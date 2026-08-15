@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Daily Grind Coffee Shop</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      color: #3b2f2f;
+      background-color: #fdf6ec;
+      line-height: 1.6;
+    }
+
+    /* Hero Section */
+    .hero {
+      background: linear-gradient(135deg, #4a2c2a 0%, #6b3a2a 50%, #8b4513 100%);
+      color: #fff;
+      text-align: center;
+      padding: 100px 20px;
+      min-height: 60vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .hero h1 {
+      font-size: 3.5rem;
+      margin-bottom: 10px;
+      letter-spacing: 2px;
+    }
+
+    .hero .tagline {
+      font-size: 1.4rem;
+      font-style: italic;
+      opacity: 0.9;
+      margin-bottom: 30px;
+    }
+
+    .hero .cta-btn {
+      display: inline-block;
+      padding: 14px 36px;
+      background-color: #d4a574;
+      color: #3b2f2f;
+      text-decoration: none;
+      border-radius: 30px;
+      font-size: 1.1rem;
+      font-weight: bold;
+      transition: background-color 0.3s;
+    }
+
+    .hero .cta-btn:hover {
+      background-color: #e8c49a;
+    }
+
+    /* Section Styles */
+    section {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 60px 20px;
+    }
+
+    section h2 {
+      font-size: 2.2rem;
+      text-align: center;
+      margin-bottom: 40px;
+      color: #4a2c2a;
+    }
+
+    /* Menu Section */
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 30px;
+    }
+
+    .menu-item {
+      background: #fff;
+      border-radius: 12px;
+      padding: 30px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+
+    .menu-item h3 {
+      font-size: 1.3rem;
+      margin-bottom: 8px;
+      color: #6b3a2a;
+    }
+
+    .menu-item .price {
+      font-size: 1.1rem;
+      color: #d4a574;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+
+    .menu-item p {
+      font-size: 0.95rem;
+      color: #666;
+    }
+
+    /* About Section */
+    .about {
+      background-color: #f5e6d3;
+      border-radius: 16px;
+      padding: 50px 40px;
+    }
+
+    .about p {
+      font-size: 1.1rem;
+      margin-bottom: 16px;
+      text-align: center;
+      max-width: 700px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* Visit Section */
+    .visit {
+      text-align: center;
+    }
+
+    .visit-details {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 40px;
+      margin-top: 20px;
+    }
+
+    .visit-card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 30px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      min-width: 250px;
+    }
+
+    .visit-card h3 {
+      color: #6b3a2a;
+      margin-bottom: 10px;
+    }
+
+    /* Footer */
+    footer {
+      background-color: #3b2f2f;
+      color: #d4a574;
+      text-align: center;
+      padding: 30px 20px;
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 600px) {
+      .hero h1 {
+        font-size: 2.2rem;
+      }
+      .hero .tagline {
+        font-size: 1.1rem;
+      }
+      section {
+        padding: 40px 15px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero Section -->
+  <header class="hero">
+    <h1>&#9749; The Daily Grind</h1>
+    <p class="tagline">Handcrafted coffee, brewed with passion since 2015</p>
+    <a href="#menu" class="cta-btn">Explore Our Menu</a>
+  </header>
+
+  <!-- Menu Section -->
+  <section id="menu">
+    <h2>Our Menu</h2>
+    <div class="menu-grid">
+      <div class="menu-item">
+        <h3>Classic Espresso</h3>
+        <p class="price">$3.50</p>
+        <p>A bold, rich shot of our signature house blend, pulled to perfection.</p>
+      </div>
+      <div class="menu-item">
+        <h3>Caramel Latte</h3>
+        <p class="price">$5.25</p>
+        <p>Silky steamed milk with espresso and house-made caramel drizzle.</p>
+      </div>
+      <div class="menu-item">
+        <h3>Cold Brew</h3>
+        <p class="price">$4.75</p>
+        <p>Slow-steeped for 18 hours, smooth and refreshing over ice.</p>
+      </div>
+      <div class="menu-item">
+        <h3>Mocha Delight</h3>
+        <p class="price">$5.50</p>
+        <p>Espresso meets rich dark chocolate, topped with whipped cream.</p>
+      </div>
+      <div class="menu-item">
+        <h3>Flat White</h3>
+        <p class="price">$4.50</p>
+        <p>Velvety micro-foam over a double ristretto shot. Smooth and strong.</p>
+      </div>
+      <div class="menu-item">
+        <h3>Fresh Pastries</h3>
+        <p class="price">$3.00+</p>
+        <p>Croissants, muffins, and scones baked fresh every morning.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- About / Story Section -->
+  <section id="about">
+    <h2>Our Story</h2>
+    <div class="about">
+      <p>The Daily Grind was born from a simple belief: great coffee brings people together. What started as a small cart at the local farmers market in 2015 has grown into a beloved neighborhood gathering place.</p>
+      <p>We source our beans directly from small farms in Colombia, Ethiopia, and Guatemala, roasting them in-house every week to ensure peak freshness. Every cup is crafted by our trained baristas who treat coffee-making as an art form.</p>
+      <p>Whether you're grabbing a quick espresso on your way to work or settling in with a latte and a good book, The Daily Grind is your home away from home.</p>
+    </div>
+  </section>
+
+  <!-- Visit / Contact Section -->
+  <section id="visit" class="visit">
+    <h2>Visit Us</h2>
+    <div class="visit-details">
+      <div class="visit-card">
+        <h3>&#128205; Location</h3>
+        <p>123 Roast Street<br>Beanville, CA 90210</p>
+      </div>
+      <div class="visit-card">
+        <h3>&#128336; Hours</h3>
+        <p>Mon–Fri: 6:00 AM – 8:00 PM<br>Sat–Sun: 7:00 AM – 6:00 PM</p>
+      </div>
+      <div class="visit-card">
+        <h3>&#128222; Contact</h3>
+        <p>Phone: (555) 123-4567<br>Email: hello@dailygrind.coffee</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>&copy; 2025 The Daily Grind Coffee Shop. All rights reserved. Brewed with &#10084;&#65039; and caffeine.</p>
+  </footer>
+
+</body>
+</html>

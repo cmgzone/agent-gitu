@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ember & Oak Coffee — Small-Batch Roasts</title>
+  <meta name="description" content="Ember & Oak Coffee: small-batch roasted coffee, pour-over bar, and a warm neighborhood space." />
+  <style>
+    :root {
+      --bg: #17120e;
+      --panel: #211a14;
+      --cream: #f4ede4;
+      --muted: #c9b8a8;
+      --accent: #d99a4e;
+      --accent-strong: #b97324;
+      --line: rgba(244, 237, 228, 0.14);
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Georgia", "Times New Roman", serif;
+      background:
+        radial-gradient(circle at top left, rgba(217, 154, 78, 0.18), transparent 32rem),
+        radial-gradient(circle at bottom right, rgba(185, 115, 36, 0.16), transparent 28rem),
+        var(--bg);
+      color: var(--cream);
+      line-height: 1.6;
+    }
+
+    a { color: inherit; }
+
+    .page {
+      width: min(1080px, calc(100% - 2.5rem));
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 1.5rem 0;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 0.65rem;
+      font-size: 1.35rem;
+      letter-spacing: 0.02em;
+    }
+
+    .brand small {
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-style: italic;
+    }
+
+    nav {
+      display: flex;
+      gap: 1.25rem;
+      font-size: 0.95rem;
+    }
+
+    nav a {
+      text-decoration: none;
+      color: var(--muted);
+    }
+
+    nav a:hover { color: var(--cream); }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 2rem;
+      align-items: center;
+      padding: 4rem 0 3rem;
+    }
+
+    .eyebrow {
+      margin: 0 0 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.22em;
+      font-size: 0.78rem;
+      color: var(--accent);
+    }
+
+    h1 {
+      margin: 0 0 1rem;
+      font-size: clamp(2.4rem, 6vw, 4.4rem);
+      line-height: 1.05;
+    }
+
+    .hero p {
+      margin: 0 0 1.75rem;
+      max-width: 34rem;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.9rem;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 0.85rem 1.3rem;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .button-primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+      color: #221304;
+    }
+
+    .button-secondary {
+      border-color: var(--line);
+      color: var(--cream);
+      background: rgba(244, 237, 228, 0.04);
+    }
+
+    .cup-card {
+      margin: 0;
+      padding: 2rem;
+      border: 1px solid var(--line);
+      border-radius: 1.4rem;
+      background: linear-gradient(180deg, rgba(244,237,228,0.07), rgba(244,237,228,0.03));
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .cup-card h2 {
+      margin-top: 0;
+      font-size: 1.2rem;
+    }
+
+    .cup-card ul {
+      margin: 0;
+      padding-left: 1.2rem;
+      color: var(--muted);
+    }
+
+    section {
+      padding: 2.5rem 0;
+      border-top: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 1rem;
+      font-size: 1.8rem;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1.25rem;
+    }
+
+    article {
+      padding: 1.4rem;
+      border: 1px solid var(--line);
+      border-radius: 1rem;
+      background: rgba(244, 237, 228, 0.035);
+    }
+
+    article h3 {
+      margin: 0 0 0.5rem;
+      font-size: 1.1rem;
+    }
+
+    article p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .price {
+      display: inline-block;
+      margin-top: 0.9rem;
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    footer {
+      padding: 2rem 0 3rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 860px) {
+      .hero {
+        grid-template-columns: 1fr;
+        padding-top: 2.5rem;
+      }
+
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div class="brand">
+        <strong>Ember &amp; Oak</strong>
+        <small>coffee roasters</small>
+      </div>
+      <nav aria-label="Primary">
+        <a href="#menu">Menu</a>
+        <a href="#beans">Beans</a>
+        <a href="#visit">Visit</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div>
+          <p class="eyebrow">Small-batch roasts · Pour-over bar</p>
+          <h1 id="hero-title">Coffee worth slowing down for.</h1>
+          <p>
+            Ember &amp; Oak roasts bright, balanced coffee in small batches and serves it in a warm,
+            wood-lined room built for conversation, reading, and unhurried mornings.
+          </p>
+          <div class="actions">
+            <a class="button button-primary" href="#menu">See the menu</a>
+            <a class="button button-secondary" href="#visit">Plan your visit</a>
+          </div>
+        </div>
+
+        <aside class="cup-card" aria-label="Today at Ember and Oak">
+          <h2>Today at the bar</h2>
+          <ul>
+            <li>Single-origin pour-over: Huila, Colombia</li>
+            <li>Espresso blend: toasted hazelnut finish</li>
+            <li>Fresh pastries from the morning bake</li>
+          </ul>
+        </aside>
+      </section>
+
+      <section id="menu" aria-labelledby="menu-title">
+        <h2 id="menu-title">Menu highlights</h2>
+        <div class="grid">
+          <article>
+            <h3>Pour-Over</h3>
+            <p>A clean, nuanced cup brewed to order. Ask about today’s roast notes.</p>
+            <span class="price">$5.25</span>
+          </article>
+          <article>
+            <h3>Cortado</h3>
+            <p>Equal parts espresso and silky steamed milk, balanced and smooth.</p>
+            <span class="price">$4.75</span>
+          </article>
+          <article>
+            <h3>Oak Latte</h3>
+            <p>House espresso with oak-smoked maple syrup and velvety milk.</p>
+            <span class="price">$5.75</span>
+          </article>
+        </div>
+      </section>
+
+      <section id="beans" aria-labelledby="beans-title">
+        <h2 id="beans-title">Beans we love</h2>
+        <div class="grid">
+          <article>
+            <h3>Colombia · Huila</h3>
+            <p>Red apple, caramel, and a bright citrus finish.</p>
+            <span class="price">$18 / 12 oz</span>
+          </article>
+          <article>
+            <h3>Ethiopia · Yirgacheffe</h3>
+            <p>Jasmine, bergamot, and a tea-like body.</p>
+            <span class="price">$20 / 12 oz</span>
+          </article>
+          <article>
+            <h3>Ember Blend</h3>
+            <p>Dark chocolate, toasted hazelnut, and brown sugar.</p>
+            <span class="price">$17 / 12 oz</span>
+          </article>
+        </div>
+      </section>
+
+      <section id="visit" aria-labelledby="visit-title">
+        <h2 id="visit-title">Visit us</h2>
+        <p>
+          We’re open daily from 7:00am to 4:00pm at 128 Oakline Street, Maple District.
+          Bring a book, bring a friend, or come meet the roasters.
+        </p>
+        <a class="button button-primary" href="mailto:hello@emberandoak.example">hello@emberandoak.example</a>
+      </section>
+    </main>
+
+    <footer>
+      <span>© 2026 Ember &amp; Oak Coffee Roasters</span>
+      <span>Roasted locally. Served warmly.</span>
+    </footer>
+  </div>
+</body>
+</html>

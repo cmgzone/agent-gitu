@@ -163,6 +163,15 @@ export const UI_HTML = String.raw`<!doctype html>
   .bottom-composer { border-top: 1px solid var(--border); padding: 10px 22px 14px; flex: none; background: var(--bg); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
   @media (max-width: 1080px) { .run-side { display: none; } }
+  @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .working { display: flex; align-items: center; gap: 10px; padding: 12px 2px; }
+  .working .spinner { width: 12px; height: 12px; border: 2px solid var(--border2); border-top-color: var(--dark); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  .working .shimmer { height: 9px; width: 120px; border-radius: 5px; background: linear-gradient(90deg, #e8e8e3 25%, #f6f6f2 50%, #e8e8e3 75%); background-size: 600px 100%; animation: shimmer 1.3s linear infinite; flex: none; }
+  .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .progress { display: flex; align-items: center; gap: 12px; padding: 0 22px 10px; color: var(--muted); font-size: 11.5px; flex: none; }
+  .progress .pbar { flex: 1; height: 4px; border-radius: 2px; background: #e7e7e2; overflow: hidden; }
+  .progress .pbar span { display: block; height: 100%; width: 0; background: var(--dark); transition: width .5s ease; }
 </style>
 </head>
 <body>
@@ -302,6 +311,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="run">' +
       '<div class="run-main">' +
       '<div class="run-head"><span class="goal" id="rGoal"></span><span id="rChip"></span></div>' +
+      '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
       '<div class="bottom-composer"><div class="composer">' +
       '<textarea id="follow" rows="1" placeholder="New session… (Enter to start)"></textarea>' +
@@ -336,6 +346,13 @@ export const UI_HTML = String.raw`<!doctype html>
       ta.dispatchEvent(ev);
     };
     replayEvents(runId);
+    var streamEl = $('stream');
+    var w = document.createElement('div');
+    w.className = 'working';
+    w.id = 'working';
+    w.innerHTML = '<span class="spinner"></span><span class="shimmer"></span><span class="wtext" id="workingText">Connecting…</span>';
+    streamEl.appendChild(w);
+    setWorking('Thinking…');
     renderSide(runId);
     connect(runId);
     pollRun(runId);
@@ -364,18 +381,69 @@ export const UI_HTML = String.raw`<!doctype html>
     return '';
   }
 
+  function workingTextFor(text) {
+    if (text.indexOf('think') === 0) return 'Thinking…';
+    if (text.indexOf('run ') === 0) {
+      var body = text.slice(4);
+      var dash = body.indexOf(' — ');
+      var summary = dash >= 0 ? body.slice(0, dash) : body;
+      if (summary.indexOf('write ') === 0) return 'Editing ' + summary.slice(6) + '…';
+      if (summary.indexOf('edit ') === 0) return 'Editing ' + summary.slice(5) + '…';
+      if (summary.indexOf('read ') === 0) return 'Reading ' + summary.slice(5) + '…';
+      if (summary.indexOf('list ') === 0) return 'Listing ' + summary.slice(5) + '…';
+      if (summary.indexOf('search ') === 0) return 'Searching ' + summary.slice(7) + '…';
+      if (summary.indexOf('$ ') === 0) return 'Running ' + summary.slice(2) + '…';
+      return 'Working: ' + summary + '…';
+    }
+    if (text.indexOf('plan ') === 0) return 'Building plan…';
+    if (text.indexOf('criteria') === 0) return 'Defining acceptance criteria…';
+    if (text.indexOf('evidence') === 0) return 'Recording evidence…';
+    if (text.indexOf('claim') === 0) return 'Checking acceptance criteria…';
+    if (text.indexOf('hypothesis') === 0) return 'Updating hypothesis…';
+    if (text.indexOf('branch') === 0) return 'Preparing workspace…';
+    if (text.indexOf('context') === 0) return 'Selecting relevant context…';
+    return null;
+  }
+
+  function setWorking(text) {
+    var w = $('working');
+    if (!w) return;
+    if (!text) { w.style.display = 'none'; return; }
+    w.style.display = 'flex';
+    var t = $('workingText');
+    if (t && t.textContent !== text) t.textContent = text;
+  }
+
+  function updateProgress(L) {
+    var p = $('progress');
+    if (!p || !L) return;
+    var done = 0;
+    L.plan.forEach(function (s) { if (s.status === 'done') done++; });
+    var total = L.plan.length;
+    p.style.display = 'flex';
+    $('progText').textContent =
+      (total ? 'Step ' + done + '/' + total : 'Planning…') +
+      ' · ' + L.actions.length + '/' + L.budgets.maxActions + ' actions' +
+      ' · ' + L.evidence.length + ' evidence';
+    var width = Math.min(100, Math.round((done / Math.max(1, total)) * 70 + (L.actions.length / Math.max(1, L.budgets.maxActions)) * 30));
+    $('progFill').style.width = width + '%';
+  }
+
   function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
     var text = String(ev.text);
-    if (text.indexOf('approval-required') === 0) return;
+    if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     var parts = text.split(' ');
     var tag = parts[0] || '';
     var rest = text.slice(tag.length).trim();
     var div = document.createElement('div');
     div.className = 'ev';
     div.innerHTML = '<span class="tag ' + tagClass(text) + '">' + esc(tag) + '</span><div class="body">' + esc(rest) + '</div>';
-    stream.appendChild(div);
+    var working = $('working');
+    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
+    var wt = workingTextFor(text);
+    if (wt) setWorking(wt);
     stream.scrollTop = stream.scrollHeight;
   }
 
@@ -401,12 +469,15 @@ export const UI_HTML = String.raw`<!doctype html>
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
-          if (s2) { s2.ledger = ledger; renderSide(runId); }
+          if (s2) { s2.ledger = ledger; renderSide(runId); updateProgress(ledger); }
         }).catch(function () {});
       } else {
         renderSide(runId);
       }
-      if (session.status !== 'running' && S.poll) { clearInterval(S.poll); S.poll = null; }
+      if (session.status !== 'running') {
+        setWorking(null);
+        if (S.poll) { clearInterval(S.poll); S.poll = null; }
+      }
     }).catch(function () {});
   }
 

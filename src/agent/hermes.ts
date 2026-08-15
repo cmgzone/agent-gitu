@@ -166,6 +166,7 @@ export class Hermes {
 
     const ask = async (note?: string): Promise<ParsedAction | undefined> => {
       messages.push({ role: 'user', content: buildStateMessage(ledger, note) });
+      this.emit('think  reviewing task state and choosing the next action');
       const reply = await llm.complete(messages, { json: true });
       messages.push({ role: 'assistant', content: reply });
       const parsed = parseAction(extractJson(reply));

@@ -89,7 +89,7 @@ export class Executor {
       return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
-    this.emit(`run      ${summary}`);
+    this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
     const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot };
     let result: ToolResult;
     try {

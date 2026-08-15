@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VisionMax TV | Experience Entertainment Redefined</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #1a1a2e; line-height: 1.6; }
+
+    /* Hero Section */
+    .hero {
+      background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+      color: #ffffff;
+      text-align: center;
+      padding: 120px 20px 100px;
+    }
+    .hero h1 { font-size: 3.5rem; margin-bottom: 20px; letter-spacing: -1px; }
+    .hero p { font-size: 1.3rem; max-width: 700px; margin: 0 auto 40px; color: #c9c9e3; }
+    .hero .cta-btn {
+      display: inline-block;
+      padding: 16px 40px;
+      background: #e94560;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 50px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      transition: background 0.3s;
+    }
+    .hero .cta-btn:hover { background: #ff6b6b; }
+
+    /* Features Section */
+    .features {
+      padding: 80px 20px;
+      background: #f8f9fa;
+    }
+    .features h2 { text-align: center; font-size: 2.5rem; margin-bottom: 50px; }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 40px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .feature-card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 40px 30px;
+      text-align: center;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+      transition: transform 0.3s;
+    }
+    .feature-card:hover { transform: translateY(-6px); }
+    .feature-card .icon { font-size: 3rem; margin-bottom: 16px; }
+    .feature-card h3 { font-size: 1.3rem; margin-bottom: 12px; }
+    .feature-card p { color: #555; font-size: 0.95rem; }
+
+    /* Products Section */
+    .products {
+      padding: 80px 20px;
+    }
+    .products h2 { text-align: center; font-size: 2.5rem; margin-bottom: 50px; }
+    .products-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 30px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .product-card {
+      border: 1px solid #e0e0e0;
+      border-radius: 16px;
+      padding: 30px;
+      text-align: center;
+    }
+    .product-card h3 { font-size: 1.4rem; margin-bottom: 8px; }
+    .product-card .size { color: #e94560; font-weight: 700; font-size: 1.1rem; margin-bottom: 12px; }
+    .product-card p { color: #666; font-size: 0.9rem; margin-bottom: 16px; }
+    .product-card .price { font-size: 1.5rem; font-weight: 700; }
+
+    /* CTA Section */
+    .cta-section {
+      background: linear-gradient(135deg, #302b63, #24243e);
+      color: #fff;
+      text-align: center;
+      padding: 80px 20px;
+    }
+    .cta-section h2 { font-size: 2.2rem; margin-bottom: 16px; }
+    .cta-section p { font-size: 1.1rem; color: #c9c9e3; margin-bottom: 30px; max-width: 600px; margin-left: auto; margin-right: auto; }
+    .cta-section .cta-btn {
+      display: inline-block;
+      padding: 16px 40px;
+      background: #e94560;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 50px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      transition: background 0.3s;
+    }
+    .cta-section .cta-btn:hover { background: #ff6b6b; }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 30px 20px;
+      background: #1a1a2e;
+      color: #888;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <h1>VisionMax TV</h1>
+    <p>Experience breathtaking 8K resolution, immersive Dolby Atmos sound, and AI-powered picture quality that adapts to every scene. Your entertainment, elevated.</p>
+    <a href="#products" class="cta-btn">Explore Our TVs</a>
+  </section>
+
+  <!-- Features Section -->
+  <section class="features">
+    <h2>Why VisionMax?</h2>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="icon">🎬</div>
+        <h3>8K Ultra HD</h3>
+        <p>Four times the detail of 4K. Every pixel crafted for lifelike clarity and depth that pulls you into the action.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🔊</div>
+        <h3>Dolby Atmos Sound</h3>
+        <p>Multi-dimensional audio that surrounds you. Feel every whisper, explosion, and note as if you were there.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🤖</div>
+        <h3>AI Picture Engine</h3>
+        <p>Intelligent processing that optimizes color, contrast, and motion in real time for every frame.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🎮</div>
+        <h3>Game Mode Pro</h3>
+        <p>120Hz refresh rate, VRR, and ultra-low input lag. Dominate every game with zero compromise.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">📱</div>
+        <h3>Smart OS</h3>
+        <p>All your favorite streaming apps built in. Voice control, screen mirroring, and seamless connectivity.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">🌿</div>
+        <h3>Eco-Friendly Design</h3>
+        <p>Energy-efficient panels and recyclable materials. Stunning visuals with a smaller carbon footprint.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Products Section -->
+  <section class="products" id="products">
+    <h2>Choose Your Screen</h2>
+    <div class="products-grid">
+      <div class="product-card">
+        <h3>VisionMax S55</h3>
+        <div class="size">55" 4K QLED</div>
+        <p>Perfect for bedrooms and smaller living spaces. Quantum dot color with HDR10+ support.</p>
+        <div class="price">$799</div>
+      </div>
+      <div class="product-card">
+        <h3>VisionMax M65</h3>
+        <div class="size">65" 4K OLED</div>
+        <p>The sweet spot for movie nights. Infinite contrast, true blacks, and 120Hz gaming.</p>
+        <div class="price">$1,499</div>
+      </div>
+      <div class="product-card">
+        <h3>VisionMax X85</h3>
+        <div class="size">85" 8K Mini-LED</div>
+        <p>The ultimate home theater experience. Massive screen, 8K resolution, and built-in soundbar.</p>
+        <div class="price">$3,999</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Call to Action Section -->
+  <section class="cta-section">
+    <h2>Ready to Upgrade Your Viewing?</h2>
+    <p>Visit your nearest VisionMax store or order online with free delivery and 30-day returns. Financing available.</p>
+    <a href="#" class="cta-btn">Shop Now</a>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>&copy; 2026 VisionMax TV. All rights reserved. | Privacy Policy | Terms of Service</p>
+  </footer>
+
+</body>
+</html>

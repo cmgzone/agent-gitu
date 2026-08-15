@@ -1,0 +1,176 @@
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import type { ProjectLock } from '../types.js';
+import { nowIso, readJson, writeJson } from '../util.js';
+
+const MARKER_FILES = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle'];
+const DEFAULT_IGNORES = ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.venv', '__pycache__', 'target'];
+
+export class ProjectGuardError extends Error {}
+
+function tryGit(repoRoot: string, args: string[]): string | undefined {
+  try {
+    return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function findRepoRoot(startDir: string): { root: string; marker?: string } | undefined {
+  let dir = path.resolve(startDir);
+  for (;;) {
+    for (const marker of MARKER_FILES) {
+      if (existsSync(path.join(dir, marker))) return { root: dir, marker };
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+interface PackageJson {
+  name?: string;
+  main?: string;
+  bin?: string | Record<string, string>;
+  scripts?: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+}
+
+function pickScript(scripts: Record<string, string>, candidates: string[]): string | undefined {
+  for (const c of candidates) {
+    if (scripts[c]) return `npm run ${c}`;
+  }
+  return undefined;
+}
+
+function detectTechStack(pkg: PackageJson): string[] {
+  const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+  const stack: string[] = [];
+  const known: [string, string][] = [
+    ['typescript', 'typescript'],
+    ['react', 'react'],
+    ['electron', 'electron'],
+    ['vite', 'vite'],
+    ['vitest', 'vitest'],
+    ['jest', 'jest'],
+    ['express', 'express'],
+    ['next', 'next'],
+    ['vue', 'vue'],
+    ['svelte', 'svelte'],
+  ];
+  for (const [dep, label] of known) {
+    if (deps[dep]) stack.push(label);
+  }
+  if (Object.keys(deps).length === 0 && pkg.scripts) stack.push('node');
+  return stack;
+}
+
+function detectEntrypoints(root: string, pkg: PackageJson): string[] {
+  const found: string[] = [];
+  const candidates = [
+    pkg.main,
+    typeof pkg.bin === 'string' ? pkg.bin : undefined,
+    'src/index.ts',
+    'src/main.ts',
+    'src/cli.ts',
+    'src/index.js',
+    'index.js',
+    'main.py',
+    'src/main.rs',
+  ];
+  for (const c of candidates) {
+    if (c && existsSync(path.join(root, c))) found.push(c.replace(/\\/g, '/'));
+  }
+  return [...new Set(found)];
+}
+
+export class ProjectGuard {
+  private constructor(
+    public readonly lock: ProjectLock,
+    private readonly lockFile: string,
+  ) {}
+
+  static detect(cwd: string): ProjectGuard {
+    const located = findRepoRoot(cwd);
+    if (!located) {
+      throw new ProjectGuardError(
+        `No project marker found at or above ${cwd}. Hermes refuses to act without a locked project scope.`,
+      );
+    }
+    const { root, marker } = located;
+
+    let branch = tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    if (!branch && tryGit(root, ['rev-parse', '--is-inside-work-tree']) === 'true') {
+      branch = undefined;
+    }
+
+    let name = path.basename(root);
+    let pkg: PackageJson = {};
+    const pkgPath = path.join(root, 'package.json');
+    if (existsSync(pkgPath)) {
+      try {
+        pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as PackageJson;
+        if (pkg.name) name = pkg.name;
+      } catch {
+        pkg = {};
+      }
+    }
+
+    const scripts = pkg.scripts ?? {};
+    const lock: ProjectLock = {
+      name,
+      repoRoot: root,
+      branch,
+      techStack: marker === 'package.json' ? detectTechStack(pkg) : [marker ?? 'unknown'],
+      entrypoints: detectEntrypoints(root, pkg),
+      testCommand: pickScript(scripts, ['test', 'test:unit']),
+      buildCommand: pickScript(scripts, ['build']),
+      lintCommand: pickScript(scripts, ['lint']),
+      typecheckCommand: pickScript(scripts, ['typecheck', 'type-check', 'tsc']),
+      ignorePaths: DEFAULT_IGNORES,
+      lockedAt: nowIso(),
+    };
+
+    return new ProjectGuard(lock, path.join(root, '.hermes', 'project-lock.json'));
+  }
+
+  persist(): void {
+    writeJson(this.lockFile, this.lock);
+  }
+
+  static load(repoRoot: string): ProjectGuard | undefined {
+    const lockFile = path.join(repoRoot, '.hermes', 'project-lock.json');
+    const data = readJson<ProjectLock>(lockFile);
+    if (!data) return undefined;
+    return new ProjectGuard(data, lockFile);
+  }
+
+  isInsideProject(absPath: string): boolean {
+    const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  }
+
+  assertInside(absPath: string): void {
+    if (!this.isInsideProject(absPath)) {
+      throw new ProjectGuardError(
+        `Path ${absPath} is outside the locked project ${this.lock.name} (${this.lock.repoRoot}).`,
+      );
+    }
+    const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
+    const top = rel.split(path.sep)[0];
+    if (top && this.lock.ignorePaths.includes(top)) {
+      throw new ProjectGuardError(`Path ${absPath} is inside an ignored directory (${top}).`);
+    }
+  }
+
+  resolve(relOrAbs: string): string {
+    const abs = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(this.lock.repoRoot, relOrAbs);
+    return path.resolve(abs);
+  }
+
+  toRelative(absPath: string): string {
+    return path.relative(this.lock.repoRoot, absPath).replace(/\\/g, '/');
+  }
+}

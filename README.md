@@ -1,0 +1,158 @@
+# Hermes
+
+A **bounded autonomous engineering agent**. Hermes is not a chatbot with shell
+access — it is a control plane for autonomous work: it locks a project, plans
+bounded actions, executes through policy-gated tools, verifies with evidence,
+prevents loops, and only claims completion when every acceptance criterion is
+backed by passing evidence.
+
+> Hermes must know the difference between *"I did something"* and
+> *"the task is actually complete."*
+
+## Architecture
+
+```
+            CLI (src/cli.ts)
+                 │
+         Hermes orchestrator (src/agent/hermes.ts)
+                 │
+   ┌─────────────┼──────────────────────────────┐
+   │             │                              │
+ProjectGuard  TaskLedger                  LLM client
+(scope lock)  (persistent task state)     (OpenAI-compatible)
+   │
+   ├── ContextEngine   ranked, role-labeled, budgeted context packs
+   ├── Executor        policy-gated tool dispatch + action log
+   │     ├── PolicyEngine    safe / moderate / dangerous tiers, approvals
+   │     └── LoopDetector    action hashes + normalized error signatures
+   ├── EvidenceEngine  evidence records + completion gate
+   ├── CheckpointManager     git snapshots per step, rollback refs
+   ├── MemoryStore     typed memory: project/decision/task/failure/…
+   └── Reporter        completion reports
+```
+
+### The control loop
+
+```
+Lock project → criteria → context pack → plan →
+  execute one action → observe → verify → record evidence →
+  on failure: record, new hypothesis, never repeat blindly →
+  when all criteria have passing evidence → complete → report + memory
+```
+
+### The guarantees
+
+| Mechanism | What it prevents |
+|---|---|
+| **ProjectGuard** | Editing the wrong project / files outside scope |
+| **TaskLedger** | Forgetting what was tried; lost state between turns |
+| **EvidenceEngine + gate** | Saying "done" without proof |
+| **LoopDetector** | Repeating the same failing action forever |
+| **PolicyEngine** | Unapproved destructive commands (fail-closed tiers) |
+| **Budgets** | Runaway action/attempt/wall-clock consumption |
+| **CheckpointManager** | Irreversible damage (git branch + snapshot per step) |
+
+## Quick start
+
+```bash
+npm install
+npm run build
+
+# Web UI — agent state viewer (live task state, evidence, approval gates)
+node dist/cli.js ui --port 8321        # then open http://localhost:8321
+
+# inside any project (package.json / pyproject.toml / cargo.toml / go.mod …)
+node dist/cli.js init
+node dist/cli.js run "Fix the streaming renderer" \
+  --criteria "tool results stream incrementally|existing tests pass"
+
+# inspect state afterwards
+node dist/cli.js tasks
+node dist/cli.js show <taskId>
+node dist/cli.js report <taskId>
+node dist/cli.js memory
+```
+
+Environment for `run`:
+
+```
+# Alibaba Cloud Model Studio / DashScope (provider: alibaba)
+HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
+# endpoint defaults to the workspace URL built in for this deployment;
+# override with --base-url or HERMES_BASE_URL
+
+# OpenAI (provider: openai)
+HERMES_OPENAI_API_KEY | OPENAI_API_KEY
+
+# Any OpenAI-compatible endpoint (provider: custom)
+HERMES_API_KEY  (+ optional HERMES_BASE_URL, HERMES_MODEL)
+```
+
+Select explicitly:
+
+```bash
+node dist/cli.js providers                       # show providers + key status
+node dist/cli.js models --provider alibaba       # list all models (live from the endpoint when a key is set)
+node dist/cli.js models --pick                   # interactive model chooser
+node dist/cli.js run "goal" --provider alibaba --model qwen3.7-max
+```
+
+The alibaba catalog is fetched live from `GET /models` on your workspace
+endpoint whenever an API key is configured, so new models appear
+automatically; a built-in fallback list (qwen3.7-max, qwen3.7-plus,
+qwen3.6-flash, qwen3-coder-*, deepseek-v4-*, kimi-k2.7-code, glm-5.2, ...)
+is shown when offline or keyless.
+
+## Development
+
+```bash
+npm run typecheck   # strict TS
+npm test            # vitest: 41 tests incl. end-to-end runs with a mock LLM
+```
+
+### Layout
+
+```
+src/
+  agent/      orchestrator + system/state prompts (strict JSON protocol)
+  guard/      ProjectGuard — workspace detection, scope lock, boundary checks
+  ledger/     TaskLedger — persistent task object (.hermes/tasks/<id>.json)
+  context/    ContextEngine — file roles, relevance scoring, budgets
+  executor/   Executor — dispatch, capture, action records
+  policy/     PolicyEngine — risk tiers + command classifier (fail closed)
+  loop/       LoopDetector — signature-based repeat prevention
+  evidence/   EvidenceEngine — evidence records + completion gate
+  checkpoint/ CheckpointManager — git branch/snapshot/rollback
+  memory/     MemoryStore — typed, scoped memory (.hermes/memory.json)
+  report/     Reporter — completion reports
+  llm/        LlmClient interface, OpenAI-compatible client, scripted mock
+  tools/      read/write/edit/list/search/shell implementations
+tests/        unit + end-to-end (mock LLM) suites
+```
+
+## Roadmap
+
+- [x] Phase 1 — Control: project lock, ledger, action log, budgets, loop prevention
+- [x] Phase 2 — Context: role labeling, relevance ranking, budgeted packs (basic)
+- [x] Phase 3 — Verification: evidence capture, completion gate, reports
+- [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs
+- [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs
+- [x] Phase 5 — UI: agent-state viewer WebUI (SSE live feed, criteria/plan/evidence panels, approval gates)
+- [ ] Electron desktop shell
+- [ ] Deeper context: import graphs, semantic search, edit history signals
+
+## Web UI
+
+`hermes ui` starts a zero-dependency HTTP server (built-in `node:http`) that
+renders the agent's **state**, not a chat transcript:
+
+- current task, status, hypothesis
+- acceptance criteria with satisfied/open state + linked evidence
+- plan steps with per-step status/attempts
+- evidence list (PASS/FAIL, kind, command)
+- files changed, blockers, completion report
+- live activity feed via Server-Sent Events
+- **approval gates**: dangerous actions pause the run until approved/denied in the UI
+
+API: `GET /api/project|models|tasks|runs`, `POST /api/runs`,
+`GET /api/runs/:id/stream` (SSE), `POST /api/approvals/:id`.

@@ -1,0 +1,68 @@
+import type { TaskLedger } from '../ledger/task-ledger.js';
+import type { CompletionReport } from '../types.js';
+import { nowIso } from '../util.js';
+
+export class Reporter {
+  build(
+    ledger: TaskLedger,
+    exitReason: 'complete' | 'blocked' | 'budget' | 'stalled',
+    completionInput?: { summary: string; risks: string[]; followUps: string[] },
+  ): CompletionReport {
+    const d = ledger.data;
+    const verification = d.evidence.map((e) => `${e.passed ? 'PASS' : 'FAIL'} [${e.kind}] ${e.label}${e.command ? ` (${e.command})` : ''}`);
+    const changes = d.actions
+      .filter((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success')
+      .map((a) => a.paramsSummary);
+
+    const statusMap: Record<typeof exitReason, CompletionReport['status']> = {
+      complete: 'complete',
+      blocked: 'blocked',
+      budget: 'failed',
+      stalled: 'failed',
+    };
+
+    return {
+      taskId: d.taskId,
+      goal: d.goal,
+      status: statusMap[exitReason],
+      summary:
+        completionInput?.summary ??
+        (exitReason === 'blocked'
+          ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}`
+          : `Task ended without completion (${exitReason}).`),
+      changes,
+      filesChanged: d.filesChanged,
+      verification,
+      evidence: d.evidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
+      remainingRisks: completionInput?.risks ?? (d.blockers.length > 0 ? [`Unresolved blockers: ${d.blockers.join('; ')}`] : []),
+      followUps: completionInput?.followUps ?? [],
+      generatedAt: nowIso(),
+    };
+  }
+
+  render(report: CompletionReport): string {
+    const lines: string[] = [
+      `Task: ${report.goal}`,
+      `Task ID: ${report.taskId}`,
+      `Status: ${report.status.toUpperCase()}`,
+      '',
+      `Summary: ${report.summary}`,
+      '',
+      'Changes made:',
+      ...(report.changes.length > 0 ? report.changes.map((c) => `  - ${c}`) : ['  (none)']),
+      '',
+      'Files changed:',
+      ...(report.filesChanged.length > 0 ? report.filesChanged.map((f) => `  - ${f}`) : ['  (none)']),
+      '',
+      'Verification:',
+      ...(report.verification.length > 0 ? report.verification.map((v) => `  - ${v}`) : ['  (none recorded)']),
+      '',
+      'Remaining risks:',
+      ...(report.remainingRisks.length > 0 ? report.remainingRisks.map((r) => `  - ${r}`) : ['  (none noted)']),
+      '',
+      'Follow-ups:',
+      ...(report.followUps.length > 0 ? report.followUps.map((f) => `  - ${f}`) : ['  (none)']),
+    ];
+    return lines.join('\n');
+  }
+}

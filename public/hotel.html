@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>The Meridian Grand Hotel</title>
+  <meta name='description' content='The Meridian Grand Hotel offers elegant rooms, world-class amenities, and a prime waterfront location.'>
+  <style>
+    :root {
+      --gold: #c9a227;
+      --navy: #10233f;
+      --ink: #1d2733;
+      --muted: #5c6b7a;
+      --paper: #f7f5f0;
+      --white: #ffffff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Georgia', 'Times New Roman', serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.6;
+    }
+    a { color: inherit; text-decoration: none; }
+    .container { width: min(1080px, 92%); margin: 0 auto; }
+
+    header.site-header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(16, 35, 63, 0.95);
+      color: var(--white);
+      padding: 0.9rem 0;
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    .brand {
+      font-size: 1.25rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--gold);
+      font-weight: 700;
+    }
+    .nav-links {
+      display: flex;
+      gap: 1.25rem;
+      font-size: 0.95rem;
+      flex-wrap: wrap;
+    }
+    .nav-links a:hover { color: var(--gold); }
+    .btn {
+      display: inline-block;
+      background: var(--gold);
+      color: var(--navy);
+      padding: 0.65rem 1.4rem;
+      border-radius: 4px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-size: 0.9rem;
+      border: 2px solid var(--gold);
+      cursor: pointer;
+    }
+    .btn:hover { filter: brightness(1.08); }
+    .btn-outline {
+      background: transparent;
+      color: var(--white);
+      border-color: var(--white);
+    }
+    .btn-outline:hover { border-color: var(--gold); color: var(--gold); }
+
+    .hero {
+      background: linear-gradient(rgba(16, 35, 63, 0.72), rgba(16, 35, 63, 0.72)),
+        radial-gradient(circle at 20% 30%, #2a4a7f, #10233f 60%);
+      color: var(--white);
+      text-align: center;
+      padding: 6.5rem 0 5.5rem;
+    }
+    .hero h1 {
+      font-size: clamp(2.2rem, 5vw, 3.6rem);
+      letter-spacing: 0.06em;
+      margin-bottom: 1rem;
+    }
+    .hero .tagline {
+      font-size: clamp(1.05rem, 2.2vw, 1.35rem);
+      color: #e8e2d0;
+      max-width: 46rem;
+      margin: 0 auto 2rem;
+      font-style: italic;
+    }
+    .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+
+    section { padding: 4rem 0; }
+    .section-title {
+      text-align: center;
+      font-size: clamp(1.7rem, 3.4vw, 2.4rem);
+      color: var(--navy);
+      margin-bottom: 0.5rem;
+    }
+    .section-sub {
+      text-align: center;
+      color: var(--muted);
+      max-width: 44rem;
+      margin: 0 auto 2.5rem;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.5rem;
+    }
+    .card {
+      background: var(--white);
+      border: 1px solid #e4ded2;
+      border-radius: 8px;
+      padding: 1.75rem;
+      box-shadow: 0 6px 18px rgba(16, 35, 63, 0.06);
+    }
+    .card h3 {
+      color: var(--navy);
+      margin-bottom: 0.5rem;
+      font-size: 1.2rem;
+    }
+    .card .price {
+      color: var(--gold);
+      font-weight: 700;
+      margin: 0.75rem 0;
+      font-size: 1.1rem;
+    }
+    .card p { color: var(--muted); font-size: 0.98rem; }
+
+    .amenities {
+      background: var(--navy);
+      color: var(--white);
+    }
+    .amenities .section-title { color: var(--white); }
+    .amenities .section-sub { color: #cfd8e3; }
+    .amenity-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1.25rem;
+    }
+    .amenity {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 8px;
+      padding: 1.25rem;
+    }
+    .amenity h3 { color: var(--gold); font-size: 1.05rem; margin-bottom: 0.4rem; }
+    .amenity p { color: #dbe3ec; font-size: 0.95rem; }
+
+    .contact-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.5rem;
+      align-items: start;
+    }
+    .contact-card {
+      background: var(--white);
+      border: 1px solid #e4ded2;
+      border-radius: 8px;
+      padding: 1.75rem;
+    }
+    .contact-card h3 { color: var(--navy); margin-bottom: 0.75rem; }
+    .contact-card p { color: var(--muted); margin-bottom: 0.35rem; }
+
+    footer.site-footer {
+      background: #0b182c;
+      color: #9fb0c3;
+      text-align: center;
+      padding: 2rem 0;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header class='site-header'>
+    <div class='container nav'>
+      <span class='brand'>Meridian Grand</span>
+      <nav class='nav-links' aria-label='Primary'>
+        <a href='#rooms'>Rooms</a>
+        <a href='#amenities'>Amenities</a>
+        <a href='#location'>Location</a>
+        <a href='#contact'>Contact</a>
+      </nav>
+      <a class='btn' href='#contact'>Book Now</a>
+    </div>
+  </header>
+
+  <main>
+    <section class='hero' id='top'>
+      <div class='container'>
+        <h1>The Meridian Grand Hotel</h1>
+        <p class='tagline'>Timeless elegance on the waterfront — where every stay becomes a cherished memory.</p>
+        <div class='hero-actions'>
+          <a class='btn' href='#rooms'>Explore Rooms</a>
+          <a class='btn btn-outline' href='#amenities'>Discover Amenities</a>
+        </div>
+      </div>
+    </section>
+
+    <section id='rooms'>
+      <div class='container'>
+        <h2 class='section-title'>Rooms and Suites</h2>
+        <p class='section-sub'>Choose from thoughtfully appointed accommodations, each designed for comfort and refined relaxation.</p>
+        <div class='cards'>
+          <article class='card'>
+            <h3>Deluxe King Room</h3>
+            <p>A serene retreat with a plush king bed, marble bathroom, and city views. Ideal for couples and business travelers.</p>
+            <p class='price'>From $189 / night</p>
+          </article>
+          <article class='card'>
+            <h3>Harbor View Suite</h3>
+            <p>Wake to panoramic waterfront views in this spacious suite featuring a separate living area and private balcony.</p>
+            <p class='price'>From $329 / night</p>
+          </article>
+          <article class='card'>
+            <h3>Meridian Presidential Suite</h3>
+            <p>Our signature suite offers unmatched luxury with a dining room, study, and dedicated concierge service.</p>
+            <p class='price'>From $649 / night</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class='amenities' id='amenities'>
+      <div class='container'>
+        <h2 class='section-title'>World-Class Amenities</h2>
+        <p class='section-sub'>Everything you need for an unforgettable stay, all under one roof.</p>
+        <div class='amenity-grid'>
+          <div class='amenity'>
+            <h3>Infinity Pool and Spa</h3>
+            <p>Relax in our rooftop infinity pool or indulge in signature treatments at the Meridian Spa.</p>
+          </div>
+          <div class='amenity'>
+            <h3>Fine Dining</h3>
+            <p>Savor seasonal cuisine at Azure Restaurant and craft cocktails in the Gold Leaf Lounge.</p>
+          </div>
+          <div class='amenity'>
+            <h3>Fitness Center</h3>
+            <p>State-of-the-art equipment and personal training available around the clock.</p>
+          </div>
+          <div class='amenity'>
+            <h3>Concierge and Valet</h3>
+            <p>Our dedicated team arranges tours, transfers, and reservations with 24/7 valet service.</p>
+          </div>
+          <div class='amenity'>
+            <h3>Business and Events</h3>
+            <p>Elegant ballrooms and fully equipped meeting spaces for conferences and celebrations.</p>
+          </div>
+          <div class='amenity'>
+            <h3>Complimentary Wi-Fi</h3>
+            <p>High-speed internet throughout the hotel, plus in-room smart entertainment systems.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id='location'>
+      <div class='container'>
+        <h2 class='section-title'>Prime Waterfront Location</h2>
+        <p class='section-sub'>Steps from the promenade, minutes from the city center, and moments from everything that matters.</p>
+        <div class='contact-grid'>
+          <div class='contact-card'>
+            <h3>Address</h3>
+            <p>100 Harborview Boulevard</p>
+            <p>Seaside District, Bayport, CA 90210</p>
+          </div>
+          <div class='contact-card'>
+            <h3>Getting Here</h3>
+            <p>15 minutes from Bayport International Airport</p>
+            <p>5 minutes from Harbor Metro Station</p>
+          </div>
+          <div class='contact-card'>
+            <h3>Nearby</h3>
+            <p>Waterfront Promenade — 2 min walk</p>
+            <p>Old Town Market — 10 min walk</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id='contact' style='padding-top: 0;'>
+      <div class='container'>
+        <h2 class='section-title'>Reservations and Contact</h2>
+        <p class='section-sub'>Our reservations team is available around the clock to plan your perfect stay.</p>
+        <div class='contact-grid'>
+          <div class='contact-card'>
+            <h3>Call Us</h3>
+            <p>+1 (555) 012-3456</p>
+            <p>Available 24/7</p>
+          </div>
+          <div class='contact-card'>
+            <h3>Email</h3>
+            <p>reservations@meridiangrand.example</p>
+            <p>concierge@meridiangrand.example</p>
+          </div>
+          <div class='contact-card'>
+            <h3>Front Desk</h3>
+            <p>Check-in: 3:00 PM</p>
+            <p>Check-out: 12:00 PM</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class='site-footer'>
+    <div class='container'>
+      <p>© 2026 The Meridian Grand Hotel. All rights reserved.</p>
+    </div>
+  </footer>
+</body>
+</html>

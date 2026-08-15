@@ -26,6 +26,7 @@ export interface HermesConfig {
   askUserHandler?: AskUserHandler;
   scopeFiles?: string[];
   extraConstraints?: string[];
+  effort?: 'low' | 'medium' | 'high' | 'max';
   onEvent?: (event: string) => void;
 }
 
@@ -231,7 +232,7 @@ export class Hermes {
       ledger.setStatus('executing');
       this.emit('think  composing answer');
       messages.push({ role: 'user', content: `User request (chat mode — answer directly and helpfully, no tools): ${goal}` });
-      const reply = await llm.completeStream(messages, {}, (d) => this.emit(`tdelta ${d}`));
+      const reply = await llm.completeStream(messages, { effort: this.config.effort }, (d) => this.emit(`tdelta ${d}`));
       if (reply.trim()) this.emit(`say ${reply.trim()}`);
       ledger.setStatus('completed');
       const report = reporter.build(ledger, 'complete', {
@@ -264,7 +265,7 @@ export class Hermes {
         pending = '';
         lastFlush = Date.now();
       };
-      const reply = await llm.completeStream(messages, {}, (delta) => {
+      const reply = await llm.completeStream(messages, { effort: this.config.effort }, (delta) => {
         if (seenBrace) return;
         const braceAt = delta.indexOf('{');
         if (braceAt >= 0) {

@@ -7,6 +7,7 @@ export interface ProviderSpec {
   keyEnvVars: string[];
   defaultModel: string;
   models: string[];
+  effortLevels: string[];
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
@@ -39,6 +40,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       'glm-5.2',
       'glm-5.1',
     ],
+    effortLevels: ['low', 'medium', 'high', 'max'],
   },
   openai: {
     id: 'openai',
@@ -47,6 +49,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     keyEnvVars: ['HERMES_OPENAI_API_KEY', 'OPENAI_API_KEY'],
     defaultModel: 'gpt-4.1-mini',
     models: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o'],
+    effortLevels: ['low', 'medium', 'high'],
   },
 };
 

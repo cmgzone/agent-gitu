@@ -6,6 +6,7 @@ export interface LlmMessage {
 export interface LlmOptions {
   temperature?: number;
   json?: boolean;
+  effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
 export type LlmDeltaHandler = (delta: string) => void;
@@ -48,12 +49,7 @@ export class OpenAiCompatClient implements LlmClient {
   }
 
   async complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<string> {
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages,
-      temperature: opts.temperature ?? 0.2,
-    };
-    if (opts.json) body['response_format'] = { type: 'json_object' };
+    const body = this.buildBody(messages, opts, false);
 
     let res: Response;
     try {
@@ -80,17 +76,32 @@ export class OpenAiCompatClient implements LlmClient {
     return content;
   }
 
+  private buildBody(messages: LlmMessage[], opts: LlmOptions, stream: boolean): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages,
+      temperature: opts.temperature ?? 0.2,
+    };
+    if (stream) body['stream'] = true;
+    if (opts.json) body['response_format'] = { type: 'json_object' };
+    if (opts.effort) {
+      if (/aliyuncs|dashscope/i.test(this.baseUrl)) {
+        body['enable_thinking'] = opts.effort !== 'low';
+        const budgets: Record<string, number> = { low: 1024, medium: 4096, high: 16384, max: 38912 };
+        body['thinking_budget'] = budgets[opts.effort] ?? 4096;
+      } else {
+        body['reasoning_effort'] = opts.effort === 'max' ? 'high' : opts.effort;
+      }
+    }
+    return body;
+  }
+
   async completeStream(
     messages: LlmMessage[],
     opts: LlmOptions = {},
     onDelta: LlmDeltaHandler,
   ): Promise<string> {
-    const body: Record<string, unknown> = {
-      model: this.model,
-      messages,
-      temperature: opts.temperature ?? 0.2,
-      stream: true,
-    };
+    const body = this.buildBody(messages, opts, true);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/chat/completions`, {

@@ -201,7 +201,7 @@ export class HermesServer {
               live = true;
             }
           }
-          return { id: spec.id, label: spec.label, defaultModel: spec.defaultModel, hasKey: Boolean(keyInfo), live, models };
+          return { id: spec.id, label: spec.label, defaultModel: spec.defaultModel, hasKey: Boolean(keyInfo), live, models, effortLevels: spec.effortLevels };
         }),
       );
       const withKey = providers.find((p) => p.hasKey);
@@ -297,6 +297,7 @@ export class HermesServer {
       const provider = typeof body['provider'] === 'string' ? body['provider'] : undefined;
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
       const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : 'standard';
+      const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const review = body['review'] !== false;
       const maxActions = typeof body['maxActions'] === 'number' && Number.isFinite(body['maxActions']) ? body['maxActions'] : undefined;
 
@@ -329,7 +330,7 @@ export class HermesServer {
       };
       this.sessions.set(session.runId, session);
       this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints });
+      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort });
       return;
     }
 
@@ -450,6 +451,7 @@ export class HermesServer {
       review?: boolean;
       scope?: string[];
       constraints?: string[];
+      effort?: 'low' | 'medium' | 'high' | 'max';
     },
   ): Promise<void> {
     const hermes = new Hermes({
@@ -459,6 +461,7 @@ export class HermesServer {
       criteria: opts.criteria,
       scopeFiles: opts.scope,
       extraConstraints: opts.constraints,
+      effort: opts.effort,
       budgets: opts.maxActions ? { maxActions: opts.maxActions } : undefined,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {

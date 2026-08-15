@@ -190,7 +190,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <div class="view" id="view"></div>
 <script>
 (function () {
-  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, settings: { scope: '', constraints: '' }, files: [] };
+  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, settings: { scope: '', constraints: '' }, files: [], draft: '', sel: { wf: 'review', model: '', budget: '40', effort: 'high' } };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
@@ -201,6 +201,45 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
   function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
+  function modelOptionsHtml() {
+    var out = '';
+    S.models.forEach(function (p) {
+      out += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(p.id + ' / ' + titleCase(p.defaultModel)) + '</option>';
+      p.models.forEach(function (m) {
+        if (m === p.defaultModel) return;
+        out += '<option value="' + esc(p.id + '::' + m) + '">' + esc(p.id + ' / ' + titleCase(m)) + '</option>';
+      });
+    });
+    return out;
+  }
+  function provOf(v) { return v.split('::')[0]; }
+  function effortLevelsFor(pid) {
+    for (var i = 0; i < S.models.length; i++) if (S.models[i].id === pid) return S.models[i].effortLevels || ['low', 'medium', 'high', 'max'];
+    return ['low', 'medium', 'high', 'max'];
+  }
+  function fillEffort(id, pid) {
+    var el = $(id);
+    if (!el) return;
+    el.innerHTML = effortLevelsFor(pid).map(function (l) { return '<option value="' + l + '">' + l + '</option>'; }).join('');
+  }
+  function bindControls() {
+    var wf = $('wf'), model = $('model'), effort = $('effort'), budget = $('budget');
+    if (wf) wf.value = S.sel.wf;
+    if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
+    if (budget) budget.value = S.sel.budget;
+    fillEffort('effort', provOf(S.sel.model));
+    if (effort) effort.value = S.sel.effort;
+    if (wf) wf.onchange = function () { S.sel.wf = wf.value; };
+    if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); S.sel.effort = $('effort') ? $('effort').value : S.sel.effort; };
+    if (effort) effort.onchange = function () { S.sel.effort = effort.value; };
+    if (budget) budget.onchange = function () { S.sel.budget = budget.value; };
+  }
+  function controlsHtml(showBudget) {
+    return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
+      (showBudget ? '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' : '');
+  }
   function chipFor(status) {
     if (status === 'completed') return '<span class="chip ok">complete</span>';
     if (status === 'blocked') return '<span class="chip bad">blocked</span>';
@@ -235,48 +274,43 @@ export const UI_HTML = String.raw`<!doctype html>
   function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
 
   function renderHome() {
-    var modelOpts = '';
-    S.models.forEach(function (p) {
-      modelOpts += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(titleCase(p.defaultModel)) + '</option>';
-      p.models.forEach(function (m) {
-        if (m === p.defaultModel) return;
-        modelOpts += '<option value="' + esc(p.id + '::' + m) + '">' + esc(titleCase(m)) + '</option>';
-      });
-    });
     var git = S.project && S.project.branch ? S.project.branch : 'No Git';
     var name = S.project ? S.project.name : 'no project';
     $('view').innerHTML =
       '<div class="home"><div class="wordmark">hermes</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
       '<div class="composer-bar"><button class="icon-btn" title="attach">+</button>' +
-      '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill"><select id="model">' + modelOpts + '</select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' +
+      controlsHtml(true) +
       '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
       '<div class="home-meta"><span>&#9632; <b>' + esc(name) + '</b></span><span class="sep">/</span><span>&#8645; ' + esc(git) + '</span></div></div>';
     var ta = $('goal');
-    ta.addEventListener('input', function () { ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
+    ta.value = S.draft;
+    ta.addEventListener('input', function () { S.draft = ta.value; ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
     ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
+    bindControls();
     $('send').onclick = startRun;
   }
 
   function startRun() {
-    var goal = $('goal').value.trim();
-    if (!goal) { $('goal').focus(); return; }
-    var mc = $('model').value.split('::');
-    var wf = $('wf').value;
+    var goal = $('goal') ? $('goal').value.trim() : '';
+    if (!goal) { if ($('goal')) $('goal').focus(); return; }
+    var mc = (S.sel.model || '').split('::');
     api('/api/runs', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         goal: goal, provider: mc[0], model: mc[1],
-        mode: $('wf').value === 'chat' ? 'chat' : 'standard',
-        review: $('wf').value === 'review',
-        maxActions: Number($('budget').value),
+        mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+        review: S.sel.wf === 'review',
+        effort: S.sel.effort,
+        maxActions: Number(S.sel.budget),
         scope: S.settings.scope.split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
         constraints: S.settings.constraints.split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
       })
-    }).then(function (r) { ensureRunTab(r.runId, goal.slice(0, 40), 'running'); openTab(r.runId); })
-      .catch(function (e) { alert('Failed to start: ' + e.message); });
+    }).then(function (r) {
+      S.draft = '';
+      ensureRunTab(r.runId, goal.slice(0, 40), 'running');
+      openTab(r.runId);
+    }).catch(function (e) { alert('Failed to start: ' + e.message); });
   }
 
   function renderRun(runId) {
@@ -287,8 +321,8 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="run-head"><span class="goal" id="rGoal"></span><span id="rChip"></span></div>' +
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
-      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="New session… (Enter to start)"></textarea>' +
-      '<div class="composer-bar"><button class="send" id="send2">&#8593;</button></div></div></div>' +
+      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="New session… (Enter to start a new tab)"></textarea>' +
+      '<div class="composer-bar">' + controlsHtml(false) + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
       '<aside class="run-side"><div class="side-tabs">' +
       '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
@@ -302,11 +336,21 @@ export const UI_HTML = String.raw`<!doctype html>
       e.preventDefault();
       var g = $('follow').value.trim();
       if (!g) return;
-      api('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ goal: g, review: true }) })
+      var mc = (S.sel.model || '').split('::');
+      api('/api/runs', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          goal: g, provider: mc[0], model: mc[1],
+          mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+          review: S.sel.wf === 'review',
+          effort: S.sel.effort
+        })
+      })
         .then(function (r) { ensureRunTab(r.runId, g.slice(0, 40), 'running'); openTab(r.runId); })
         .catch(function (er) { alert(er.message); });
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
+    bindControls();
     sess.events.forEach(function (ev) { appendEvent(runId, ev, true); });
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');

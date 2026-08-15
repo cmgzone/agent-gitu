@@ -292,18 +292,19 @@ describe('Hermes end-to-end (mock LLM)', () => {
   it('stop() aborts a running task and queued messages reach the agent', async () => {
     const dir = makeProject('stop');
     const events: string[] = [];
+    const longProse = 'Working carefully on the current step and observing results. '.repeat(30);
     const llm = new ScriptedMockLlm([
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['c'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 's', verification: 'v' }] } }),
-      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'h1' } }),
-      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'h2' } }),
-      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'h3' } }),
+      () => `${longProse}\n${JSON.stringify({ action: { type: 'set_hypothesis', text: 'h1' } })}`,
+      () => `${longProse}\n${JSON.stringify({ action: { type: 'set_hypothesis', text: 'h2' } })}`,
+      () => `${longProse}\n${JSON.stringify({ action: { type: 'set_hypothesis', text: 'h3' } })}`,
       () => JSON.stringify({ action: { type: 'request_block', reason: 'end' } }),
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
     hermes.queueMessage('please focus on the header');
     const runPromise = hermes.run('stop test');
-    setTimeout(() => hermes.stop(), 120);
+    setTimeout(() => hermes.stop(), 150);
     const { ledger } = await runPromise;
 
     expect(events.some((e) => e.startsWith('user-msg '))).toBe(true);

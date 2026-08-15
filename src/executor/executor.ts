@@ -139,6 +139,7 @@ export class Executor {
     });
 
     this.emit(`${result.ok ? 'ok       ' : 'error    '} ${summary} (${record.durationMs}ms)`);
+    if (result.output) this.emit(`out      ${excerpt(result.output, 900).replace(/\n/g, ' ⏎ ')}`);
     return { record, result };
   }
 }

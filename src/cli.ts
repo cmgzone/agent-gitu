@@ -59,6 +59,7 @@ Run options:
   --provider <name>      LLM provider: ${Object.keys(PROVIDERS).join(', ')} (default: auto-detect from env)
   --model <name>         Override model (env: HERMES_MODEL)
   --base-url <url>       Override provider endpoint
+  --review               Pause after planning for an interactive plan review before building
 
 Providers:
   alibaba   Alibaba Cloud Model Studio / DashScope (OpenAI-compatible)
@@ -296,6 +297,18 @@ async function main(): Promise<void> {
         autoApprove: Boolean(flags.get('yes')),
         criteria,
         budgets: maxActions && Number.isFinite(maxActions) ? { maxActions } : undefined,
+        requirePlanReview: Boolean(flags.get('review')),
+        planReviewHandler: async ({ criteria: crits, steps }) => {
+          console.log('\nPLAN REVIEW');
+          console.log('Criteria:');
+          crits.forEach((c, i) => console.log(`  ${i + 1}. ${c}`));
+          console.log('Steps:');
+          steps.forEach((s, i) => console.log(`  ${i + 1}. ${s.description}  (verify: ${s.verification})`));
+          const answer = await askApproval('Approve and switch to build mode? (y/N) ');
+          if (answer) return { approved: true };
+          const note = await askLine('Describe the changes you want (sent back to the agent): ');
+          return { approved: false, note };
+        },
         approvalHandler: async ({ tool, why, summary }) =>
           askApproval(`\nAPPROVAL REQUIRED [${tool}] (${why})\n${summary}\nApprove? (y/N) `),
         onEvent: (e) => console.error(`[hermes] ${e}`),

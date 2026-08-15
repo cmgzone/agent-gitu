@@ -1,6 +1,7 @@
 export type TaskStatus =
   | 'intake'
   | 'planning'
+  | 'review'
   | 'executing'
   | 'verifying'
   | 'blocked'
@@ -160,6 +161,7 @@ export interface TaskLedgerData {
   nonGoals: string[];
   contextPack?: ContextPack;
   plan: PlanStep[];
+  planApproved?: boolean;
   currentHypothesis?: string;
   actions: ActionRecord[];
   evidence: Evidence[];

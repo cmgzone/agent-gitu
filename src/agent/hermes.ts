@@ -21,8 +21,24 @@ export interface HermesConfig {
   approvalHandler?: ApprovalHandler;
   budgets?: Partial<Budgets>;
   criteria?: string[];
+  requirePlanReview?: boolean;
+  planReviewHandler?: PlanReviewHandler;
   onEvent?: (event: string) => void;
 }
+
+export interface PlanReviewInput {
+  criteria: string[];
+  steps: { description: string; verification: string }[];
+}
+
+export interface PlanReviewDecision {
+  approved: boolean;
+  note?: string;
+  criteria?: string[];
+  steps?: { description: string; verification: string }[];
+}
+
+export type PlanReviewHandler = (input: PlanReviewInput) => Promise<PlanReviewDecision>;
 
 export interface HermesRunResult {
   ledger: TaskLedger;
@@ -167,7 +183,30 @@ export class Hermes {
     const ask = async (note?: string): Promise<ParsedAction | undefined> => {
       messages.push({ role: 'user', content: buildStateMessage(ledger, note) });
       this.emit('think  reviewing task state and choosing the next action');
-      const reply = await llm.complete(messages, { json: true });
+      let seenBrace = false;
+      let pending = '';
+      let lastFlush = Date.now();
+      const flush = (): void => {
+        if (pending) this.emit(`tdelta ${pending}`);
+        pending = '';
+        lastFlush = Date.now();
+      };
+      const reply = await llm.completeStream(messages, {}, (delta) => {
+        if (seenBrace) return;
+        const braceAt = delta.indexOf('{');
+        if (braceAt >= 0) {
+          seenBrace = true;
+          pending += delta.slice(0, braceAt);
+          flush();
+          return;
+        }
+        pending += delta;
+        if (pending.length >= 32 || Date.now() - lastFlush > 50) flush();
+      });
+      flush();
+      const braceIdx = reply.indexOf('{');
+      const prose = (braceIdx >= 0 ? reply.slice(0, braceIdx) : '').trim();
+      if (prose) this.emit(`say ${prose}`);
       messages.push({ role: 'assistant', content: reply });
       const parsed = parseAction(extractJson(reply));
       if (!parsed) invalidStreak += 1;
@@ -211,10 +250,35 @@ export class Hermes {
         }
         case 'set_plan': {
           ledger.setPlan(action.steps);
-          ledger.setStatus('executing');
           checkpoints.snapshot(ledger, 'plan', 'plan created');
           this.emit(`plan     ${action.steps.length} steps`);
-          observe('Plan recorded. Execute one step at a time. Verify with commands; evidence ids will be reported.');
+          if (this.config.requirePlanReview && this.config.planReviewHandler && !ledger.data.planApproved) {
+            ledger.setStatus('review');
+            this.emit('plan-review waiting for user review');
+            const decision = await this.config.planReviewHandler({
+              criteria: ledger.data.acceptanceCriteria.map((c) => c.text),
+              steps: action.steps,
+            });
+            if (decision.criteria && decision.criteria.length > 0) ledger.setCriteria(decision.criteria);
+            if (decision.steps && decision.steps.length > 0) ledger.setPlan(decision.steps);
+            if (decision.approved) {
+              ledger.data.planApproved = true;
+              ledger.save();
+              ledger.setStatus('executing');
+              this.emit('plan approved — switching to build');
+              observe('The user reviewed and approved the plan. Execute the approved plan one step at a time; verify with commands.');
+            } else {
+              ledger.setStatus('planning');
+              this.emit(`plan-review changes requested: ${decision.note ?? '(no note)'}`);
+              observe(
+                `The user reviewed the plan and requested changes: ${decision.note || '(no note)'}\n` +
+                  `Revise the plan with set_plan. Keep it small, reversible, and verifiable.`,
+              );
+            }
+          } else {
+            ledger.setStatus('executing');
+            observe('Plan recorded. Execute one step at a time. Verify with commands; evidence ids will be reported.');
+          }
           break;
         }
         case 'set_hypothesis': {

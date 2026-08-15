@@ -29,7 +29,9 @@ OPERATING RULES:
 STORED MEMORY (from previous work on this project):
 ${memory.renderForPrompt(lock.name)}
 
-PROTOCOL — respond with EXACTLY ONE JSON object per turn, no prose outside JSON:
+PROTOCOL — each turn you MUST respond in this exact shape:
+1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
+2. Then, on a new line, EXACTLY ONE JSON object describing your action.
 
 Intake/planning actions:
 {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
@@ -53,6 +55,7 @@ Completion/escalation:
 {"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried"}}
 
 Rules for the protocol:
+- The streamed prose must describe what you are doing or learning right now, in user language.
 - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
 - Evidence ids come from verification results reported to you (ev-...).
 - If the same action failed twice, you MUST propose a different action or request_block.`;

@@ -8,9 +8,12 @@ export interface LlmOptions {
   json?: boolean;
 }
 
+export type LlmDeltaHandler = (delta: string) => void;
+
 export interface LlmClient {
   readonly name: string;
   complete(messages: LlmMessage[], opts?: LlmOptions): Promise<string>;
+  completeStream(messages: LlmMessage[], opts: LlmOptions, onDelta: LlmDeltaHandler): Promise<string>;
 }
 
 export class LlmError extends Error {}
@@ -76,6 +79,69 @@ export class OpenAiCompatClient implements LlmClient {
     if (typeof content !== 'string') throw new LlmError('LLM returned no content');
     return content;
   }
+
+  async completeStream(
+    messages: LlmMessage[],
+    opts: LlmOptions = {},
+    onDelta: LlmDeltaHandler,
+  ): Promise<string> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      messages,
+      temperature: opts.temperature ?? 0.2,
+      stream: true,
+    };
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw new LlmError(`LLM request failed: ${(err as Error).message}`);
+    }
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      if (!res.ok) throw new LlmError(`LLM HTTP ${res.status}: ${text.slice(0, 300)}`);
+      return this.complete(messages, opts);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let full = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline: number;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const json = JSON.parse(payload) as {
+            choices?: { delta?: { content?: string }; message?: { content?: string } }[];
+          };
+          const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
+          if (delta) {
+            full += delta;
+            onDelta(delta);
+          }
+        } catch {
+          /* partial line */
+        }
+      }
+    }
+    if (!full) return this.complete(messages, opts);
+    return full;
+  }
 }
 
 export class ScriptedMockLlm implements LlmClient {
@@ -84,10 +150,24 @@ export class ScriptedMockLlm implements LlmClient {
 
   constructor(private readonly responses: ((call: number, messages: LlmMessage[]) => string)[]) {}
 
-  async complete(messages: LlmMessage[]): Promise<string> {
+  private scripted(messages: LlmMessage[]): string {
     const fn = this.responses[Math.min(this.call, this.responses.length - 1)];
     this.call += 1;
     return fn ? fn(this.call - 1, messages) : JSON.stringify({ thought: 'nothing left', action: { type: 'request_block', reason: 'script exhausted' } });
+  }
+
+  async complete(messages: LlmMessage[]): Promise<string> {
+    return this.scripted(messages);
+  }
+
+  async completeStream(messages: LlmMessage[], _opts: LlmOptions, onDelta: LlmDeltaHandler): Promise<string> {
+    const full = this.scripted(messages);
+    const chunk = 48;
+    for (let i = 0; i < full.length; i += chunk) {
+      onDelta(full.slice(i, i + chunk));
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    return full;
   }
 }
 

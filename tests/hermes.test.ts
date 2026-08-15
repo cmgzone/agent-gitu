@@ -164,6 +164,52 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(report.status).toBe('blocked');
   }, 60000);
 
+  it('streams natural-language updates and records them', async () => {
+    const dir = makeProject('stream');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => `I will define the acceptance criteria first.\n${JSON.stringify({ action: { type: 'set_criteria', criteria: ['x works'] } })}`,
+      () => `Nothing left to do here.\n${JSON.stringify({ action: { type: 'request_block', reason: 'stream test done' } })}`,
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    await hermes.run('stream test');
+
+    expect(events.some((e) => e.startsWith('tdelta '))).toBe(true);
+    expect(events.some((e) => e.startsWith('say I will define the acceptance criteria'))).toBe(true);
+  }, 30000);
+
+  it('pauses for plan review, applies edits, and only then builds', async () => {
+    const dir = makeProject('review');
+    let reviewed = 0;
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['c1'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'original step', verification: 'v' }] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'revised step', verification: 'v' }] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop after build starts' } }),
+    ]);
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      requirePlanReview: true,
+      planReviewHandler: async (input) => {
+        reviewed += 1;
+        if (reviewed === 1) {
+          expect(input.steps[0]!.description).toBe('original step');
+          return { approved: false, note: 'rename the step' };
+        }
+        expect(input.steps[0]!.description).toBe('revised step');
+        return { approved: true, steps: [{ description: 'user-edited step', verification: 'v2' }] };
+      },
+    });
+    const { ledger } = await hermes.run('review flow');
+
+    expect(reviewed).toBe(2);
+    expect(ledger.data.planApproved).toBe(true);
+    expect(ledger.data.plan[0]!.description).toBe('user-edited step');
+    expect(ledger.data.status).toBe('blocked');
+  }, 30000);
+
   it('denies dangerous commands that are not approved', async () => {
     const dir = makeProject('danger');
     const llm = new ScriptedMockLlm([

@@ -67,7 +67,7 @@ describe('HermesServer', () => {
     const created = await fetch(`${base}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ goal: 'Verify node works', mode: 'fast' }),
+      body: JSON.stringify({ goal: 'Verify node works', mode: 'fast', review: false }),
     }).then((r) => r.json());
     expect(created.runId).toBeTruthy();
 
@@ -104,7 +104,7 @@ describe('HermesServer', () => {
     const created = await fetch(`${base}/api/runs`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ goal: 'Force push cleanup', mode: 'fast' }),
+      body: JSON.stringify({ goal: 'Force push cleanup', mode: 'fast', review: false }),
     }).then((r) => r.json());
 
     const session = await waitFor(async () => {
@@ -131,6 +131,52 @@ describe('HermesServer', () => {
     const ledger = await fetch(`${base}/api/tasks/${finished.taskId}`).then((r) => r.json());
     const deniedActions = ledger.actions.filter((a: { status: string }) => a.status === 'denied');
     expect(deniedActions.length).toBe(1);
+  }, 30000);
+
+  it('pauses for plan review over HTTP and builds after approval', async () => {
+    const dir = makeProject('planreview');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }),
+      (_n, messages) => {
+        const text = messages.map((m) => m.content).join('\n');
+        const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+      },
+      () => JSON.stringify({ action: { type: 'complete', summary: 'done after review', risks: [], followUps: [] } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Reviewed build', mode: 'fast', review: true }),
+    }).then((r) => r.json());
+
+    const withReview = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview ? s : undefined;
+    });
+    expect(withReview.pendingPlanReview.steps[0].description).toBe('run verification');
+    expect(withReview.status).toBe('running');
+
+    const approved = await fetch(`${base}/api/plan-review/${withReview.pendingPlanReview.id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    }).then((r) => r.json());
+    expect(approved.ok).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(finished.status).toBe('completed');
+    const ledger = await fetch(`${base}/api/tasks/${finished.taskId}`).then((r) => r.json());
+    expect(ledger.planApproved).toBe(true);
   }, 30000);
 
   it('rejects runs without a goal', async () => {

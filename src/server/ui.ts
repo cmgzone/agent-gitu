@@ -25,82 +25,51 @@ export const UI_HTML = String.raw`<!doctype html>
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 13.5px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif;
+    font: 13.5px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
     display: flex; flex-direction: column;
   }
   button { font: inherit; cursor: pointer; }
-  select { font: inherit; }
+  select, textarea, input { font: inherit; }
 
-  .topbar {
-    display: flex; align-items: center; gap: 6px; padding: 8px 12px;
-    border-bottom: 1px solid var(--border); flex: none;
-  }
-  .icon-btn {
-    background: none; border: 0; color: var(--muted); border-radius: 7px;
-    width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center;
-    font-size: 15px;
-  }
+  .topbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
+  .icon-btn { background: none; border: 0; color: var(--muted); border-radius: 7px; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
   .icon-btn:hover { background: #ebebe7; color: var(--text); }
   .logo { font-weight: 700; letter-spacing: 3px; font-size: 12px; color: var(--dark); margin-right: 8px; }
   .tabs { display: flex; gap: 4px; align-items: center; overflow-x: auto; max-width: 60%; }
-  .tab {
-    display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px;
-    border-radius: 8px; color: var(--muted); font-size: 12.5px; white-space: nowrap;
-    border: 1px solid transparent; background: none; max-width: 220px;
-  }
+  .tab { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 8px; color: var(--muted); font-size: 12.5px; white-space: nowrap; border: 1px solid transparent; background: none; max-width: 220px; }
   .tab .label { overflow: hidden; text-overflow: ellipsis; }
   .tab.active { background: #e9e9e5; color: var(--text); border-color: var(--border); }
   .tab .x { color: var(--faint); font-size: 12px; }
   .tab .x:hover { color: var(--red); }
   .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
-  .tab .dot.running { background: var(--blue); animation: pulse 1.2s infinite; }
+  .tab .dot.running, .tab .dot.review { background: var(--blue); animation: pulse 1.2s infinite; }
   .tab .dot.completed { background: var(--green); }
   .tab .dot.blocked, .tab .dot.failed { background: var(--red); }
   @keyframes pulse { 50% { opacity: .35; } }
   .spacer { flex: 1; }
-  .proj-chip {
-    display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px;
-    background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px;
-    max-width: 340px; overflow: hidden; white-space: nowrap;
-  }
+  .proj-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; max-width: 340px; overflow: hidden; white-space: nowrap; }
   .proj-chip b { color: var(--text); font-weight: 600; }
 
   .view { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
   .home { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 24px; overflow: auto; }
-  .wordmark {
-    font-size: clamp(56px, 9vw, 108px); font-weight: 800; letter-spacing: .04em;
-    color: rgba(30, 30, 26, .07); user-select: none; line-height: 1; margin-bottom: 6px;
-  }
-  .composer {
-    width: min(720px, 94vw); background: var(--card); border: 1px solid var(--border);
-    border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05);
-    padding: 6px 8px 8px;
-  }
-  .composer textarea {
-    width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text);
-    font: inherit; padding: 10px 10px 6px; min-height: 44px; max-height: 180px;
-  }
+  .wordmark { font-size: clamp(56px, 9vw, 108px); font-weight: 800; letter-spacing: .04em; color: rgba(30,30,26,.07); user-select: none; line-height: 1; margin-bottom: 6px; }
+  .composer { width: min(720px, 94vw); background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); padding: 6px 8px 8px; }
+  .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
   .composer textarea::placeholder { color: var(--faint); }
   .composer-bar { display: flex; align-items: center; gap: 4px; padding: 2px 6px; }
-  .pill {
-    background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px;
-    display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px;
-  }
+  .pill { background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
   .pill:hover { background: #f0f0ec; color: var(--text); }
-  .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; -webkit-appearance: none; appearance: none; padding-right: 2px; }
+  .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; }
   .pill .caret { color: var(--faint); font-size: 10px; }
-  .send {
-    margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0;
-    background: var(--dark); color: #fff; font-size: 14px;
-  }
+  .send { margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--dark); color: #fff; font-size: 14px; }
   .send:disabled { background: #c9c9c3; }
   .home-meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
   .home-meta .sep { color: var(--faint); }
 
   .run { flex: 1; display: flex; min-height: 0; }
   .run-main { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
-  .run-head { padding: 14px 22px 8px; display: flex; align-items: center; gap: 10px; flex: none; }
+  .run-head { padding: 14px 26px 6px; display: flex; align-items: center; gap: 10px; flex: none; }
   .run-head .goal { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip { font-size: 11px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--border2); color: var(--muted); }
   .chip.ok { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
@@ -108,29 +77,52 @@ export const UI_HTML = String.raw`<!doctype html>
   .chip.info { color: var(--blue); border-color: #bfdbfe; background: #eff6ff; }
   .chip.warn { color: var(--amber); border-color: #fde68a; background: var(--amber-bg); }
 
-  .stream { flex: 1; overflow-y: auto; padding: 6px 22px 18px; }
-  .ev { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid #eeeEE9; font-size: 12.5px; }
-  .ev:last-child { border-bottom: 0; }
-  .ev .tag { font-family: var(--mono); font-size: 10.5px; flex: none; width: 64px; padding-top: 2px; color: var(--muted); }
-  .ev .tag.ok { color: var(--green); } .ev .tag.error, .ev .tag.denied { color: var(--red); }
-  .ev .tag.blocked { color: var(--amber); } .ev .tag.run { color: var(--blue); }
-  .ev .body { font-family: var(--mono); font-size: 12px; color: #44443f; white-space: pre-wrap; word-break: break-word; }
-  .ev .body .sub { color: var(--muted); }
+  .progress { display: flex; align-items: center; gap: 12px; padding: 0 26px 8px; color: var(--muted); font-size: 11.5px; flex: none; }
+  .progress .pbar { flex: 1; height: 4px; border-radius: 2px; background: #e7e7e2; overflow: hidden; }
+  .progress .pbar span { display: block; height: 100%; width: 0; background: var(--dark); transition: width .5s ease; }
 
-  .approval {
-    border: 1px solid #fde68a; background: var(--amber-bg); border-radius: 12px;
-    padding: 12px 14px; margin: 10px 0;
-  }
-  .approval .head { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
-  .approval pre { font-family: var(--mono); font-size: 11.5px; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow-x: auto; margin: 6px 0 10px; }
+  .stream { flex: 1; overflow-y: auto; padding: 8px 26px 18px; max-width: 900px; }
+
+  .thought { padding: 10px 2px; color: var(--text); white-space: pre-wrap; }
+  .thought .caret { display: inline-block; width: 7px; height: 14px; background: var(--dark); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
+
+  .meta-line { color: var(--muted); font-size: 12px; padding: 3px 2px; }
+  .meta-line b { color: var(--text); font-weight: 600; }
+
+  .tool { border: 1px solid var(--border); background: var(--card); border-radius: 10px; margin: 8px 0; overflow: hidden; }
+  .tool .head { display: flex; align-items: center; gap: 9px; padding: 8px 12px; cursor: pointer; }
+  .tool .head:hover { background: #fbfbf9; }
+  .tool .kind { font-family: var(--mono); font-size: 10px; letter-spacing: .5px; color: var(--muted); background: #f0f0ec; border-radius: 5px; padding: 2px 7px; flex: none; }
+  .tool .sum { font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool .reason { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool .st { margin-left: auto; flex: none; }
+  .tool .spin { width: 10px; height: 10px; border: 2px solid var(--border2); border-top-color: var(--dark); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  .tool details { border-top: 1px solid var(--border); }
+  .tool summary { padding: 5px 12px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
+  .tool pre { margin: 0; padding: 8px 12px 10px; font-family: var(--mono); font-size: 11.5px; color: #55554f; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
+
+  .review-card, .approval { border: 1px solid #fde68a; background: var(--amber-bg); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .review-card h3, .approval h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
+  .review-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
+  .review-card textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 7px 9px; font-family: var(--mono); font-size: 11.5px; resize: vertical; }
+  .review-card .actions, .approval .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+  .review-card input { flex: 1; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 6px 9px; font-size: 12px; }
   .btn { border: 0; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; }
   .btn.dark { background: var(--dark); color: #fff; }
   .btn.ghost { background: #fff; color: var(--text); border: 1px solid var(--border2); }
   .btn.red { background: #fff; color: var(--red); border: 1px solid #fecaca; }
+  .approval pre { font-family: var(--mono); font-size: 11.5px; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow-x: auto; margin: 6px 0 10px; }
 
   .report-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   .report-card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
   .report-card pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; margin: 0; }
+
+  @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .working { display: flex; align-items: center; gap: 10px; padding: 12px 2px; }
+  .working .spinner { width: 12px; height: 12px; border: 2px solid var(--border2); border-top-color: var(--dark); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  .working .shimmer { height: 9px; width: 120px; border-radius: 5px; background: linear-gradient(90deg, #e8e8e3 25%, #f6f6f2 50%, #e8e8e3 75%); background-size: 600px 100%; animation: shimmer 1.3s linear infinite; flex: none; }
+  .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .run-side { width: 380px; flex: none; display: flex; flex-direction: column; min-height: 0; }
   .side-tabs { display: flex; gap: 4px; padding: 10px 14px 0; flex: none; }
@@ -160,18 +152,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .raw .row .t { color: var(--faint); flex: none; }
   .empty { color: var(--faint); font-size: 12.5px; padding: 4px 0; }
 
-  .bottom-composer { border-top: 1px solid var(--border); padding: 10px 22px 14px; flex: none; background: var(--bg); }
+  .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: var(--bg); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
   @media (max-width: 1080px) { .run-side { display: none; } }
-  @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .working { display: flex; align-items: center; gap: 10px; padding: 12px 2px; }
-  .working .spinner { width: 12px; height: 12px; border: 2px solid var(--border2); border-top-color: var(--dark); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
-  .working .shimmer { height: 9px; width: 120px; border-radius: 5px; background: linear-gradient(90deg, #e8e8e3 25%, #f6f6f2 50%, #e8e8e3 75%); background-size: 600px 100%; animation: shimmer 1.3s linear infinite; flex: none; }
-  .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .progress { display: flex; align-items: center; gap: 12px; padding: 0 22px 10px; color: var(--muted); font-size: 11.5px; flex: none; }
-  .progress .pbar { flex: 1; height: 4px; border-radius: 2px; background: #e7e7e2; overflow: hidden; }
-  .progress .pbar span { display: block; height: 100%; width: 0; background: var(--dark); transition: width .5s ease; }
 </style>
 </head>
 <body>
@@ -186,29 +169,22 @@ export const UI_HTML = String.raw`<!doctype html>
 <div class="view" id="view"></div>
 <script>
 (function () {
-  var S = {
-    tabs: [{ id: 'home', label: 'New session', status: null }],
-    active: 'home',
-    project: null,
-    models: [],
-    sessions: {},
-    es: null,
-    poll: null
-  };
+  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
-      if (!r.ok) return r.text().then(function (t) { throw new Error(t || (r.status + '')); });
+      if (!r.ok) return r.text().then(function (t) { throw new Error(t || String(r.status)); });
       return r.json();
     });
   }
-
+  function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
   function chipFor(status) {
     if (status === 'completed') return '<span class="chip ok">complete</span>';
     if (status === 'blocked') return '<span class="chip bad">blocked</span>';
     if (status === 'failed') return '<span class="chip bad">failed</span>';
+    if (status === 'review') return '<span class="chip warn">awaiting review</span>';
     if (status === 'running') return '<span class="chip info">running</span>';
     return '<span class="chip">' + esc(status || 'idle') + '</span>';
   }
@@ -217,44 +193,25 @@ export const UI_HTML = String.raw`<!doctype html>
     $('tabs').innerHTML = S.tabs.map(function (t) {
       var dot = t.id === 'home' ? '' : '<span class="dot ' + esc(t.status || '') + '"></span>';
       var x = t.id === 'home' ? '' : '<span class="x" data-x="' + esc(t.id) + '">&#10005;</span>';
-      return '<button class="tab ' + (S.active === t.id ? 'active' : '') + '" data-tab="' + esc(t.id) + '">' +
-        dot + '<span class="label">' + esc(t.label) + '</span>' + x + '</button>';
+      return '<button class="tab ' + (S.active === t.id ? 'active' : '') + '" data-tab="' + esc(t.id) + '">' + dot + '<span class="label">' + esc(t.label) + '</span>' + x + '</button>';
     }).join('');
-    var nav = $('tabs');
-    nav.onclick = function (e) {
+    $('tabs').onclick = function (e) {
       var x = e.target.getAttribute && e.target.getAttribute('data-x');
-      if (x) { closeTab(x); e.stopPropagation(); return; }
-      var id = e.target.closest('[data-tab]');
-      if (id) openTab(id.getAttribute('data-tab'));
+      if (x) { closeTab(x); return; }
+      var el = e.target.closest('[data-tab]');
+      if (el) openTab(el.getAttribute('data-tab'));
     };
   }
-
-  function openTab(id) {
-    S.active = id;
-    stopStreams();
-    renderTabs();
-    if (id === 'home') renderHome(); else renderRun(id);
-  }
-
-  function closeTab(id) {
-    S.tabs = S.tabs.filter(function (t) { return t.id !== id; });
-    delete S.sessions[id];
-    if (S.active === id) openTab('home'); else renderTabs();
-  }
-
+  function openTab(id) { S.active = id; stopStreams(); renderTabs(); if (id === 'home') renderHome(); else renderRun(id); }
+  function closeTab(id) { S.tabs = S.tabs.filter(function (t) { return t.id !== id; }); delete S.sessions[id]; if (S.active === id) openTab('home'); else renderTabs(); }
   function ensureRunTab(runId, label, status) {
     var t = null;
     for (var i = 0; i < S.tabs.length; i++) if (S.tabs[i].id === runId) t = S.tabs[i];
     if (!t) { t = { id: runId, label: label, status: status }; S.tabs.push(t); }
-    t.status = status;
-    if (label && t.label === 'New session') t.label = label;
+    if (status) t.status = status;
     return t;
   }
-
-  function stopStreams() {
-    if (S.es) { S.es.close(); S.es = null; }
-    if (S.poll) { clearInterval(S.poll); S.poll = null; }
-  }
+  function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
 
   function renderHome() {
     var modelOpts = '';
@@ -268,90 +225,69 @@ export const UI_HTML = String.raw`<!doctype html>
     var git = S.project && S.project.branch ? S.project.branch : 'No Git';
     var name = S.project ? S.project.name : 'no project';
     $('view').innerHTML =
-      '<div class="home">' +
-      '<div class="wordmark">hermes</div>' +
-      '<div class="composer">' +
-      '<textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
-      '<div class="composer-bar">' +
-      '<button class="icon-btn" title="attach">+</button>' +
-      '<span class="pill"><select id="mode"><option value="standard">Standard</option><option value="fast">Fast</option></select><span class="caret">&#9662;</span></span>' +
+      '<div class="home"><div class="wordmark">hermes</div>' +
+      '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
+      '<div class="composer-bar"><button class="icon-btn" title="attach">+</button>' +
+      '<span class="pill"><select id="wf"><option value="review">Plan + review</option><option value="auto">Auto build</option><option value="fast">Fast</option></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill"><select id="model">' + modelOpts + '</select><span class="caret">&#9662;</span></span>' +
       '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' +
-      '<button class="send" id="send" title="start">&#8593;</button>' +
-      '</div></div>' +
-      '<div class="home-meta"><span>&#9632; <b>' + esc(name) + '</b></span><span class="sep">/</span><span>&#8645; ' + esc(git) + '</span></div>' +
-      '</div>';
+      '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
+      '<div class="home-meta"><span>&#9632; <b>' + esc(name) + '</b></span><span class="sep">/</span><span>&#8645; ' + esc(git) + '</span></div></div>';
     var ta = $('goal');
     ta.addEventListener('input', function () { ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
     ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
     $('send').onclick = startRun;
   }
 
-  function titleCase(m) {
-    return m.replace(/(^|[-.])([a-z])/g, function (all, sep, ch) { return sep + ch.toUpperCase(); });
-  }
-
   function startRun() {
     var goal = $('goal').value.trim();
     if (!goal) { $('goal').focus(); return; }
     var mc = $('model').value.split('::');
+    var wf = $('wf').value;
     api('/api/runs', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ goal: goal, provider: mc[0], model: mc[1], mode: $('mode').value, maxActions: Number($('budget').value) })
-    }).then(function (r) {
-      ensureRunTab(r.runId, goal.slice(0, 40), 'running');
-      openTab(r.runId);
-    }).catch(function (e) { alert('Failed to start: ' + e.message); });
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        goal: goal, provider: mc[0], model: mc[1],
+        mode: wf === 'fast' ? 'fast' : 'standard',
+        review: wf === 'review',
+        maxActions: Number($('budget').value)
+      })
+    }).then(function (r) { ensureRunTab(r.runId, goal.slice(0, 40), 'running'); openTab(r.runId); })
+      .catch(function (e) { alert('Failed to start: ' + e.message); });
   }
 
   function renderRun(runId) {
-    var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state' });
+    var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
+    sess.nodes = {};
     $('view').innerHTML =
-      '<div class="run">' +
-      '<div class="run-main">' +
+      '<div class="run"><div class="run-main">' +
       '<div class="run-head"><span class="goal" id="rGoal"></span><span id="rChip"></span></div>' +
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
-      '<div class="bottom-composer"><div class="composer">' +
-      '<textarea id="follow" rows="1" placeholder="New session… (Enter to start)"></textarea>' +
-      '<div class="composer-bar"><span class="pill" id="miniModel"></span><button class="send" id="send2">&#8593;</button></div>' +
-      '</div></div>' +
+      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="New session… (Enter to start)"></textarea>' +
+      '<div class="composer-bar"><button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
-      '<aside class="run-side">' +
-      '<div class="side-tabs">' +
+      '<aside class="run-side"><div class="side-tabs">' +
       '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
       '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>' +
-      '</div>' +
-      '<div class="side-body" id="sideBody"></div>' +
-      '</aside>' +
-      '</div>';
+      '</div><div class="side-body" id="sideBody"></div></aside></div>';
     var tabs = document.querySelectorAll('.side-tab');
-    for (var i = 0; i < tabs.length; i++) {
-      tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRun(runId); };
-    }
-    var ta = $('follow');
-    ta.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        var g = ta.value.trim();
-        if (!g) return;
-        api('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ goal: g }) })
-          .then(function (r) { ensureRunTab(r.runId, g.slice(0, 40), 'running'); openTab(r.runId); })
-          .catch(function (er) { alert(er.message); });
-      }
+    for (var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRun(runId); };
+    $('follow').addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      var g = $('follow').value.trim();
+      if (!g) return;
+      api('/api/runs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ goal: g, review: true }) })
+        .then(function (r) { ensureRunTab(r.runId, g.slice(0, 40), 'running'); openTab(r.runId); })
+        .catch(function (er) { alert(er.message); });
     });
-    $('send2').onclick = function () {
-      var ev = new KeyboardEvent('keydown', { key: 'Enter' });
-      ta.dispatchEvent(ev);
-    };
-    replayEvents(runId);
-    var streamEl = $('stream');
+    $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
+    sess.events.forEach(function (ev) { appendEvent(runId, ev, true); });
     var w = document.createElement('div');
-    w.className = 'working';
-    w.id = 'working';
+    w.className = 'working'; w.id = 'working';
     w.innerHTML = '<span class="spinner"></span><span class="shimmer"></span><span class="wtext" id="workingText">Connecting…</span>';
-    streamEl.appendChild(w);
+    $('stream').appendChild(w);
     setWorking('Thinking…');
     renderSide(runId);
     connect(runId);
@@ -367,43 +303,48 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess) return;
       if (sess.lastIndex == null) sess.lastIndex = -1;
-      if (ev.i > sess.lastIndex) { sess.lastIndex = ev.i; sess.events.push(ev); appendEvent(runId, ev); }
+      if (ev.i > sess.lastIndex) { sess.lastIndex = ev.i; sess.events.push(ev); appendEvent(runId, ev, false); }
     };
   }
 
-  function tagClass(text) {
-    if (text.indexOf('ok ') === 0) return 'ok';
-    if (text.indexOf('error ') === 0) return 'error';
-    if (text.indexOf('denied ') === 0) return 'denied';
-    if (text.indexOf('blocked ') === 0) return 'blocked';
-    if (text.indexOf('run ') === 0) return 'run';
-    if (text.indexOf('evidence ') === 0) return 'ok';
-    return '';
+  function closeThought(runId) {
+    var sess = S.sessions[runId];
+    var node = sess.nodes.thought;
+    if (node) { var c = node.querySelector('.caret'); if (c) c.remove(); sess.nodes.thought = null; }
+  }
+
+  function toolKind(summary) {
+    if (summary.indexOf('write ') === 0) return 'edit';
+    if (summary.indexOf('edit ') === 0) return 'edit';
+    if (summary.indexOf('read ') === 0) return 'read';
+    if (summary.indexOf('list ') === 0) return 'list';
+    if (summary.indexOf('search ') === 0) return 'search';
+    if (summary.indexOf('$ ') === 0) return 'shell';
+    return 'tool';
   }
 
   function workingTextFor(text) {
     if (text.indexOf('think') === 0) return 'Thinking…';
     if (text.indexOf('run ') === 0) {
-      var body = text.slice(4);
-      var dash = body.indexOf(' — ');
-      var summary = dash >= 0 ? body.slice(0, dash) : body;
-      if (summary.indexOf('write ') === 0) return 'Editing ' + summary.slice(6) + '…';
-      if (summary.indexOf('edit ') === 0) return 'Editing ' + summary.slice(5) + '…';
-      if (summary.indexOf('read ') === 0) return 'Reading ' + summary.slice(5) + '…';
-      if (summary.indexOf('list ') === 0) return 'Listing ' + summary.slice(5) + '…';
-      if (summary.indexOf('search ') === 0) return 'Searching ' + summary.slice(7) + '…';
-      if (summary.indexOf('$ ') === 0) return 'Running ' + summary.slice(2) + '…';
+      var summary = splitSummary(text.slice(4));
+      var k = toolKind(summary);
+      if (k === 'edit') return 'Editing ' + summary.slice(summary.indexOf(' ') + 1) + '…';
+      if (k === 'read') return 'Reading ' + summary.slice(5) + '…';
+      if (k === 'list') return 'Listing ' + summary.slice(5) + '…';
+      if (k === 'search') return 'Searching…';
+      if (k === 'shell') return 'Running ' + summary.slice(2) + '…';
       return 'Working: ' + summary + '…';
     }
     if (text.indexOf('plan ') === 0) return 'Building plan…';
     if (text.indexOf('criteria') === 0) return 'Defining acceptance criteria…';
     if (text.indexOf('evidence') === 0) return 'Recording evidence…';
-    if (text.indexOf('claim') === 0) return 'Checking acceptance criteria…';
+    if (text.indexOf('claim') === 0) return 'Checking acceptance…';
     if (text.indexOf('hypothesis') === 0) return 'Updating hypothesis…';
-    if (text.indexOf('branch') === 0) return 'Preparing workspace…';
-    if (text.indexOf('context') === 0) return 'Selecting relevant context…';
+    if (text.indexOf('context') === 0) return 'Selecting context…';
     return null;
   }
+  function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
+  function splitReason(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(d + 3) : ''; }
 
   function setWorking(text) {
     var w = $('working');
@@ -414,6 +355,98 @@ export const UI_HTML = String.raw`<!doctype html>
     if (t && t.textContent !== text) t.textContent = text;
   }
 
+  function appendEvent(runId, ev, replay) {
+    var stream = $('stream');
+    if (!stream) return;
+    var sess = S.sessions[runId];
+    var text = String(ev.text);
+    var working = $('working');
+    function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
+
+    if (text.indexOf('tdelta ') === 0) {
+      closeIfToolOpen(sess);
+      if (!sess.nodes.thought) {
+        var p = document.createElement('div');
+        p.className = 'thought';
+        p.innerHTML = '<span class="txt"></span><span class="caret"></span>';
+        insert(p);
+        sess.nodes.thought = p;
+      }
+      sess.nodes.thought.querySelector('.txt').appendChild(document.createTextNode(text.slice(7)));
+      stream.scrollTop = stream.scrollHeight;
+      return;
+    }
+    if (text.indexOf('say ') === 0) {
+      var prose = text.slice(4);
+      var cur = sess.nodes.thought ? sess.nodes.thought.querySelector('.txt').textContent : '';
+      if (!cur || prose.indexOf(cur) !== 0) {
+        var pp = document.createElement('div');
+        pp.className = 'thought';
+        pp.innerHTML = '<span class="txt">' + esc(prose) + '</span>';
+        insert(pp);
+      }
+      closeThought(runId);
+      return;
+    }
+    if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
+    if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
+    if (text.indexOf('plan-review') === 0) { closeThought(runId); setWorking('Waiting for your plan review…'); return; }
+
+    closeThought(runId);
+    var tag = text.split(' ')[0];
+    var body = text.slice(tag.length).trim();
+
+    if (tag === 'run') {
+      var summary = splitSummary(body);
+      var reason = splitReason(body);
+      var card = document.createElement('div');
+      card.className = 'tool';
+      card.innerHTML =
+        '<div class="head"><span class="kind">' + esc(toolKind(summary)) + '</span>' +
+        '<span class="sum">' + esc(summary) + '</span>' +
+        (reason ? '<span class="reason">— ' + esc(reason) + '</span>' : '') +
+        '<span class="st"><span class="spin"></span></span></div>' +
+        '<details><summary>output</summary><pre></pre></details>';
+      insert(card);
+      sess.nodes.lastTool = card;
+      var wt = workingTextFor(text);
+      if (wt) setWorking(wt);
+      stream.scrollTop = stream.scrollHeight;
+      return;
+    }
+    if (tag === 'ok' || tag === 'error' || tag === 'denied' || tag === 'blocked') {
+      var tool = sess.nodes.lastTool;
+      if (tool) {
+        var st = tool.querySelector('.st');
+        st.innerHTML = tag === 'ok' ? '<span class="chip ok">ok</span>' : tag === 'error' ? '<span class="chip bad">error</span>' : tag === 'denied' ? '<span class="chip bad">denied</span>' : '<span class="chip warn">blocked</span>';
+      }
+      setWorking('Thinking…');
+      return;
+    }
+    if (tag === 'out') {
+      var t2 = sess.nodes.lastTool;
+      if (t2) {
+        var pre = t2.querySelector('pre');
+        pre.textContent = body.replace(/ ⏎ /g, '\n');
+      }
+      return;
+    }
+
+    var meta = document.createElement('div');
+    meta.className = 'meta-line';
+    var label = tag;
+    var rest = body;
+    if (tag === 'evidence') { meta.innerHTML = '<b style="color:' + (rest.indexOf('PASS') >= 0 ? 'var(--green)' : 'var(--red)') + '">evidence</b> ' + esc(rest); }
+    else if (tag === 'plan') { meta.innerHTML = '<b>plan</b> ' + esc(rest) + ' — review it in the panel, then approve to build'; }
+    else { meta.innerHTML = '<b>' + esc(label) + '</b> ' + esc(rest); }
+    insert(meta);
+    var wt2 = workingTextFor(text);
+    if (wt2) setWorking(wt2);
+    stream.scrollTop = stream.scrollHeight;
+  }
+
+  function closeIfToolOpen(sess) { /* thoughts and tools may interleave; keep lastTool for out events */ }
+
   function updateProgress(L) {
     var p = $('progress');
     if (!p || !L) return;
@@ -421,38 +454,9 @@ export const UI_HTML = String.raw`<!doctype html>
     L.plan.forEach(function (s) { if (s.status === 'done') done++; });
     var total = L.plan.length;
     p.style.display = 'flex';
-    $('progText').textContent =
-      (total ? 'Step ' + done + '/' + total : 'Planning…') +
-      ' · ' + L.actions.length + '/' + L.budgets.maxActions + ' actions' +
-      ' · ' + L.evidence.length + ' evidence';
+    $('progText').textContent = (total ? 'Step ' + done + '/' + total : 'Planning…') + ' · ' + L.actions.length + '/' + L.budgets.maxActions + ' actions · ' + L.evidence.length + ' evidence';
     var width = Math.min(100, Math.round((done / Math.max(1, total)) * 70 + (L.actions.length / Math.max(1, L.budgets.maxActions)) * 30));
     $('progFill').style.width = width + '%';
-  }
-
-  function appendEvent(runId, ev) {
-    var stream = $('stream');
-    if (!stream) return;
-    var text = String(ev.text);
-    if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
-    var parts = text.split(' ');
-    var tag = parts[0] || '';
-    var rest = text.slice(tag.length).trim();
-    var div = document.createElement('div');
-    div.className = 'ev';
-    div.innerHTML = '<span class="tag ' + tagClass(text) + '">' + esc(tag) + '</span><div class="body">' + esc(rest) + '</div>';
-    var working = $('working');
-    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
-    var wt = workingTextFor(text);
-    if (wt) setWorking(wt);
-    stream.scrollTop = stream.scrollHeight;
-  }
-
-  function replayEvents(runId) {
-    var sess = S.sessions[runId];
-    var stream = $('stream');
-    if (!stream || !sess) return;
-    stream.innerHTML = '';
-    sess.events.forEach(function (ev) { appendEvent(runId, ev); });
   }
 
   function pollRun(runId) {
@@ -461,19 +465,18 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess) return;
       sess.session = session;
-      var tab = ensureRunTab(runId, session.goal.slice(0, 40), session.status);
+      ensureRunTab(runId, session.goal.slice(0, 40), session.status);
       renderTabs();
       var g = $('rGoal'); if (g) g.textContent = session.goal;
       var c = $('rChip'); if (c) c.innerHTML = chipFor(session.status) + ' <span class="chip">' + esc(runId) + '</span>';
       renderApprovals(runId, session);
+      renderPlanReview(runId, session);
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
           if (s2) { s2.ledger = ledger; renderSide(runId); updateProgress(ledger); }
         }).catch(function () {});
-      } else {
-        renderSide(runId);
-      }
+      } else renderSide(runId);
       if (session.status !== 'running') {
         setWorking(null);
         if (S.poll) { clearInterval(S.poll); S.poll = null; }
@@ -484,24 +487,69 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderApprovals(runId, session) {
     var stream = $('stream');
     if (!stream) return;
-    var existing = stream.querySelectorAll('.approval');
-    for (var i = 0; i < existing.length; i++) existing[i].remove();
+    var old = stream.querySelectorAll('.approval');
+    for (var i = 0; i < old.length; i++) old[i].remove();
     (session.pendingApprovals || []).forEach(function (a) {
       var div = document.createElement('div');
       div.className = 'approval';
       div.innerHTML =
-        '<div class="head"><span class="chip warn">approval required</span><b>' + esc(a.tool) + '</b><span class="chip">' + esc(a.why) + '</span></div>' +
+        '<h3>approval required — ' + esc(a.tool) + '</h3>' +
+        '<div class="meta-line">' + esc(a.why) + '</div>' +
         '<pre>' + esc(a.summary) + '</pre>' +
-        '<div><button class="btn dark" data-appr="' + esc(a.id) + '" data-ok="1">Approve</button> ' +
+        '<div class="actions"><button class="btn dark" data-appr="' + esc(a.id) + '" data-ok="1">Approve</button>' +
         '<button class="btn red" data-appr="' + esc(a.id) + '" data-ok="0">Deny</button></div>';
       stream.appendChild(div);
       stream.scrollTop = stream.scrollHeight;
     });
     stream.onclick = function (e) {
       var id = e.target.getAttribute && e.target.getAttribute('data-appr');
-      if (!id) return;
-      var ok = e.target.getAttribute('data-ok') === '1';
-      api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: ok }) })
+      if (id) {
+        api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: e.target.getAttribute('data-ok') === '1' }) })
+          .catch(function (er) { alert(er.message); });
+        return;
+      }
+      var head = e.target.closest && e.target.closest('.tool .head');
+      if (head) {
+        var det = head.parentElement.querySelector('details');
+        if (det) det.open = !det.open;
+      }
+    };
+  }
+
+  function renderPlanReview(runId, session) {
+    var stream = $('stream');
+    if (!stream) return;
+    var old = stream.querySelectorAll('.review-card');
+    for (var i = 0; i < old.length; i++) old[i].remove();
+    var pr = session.pendingPlanReview;
+    if (!pr) return;
+    var div = document.createElement('div');
+    div.className = 'review-card';
+    div.innerHTML =
+      '<h3>plan review — approve to switch to build mode</h3>' +
+      '<label>Acceptance criteria (one per line)</label>' +
+      '<textarea id="prCrit" rows="' + Math.max(2, pr.criteria.length) + '">' + esc(pr.criteria.join('\n')) + '</textarea>' +
+      '<label>Plan steps (one per line: description | verification)</label>' +
+      '<textarea id="prSteps" rows="' + Math.max(3, pr.steps.length + 1) + '">' + esc(pr.steps.map(function (s) { return s.description + ' | ' + s.verification; }).join('\n')) + '</textarea>' +
+      '<div class="actions"><button class="btn dark" id="prApprove">Approve &amp; Build</button>' +
+      '<input id="prNote" placeholder="Requested changes (optional)…">' +
+      '<button class="btn ghost" id="prChange">Request changes</button></div>';
+    stream.appendChild(div);
+    stream.scrollTop = stream.scrollHeight;
+    function payload(approved) {
+      var criteria = $('prCrit').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+      var steps = $('prSteps').value.split('\n').map(function (line) {
+        var parts = line.split('|');
+        return { description: (parts[0] || '').trim(), verification: (parts.slice(1).join('|') || 'manual check').trim() };
+      }).filter(function (s) { return s.description; });
+      return { approved: approved, note: $('prNote').value.trim() || undefined, criteria: criteria, steps: steps };
+    }
+    $('prApprove').onclick = function () {
+      api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(true)) })
+        .catch(function (er) { alert(er.message); });
+    };
+    $('prChange').onclick = function () {
+      api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(false)) })
         .catch(function (er) { alert(er.message); });
     };
   }
@@ -512,40 +560,30 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!body || !sess) return;
     if (sess.side === 'context') { renderContext(runId); return; }
     var L = sess.ledger;
-    var html = '';
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
-
-    html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
+    var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
     if (!L.acceptanceCriteria.length) html += '<div class="empty">none set yet</div>';
     L.acceptanceCriteria.forEach(function (c) {
       html += '<div class="crit ' + (c.satisfied ? 'done' : '') + '"><span class="dot"></span><div>' + esc(c.text) +
         (c.evidenceIds.length ? '<div class="ev-ids">' + esc(c.evidenceIds.join(', ')) + '</div>' : '') + '</div></div>';
     });
-
-    html += '<div class="section-h">Plan</div>';
+    html += '<div class="section-h">Plan' + (L.planApproved ? ' <span class="chip ok" style="margin-left:6px">approved</span>' : '') + '</div>';
     if (!L.plan.length) html += '<div class="empty">no plan yet</div>';
     L.plan.forEach(function (s) {
-      html += '<div class="step"><span class="st ' + s.status + '">' + esc(s.status) + '</span><div>' + esc(s.description) +
-        ' <span style="color:var(--faint)">· ' + esc(s.verification) + '</span></div></div>';
+      html += '<div class="step"><span class="st ' + s.status + '">' + esc(s.status) + '</span><div>' + esc(s.description) + ' <span style="color:var(--faint)">· ' + esc(s.verification) + '</span></div></div>';
     });
-
     html += '<div class="section-h">Evidence</div>';
     if (!L.evidence.length) html += '<div class="empty">none yet</div>';
     L.evidence.forEach(function (e) {
       html += '<div class="step"><span class="st ' + (e.passed ? 'done' : 'failed') + '">' + (e.passed ? 'PASS' : 'FAIL') + '</span><div>' + esc(e.label) + '</div></div>';
     });
-
     html += '<div class="section-h">Files changed</div>';
     html += L.filesChanged.length ? L.filesChanged.map(function (f) { return '<span class="file-chip">' + esc(f) + '</span>'; }).join('') : '<div class="empty">none</div>';
-
     if (L.blockers.length) {
       html += '<div class="section-h">Blockers</div>';
       L.blockers.forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
     }
-
-    if (L.report) {
-      html += '<div class="report-card"><h3>Completion report</h3><pre>' + esc(reportText(L.report)) + '</pre></div>';
-    }
+    if (L.report) html += '<div class="report-card"><h3>Completion report</h3><pre>' + esc(reportText(L.report)) + '</pre></div>';
     body.innerHTML = html;
   }
 
@@ -564,9 +602,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var L = sess.ledger;
     var session = sess.session;
     var html = '<div class="stat-grid">';
-    function stat(k, v, mono) {
-      html += '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v ' + (mono ? 'mono' : '') + '">' + esc(v) + '</div></div>';
-    }
+    function stat(k, v, mono) { html += '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v ' + (mono ? 'mono' : '') + '">' + esc(v) + '</div></div>'; }
     stat('Session', runId, true);
     stat('Status', session ? session.status : '—');
     stat('Provider', session && session.provider ? session.provider : '—');
@@ -582,7 +618,6 @@ export const UI_HTML = String.raw`<!doctype html>
       stat('Checkpoints', L.checkpoints.length);
     }
     html += '</div>';
-
     if (L && L.actions.length) {
       var counts = { read: 0, write: 0, command: 0, other: 0 };
       L.actions.forEach(function (a) {
@@ -593,23 +628,18 @@ export const UI_HTML = String.raw`<!doctype html>
       });
       var total = L.actions.length;
       function pct(n) { return Math.round((n / total) * 1000) / 10; }
-      html += '<div class="section-h">Action breakdown</div>' +
-        '<div class="bar">' +
+      html += '<div class="section-h">Action breakdown</div><div class="bar">' +
         '<span style="width:' + pct(counts.read) + '%;background:#16a34a"></span>' +
         '<span style="width:' + pct(counts.write) + '%;background:#d97706"></span>' +
         '<span style="width:' + pct(counts.command) + '%;background:#8a6d1a"></span>' +
-        '<span style="width:' + pct(counts.other) + '%;background:#9ca3af"></span>' +
-        '</div>' +
-        '<div class="legend">' +
-        '<span><i style="background:#16a34a"></i>Reads ' + pct(counts.read) + '%</span>' +
+        '<span style="width:' + pct(counts.other) + '%;background:#9ca3af"></span></div>' +
+        '<div class="legend"><span><i style="background:#16a34a"></i>Reads ' + pct(counts.read) + '%</span>' +
         '<span><i style="background:#d97706"></i>Writes ' + pct(counts.write) + '%</span>' +
         '<span><i style="background:#8a6d1a"></i>Commands ' + pct(counts.command) + '%</span>' +
-        '<span><i style="background:#9ca3af"></i>Other ' + pct(counts.other) + '%</span>' +
-        '</div>';
+        '<span><i style="background:#9ca3af"></i>Other ' + pct(counts.other) + '%</span></div>';
     }
-
     html += '<div class="section-h">Raw events</div><div class="raw">';
-    var evs = (sess.events || []).slice(-60).reverse();
+    var evs = (sess.events || []).filter(function (e) { return String(e.text).indexOf('tdelta') !== 0; }).slice(-60).reverse();
     if (!evs.length) html += '<div class="row"><span>no events yet</span></div>';
     evs.forEach(function (ev) {
       html += '<div class="row"><span>' + esc(String(ev.text).slice(0, 90)) + '</span><span class="t">' + esc(new Date(ev.t).toLocaleTimeString()) + '</span></div>';
@@ -632,7 +662,6 @@ export const UI_HTML = String.raw`<!doctype html>
     renderTabs();
     renderHome();
   }
-
   boot();
 })();
 </script>

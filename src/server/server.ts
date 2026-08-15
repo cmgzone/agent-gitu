@@ -18,6 +18,17 @@ export interface PendingApproval {
   requestedAt: string;
 }
 
+export interface PendingPlanReview {
+  id: string;
+  criteria: string[];
+  steps: { description: string; verification: string }[];
+  requestedAt: string;
+}
+
+interface PlanReviewWaiter extends PendingPlanReview {
+  resolve: (decision: { approved: boolean; note?: string; criteria?: string[]; steps?: { description: string; verification: string }[] }) => void;
+}
+
 interface ApprovalWaiter extends PendingApproval {
   resolve: (approved: boolean) => void;
 }
@@ -32,6 +43,7 @@ export interface RunSessionView {
   provider?: string;
   model?: string;
   pendingApprovals: PendingApproval[];
+  pendingPlanReview?: PendingPlanReview;
   report?: CompletionReport;
   error?: string;
 }
@@ -48,6 +60,7 @@ interface RunSession {
   events: { i: number; t: string; text: string }[];
   subscribers: Set<(ev: { i: number; t: string; text: string }) => void>;
   approvals: Map<string, ApprovalWaiter>;
+  planReview?: PlanReviewWaiter;
   report?: CompletionReport;
   error?: string;
 }
@@ -125,6 +138,9 @@ export class HermesServer {
       provider: s.provider,
       model: s.model,
       pendingApprovals: [...s.approvals.values()].map(({ id, tool, why, summary, requestedAt }) => ({ id, tool, why, summary, requestedAt })),
+      pendingPlanReview: s.planReview
+        ? { id: s.planReview.id, criteria: s.planReview.criteria, steps: s.planReview.steps, requestedAt: s.planReview.requestedAt }
+        : undefined,
       report: s.report,
       error: s.error,
     };
@@ -225,6 +241,7 @@ export class HermesServer {
       const provider = typeof body['provider'] === 'string' ? body['provider'] : undefined;
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
       const mode = body['mode'] === 'fast' ? 'fast' : 'standard';
+      const review = body['review'] !== false;
       const maxActions = typeof body['maxActions'] === 'number' && Number.isFinite(body['maxActions']) ? body['maxActions'] : undefined;
 
       let llm = this.config.llm;
@@ -256,7 +273,7 @@ export class HermesServer {
       };
       this.sessions.set(session.runId, session);
       this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions });
+      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review });
       return;
     }
 
@@ -296,6 +313,37 @@ export class HermesServer {
       return;
     }
 
+    const planReviewMatch = path.match(/^\/api\/plan-review\/([\w-]+)$/);
+    if (method === 'POST' && planReviewMatch) {
+      const body = await this.readBody(req);
+      for (const session of this.sessions.values()) {
+        if (session.planReview && session.planReview.id === planReviewMatch[1]) {
+          const waiter = session.planReview;
+          session.planReview = undefined;
+          const steps = Array.isArray(body['steps'])
+            ? (body['steps'] as Record<string, unknown>[])
+                .map((s) => ({ description: String(s['description'] ?? '').trim(), verification: String(s['verification'] ?? 'manual check').trim() }))
+                .filter((s) => s.description)
+            : undefined;
+          const criteria = Array.isArray(body['criteria'])
+            ? (body['criteria'] as unknown[]).map(String).map((s) => s.trim()).filter(Boolean)
+            : undefined;
+          const decision = {
+            approved: body['approved'] === true,
+            note: typeof body['note'] === 'string' ? body['note'] : undefined,
+            criteria,
+            steps,
+          };
+          this.pushEvent(session, decision.approved ? 'plan-review approved — building' : 'plan-review changes requested');
+          waiter.resolve(decision);
+          this.sendJson(res, 200, { ok: true });
+          return;
+        }
+      }
+      this.sendJson(res, 404, { error: 'plan review not found or already resolved' });
+      return;
+    }
+
     const approvalMatch = path.match(/^\/api\/approvals\/([\w-]+)$/);
     if (method === 'POST' && approvalMatch) {
       const body = await this.readBody(req);
@@ -320,7 +368,7 @@ export class HermesServer {
   private async executeRun(
     session: RunSession,
     llm: LlmClient,
-    opts: { goal: string; criteria?: string[]; mode: 'fast' | 'standard'; maxActions?: number },
+    opts: { goal: string; criteria?: string[]; mode: 'fast' | 'standard'; maxActions?: number; review?: boolean },
   ): Promise<void> {
     const hermes = new Hermes({
       cwd: this.config.cwd,
@@ -328,6 +376,19 @@ export class HermesServer {
       mode: opts.mode,
       criteria: opts.criteria,
       budgets: opts.maxActions ? { maxActions: opts.maxActions } : undefined,
+      requirePlanReview: opts.review ?? true,
+      planReviewHandler: (input) =>
+        new Promise((resolve) => {
+          const waiter: PlanReviewWaiter = {
+            id: shortId('pr'),
+            criteria: input.criteria,
+            steps: input.steps,
+            requestedAt: nowIso(),
+            resolve,
+          };
+          session.planReview = waiter;
+          this.pushEvent(session, `plan-review ${waiter.id} waiting for your review`);
+        }),
       approvalHandler: ({ tool, why, summary }) =>
         new Promise<boolean>((resolve) => {
           const waiter: ApprovalWaiter = {

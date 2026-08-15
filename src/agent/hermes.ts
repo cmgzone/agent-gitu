@@ -161,10 +161,22 @@ function classifyEvidenceKind(command: string): EvidenceKind {
 export class Hermes {
   private readonly config: HermesConfig;
   private readonly emit: (event: string) => void;
+  private readonly inbox: string[] = [];
+  private aborted = false;
+  private abortController?: AbortController;
 
   constructor(config: HermesConfig) {
     this.config = config;
     this.emit = config.onEvent ?? (() => {});
+  }
+
+  queueMessage(text: string): void {
+    this.inbox.push(text);
+  }
+
+  stop(): void {
+    this.aborted = true;
+    this.abortController?.abort();
   }
 
   async run(goal: string): Promise<HermesRunResult> {
@@ -265,7 +277,8 @@ export class Hermes {
         pending = '';
         lastFlush = Date.now();
       };
-      const reply = await llm.completeStream(messages, { effort: this.config.effort }, (delta) => {
+      this.abortController = new AbortController();
+      const reply = await llm.completeStream(messages, { effort: this.config.effort, signal: this.abortController.signal }, (delta) => {
         if (seenBrace) return;
         const braceAt = delta.indexOf('{');
         if (braceAt >= 0) {
@@ -295,7 +308,13 @@ export class Hermes {
       }
     };
 
+    try {
     for (let turn = 0; turn < maxTurns; turn++) {
+      if (this.aborted) {
+        ledger.addBlocker('Stopped by user.');
+        exitReason = 'blocked';
+        break;
+      }
       const budgetProblem = ledger.budgetExceeded();
       if (budgetProblem) {
         ledger.addBlocker(budgetProblem);
@@ -497,7 +516,21 @@ export class Hermes {
         }
       }
 
+      while (this.inbox.length > 0) {
+        const msg = this.inbox.shift()!;
+        this.emit(`user-msg ${msg}`);
+        observe(`USER MESSAGE (sent while you were working — take it into account now): ${msg}`);
+      }
+
       if (exitReason === 'complete' || exitReason === 'blocked') break;
+    }
+    } catch (err) {
+      if (!this.aborted) throw err;
+    }
+
+    if (this.aborted && exitReason === 'stalled') {
+      ledger.addBlocker('Stopped by user.');
+      exitReason = 'blocked';
     }
 
     if (exitReason === 'stalled') {

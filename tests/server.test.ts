@@ -179,6 +179,49 @@ describe('HermesServer', () => {
     expect(ledger.planApproved).toBe(true);
   }, 30000);
 
+  it('queues user messages and stops a running task over HTTP', async () => {
+    const dir = makeProject('interrupt');
+    const longProse = 'Working carefully on the current step and observing the results. '.repeat(30);
+    const script: ((n: number, m: { role: string; content: string }[]) => string)[] = [
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['c'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 's', verification: 'v' }] } }),
+    ];
+    for (let i = 0; i < 20; i++) {
+      script.push(() => `${longProse}\n${JSON.stringify({ action: { type: 'set_hypothesis', text: 'h' } })}`);
+    }
+    script.push(() => JSON.stringify({ action: { type: 'request_block', reason: 'end' } }));
+    const { base } = await startServer(dir, new ScriptedMockLlm(script));
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'interruptible task', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+
+    const running = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status === 'running' && s.taskId ? s : undefined;
+    });
+
+    const msg = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'focus on the header section' }),
+    }).then((r) => r.json());
+    expect(msg.ok).toBe(true);
+
+    const stop = await fetch(`${base}/api/runs/${created.runId}/stop`, { method: 'POST' }).then((r) => r.json());
+    expect(stop.ok).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(finished.status).toBe('blocked');
+    const ledger = await fetch(`${base}/api/tasks/${running.taskId}`).then((r) => r.json());
+    expect(ledger.blockers.join(' ')).toContain('Stopped by user');
+  }, 60000);
+
   it('rejects runs without a goal', async () => {
     const dir = makeProject('badreq');
     const { base } = await startServer(dir, new ScriptedMockLlm([]));

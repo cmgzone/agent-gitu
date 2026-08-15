@@ -289,6 +289,28 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(linesEvent).toContain('+5');
   }, 30000);
 
+  it('stop() aborts a running task and queued messages reach the agent', async () => {
+    const dir = makeProject('stop');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['c'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 's', verification: 'v' }] } }),
+      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'h1' } }),
+      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'h2' } }),
+      () => JSON.stringify({ action: { type: 'set_hypothesis', text: 'h3' } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'end' } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    hermes.queueMessage('please focus on the header');
+    const runPromise = hermes.run('stop test');
+    setTimeout(() => hermes.stop(), 120);
+    const { ledger } = await runPromise;
+
+    expect(events.some((e) => e.startsWith('user-msg '))).toBe(true);
+    expect(ledger.data.blockers.some((b) => b.includes('Stopped by user'))).toBe(true);
+    expect(['blocked', 'failed']).toContain(ledger.data.status);
+  }, 30000);
+
   it('denies dangerous commands that are not approved', async () => {
     const dir = makeProject('danger');
     const llm = new ScriptedMockLlm([

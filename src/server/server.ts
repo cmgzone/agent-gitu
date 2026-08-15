@@ -73,6 +73,7 @@ interface RunSession {
   approvals: Map<string, ApprovalWaiter>;
   planReview?: PlanReviewWaiter;
   questions?: QuestionsWaiter;
+  hermes?: InstanceType<typeof Hermes>;
   report?: CompletionReport;
   error?: string;
 }
@@ -388,6 +389,38 @@ export class HermesServer {
       return;
     }
 
+    const stopMatch = path.match(/^\/api\/runs\/([\w-]+)\/stop$/);
+    if (method === 'POST' && stopMatch) {
+      const session = this.sessions.get(stopMatch[1]!);
+      if (!session) {
+        this.sendJson(res, 404, { error: 'run not found' });
+        return;
+      }
+      session.hermes?.stop();
+      this.pushEvent(session, 'stopped by user');
+      this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const messageMatch = path.match(/^\/api\/runs\/([\w-]+)\/message$/);
+    if (method === 'POST' && messageMatch) {
+      const session = this.sessions.get(messageMatch[1]!);
+      if (!session) {
+        this.sendJson(res, 404, { error: 'run not found' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
+      if (!text) {
+        this.sendJson(res, 400, { error: 'text is required' });
+        return;
+      }
+      session.hermes?.queueMessage(text);
+      this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
+      this.sendJson(res, 200, { ok: true, queued: session.status === 'running' });
+      return;
+    }
+
     const planReviewMatch = path.match(/^\/api\/plan-review\/([\w-]+)$/);
     if (method === 'POST' && planReviewMatch) {
       const body = await this.readBody(req);
@@ -515,6 +548,7 @@ export class HermesServer {
         this.pushEvent(session, text);
       },
     });
+    session.hermes = hermes;
 
     try {
       const { report } = await hermes.run(opts.goal);

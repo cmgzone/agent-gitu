@@ -318,10 +318,10 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.nodes = {};
     $('view').innerHTML =
       '<div class="run"><div class="run-main">' +
-      '<div class="run-head"><span class="goal" id="rGoal"></span><span id="rChip"></span></div>' +
+      '<div class="run-head"><span class="goal" id="rGoal"></span><span id="rChip"></span><span class="spacer"></span><button class="btn red" id="stopBtn" style="display:none">Stop</button></div>' +
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
-      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="New session… (Enter to start a new tab)"></textarea>' +
+      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Hermes… Enter sends to this session while working, or starts a new one when done"></textarea>' +
       '<div class="composer-bar">' + controlsHtml(false) + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
       '<aside class="run-side"><div class="side-tabs">' +
@@ -336,20 +336,31 @@ export const UI_HTML = String.raw`<!doctype html>
       e.preventDefault();
       var g = $('follow').value.trim();
       if (!g) return;
-      var mc = (S.sel.model || '').split('::');
-      api('/api/runs', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          goal: g, provider: mc[0], model: mc[1],
-          mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-          review: S.sel.wf === 'review',
-          effort: S.sel.effort
+      var cur = S.sessions[runId];
+      var running = cur && cur.session && cur.session.status === 'running';
+      if (running) {
+        api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: g }) })
+          .then(function () { $('follow').value = ''; })
+          .catch(function (er) { alert(er.message); });
+      } else {
+        var mc = (S.sel.model || '').split('::');
+        api('/api/runs', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            goal: g, provider: mc[0], model: mc[1],
+            mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+            review: S.sel.wf === 'review',
+            effort: S.sel.effort
+          })
         })
-      })
-        .then(function (r) { ensureRunTab(r.runId, g.slice(0, 40), 'running'); openTab(r.runId); })
-        .catch(function (er) { alert(er.message); });
+          .then(function (r) { ensureRunTab(r.runId, g.slice(0, 40), 'running'); openTab(r.runId); })
+          .catch(function (er) { alert(er.message); });
+      }
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
+    $('stopBtn').onclick = function () {
+      api('/api/runs/' + runId + '/stop', { method: 'POST' }).catch(function (er) { alert(er.message); });
+    };
     bindControls();
     sess.events.forEach(function (ev) { appendEvent(runId, ev, true); });
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
@@ -448,7 +459,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('say ') === 0) {
       var prose = text.slice(4);
       var cur = sess.nodes.thought ? sess.nodes.thought.querySelector('.txt').textContent : '';
-      if (!cur || prose.indexOf(cur) !== 0) {
+      cur = (cur || '').trim();
+      if (!cur || (prose.indexOf(cur) !== 0 && cur.indexOf(prose) !== 0)) {
         var pp = document.createElement('div');
         pp.className = 'thought';
         pp.innerHTML = '<span class="txt">' + esc(prose) + '</span>';
@@ -461,6 +473,20 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     if (text.indexOf('plan-review') === 0) { closeThought(runId); setWorking('Waiting for your plan review…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
+    if (text.indexOf('user-msg ') === 0) {
+      var um = document.createElement('div');
+      um.className = 'meta-line';
+      um.innerHTML = '<b style="color:var(--blue)">you</b> ' + esc(text.slice(9));
+      insert(um);
+      return;
+    }
+    if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0) {
+      var qm = document.createElement('div');
+      qm.className = 'meta-line';
+      qm.innerHTML = '<b>' + esc(text.split(' ')[0]) + '</b> ' + esc(text.slice(text.indexOf(' ') + 1));
+      insert(qm);
+      return;
+    }
     if (text.indexOf('parallel') === 0) {
       var pm = document.createElement('div');
       pm.className = 'meta-line';
@@ -564,6 +590,8 @@ export const UI_HTML = String.raw`<!doctype html>
       renderTabs();
       var g = $('rGoal'); if (g) g.textContent = session.goal;
       var c = $('rChip'); if (c) c.innerHTML = chipFor(session.status) + ' <span class="chip">' + esc(runId) + '</span>';
+      var stopBtn = $('stopBtn');
+      if (stopBtn) stopBtn.style.display = session.status === 'running' ? 'inline-block' : 'none';
       renderApprovals(runId, session);
       renderPlanReview(runId, session);
       renderQuestions(runId, session);

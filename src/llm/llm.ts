@@ -7,6 +7,7 @@ export interface LlmOptions {
   temperature?: number;
   json?: boolean;
   effort?: 'low' | 'medium' | 'high' | 'max';
+  signal?: AbortSignal;
 }
 
 export type LlmDeltaHandler = (delta: string) => void;
@@ -60,6 +61,7 @@ export class OpenAiCompatClient implements LlmClient {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
+        signal: opts.signal,
       });
     } catch (err) {
       throw new LlmError(`LLM request failed: ${(err as Error).message}`);
@@ -111,6 +113,7 @@ export class OpenAiCompatClient implements LlmClient {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
+        signal: opts.signal,
       });
     } catch (err) {
       throw new LlmError(`LLM request failed: ${(err as Error).message}`);

@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Brightwood Academy — A School for Curious Minds</title>
+  <style>
+    :root {
+      --navy: #12324f;
+      --blue: #1f6f8b;
+      --gold: #f2b134;
+      --paper: #f7f4ee;
+      --ink: #22303a;
+      --white: #ffffff;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+    }
+
+    body {
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.6;
+    }
+
+    a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .container {
+      width: min(1080px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(255, 255, 255, 0.95);
+      border-bottom: 1px solid rgba(18, 50, 79, 0.12);
+    }
+
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      min-height: 68px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 800;
+      color: var(--navy);
+      letter-spacing: 0.02em;
+    }
+
+    .brand-badge {
+      display: grid;
+      place-items: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: var(--gold);
+      color: var(--navy);
+      font-size: 1.1rem;
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      color: var(--navy);
+      font-weight: 600;
+    }
+
+    .nav-links a:hover {
+      color: var(--blue);
+    }
+
+    .hero {
+      background: linear-gradient(135deg, var(--navy), var(--blue));
+      color: var(--white);
+      padding: 88px 0 72px;
+    }
+
+    .hero-inner {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 32px;
+      align-items: center;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      margin-bottom: 14px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: rgba(242, 177, 52, 0.18);
+      color: var(--gold);
+      font-size: 0.9rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      font-size: clamp(2.3rem, 5vw, 4rem);
+      line-height: 1.08;
+      margin-bottom: 18px;
+    }
+
+    .hero p {
+      max-width: 620px;
+      font-size: 1.08rem;
+      color: rgba(255, 255, 255, 0.88);
+      margin-bottom: 28px;
+    }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 13px 22px;
+      border-radius: 12px;
+      font-weight: 800;
+    }
+
+    .button-primary {
+      background: var(--gold);
+      color: var(--navy);
+    }
+
+    .button-secondary {
+      border: 2px solid rgba(255, 255, 255, 0.75);
+      color: var(--white);
+    }
+
+    .hero-card {
+      padding: 24px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+    }
+
+    .hero-card h2 {
+      font-size: 1.1rem;
+      margin-bottom: 12px;
+      color: var(--gold);
+    }
+
+    .hero-card ul {
+      padding-left: 18px;
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    section {
+      padding: 72px 0;
+    }
+
+    .section-heading {
+      max-width: 720px;
+      margin-bottom: 32px;
+    }
+
+    .section-heading h2 {
+      font-size: clamp(1.8rem, 3vw, 2.6rem);
+      color: var(--navy);
+      margin-bottom: 10px;
+    }
+
+    .section-heading p {
+      color: rgba(34, 48, 58, 0.78);
+    }
+
+    .grid {
+      display: grid;
+      gap: 18px;
+    }
+
+    .grid-3 {
+      grid-template-columns: repeat(3, 1fr);
+    }
+
+    .card {
+      padding: 24px;
+      border-radius: 18px;
+      background: var(--white);
+      border: 1px solid rgba(18, 50, 79, 0.08);
+      box-shadow: 0 12px 30px rgba(18, 50, 79, 0.06);
+    }
+
+    .card h3 {
+      color: var(--navy);
+      margin-bottom: 10px;
+    }
+
+    .programs {
+      background: var(--white);
+    }
+
+    .about {
+      background: var(--paper);
+    }
+
+    .about-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 22px;
+    }
+
+    .stat {
+      padding: 18px;
+      border-radius: 16px;
+      background: var(--white);
+      border: 1px solid rgba(18, 50, 79, 0.08);
+      text-align: center;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 1.6rem;
+      color: var(--blue);
+    }
+
+    .admissions {
+      background: var(--white);
+    }
+
+    .steps {
+      counter-reset: step;
+      display: grid;
+      gap: 14px;
+    }
+
+    .step {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+      padding: 18px;
+      border-radius: 16px;
+      background: var(--paper);
+      border: 1px solid rgba(18, 50, 79, 0.08);
+    }
+
+    .step-number {
+      display: grid;
+      place-items: center;
+      min-width: 38px;
+      height: 38px;
+      border-radius: 999px;
+      background: var(--navy);
+      color: var(--white);
+      font-weight: 800;
+    }
+
+    .contact {
+      background: linear-gradient(135deg, var(--navy), var(--blue));
+      color: var(--white);
+    }
+
+    .contact .section-heading h2,
+    .contact .section-heading p {
+      color: var(--white);
+    }
+
+    .contact-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    .contact-card {
+      padding: 24px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .contact-card h3 {
+      margin-bottom: 12px;
+      color: var(--gold);
+    }
+
+    footer {
+      padding: 28px 0;
+      background: #0d2438;
+      color: rgba(255, 255, 255, 0.75);
+      text-align: center;
+    }
+
+    @media (max-width: 860px) {
+      .hero-inner,
+      .about-grid,
+      .contact-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .grid-3 {
+        grid-template-columns: 1fr;
+      }
+
+      .stats {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container nav">
+      <a class="brand" href="#top">
+        <span class="brand-badge">B</span>
+        Brightwood Academy
+      </a>
+      <nav class="nav-links">
+        <a href="#programs">Programs</a>
+        <a href="#about">About</a>
+        <a href="#admissions">Admissions</a>
+        <a href="#contact">Contact</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-inner">
+        <div>
+          <span class="eyebrow">Now enrolling for Fall 2026</span>
+          <h1>A school where curiosity grows into confidence.</h1>
+          <p>
+            Brightwood Academy is a K-12 learning community focused on academics,
+            arts, athletics, and character. We help students ask better questions,
+            work together, and prepare for the future with purpose.
+          </p>
+          <div class="cta-row">
+            <a class="button button-primary" href="#admissions">Apply Today</a>
+            <a class="button button-secondary" href="#contact">Schedule a Tour</a>
+          </div>
+        </div>
+        <aside class="hero-card">
+          <h2>Why families choose Brightwood</h2>
+          <ul>
+            <li>Small class sizes and individual support</li>
+            <li>STEM, arts, and athletics under one roof</li>
+            <li>Caring teachers focused on every student</li>
+            <li>Safe, inclusive, and welcoming campus</li>
+          </ul>
+        </aside>
+      </div>
+    </section>
+
+    <section id="programs" class="programs">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Programs &amp; Academics</h2>
+          <p>
+            From early learners to graduating seniors, our programs build strong
+            foundations and encourage students to explore what excites them.
+          </p>
+        </div>
+        <div class="grid grid-3">
+          <article class="card">
+            <h3>Elementary School</h3>
+            <p>
+              Playful, hands-on learning in reading, math, science, and social
+              studies, with an emphasis on curiosity, kindness, and confidence.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Middle School</h3>
+            <p>
+              Students deepen core academic skills while exploring robotics,
+              music, visual arts, world languages, and leadership opportunities.
+            </p>
+          </article>
+          <article class="card">
+            <h3>High School</h3>
+            <p>
+              College-preparatory courses, advanced labs, career pathways,
+              athletics, and counseling support for life after graduation.
+            </p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="about" class="about">
+      <div class="container about-grid">
+        <div>
+          <div class="section-heading">
+            <h2>About Brightwood Academy</h2>
+            <p>
+              Founded on the belief that every child deserves to be known,
+              challenged, and encouraged, Brightwood Academy blends rigorous
+              academics with a warm community culture.
+            </p>
+          </div>
+          <p>
+            Our teachers design lessons that connect classroom learning to the
+            real world. Students collaborate on projects, present their ideas,
+            and learn how to solve problems with creativity and integrity.
+          </p>
+        </div>
+        <div>
+          <div class="card">
+            <h3>Our Mission</h3>
+            <p>
+              To develop thoughtful, capable learners who are ready to serve
+              their communities and pursue their goals with courage.
+            </p>
+          </div>
+          <div class="stats">
+            <div class="stat"><strong>18:1</strong>Student-teacher ratio</div>
+            <div class="stat"><strong>40+</strong>Clubs and activities</div>
+            <div class="stat"><strong>98%</strong>Graduation rate</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="admissions" class="admissions">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Admissions</h2>
+          <p>
+            Applying to Brightwood Academy is simple. Our admissions team is
+            ready to guide your family through every step of the process.
+          </p>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <span class="step-number">1</span>
+            <div>
+              <h3>Inquire or visit</h3>
+              <p>Reach out online or schedule a campus tour to see our classrooms in action.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">2</span>
+            <div>
+              <h3>Submit an application</h3>
+              <p>Complete the enrollment form and share previous school records if available.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">3</span>
+            <div>
+              <h3>Meet the admissions team</h3>
+              <p>Students and families meet with our staff to discuss goals, interests, and support needs.</p>
+            </div>
+          </div>
+          <div class="step">
+            <span class="step-number">4</span>
+            <div>
+              <h3>Enroll and join the community</h3>
+              <p>Receive an enrollment decision and complete registration to secure your student's place.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="contact" class="contact">
+      <div class="container">
+        <div class="section-heading">
+          <h2>Contact Us</h2>
+          <p>Have questions about enrollment, programs, or campus visits? We would love to hear from you.</p>
+        </div>
+        <div class="contact-grid">
+          <div class="contact-card">
+            <h3>Visit or call</h3>
+            <p>123 Learning Lane<br />Brightwood, ST 45678</p>
+            <p>Phone: (555) 123-4567<br />Office hours: Monday-Friday, 8:00 AM - 4:30 PM</p>
+          </div>
+          <div class="contact-card">
+            <h3>Email the admissions office</h3>
+            <p>admissions@brightwoodacademy.example</p>
+            <p>We respond within two school business days.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      © 2026 Brightwood Academy. All rights reserved.
+    </div>
+  </footer>
+</body>
+</html>

@@ -81,7 +81,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .progress .pbar { flex: 1; height: 4px; border-radius: 2px; background: #e7e7e2; overflow: hidden; }
   .progress .pbar span { display: block; height: 100%; width: 0; background: var(--dark); transition: width .5s ease; }
 
-  .stream { flex: 1; overflow-y: auto; padding: 8px 26px 18px; max-width: 900px; }
+  .stream { flex: 1; overflow-y: auto; padding: 8px 26px 18px; }
 
   .thought { padding: 10px 2px; color: var(--text); white-space: pre-wrap; }
   .thought .caret { display: inline-block; width: 7px; height: 14px; background: var(--dark); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
@@ -154,6 +154,27 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: var(--bg); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
+  .tool .lines { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--green); background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px; padding: 1px 7px; flex: none; }
+  .qcard { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .qcard h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); }
+  .qcard .q { margin-bottom: 12px; }
+  .qcard .q .qt { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .qcard .opts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .qcard .opt { border: 1px solid var(--border2); background: #fff; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+  .qcard .opt.sel { border-color: var(--blue); color: var(--blue); background: #eff6ff; }
+  .qcard .custom { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px; background: #fff; }
+  .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .summary-card h2 { margin: 0 0 4px; font-size: 15px; }
+  .summary-card .sec { margin-top: 12px; }
+  .summary-card .sec h4 { margin: 0 0 5px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+  .summary-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+  .summary-card li { margin: 2px 0; }
+  .md-plan { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px; margin: 6px 0; }
+  .md-plan h4 { margin: 12px 0 6px; font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+  .md-plan ol { margin: 0 0 12px; padding-left: 20px; }
+  .md-plan li { margin: 8px 0; font-size: 13px; }
+  .md-plan li .ver { display: block; color: var(--muted); font-size: 11.5px; }
+  .md-plan ul { margin: 0 0 12px; padding-left: 20px; font-size: 12.5px; }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
@@ -169,7 +190,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <div class="view" id="view"></div>
 <script>
 (function () {
-  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null };
+  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, settings: { scope: '', constraints: '' }, files: [] };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
@@ -228,7 +249,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="home"><div class="wordmark">hermes</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
       '<div class="composer-bar"><button class="icon-btn" title="attach">+</button>' +
-      '<span class="pill"><select id="wf"><option value="review">Plan + review</option><option value="auto">Auto build</option><option value="fast">Fast</option></select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill"><select id="model">' + modelOpts + '</select><span class="caret">&#9662;</span></span>' +
       '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' +
       '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
@@ -248,9 +269,11 @@ export const UI_HTML = String.raw`<!doctype html>
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         goal: goal, provider: mc[0], model: mc[1],
-        mode: wf === 'fast' ? 'fast' : 'standard',
-        review: wf === 'review',
-        maxActions: Number($('budget').value)
+        mode: $('wf').value === 'chat' ? 'chat' : 'standard',
+        review: $('wf').value === 'review',
+        maxActions: Number($('budget').value),
+        scope: S.settings.scope.split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
+        constraints: S.settings.constraints.split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
       })
     }).then(function (r) { ensureRunTab(r.runId, goal.slice(0, 40), 'running'); openTab(r.runId); })
       .catch(function (e) { alert('Failed to start: ' + e.message); });
@@ -270,6 +293,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<aside class="run-side"><div class="side-tabs">' +
       '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
       '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>' +
+      '<button class="side-tab ' + (sess.side === 'settings' ? 'active' : '') + '" data-side="settings">Settings</button>' +
       '</div><div class="side-body" id="sideBody"></div></aside></div>';
     var tabs = document.querySelectorAll('.side-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRun(runId); };
@@ -284,6 +308,7 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
     sess.events.forEach(function (ev) { appendEvent(runId, ev, true); });
+    sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
     w.className = 'working'; w.id = 'working';
     w.innerHTML = '<span class="spinner"></span><span class="shimmer"></span><span class="wtext" id="workingText">Connecting…</span>';
@@ -391,6 +416,32 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     if (text.indexOf('plan-review') === 0) { closeThought(runId); setWorking('Waiting for your plan review…'); return; }
+    if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
+    if (text.indexOf('parallel') === 0) {
+      var pm = document.createElement('div');
+      pm.className = 'meta-line';
+      pm.innerHTML = '<b>parallel</b> ' + esc(text.slice(9)) + ' — running concurrently';
+      insert(pm);
+      setWorking('Running parallel tools…');
+      return;
+    }
+    if (text.indexOf('lines ') === 0) {
+      var toolCard = sess.nodes.lastTool;
+      if (toolCard && !toolCard.querySelector('.lines')) {
+        var badge = document.createElement('span');
+        badge.className = 'lines';
+        badge.textContent = '+0 lines';
+        toolCard.querySelector('.head').insertBefore(badge, toolCard.querySelector('.st'));
+        var target = parseInt(text.split('+')[1] || '0', 10) || 0;
+        var startT = Date.now();
+        var anim = setInterval(function () {
+          var p = Math.min(1, (Date.now() - startT) / 700);
+          badge.textContent = '+' + Math.round(target * p) + ' lines';
+          if (p >= 1) clearInterval(anim);
+        }, 40);
+      }
+      return;
+    }
 
     closeThought(runId);
     var tag = text.split(' ')[0];
@@ -471,6 +522,11 @@ export const UI_HTML = String.raw`<!doctype html>
       var c = $('rChip'); if (c) c.innerHTML = chipFor(session.status) + ' <span class="chip">' + esc(runId) + '</span>';
       renderApprovals(runId, session);
       renderPlanReview(runId, session);
+      renderQuestions(runId, session);
+      if (session.status !== 'running' && !sess.summaryShown && session.report) {
+        sess.summaryShown = true;
+        appendSummary(runId, session);
+      }
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
@@ -526,22 +582,41 @@ export const UI_HTML = String.raw`<!doctype html>
     var div = document.createElement('div');
     div.className = 'review-card';
     div.innerHTML =
-      '<h3>plan review — approve to switch to build mode</h3>' +
+      '<h3>plan review — read the plan, edit if needed, then choose a mode</h3>' +
+      '<div class="md-plan" id="prDoc">' +
+      '<h4>Acceptance criteria</h4><ul>' + pr.criteria.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>' +
+      '<h4>Plan</h4><ol>' + pr.steps.map(function (s, i) {
+        return '<li><b>Step ' + (i + 1) + '.</b> ' + esc(s.description) + '<span class="ver">Verification: ' + esc(s.verification) + '</span></li>';
+      }).join('') + '</ol></div>' +
+      '<div id="prEdit" style="display:none">' +
       '<label>Acceptance criteria (one per line)</label>' +
       '<textarea id="prCrit" rows="' + Math.max(2, pr.criteria.length) + '">' + esc(pr.criteria.join('\n')) + '</textarea>' +
       '<label>Plan steps (one per line: description | verification)</label>' +
       '<textarea id="prSteps" rows="' + Math.max(3, pr.steps.length + 1) + '">' + esc(pr.steps.map(function (s) { return s.description + ' | ' + s.verification; }).join('\n')) + '</textarea>' +
+      '</div>' +
       '<div class="actions"><button class="btn dark" id="prApprove">Approve &amp; Build</button>' +
+      '<button class="btn ghost" id="prEditBtn">Edit plan</button>' +
       '<input id="prNote" placeholder="Requested changes (optional)…">' +
       '<button class="btn ghost" id="prChange">Request changes</button></div>';
     stream.appendChild(div);
     stream.scrollTop = stream.scrollHeight;
+    var editing = false;
+    $('prEditBtn').onclick = function () {
+      editing = !editing;
+      $('prEdit').style.display = editing ? 'block' : 'none';
+      $('prDoc').style.display = editing ? 'none' : 'block';
+      $('prEditBtn').textContent = editing ? 'Preview' : 'Edit plan';
+    };
     function payload(approved) {
-      var criteria = $('prCrit').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-      var steps = $('prSteps').value.split('\n').map(function (line) {
-        var parts = line.split('|');
-        return { description: (parts[0] || '').trim(), verification: (parts.slice(1).join('|') || 'manual check').trim() };
-      }).filter(function (s) { return s.description; });
+      var criteria = pr.criteria;
+      var steps = pr.steps;
+      if (editing) {
+        criteria = $('prCrit').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+        steps = $('prSteps').value.split('\n').map(function (line) {
+          var parts = line.split('|');
+          return { description: (parts[0] || '').trim(), verification: (parts.slice(1).join('|') || 'manual check').trim() };
+        }).filter(function (s) { return s.description; });
+      }
       return { approved: approved, note: $('prNote').value.trim() || undefined, criteria: criteria, steps: steps };
     }
     $('prApprove').onclick = function () {
@@ -554,11 +629,125 @@ export const UI_HTML = String.raw`<!doctype html>
     };
   }
 
+  function renderQuestions(runId, session) {
+    var stream = $('stream');
+    if (!stream) return;
+    var old = stream.querySelectorAll('.qcard');
+    for (var i = 0; i < old.length; i++) old[i].remove();
+    var q = session.pendingQuestions;
+    if (!q) return;
+    var selections = {};
+    var div = document.createElement('div');
+    div.className = 'qcard';
+    var html = '<h3>Hermes has a few questions before starting</h3>';
+    q.questions.forEach(function (qq, qi) {
+      html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(qq.question) + '</div><div class="opts">';
+      qq.options.forEach(function (op, oi) {
+        html += '<button class="opt" data-q="' + qi + '" data-o="' + oi + '">' + esc(op) + '</button>';
+      });
+      html += '</div><input class="custom" data-q="' + qi + '" placeholder="or type your own answer…"></div>';
+    });
+    html += '<div class="actions"><button class="btn dark" id="qSend">Send answers</button></div>';
+    div.innerHTML = html;
+    stream.appendChild(div);
+    stream.scrollTop = stream.scrollHeight;
+    div.onclick = function (e) {
+      var btn = e.target.closest && e.target.closest('.opt');
+      if (!btn) return;
+      var qi = btn.getAttribute('data-q');
+      var siblings = div.querySelectorAll('.opt[data-q="' + qi + '"]');
+      for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('sel');
+      btn.classList.add('sel');
+      selections[qi] = q.questions[Number(qi)].options[Number(btn.getAttribute('data-o'))];
+    };
+    $('qSend').onclick = function () {
+      var answers = q.questions.map(function (qq, qi) {
+        var custom = div.querySelector('.custom[data-q="' + qi + '"]');
+        var val = (custom && custom.value.trim()) || selections[qi] || '(no answer)';
+        return qq.question + ' → ' + val;
+      }).join('\n');
+      api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer: answers }) })
+        .catch(function (er) { alert(er.message); });
+    };
+  }
+
+  function appendSummary(runId, session) {
+    var stream = $('stream');
+    if (!stream) return;
+    var r = session.report;
+    var sess = S.sessions[runId];
+    var lineCounts = {};
+    (sess.events || []).forEach(function (ev) {
+      var t = String(ev.text);
+      if (t.indexOf('lines ') === 0) {
+        var parts = t.slice(6).split(' +');
+        lineCounts[parts[0]] = (lineCounts[parts[0]] || 0) + (parseInt(parts[1], 10) || 0);
+      }
+    });
+    var div = document.createElement('div');
+    div.className = 'summary-card';
+    var html = '<h2>' + esc(session.goal) + '</h2>' + chipFor(session.status);
+    html += '<div class="sec"><h4>What was done</h4><p style="margin:0;font-size:12.5px">' + esc(r.summary) + '</p></div>';
+    if (r.filesChanged.length) {
+      html += '<div class="sec"><h4>Files</h4><ul>' + r.filesChanged.map(function (f) {
+        return '<li><span class="file-chip">' + esc(f) + '</span>' + (lineCounts[f] ? ' <span style="color:var(--green);font-family:var(--mono);font-size:11px">+' + lineCounts[f] + ' lines</span>' : '') + '</li>';
+      }).join('') + '</ul></div>';
+    }
+    if (r.verification.length) {
+      html += '<div class="sec"><h4>Verification evidence</h4><ul>' + r.verification.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    }
+    if (r.remainingRisks.length) {
+      html += '<div class="sec"><h4>Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    }
+    if (r.followUps.length) {
+      html += '<div class="sec"><h4>Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    }
+    stream.appendChild(div);
+    stream.scrollTop = stream.scrollHeight;
+  }
+
+  function renderSettings(runId) {
+    var body = $('sideBody');
+    if (!body) return;
+    var filesHtml = S.files.length
+      ? '<datalist id="fileList">' + S.files.map(function (f) { return '<option value="' + esc(f) + '"></option>'; }).join('') + '</datalist>'
+      : '';
+    body.innerHTML =
+      '<div class="section-h" style="margin-top:0">Task settings (apply to next runs)</div>' +
+      '<label style="font-size:11px;color:var(--muted)">Scope files — which files to work on (one per line)</label>' +
+      '<textarea id="setScope" rows="5" placeholder="src/app.ts&#10;public/index.html" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:7px 9px;font-family:var(--mono);font-size:11.5px">' + esc(S.settings.scope) + '</textarea>' +
+      '<input id="setScopePick" list="fileList" placeholder="pick a project file…" style="width:100%;margin-top:6px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:6px 9px;font-size:12px">' +
+      filesHtml +
+      '<label style="font-size:11px;color:var(--muted);display:block;margin-top:12px">Constraints (one per line)</label>' +
+      '<textarea id="setConstraints" rows="4" placeholder="Do not touch the billing module&#10;Keep the IPC contract stable" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:7px 9px;font-size:12px">' + esc(S.settings.constraints) + '</textarea>' +
+      '<div class="actions" style="display:flex;gap:8px;margin-top:12px"><button class="btn dark" id="setSave">Save settings</button></div>' +
+      '<div class="section-h">About modes</div>' +
+      '<div class="meta-line"><b>Plan mode</b> — agent plans, you review &amp; edit, then it builds.</div>' +
+      '<div class="meta-line"><b>Build mode</b> — plans and builds without pausing.</div>' +
+      '<div class="meta-line"><b>Chat mode</b> — direct answer, no tools.</div>' +
+      '<div class="meta-line">Parallel tool calls: the agent may run up to 4 independent tools concurrently.</div>';
+    $('setScopePick').addEventListener('change', function () {
+      var v = $('setScopePick').value.trim();
+      if (!v) return;
+      var cur = $('setScope').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+      if (cur.indexOf(v) < 0) cur.push(v);
+      $('setScope').value = cur.join('\n');
+      $('setScopePick').value = '';
+    });
+    $('setSave').onclick = function () {
+      S.settings.scope = $('setScope').value;
+      S.settings.constraints = $('setConstraints').value;
+      $('setSave').textContent = 'Saved ✓';
+      setTimeout(function () { var b = $('setSave'); if (b) b.textContent = 'Save settings'; }, 1200);
+    };
+  }
+
   function renderSide(runId) {
     var sess = S.sessions[runId];
     var body = $('sideBody');
     if (!body || !sess) return;
     if (sess.side === 'context') { renderContext(runId); return; }
+    if (sess.side === 'settings') { renderSettings(runId); return; }
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
@@ -654,6 +843,7 @@ export const UI_HTML = String.raw`<!doctype html>
       $('projChip').innerHTML = '<b>' + esc(p.name) + '</b> ' + esc(p.branch || '· no git');
     }).catch(function () { $('projChip').textContent = 'no project'; });
     api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') renderHome(); }).catch(function () {});
+    api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     api('/api/runs').then(function (sessions) {
       sessions.slice(0, 6).forEach(function (s) { ensureRunTab(s.runId, s.goal.slice(0, 40), s.status); });
       renderTabs();

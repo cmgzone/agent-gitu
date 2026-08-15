@@ -30,7 +30,7 @@ export class TaskLedger {
     repoRoot: string;
     goal: string;
     project: ProjectLock;
-    mode: 'fast' | 'standard';
+    mode: 'fast' | 'standard' | 'chat';
     budgets?: Partial<Budgets>;
   }): TaskLedger {
     const taskId = shortId('hermes-task');

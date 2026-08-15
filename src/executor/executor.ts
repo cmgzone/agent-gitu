@@ -123,6 +123,10 @@ export class Executor {
     for (const f of result.filesTouched ?? []) {
       this.ledger.trackFile(f);
     }
+    if (result.ok && result.linesAdded) {
+      const file = String(req.params['path'] ?? '');
+      this.emit(`lines    ${file} +${result.linesAdded} lines`);
+    }
 
     const record = this.ledger.recordAction({
       stepId,

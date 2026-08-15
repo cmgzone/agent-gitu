@@ -2,9 +2,22 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import type { MemoryStore } from '../memory/memory-store.js';
 
-export function buildSystemPrompt(guard: ProjectGuard, memory: MemoryStore): string {
+export function buildSystemPrompt(
+  guard: ProjectGuard,
+  memory: MemoryStore,
+  opts: { scopeFiles?: string[]; extraConstraints?: string[] } = {},
+): string {
   const lock = guard.lock;
+  const scopeSection =
+    opts.scopeFiles && opts.scopeFiles.length > 0
+      ? `\nUSER-SELECTED SCOPE (the user chose these files to work on — prefer them, avoid everything else):\n${opts.scopeFiles.map((f) => `  - ${f}`).join('\n')}\n`
+      : '';
+  const constraintSection =
+    opts.extraConstraints && opts.extraConstraints.length > 0
+      ? `\nUSER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}\n`
+      : '';
   return `You are Hermes, an autonomous software engineering agent operating inside a LOCKED project boundary.
+${scopeSection}${constraintSection}
 
 PROJECT LOCK (do not violate):
   name: ${lock.name}
@@ -53,6 +66,12 @@ Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
 {"thought":"...","action":{"type":"complete","summary":"...","risks":["..."],"followUps":["..."]}}
 {"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried"}}
+
+Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
+{"thought":"...","action":{"type":"ask_user","questions":[{"question":"...","header":"short label","options":["option A","option B"]}]}}
+
+Parallel independent work (only for tools that do not depend on each other, max 4):
+{"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
 
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.

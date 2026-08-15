@@ -25,6 +25,16 @@ export interface PendingPlanReview {
   requestedAt: string;
 }
 
+export interface PendingQuestions {
+  id: string;
+  questions: { question: string; header?: string; options: string[] }[];
+  requestedAt: string;
+}
+
+interface QuestionsWaiter extends PendingQuestions {
+  resolve: (answer: string) => void;
+}
+
 interface PlanReviewWaiter extends PendingPlanReview {
   resolve: (decision: { approved: boolean; note?: string; criteria?: string[]; steps?: { description: string; verification: string }[] }) => void;
 }
@@ -44,6 +54,7 @@ export interface RunSessionView {
   model?: string;
   pendingApprovals: PendingApproval[];
   pendingPlanReview?: PendingPlanReview;
+  pendingQuestions?: PendingQuestions;
   report?: CompletionReport;
   error?: string;
 }
@@ -61,6 +72,7 @@ interface RunSession {
   subscribers: Set<(ev: { i: number; t: string; text: string }) => void>;
   approvals: Map<string, ApprovalWaiter>;
   planReview?: PlanReviewWaiter;
+  questions?: QuestionsWaiter;
   report?: CompletionReport;
   error?: string;
 }
@@ -141,6 +153,9 @@ export class HermesServer {
       pendingPlanReview: s.planReview
         ? { id: s.planReview.id, criteria: s.planReview.criteria, steps: s.planReview.steps, requestedAt: s.planReview.requestedAt }
         : undefined,
+      pendingQuestions: s.questions
+        ? { id: s.questions.id, questions: s.questions.questions, requestedAt: s.questions.requestedAt }
+        : undefined,
       report: s.report,
       error: s.error,
     };
@@ -194,6 +209,45 @@ export class HermesServer {
       return;
     }
 
+    if (method === 'GET' && path === '/api/files') {
+      try {
+        const guard = ProjectGuard.detect(this.config.cwd);
+        const { readdirSync, statSync } = await import('node:fs');
+        const files: string[] = [];
+        const walk = (dir: string, depth: number): void => {
+          if (depth > 5 || files.length >= 300) return;
+          let entries: string[];
+          try {
+            entries = readdirSync(dir);
+          } catch {
+            return;
+          }
+          for (const name of entries.sort()) {
+            if (files.length >= 300) return;
+            if (guard.lock.ignorePaths.includes(name) || name.startsWith('.')) continue;
+            const full = `${dir}\\${name}`;
+            let st;
+            try {
+              st = statSync(full);
+            } catch {
+              continue;
+            }
+            const rel = guard.toRelative(full);
+            if (st.isDirectory()) {
+              walk(full, depth + 1);
+            } else {
+              files.push(rel);
+            }
+          }
+        };
+        walk(guard.lock.repoRoot, 0);
+        this.sendJson(res, 200, { files });
+      } catch {
+        this.sendJson(res, 200, { files: [] });
+      }
+      return;
+    }
+
     if (method === 'GET' && path === '/api/tasks') {
       try {
         const guard = ProjectGuard.detect(this.config.cwd);
@@ -238,9 +292,11 @@ export class HermesServer {
         return;
       }
       const criteria = Array.isArray(body['criteria']) ? (body['criteria'] as unknown[]).map(String).filter(Boolean) : undefined;
+      const scope = Array.isArray(body['scope']) ? (body['scope'] as unknown[]).map(String).filter(Boolean) : undefined;
+      const constraints = Array.isArray(body['constraints']) ? (body['constraints'] as unknown[]).map(String).filter(Boolean) : undefined;
       const provider = typeof body['provider'] === 'string' ? body['provider'] : undefined;
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
-      const mode = body['mode'] === 'fast' ? 'fast' : 'standard';
+      const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : 'standard';
       const review = body['review'] !== false;
       const maxActions = typeof body['maxActions'] === 'number' && Number.isFinite(body['maxActions']) ? body['maxActions'] : undefined;
 
@@ -273,7 +329,7 @@ export class HermesServer {
       };
       this.sessions.set(session.runId, session);
       this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review });
+      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints });
       return;
     }
 
@@ -310,6 +366,24 @@ export class HermesServer {
         clearInterval(heartbeat);
         session.subscribers.delete(send);
       });
+      return;
+    }
+
+    const answersMatch = path.match(/^\/api\/answers\/([\w-]+)$/);
+    if (method === 'POST' && answersMatch) {
+      const body = await this.readBody(req);
+      for (const session of this.sessions.values()) {
+        if (session.questions && session.questions.id === answersMatch[1]) {
+          const waiter = session.questions;
+          session.questions = undefined;
+          const answer = typeof body['answer'] === 'string' ? body['answer'] : '';
+          this.pushEvent(session, 'ask-user answered by user');
+          waiter.resolve(answer);
+          this.sendJson(res, 200, { ok: true });
+          return;
+        }
+      }
+      this.sendJson(res, 404, { error: 'question not found or already answered' });
       return;
     }
 
@@ -368,14 +442,37 @@ export class HermesServer {
   private async executeRun(
     session: RunSession,
     llm: LlmClient,
-    opts: { goal: string; criteria?: string[]; mode: 'fast' | 'standard'; maxActions?: number; review?: boolean },
+    opts: {
+      goal: string;
+      criteria?: string[];
+      mode: 'fast' | 'standard' | 'chat';
+      maxActions?: number;
+      review?: boolean;
+      scope?: string[];
+      constraints?: string[];
+    },
   ): Promise<void> {
     const hermes = new Hermes({
       cwd: this.config.cwd,
       llm,
       mode: opts.mode,
       criteria: opts.criteria,
+      scopeFiles: opts.scope,
+      extraConstraints: opts.constraints,
       budgets: opts.maxActions ? { maxActions: opts.maxActions } : undefined,
+      askUserHandler: (questions) =>
+        new Promise<string>((resolve) => {
+          const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };
+          session.questions = waiter;
+          this.pushEvent(session, `ask-user waiting for your answers`);
+          setTimeout(() => {
+            if (session.questions === waiter) {
+              session.questions = undefined;
+              this.pushEvent(session, 'ask-user timed out — agent will assume defaults');
+              resolve('(no answer — proceed with reasonable defaults)');
+            }
+          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+        }),
       requirePlanReview: opts.review ?? true,
       planReviewHandler: (input) =>
         new Promise((resolve) => {

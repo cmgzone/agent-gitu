@@ -210,6 +210,85 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.status).toBe('blocked');
   }, 30000);
 
+  it('chat mode answers directly without tools', async () => {
+    const dir = makeProject('chat');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([() => 'Hermes can plan, build and verify your work.']);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'chat', onEvent: (e) => events.push(e) });
+    const { ledger, report } = await hermes.run('what can you do?');
+
+    expect(ledger.data.status).toBe('completed');
+    expect(report.summary).toContain('Hermes can plan');
+    expect(events.some((e) => e.startsWith('tdelta '))).toBe(true);
+  }, 30000);
+
+  it('asks the user clarifying questions and uses the answers', async () => {
+    const dir = makeProject('questions');
+    let asked = false;
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'ask_user', questions: [{ question: 'Which style?', header: 'Style', options: ['modern', 'classic'] }] } }),
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'y' }] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop' } }),
+    ]);
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      askUserHandler: async (questions) => {
+        asked = true;
+        expect(questions[0]!.options).toContain('modern');
+        return 'Which style? → modern';
+      },
+    });
+    await hermes.run('build something');
+    expect(asked).toBe(true);
+  }, 30000);
+
+  it('executes parallel tool calls concurrently and records evidence', async () => {
+    const dir = makeProject('parallel');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['c'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 's', verification: 'v' }] } }),
+      () => JSON.stringify({
+        action: {
+          type: 'parallel',
+          calls: [
+            { tool: 'run_command', params: { command: 'node --version' }, reason: 'a', expected: 'ok' },
+            { tool: 'run_command', params: { command: 'node -e "1"' }, reason: 'b', expected: 'ok' },
+          ],
+        },
+      }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop' } }),
+    ]);
+    const events: string[] = [];
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    const { ledger } = await hermes.run('parallel work');
+
+    expect(events.some((e) => e.startsWith('parallel '))).toBe(true);
+    expect(ledger.data.evidence.length).toBeGreaterThanOrEqual(2);
+  }, 30000);
+
+  it('emits live line counts when writing files', async () => {
+    const dir = makeProject('lines');
+    const content = 'line1\nline2\nline3\nline4\n';
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['c'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 's', verification: 'v' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'write_file', params: { path: 'src/big.ts', content }, reason: 'create', expected: 'written' },
+      }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop' } }),
+    ]);
+    const events: string[] = [];
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    await hermes.run('write a big file');
+
+    const linesEvent = events.find((e) => e.startsWith('lines '));
+    expect(linesEvent).toBeTruthy();
+    expect(linesEvent).toContain('+5');
+  }, 30000);
+
   it('denies dangerous commands that are not approved', async () => {
     const dir = makeProject('danger');
     const llm = new ScriptedMockLlm([

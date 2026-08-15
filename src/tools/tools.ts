@@ -50,7 +50,12 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
   try {
     mkdirSync(path.dirname(abs), { recursive: true });
     writeFileSync(abs, content, 'utf8');
-    return { ok: true, output: `Wrote ${content.length} chars to ${rel}`, filesTouched: [ctx.guard.toRelative(abs)] };
+    return {
+      ok: true,
+      output: `Wrote ${content.length} chars to ${rel}`,
+      filesTouched: [ctx.guard.toRelative(abs)],
+      linesAdded: content.split('\n').length,
+    };
   } catch (err) {
     return fail(`write_file failed: ${(err as Error).message}`);
   }
@@ -74,7 +79,13 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
     if (count > 1) return fail(`apply_edit: oldString matches ${count} locations in ${rel}; provide more context`);
     const updated = content.replace(oldStr, newStr);
     writeFileSync(abs, updated, 'utf8');
-    return { ok: true, output: `Edited ${rel}`, filesTouched: [ctx.guard.toRelative(abs)] };
+    const delta = newStr.split('\n').length - oldStr.split('\n').length;
+    return {
+      ok: true,
+      output: `Edited ${rel}`,
+      filesTouched: [ctx.guard.toRelative(abs)],
+      linesAdded: Math.max(newStr.split('\n').length, delta),
+    };
   } catch (err) {
     return fail(`apply_edit failed: ${(err as Error).message}`);
   }

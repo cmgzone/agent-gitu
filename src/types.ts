@@ -154,7 +154,7 @@ export interface TaskLedgerData {
   taskId: string;
   goal: string;
   status: TaskStatus;
-  mode: 'fast' | 'standard';
+  mode: 'fast' | 'standard' | 'chat';
   project: ProjectLock;
   acceptanceCriteria: AcceptanceCriterion[];
   constraints: string[];
@@ -184,4 +184,5 @@ export interface ToolResult {
   exitCode?: number;
   errorSignature?: string;
   filesTouched?: string[];
+  linesAdded?: number;
 }

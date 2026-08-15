@@ -16,15 +16,26 @@ import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 export interface HermesConfig {
   cwd: string;
   llm: LlmClient;
-  mode?: 'fast' | 'standard';
+  mode?: 'fast' | 'standard' | 'chat';
   autoApprove?: boolean;
   approvalHandler?: ApprovalHandler;
   budgets?: Partial<Budgets>;
   criteria?: string[];
   requirePlanReview?: boolean;
   planReviewHandler?: PlanReviewHandler;
+  askUserHandler?: AskUserHandler;
+  scopeFiles?: string[];
+  extraConstraints?: string[];
   onEvent?: (event: string) => void;
 }
+
+export interface AskUserQuestion {
+  question: string;
+  header?: string;
+  options: string[];
+}
+
+export type AskUserHandler = (questions: AskUserQuestion[]) => Promise<string>;
 
 export interface PlanReviewInput {
   criteria: string[];
@@ -52,7 +63,12 @@ type ParsedAction =
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
   | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
   | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[] }
-  | { type: 'request_block'; reason: string };
+  | { type: 'request_block'; reason: string }
+  | { type: 'ask_user'; questions: AskUserQuestion[] }
+  | {
+      type: 'parallel';
+      calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
+    };
 
 function parseAction(raw: unknown): ParsedAction | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -100,6 +116,33 @@ function parseAction(raw: unknown): ParsedAction | undefined {
     case 'request_block':
       if (typeof action['reason'] !== 'string') return undefined;
       return { type, reason: action['reason'] };
+    case 'ask_user': {
+      const questions = action['questions'];
+      if (!Array.isArray(questions) || questions.length === 0) return undefined;
+      const parsed = (questions as Record<string, unknown>[])
+        .map((q) => ({
+          question: String(q['question'] ?? ''),
+          header: typeof q['header'] === 'string' ? q['header'] : undefined,
+          options: Array.isArray(q['options']) ? (q['options'] as unknown[]).map(String).slice(0, 6) : [],
+        }))
+        .filter((q) => q.question);
+      if (parsed.length === 0) return undefined;
+      return { type, questions: parsed.slice(0, 4) };
+    }
+    case 'parallel': {
+      const calls = action['calls'];
+      if (!Array.isArray(calls)) return undefined;
+      const parsedCalls = (calls as Record<string, unknown>[])
+        .map((c) => ({
+          tool: String(c['tool'] ?? ''),
+          params: (c['params'] && typeof c['params'] === 'object' ? c['params'] : {}) as Record<string, unknown>,
+          reason: String(c['reason'] ?? ''),
+          expected: String(c['expected'] ?? ''),
+        }))
+        .filter((c) => c.tool);
+      if (parsedCalls.length < 2) return undefined;
+      return { type, calls: parsedCalls.slice(0, 4) };
+    }
     default:
       return undefined;
   }
@@ -144,6 +187,9 @@ export class Hermes {
       mode: this.config.mode ?? 'standard',
       budgets: this.config.budgets,
     });
+    if (this.config.extraConstraints && this.config.extraConstraints.length > 0) {
+      ledger.data.constraints = [...ledger.data.constraints, ...this.config.extraConstraints];
+    }
     this.emit(`ledger   created: ${ledger.data.taskId}`);
 
     const checkpoints = new CheckpointManager(guard);
@@ -170,8 +216,35 @@ export class Hermes {
       this.emit(`context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected`);
     }
 
-    const messages: LlmMessage[] = [{ role: 'system', content: buildSystemPrompt(guard, memory) }];
+    const messages: LlmMessage[] = [
+      {
+        role: 'system',
+        content: buildSystemPrompt(guard, memory, {
+          scopeFiles: this.config.scopeFiles,
+          extraConstraints: this.config.extraConstraints,
+        }),
+      },
+    ];
     if (contextNote) messages.push({ role: 'user', content: contextNote });
+
+    if (ledger.data.mode === 'chat') {
+      ledger.setStatus('executing');
+      this.emit('think  composing answer');
+      messages.push({ role: 'user', content: `User request (chat mode — answer directly and helpfully, no tools): ${goal}` });
+      const reply = await llm.completeStream(messages, {}, (d) => this.emit(`tdelta ${d}`));
+      if (reply.trim()) this.emit(`say ${reply.trim()}`);
+      ledger.setStatus('completed');
+      const report = reporter.build(ledger, 'complete', {
+        summary: reply.trim().slice(0, 600) || 'Answered.',
+        risks: [],
+        followUps: [],
+      });
+      ledger.data.report = report;
+      ledger.save();
+      this.emit('done     completed — chat answer delivered');
+      return { ledger, report };
+    }
+
     ledger.setStatus('planning');
 
     const maxTurns = ledger.data.budgets.maxActions + 12;
@@ -376,6 +449,43 @@ export class Hermes {
             followUps: action.followUps ?? [],
           };
           exitReason = 'complete';
+          break;
+        }
+        case 'ask_user': {
+          if (this.config.askUserHandler) {
+            this.emit(`ask-user ${action.questions.length} question(s) for you`);
+            const answer = await this.config.askUserHandler(action.questions);
+            this.emit('ask-user answered');
+            observe(`User answered your clarifying questions:\n${answer}\nUse these answers to set criteria and plan.`);
+          } else {
+            observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
+          }
+          break;
+        }
+        case 'parallel': {
+          this.emit(`parallel ${action.calls.length} concurrent tool calls`);
+          const outcomes = await Promise.all(
+            action.calls.map((c) =>
+              executor.execute({ tool: c.tool, params: c.params, reason: c.reason, expected: c.expected }),
+            ),
+          );
+          const parts = outcomes.map((o, i) => {
+            if (o.record.tool === 'run_command') {
+              const kind = classifyEvidenceKind(String(action.calls[i]?.params['command'] ?? ''));
+              const ev = evidence.record(ledger.data, {
+                kind,
+                label: o.record.paramsSummary,
+                command: String(action.calls[i]?.params['command'] ?? ''),
+                exitCode: o.result.exitCode,
+                passed: o.result.ok,
+                output: o.result.output,
+              });
+              ledger.save();
+              this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+            }
+            return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}`;
+          });
+          observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
           break;
         }
         case 'request_block': {

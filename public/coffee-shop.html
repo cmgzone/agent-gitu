@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Daily Grind — Coffee Shop</title>
+  <style>
+    :root {
+      --espresso: #3b2a20;
+      --mocha: #5c4033;
+      --caramel: #c68b59;
+      --cream: #f5efe6;
+      --foam: #fffdf8;
+      --accent: #a0522d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      color: var(--espresso);
+      background: var(--foam);
+      line-height: 1.6;
+    }
+    header {
+      background: linear-gradient(135deg, var(--espresso), var(--mocha));
+      color: var(--cream);
+      text-align: center;
+      padding: 4.5rem 1.5rem 3.5rem;
+    }
+    header h1 {
+      font-size: 2.8rem;
+      letter-spacing: 2px;
+      margin-bottom: 0.5rem;
+    }
+    header p.tagline {
+      font-size: 1.25rem;
+      color: var(--caramel);
+      font-style: italic;
+    }
+    nav {
+      background: var(--mocha);
+      text-align: center;
+      padding: 0.75rem;
+    }
+    nav a {
+      color: var(--cream);
+      text-decoration: none;
+      margin: 0 1rem;
+      font-size: 1rem;
+    }
+    nav a:hover { color: var(--caramel); }
+    main { max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem; }
+    section { margin-bottom: 3rem; }
+    section h2 {
+      font-size: 2rem;
+      border-bottom: 3px solid var(--caramel);
+      padding-bottom: 0.4rem;
+      margin-bottom: 1.2rem;
+    }
+    .menu-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.2rem;
+    }
+    .menu-item {
+      background: var(--cream);
+      border: 1px solid var(--caramel);
+      border-radius: 8px;
+      padding: 1rem 1.2rem;
+    }
+    .menu-item h3 {
+      font-size: 1.15rem;
+      margin-bottom: 0.3rem;
+    }
+    .menu-item .price {
+      color: var(--accent);
+      font-weight: bold;
+      float: right;
+    }
+    .menu-item p { font-size: 0.95rem; color: var(--mocha); }
+    .hours-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 0.8rem;
+    }
+    .hours-table td {
+      padding: 0.45rem 0.6rem;
+      border-bottom: 1px solid var(--caramel);
+    }
+    .hours-table td:last-child { text-align: right; }
+    address {
+      font-style: normal;
+      margin-top: 0.8rem;
+      color: var(--mocha);
+    }
+    .contact-list { list-style: none; margin-top: 0.8rem; }
+    .contact-list li { margin-bottom: 0.5rem; }
+    .cta {
+      display: inline-block;
+      margin-top: 1rem;
+      background: var(--accent);
+      color: var(--foam);
+      padding: 0.7rem 1.6rem;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 1.05rem;
+    }
+    .cta:hover { background: var(--mocha); }
+    footer {
+      background: var(--espresso);
+      color: var(--cream);
+      text-align: center;
+      padding: 1.5rem;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header id="hero">
+    <h1>The Daily Grind</h1>
+    <p class="tagline">Small-batch coffee, baked fresh daily, brewed with care.</p>
+    <a class="cta" href="#menu">Explore Our Menu</a>
+  </header>
+
+  <nav>
+    <a href="#hero">Home</a>
+    <a href="#menu">Menu</a>
+    <a href="#about">About</a>
+    <a href="#location">Location &amp; Hours</a>
+    <a href="#contact">Contact</a>
+  </nav>
+
+  <main>
+    <section id="menu">
+      <h2>Menu</h2>
+      <div class="menu-grid">
+        <div class="menu-item">
+          <h3>Espresso <span class="price">$3.00</span></h3>
+          <p>A rich double shot pulled from our signature house blend.</p>
+        </div>
+        <div class="menu-item">
+          <h3>Cappuccino <span class="price">$4.50</span></h3>
+          <p>Velvety steamed milk over espresso, finished with silky foam.</p>
+        </div>
+        <div class="menu-item">
+          <h3>Caramel Latte <span class="price">$5.25</span></h3>
+          <p>Smooth espresso, steamed milk, and house-made caramel sauce.</p>
+        </div>
+        <div class="menu-item">
+          <h3>Cold Brew <span class="price">$4.75</span></h3>
+          <p>Steeped for 18 hours, served over ice. Bold yet smooth.</p>
+        </div>
+        <div class="menu-item">
+          <h3>Butter Croissant <span class="price">$3.75</span></h3>
+          <p>Flaky, golden, and baked in-house every morning.</p>
+        </div>
+        <div class="menu-item">
+          <h3>Blueberry Muffin <span class="price">$3.50</span></h3>
+          <p>Bursting with wild blueberries and a cinnamon-sugar top.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="about">
+      <h2>About Us</h2>
+      <p>
+        The Daily Grind started as a tiny cart with one espresso machine and a big dream:
+        bring honest, expertly roasted coffee to the neighborhood. Today we source beans
+        directly from family farms in Colombia and Ethiopia, roast them in small batches
+        right here in the shop, and brew every cup to order.
+      </p>
+      <p>
+        Whether you're grabbing a quick espresso on the way to work or settling in with
+        a latte and a book, our baristas are here to make your day a little warmer.
+      </p>
+    </section>
+
+    <section id="location">
+      <h2>Location &amp; Hours</h2>
+      <address>
+        42 Roast Street, Bean District<br />
+        Corner of Roast Street &amp; Crema Avenue
+      </address>
+      <table class="hours-table">
+        <tr><td>Monday – Friday</td><td>6:30 AM – 7:00 PM</td></tr>
+        <tr><td>Saturday</td><td>7:00 AM – 8:00 PM</td></tr>
+        <tr><td>Sunday</td><td>8:00 AM – 5:00 PM</td></tr>
+      </table>
+    </section>
+
+    <section id="contact">
+      <h2>Contact</h2>
+      <ul class="contact-list">
+        <li>Phone: (555) 012-3456</li>
+        <li>Email: hello@dailygrind.example</li>
+        <li>Catering &amp; events: events@dailygrind.example</li>
+      </ul>
+      <p>Have a question or want to book our space for an event? Drop us a line — we'd love to hear from you.</p>
+    </section>
+  </main>
+
+  <footer>
+    <p>&copy; 2026 The Daily Grind Coffee Shop. Brewed with love.</p>
+  </footer>
+</body>
+</html>

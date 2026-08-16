@@ -9,11 +9,12 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import type { LlmClient } from '../llm/llm.js';
 import { PROVIDERS, ProviderError, fetchLiveModels, providerKey, resolveLlm } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
+import { SessionStore } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import type { CompletionReport } from '../types.js';
-import { nowIso, readJson, shortId, writeJson } from '../util.js';
+import { nowIso, shortId } from '../util.js';
 import { UI_HTML } from './ui.js';
 
 export interface PendingApproval {
@@ -103,6 +104,12 @@ export class HermesServer {
   private readonly sessions = new Map<string, RunSession>();
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
+  private store?: SessionStore;
+
+  private db(): SessionStore {
+    if (!this.store) this.store = new SessionStore();
+    return this.store;
+  }
 
   constructor(config: HermesServerConfig) {
     this.config = config;
@@ -143,37 +150,23 @@ export class HermesServer {
     status: string;
     events?: { i: number; t: string; text: string }[];
   }[] {
-    const root = this.projectRoot();
-    if (!root) return [];
-    const data = readJson<unknown>(`${root}/.hermes/sessions.json`);
-    return Array.isArray(data)
-      ? (data as {
-          runId: string;
-          taskId?: string;
-          goal: string;
-          project?: string;
-          projectPath?: string;
-          startedAt: string;
-          status: string;
-          events?: { i: number; t: string; text: string }[];
-        }[])
-      : [];
+    return this.db()
+      .listSessions()
+      .map((s) => ({ ...s, events: this.db().eventsFor(s.runId) }));
   }
 
   private saveRegistry(): void {
-    const root = this.projectRoot();
-    if (!root) return;
-    const data = [...this.sessions.values()].map((s) => ({
-      runId: s.runId,
-      taskId: s.taskId,
-      goal: s.goal,
-      project: s.project,
-      projectPath: s.projectPath,
-      startedAt: s.startedAt,
-      status: s.status,
-      events: s.events.slice(-400),
-    }));
-    writeJson(`${root}/.hermes/sessions.json`, data);
+    for (const s of this.sessions.values()) {
+      this.db().upsertSession({
+        runId: s.runId,
+        taskId: s.taskId,
+        goal: s.goal,
+        project: s.project,
+        projectPath: s.projectPath,
+        startedAt: s.startedAt,
+        status: s.status,
+      });
+    }
   }
 
   async start(): Promise<number> {
@@ -318,6 +311,22 @@ export class HermesServer {
   private pushEvent(s: RunSession, text: string): void {
     const ev = { i: s.events.length, t: nowIso(), text };
     s.events.push(ev);
+    if (!text.startsWith('tdelta')) {
+      try {
+        this.db().addEvent(s.runId, ev);
+        this.db().upsertSession({
+          runId: s.runId,
+          taskId: s.taskId,
+          goal: s.goal,
+          project: s.project,
+          projectPath: s.projectPath,
+          startedAt: s.startedAt,
+          status: s.status,
+        });
+      } catch {
+        /* persistence must never break the run */
+      }
+    }
     for (const send of s.subscribers) send(ev);
   }
 

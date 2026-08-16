@@ -6,7 +6,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <title>Hermes</title>
 <style>
   :root {
-    --bg: #f4f4f2;
+    --bg: #f7f7f5;
     --card: #ffffff;
     --border: #e6e6e2;
     --border2: #d8d8d3;
@@ -19,76 +19,78 @@ export const UI_HTML = String.raw`<!doctype html>
     --amber: #b45309;
     --amber-bg: #fffbeb;
     --blue: #2563eb;
+    --accent: #7c6cf0;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 13.5px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif;
-    display: flex; flex-direction: column;
-  }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.6 -apple-system, "Segoe UI", system-ui, sans-serif; }
   button { font: inherit; cursor: pointer; }
   select, textarea, input { font: inherit; }
+  [hidden] { display: none !important; }
 
-  .topbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex: none; }
-  .icon-btn { background: none; border: 0; color: var(--muted); border-radius: 7px; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; font-size: 15px; }
-  .icon-btn:hover { background: #ebebe7; color: var(--text); }
-  .logo { font-weight: 700; letter-spacing: 3px; font-size: 12px; color: var(--dark); margin-right: 8px; }
-  .tabs { display: flex; gap: 4px; align-items: center; overflow-x: auto; max-width: 60%; }
-  .tab { display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 8px; color: var(--muted); font-size: 12.5px; white-space: nowrap; border: 1px solid transparent; background: none; max-width: 220px; }
-  .tab .label { overflow: hidden; text-overflow: ellipsis; }
-  .tab.active { background: #e9e9e5; color: var(--text); border-color: var(--border); }
-  .tab .x { color: var(--faint); font-size: 12px; }
-  .tab .x:hover { color: var(--red); }
-  .tab .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
-  .tab .dot.running, .tab .dot.review { background: var(--blue); animation: pulse 1.2s infinite; }
-  .tab .dot.completed { background: var(--green); }
-  .tab .dot.blocked, .tab .dot.failed { background: var(--red); }
+  .shell { display: flex; height: 100%; }
+  .sb { width: 264px; flex: none; border-right: 1px solid var(--border); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+  .sb .head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px; }
+  .sb .head .name { font-weight: 700; letter-spacing: 2px; font-size: 14px; }
+  .sb .head .spacer { flex: 1; }
+  .sb .iconbtn { background: none; border: 0; color: var(--muted); width: 28px; height: 28px; border-radius: 7px; font-size: 15px; }
+  .sb .iconbtn:hover { background: #ebebe7; color: var(--text); }
+  .sb .scroll { flex: 1; overflow-y: auto; padding: 4px 10px 10px; }
+  .sb .newbtn { margin: 6px 4px 10px; display: flex; align-items: center; gap: 9px; border: 0; background: #ebebe7; border-radius: 9px; padding: 8px 11px; font-weight: 600; font-size: 13px; width: calc(100% - 8px); text-align: left; }
+  .sb .newbtn:hover { background: #e2e2dd; }
+  .sb .navitem { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
+  .sb .navitem:hover { background: #ebebe7; }
+  .sb .navitem .ico { width: 16px; text-align: center; color: var(--muted); }
+  .sb .sect { font-size: 11px; color: var(--muted); margin: 14px 10px 4px; }
+  .sb .proj { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12.5px; font-weight: 600; color: var(--text); border-radius: 8px; cursor: pointer; }
+  .sb .proj:hover { background: #ebebe7; }
+  .sb .chat { display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 26px; font-size: 12.5px; color: var(--muted); border-radius: 8px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
+  .sb .chat:hover { background: #ebebe7; color: var(--text); }
+  .sb .chat.active { background: #e5e3fb; color: var(--text); }
+  .sb .chat .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .sb .chat .dot.running { background: var(--blue); animation: pulse 1.2s infinite; }
+  .sb .chat .dot.completed { background: var(--green); }
+  .sb .chat .dot.blocked, .sb .chat .dot.failed { background: var(--red); }
+  .sb .foot { border-top: 1px solid var(--border); padding: 10px 12px; display: flex; gap: 8px; align-items: center; }
+  .sb .foot .chip { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   @keyframes pulse { 50% { opacity: .35; } }
-  .spacer { flex: 1; }
-  .proj-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; max-width: 340px; overflow: hidden; white-space: nowrap; }
-  .proj-chip b { color: var(--text); font-weight: 600; }
 
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .topbar { display: flex; align-items: center; gap: 10px; padding: 10px 20px; border-bottom: 1px solid var(--border); flex: none; }
+  .topbar .title { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar .spacer { flex: 1; }
   .view { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
-  .home { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; padding: 24px; overflow: auto; }
-  .wordmark { font-size: clamp(56px, 9vw, 108px); font-weight: 800; letter-spacing: .04em; color: rgba(30,30,26,.07); user-select: none; line-height: 1; margin-bottom: 6px; }
-  .composer { width: min(720px, 94vw); background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); padding: 6px 8px 8px; }
+  .home { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px; overflow: auto; }
+  .home h1 { font-size: 24px; font-weight: 600; margin: 0; }
+  .home h1 .u { border-bottom: 2px dotted var(--faint); }
+  .sugs { display: grid; grid-template-columns: repeat(4, 170px); gap: 12px; }
+  @media (max-width: 900px) { .sugs { grid-template-columns: repeat(2, 170px); } }
+  .sug { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--text); }
+  .sug:hover { border-color: var(--border2); box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+  .sug .ico { font-size: 15px; display: block; margin-bottom: 10px; }
+  .composer { width: min(760px, 94vw); background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); padding: 6px 8px 8px; }
   .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
   .composer textarea::placeholder { color: var(--faint); }
-  .composer-bar { display: flex; align-items: center; gap: 4px; padding: 2px 6px; }
+  .composer-bar { display: flex; align-items: center; gap: 4px; padding: 2px 6px; flex-wrap: wrap; }
   .pill { background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
   .pill:hover { background: #f0f0ec; color: var(--text); }
-  .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; }
+  .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; max-width: 220px; }
   .pill .caret { color: var(--faint); font-size: 10px; }
   .send { margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--dark); color: #fff; font-size: 14px; }
   .send:disabled { background: #c9c9c3; }
-  .home-meta { color: var(--muted); font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
-  .home-meta .sep { color: var(--faint); }
 
   .run { flex: 1; display: flex; min-height: 0; }
   .run-main { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
-  .run-head { padding: 14px 26px 6px; display: flex; align-items: center; gap: 10px; flex: none; }
-  .run-head .goal { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chip { font-size: 11px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--border2); color: var(--muted); }
-  .chip.ok { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
-  .chip.bad { color: var(--red); border-color: #fecaca; background: #fef2f2; }
-  .chip.info { color: var(--blue); border-color: #bfdbfe; background: #eff6ff; }
-  .chip.warn { color: var(--amber); border-color: #fde68a; background: var(--amber-bg); }
-
-  .progress { display: flex; align-items: center; gap: 12px; padding: 0 26px 8px; color: var(--muted); font-size: 11.5px; flex: none; }
+  .progress { display: flex; align-items: center; gap: 12px; padding: 6px 26px 6px; color: var(--muted); font-size: 11.5px; flex: none; }
   .progress .pbar { flex: 1; height: 4px; border-radius: 2px; background: #e7e7e2; overflow: hidden; }
   .progress .pbar span { display: block; height: 100%; width: 0; background: var(--dark); transition: width .5s ease; }
-
   .stream { flex: 1; overflow-y: auto; padding: 8px 26px 18px; }
-
   .thought { padding: 10px 2px; color: var(--text); white-space: pre-wrap; }
   .thought .caret { display: inline-block; width: 7px; height: 14px; background: var(--dark); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
-
   .meta-line { color: var(--muted); font-size: 12px; padding: 3px 2px; }
   .meta-line b { color: var(--text); font-weight: 600; }
-
   .tool { border: 1px solid var(--border); background: var(--card); border-radius: 10px; margin: 8px 0; overflow: hidden; }
   .tool .head { display: flex; align-items: center; gap: 9px; padding: 8px 12px; cursor: pointer; }
   .tool .head:hover { background: #fbfbf9; }
@@ -100,6 +102,13 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool details { border-top: 1px solid var(--border); }
   .tool summary { padding: 5px 12px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
   .tool pre { margin: 0; padding: 8px 12px 10px; font-family: var(--mono); font-size: 11.5px; color: #55554f; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
+  .tool .lines { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--green); background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px; padding: 1px 7px; flex: none; }
+
+  .chip { font-size: 11px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--border2); color: var(--muted); }
+  .chip.ok { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+  .chip.bad { color: var(--red); border-color: #fecaca; background: #fef2f2; }
+  .chip.info { color: var(--blue); border-color: #bfdbfe; background: #eff6ff; }
+  .chip.warn { color: var(--amber); border-color: #fde68a; background: var(--amber-bg); }
 
   .review-card, .approval { border: 1px solid #fde68a; background: var(--amber-bg); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   .review-card h3, .approval h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
@@ -112,10 +121,29 @@ export const UI_HTML = String.raw`<!doctype html>
   .btn.ghost { background: #fff; color: var(--text); border: 1px solid var(--border2); }
   .btn.red { background: #fff; color: var(--red); border: 1px solid #fecaca; }
   .approval pre { font-family: var(--mono); font-size: 11.5px; background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow-x: auto; margin: 6px 0 10px; }
+  .md-plan { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px; margin: 6px 0; }
+  .md-plan h4 { margin: 12px 0 6px; font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
+  .md-plan ol { margin: 0 0 12px; padding-left: 20px; }
+  .md-plan li { margin: 8px 0; font-size: 13px; }
+  .md-plan li .ver { display: block; color: var(--muted); font-size: 11.5px; }
+  .md-plan ul { margin: 0 0 12px; padding-left: 20px; font-size: 12.5px; }
 
-  .report-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
-  .report-card h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
-  .report-card pre { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; margin: 0; }
+  .qcard { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .qcard h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); }
+  .qcard .q { margin-bottom: 12px; }
+  .qcard .q .qt { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  .qcard .opts { display: flex; gap: 6px; flex-wrap: wrap; }
+  .qcard .opt { border: 1px solid var(--border2); background: #fff; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
+  .qcard .opt.sel { border-color: var(--blue); color: var(--blue); background: #eff6ff; }
+  .qcard .custom { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px; background: #fff; }
+
+  .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .summary-card h2 { margin: 0 0 4px; font-size: 15px; }
+  .summary-card .sec { margin-top: 12px; }
+  .summary-card .sec h4 { margin: 0 0 5px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+  .summary-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+  .summary-card li { margin: 2px 0; }
+  .file-chip { display: inline-block; font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; margin: 2px 4px 2px 0; background: #fafaf8; }
 
   @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -145,7 +173,6 @@ export const UI_HTML = String.raw`<!doctype html>
   .bar span { height: 100%; }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
   .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
-  .file-chip { display: inline-block; font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; margin: 2px 4px 2px 0; background: #fafaf8; }
   .raw { border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; overflow: hidden; }
   .raw .row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px; font-family: var(--mono); font-size: 11px; border-bottom: 1px solid var(--border); color: #55554f; }
   .raw .row:last-child { border-bottom: 0; }
@@ -154,58 +181,81 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: var(--bg); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
-  .drawer { position: fixed; top: 47px; left: 0; bottom: 0; width: 360px; background: var(--card); border-right: 1px solid var(--border); z-index: 20; transform: translateX(-100%); transition: transform .18s ease; overflow-y: auto; padding: 16px 18px; }
-  .drawer.open { transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,.12); }
-  .drawer h3 { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 18px 0 8px; }
-  .drawer h3:first-child { margin-top: 0; }
-  .drawer .item { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; margin-bottom: 6px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
-  .drawer .item .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-  .drawer .item .x { color: var(--faint); cursor: pointer; }
-  .drawer .item .x:hover { color: var(--red); }
-  .drawer input, .drawer textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 6px 9px; font-size: 12px; margin-bottom: 6px; }
-  .drawer .row { display: flex; gap: 6px; }
-  .drawer .meta { color: var(--muted); font-size: 11px; }
-  .tool .lines { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--green); background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px; padding: 1px 7px; flex: none; }
-  .qcard { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
-  .qcard h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); }
-  .qcard .q { margin-bottom: 12px; }
-  .qcard .q .qt { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-  .qcard .opts { display: flex; gap: 6px; flex-wrap: wrap; }
-  .qcard .opt { border: 1px solid var(--border2); background: #fff; border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
-  .qcard .opt.sel { border-color: var(--blue); color: var(--blue); background: #eff6ff; }
-  .qcard .custom { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px; background: #fff; }
-  .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
-  .summary-card h2 { margin: 0 0 4px; font-size: 15px; }
-  .summary-card .sec { margin-top: 12px; }
-  .summary-card .sec h4 { margin: 0 0 5px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
-  .summary-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
-  .summary-card li { margin: 2px 0; }
-  .md-plan { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px; margin: 6px 0; }
-  .md-plan h4 { margin: 12px 0 6px; font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
-  .md-plan ol { margin: 0 0 12px; padding-left: 20px; }
-  .md-plan li { margin: 8px 0; font-size: 13px; }
-  .md-plan li .ver { display: block; color: var(--muted); font-size: 11.5px; }
-  .md-plan ul { margin: 0 0 12px; padding-left: 20px; font-size: 12.5px; }
+
+  .settings { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: flex; }
+  .setnav { width: 264px; border-right: 1px solid var(--border); padding: 16px 10px; overflow-y: auto; }
+  .setnav .back { display: flex; gap: 8px; align-items: center; border: 0; background: none; color: var(--muted); font-size: 13px; padding: 6px 10px; border-radius: 8px; margin-bottom: 10px; }
+  .setnav .back:hover { background: #ebebe7; color: var(--text); }
+  .setnav .item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; color: var(--text); }
+  .setnav .item:hover { background: #ebebe7; }
+  .setnav .item.active { background: #e5e3fb; }
+  .setnav .sect { font-size: 11px; color: var(--muted); margin: 14px 10px 4px; }
+  .setbody { flex: 1; overflow-y: auto; padding: 34px 8vw; }
+  .setbody h1 { font-size: 22px; font-weight: 600; margin: 0 0 20px; }
+  .setbody h2 { font-size: 13px; font-weight: 600; margin: 26px 0 10px; }
+  .setcard { background: var(--card); border: 1px solid var(--border); border-radius: 14px; }
+  .setrow { display: flex; align-items: center; gap: 16px; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .setrow:last-child { border-bottom: 0; }
+  .setrow .grow { flex: 1; }
+  .setrow .t { font-weight: 600; font-size: 13px; }
+  .setrow .d { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .setrow select, .setrow input[type=text] { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 6px 10px; font-size: 12.5px; }
+  .toggle { width: 38px; height: 22px; border-radius: 999px; background: #d6d6d0; border: 0; position: relative; transition: background .15s; flex: none; }
+  .toggle.on { background: var(--blue); }
+  .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .toggle.on::after { left: 19px; }
+  .setlist { padding: 10px 18px; }
+  .setlist .row { display: flex; gap: 8px; align-items: center; padding: 6px 0; font-size: 12.5px; }
+  .setlist .row .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .setlist .x { color: var(--faint); cursor: pointer; border: 0; background: none; }
+  .setlist .x:hover { color: var(--red); }
+  .setlist input, .setlist textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 6px 9px; font-size: 12px; margin-bottom: 6px; }
+  .setlist .meta { color: var(--muted); font-size: 11px; }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
 <body>
-<div class="topbar">
-  <button class="icon-btn" id="menuBtn" title="menu">&#9776;</button>
-  <span class="logo">HERMES</span>
-  <nav class="tabs" id="tabs"></nav>
-  <button class="icon-btn" id="newTab" title="new session">+</button>
-  <span class="spacer"></span>
-  <span class="proj-chip" id="projChip">loading…</span>
+<div class="shell">
+  <aside class="sb">
+    <div class="head">
+      <span class="name">HERMES</span>
+      <span class="spacer"></span>
+      <button class="iconbtn" id="gearBtn" title="settings">&#9881;</button>
+    </div>
+    <div class="scroll" id="sbScroll"></div>
+    <div class="foot">
+      <span class="chip" id="projChip">…</span>
+    </div>
+  </aside>
+  <div class="main">
+    <div class="topbar" id="topbar"></div>
+    <div class="view" id="view"></div>
+  </div>
 </div>
-<div class="drawer" id="drawer"></div>
-<div class="view" id="view"></div>
+<div class="settings" id="settings" hidden>
+  <aside class="setnav" id="setnav"></aside>
+  <div class="setbody" id="setbody"></div>
+</div>
 <script>
 (function () {
-  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, settings: { scope: '', constraints: '' }, files: [], draft: '', sel: { wf: 'review', model: '', budget: '40', effort: 'high' }, projectPath: '' };
-  try { S.projectPath = localStorage.getItem('hermes.project') || ''; } catch (e) {}
-  function basename(p) { var parts = String(p).replace(/\\/g, '/').split('/'); return parts[parts.length - 1] || p; }
-
+  var S = {
+    active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
+    draft: '',
+    sel: { wf: 'review', model: '', budget: '40', effort: 'high' },
+    settings: { review: true, autoApprove: false, projectPath: '' },
+    setSection: 'general'
+  };
+  try {
+    var saved = JSON.parse(localStorage.getItem('hermes.settings') || 'null');
+    if (saved) {
+      if (saved.sel) for (var k in saved.sel) S.sel[k] = saved.sel[k];
+      if (saved.settings) for (var k2 in saved.settings) S.settings[k2] = saved.settings[k2];
+      S.draft = saved.draft || '';
+    }
+  } catch (e) {}
+  function persist() {
+    try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: S.draft })); } catch (e) {}
+  }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
   function api(path, opts) {
@@ -215,6 +265,109 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
   function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
+  function basename(p) { var parts = String(p).replace(/\\/g, '/').split('/'); return parts[parts.length - 1] || p; }
+  function chipFor(status) {
+    if (status === 'completed') return '<span class="chip ok">complete</span>';
+    if (status === 'blocked') return '<span class="chip bad">blocked</span>';
+    if (status === 'failed') return '<span class="chip bad">failed</span>';
+    if (status === 'review') return '<span class="chip warn">awaiting review</span>';
+    if (status === 'running') return '<span class="chip info">running</span>';
+    return '<span class="chip">' + esc(status || 'idle') + '</span>';
+  }
+
+  function renderSidebar() {
+    api('/api/runs').then(function (sessions) {
+      var byProj = {};
+      sessions.forEach(function (s) {
+        var p = s.project || basename(S.settings.projectPath || '') || 'project';
+        (byProj[p] = byProj[p] || []).push(s);
+      });
+      var html = '<button class="newbtn" id="sbNew">&#9998; New session</button>' +
+        '<button class="navitem" data-set="cron"><span class="ico">&#9200;</span>Scheduled</button>' +
+        '<button class="navitem" data-set="skills"><span class="ico">&#9889;</span>Skills</button>' +
+        '<button class="navitem" data-set="mcp"><span class="ico">&#128268;</span>MCP servers</button>' +
+        '<div class="sect">Projects</div>';
+      var names = Object.keys(byProj);
+      if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
+      names.forEach(function (p) {
+        html += '<div class="proj" data-projpick="' + esc(p) + '">&#128193; ' + esc(p) + '</div>';
+        byProj[p].slice(0, 8).forEach(function (s) {
+          html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '">' +
+            '<span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></button>';
+        });
+      });
+      $('sbScroll').innerHTML = html;
+      $('sbNew').onclick = function () { openHome(); };
+      $('sbScroll').querySelectorAll('[data-run]').forEach(function (el) {
+        el.onclick = function () { openRun(el.getAttribute('data-run')); };
+      });
+      $('sbScroll').querySelectorAll('[data-set]').forEach(function (el) {
+        el.onclick = function () { openSettings(el.getAttribute('data-set')); };
+      });
+      $('sbScroll').querySelectorAll('[data-projpick]').forEach(function (el) {
+        el.onclick = function () {
+          S.settings.projectPath = el.getAttribute('data-projpick');
+          persist();
+          updateProjChip();
+        };
+      });
+    }).catch(function () {});
+    api('/api/cron').then(function (d) { S.cronCount = (d.jobs || []).length; }).catch(function () {});
+  }
+
+  function updateProjChip() {
+    var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'no project');
+    $('projChip').textContent = ' ' + name;
+  }
+
+  function renderTopbar() {
+    var tb = $('topbar');
+    if (S.active === 'home') {
+      tb.innerHTML = '<span class="title">New session</span><span class="spacer"></span>';
+      return;
+    }
+    var sess = S.sessions[S.active];
+    var s = sess && sess.session;
+    tb.innerHTML = '<span class="title">' + esc(s ? s.goal : '') + '</span>' +
+      (s ? chipFor(s.status) : '') +
+      (s && s.taskId ? ' <span class="chip">' + esc(s.taskId) + '</span>' : '') +
+      '<span class="spacer"></span>' +
+      '<button class="btn red" id="stopBtn" style="' + (s && s.status === 'running' ? '' : 'display:none') + '">Stop</button>';
+    var stop = $('stopBtn');
+    if (stop) stop.onclick = function () { api('/api/runs/' + S.active + '/stop', { method: 'POST' }).catch(function (e) { alert(e.message); }); };
+  }
+
+  function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
+
+  function openHome() {
+    S.active = 'home';
+    stopStreams();
+    renderSidebar();
+    renderTopbar();
+    var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'this project');
+    $('view').innerHTML =
+      '<div class="home">' +
+      '<h1>What should we work on in <span class="u">' + esc(name) + '</span>?</h1>' +
+      '<div class="sugs">' +
+      '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:#2563eb">&#128269;</span>Explore and understand code</button>' +
+      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:#7c6cf0">&#128296;</span>Build a new feature, app, or tool</button>' +
+      '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:#16a34a">&#9989;</span>Review code and suggest changes</button>' +
+      '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:#dc2626">&#128295;</span>Fix issues and failures</button>' +
+      '</div>' +
+      '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
+      '<div class="composer-bar">' + controlsHtml(true) + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
+      '</div>';
+    var ta = $('goal');
+    ta.value = S.draft;
+    ta.addEventListener('input', function () { S.draft = ta.value; persist(); ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
+    ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
+    $('view').querySelectorAll('[data-sug]').forEach(function (el) {
+      el.onclick = function () { ta.value = el.getAttribute('data-sug'); S.draft = ta.value; persist(); ta.focus(); };
+    });
+    bindControls();
+    $('send').onclick = startRun;
+  }
+
   function modelOptionsHtml() {
     var out = '';
     S.models.forEach(function (p) {
@@ -236,6 +389,12 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!el) return;
     el.innerHTML = effortLevelsFor(pid).map(function (l) { return '<option value="' + l + '">' + l + '</option>'; }).join('');
   }
+  function controlsHtml(showBudget) {
+    return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
+      (showBudget ? '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' : '');
+  }
   function bindControls() {
     var wf = $('wf'), model = $('model'), effort = $('effort'), budget = $('budget');
     if (wf) wf.value = S.sel.wf;
@@ -243,73 +402,10 @@ export const UI_HTML = String.raw`<!doctype html>
     if (budget) budget.value = S.sel.budget;
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
-    if (wf) wf.onchange = function () { S.sel.wf = wf.value; };
-    if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); S.sel.effort = $('effort') ? $('effort').value : S.sel.effort; };
-    if (effort) effort.onchange = function () { S.sel.effort = effort.value; };
-    if (budget) budget.onchange = function () { S.sel.budget = budget.value; };
-  }
-  function controlsHtml(showBudget) {
-    return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
-      (showBudget ? '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' : '');
-  }
-  function chipFor(status) {
-    if (status === 'completed') return '<span class="chip ok">complete</span>';
-    if (status === 'blocked') return '<span class="chip bad">blocked</span>';
-    if (status === 'failed') return '<span class="chip bad">failed</span>';
-    if (status === 'review') return '<span class="chip warn">awaiting review</span>';
-    if (status === 'running') return '<span class="chip info">running</span>';
-    return '<span class="chip">' + esc(status || 'idle') + '</span>';
-  }
-
-  function renderTabs() {
-    var visible = S.tabs.filter(function (t) {
-      if (t.id === 'home') return true;
-      if (!S.projectPath) return true;
-      if (!t.project) return true;
-      return t.project === basename(S.projectPath);
-    });
-    $('tabs').innerHTML = visible.map(function (t) {
-      var dot = t.id === 'home' ? '' : '<span class="dot ' + esc(t.status || '') + '"></span>';
-      var x = t.id === 'home' ? '' : '<span class="x" data-x="' + esc(t.id) + '">&#10005;</span>';
-      return '<button class="tab ' + (S.active === t.id ? 'active' : '') + '" data-tab="' + esc(t.id) + '">' + dot + '<span class="label">' + esc(t.label) + '</span>' + x + '</button>';
-    }).join('');
-    $('tabs').onclick = function (e) {
-      var x = e.target.getAttribute && e.target.getAttribute('data-x');
-      if (x) { closeTab(x); return; }
-      var el = e.target.closest('[data-tab]');
-      if (el) openTab(el.getAttribute('data-tab'));
-    };
-  }
-  function openTab(id) { S.active = id; stopStreams(); renderTabs(); if (id === 'home') renderHome(); else renderRun(id); }
-  function closeTab(id) { S.tabs = S.tabs.filter(function (t) { return t.id !== id; }); delete S.sessions[id]; if (S.active === id) openTab('home'); else renderTabs(); }
-  function ensureRunTab(runId, label, status, project) {
-    var t = null;
-    for (var i = 0; i < S.tabs.length; i++) if (S.tabs[i].id === runId) t = S.tabs[i];
-    if (!t) { t = { id: runId, label: label, status: status, project: project }; S.tabs.push(t); }
-    if (status) t.status = status;
-    if (project) t.project = project;
-    return t;
-  }
-  function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
-
-  function renderHome() {
-    var git = S.project && S.project.branch ? S.project.branch : 'No Git';
-    var name = S.projectPath ? basename(S.projectPath) : (S.project ? S.project.name : 'no project');
-    $('view').innerHTML =
-      '<div class="home"><div class="wordmark">hermes</div>' +
-      '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
-      '<div class="composer-bar"><button class="icon-btn" title="attach">+</button>' +
-      controlsHtml(true) +
-      '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
-      '<div class="home-meta"><span>&#9632; <b>' + esc(name) + '</b></span><span class="sep">/</span><span>&#8645; ' + esc(git) + '</span></div></div>';
-    var ta = $('goal');
-    ta.value = S.draft;
-    ta.addEventListener('input', function () { S.draft = ta.value; ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
-    ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
-    bindControls();
-    $('send').onclick = startRun;
+    if (wf) wf.onchange = function () { S.sel.wf = wf.value; persist(); };
+    if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); persist(); };
+    if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
+    if (budget) budget.onchange = function () { S.sel.budget = budget.value; persist(); };
   }
 
   function startRun() {
@@ -321,38 +417,41 @@ export const UI_HTML = String.raw`<!doctype html>
       body: JSON.stringify({
         goal: goal, provider: mc[0], model: mc[1],
         mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-        review: S.sel.wf === 'review',
+        review: S.sel.wf === 'review' ? S.settings.review : false,
+        autoApprove: S.settings.autoApprove,
         effort: S.sel.effort,
-        projectPath: S.projectPath || undefined,
+        projectPath: S.settings.projectPath || undefined,
         maxActions: Number(S.sel.budget),
-        scope: S.settings.scope.split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
-        constraints: S.settings.constraints.split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
+        scope: (S.settings.scope || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
+        constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
       })
     }).then(function (r) {
-      S.draft = '';
-      ensureRunTab(r.runId, goal.slice(0, 40), 'running', basename(S.projectPath || ''));
-      openTab(r.runId);
+      S.draft = ''; persist();
+      openRun(r.runId);
+      renderSidebar();
     }).catch(function (e) { alert('Failed to start: ' + e.message); });
   }
 
-  function renderRun(runId) {
+  function openRun(runId) {
+    S.active = runId;
+    stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
     sess.nodes = {};
+    renderSidebar();
+    renderTopbar();
     $('view').innerHTML =
       '<div class="run"><div class="run-main">' +
-      '<div class="run-head"><span class="goal" id="rGoal"></span><span id="rChip"></span><span class="spacer"></span><button class="btn red" id="stopBtn" style="display:none">Stop</button></div>' +
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
-      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Hermes… Enter sends to this session while working, or starts a new one when done"></textarea>' +
+      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Hermes… Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="composer-bar">' + controlsHtml(false) + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
       '<aside class="run-side"><div class="side-tabs">' +
       '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
       '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>' +
-      '<button class="side-tab ' + (sess.side === 'settings' ? 'active' : '') + '" data-side="settings">Settings</button>' +
       '</div><div class="side-body" id="sideBody"></div></aside></div>';
     var tabs = document.querySelectorAll('.side-tab');
-    for (var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRun(runId); };
+    for (var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRunSide(runId); };
     $('follow').addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
       e.preventDefault();
@@ -371,21 +470,34 @@ export const UI_HTML = String.raw`<!doctype html>
           setWorking('Thinking…');
           if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
         })
-        .catch(function (er) { alert(er.message); });
+        .catch(function (er) {
+          var msg = String(er.message);
+          if (msg.indexOf('run not found') >= 0) {
+            var mc = (S.sel.model || '').split('::');
+            api('/api/runs', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                goal: g, provider: mc[0], model: mc[1],
+                mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+                review: S.sel.wf === 'review' ? S.settings.review : false,
+                autoApprove: S.settings.autoApprove,
+                effort: S.sel.effort,
+                projectPath: S.settings.projectPath || undefined
+              })
+            }).then(function (r) { openRun(r.runId); }).catch(function (e2) { alert(e2.message); });
+          } else alert(msg);
+        });
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
-    $('stopBtn').onclick = function () {
-      api('/api/runs/' + runId + '/stop', { method: 'POST' }).catch(function (er) { alert(er.message); });
-    };
     bindControls();
-    sess.events.forEach(function (ev) { appendEvent(runId, ev, true); });
+    sess.events.forEach(function (ev) { appendEvent(runId, ev); });
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
     w.className = 'working'; w.id = 'working';
     w.innerHTML = '<span class="spinner"></span><span class="shimmer"></span><span class="wtext" id="workingText">Connecting…</span>';
     $('stream').appendChild(w);
     setWorking('Thinking…');
-    renderSide(runId);
+    renderRunSide(runId);
     connect(runId);
     pollRun(runId);
     S.poll = setInterval(function () { pollRun(runId); }, 1500);
@@ -399,8 +511,16 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess) return;
       if (sess.lastIndex == null) sess.lastIndex = -1;
-      if (ev.i > sess.lastIndex) { sess.lastIndex = ev.i; sess.events.push(ev); appendEvent(runId, ev, false); }
+      if (ev.i > sess.lastIndex) { sess.lastIndex = ev.i; sess.events.push(ev); appendEvent(runId, ev); }
     };
+  }
+
+  function userBubble(text) {
+    var div = document.createElement('div');
+    div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
+    div.innerHTML = '<div style="max-width:75%;background:#eef2ff;border:1px solid #dbe3ff;border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
+      '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) + '</div>';
+    return div;
   }
 
   function closeThought(runId) {
@@ -408,7 +528,6 @@ export const UI_HTML = String.raw`<!doctype html>
     var node = sess.nodes.thought;
     if (node) { var c = node.querySelector('.caret'); if (c) c.remove(); sess.nodes.thought = null; }
   }
-
   function toolKind(summary) {
     if (summary.indexOf('write ') === 0) return 'edit';
     if (summary.indexOf('edit ') === 0) return 'edit';
@@ -418,7 +537,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (summary.indexOf('$ ') === 0) return 'shell';
     return 'tool';
   }
-
+  function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
+  function splitReason(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(d + 3) : ''; }
   function workingTextFor(text) {
     if (text.indexOf('think') === 0) return 'Thinking…';
     if (text.indexOf('run ') === 0) {
@@ -439,9 +559,6 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('context') === 0) return 'Selecting context…';
     return null;
   }
-  function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
-  function splitReason(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(d + 3) : ''; }
-
   function setWorking(text) {
     var w = $('working');
     if (!w) return;
@@ -451,7 +568,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (t && t.textContent !== text) t.textContent = text;
   }
 
-  function appendEvent(runId, ev, replay) {
+  function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
@@ -460,7 +577,6 @@ export const UI_HTML = String.raw`<!doctype html>
     function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
 
     if (text.indexOf('tdelta ') === 0) {
-      closeIfToolOpen(sess);
       if (!sess.nodes.thought) {
         var p = document.createElement('div');
         p.className = 'thought';
@@ -488,14 +604,8 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
-    if (text.indexOf('plan-review') === 0) { closeThought(runId); setWorking('Waiting for your plan review…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
-    if (text.indexOf('user-msg ') === 0) {
-      var um = userBubble(text.slice(9));
-      insert(um);
-      stream.scrollTop = stream.scrollHeight;
-      return;
-    }
+    if (text.indexOf('user-msg ') === 0) { insert(userBubble(text.slice(9))); stream.scrollTop = stream.scrollHeight; return; }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
       qm.className = 'meta-line';
@@ -525,9 +635,9 @@ export const UI_HTML = String.raw`<!doctype html>
         var target = parseInt(text.split('+')[1] || '0', 10) || 0;
         var startT = Date.now();
         var anim = setInterval(function () {
-          var p = Math.min(1, (Date.now() - startT) / 700);
-          badge.textContent = '+' + Math.round(target * p) + ' lines';
-          if (p >= 1) clearInterval(anim);
+          var pr = Math.min(1, (Date.now() - startT) / 700);
+          badge.textContent = '+' + Math.round(target * pr) + ' lines';
+          if (pr >= 1) clearInterval(anim);
         }, 40);
       }
       return;
@@ -566,35 +676,19 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (tag === 'out') {
       var t2 = sess.nodes.lastTool;
-      if (t2) {
-        var pre = t2.querySelector('pre');
-        pre.textContent = body.replace(/ ⏎ /g, '\n');
-      }
+      if (t2) t2.querySelector('pre').textContent = body.replace(/ ⏎ /g, '\n');
       return;
     }
-
     var meta = document.createElement('div');
     meta.className = 'meta-line';
-    var label = tag;
-    var rest = body;
-    if (tag === 'evidence') { meta.innerHTML = '<b style="color:' + (rest.indexOf('PASS') >= 0 ? 'var(--green)' : 'var(--red)') + '">evidence</b> ' + esc(rest); }
-    else if (tag === 'plan') { meta.innerHTML = '<b>plan</b> ' + esc(rest) + ' — review it in the panel, then approve to build'; }
-    else { meta.innerHTML = '<b>' + esc(label) + '</b> ' + esc(rest); }
+    if (tag === 'evidence') meta.innerHTML = '<b style="color:' + (body.indexOf('PASS') >= 0 ? 'var(--green)' : 'var(--red)') + '">evidence</b> ' + esc(body);
+    else if (tag === 'plan') meta.innerHTML = '<b>plan</b> ' + esc(body) + ' — review it, then approve to build';
+    else meta.innerHTML = '<b>' + esc(tag) + '</b> ' + esc(body);
     insert(meta);
     var wt2 = workingTextFor(text);
     if (wt2) setWorking(wt2);
     stream.scrollTop = stream.scrollHeight;
   }
-
-  function userBubble(text) {
-    var div = document.createElement('div');
-    div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
-    div.innerHTML = '<div style="max-width:75%;background:#eef2ff;border:1px solid #dbe3ff;border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
-      '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) + '</div>';
-    return div;
-  }
-
-  function closeIfToolOpen(sess) { /* thoughts and tools may interleave; keep lastTool for out events */ }
 
   function updateProgress(L) {
     var p = $('progress');
@@ -614,12 +708,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess) return;
       sess.session = session;
-      ensureRunTab(runId, session.goal.slice(0, 40), session.status, session.project);
-      renderTabs();
-      var g = $('rGoal'); if (g) g.textContent = session.goal;
-      var c = $('rChip'); if (c) c.innerHTML = chipFor(session.status) + ' <span class="chip">' + esc(runId) + '</span>';
-      var stopBtn = $('stopBtn');
-      if (stopBtn) stopBtn.style.display = session.status === 'running' ? 'inline-block' : 'none';
+      renderTopbar();
       renderApprovals(runId, session);
       renderPlanReview(runId, session);
       renderQuestions(runId, session);
@@ -630,12 +719,13 @@ export const UI_HTML = String.raw`<!doctype html>
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
-          if (s2) { s2.ledger = ledger; renderSide(runId); updateProgress(ledger); }
+          if (s2) { s2.ledger = ledger; renderRunSide(runId); updateProgress(ledger); }
         }).catch(function () {});
-      } else renderSide(runId);
+      } else renderRunSide(runId);
       if (session.status !== 'running') {
         setWorking(null);
         if (S.poll) { clearInterval(S.poll); S.poll = null; }
+        renderSidebar();
       }
     }).catch(function () {});
   }
@@ -671,27 +761,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var id = e.target.getAttribute && e.target.getAttribute('data-appr');
       if (id) {
         api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: e.target.getAttribute('data-ok') === '1' }) })
-        .catch(function (er) {
-          var msg = String(er.message);
-          if (msg.indexOf('run not found') >= 0) {
-            var mc = (S.sel.model || '').split('::');
-            api('/api/runs', {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                goal: g, provider: mc[0], model: mc[1],
-                mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-                review: S.sel.wf === 'review',
-                effort: S.sel.effort,
-                projectPath: S.projectPath || undefined
-              })
-            }).then(function (r) {
-              ensureRunTab(r.runId, g.slice(0, 40), 'running', basename(S.projectPath || ''));
-              openTab(r.runId);
-            }).catch(function (e2) { alert(e2.message); });
-          } else {
-            alert(msg);
-          }
-        });
+          .catch(function (er) { alert(er.message); });
         return;
       }
       var head = e.target.closest && e.target.closest('.tool .head');
@@ -699,73 +769,6 @@ export const UI_HTML = String.raw`<!doctype html>
         var det = head.parentElement.querySelector('details');
         if (det) det.open = !det.open;
       }
-    };
-  }
-
-  function renderPlanReview(runId, session) {
-    var stream = $('stream');
-    if (!stream) return;
-    var sess = S.sessions[runId];
-    var pr = session.pendingPlanReview;
-    if (!pr) {
-      if (sess.prShown) {
-        sess.prShown = null;
-        var olds = stream.querySelectorAll('.review-card');
-        for (var i = 0; i < olds.length; i++) olds[i].remove();
-      }
-      return;
-    }
-    if (sess.prShown === pr.id) return;
-    sess.prShown = pr.id;
-    var old = stream.querySelectorAll('.review-card');
-    for (var j = 0; j < old.length; j++) old[j].remove();
-    var div = document.createElement('div');
-    div.className = 'review-card';
-    div.innerHTML =
-      '<h3>plan review — read the plan, edit if needed, then choose a mode</h3>' +
-      '<div class="md-plan" id="prDoc">' +
-      '<h4>Acceptance criteria</h4><ul>' + pr.criteria.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>' +
-      '<h4>Plan</h4><ol>' + pr.steps.map(function (s, i) {
-        return '<li><b>Step ' + (i + 1) + '.</b> ' + esc(s.description) + '<span class="ver">Verification: ' + esc(s.verification) + '</span></li>';
-      }).join('') + '</ol></div>' +
-      '<div id="prEdit" style="display:none">' +
-      '<label>Acceptance criteria (one per line)</label>' +
-      '<textarea id="prCrit" rows="' + Math.max(2, pr.criteria.length) + '">' + esc(pr.criteria.join('\n')) + '</textarea>' +
-      '<label>Plan steps (one per line: description | verification)</label>' +
-      '<textarea id="prSteps" rows="' + Math.max(3, pr.steps.length + 1) + '">' + esc(pr.steps.map(function (s) { return s.description + ' | ' + s.verification; }).join('\n')) + '</textarea>' +
-      '</div>' +
-      '<div class="actions"><button class="btn dark" id="prApprove">Approve &amp; Build</button>' +
-      '<button class="btn ghost" id="prEditBtn">Edit plan</button>' +
-      '<input id="prNote" placeholder="Requested changes (optional)…">' +
-      '<button class="btn ghost" id="prChange">Request changes</button></div>';
-    stream.appendChild(div);
-    stream.scrollTop = stream.scrollHeight;
-    var editing = false;
-    $('prEditBtn').onclick = function () {
-      editing = !editing;
-      $('prEdit').style.display = editing ? 'block' : 'none';
-      $('prDoc').style.display = editing ? 'none' : 'block';
-      $('prEditBtn').textContent = editing ? 'Preview' : 'Edit plan';
-    };
-    function payload(approved) {
-      var criteria = pr.criteria;
-      var steps = pr.steps;
-      if (editing) {
-        criteria = $('prCrit').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-        steps = $('prSteps').value.split('\n').map(function (line) {
-          var parts = line.split('|');
-          return { description: (parts[0] || '').trim(), verification: (parts.slice(1).join('|') || 'manual check').trim() };
-        }).filter(function (s) { return s.description; });
-      }
-      return { approved: approved, note: $('prNote').value.trim() || undefined, criteria: criteria, steps: steps };
-    }
-    $('prApprove').onclick = function () {
-      api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(true)) })
-        .catch(function (er) { alert(er.message); });
-    };
-    $('prChange').onclick = function () {
-      api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(false)) })
-        .catch(function (er) { alert(er.message); });
     };
   }
 
@@ -799,24 +802,93 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     html += '<div class="actions"><button class="btn dark" id="qSend">Send answers</button></div>';
     div.innerHTML = html;
-    stream.appendChild(div);
+    var working = $('working');
+    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
     stream.scrollTop = stream.scrollHeight;
     div.onclick = function (e) {
       var btn = e.target.closest && e.target.closest('.opt');
       if (!btn) return;
       var qi = btn.getAttribute('data-q');
       var siblings = div.querySelectorAll('.opt[data-q="' + qi + '"]');
-      for (var i = 0; i < siblings.length; i++) siblings[i].classList.remove('sel');
+      for (var i2 = 0; i2 < siblings.length; i2++) siblings[i2].classList.remove('sel');
       btn.classList.add('sel');
       selections[qi] = q.questions[Number(qi)].options[Number(btn.getAttribute('data-o'))];
     };
     $('qSend').onclick = function () {
-      var answers = q.questions.map(function (qq, qi) {
-        var custom = div.querySelector('.custom[data-q="' + qi + '"]');
-        var val = (custom && custom.value.trim()) || selections[qi] || '(no answer)';
+      var answers = q.questions.map(function (qq, qi2) {
+        var custom = div.querySelector('.custom[data-q="' + qi2 + '"]');
+        var val = (custom && custom.value.trim()) || selections[qi2] || '(no answer)';
         return qq.question + ' → ' + val;
       }).join('\n');
       api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer: answers }) })
+        .catch(function (er) { alert(er.message); });
+    };
+  }
+
+  function renderPlanReview(runId, session) {
+    var stream = $('stream');
+    if (!stream) return;
+    var sess = S.sessions[runId];
+    var pr = session.pendingPlanReview;
+    if (!pr) {
+      if (sess.prShown) {
+        sess.prShown = null;
+        var olds = stream.querySelectorAll('.review-card');
+        for (var i = 0; i < olds.length; i++) olds[i].remove();
+      }
+      return;
+    }
+    if (sess.prShown === pr.id) return;
+    sess.prShown = pr.id;
+    var old = stream.querySelectorAll('.review-card');
+    for (var j = 0; j < old.length; j++) old[j].remove();
+    var div = document.createElement('div');
+    div.className = 'review-card';
+    div.innerHTML =
+      '<h3>plan review — read the plan, edit if needed, then choose</h3>' +
+      '<div class="md-plan" id="prDoc">' +
+      '<h4>Acceptance criteria</h4><ul>' + pr.criteria.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>' +
+      '<h4>Plan</h4><ol>' + pr.steps.map(function (s, i2) {
+        return '<li><b>Step ' + (i2 + 1) + '.</b> ' + esc(s.description) + '<span class="ver">Verification: ' + esc(s.verification) + '</span></li>';
+      }).join('') + '</ol></div>' +
+      '<div id="prEdit" style="display:none">' +
+      '<label>Acceptance criteria (one per line)</label>' +
+      '<textarea id="prCrit" rows="' + Math.max(2, pr.criteria.length) + '">' + esc(pr.criteria.join('\n')) + '</textarea>' +
+      '<label>Plan steps (one per line: description | verification)</label>' +
+      '<textarea id="prSteps" rows="' + Math.max(3, pr.steps.length + 1) + '">' + esc(pr.steps.map(function (s) { return s.description + ' | ' + s.verification; }).join('\n')) + '</textarea>' +
+      '</div>' +
+      '<div class="actions"><button class="btn dark" id="prApprove">Approve &amp; Build</button>' +
+      '<button class="btn ghost" id="prEditBtn">Edit plan</button>' +
+      '<input id="prNote" placeholder="Requested changes (optional)…">' +
+      '<button class="btn ghost" id="prChange">Request changes</button></div>';
+    var working = $('working');
+    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
+    stream.scrollTop = stream.scrollHeight;
+    var editing = false;
+    $('prEditBtn').onclick = function () {
+      editing = !editing;
+      $('prEdit').style.display = editing ? 'block' : 'none';
+      $('prDoc').style.display = editing ? 'none' : 'block';
+      $('prEditBtn').textContent = editing ? 'Preview' : 'Edit plan';
+    };
+    function payload(approved) {
+      var criteria = pr.criteria;
+      var steps = pr.steps;
+      if (editing) {
+        criteria = $('prCrit').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+        steps = $('prSteps').value.split('\n').map(function (line) {
+          var parts = line.split('|');
+          return { description: (parts[0] || '').trim(), verification: (parts.slice(1).join('|') || 'manual check').trim() };
+        }).filter(function (s) { return s.description; });
+      }
+      return { approved: approved, note: $('prNote').value.trim() || undefined, criteria: criteria, steps: steps };
+    }
+    $('prApprove').onclick = function () {
+      api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(true)) })
+        .catch(function (er) { alert(er.message); });
+    };
+    $('prChange').onclick = function () {
+      api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(false)) })
         .catch(function (er) { alert(er.message); });
     };
   }
@@ -843,61 +915,19 @@ export const UI_HTML = String.raw`<!doctype html>
         return '<li><span class="file-chip">' + esc(f) + '</span>' + (lineCounts[f] ? ' <span style="color:var(--green);font-family:var(--mono);font-size:11px">+' + lineCounts[f] + ' lines</span>' : '') + '</li>';
       }).join('') + '</ul></div>';
     }
-    if (r.verification.length) {
-      html += '<div class="sec"><h4>Verification evidence</h4><ul>' + r.verification.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
-    }
-    if (r.remainingRisks.length) {
-      html += '<div class="sec"><h4>Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
-    }
-    if (r.followUps.length) {
-      html += '<div class="sec"><h4>Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
-    }
+    if (r.verification.length) html += '<div class="sec"><h4>Verification evidence</h4><ul>' + r.verification.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    if (r.remainingRisks.length) html += '<div class="sec"><h4>Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    if (r.followUps.length) html += '<div class="sec"><h4>Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    div.innerHTML = html;
     stream.appendChild(div);
     stream.scrollTop = stream.scrollHeight;
   }
 
-  function renderSettings(runId) {
-    var body = $('sideBody');
-    if (!body) return;
-    var filesHtml = S.files.length
-      ? '<datalist id="fileList">' + S.files.map(function (f) { return '<option value="' + esc(f) + '"></option>'; }).join('') + '</datalist>'
-      : '';
-    body.innerHTML =
-      '<div class="section-h" style="margin-top:0">Task settings (apply to next runs)</div>' +
-      '<label style="font-size:11px;color:var(--muted)">Scope files — which files to work on (one per line)</label>' +
-      '<textarea id="setScope" rows="5" placeholder="src/app.ts&#10;public/index.html" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:7px 9px;font-family:var(--mono);font-size:11.5px">' + esc(S.settings.scope) + '</textarea>' +
-      '<input id="setScopePick" list="fileList" placeholder="pick a project file…" style="width:100%;margin-top:6px;border:1px solid var(--border);border-radius:8px;background:#fff;padding:6px 9px;font-size:12px">' +
-      filesHtml +
-      '<label style="font-size:11px;color:var(--muted);display:block;margin-top:12px">Constraints (one per line)</label>' +
-      '<textarea id="setConstraints" rows="4" placeholder="Do not touch the billing module&#10;Keep the IPC contract stable" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:7px 9px;font-size:12px">' + esc(S.settings.constraints) + '</textarea>' +
-      '<div class="actions" style="display:flex;gap:8px;margin-top:12px"><button class="btn dark" id="setSave">Save settings</button></div>' +
-      '<div class="section-h">About modes</div>' +
-      '<div class="meta-line"><b>Plan mode</b> — agent plans, you review &amp; edit, then it builds.</div>' +
-      '<div class="meta-line"><b>Build mode</b> — plans and builds without pausing.</div>' +
-      '<div class="meta-line"><b>Chat mode</b> — direct answer, no tools.</div>' +
-      '<div class="meta-line">Parallel tool calls: the agent may run up to 4 independent tools concurrently.</div>';
-    $('setScopePick').addEventListener('change', function () {
-      var v = $('setScopePick').value.trim();
-      if (!v) return;
-      var cur = $('setScope').value.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
-      if (cur.indexOf(v) < 0) cur.push(v);
-      $('setScope').value = cur.join('\n');
-      $('setScopePick').value = '';
-    });
-    $('setSave').onclick = function () {
-      S.settings.scope = $('setScope').value;
-      S.settings.constraints = $('setConstraints').value;
-      $('setSave').textContent = 'Saved ✓';
-      setTimeout(function () { var b = $('setSave'); if (b) b.textContent = 'Save settings'; }, 1200);
-    };
-  }
-
-  function renderSide(runId) {
+  function renderRunSide(runId) {
     var sess = S.sessions[runId];
     var body = $('sideBody');
     if (!body || !sess) return;
     if (sess.side === 'context') { renderContext(runId); return; }
-    if (sess.side === 'settings') { renderSettings(runId); return; }
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
@@ -922,7 +952,7 @@ export const UI_HTML = String.raw`<!doctype html>
       html += '<div class="section-h">Blockers</div>';
       L.blockers.forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
     }
-    if (L.report) html += '<div class="report-card"><h3>Completion report</h3><pre>' + esc(reportText(L.report)) + '</pre></div>';
+    if (L.report) html += '<div class="summary-card" style="margin:12px 0 0"><h3 style="margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Completion report</h3><pre style="font-family:var(--mono);font-size:12px;white-space:pre-wrap;margin:0">' + esc(reportText(L.report)) + '</pre></div>';
     body.innerHTML = html;
   }
 
@@ -947,6 +977,7 @@ export const UI_HTML = String.raw`<!doctype html>
     stat('Provider', session && session.provider ? session.provider : '—');
     stat('Model', session && session.model ? session.model : '—');
     stat('Mode', L ? L.mode : '—');
+    stat('Effort', S.sel.effort);
     stat('Started', session ? new Date(session.startedAt).toLocaleString() : '—');
     stat('Finished', session && session.finishedAt ? new Date(session.finishedAt).toLocaleString() : 'running…');
     if (L) {
@@ -987,117 +1018,138 @@ export const UI_HTML = String.raw`<!doctype html>
     body.innerHTML = html;
   }
 
-  function toggleDrawer() {
-    var d = $('drawer');
-    d.classList.toggle('open');
-    if (d.classList.contains('open')) loadDrawer();
+  function openSettings(section) {
+    S.setSection = section || 'general';
+    $('settings').hidden = false;
+    renderSettings();
   }
+  function closeSettings() { $('settings').hidden = true; }
 
-  function loadDrawer() {
-    Promise.all([
-      api('/api/runs').catch(function () { return []; }),
-      api('/api/skills').catch(function () { return { skills: [] }; }),
-      api('/api/mcp').catch(function () { return { servers: [], tools: [] }; }),
-      api('/api/cron').catch(function () { return { jobs: [] }; })
-    ]).then(function (vals) {
-      renderDrawer(vals[0], vals[1].skills, vals[2], vals[3].jobs);
+  function renderSettings() {
+    var items = [
+      ['general', '⚙', 'General'],
+      ['permissions', '🛡', 'Permissions'],
+      ['project', '📁', 'Project'],
+      ['skills', '⚡', 'Skills'],
+      ['mcp', '🔌', 'MCP servers'],
+      ['cron', '⏰', 'Scheduled / heartbeat']
+    ];
+    $('setnav').innerHTML =
+      '<button class="back" id="setBack">&#8592; Back to app</button>' +
+      '<div class="sect">Settings</div>' +
+      items.map(function (it) {
+        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '"><span>' + it[1] + '</span>' + it[2] + '</button>';
+      }).join('');
+    $('setBack').onclick = closeSettings;
+    $('setnav').querySelectorAll('[data-sec]').forEach(function (el) {
+      el.onclick = function () { S.setSection = el.getAttribute('data-sec'); renderSettings(); };
     });
-  }
-
-  function renderDrawer(sessions, skills, mcp, jobs) {
-    var d = $('drawer');
-    var html = '<h3>Project</h3>' +
-      '<input id="dProj" placeholder="C:\\path\\to\\project" value="' + esc(S.projectPath) + '">' +
-      '<div class="row"><button class="btn dark" id="dProjSave">Use this project</button></div>' +
-      '<div class="meta" style="margin-top:6px">Each project gets its own sessions, skills, MCP servers and cron jobs.</div>' +
-      '<h3>Sessions</h3>';
-    if (!sessions.length) html += '<div class="meta">none yet</div>';
-    sessions.forEach(function (s) {
-      html += '<div class="item"><span class="grow" data-open="' + esc(s.runId) + '" data-label="' + esc(s.goal.slice(0, 40)) + '" data-proj="' + esc(s.project || '') + '">' +
-        esc(s.project || '?') + ' · ' + esc(s.status) + ' · ' + esc(s.goal.slice(0, 34)) + '</span></div>';
-    });
-    html += '<h3>Skills (reusable knowledge)</h3>';
-    if (!skills.length) html += '<div class="meta">none yet — the agent can create skills with create_skill</div>';
-    skills.forEach(function (sk) {
-      html += '<div class="item"><span class="grow" title="' + esc(sk.description) + '">' + esc(sk.name) + ' <span class="meta">(' + esc(sk.createdBy) + ')</span></span><span class="x" data-delskill="' + esc(sk.name) + '">&#10005;</span></div>';
-    });
-    html += '<input id="dSkillName" placeholder="skill name (e.g. deploy-checklist)">' +
-      '<input id="dSkillDesc" placeholder="short description">' +
-      '<textarea id="dSkillInstr" rows="3" placeholder="step-by-step instructions the agent should follow"></textarea>' +
-      '<div class="row"><button class="btn dark" id="dSkillAdd">Add skill</button></div>' +
-      '<h3>MCP servers</h3>';
-    if (!mcp.servers.length) html += '<div class="meta">none — add e.g. a filesystem MCP server</div>';
-    mcp.servers.forEach(function (sv) {
-      html += '<div class="item"><span class="grow">' + esc(sv.name) + ' <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><span class="x" data-delmcp="' + esc(sv.name) + '">&#10005;</span></div>';
-    });
-    html += '<div class="row"><input id="dMcpName" placeholder="name (e.g. fs)" style="margin:0"><input id="dMcpCmd" placeholder="command (e.g. npx)" style="margin:0"></div>' +
-      '<input id="dMcpArgs" placeholder="args separated by spaces (e.g. -y @modelcontextprotocol/server-filesystem C:\\path)">' +
-      '<div class="row"><button class="btn dark" id="dMcpAdd">Add MCP server</button></div>' +
-      '<h3>Cron jobs / heartbeat</h3>';
-    if (!jobs.length) html += '<div class="meta">none</div>';
-    jobs.forEach(function (jb) {
-      html += '<div class="item"><span class="grow">every ' + esc(jb.every) + ' — ' + esc(jb.goal.slice(0, 40)) + '</span><span class="x" data-delcron="' + esc(jb.id) + '">&#10005;</span></div>';
-    });
-    html += '<div class="row"><input id="dCronEvery" placeholder="every 30m" style="margin:0"><input id="dCronGoal" placeholder="goal for the agent" style="margin:0"></div>' +
-      '<div class="row" style="margin-top:6px"><button class="btn dark" id="dCronAdd">Add cron job</button>' +
-      '<button class="btn ghost" id="dHeart">+ heartbeat (30m)</button></div>';
-    d.innerHTML = html;
-
-    $('dProjSave').onclick = function () {
-      S.projectPath = $('dProj').value.trim();
-      try { localStorage.setItem('hermes.project', S.projectPath); } catch (e) {}
-      renderTabs();
-      loadDrawer();
-    };
-    d.querySelectorAll('[data-open]').forEach(function (el) {
-      el.onclick = function () {
-        ensureRunTab(el.getAttribute('data-open'), el.getAttribute('data-label'), null, el.getAttribute('data-proj'));
-        openTab(el.getAttribute('data-open'));
-        d.classList.remove('open');
+    var b = $('setbody');
+    if (S.setSection === 'general') {
+      b.innerHTML = '<h1>General</h1>' +
+        '<h2>Defaults</h2><div class="setcard">' +
+        '<div class="setrow"><div class="grow"><div class="t">Default workflow</div><div class="d">Plan mode pauses for your review; Build runs straight through; Chat answers only.</div></div>' +
+        '<select id="gWf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Action budget</div><div class="d">Maximum tool actions per task before the agent must stop.</div></div>' +
+        '<select id="gBudget"><option value="20">20</option><option value="40">40</option><option value="80">80</option></select></div>' +
+        '</div>';
+      $('gWf').value = S.sel.wf;
+      fillEffort('gEffort', provOf(S.sel.model));
+      $('gEffort').value = S.sel.effort;
+      $('gBudget').value = S.sel.budget;
+      $('gWf').onchange = function () { S.sel.wf = $('gWf').value; persist(); };
+      $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
+      $('gBudget').onchange = function () { S.sel.budget = $('gBudget').value; persist(); };
+    } else if (S.setSection === 'permissions') {
+      b.innerHTML = '<h1>Permissions</h1>' +
+        '<div class="setcard">' +
+        '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">In Plan mode the agent waits for your approval before building.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Auto-approve dangerous actions</div><div class="d">Skips the approval gate for destructive commands. Significantly increases risk of data loss.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Loop prevention</div><div class="d">Repeated failing actions are blocked automatically. Always on.</div></div><button class="toggle on" disabled></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Evidence gate</div><div class="d">Tasks cannot complete without passing evidence for every criterion. Always on.</div></div><button class="toggle on" disabled></button></div>' +
+        '</div>';
+      $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
+      $('pAuto').onclick = function () { S.settings.autoApprove = !S.settings.autoApprove; persist(); renderSettings(); };
+    } else if (S.setSection === 'project') {
+      b.innerHTML = '<h1>Project</h1>' +
+        '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Active project path</div><div class="d">Each project has its own chats, skills, MCP servers and cron jobs.</div></div></div>' +
+        '<div class="setlist"><input type="text" id="prPath" value="' + esc(S.settings.projectPath) + '" placeholder="C:\\path\\to\\project">' +
+        '<div class="row"><button class="btn dark" id="prSave">Save project</button></div></div></div>';
+      $('prSave').onclick = function () {
+        S.settings.projectPath = $('prPath').value.trim();
+        persist();
+        updateProjChip();
+        renderSidebar();
       };
-    });
-    d.querySelectorAll('[data-delskill]').forEach(function (el) {
-      el.onclick = function () { api('/api/skills/' + el.getAttribute('data-delskill'), { method: 'DELETE' }).then(loadDrawer); };
-    });
-    d.querySelectorAll('[data-delmcp]').forEach(function (el) {
-      el.onclick = function () { api('/api/mcp/' + el.getAttribute('data-delmcp'), { method: 'DELETE' }).then(loadDrawer); };
-    });
-    d.querySelectorAll('[data-delcron]').forEach(function (el) {
-      el.onclick = function () { api('/api/cron/' + el.getAttribute('data-delcron'), { method: 'DELETE' }).then(loadDrawer); };
-    });
-    $('dSkillAdd').onclick = function () {
-      api('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('dSkillName').value, description: $('dSkillDesc').value, instructions: $('dSkillInstr').value }) })
-        .then(loadDrawer).catch(function (e) { alert(e.message); });
-    };
-    $('dMcpAdd').onclick = function () {
-      api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('dMcpName').value, command: $('dMcpCmd').value, args: $('dMcpArgs').value.split(/\s+/).filter(Boolean) }) })
-        .then(loadDrawer).catch(function (e) { alert(e.message); });
-    };
-    $('dCronAdd').onclick = function () {
-      api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: $('dCronEvery').value, goal: $('dCronGoal').value }) })
-        .then(loadDrawer).catch(function (e) { alert(e.message); });
-    };
-    $('dHeart').onclick = function () {
-      api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: '30m', goal: 'Heartbeat: inspect the project, run tests/typecheck, fix or report anything broken.' }) })
-        .then(loadDrawer).catch(function (e) { alert(e.message); });
-    };
+    } else if (S.setSection === 'skills') {
+      api('/api/skills').then(function (d) {
+        b.innerHTML = '<h1>Skills</h1><p style="color:var(--muted);font-size:12.5px">Reusable knowledge. The agent can learn new skills with create_skill; you can add your own here.</p>' +
+          '<div class="setcard"><div class="setlist">' +
+          (d.skills.length ? d.skills.map(function (sk) {
+            return '<div class="row"><span class="grow"><b>' + esc(sk.name) + '</b> — ' + esc(sk.description) + ' <span class="meta">(' + esc(sk.createdBy) + ')</span></span><button class="x" data-x="' + esc(sk.name) + '">✕</button></div>';
+          }).join('') : '<div class="meta">no skills yet</div>') +
+          '<div style="height:8px"></div><input id="skName" placeholder="skill name (e.g. deploy-checklist)"><input id="skDesc" placeholder="short description"><textarea id="skInstr" rows="3" placeholder="step-by-step instructions"></textarea>' +
+          '<div class="row"><button class="btn dark" id="skAdd">Add skill</button></div></div></div>';
+        b.querySelectorAll('[data-x]').forEach(function (el) {
+          el.onclick = function () { api('/api/skills/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }); };
+        });
+        $('skAdd').onclick = function () {
+          api('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('skName').value, description: $('skDesc').value, instructions: $('skInstr').value }) })
+            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+        };
+      });
+    } else if (S.setSection === 'mcp') {
+      api('/api/mcp').then(function (d) {
+        b.innerHTML = '<h1>MCP servers</h1><p style="color:var(--muted);font-size:12.5px">External tool servers (filesystem, browser, databases…). Their tools require approval before running.</p>' +
+          '<div class="setcard"><div class="setlist">' +
+          (d.servers.length ? d.servers.map(function (sv) {
+            return '<div class="row"><span class="grow"><b>' + esc(sv.name) + '</b> <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><button class="x" data-x="' + esc(sv.name) + '">✕</button></div>';
+          }).join('') : '<div class="meta">no servers yet</div>') +
+          (d.tools.length ? '<div class="meta" style="margin-top:6px">tools: ' + esc(d.tools.map(function (t) { return 'mcp:' + t.server + ':' + t.name; }).join(', ')) + '</div>' : '') +
+          '<div style="height:8px"></div><div class="row"><input id="mcName" placeholder="name (e.g. fs)" style="margin:0"><input id="mcCmd" placeholder="command (e.g. npx)" style="margin:0"></div><input id="mcArgs" placeholder="args separated by spaces">' +
+          '<div class="row"><button class="btn dark" id="mcAdd">Add MCP server</button></div></div></div>';
+        b.querySelectorAll('[data-x]').forEach(function (el) {
+          el.onclick = function () { api('/api/mcp/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }); };
+        });
+        $('mcAdd').onclick = function () {
+          api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('mcName').value, command: $('mcCmd').value, args: $('mcArgs').value.split(/\s+/).filter(Boolean) }) })
+            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+        };
+      });
+    } else if (S.setSection === 'cron') {
+      api('/api/cron').then(function (d) {
+        b.innerHTML = '<h1>Scheduled / heartbeat</h1><p style="color:var(--muted);font-size:12.5px">Cron jobs start agent runs on a schedule. A heartbeat periodically checks project health.</p>' +
+          '<div class="setcard"><div class="setlist">' +
+          (d.jobs.length ? d.jobs.map(function (jb) {
+            return '<div class="row"><span class="grow">every <b>' + esc(jb.every) + '</b> — ' + esc(jb.goal) + (jb.lastRunAt ? ' <span class="meta">(last ' + new Date(jb.lastRunAt).toLocaleTimeString() + ')</span>' : '') + '</span><button class="x" data-x="' + esc(jb.id) + '">✕</button></div>';
+          }).join('') : '<div class="meta">no jobs yet</div>') +
+          '<div style="height:8px"></div><div class="row"><input id="crEvery" placeholder="every 30m" style="margin:0"><input id="crGoal" placeholder="goal for the agent" style="margin:0"></div>' +
+          '<div class="row"><button class="btn dark" id="crAdd">Add cron job</button><button class="btn ghost" id="crHeart">+ heartbeat (30m)</button></div></div></div>';
+        b.querySelectorAll('[data-x]').forEach(function (el) {
+          el.onclick = function () { api('/api/cron/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }); };
+        });
+        $('crAdd').onclick = function () {
+          api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: $('crEvery').value, goal: $('crGoal').value }) })
+            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+        };
+        $('crHeart').onclick = function () {
+          api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: '30m', goal: 'Heartbeat: inspect the project, run tests/typecheck, fix or report anything broken.' }) })
+            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+        };
+      });
+    }
   }
 
   function boot() {
-    api('/api/project').then(function (p) {
-      S.project = p;
-      $('projChip').innerHTML = '<b>' + esc(p.name) + '</b> ' + esc(p.branch || '· no git');
-    }).catch(function () { $('projChip').textContent = 'no project'; });
-    api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') renderHome(); }).catch(function () {});
+    api('/api/project').then(function (p) { S.project = p; updateProjChip(); }).catch(function () { updateProjChip(); });
+    api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') openHome(); }).catch(function () {});
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
-    api('/api/runs').then(function (sessions) {
-      sessions.slice(0, 12).forEach(function (s) { ensureRunTab(s.runId, s.goal.slice(0, 40), s.status, s.project); });
-      renderTabs();
-    }).catch(function () {});
-    $('newTab').onclick = function () { openTab('home'); };
-    $('menuBtn').onclick = toggleDrawer;
-    renderTabs();
-    renderHome();
+    $('gearBtn').onclick = function () { openSettings('general'); };
+    updateProjChip();
+    renderSidebar();
+    renderTopbar();
+    openHome();
   }
   boot();
 })();

@@ -474,6 +474,7 @@ export class HermesServer {
       const provider = typeof body['provider'] === 'string' ? body['provider'] : undefined;
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
       const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : 'standard';
+      const autoApprove = body['autoApprove'] === true;
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
       const review = body['review'] !== false;
@@ -510,9 +511,9 @@ export class HermesServer {
     this.sessions.set(session.runId, session);
     this.saveRegistry();
     this.sendJson(res, 202, { runId: session.runId });
-    void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort, projectPath });
-    return;
-  }
+      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort, projectPath, autoApprove });
+      return;
+    }
 
     const runMatch = path.match(/^\/api\/runs\/([\w-]+)$/);
     if (method === 'GET' && runMatch) {
@@ -696,6 +697,7 @@ export class HermesServer {
       effort?: 'low' | 'medium' | 'high' | 'max';
       projectPath?: string;
       resume?: { taskId: string; message: string };
+      autoApprove?: boolean;
     },
   ): Promise<void> {
     let root: string;
@@ -711,6 +713,7 @@ export class HermesServer {
       cwd: opts.projectPath ?? this.config.cwd,
       llm,
       mode: opts.mode,
+      autoApprove: opts.autoApprove ?? false,
       criteria: opts.criteria,
       scopeFiles: opts.scope,
       extraConstraints: opts.constraints,

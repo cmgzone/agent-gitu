@@ -139,6 +139,39 @@ export class ContextEngine {
       .join('\n');
   }
 
+  renderPackWithContent(pack: ContextPack): string {
+    const maxTotal = Math.min(pack.budget.maxBytes || 40_000, 40_000);
+    const perFile = 4_000;
+    const parts: string[] = [this.renderPack(pack)];
+
+    const targets: FileRef[] = [...pack.primaryFiles, ...pack.testFiles];
+    if (targets.length === 0) {
+      for (const ep of this.guard.lock.entrypoints.slice(0, 3)) {
+        targets.push({ path: ep, role: 'entrypoint', score: 0 });
+      }
+    }
+
+    const included: string[] = [];
+    let used = 0;
+    for (const ref of targets) {
+      if (used >= maxTotal) break;
+      const content = this.peekFile(ref.path, perFile);
+      if (!content) continue;
+      const slice = content.slice(0, Math.max(0, Math.min(perFile, maxTotal - used)));
+      if (!slice) break;
+      included.push(`--- ${ref.path} [${ref.role}] ---\n${slice}`);
+      used += slice.length;
+    }
+
+    if (included.length > 0) {
+      parts.push(
+        '\nCURRENT CODE (the real state of this codebase — ground your plan in it; use read_file/search_files to see more before planning):\n' +
+          included.join('\n\n'),
+      );
+    }
+    return parts.join('\n');
+  }
+
   peekFile(relPath: string, maxChars = 3000): string | undefined {
     try {
       const abs = this.guard.resolve(relPath);

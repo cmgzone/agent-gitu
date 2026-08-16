@@ -248,8 +248,10 @@ export class Hermes {
     if (ledger.data.mode === 'standard') {
       const pack = context.buildPack(goal);
       ledger.data.contextPack = pack;
-      contextNote = `CONTEXT PACK (ranked, role-labeled, budgeted):\n${context.renderPack(pack)}`;
-      this.emit(`context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected`);
+      contextNote = `CONTEXT PACK (ranked, role-labeled, budgeted):\n${context.renderPackWithContent(pack)}`;
+      this.emit(
+        `context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected (code attached for grounding)`,
+      );
     }
 
     const messages: LlmMessage[] = [

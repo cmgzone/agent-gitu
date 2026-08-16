@@ -48,7 +48,7 @@ describe('HermesServer', () => {
     const dir = makeProject('ui');
     const { base } = await startServer(dir, new ScriptedMockLlm([]));
     const html = await fetch(`${base}/`).then((r) => r.text());
-    expect(html).toContain('HERMES');
+    expect(html).toContain('AGENT GITU');
     const project = await fetch(`${base}/api/project`).then((r) => r.json());
     expect(project.name).toBe('web-ui');
   });

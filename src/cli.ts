@@ -40,7 +40,7 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function usage(): string {
-  return `hermes — bounded autonomous engineering agent
+  return `Agent Gitu — autonomous engineering agent (cli: hermes)
 
 Usage:
   hermes init                          Detect and lock the current project

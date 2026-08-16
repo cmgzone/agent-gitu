@@ -32,7 +32,7 @@ export function buildSystemPrompt(
           : ' The current model cannot see images; screenshots are captured for the user but not delivered to you — rely on DOM/tests or ask for a vision-capable model.'
       }\n`
     : '';
-  return `You are Hermes, an autonomous software engineering agent operating inside a LOCKED project boundary.
+  return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
 ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}
 
 PROJECT LOCK (do not violate):

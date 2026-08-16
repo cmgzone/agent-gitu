@@ -26,7 +26,7 @@ function ensureBrowserWin() {
   browserWin = new BrowserWindow({
     width: 1280,
     height: 900,
-    title: 'Hermes Browser',
+    title: 'Agent Gitu Browser',
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: { backgroundThrottling: false },
@@ -70,7 +70,7 @@ function injectBanner(win) {
           b.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#7c6cf0;color:#fff;border-radius:999px;padding:7px 16px;font:600 12px system-ui,sans-serif;box-shadow:0 4px 16px rgba(124,108,240,.55);pointer-events:none';
           document.documentElement.appendChild(b);
         }
-        b.textContent = '\\u26A1 Hermes is driving the browser';
+        b.textContent = '\\u26A1 Agent Gitu is driving the browser';
         b.style.display = 'block';
         clearTimeout(b._t);
         b._t = setTimeout(function(){ b.style.display = 'none'; }, 1600);
@@ -326,7 +326,7 @@ function createMainWindow() {
     height: 940,
     minWidth: 900,
     minHeight: 600,
-    title: 'Hermes',
+    title: 'Agent Gitu',
     autoHideMenuBar: true,
     backgroundColor: '#f7f7f5',
     webPreferences: { contextIsolation: true, nodeIntegration: false },
@@ -404,3 +404,4 @@ if (!gotLock) {
     if (server) void server.stop().catch(() => {});
   });
 }
+

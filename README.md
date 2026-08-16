@@ -1,4 +1,4 @@
-# Hermes
+# Agent Gitu
 
 A **bounded autonomous engineering agent**. Hermes is not a chatbot with shell
 access — it is a control plane for autonomous work: it locks a project, plans
@@ -193,3 +193,4 @@ it. Override the home with `HERMES_HOME_DIR` if needed.
 
 API: `GET /api/project|models|tasks|runs`, `POST /api/runs`,
 `GET /api/runs/:id/stream` (SSE), `POST /api/approvals/:id`.
+

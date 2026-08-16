@@ -3,7 +3,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Hermes</title>
+<title>Agent Gitu</title>
 <style>
   :root {
     --bg: #f7f7f5;
@@ -277,6 +277,10 @@ export const UI_HTML = String.raw`<!doctype html>
   .thumbs .rm:hover { color: var(--red); border-color: #fecaca; }
   .pill[disabled] { opacity: .4; cursor: not-allowed; }
 
+  .grow-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
+  .gitpath { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .gitpath:hover { color: var(--accent); }
+
   .bpanel2 .nav { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
   .bpanel2 .nav input { flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; background: #fff; min-width: 0; }
   .bpanel2 .bwrap { position: relative; }
@@ -290,7 +294,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <div class="shell">
   <aside class="sb">
     <div class="head">
-      <span class="name">HERMES</span>
+      <span class="name">AGENT GITU</span>
       <span class="spacer"></span>
       <button class="iconbtn" id="gearBtn" title="settings">&#9881;</button>
       <button class="iconbtn" id="sbCollapse" title="collapse sidebar">&#171;</button>
@@ -348,6 +352,12 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  function mascotPulse() {
+    if (window.__mascot) window.__mascot.setMode('shoot');
+    if (S.mascotTimer) clearTimeout(S.mascotTimer);
+    S.mascotTimer = setTimeout(function () { if (window.__mascot) window.__mascot.setMode('idle'); }, 2500);
+  }
+
   function toast(msg, isErr) {
     var wrap = $('toasts');
     if (!wrap) return;
@@ -375,6 +385,7 @@ export const UI_HTML = String.raw`<!doctype html>
     layers: SVG_OPEN + '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
     image: SVG_OPEN + '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
     copy: SVG_OPEN + '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
+    branch: SVG_OPEN + '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>',
     globe: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z"/></svg>'
   };
   function icon(name) { return ICONS[name] || ''; }
@@ -630,7 +641,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:#16a34a">' + icon('layers') + '</span>Review code and suggest changes</button>' +
       '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:#dc2626">' + icon('wrench') + '</span>Fix issues and failures</button>' +
       '</div>' +
-      '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
+      '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar"><span class="pill" id="homeProj" title="active project for this session — click to change" style="max-width:180px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></span>' + controlsHtml() + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
       '</div>';
@@ -817,7 +828,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="run"><div class="run-main">' +
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
-      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Hermes… Enter sends to this session while working, or continues it when done"></textarea>' +
+      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu… Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
@@ -968,6 +979,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
+    if (text.indexOf('run ') === 0 || text.indexOf('think') === 0 || text.indexOf('delegate') === 0 || text.indexOf('subagent') === 0) mascotPulse();
     if (sess && sess.chatish && (
       text.indexOf('project ') === 0 || text.indexOf('ledger ') === 0 || text.indexOf('branch ') === 0 ||
       text.indexOf('context ') === 0 || text.indexOf('done ') === 0 || text.indexOf('run finished:') === 0 ||
@@ -983,7 +995,7 @@ export const UI_HTML = String.raw`<!doctype html>
         if (!sess.nodes.abubble) {
           var ab = document.createElement('div');
           ab.className = 'abubble';
-          ab.innerHTML = '<span class="who">Hermes</span><span class="txt"></span>';
+          ab.innerHTML = '<span class="who">Agent Gitu</span><span class="txt"></span>';
           insert(ab);
           sess.nodes.abubble = ab;
         }
@@ -1011,7 +1023,7 @@ export const UI_HTML = String.raw`<!doctype html>
         } else {
           var ab2 = document.createElement('div');
           ab2.className = 'abubble';
-          ab2.innerHTML = '<span class="who">Hermes</span><span class="txt"></span>';
+          ab2.innerHTML = '<span class="who">Agent Gitu</span><span class="txt"></span>';
           ab2.querySelector('.txt').textContent = prose;
           appendLive(stream, ab2);
           stream.scrollTop = stream.scrollHeight;
@@ -1234,7 +1246,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var selections = {};
     var div = document.createElement('div');
     div.className = 'qcard';
-    var html = '<h3>Hermes has a few questions before starting</h3>';
+    var html = '<h3>Agent Gitu has a few questions before starting</h3>';
     q.questions.forEach(function (qq, qi) {
       html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(qq.question) + '</div><div class="opts">';
       qq.options.forEach(function (op, oi) {
@@ -1373,6 +1385,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!body || !sess) return;
     if (sess.side === 'context') { renderContext(runId); stopBrowserPoll(); return; }
     if (sess.side === 'browser') { showBrowserPanel(runId); return; }
+    if (sess.side === 'git') { renderGitPanel(runId); stopBrowserPoll(); return; }
     stopBrowserPoll();
     if (sess.chatish) { body.innerHTML = '<div class="empty" style="padding:16px 6px">Conversation session — no task state. Send a task message (e.g. "fix…", "build…") to switch to agent mode.</div>'; return; }
     var L = sess.ledger;
@@ -1447,7 +1460,7 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function sideTabsState() {
-    if (!S.settings.sideTabs) S.settings.sideTabs = { state: true, context: true, browser: true };
+    if (!S.settings.sideTabs) S.settings.sideTabs = { state: true, context: true, browser: true, git: true };
     return S.settings.sideTabs;
   }
 
@@ -1462,6 +1475,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (tabs.state !== false) html += '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>';
     if (tabs.context !== false) html += '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>';
     if (tabs.browser !== false) html += '<button class="side-tab ' + (sess.side === 'browser' ? 'active' : '') + '" data-side="browser">' + icon('globe') + ' Browser</button>';
+    if (tabs.git !== false) html += '<button class="side-tab ' + (sess.side === 'git' ? 'active' : '') + '" data-side="git">' + icon('branch') + ' Git</button>';
     html += '<button class="collapse-tab" id="tabMgr" title="add / remove tabs" style="font-size:14px">+</button>';
     html += '<button class="collapse-tab" id="rsCollapse" title="collapse panel">&#187;</button>';
     el.innerHTML = html;
@@ -1476,7 +1490,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function openTabMgr(anchor, sess, runId) {
     closeTabMgr();
-    var defs = [['state', 'State'], ['context', 'Context'], ['browser', 'Browser']];
+    var defs = [['state', 'State'], ['context', 'Context'], ['browser', 'Browser'], ['git', 'Git']];
     var tabs = sideTabsState();
     var d = document.createElement('div');
     d.id = 'tabMgrMenu';
@@ -1516,6 +1530,103 @@ export const UI_HTML = String.raw`<!doctype html>
     return url;
   }
 
+  function gitQueryPath() { return S.settings.projectPath || S.lastProjectPath || ''; }
+
+  function renderGitPanel(runId) {
+    var body = $('sideBody');
+    body.innerHTML = '<div style="padding:4px 2px"><div id="gitHead" class="meta" style="margin-bottom:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">loading…</div><div id="gitBody"></div></div>';
+    refreshGit();
+  }
+
+  function refreshGit() {
+    api('/api/git?path=' + encodeURIComponent(gitQueryPath())).then(function (g) {
+      var head = $('gitHead');
+      var gb = $('gitBody');
+      if (!head || !gb) return;
+      if (!g.available) {
+        head.textContent = 'Not a git repository' + (g.root ? ' (' + g.root + ')' : '') + '.';
+        gb.innerHTML = '<p class="meta">Initialize git to track changes, commit and push from here.</p><button class="btn dark" id="gitInit">git init</button>';
+        $('gitInit').onclick = function () {
+          api('/api/git/init', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: gitQueryPath() }) })
+            .then(function () { toast('git initialized'); refreshGit(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        return;
+      }
+      var files = g.files || [];
+      head.innerHTML = '<span class="chip info">' + esc(g.branch || '?') + '</span>' +
+        (g.ahead ? ' <span class="chip">ahead ' + g.ahead + '</span>' : '') +
+        (g.behind ? ' <span class="chip warn">behind ' + g.behind + '</span>' : '') +
+        '<span class="meta" style="word-break:break-all;flex:1">' + esc(g.remote || 'no remote') + '</span>' +
+        '<button class="ubtn" id="gitRefresh" title="refresh">' + icon('retry') + '</button>';
+      $('gitRefresh').onclick = refreshGit;
+      var html = '<div class="section-h" style="margin-top:0">Working tree (' + files.length + ')</div>';
+      if (!files.length) html += '<div class="empty">clean — no changes</div>';
+      html += files.map(function (f) {
+        return '<div class="grow-row"><label style="display:flex;gap:7px;align-items:center;flex:1;cursor:pointer;min-width:0">' +
+          '<input type="checkbox" class="chk gitf" data-f="' + esc(f.path) + '" style="margin:0;width:auto" checked>' +
+          '<span class="chip ' + (f.untracked ? 'warn' : 'info') + '" style="flex:none">' + esc(f.status) + '</span>' +
+          '<span class="gitpath" data-diff="' + esc(f.path) + '" title="view diff">' + esc(f.path) + '</span></label>' +
+          (f.untracked ? '' : '<button class="ubtn gitdiscard" data-d="' + esc(f.path) + '" title="discard changes">' + icon('x') + '</button>') +
+          '</div>';
+      }).join('');
+      html += '<pre class="skinstr" id="gitDiff" hidden></pre>';
+      html += '<div class="section-h">Commit &amp; push</div>' +
+        '<input id="gitMsg" placeholder="commit message" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:7px 9px;margin-bottom:8px">' +
+        '<div style="display:flex;gap:6px;flex-wrap:wrap">' +
+        '<button class="btn dark" id="gitCommitSel">Commit selected</button>' +
+        '<button class="btn ghost" id="gitCommitAll">Commit all</button>' +
+        '<button class="btn ghost" id="gitPush">' + (g.ahead ? 'Push (' + g.ahead + ')' : 'Push') + '</button>' +
+        '</div>';
+      gb.innerHTML = html;
+      gb.querySelectorAll('[data-diff]').forEach(function (el) {
+        el.onclick = function () {
+          var pre = $('gitDiff');
+          var f = el.getAttribute('data-diff');
+          if (pre.dataset.cur === f && !pre.hidden) { pre.hidden = true; return; }
+          pre.hidden = false; pre.dataset.cur = f; pre.textContent = 'loading diff…';
+          api('/api/git/diff?path=' + encodeURIComponent(gitQueryPath()) + '&file=' + encodeURIComponent(f)).then(function (d) {
+            pre.textContent = d.diff || '(no unstaged diff — file may be untracked or staged)';
+          }).catch(function (e) { pre.textContent = e.message; });
+        };
+      });
+      gb.querySelectorAll('.gitdiscard').forEach(function (el) {
+        el.onclick = function () {
+          var f = el.getAttribute('data-d');
+          if (!confirm('Discard local changes in ' + f + '?')) return;
+          api('/api/git/discard', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: gitQueryPath(), file: f }) })
+            .then(function () { toast('Discarded ' + f); refreshGit(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+      });
+      function selected() {
+        var out = [];
+        gb.querySelectorAll('.gitf').forEach(function (cb) { if (cb.checked) out.push(cb.getAttribute('data-f')); });
+        return out;
+      }
+      function commit(filesOrNull) {
+        var msg = $('gitMsg').value.trim();
+        if (!msg) { toast('Commit message required', true); $('gitMsg').focus(); return; }
+        if (filesOrNull && !filesOrNull.length) { toast('No files selected', true); return; }
+        var payload = { path: gitQueryPath(), message: msg };
+        if (filesOrNull) payload.files = filesOrNull;
+        api('/api/git/commit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+          .then(function (d) { toast('Committed ' + d.commit); $('gitMsg').value = ''; refreshGit(); })
+          .catch(function (e) { toast(e.message, true); });
+      }
+      $('gitCommitSel').onclick = function () { commit(selected()); };
+      $('gitCommitAll').onclick = function () { commit(null); };
+      $('gitPush').onclick = function () {
+        api('/api/git/push', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: gitQueryPath() }) })
+          .then(function () { toast('Pushed to remote'); refreshGit(); })
+          .catch(function (e) { toast(e.message, true); });
+      };
+    }).catch(function (e) {
+      var head = $('gitHead');
+      if (head) head.textContent = e.message;
+    });
+  }
+
   function stopBrowserPoll() { if (S.bPoll) { clearInterval(S.bPoll); S.bPoll = null; } }
 
   function startBrowserPoll() {
@@ -1533,7 +1644,7 @@ export const UI_HTML = String.raw`<!doctype html>
         if (im) im.removeAttribute('src');
         return;
       }
-      hint.textContent = (d.state.title || '(blank page)') + (d.state.driving ? ' — Hermes is driving' : '');
+      hint.textContent = (d.state.title || '(blank page)') + (d.state.driving ? ' — Agent Gitu is driving' : '');
       var u = $('bUrl2');
       if (u && document.activeElement !== u) u.value = d.state.url === 'about:blank' ? '' : d.state.url || '';
       var bb = $('bBack2'), ff = $('bFwd2');
@@ -1560,7 +1671,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<button class="btn dark" id="bGo2">Go</button>' +
       '<button class="btn ghost" id="bOpen2" title="open / focus the browser window">Open</button>' +
       '</div>' +
-      '<div class="bwrap"><div class="bdrive" id="bDrive2" hidden>' + icon('bolt') + ' Hermes is driving the browser</div><img id="bImg2" alt="live browser view"></div>' +
+      '<div class="bwrap"><div class="bdrive" id="bDrive2" hidden>' + icon('bolt') + ' Agent Gitu is driving the browser</div><img id="bImg2" alt="live browser view"></div>' +
       '<div class="empty" id="bHint2" style="margin-top:8px"></div></div>';
     $('bBack2').onclick = function () { api('/api/browser/back', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
     $('bFwd2').onclick = function () { api('/api/browser/forward', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
@@ -2089,6 +2200,116 @@ export const UI_HTML = String.raw`<!doctype html>
     openHome();
   }
   boot();
+})();
+</script>
+<div id="mascotWrap" style="position:fixed;right:14px;bottom:12px;z-index:45;pointer-events:none;width:240px;height:170px">
+  <canvas id="mascotCanvas" style="width:240px;height:170px;image-rendering:pixelated"></canvas>
+  <div id="mascotName" style="position:absolute;top:44px;left:0;font:700 11px ui-monospace,Menlo,Consolas,monospace;color:#fff;background:#2a2a26;border:1px solid #7c6cf0;border-radius:6px;padding:2px 8px;white-space:nowrap;opacity:0;transition:opacity .4s">Agent Gitu</div>
+</div>
+<script type="module">
+import * as THREE from '/vendor/three.module.js';
+(function () {
+  var canvas = document.getElementById('mascotCanvas');
+  if (!canvas) return;
+  canvas.width = 120;
+  canvas.height = 85;
+  var renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: false });
+  } catch (e) {
+    return;
+  }
+  renderer.setClearColor(0x000000, 0);
+  var scene = new THREE.Scene();
+  var cam = new THREE.OrthographicCamera(-12, 12, 8.5, -8.5, 0.1, 100);
+  cam.position.set(0, 2, 30);
+  cam.lookAt(0, 2.4, 0);
+  scene.add(new THREE.AmbientLight(0xffffff, 1.7));
+  var dl = new THREE.DirectionalLight(0xffffff, 1.1);
+  dl.position.set(4, 8, 10);
+  scene.add(dl);
+
+  function box(w, h, d, c) {
+    return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color: c }));
+  }
+  var SKIN = 0xe8b98a, SUIT = 0x23231f, PANT = 0x1a1a17, GUN = 0x3a3a36, ACC = 0x7c6cf0;
+
+  var root = new THREE.Group();
+  scene.add(root);
+
+  var legL = new THREE.Group(); legL.position.set(-0.45, 1.7, 0);
+  var legLM = box(0.7, 1.7, 0.7, PANT); legLM.position.y = -0.85; legL.add(legLM); root.add(legL);
+  var legR = new THREE.Group(); legR.position.set(0.45, 1.7, 0);
+  var legRM = box(0.7, 1.7, 0.7, PANT); legRM.position.y = -0.85; legR.add(legRM); root.add(legR);
+
+  var torso = box(1.9, 1.9, 1.0, SUIT); torso.position.y = 2.75; root.add(torso);
+  var tie = box(0.3, 1.1, 0.12, ACC); tie.position.set(0, 2.8, 0.55); root.add(tie);
+
+  var head = box(1.5, 1.5, 1.5, SKIN); head.position.y = 4.5; root.add(head);
+  var shades = box(1.52, 0.35, 0.25, 0x111111); shades.position.set(0, 4.65, 0.7); root.add(shades);
+  var hat = box(1.7, 0.5, 1.7, 0x111111); hat.position.y = 5.45; root.add(hat);
+  var brim = box(1.7, 0.12, 0.9, 0x111111); brim.position.set(0, 5.25, 1.15); root.add(brim);
+
+  var armL = new THREE.Group(); armL.position.set(-1.25, 3.6, 0);
+  var armLM = box(0.55, 1.6, 0.55, SUIT); armLM.position.y = -0.7; armL.add(armLM); root.add(armL);
+  var armR = new THREE.Group(); armR.position.set(1.25, 3.6, 0);
+  var armRM = box(0.55, 1.6, 0.55, SUIT); armRM.position.y = -0.7; armR.add(armRM);
+  var gun = new THREE.Group(); gun.position.set(0, -1.5, 0.2);
+  var g1 = box(0.35, 0.5, 1.7, GUN); g1.position.set(0, 0, 0.6); gun.add(g1);
+  var g2 = box(0.3, 0.7, 0.4, GUN); g2.position.set(0, -0.45, 0.1); gun.add(g2);
+  var flash = box(0.55, 0.55, 0.6, 0xffd23a); flash.position.set(0, 0.05, 1.7); flash.visible = false; gun.add(flash);
+  armR.add(gun); root.add(armR);
+
+  var mode = 'walk';
+  var modeT = 0;
+  var t = 0;
+  var nameX = -11;
+  var nameEl = document.getElementById('mascotName');
+  window.__mascot = {
+    setMode: function (m) {
+      if (m !== mode) { mode = m; modeT = 0; }
+    }
+  };
+
+  var clock = new THREE.Clock();
+  function tick() {
+    requestAnimationFrame(tick);
+    var dt = Math.min(0.05, clock.getDelta());
+    t += dt;
+    modeT += dt;
+    if (mode === 'walk') {
+      var s = Math.sin(t * 9);
+      legL.rotation.x = s * 0.7; legR.rotation.x = -s * 0.7;
+      armL.rotation.x = -s * 0.5;
+      armR.rotation.x = -0.5; armR.rotation.z = -0.12;
+      root.position.x = Math.min(2, -9 + modeT * 3.2);
+      root.position.y = Math.abs(Math.cos(t * 9)) * 0.15;
+      if (modeT > 4.5) { mode = 'idle'; modeT = 0; }
+    } else if (mode === 'shoot') {
+      legL.rotation.x = 0.25; legR.rotation.x = -0.25;
+      armR.rotation.x = -1.35 + Math.sin(t * 28) * 0.07;
+      armR.rotation.z = 0;
+      armL.rotation.x = 0.35;
+      flash.visible = (Math.floor(t * 14) % 2 === 0);
+      root.position.x = 2;
+      root.position.y = Math.sin(t * 28) * 0.04;
+    } else {
+      legL.rotation.x = 0; legR.rotation.x = 0;
+      armR.rotation.x = -0.85; armR.rotation.z = -0.08;
+      armL.rotation.x = 0;
+      flash.visible = false;
+      root.position.x = 2;
+      root.position.y = Math.sin(t * 2) * 0.06;
+    }
+    var targetX = root.position.x - 5.2;
+    nameX += (targetX - nameX) * 0.05;
+    if (nameEl) {
+      nameEl.style.left = Math.round((nameX + 12) / 24 * 240) + 'px';
+      nameEl.style.opacity = mode === 'idle' ? '0.85' : '1';
+    }
+    renderer.render(scene, cam);
+  }
+  tick();
 })();
 </script>
 </body>

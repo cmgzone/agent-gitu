@@ -1,11 +1,12 @@
 {
-  "name": "hermes-agent",
+  "name": "agent-gitu",
   "version": "0.1.0",
-  "description": "Hermes: a bounded autonomous engineering agent with project guard, task ledger, evidence gates, and loop prevention",
+  "description": "Agent Gitu: an autonomous engineering agent with project guard, task ledger, evidence gates, specialist sub-agents, in-app browser and an animated voxel mascot",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
+    "agent-gitu": "dist/cli.js",
     "hermes": "dist/cli.js"
   },
   "scripts": {
@@ -28,5 +29,8 @@
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "three": "^0.185.1"
   }
 }

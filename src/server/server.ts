@@ -1,7 +1,13 @@
 import http from 'node:http';
-import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
+
+const VENDOR_THREE = nodePath.join(
+  nodePath.dirname(fileURLToPath(import.meta.url)),
+  '../../node_modules/three/build/three.module.min.js',
+);
 import { Hermes } from '../agent/hermes.js';
 import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
@@ -410,6 +416,16 @@ export class HermesServer {
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end(UI_HTML);
+      return;
+    }
+
+    if (method === 'GET' && path === '/vendor/three.module.js') {
+      if (!existsSync(VENDOR_THREE)) {
+        this.sendJson(res, 404, { error: 'three.js bundle not installed' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=86400' });
+      createReadStream(VENDOR_THREE).pipe(res);
       return;
     }
 

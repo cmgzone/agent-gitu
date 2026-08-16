@@ -11,7 +11,7 @@ import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
-import type { SkillStore } from '../skills/skills.js';
+import { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentRunner } from './subagent.js';
 import type { CompletionReport, EvidenceKind } from '../types.js';
@@ -256,13 +256,14 @@ export class Hermes {
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler);
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
+    const skills = this.config.skills ?? SkillStore.forProject(guard.lock.repoRoot);
     const executor = new Executor(
       guard,
       ledger,
       policy,
       loopDetector,
       this.emit,
-      this.config.skills,
+      skills,
       this.config.mcp,
       this.config.browser,
       this.config.subagents ? (specs) => this.config.subagents!.runMany(specs) : undefined,
@@ -292,7 +293,7 @@ export class Hermes {
         content: buildSystemPrompt(guard, memory, {
           scopeFiles: this.config.scopeFiles,
           extraConstraints: this.config.extraConstraints,
-          skillsSection: this.config.skills ? this.config.skills.renderForPrompt() : undefined,
+          skillsSection: skills.renderForPrompt(),
           agentsSection: this.config.agentsSection,
           mcpSection: this.config.mcp
             ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined

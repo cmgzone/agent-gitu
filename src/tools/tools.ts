@@ -276,7 +276,7 @@ export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown
 export function toolUseSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   if (!ctx.skills) return fail('skills not available');
   const skill = ctx.skills.get(String(params['name'] ?? ''));
-  if (!skill) return fail(`Unknown skill: ${params['name']}. Use list_skills.`);
+  if (!skill) return fail(`Unknown skill: ${params['name']}. Use list_skills to see existing ones, or create it yourself with create_skill (research with web_fetch first if needed).`);
   return { ok: true, output: `SKILL ${skill.name}: ${skill.description}\n${skill.instructions}` };
 }
 

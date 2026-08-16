@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/hermes.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { SkillStore } from '../src/skills/skills.js';
 
 function makeProject(name: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `hermes-e2e-${name}-`));
@@ -339,6 +340,27 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(report.status).toBe('complete');
     expect(ledger.data.status).toBe('completed');
     expect(report.summary).toContain('Glad you like it');
+  }, 30000);
+
+  it('creates skills by itself when asked', async () => {
+    const dir = makeProject('skillful');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['design skill saved'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'create the skill', verification: 'list_skills shows it' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'create_skill', params: { name: 'design', description: 'design system skill', instructions: '1. check brand colors\n2. prefer svg icons' }, reason: 'user asked for a design skill', expected: 'saved' },
+      }),
+      () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'list_skills', params: {}, reason: 'verify saved', expected: 'design listed' } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop' } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', skills: SkillStore.forProject(path.resolve(dir)) });
+    const { ledger } = await hermes.run('add a design skill and use it');
+
+    const create = ledger.data.actions.find((a) => a.tool === 'create_skill');
+    expect(create?.status).toBe('success');
+    const store = SkillStore.forProject(path.resolve(dir));
+    expect(store.get('design')).toBeTruthy();
+    expect(store.get('design')!.instructions).toContain('svg');
   }, 30000);
 
   it('delegates parallel sub-tasks to named sub-agents', async () => {

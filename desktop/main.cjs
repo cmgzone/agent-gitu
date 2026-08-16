@@ -26,7 +26,7 @@ function ensureBrowserWin() {
     width: 1280,
     height: 900,
     title: 'Hermes Browser',
-    webPreferences: { backgroundThrottling: false },
+    webPreferences: { backgroundThrottling: false, offscreen: true },
   });
   browserWin.on('closed', () => {
     browserWin = null;
@@ -84,6 +84,7 @@ function makeBrowserBridge(normalizeUrl) {
       if (!win.webContents.getURL()) {
         await win.loadURL('about:blank').catch(() => {});
       }
+      if (typeof win.webContents.invalidate === 'function') win.webContents.invalidate();
       const image = await win.webContents.capturePage();
       return { pngBase64: image.toPNG().toString('base64'), state: stateOf(win) };
     },

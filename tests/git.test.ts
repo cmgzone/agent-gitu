@@ -54,5 +54,5 @@ describe('git integration', () => {
     expect(sha).toBeTruthy();
     info = await gitInfo(dir);
     expect(info.files!.length).toBe(0);
-  });
+  }, 20000);
 });

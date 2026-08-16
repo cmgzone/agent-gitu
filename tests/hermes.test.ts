@@ -76,7 +76,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
       }),
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', budgets: { maxActions: 20 } });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
     const { ledger, report } = await hermes.run('Create a hello module');
 
     expect(report.status).toBe('complete');

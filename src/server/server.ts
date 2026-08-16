@@ -656,7 +656,6 @@ export class HermesServer {
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
       const review = body['review'] !== false;
-      const maxActions = typeof body['maxActions'] === 'number' && Number.isFinite(body['maxActions']) ? body['maxActions'] : undefined;
 
       let llm = this.config.llm;
       let resolvedInfo: { providerId: string; model: string } | undefined;
@@ -690,7 +689,7 @@ export class HermesServer {
     this.sessions.set(session.runId, session);
     this.saveRegistry();
     this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort, projectPath, autoApprove });
+      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove });
       return;
     }
 
@@ -882,7 +881,6 @@ export class HermesServer {
       goal: string;
       criteria?: string[];
       mode: 'fast' | 'standard' | 'chat';
-      maxActions?: number;
       review?: boolean;
       scope?: string[];
       constraints?: string[];
@@ -913,7 +911,6 @@ export class HermesServer {
       skills,
       mcp,
       resume: opts.resume,
-      budgets: opts.maxActions ? { maxActions: opts.maxActions } : undefined,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };

@@ -2,19 +2,12 @@ import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import type {
   ActionRecord,
-  Budgets,
   PlanStep,
   ProjectLock,
   TaskLedgerData,
   TaskStatus,
 } from '../types.js';
 import { nowIso, readJson, shortId, writeJson } from '../util.js';
-
-export const DEFAULT_BUDGETS: Budgets = {
-  maxActions: 40,
-  maxPlanAttempts: 30,
-  maxWallClockMs: 30 * 60 * 1000,
-};
 
 export class TaskLedger {
   readonly data: TaskLedgerData;
@@ -31,7 +24,6 @@ export class TaskLedger {
     goal: string;
     project: ProjectLock;
     mode: 'fast' | 'standard' | 'chat';
-    budgets?: Partial<Budgets>;
   }): TaskLedger {
     const taskId = shortId('hermes-task');
     const now = nowIso();
@@ -51,7 +43,6 @@ export class TaskLedger {
       filesChanged: [],
       checkpoints: [],
       blockers: [],
-      budgets: { ...DEFAULT_BUDGETS, ...input.budgets },
       createdAt: now,
       updatedAt: now,
     };
@@ -149,25 +140,6 @@ export class TaskLedger {
   addBlocker(reason: string): void {
     this.data.blockers.push(reason);
     this.save();
-  }
-
-  budgetExceeded(): string | undefined {
-    const { budgets } = this.data;
-    const base = this.data.budgetBaseline ?? { actions: 0, planAttempts: 0 };
-    if (this.data.actions.length - base.actions >= budgets.maxActions) {
-      return `Action budget exhausted (${budgets.maxActions}).`;
-    }
-    const totalAttempts = this.data.plan.reduce((sum, s) => sum + s.attempts, 0);
-    if (totalAttempts - base.planAttempts >= budgets.maxPlanAttempts) {
-      return `Plan attempt budget exhausted (${budgets.maxPlanAttempts}).`;
-    }
-    if (this.data.startedAt) {
-      const elapsed = Date.now() - new Date(this.data.startedAt).getTime();
-      if (elapsed > budgets.maxWallClockMs) {
-        return `Wall-clock budget exhausted (${Math.round(elapsed / 60000)} min).`;
-      }
-    }
-    return undefined;
   }
 
   transcriptTail(maxActions = 8): string {

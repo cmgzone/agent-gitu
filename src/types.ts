@@ -129,12 +129,6 @@ export interface ContextPack {
   budget: { maxFiles: number; maxBytes: number };
 }
 
-export interface Budgets {
-  maxActions: number;
-  maxPlanAttempts: number;
-  maxWallClockMs: number;
-}
-
 export interface CompletionReport {
   taskId: string;
   goal: string;
@@ -168,8 +162,6 @@ export interface TaskLedgerData {
   filesChanged: string[];
   checkpoints: { stepId: string; ref: string; createdAt: string }[];
   blockers: string[];
-  budgets: Budgets;
-  budgetBaseline?: { actions: number; planAttempts: number };
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -186,4 +178,5 @@ export interface ToolResult {
   errorSignature?: string;
   filesTouched?: string[];
   linesAdded?: number;
+  image?: string;
 }

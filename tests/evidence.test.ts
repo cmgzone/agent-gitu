@@ -27,7 +27,6 @@ function emptyLedger(): TaskLedgerData {
     filesChanged: [],
     checkpoints: [],
     blockers: [],
-    budgets: { maxActions: 10, maxPlanAttempts: 10, maxWallClockMs: 1000 },
     createdAt: now,
     updatedAt: now,
   };

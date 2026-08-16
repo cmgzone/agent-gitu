@@ -54,7 +54,6 @@ Usage:
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
   --criteria "<a>|<b>"   Pipe-separated acceptance criteria (skip LLM intake)
-  --max-actions <n>      Action budget (default 40)
   --yes                  Auto-approve dangerous actions (use with care)
   --provider <name>      LLM provider: ${Object.keys(PROVIDERS).join(', ')} (default: auto-detect from env)
   --model <name>         Override model (env: HERMES_MODEL)
@@ -293,7 +292,6 @@ async function main(): Promise<void> {
 
       const criteriaFlag = flags.get('criteria');
       const criteria = typeof criteriaFlag === 'string' ? criteriaFlag.split('|').map((s) => s.trim()).filter(Boolean) : undefined;
-      const maxActions = typeof flags.get('max-actions') === 'string' ? Number(flags.get('max-actions')) : undefined;
 
       const hermes = new Hermes({
         cwd,
@@ -301,7 +299,6 @@ async function main(): Promise<void> {
         mode: flags.get('fast') ? 'fast' : 'standard',
         autoApprove: Boolean(flags.get('yes')),
         criteria,
-        budgets: maxActions && Number.isFinite(maxActions) ? { maxActions } : undefined,
         requirePlanReview: Boolean(flags.get('review')),
         planReviewHandler: async ({ criteria: crits, steps }) => {
           console.log('\nPLAN REVIEW');

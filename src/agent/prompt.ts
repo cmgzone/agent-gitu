@@ -103,7 +103,6 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string): string {
     .slice(-12)
     .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${e.label}${e.command ? ` — ${e.command}` : ''}`)
     .join('\n');
-  const budgetLeft = d.budgets.maxActions - d.actions.length;
 
   return [
     `TASK: ${d.goal}`,
@@ -115,7 +114,6 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string): string {
     `FILES CHANGED: ${d.filesChanged.join(', ') || '(none)'}`,
     d.blockers.length ? `BLOCKERS: ${d.blockers.join('; ')}` : '',
     `RECENT ACTIONS:\n${ledger.transcriptTail()}`,
-    `BUDGET: ${budgetLeft} actions remaining`,
     extra ? `SYSTEM NOTE: ${extra}` : '',
     'Respond with exactly one JSON action.',
   ]

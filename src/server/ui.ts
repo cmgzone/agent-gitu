@@ -269,7 +269,7 @@ export const UI_HTML = String.raw`<!doctype html>
   var S = {
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     draft: '',
-    sel: { wf: 'review', model: '', budget: '40', effort: 'high' },
+    sel: { wf: 'review', model: '', effort: 'high' },
     settings: { review: true, autoApprove: false, projectPath: '' },
     setSection: 'general'
   };
@@ -406,7 +406,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:#dc2626">' + icon('wrench') + '</span>Fix issues and failures</button>' +
       '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
-      '<div class="composer-bar">' + controlsHtml(true) + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
       '</div>';
     var ta = $('goal');
     ta.value = S.draft;
@@ -440,23 +440,20 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!el) return;
     el.innerHTML = effortLevelsFor(pid).map(function (l) { return '<option value="' + l + '">' + l + '</option>'; }).join('');
   }
-  function controlsHtml(showBudget) {
+  function controlsHtml() {
     return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
-      (showBudget ? '<span class="pill"><select id="budget"><option value="40">40 actions</option><option value="20">20 actions</option><option value="80">80 actions</option></select><span class="caret">&#9662;</span></span>' : '');
+      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>';
   }
   function bindControls() {
-    var wf = $('wf'), model = $('model'), effort = $('effort'), budget = $('budget');
+    var wf = $('wf'), model = $('model'), effort = $('effort');
     if (wf) wf.value = S.sel.wf;
     if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
-    if (budget) budget.value = S.sel.budget;
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
     if (wf) wf.onchange = function () { S.sel.wf = wf.value; persist(); };
     if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); persist(); };
     if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
-    if (budget) budget.onchange = function () { S.sel.budget = budget.value; persist(); };
   }
 
   function startRun() {
@@ -472,7 +469,6 @@ export const UI_HTML = String.raw`<!doctype html>
         autoApprove: S.settings.autoApprove,
         effort: S.sel.effort,
         projectPath: S.settings.projectPath || undefined,
-        maxActions: Number(S.sel.budget),
         scope: S.settings.scope || [],
         constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
       })
@@ -495,7 +491,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
       '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Hermes… Enter sends to this session while working, or continues it when done"></textarea>' +
-      '<div class="composer-bar">' + controlsHtml(false) + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
       '<aside class="run-side"><div class="side-tabs">' +
       '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
@@ -759,8 +755,8 @@ export const UI_HTML = String.raw`<!doctype html>
     L.plan.forEach(function (s) { if (s.status === 'done') done++; });
     var total = L.plan.length;
     p.style.display = 'flex';
-    $('progText').textContent = (total ? 'Step ' + done + '/' + total : 'Planning…') + ' · ' + L.actions.length + '/' + L.budgets.maxActions + ' actions · ' + L.evidence.length + ' evidence';
-    var width = Math.min(100, Math.round((done / Math.max(1, total)) * 70 + (L.actions.length / Math.max(1, L.budgets.maxActions)) * 30));
+    $('progText').textContent = (total ? 'Step ' + done + '/' + total : 'Planning…') + ' · ' + L.actions.length + ' actions · ' + L.evidence.length + ' evidence';
+    var width = Math.min(100, Math.round((done / Math.max(1, total)) * 100));
     $('progFill').style.width = width + '%';
   }
 
@@ -1044,8 +1040,8 @@ export const UI_HTML = String.raw`<!doctype html>
     stat('Started', session ? new Date(session.startedAt).toLocaleString() : '—');
     stat('Finished', session && session.finishedAt ? new Date(session.finishedAt).toLocaleString() : 'running…');
     if (L) {
-      stat('Actions', L.actions.length + ' / ' + L.budgets.maxActions);
-      stat('Plan attempts', L.plan.reduce(function (n, s) { return n + s.attempts; }, 0) + ' / ' + L.budgets.maxPlanAttempts);
+      stat('Actions', L.actions.length);
+      stat('Plan attempts', L.plan.reduce(function (n, s) { return n + s.attempts; }, 0));
       stat('Evidence', L.evidence.length);
       stat('Files changed', L.filesChanged.length);
       stat('Checkpoints', L.checkpoints.length);
@@ -1122,16 +1118,12 @@ export const UI_HTML = String.raw`<!doctype html>
         '<div class="setrow"><div class="grow"><div class="t">Default workflow</div><div class="d">Plan mode pauses for your review; Build runs straight through; Chat answers only.</div></div>' +
         '<select id="gWf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
-        '<div class="setrow"><div class="grow"><div class="t">Action budget</div><div class="d">Maximum tool actions per task before the agent must stop.</div></div>' +
-        '<select id="gBudget"><option value="20">20</option><option value="40">40</option><option value="80">80</option></select></div>' +
         '</div>';
       $('gWf').value = S.sel.wf;
       fillEffort('gEffort', provOf(S.sel.model));
       $('gEffort').value = S.sel.effort;
-      $('gBudget').value = S.sel.budget;
       $('gWf').onchange = function () { S.sel.wf = $('gWf').value; persist(); };
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
-      $('gBudget').onchange = function () { S.sel.budget = $('gBudget').value; persist(); };
     } else if (S.setSection === 'providers') {
       b.innerHTML = '<h1>Providers</h1>' +
         '<p style="color:var(--muted);font-size:12.5px">LLM providers and API-key status. Click a model to make it the default for new runs.</p>' +

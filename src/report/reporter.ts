@@ -5,7 +5,7 @@ import { nowIso } from '../util.js';
 export class Reporter {
   build(
     ledger: TaskLedger,
-    exitReason: 'complete' | 'blocked' | 'budget' | 'stalled',
+    exitReason: 'complete' | 'blocked' | 'stalled',
     completionInput?: { summary: string; risks: string[]; followUps: string[] },
   ): CompletionReport {
     const d = ledger.data;
@@ -17,7 +17,6 @@ export class Reporter {
     const statusMap: Record<typeof exitReason, CompletionReport['status']> = {
       complete: 'complete',
       blocked: 'blocked',
-      budget: 'failed',
       stalled: 'failed',
     };
 

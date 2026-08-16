@@ -6,12 +6,14 @@ import type { McpManager } from '../mcp/client.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { ToolResult } from '../types.js';
 import { errorSignature, excerpt } from '../util.js';
+import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 
 export interface ToolContext {
   guard: ProjectGuard;
   cwd: string;
   skills?: SkillStore;
   mcp?: McpManager;
+  browser?: BrowserBridge;
 }
 
 const MAX_FILE_BYTES = 512 * 1024;
@@ -303,5 +305,45 @@ export function toolWebFetch(_ctx: ToolContext, params: Record<string, unknown>)
     .catch((err) => fail(`web_fetch failed: ${(err as Error).message}`));
 }
 
-export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch'] as const;
+export async function toolBrowse(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  if (!ctx.browser) {
+    return fail('browse: no in-app browser available (run the desktop app: npm run app)');
+  }
+  const action = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
+  try {
+    switch (action) {
+      case 'navigate': {
+        const url = normalizeUrl(String(params['url'] ?? ''));
+        const st = await ctx.browser.navigate(url);
+        return { ok: true, output: `navigated to ${st.url} — "${st.title}"` };
+      }
+      case 'back': {
+        const st = await ctx.browser.back();
+        return { ok: true, output: `back to ${st.url} — "${st.title}"` };
+      }
+      case 'forward': {
+        const st = await ctx.browser.forward();
+        return { ok: true, output: `forward to ${st.url} — "${st.title}"` };
+      }
+      case 'reload': {
+        const st = await ctx.browser.reload();
+        return { ok: true, output: `reloaded ${st.url} — "${st.title}"` };
+      }
+      case 'screenshot': {
+        const shot = await ctx.browser.screenshot();
+        return {
+          ok: true,
+          output: `screenshot of ${shot.state.url} — "${shot.state.title}" (${Math.round((shot.pngBase64.length * 3) / 4 / 1024)} KB png attached)`,
+          image: `data:image/png;base64,${shot.pngBase64}`,
+        };
+      }
+      default:
+        return fail(`browse: unknown action "${action}" (navigate|screenshot|back|forward|reload)`);
+    }
+  } catch (err) {
+    return fail(`browse failed: ${(err as Error).message}`);
+  }
+}
+
+export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

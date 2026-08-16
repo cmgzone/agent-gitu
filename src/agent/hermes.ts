@@ -12,7 +12,7 @@ import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
 import type { SkillStore } from '../skills/skills.js';
-import type { Budgets, CompletionReport, EvidenceKind } from '../types.js';
+import type { CompletionReport, EvidenceKind } from '../types.js';
 import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 
 export interface HermesConfig {
@@ -21,7 +21,6 @@ export interface HermesConfig {
   mode?: 'fast' | 'standard' | 'chat';
   autoApprove?: boolean;
   approvalHandler?: ApprovalHandler;
-  budgets?: Partial<Budgets>;
   criteria?: string[];
   requirePlanReview?: boolean;
   planReviewHandler?: PlanReviewHandler;
@@ -211,10 +210,6 @@ export class Hermes {
       ledger.data.completedAt = undefined;
       ledger.data.report = undefined;
       ledger.data.startedAt = undefined;
-      ledger.data.budgetBaseline = {
-        actions: ledger.data.actions.length,
-        planAttempts: ledger.data.plan.reduce((sum, s) => sum + s.attempts, 0),
-      };
       resumeNote = this.config.resume.message;
       this.emit(`ledger   resumed: ${ledger.data.taskId}`);
     } else {
@@ -223,7 +218,6 @@ export class Hermes {
         goal,
         project: guard.lock,
         mode: this.config.mode ?? 'standard',
-        budgets: this.config.budgets,
       });
       if (this.config.extraConstraints && this.config.extraConstraints.length > 0) {
         ledger.data.constraints = [...ledger.data.constraints, ...this.config.extraConstraints];
@@ -302,10 +296,9 @@ export class Hermes {
 
     ledger.setStatus('planning');
 
-    const maxTurns = ledger.data.budgets.maxActions + 12;
     let invalidStreak = 0;
     let loopBlocks = 0;
-    let exitReason: 'complete' | 'blocked' | 'budget' | 'stalled' = 'stalled';
+    let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
     let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
 
     const ask = async (note?: string): Promise<ParsedAction | undefined> => {
@@ -351,16 +344,10 @@ export class Hermes {
     };
 
     try {
-    for (let turn = 0; turn < maxTurns; turn++) {
+    for (;;) {
       if (this.aborted) {
         ledger.addBlocker('Stopped by user.');
         exitReason = 'blocked';
-        break;
-      }
-      const budgetProblem = ledger.budgetExceeded();
-      if (budgetProblem) {
-        ledger.addBlocker(budgetProblem);
-        exitReason = 'budget';
         break;
       }
 
@@ -588,10 +575,6 @@ export class Hermes {
     if (this.aborted && exitReason === 'stalled') {
       ledger.addBlocker('Stopped by user.');
       exitReason = 'blocked';
-    }
-
-    if (exitReason === 'stalled') {
-      ledger.addBlocker('Turn limit reached without completion.');
     }
 
     const status = exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : 'failed';

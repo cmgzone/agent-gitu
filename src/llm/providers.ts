@@ -59,6 +59,29 @@ export interface ModelInfo {
   ownedBy?: string;
 }
 
+const VISION_PATTERNS: RegExp[] = [
+  /\bvl\b/,
+  /vision/,
+  /gpt-4o/,
+  /gpt-4\.1/,
+  /gpt-5/,
+  /\bo3\b/,
+  /\bo4\b/,
+  /qwen3\.\d+-(max|plus)/,
+  /qwen3-max/,
+  /qwen-(max|plus|turbo)/,
+  /kimi-k2/,
+  /glm-5/,
+];
+
+const TEXT_ONLY_PATTERNS: RegExp[] = [/coder/, /deepseek/];
+
+export function modelSupportsImages(model: string): boolean {
+  const m = model.toLowerCase();
+  if (TEXT_ONLY_PATTERNS.some((re) => re.test(m))) return false;
+  return VISION_PATTERNS.some((re) => re.test(m));
+}
+
 export async function fetchLiveModels(opts: {
   baseUrl: string;
   apiKey: string;

@@ -49,7 +49,6 @@ Lock project → criteria → context pack → plan →
 | **EvidenceEngine + gate** | Saying "done" without proof |
 | **LoopDetector** | Repeating the same failing action forever |
 | **PolicyEngine** | Unapproved destructive commands (fail-closed tiers) |
-| **Budgets** | Runaway action/attempt/wall-clock consumption |
 | **CheckpointManager** | Irreversible damage (git branch + snapshot per step) |
 
 ## Quick start
@@ -132,7 +131,7 @@ tests/        unit + end-to-end (mock LLM) suites
 
 ## Roadmap
 
-- [x] Phase 1 — Control: project lock, ledger, action log, budgets, loop prevention
+- [x] Phase 1 — Control: project lock, ledger, action log, loop prevention
 - [x] Phase 2 — Context: role labeling, relevance ranking, budgeted packs (basic)
 - [x] Phase 3 — Verification: evidence capture, completion gate, reports
 - [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs

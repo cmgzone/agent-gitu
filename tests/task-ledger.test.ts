@@ -55,23 +55,6 @@ describe('TaskLedger', () => {
     expect(reloaded?.data.plan[0]!.description).toBe('step one');
   });
 
-  it('enforces the action budget', () => {
-    const dir = makeProject();
-    const guard = ProjectGuard.detect(dir);
-    const ledger = TaskLedger.create({
-      repoRoot: path.resolve(dir),
-      goal: 'g',
-      project: guard.lock,
-      mode: 'fast',
-      budgets: { maxActions: 2 },
-    });
-    expect(ledger.budgetExceeded()).toBeUndefined();
-    for (let i = 0; i < 2; i++) {
-      ledger.recordAction({ tool: 'read_file', paramsHash: `h${i}`, paramsSummary: 'x', status: 'success', reason: 'r', expected: 'e', durationMs: 1 });
-    }
-    expect(ledger.budgetExceeded()).toMatch(/budget/i);
-  });
-
   it('lists tasks newest first', () => {
     const dir = makeProject();
     const guard = ProjectGuard.detect(dir);

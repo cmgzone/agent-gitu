@@ -5,7 +5,7 @@ export { ContextEngine, classifyRole, tokenize } from './context/context-engine.
 export { EvidenceEngine, type GateResult } from './evidence/evidence.js';
 export { Executor, type ExecuteOutcome, type ExecuteRequest } from './executor/executor.js';
 export { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
-export { DEFAULT_BUDGETS, TaskLedger } from './ledger/task-ledger.js';
+export { TaskLedger } from './ledger/task-ledger.js';
 export { DEFAULT_LOOP_POLICY, LoopDetector, type LoopPolicy, type LoopVerdict } from './loop/loop-detector.js';
 export {
   OpenAiCompatClient,

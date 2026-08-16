@@ -84,6 +84,7 @@ export class PolicyEngine {
       case 'list_files':
       case 'search_files':
       case 'web_fetch':
+      case 'browse':
       case 'list_skills':
       case 'use_skill':
         tier = 'safe';

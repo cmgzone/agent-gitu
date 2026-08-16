@@ -115,6 +115,23 @@ export class HermesServer {
     }
   }
 
+  private resolveTaskRoot(taskId: string, queryPath?: string | null): string | undefined {
+    const candidates: (string | undefined)[] = [queryPath ?? undefined];
+    for (const s of this.sessions.values()) {
+      if (s.taskId === taskId) candidates.push(s.projectPath);
+    }
+    candidates.push(this.config.cwd);
+    for (const c of candidates) {
+      if (!c) continue;
+      try {
+        return ProjectGuard.detect(c).lock.repoRoot;
+      } catch {
+        /* try next candidate */
+      }
+    }
+    return undefined;
+  }
+
   private loadRegistry(): { runId: string; taskId?: string; goal: string; project?: string; projectPath?: string; startedAt: string; status: string }[] {
     const root = this.projectRoot();
     if (!root) return [];
@@ -523,8 +540,8 @@ export class HermesServer {
 
     const taskMatch = path.match(/^\/api\/tasks\/([\w-]+)$/);
     if (method === 'GET' && taskMatch) {
-      const guard = ProjectGuard.detect(this.config.cwd);
-      const ledger = TaskLedger.load(guard.lock.repoRoot, taskMatch[1]!);
+      const root = this.resolveTaskRoot(taskMatch[1]!, url.searchParams.get('path'));
+      const ledger = root ? TaskLedger.load(root, taskMatch[1]!) : undefined;
       if (!ledger) {
         this.sendJson(res, 404, { error: 'task not found' });
         return;

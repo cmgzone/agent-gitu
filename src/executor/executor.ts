@@ -58,7 +58,10 @@ export class Executor {
 
     if (stepId) {
       const step = this.ledger.step(stepId);
-      if (step) this.ledger.updateStep(stepId, { status: 'in_progress', attempts: step.attempts + 1 });
+      if (step) {
+        const entering = step.status !== 'in_progress';
+        this.ledger.updateStep(stepId, { status: 'in_progress', attempts: step.attempts + (entering ? 1 : 0) });
+      }
     }
 
     const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined);

@@ -169,6 +169,7 @@ export interface TaskLedgerData {
   checkpoints: { stepId: string; ref: string; createdAt: string }[];
   blockers: string[];
   budgets: Budgets;
+  budgetBaseline?: { actions: number; planAttempts: number };
   createdAt: string;
   updatedAt: string;
   startedAt?: string;

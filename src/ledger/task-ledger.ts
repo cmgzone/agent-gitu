@@ -12,7 +12,7 @@ import { nowIso, readJson, shortId, writeJson } from '../util.js';
 
 export const DEFAULT_BUDGETS: Budgets = {
   maxActions: 40,
-  maxPlanAttempts: 12,
+  maxPlanAttempts: 30,
   maxWallClockMs: 30 * 60 * 1000,
 };
 
@@ -153,11 +153,12 @@ export class TaskLedger {
 
   budgetExceeded(): string | undefined {
     const { budgets } = this.data;
-    if (this.data.actions.length >= budgets.maxActions) {
+    const base = this.data.budgetBaseline ?? { actions: 0, planAttempts: 0 };
+    if (this.data.actions.length - base.actions >= budgets.maxActions) {
       return `Action budget exhausted (${budgets.maxActions}).`;
     }
     const totalAttempts = this.data.plan.reduce((sum, s) => sum + s.attempts, 0);
-    if (totalAttempts >= budgets.maxPlanAttempts) {
+    if (totalAttempts - base.planAttempts >= budgets.maxPlanAttempts) {
       return `Plan attempt budget exhausted (${budgets.maxPlanAttempts}).`;
     }
     if (this.data.startedAt) {

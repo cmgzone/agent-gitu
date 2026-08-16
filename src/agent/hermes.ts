@@ -211,6 +211,10 @@ export class Hermes {
       ledger.data.completedAt = undefined;
       ledger.data.report = undefined;
       ledger.data.startedAt = undefined;
+      ledger.data.budgetBaseline = {
+        actions: ledger.data.actions.length,
+        planAttempts: ledger.data.plan.reduce((sum, s) => sum + s.attempts, 0),
+      };
       resumeNote = this.config.resume.message;
       this.emit(`ledger   resumed: ${ledger.data.taskId}`);
     } else {

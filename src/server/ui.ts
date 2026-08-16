@@ -359,7 +359,18 @@ export const UI_HTML = String.raw`<!doctype html>
       var g = $('follow').value.trim();
       if (!g) return;
       api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: g }) })
-        .then(function () { $('follow').value = ''; })
+        .then(function () {
+          $('follow').value = '';
+          var stream = $('stream');
+          if (stream) {
+            var bubble = userBubble(g);
+            var working = $('working');
+            if (working) stream.insertBefore(bubble, working); else stream.appendChild(bubble);
+            stream.scrollTop = stream.scrollHeight;
+          }
+          setWorking('Thinking…');
+          if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
+        })
         .catch(function (er) { alert(er.message); });
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
@@ -463,6 +474,7 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (text.indexOf('say ') === 0) {
       var prose = text.slice(4);
+      if (!prose.trim()) { closeThought(runId); return; }
       var cur = sess.nodes.thought ? sess.nodes.thought.querySelector('.txt').textContent : '';
       cur = (cur || '').trim();
       if (!cur || (prose.indexOf(cur) !== 0 && cur.indexOf(prose) !== 0)) {
@@ -479,16 +491,19 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('plan-review') === 0) { closeThought(runId); setWorking('Waiting for your plan review…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
     if (text.indexOf('user-msg ') === 0) {
-      var um = document.createElement('div');
-      um.className = 'meta-line';
-      um.innerHTML = '<b style="color:var(--blue)">you</b> ' + esc(text.slice(9));
+      var um = userBubble(text.slice(9));
       insert(um);
+      stream.scrollTop = stream.scrollHeight;
       return;
     }
-    if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0) {
+    if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
       qm.className = 'meta-line';
-      qm.innerHTML = '<b>' + esc(text.split(' ')[0]) + '</b> ' + esc(text.slice(text.indexOf(' ') + 1));
+      var qtag = text.split(' ')[0];
+      var qrest = text.slice(text.indexOf(' ') + 1);
+      var dashIdx = qrest.indexOf(' — ');
+      if (dashIdx >= 0) qrest = qrest.slice(dashIdx + 3);
+      qm.innerHTML = '<b>' + esc(qtag) + '</b> ' + esc(qrest);
       insert(qm);
       return;
     }
@@ -571,6 +586,14 @@ export const UI_HTML = String.raw`<!doctype html>
     stream.scrollTop = stream.scrollHeight;
   }
 
+  function userBubble(text) {
+    var div = document.createElement('div');
+    div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
+    div.innerHTML = '<div style="max-width:75%;background:#eef2ff;border:1px solid #dbe3ff;border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
+      '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) + '</div>';
+    return div;
+  }
+
   function closeIfToolOpen(sess) { /* thoughts and tools may interleave; keep lastTool for out events */ }
 
   function updateProgress(L) {
@@ -648,7 +671,27 @@ export const UI_HTML = String.raw`<!doctype html>
       var id = e.target.getAttribute && e.target.getAttribute('data-appr');
       if (id) {
         api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: e.target.getAttribute('data-ok') === '1' }) })
-          .catch(function (er) { alert(er.message); });
+        .catch(function (er) {
+          var msg = String(er.message);
+          if (msg.indexOf('run not found') >= 0) {
+            var mc = (S.sel.model || '').split('::');
+            api('/api/runs', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                goal: g, provider: mc[0], model: mc[1],
+                mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+                review: S.sel.wf === 'review',
+                effort: S.sel.effort,
+                projectPath: S.projectPath || undefined
+              })
+            }).then(function (r) {
+              ensureRunTab(r.runId, g.slice(0, 40), 'running', basename(S.projectPath || ''));
+              openTab(r.runId);
+            }).catch(function (e2) { alert(e2.message); });
+          } else {
+            alert(msg);
+          }
+        });
         return;
       }
       var head = e.target.closest && e.target.closest('.tool .head');

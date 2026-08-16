@@ -10,7 +10,7 @@ import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import type { CompletionReport } from '../types.js';
-import { nowIso, shortId } from '../util.js';
+import { nowIso, readJson, shortId, writeJson } from '../util.js';
 import { UI_HTML } from './ui.js';
 
 export interface PendingApproval {
@@ -112,6 +112,27 @@ export class HermesServer {
     }
   }
 
+  private loadRegistry(): { runId: string; taskId?: string; goal: string; project?: string; startedAt: string; status: string }[] {
+    const root = this.projectRoot();
+    if (!root) return [];
+    const data = readJson<unknown>(`${root}/.hermes/sessions.json`);
+    return Array.isArray(data) ? (data as { runId: string; taskId?: string; goal: string; project?: string; startedAt: string; status: string }[]) : [];
+  }
+
+  private saveRegistry(): void {
+    const root = this.projectRoot();
+    if (!root) return;
+    const data = [...this.sessions.values()].map((s) => ({
+      runId: s.runId,
+      taskId: s.taskId,
+      goal: s.goal,
+      project: s.project,
+      startedAt: s.startedAt,
+      status: s.status,
+    }));
+    writeJson(`${root}/.hermes/sessions.json`, data);
+  }
+
   async start(): Promise<number> {
     const server = http.createServer((req, res) => {
       this.route(req, res).catch((err) => {
@@ -127,6 +148,22 @@ export class HermesServer {
       this.cronStore = CronStore.forProject(root);
       this.scheduler = new CronScheduler(this.cronStore, (job) => this.startCronRun(root, job));
       this.scheduler.start();
+    }
+    for (const entry of this.loadRegistry()) {
+      if (this.sessions.has(entry.runId)) continue;
+      let status: RunSession['status'] = entry.status as RunSession['status'];
+      if (status !== 'completed' && status !== 'blocked' && status !== 'failed') status = 'blocked';
+      this.sessions.set(entry.runId, {
+        runId: entry.runId,
+        goal: entry.goal,
+        status,
+        startedAt: entry.startedAt,
+        taskId: entry.taskId,
+        project: entry.project,
+        events: [],
+        subscribers: new Set(),
+        approvals: new Map(),
+      });
     }
     return (server.address() as AddressInfo).port;
   }
@@ -157,6 +194,7 @@ export class HermesServer {
       approvals: new Map(),
     };
     this.sessions.set(session.runId, session);
+    this.saveRegistry();
     this.pushEvent(session, `cron job ${job.id} triggered (${job.every})`);
     void this.executeRun(session, llm, { goal: job.goal, mode: 'standard', review: false, projectPath: root });
     return session.runId;
@@ -469,11 +507,12 @@ export class HermesServer {
         subscribers: new Set(),
         approvals: new Map(),
       };
-      this.sessions.set(session.runId, session);
-      this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort, projectPath });
-      return;
-    }
+    this.sessions.set(session.runId, session);
+    this.saveRegistry();
+    this.sendJson(res, 202, { runId: session.runId });
+    void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort, projectPath });
+    return;
+  }
 
     const runMatch = path.match(/^\/api\/runs\/([\w-]+)$/);
     if (method === 'GET' && runMatch) {
@@ -745,9 +784,7 @@ export class HermesServer {
     } finally {
       session.finishedAt = nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
-      for (const sub of [...session.subscribers]) {
-        session.subscribers.delete(sub);
-      }
+      this.saveRegistry();
     }
   }
 }

@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NovaBrowser - Browse Faster, Safer, Smarter</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      color: #1a1a2e;
+      line-height: 1.6;
+    }
+
+    /* Hero Section */
+    .hero {
+      background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+      color: #ffffff;
+      text-align: center;
+      padding: 100px 20px 80px;
+    }
+
+    .hero-logo {
+      font-size: 4rem;
+      margin-bottom: 10px;
+    }
+
+    .hero h1 {
+      font-size: 3.5rem;
+      font-weight: 800;
+      margin-bottom: 16px;
+      background: linear-gradient(90deg, #00d2ff, #7b2ff7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero p {
+      font-size: 1.4rem;
+      color: #c4c4d4;
+      max-width: 600px;
+      margin: 0 auto 30px;
+    }
+
+    .hero-btn {
+      display: inline-block;
+      padding: 16px 40px;
+      background: linear-gradient(90deg, #00d2ff, #7b2ff7);
+      color: #fff;
+      text-decoration: none;
+      border-radius: 50px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .hero-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 30px rgba(123, 47, 247, 0.4);
+    }
+
+    /* Features Section */
+    .features {
+      padding: 80px 20px;
+      background: #f8f9fc;
+      text-align: center;
+    }
+
+    .features h2 {
+      font-size: 2.5rem;
+      margin-bottom: 12px;
+      color: #1a1a2e;
+    }
+
+    .features .subtitle {
+      font-size: 1.1rem;
+      color: #666;
+      margin-bottom: 50px;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 30px;
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    .feature-card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 36px 28px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .feature-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
+    }
+
+    .feature-card .icon {
+      font-size: 2.5rem;
+      margin-bottom: 16px;
+    }
+
+    .feature-card h3 {
+      font-size: 1.3rem;
+      margin-bottom: 10px;
+      color: #1a1a2e;
+    }
+
+    .feature-card p {
+      font-size: 0.95rem;
+      color: #666;
+    }
+
+    /* Stats Section */
+    .stats {
+      padding: 60px 20px;
+      background: #ffffff;
+      text-align: center;
+    }
+
+    .stats-grid {
+      display: flex;
+      justify-content: center;
+      gap: 60px;
+      flex-wrap: wrap;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+
+    .stat-item h3 {
+      font-size: 2.5rem;
+      color: #7b2ff7;
+      font-weight: 800;
+    }
+
+    .stat-item p {
+      font-size: 1rem;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    /* CTA / Download Section */
+    .cta {
+      background: linear-gradient(135deg, #302b63, #24243e);
+      color: #ffffff;
+      text-align: center;
+      padding: 80px 20px;
+    }
+
+    .cta h2 {
+      font-size: 2.5rem;
+      margin-bottom: 16px;
+    }
+
+    .cta p {
+      font-size: 1.2rem;
+      color: #c4c4d4;
+      margin-bottom: 30px;
+      max-width: 500px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .cta-buttons {
+      display: flex;
+      justify-content: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .cta-btn {
+      display: inline-block;
+      padding: 14px 32px;
+      border-radius: 50px;
+      text-decoration: none;
+      font-size: 1rem;
+      font-weight: 600;
+      transition: transform 0.2s;
+    }
+
+    .cta-btn.primary {
+      background: linear-gradient(90deg, #00d2ff, #7b2ff7);
+      color: #fff;
+    }
+
+    .cta-btn.secondary {
+      background: transparent;
+      color: #fff;
+      border: 2px solid rgba(255, 255, 255, 0.4);
+    }
+
+    .cta-btn:hover {
+      transform: translateY(-2px);
+    }
+
+    .platforms {
+      margin-top: 20px;
+      font-size: 0.9rem;
+      color: #999;
+    }
+
+    /* Footer */
+    footer {
+      background: #0f0c29;
+      color: #888;
+      text-align: center;
+      padding: 30px 20px;
+      font-size: 0.9rem;
+    }
+
+    footer a {
+      color: #00d2ff;
+      text-decoration: none;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .hero h1 {
+        font-size: 2.4rem;
+      }
+
+      .hero p {
+        font-size: 1.1rem;
+      }
+
+      .features h2,
+      .cta h2 {
+        font-size: 2rem;
+      }
+
+      .stats-grid {
+        gap: 30px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <div class="hero-logo">&#127760;</div>
+    <h1>NovaBrowser</h1>
+    <p>Browse faster, safer, and smarter. The next-generation browser built for speed, privacy, and seamless experiences.</p>
+    <a href="#download" class="hero-btn">Download Free</a>
+  </section>
+
+  <!-- Features Section -->
+  <section class="features">
+    <h2>Why Choose NovaBrowser?</h2>
+    <p class="subtitle">Everything you need in a modern browser, nothing you don't.</p>
+    <div class="features-grid">
+      <div class="feature-card">
+        <div class="icon">&#9889;</div>
+        <h3>Lightning Fast</h3>
+        <p>Powered by a next-gen rendering engine that loads pages up to 3x faster than traditional browsers.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128274;</div>
+        <h3>Privacy First</h3>
+        <p>Built-in tracker blocking, encrypted DNS, and zero data collection. Your browsing stays yours.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128736;</div>
+        <h3>Extensions Ecosystem</h3>
+        <p>Access thousands of extensions and themes. Customize your browser to fit your workflow perfectly.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128260;</div>
+        <h3>Cross-Device Sync</h3>
+        <p>Seamlessly sync bookmarks, passwords, tabs, and settings across all your devices in real time.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#127912;</div>
+        <h3>AI-Powered Search</h3>
+        <p>Smart address bar with AI suggestions, instant answers, and contextual search results.</p>
+      </div>
+      <div class="feature-card">
+        <div class="icon">&#128274;</div>
+        <h3>Built-in Ad Blocker</h3>
+        <p>Block intrusive ads and pop-ups natively without installing any third-party extensions.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stats Section -->
+  <section class="stats">
+    <div class="stats-grid">
+      <div class="stat-item">
+        <h3>50M+</h3>
+        <p>Active Users</p>
+      </div>
+      <div class="stat-item">
+        <h3>3x</h3>
+        <p>Faster Loading</p>
+      </div>
+      <div class="stat-item">
+        <h3>100%</h3>
+        <p>Tracker Blocking</p>
+      </div>
+      <div class="stat-item">
+        <h3>4.9&#9733;</h3>
+        <p>User Rating</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA / Download Section -->
+  <section class="cta" id="download">
+    <h2>Ready to Switch?</h2>
+    <p>Join millions of users who made the switch to a faster, more private browsing experience.</p>
+    <div class="cta-buttons">
+      <a href="#" class="cta-btn primary">Download for Free</a>
+      <a href="#" class="cta-btn secondary">See What's New</a>
+    </div>
+    <p class="platforms">Available for Windows &bull; macOS &bull; Linux &bull; Android &bull; iOS</p>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>&copy; 2025 NovaBrowser. All rights reserved. | <a href="#">Privacy Policy</a> | <a href="#">Terms of Service</a></p>
+  </footer>
+
+</body>
+</html>

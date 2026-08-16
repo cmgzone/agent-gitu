@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Agent Gitu: an autonomous engineering agent with project guard, task ledger, evidence gates, specialist sub-agents, in-app browser and an animated voxel mascot",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "desktop/main.cjs",
   "types": "dist/index.d.ts",
   "bin": {
     "agent-gitu": "dist/cli.js",
@@ -17,15 +17,60 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "hermes": "tsx src/cli.ts",
-    "app": "npm run build && electron desktop/main.cjs"
+    "app": "npm run build && electron desktop/main.cjs",
+    "dist": "npm run build && electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "dev.agentgitu.desktop",
+    "productName": "Agent Gitu",
+    "asar": false,
+    "files": [
+      "desktop/**/*",
+      "dist/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "publish": null,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Agent-Gitu-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "Agent-Gitu-Portable-${version}.exe"
+    }
   },
   "engines": {
     "node": ">=20"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cmgzone/agent-gitu.git"
+  },
   "devDependencies": {
     "@types/node": "^24.0.0",
     "electron": "^43.4.0",
+    "electron-builder": "^26.15.3",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"

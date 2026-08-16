@@ -174,12 +174,12 @@ The desktop shell (`npm run app`) is fully offline-capable: the server and UI
 run locally inside Electron; only LLM calls need network. If port 8321 is
 taken it binds a free port automatically.
 
-## Hermes home
+## Agent Gitu home
 
 On first launch Hermes creates its own workspace (never a drive root):
 
 ```
-C:\Users\<you>\Hermes\
+C:\Users\<you>\AgentGitu\
 ├── Projects\    default location for "New project" (change in Settings → Workspace)
 ├── Workspace\   free-form scratch space
 ├── Sessions\    session history database
@@ -193,4 +193,5 @@ it. Override the home with `HERMES_HOME_DIR` if needed.
 
 API: `GET /api/project|models|tasks|runs`, `POST /api/runs`,
 `GET /api/runs/:id/stream` (SSE), `POST /api/approvals/:id`.
+
 

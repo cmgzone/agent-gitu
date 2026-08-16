@@ -503,7 +503,7 @@ export const UI_HTML = String.raw`<!doctype html>
     modal.innerHTML = '<div class="box" style="width:460px"><div class="bar"><span style="font-weight:600;font-size:13px">New project</span></div>' +
       '<div style="padding:14px 16px">' +
       '<input id="npName" placeholder="project name (e.g. my-app)" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:8px 10px" autofocus>' +
-      '<div id="npWhere" style="margin-top:8px;color:var(--muted);font-size:12px">Created under the Hermes Projects folder.</div>' +
+      '<div id="npWhere" style="margin-top:8px;color:var(--muted);font-size:12px">Created under the Agent Gitu Projects folder.</div>' +
       '</div>' +
       '<div class="foot"><span style="flex:1"></span><button class="btn ghost" id="npCancel">Cancel</button><button class="btn dark" id="npGo">Create project</button></div></div>';
     document.body.appendChild(modal);
@@ -568,7 +568,7 @@ export const UI_HTML = String.raw`<!doctype html>
       modal.className = 'modal';
       modal.innerHTML = '<div class="box" style="width:460px"><div class="bar"><span style="font-weight:600;font-size:13px">Delete selection</span></div>' +
         '<div style="padding:14px 16px;font-size:13px">Delete <b>' + projs.length + '</b> project(s) and <b>' + runs.length + '</b> session(s)?' +
-        '<label style="display:flex;gap:8px;margin-top:10px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="bdFiles" style="margin:2px 0 0;width:auto"> Also delete the project folders (only folders inside Hermes Projects are removed)</label>' +
+        '<label style="display:flex;gap:8px;margin-top:10px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="bdFiles" style="margin:2px 0 0;width:auto"> Also delete the project folders (only folders inside Agent Gitu Projects are removed)</label>' +
         '<div style="margin-top:8px;color:var(--muted);font-size:12px">This cannot be undone.</div></div>' +
         '<div class="foot"><span style="flex:1"></span><button class="btn ghost" id="bdCancel">Cancel</button><button class="btn red" id="bdGo">Delete</button></div></div>';
       document.body.appendChild(modal);
@@ -1882,12 +1882,12 @@ export const UI_HTML = String.raw`<!doctype html>
         var home = res[1];
         var sel = S.settings.scope || [];
         b.innerHTML = '<h1>Workspace</h1>' +
-          '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Hermes home</div><div class="d" style="font-family:var(--mono)">' + esc(home.root) + '</div></div></div>' +
+          '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Agent Gitu home</div><div class="d" style="font-family:var(--mono)">' + esc(home.root) + '</div></div></div>' +
           '<div class="setrow"><div class="grow"><div class="t">Projects folder</div><div class="d">Where "New project" creates folders. Defaults to &lt;home&gt;/Projects.</div></div></div>' +
           '<div class="setlist"><input type="text" id="wsProjects" value="' + esc(home.projectsPath) + '" placeholder="' + esc(home.projects) + '">' +
           '<div class="row"><button class="btn dark" id="wsProjectsSave">Save projects folder</button><button class="btn ghost" id="wsProjectsReset">Reset to default</button></div></div></div>' +
           '<h2>File scope</h2>' +
-          '<p style="color:var(--muted);font-size:12.5px">Choose which files Hermes should work on. The agent is instructed to stay inside this selection. Leave empty to allow the whole project.</p>' +
+          '<p style="color:var(--muted);font-size:12.5px">Choose which files Agent Gitu should work on. The agent is instructed to stay inside this selection. Leave empty to allow the whole project.</p>' +
           '<div class="setcard"><div class="setlist" style="max-height:300px;overflow-y:auto">' +
           (files.map(function (f) {
             return '<div class="row"><label style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11.5px"><input type="checkbox" data-f="' + esc(f) + '"' + (sel.indexOf(f) >= 0 ? ' checked' : '') + ' style="width:auto;margin:0">' + esc(f) + '</label></div>';
@@ -2181,6 +2181,17 @@ export const UI_HTML = String.raw`<!doctype html>
       });
     }
     api('/api/project').then(function (p) { S.project = p; updateProjChip(); }).catch(function () { updateProjChip(); });
+    api('/api/home').then(function (h) {
+      var heal = function (p) {
+        if (!p) return p;
+        var i = p.indexOf('\\Hermes\\');
+        if (i >= 0) return h.root + p.slice(i + 7);
+        return p;
+      };
+      var np = heal(S.settings.projectPath);
+      if (np !== S.settings.projectPath) { S.settings.projectPath = np; persist(); updateProjChip(); }
+      S.lastProjectPath = heal(S.lastProjectPath);
+    }).catch(function () {});
     api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') openHome(); }).catch(function () {});
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     $('gearBtn').onclick = function () { openSettings('general'); };

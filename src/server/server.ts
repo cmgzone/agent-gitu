@@ -494,7 +494,7 @@ export class HermesServer {
         }
         const base = projectsDir();
         if (!(projectPath.startsWith(base + nodePath.sep) || projectPath === base)) {
-          this.sendJson(res, 400, { error: 'only projects inside the Hermes Projects folder can have their files deleted' });
+          this.sendJson(res, 400, { error: 'only projects inside the Agent Gitu Projects folder can have their files deleted' });
           return;
         }
       }

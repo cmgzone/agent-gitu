@@ -272,7 +272,7 @@ export class Hermes {
       },
     ];
     if (contextNote) messages.push({ role: 'user', content: contextNote });
-    if (resumeNote) {
+    if (resumeNote && ledger.data.mode !== 'chat') {
       messages.push({
         role: 'user',
         content: `CONTINUATION of a previous task in the same session. The user now asks:\n"${resumeNote}"\nUpdate acceptance criteria and plan as needed (set_criteria / set_plan), then execute. Reuse what was already built.`,
@@ -282,7 +282,10 @@ export class Hermes {
     if (ledger.data.mode === 'chat') {
       ledger.setStatus('executing');
       this.emit('think  composing answer');
-      messages.push({ role: 'user', content: `User request (chat mode — answer directly and helpfully, no tools): ${goal}` });
+      messages.push({
+        role: 'user',
+        content: `User request (chat mode — answer directly and helpfully, no tools): ${resumeNote ?? goal}`,
+      });
       const reply = await llm.completeStream(messages, { effort: this.config.effort }, (d) => this.emit(`tdelta ${d}`));
       if (reply.trim()) this.emit(`say ${reply.trim()}`);
       ledger.setStatus('completed');

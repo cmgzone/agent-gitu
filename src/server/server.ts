@@ -132,11 +132,31 @@ export class HermesServer {
     return undefined;
   }
 
-  private loadRegistry(): { runId: string; taskId?: string; goal: string; project?: string; projectPath?: string; startedAt: string; status: string }[] {
+  private loadRegistry(): {
+    runId: string;
+    taskId?: string;
+    goal: string;
+    project?: string;
+    projectPath?: string;
+    startedAt: string;
+    status: string;
+    events?: { i: number; t: string; text: string }[];
+  }[] {
     const root = this.projectRoot();
     if (!root) return [];
     const data = readJson<unknown>(`${root}/.hermes/sessions.json`);
-    return Array.isArray(data) ? (data as { runId: string; taskId?: string; goal: string; project?: string; projectPath?: string; startedAt: string; status: string }[]) : [];
+    return Array.isArray(data)
+      ? (data as {
+          runId: string;
+          taskId?: string;
+          goal: string;
+          project?: string;
+          projectPath?: string;
+          startedAt: string;
+          status: string;
+          events?: { i: number; t: string; text: string }[];
+        }[])
+      : [];
   }
 
   private saveRegistry(): void {
@@ -150,6 +170,7 @@ export class HermesServer {
       projectPath: s.projectPath,
       startedAt: s.startedAt,
       status: s.status,
+      events: s.events.slice(-400),
     }));
     writeJson(`${root}/.hermes/sessions.json`, data);
   }
@@ -190,7 +211,7 @@ export class HermesServer {
         taskId: entry.taskId,
         project: entry.project,
         projectPath: entry.projectPath,
-        events: [],
+        events: Array.isArray(entry.events) ? entry.events : [],
         subscribers: new Set(),
         approvals: new Map(),
       });
@@ -338,7 +359,17 @@ export class HermesServer {
               live = true;
             }
           }
-          return { id: spec.id, label: spec.label, defaultModel: spec.defaultModel, hasKey: Boolean(keyInfo), live, models, effortLevels: spec.effortLevels };
+          return {
+            id: spec.id,
+            label: spec.label,
+            defaultModel: spec.defaultModel,
+            hasKey: Boolean(keyInfo),
+            live,
+            models,
+            effortLevels: spec.effortLevels,
+            keyEnvVars: spec.keyEnvVars,
+            baseUrl: spec.baseUrl,
+          };
         }),
       );
       const withKey = providers.find((p) => p.hasKey);

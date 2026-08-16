@@ -1091,6 +1091,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderSettings() {
     var items = [
       ['general', 'gear', 'General'],
+      ['providers', 'layers', 'Providers'],
       ['permissions', 'shield', 'Permissions'],
       ['workspace', 'folder', 'Workspace'],
       ['project', 'search', 'Project'],
@@ -1125,6 +1126,42 @@ export const UI_HTML = String.raw`<!doctype html>
       $('gWf').onchange = function () { S.sel.wf = $('gWf').value; persist(); };
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
       $('gBudget').onchange = function () { S.sel.budget = $('gBudget').value; persist(); };
+    } else if (S.setSection === 'providers') {
+      b.innerHTML = '<h1>Providers</h1>' +
+        '<p style="color:var(--muted);font-size:12.5px">LLM providers and API-key status. Click a model to make it the default for new runs.</p>' +
+        '<div class="setcard" id="provBody"><div class="meta">loading providers…</div></div>';
+      api('/api/models').then(function (d) {
+        var body = $('provBody');
+        if (!body) return;
+        var cur = S.sel.model || '';
+        body.innerHTML = (d.providers || []).map(function (p) {
+          var keyChip = p.hasKey ? '<span class="chip ok">key ready</span>' : '<span class="chip bad">no key</span>';
+          var liveChip = p.live ? '<span class="chip">live</span>' : '';
+          var models = p.models || [];
+          var shown = models.slice(0, 12);
+          return '<div class="setrow" style="align-items:flex-start"><div class="grow">' +
+            '<div class="t">' + esc(p.label) + ' <span class="meta">(' + esc(p.id) + ')</span> ' + keyChip + ' ' + liveChip + '</div>' +
+            '<div class="d">default: ' + esc(p.defaultModel) + (p.keyEnvVars && !p.hasKey ? ' · set ' + esc(p.keyEnvVars.join(' | ')) : '') + '</div>' +
+            '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">' +
+            shown.map(function (m) {
+              var val = p.id + '::' + m;
+              return '<button class="btn ' + (cur === val ? 'dark' : 'ghost') + '" data-model="' + esc(val) + '" style="padding:3px 9px;font-size:11px">' + esc(m) + '</button>';
+            }).join('') +
+            (models.length > shown.length ? '<span class="meta">+' + (models.length - shown.length) + ' more</span>' : '') +
+            '</div></div></div>';
+        }).join('') || '<div class="meta">no providers available</div>';
+        body.querySelectorAll('[data-model]').forEach(function (btn) {
+          btn.onclick = function () {
+            S.sel.model = btn.getAttribute('data-model');
+            persist();
+            toast('Default model: ' + S.sel.model);
+            renderSettings();
+          };
+        });
+      }).catch(function () {
+        var body = $('provBody');
+        if (body) body.innerHTML = '<div class="meta">failed to load providers</div>';
+      });
     } else if (S.setSection === 'permissions') {
       b.innerHTML = '<h1>Permissions</h1>' +
         '<div class="setcard">' +

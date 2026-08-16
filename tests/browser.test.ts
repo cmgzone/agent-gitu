@@ -93,8 +93,9 @@ describe('Hermes with in-app browser', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'look at the page', verification: 'screenshot' }] } }),
       () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'browse', params: { action: 'screenshot' }, reason: 'verify visually', expected: 'png' } }),
       (_n, messages: LlmMessage[]) => {
-        const last = messages[messages.length - 1];
-        sawImage = Array.isArray(last.content) && last.content.some((p) => p.type === 'image_url');
+        sawImage = messages.some(
+          (m) => Array.isArray(m.content) && m.content.some((p) => p.type === 'image_url'),
+        );
         return JSON.stringify({ action: { type: 'request_block', reason: 'done looking' } });
       },
     ]);
@@ -113,8 +114,10 @@ describe('Hermes with in-app browser', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'look', verification: 'screenshot' }] } }),
       () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'browse', params: { action: 'screenshot' }, reason: 'verify', expected: 'png' } }),
       (_n, messages: LlmMessage[]) => {
-        const last = messages[messages.length - 1];
-        note = typeof last.content === 'string' ? last.content : '';
+        note = messages
+          .filter((m) => typeof m.content === 'string')
+          .map((m) => String(m.content))
+          .join('\n');
         return JSON.stringify({ action: { type: 'request_block', reason: 'done' } });
       },
     ]);

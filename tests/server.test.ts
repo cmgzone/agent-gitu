@@ -238,4 +238,41 @@ describe('HermesServer', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  it('exposes the in-app browser API when a bridge is configured', async () => {
+    const dir = makeProject('browserapi');
+    const state = { available: true, url: 'http://localhost:1/', title: 'T', canBack: false, canForward: false, loading: false };
+    const bridge = {
+      state: () => state,
+      navigate: async (url: string) => ({ ...state, url }),
+      back: async () => state,
+      forward: async () => state,
+      reload: async () => state,
+      screenshot: async () => ({ pngBase64: Buffer.from('png').toString('base64'), state }),
+    };
+    const server = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: bridge });
+    servers.push(server);
+    const port = await server.start();
+    const base = `http://127.0.0.1:${port}`;
+
+    const info = await fetch(`${base}/api/browser`).then((r) => r.json());
+    expect(info.has).toBe(true);
+
+    const nav = await fetch(`${base}/api/browser/navigate`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'http://localhost:4173/' }),
+    }).then((r) => r.json());
+    expect(nav.url).toBe('http://localhost:4173/');
+
+    const shot = await fetch(`${base}/api/browser/screenshot`).then((r) => r.json());
+    expect(shot.pngBase64).toBe(Buffer.from('png').toString('base64'));
+  });
+
+  it('reports 503 for browser endpoints without a bridge', async () => {
+    const dir = makeProject('nobrowser');
+    const { base } = await startServer(dir, new ScriptedMockLlm([]));
+    const res = await fetch(`${base}/api/browser/screenshot`);
+    expect(res.status).toBe(503);
+  });
 });

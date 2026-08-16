@@ -1,8 +1,18 @@
 const { app, BrowserWindow, shell } = require('electron');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const DESIRED_PORT = Number(process.env.HERMES_UI_PORT || 8321);
+
+function log(msg) {
+  try {
+    fs.appendFileSync(path.join(os.tmpdir(), 'hermes-desktop.log'), `[${new Date().toISOString()}] ${msg}\n`);
+  } catch {
+    /* best effort */
+  }
+}
 
 let mainWindow = null;
 let browserWin = null;
@@ -103,8 +113,10 @@ function createMainWindow() {
 }
 
 async function start() {
+  log('start() begin');
   const dist = path.join(__dirname, '..', 'dist');
   const { HermesServer } = await import(pathToFileURL(path.join(dist, 'server', 'server.js')).href);
+  log('server module loaded');
   const browserMod = await import(pathToFileURL(path.join(dist, 'browser', 'browser.js')).href);
   const bridge = makeBrowserBridge(browserMod.normalizeUrl);
 
@@ -112,6 +124,7 @@ async function start() {
   try {
     boundPort = await server.start();
   } catch (err) {
+    log(`first start failed: ${err && err.code} ${err && err.message}`);
     if (String(err && err.code) === 'EADDRINUSE') {
       server = new HermesServer({ cwd: process.cwd(), port: 0, browser: bridge });
       boundPort = await server.start();
@@ -119,8 +132,16 @@ async function start() {
       throw err;
     }
   }
+  log(`server bound to ${boundPort}`);
+  console.log(`[hermes-desktop] UI ready on http://127.0.0.1:${boundPort}`);
+  try {
+    fs.writeFileSync(path.join(os.tmpdir(), 'hermes-desktop-port'), String(boundPort));
+  } catch {
+    /* best effort */
+  }
 
   createMainWindow();
+  log('main window created');
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
@@ -138,6 +159,7 @@ if (!gotLock) {
     }
   });
   app.whenReady().then(start).catch((err) => {
+    log(`fatal: ${err && err.stack ? err.stack : err}`);
     console.error('[hermes-desktop]', err);
     app.quit();
   });

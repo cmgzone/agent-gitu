@@ -185,8 +185,13 @@ export class HermesServer {
         this.sendJson(res, status, { error: msg });
       });
     });
-    await new Promise<void>((resolve) => {
-      server.listen(this.config.port ?? 8321, this.config.host ?? '127.0.0.1', resolve);
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: Error): void => reject(err);
+      server.once('error', onError);
+      server.listen(this.config.port ?? 8321, this.config.host ?? '127.0.0.1', () => {
+        server.removeListener('error', onError);
+        resolve();
+      });
     });
     this.server = server;
     const root = this.projectRoot();

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
+import { UI_HTML } from '../src/server/ui.js';
 
 function makeProject(name: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `hermes-web-${name}-`));
@@ -26,6 +27,11 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 20000): 
 
 describe('HermesServer', () => {
   const servers: HermesServer[] = [];
+
+  it('serves a syntactically valid inline UI script', () => {
+    const js = UI_HTML.split('<script>')[1]!.split('</script>')[0]!;
+    expect(() => new Function(js)).not.toThrow();
+  });
 
   afterAll(async () => {
     for (const s of servers) await s.stop();

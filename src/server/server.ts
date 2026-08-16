@@ -73,6 +73,7 @@ interface RunSession {
   finishedAt?: string;
   taskId?: string;
   project?: string;
+  projectPath?: string;
   provider?: string;
   model?: string;
   events: { i: number; t: string; text: string }[];
@@ -114,11 +115,11 @@ export class HermesServer {
     }
   }
 
-  private loadRegistry(): { runId: string; taskId?: string; goal: string; project?: string; startedAt: string; status: string }[] {
+  private loadRegistry(): { runId: string; taskId?: string; goal: string; project?: string; projectPath?: string; startedAt: string; status: string }[] {
     const root = this.projectRoot();
     if (!root) return [];
     const data = readJson<unknown>(`${root}/.hermes/sessions.json`);
-    return Array.isArray(data) ? (data as { runId: string; taskId?: string; goal: string; project?: string; startedAt: string; status: string }[]) : [];
+    return Array.isArray(data) ? (data as { runId: string; taskId?: string; goal: string; project?: string; projectPath?: string; startedAt: string; status: string }[]) : [];
   }
 
   private saveRegistry(): void {
@@ -129,6 +130,7 @@ export class HermesServer {
       taskId: s.taskId,
       goal: s.goal,
       project: s.project,
+      projectPath: s.projectPath,
       startedAt: s.startedAt,
       status: s.status,
     }));
@@ -162,6 +164,7 @@ export class HermesServer {
         startedAt: entry.startedAt,
         taskId: entry.taskId,
         project: entry.project,
+        projectPath: entry.projectPath,
         events: [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -191,6 +194,7 @@ export class HermesServer {
       goal: `[cron ${job.every}] ${job.goal}`,
       status: 'running',
       startedAt: nowIso(),
+      projectPath: root,
       events: [],
       subscribers: new Set(),
       approvals: new Map(),
@@ -392,6 +396,7 @@ export class HermesServer {
       const requestedRaw = (url.searchParams.get('path') ?? '').trim();
       try {
         let requested = requestedRaw;
+        if (requested && !nodePath.isAbsolute(requested)) requested = '';
         if (!requested) {
           if (process.platform === 'win32') {
             const drives: string[] = [];
@@ -549,6 +554,7 @@ export class HermesServer {
         taskId: undefined,
         provider: resolvedInfo?.providerId,
         model: resolvedInfo?.model,
+        projectPath,
         events: [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -665,11 +671,13 @@ export class HermesServer {
       session.status = 'running';
       session.report = undefined;
       session.finishedAt = undefined;
-      this.pushEvent(session, `continue "${text}" — resuming this session`);
+      this.pushEvent(session, `user-msg ${text}`);
+      this.pushEvent(session, `continue — resuming this session`);
       void this.executeRun(session, llm, {
         goal: session.goal,
         mode: 'standard',
         review: false,
+        projectPath: session.projectPath,
         resume: { taskId: session.taskId, message: text },
       });
       this.sendJson(res, 200, { ok: true, resumed: true });

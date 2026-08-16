@@ -226,6 +226,11 @@ export const UI_HTML = String.raw`<!doctype html>
   .modal .foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
   .sb .navitem .ico, .sb .proj .ico, .setnav .item .ico, .sug .ico { display: inline-flex; align-items: center; color: var(--muted); }
   .setlist .x svg { width: 12px; height: 12px; }
+  .ubtns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; opacity: 0; transition: opacity .12s; }
+  div:hover > .ubtns, div:hover .ubtns { opacity: 1; }
+  .ubtn { border: 1px solid var(--border); background: #fff; color: var(--muted); border-radius: 6px; width: 24px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
+  .ubtn:hover { color: var(--text); border-color: var(--border2); }
+  .ubtn svg { width: 12px; height: 12px; }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
@@ -306,6 +311,7 @@ export const UI_HTML = String.raw`<!doctype html>
     search: SVG_OPEN + '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>',
     check: SVG_OPEN + '<polyline points="20 6 9 17 4 12"/></svg>',
     wrench: SVG_OPEN + '<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg>',
+    retry: SVG_OPEN + '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
     layers: SVG_OPEN + '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
   };
   function icon(name) { return ICONS[name] || ''; }
@@ -342,7 +348,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
       names.forEach(function (p) {
-        html += '<div class="proj" data-projpick="' + esc(p) + '"><span class="ico">' + icon('folder') + '</span>' + esc(p) + '</div>';
+        html += '<div class="proj"><span class="ico">' + icon('folder') + '</span>' + esc(p) + '</div>';
         byProj[p].slice(0, 8).forEach(function (s) {
           html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '">' +
             '<span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></button>';
@@ -355,13 +361,6 @@ export const UI_HTML = String.raw`<!doctype html>
       });
       $('sbScroll').querySelectorAll('[data-set]').forEach(function (el) {
         el.onclick = function () { openSettings(el.getAttribute('data-set')); };
-      });
-      $('sbScroll').querySelectorAll('[data-projpick]').forEach(function (el) {
-        el.onclick = function () {
-          S.settings.projectPath = el.getAttribute('data-projpick');
-          persist();
-          updateProjChip();
-        };
       });
     }).catch(function () {});
     api('/api/cron').then(function (d) { S.cronCount = (d.jobs || []).length; }).catch(function () {});
@@ -509,36 +508,7 @@ export const UI_HTML = String.raw`<!doctype html>
       e.preventDefault();
       var g = $('follow').value.trim();
       if (!g) return;
-      api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: g }) })
-        .then(function () {
-          $('follow').value = '';
-          var stream = $('stream');
-          if (stream) {
-            var bubble = userBubble(g);
-            var working = $('working');
-            if (working) stream.insertBefore(bubble, working); else stream.appendChild(bubble);
-            stream.scrollTop = stream.scrollHeight;
-          }
-          setWorking('Thinking…');
-          if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
-        })
-        .catch(function (er) {
-          var msg = String(er.message);
-          if (msg.indexOf('run not found') >= 0) {
-            var mc = (S.sel.model || '').split('::');
-            api('/api/runs', {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                goal: g, provider: mc[0], model: mc[1],
-                mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-                review: S.sel.wf === 'review' ? S.settings.review : false,
-                autoApprove: S.settings.autoApprove,
-                effort: S.sel.effort,
-                projectPath: S.settings.projectPath || undefined
-              })
-            }).then(function (r) { openRun(r.runId); }).catch(function (e2) { toast(e2.message, true); });
-          } else alert(msg);
-        });
+      sendFollow(g);
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
     bindControls();
@@ -571,8 +541,48 @@ export const UI_HTML = String.raw`<!doctype html>
     var div = document.createElement('div');
     div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
     div.innerHTML = '<div style="max-width:75%;background:#eef2ff;border:1px solid #dbe3ff;border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
-      '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) + '</div>';
+      '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) +
+      '<div class="ubtns"><button class="ubtn" title="edit and resend" data-ub="edit">' + icon('pencil') + '</button>' +
+      '<button class="ubtn" title="retry" data-ub="retry">' + icon('retry') + '</button></div></div>';
+    div.querySelector('[data-ub="edit"]').onclick = function () {
+      var f = $('follow') || $('goal');
+      if (f) { f.value = text; f.focus(); }
+    };
+    div.querySelector('[data-ub="retry"]').onclick = function () { sendFollow(text); };
     return div;
+  }
+
+  function appendLive(stream, el) {
+    var w = $('working');
+    if (w && w.style.display !== 'none') stream.insertBefore(el, w); else stream.appendChild(el);
+  }
+
+  function sendFollow(text) {
+    var runId = S.active;
+    api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text }) })
+      .then(function () {
+        var f = $('follow');
+        if (f) f.value = '';
+        setWorking('Thinking…');
+        if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
+      })
+      .catch(function (er) {
+        var msg = String(er.message);
+        if (msg.indexOf('run not found') >= 0) {
+          var mc = (S.sel.model || '').split('::');
+          api('/api/runs', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              goal: text, provider: mc[0], model: mc[1],
+              mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+              review: S.sel.wf === 'review' ? S.settings.review : false,
+              autoApprove: S.settings.autoApprove,
+              effort: S.sel.effort,
+              projectPath: S.settings.projectPath || undefined
+            })
+          }).then(function (r) { openRun(r.runId); }).catch(function (e2) { toast(e2.message, true); });
+        } else toast(msg, true);
+      });
   }
 
   function closeThought(runId) {
@@ -657,7 +667,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
-    if (text.indexOf('user-msg ') === 0) { insert(userBubble(text.slice(9))); stream.scrollTop = stream.scrollHeight; return; }
+    if (text.indexOf('user-msg ') === 0) { appendLive(stream, userBubble(text.slice(9))); stream.scrollTop = stream.scrollHeight; return; }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
       qm.className = 'meta-line';
@@ -666,7 +676,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var dashIdx = qrest.indexOf(' — ');
       if (dashIdx >= 0) qrest = qrest.slice(dashIdx + 3);
       qm.innerHTML = '<b>' + esc(qtag) + '</b> ' + esc(qrest);
-      insert(qm);
+      appendLive(stream, qm);
       return;
     }
     if (text.indexOf('parallel') === 0) {
@@ -1152,7 +1162,8 @@ export const UI_HTML = String.raw`<!doctype html>
       b.innerHTML = '<h1>Project</h1>' +
         '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Active project path</div><div class="d">Each project has its own chats, skills, MCP servers and cron jobs.</div></div></div>' +
         '<div class="setlist"><input type="text" id="prPath" value="' + esc(S.settings.projectPath) + '" placeholder="C:\\path\\to\\project">' +
-        '<div class="row"><button class="btn dark" id="prSave">Save project</button></div></div></div>';
+        '<div class="row"><button class="btn dark" id="prSave">Save project</button><button class="btn ghost" id="prBrowse">Browse folders…</button></div></div></div>';
+      $('prBrowse').onclick = openFolderBrowser;
       $('prSave').onclick = function () {
         S.settings.projectPath = $('prPath').value.trim();
         persist();
@@ -1229,8 +1240,10 @@ export const UI_HTML = String.raw`<!doctype html>
     browseTo(S.settings.projectPath || '');
   }
 
-  function browseTo(p) {
-    api('/api/browse?path=' + encodeURIComponent(p || '')).then(renderBrowser).catch(function (e) { toast(e.message, true); });
+  function browseTo(p, isFallback) {
+    api('/api/browse?path=' + encodeURIComponent(p || '')).then(renderBrowser).catch(function (e) {
+      if (!isFallback) { browseTo('', true); } else { toast(e.message, true); }
+    });
   }
 
   function renderBrowser(d) {
@@ -1268,6 +1281,14 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function boot() {
+    if (S.settings.projectPath) {
+      api('/api/browse?path=' + encodeURIComponent(S.settings.projectPath)).catch(function () {
+        toast('Stored project path no longer exists — pick a folder', true);
+        S.settings.projectPath = '';
+        persist();
+        updateProjChip();
+      });
+    }
     api('/api/project').then(function (p) { S.project = p; updateProjChip(); }).catch(function () { updateProjChip(); });
     api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') openHome(); }).catch(function () {});
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});

@@ -5,7 +5,7 @@ import type { MemoryStore } from '../memory/memory-store.js';
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string } = {},
+  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; vision?: boolean; hasBrowser?: boolean } = {},
 ): string {
   const lock = guard.lock;
   const scopeSection =
@@ -22,8 +22,15 @@ export function buildSystemPrompt(
   const mcpSection = opts.mcpSection
     ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n`
     : '';
+  const browserSection = opts.hasBrowser
+    ? `\nIN-APP BROWSER (visual verification): a real browser is embedded in the desktop app.${
+        opts.vision
+          ? ' You CAN see screenshots: navigate to the running app/page (e.g. a localhost dev server), take a screenshot, and inspect it visually before claiming visual work is done.'
+          : ' The current model cannot see images; screenshots are captured for the user but not delivered to you — rely on DOM/tests or ask for a vision-capable model.'
+      }\n`
+    : '';
   return `You are Hermes, an autonomous software engineering agent operating inside a LOCKED project boundary.
-${scopeSection}${constraintSection}${skillsSection}${mcpSection}
+${scopeSection}${constraintSection}${skillsSection}${mcpSection}${browserSection}
 
 PROJECT LOCK (do not violate):
   name: ${lock.name}
@@ -68,6 +75,7 @@ Tools:
 - search_files {"pattern":"regex","path":"src"}
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
 - web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
+- browse       {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"}  (in-app browser; screenshot is delivered as an image when the model supports vision)
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
 - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}

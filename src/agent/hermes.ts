@@ -5,13 +5,14 @@ import { Executor } from '../executor/executor.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
-import { extractJson, type LlmClient, type LlmMessage } from '../llm/llm.js';
+import { extractJson, type LlmClient, type LlmContentPart, type LlmMessage } from '../llm/llm.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
 import type { SkillStore } from '../skills/skills.js';
+import type { BrowserBridge } from '../browser/browser.js';
 import type { CompletionReport, EvidenceKind } from '../types.js';
 import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 
@@ -30,6 +31,9 @@ export interface HermesConfig {
   effort?: 'low' | 'medium' | 'high' | 'max';
   skills?: SkillStore;
   mcp?: McpManager;
+  browser?: BrowserBridge;
+  images?: { name: string; dataUrl: string }[];
+  supportsImages?: boolean;
   resume?: { taskId: string; message: string };
   onEvent?: (event: string) => void;
 }
@@ -232,7 +236,7 @@ export class Hermes {
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler);
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
-    const executor = new Executor(guard, ledger, policy, loopDetector, this.emit, this.config.skills, this.config.mcp);
+    const executor = new Executor(guard, ledger, policy, loopDetector, this.emit, this.config.skills, this.config.mcp, this.config.browser);
     const context = new ContextEngine(guard);
     const reporter = new Reporter();
 
@@ -262,10 +266,30 @@ export class Hermes {
           mcpSection: this.config.mcp
             ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined
             : undefined,
+          vision: this.config.supportsImages ?? false,
+          hasBrowser: Boolean(this.config.browser),
         }),
       },
     ];
     if (contextNote) messages.push({ role: 'user', content: contextNote });
+    if (this.config.images && this.config.images.length > 0) {
+      if (this.config.supportsImages) {
+        const parts: LlmContentPart[] = [
+          { type: 'text', text: `The user attached ${this.config.images.length} image(s) relevant to the task. Inspect them carefully and ground your work in what they show.` },
+        ];
+        for (const img of this.config.images) {
+          parts.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+        }
+        messages.push({ role: 'user', content: parts });
+        this.emit(`images   ${this.config.images.length} user image(s) attached`);
+      } else {
+        messages.push({
+          role: 'user',
+          content: `The user attached ${this.config.images.length} image(s), but the current model does not support images; they were not delivered. Suggest a vision-capable model if visual input is essential.`,
+        });
+        this.emit('images   skipped — model does not support images');
+      }
+    }
     if (resumeNote && ledger.data.mode !== 'chat') {
       messages.push({
         role: 'user',
@@ -336,8 +360,8 @@ export class Hermes {
       return parsed;
     };
 
-    const observe = (text: string): void => {
-      messages.push({ role: 'user', content: text });
+    const observe = (content: string | LlmContentPart[]): void => {
+      messages.push({ role: 'user', content });
       if (messages.length > 40) {
         messages.splice(1, messages.length - 40);
       }
@@ -484,10 +508,20 @@ export class Hermes {
             }
           }
 
-          observe(
+          const resultText =
             `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n` +
-              `${outcome.result.output.slice(0, 2500)}${evidenceNote}`,
-          );
+            `${outcome.result.output.slice(0, 2500)}${evidenceNote}`;
+          if (outcome.result.image && this.config.supportsImages) {
+            observe([
+              { type: 'text', text: resultText },
+              { type: 'image_url', image_url: { url: outcome.result.image } },
+            ]);
+            this.emit('image    visual result attached to model context');
+          } else if (outcome.result.image) {
+            observe(`${resultText}\n(A screenshot was captured and is visible in the desktop Browser panel, but the current model cannot see images.)`);
+          } else {
+            observe(resultText);
+          }
           break;
         }
         case 'claim_criterion': {

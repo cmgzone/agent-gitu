@@ -3,11 +3,12 @@ import { existsSync, readdirSync, statSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Hermes } from '../agent/hermes.js';
+import type { BrowserBridge } from '../browser/browser.js';
 import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import type { LlmClient } from '../llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, providerKey, resolveLlm } from '../llm/providers.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, modelSupportsImages, providerKey, resolveLlm } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { SessionStore } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -94,6 +95,7 @@ export interface HermesServerConfig {
   host?: string;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
+  browser?: BrowserBridge;
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -252,7 +254,7 @@ export class HermesServer {
     res.end(data);
   }
 
-  private async readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  private async readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
     const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
     if (contentType && contentType !== 'application/json') {
       throw new Error('Content-Type must be application/json');
@@ -261,7 +263,7 @@ export class HermesServer {
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
       size += (chunk as Buffer).length;
-      if (size > 1_000_000) throw new Error('Body too large');
+      if (size > maxBytes) throw new Error('Body too large');
       chunks.push(chunk as Buffer);
     }
     if (chunks.length === 0) return {};
@@ -375,7 +377,7 @@ export class HermesServer {
             defaultModel: spec.defaultModel,
             hasKey: Boolean(keyInfo),
             live,
-            models,
+            models: models.map((id) => ({ id, vision: modelSupportsImages(id) })),
             effortLevels: spec.effortLevels,
             keyEnvVars: spec.keyEnvVars,
             baseUrl: spec.baseUrl,
@@ -384,6 +386,38 @@ export class HermesServer {
       );
       const withKey = providers.find((p) => p.hasKey);
       this.sendJson(res, 200, { providers, defaultProvider: withKey?.id ?? 'alibaba' });
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/browser') {
+      const b = this.config.browser;
+      this.sendJson(res, 200, { has: Boolean(b), state: b ? b.state() : undefined });
+      return;
+    }
+
+    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot)$/);
+    if (browserMatch) {
+      const b = this.config.browser;
+      if (!b) {
+        this.sendJson(res, 503, { error: 'no in-app browser available — run the desktop app (npm run app)' });
+        return;
+      }
+      try {
+        if (browserMatch[1] === 'screenshot') {
+          this.sendJson(res, 200, await b.screenshot());
+        } else if (browserMatch[1] === 'navigate') {
+          const body = await this.readBody(req);
+          this.sendJson(res, 200, await b.navigate(String(body['url'] ?? '')));
+        } else if (browserMatch[1] === 'back') {
+          this.sendJson(res, 200, await b.back());
+        } else if (browserMatch[1] === 'forward') {
+          this.sendJson(res, 200, await b.forward());
+        } else {
+          this.sendJson(res, 200, await b.reload());
+        }
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
       return;
     }
 
@@ -640,7 +674,7 @@ export class HermesServer {
     }
 
     if (method === 'POST' && path === '/api/runs') {
-      const body = await this.readBody(req);
+      const body = await this.readBody(req, 12_000_000);
       const goal = typeof body['goal'] === 'string' ? body['goal'].trim() : '';
       if (!goal) {
         this.sendJson(res, 400, { error: 'goal is required' });
@@ -657,6 +691,12 @@ export class HermesServer {
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
       const review = body['review'] !== false;
 
+      const images = Array.isArray(body['images'])
+        ? (body['images'] as Record<string, unknown>[])
+            .map((im) => ({ name: String(im['name'] ?? 'image'), dataUrl: String(im['dataUrl'] ?? '') }))
+            .filter((im) => im.dataUrl.startsWith('data:image/'))
+            .slice(0, 4)
+        : undefined;
       let llm = this.config.llm;
       let resolvedInfo: { providerId: string; model: string } | undefined;
       if (!llm) {
@@ -679,8 +719,8 @@ export class HermesServer {
         status: 'running',
         startedAt: nowIso(),
         taskId: undefined,
-        provider: resolvedInfo?.providerId,
-        model: resolvedInfo?.model,
+        provider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
+        model: resolvedInfo?.model ?? model,
         projectPath,
         events: [],
         subscribers: new Set(),
@@ -689,7 +729,7 @@ export class HermesServer {
     this.sessions.set(session.runId, session);
     this.saveRegistry();
     this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove });
+      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, images, model: resolvedInfo?.model ?? model });
       return;
     }
 
@@ -778,12 +818,18 @@ export class HermesServer {
         this.sendJson(res, 404, { error: 'run not found' });
         return;
       }
-      const body = await this.readBody(req);
+      const body = await this.readBody(req, 12_000_000);
       const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
       if (!text) {
         this.sendJson(res, 400, { error: 'text is required' });
         return;
       }
+      const images = Array.isArray(body['images'])
+        ? (body['images'] as Record<string, unknown>[])
+            .map((im) => ({ name: String(im['name'] ?? 'image'), dataUrl: String(im['dataUrl'] ?? '') }))
+            .filter((im) => im.dataUrl.startsWith('data:image/'))
+            .slice(0, 4)
+        : undefined;
       if (session.status === 'running') {
         session.hermes?.queueMessage(text);
         this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
@@ -817,6 +863,8 @@ export class HermesServer {
         review: false,
         projectPath: session.projectPath,
         resume: { taskId: session.taskId, message: text },
+        images,
+        model: session.model,
       });
       this.sendJson(res, 200, { ok: true, resumed: true });
       return;
@@ -888,6 +936,8 @@ export class HermesServer {
       projectPath?: string;
       resume?: { taskId: string; message: string };
       autoApprove?: boolean;
+      images?: { name: string; dataUrl: string }[];
+      model?: string;
     },
   ): Promise<void> {
     let root: string;
@@ -911,6 +961,9 @@ export class HermesServer {
       skills,
       mcp,
       resume: opts.resume,
+      browser: this.config.browser,
+      images: opts.images,
+      supportsImages: modelSupportsImages(opts.model ?? session.model ?? ''),
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };

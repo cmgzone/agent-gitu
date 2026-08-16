@@ -231,6 +231,31 @@ export const UI_HTML = String.raw`<!doctype html>
   .ubtn { border: 1px solid var(--border); background: #fff; color: var(--muted); border-radius: 6px; width: 24px; height: 22px; display: inline-flex; align-items: center; justify-content: center; }
   .ubtn:hover { color: var(--text); border-color: var(--border2); }
   .ubtn svg { width: 12px; height: 12px; }
+
+  .shell.left-collapsed .sb { width: 44px; }
+  .shell.left-collapsed .sb .scroll, .shell.left-collapsed .sb .foot,
+  .shell.left-collapsed .sb .name, .shell.left-collapsed .sb .spacer,
+  .shell.left-collapsed .sb #gearBtn { display: none; }
+  .shell.left-collapsed .sb .head { padding: 14px 0 8px; justify-content: center; }
+  .run-side .collapse-tab { margin-left: auto; border: 0; background: none; color: var(--muted); border-radius: 7px; width: 26px; height: 26px; align-self: center; font-size: 12px; }
+  .run-side .collapse-tab:hover { background: #f0f0ec; color: var(--text); }
+  .run-side .rail { display: none; flex-direction: column; align-items: center; padding-top: 10px; }
+  .run-side .rail button { writing-mode: vertical-rl; border: 0; background: none; color: var(--muted); font-size: 11px; letter-spacing: 1.5px; padding: 12px 5px; border-radius: 7px; }
+  .run-side .rail button:hover { background: #f0f0ec; color: var(--text); }
+  .run.collapsed-side .run-side { width: 40px; }
+  .run.collapsed-side .side-tabs, .run.collapsed-side .side-body { display: none; }
+  .run.collapsed-side .run-side .rail { display: flex; }
+
+  .thumbs { display: flex; gap: 6px; padding: 8px 8px 0; flex-wrap: wrap; }
+  .thumbs .th { position: relative; }
+  .thumbs img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
+  .thumbs .rm { position: absolute; top: -7px; right: -7px; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--border2); background: #fff; color: var(--muted); font-size: 10px; display: flex; align-items: center; justify-content: center; padding: 0; }
+  .thumbs .rm:hover { color: var(--red); border-color: #fecaca; }
+  .pill[disabled] { opacity: .4; cursor: not-allowed; }
+
+  .bpanel .nav { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .bpanel .nav input { flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; background: #fff; min-width: 0; }
+  .bpanel img.shot { width: 100%; border: 1px solid var(--border); border-radius: 10px; display: none; background: #fff; }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
@@ -241,6 +266,7 @@ export const UI_HTML = String.raw`<!doctype html>
       <span class="name">HERMES</span>
       <span class="spacer"></span>
       <button class="iconbtn" id="gearBtn" title="settings">&#9881;</button>
+      <button class="iconbtn" id="sbCollapse" title="collapse sidebar">&#171;</button>
     </div>
     <div class="scroll" id="sbScroll"></div>
     <div class="foot">
@@ -271,7 +297,8 @@ export const UI_HTML = String.raw`<!doctype html>
     draft: '',
     sel: { wf: 'review', model: '', effort: 'high' },
     settings: { review: true, autoApprove: false, projectPath: '' },
-    setSection: 'general'
+    setSection: 'general',
+    pendingImages: []
   };
   try {
     var saved = JSON.parse(localStorage.getItem('hermes.settings') || 'null');
@@ -312,7 +339,9 @@ export const UI_HTML = String.raw`<!doctype html>
     check: SVG_OPEN + '<polyline points="20 6 9 17 4 12"/></svg>',
     wrench: SVG_OPEN + '<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg>',
     retry: SVG_OPEN + '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
-    layers: SVG_OPEN + '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
+    layers: SVG_OPEN + '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
+    image: SVG_OPEN + '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+    globe: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z"/></svg>'
   };
   function icon(name) { return ICONS[name] || ''; }
   function api(path, opts) {
@@ -406,6 +435,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:#dc2626">' + icon('wrench') + '</span>Fix issues and failures</button>' +
       '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
+      '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
       '</div>';
     var ta = $('goal');
@@ -424,8 +454,8 @@ export const UI_HTML = String.raw`<!doctype html>
     S.models.forEach(function (p) {
       out += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(p.id + ' / ' + titleCase(p.defaultModel)) + '</option>';
       p.models.forEach(function (m) {
-        if (m === p.defaultModel) return;
-        out += '<option value="' + esc(p.id + '::' + m) + '">' + esc(p.id + ' / ' + titleCase(m)) + '</option>';
+        if (m.id === p.defaultModel) return;
+        out += '<option value="' + esc(p.id + '::' + m.id) + '">' + esc(p.id + ' / ' + titleCase(m.id)) + '</option>';
       });
     });
     return out;
@@ -443,7 +473,62 @@ export const UI_HTML = String.raw`<!doctype html>
   function controlsHtml() {
     return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>';
+      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill" id="attachBtn" title="attach images (vision models only)" style="cursor:pointer">' + icon('image') + '</span>' +
+      '<input type="file" id="attachInput" accept="image/*" multiple hidden>';
+  }
+  function currentVision() {
+    var parts = String(S.sel.model || '').split('::');
+    var pid = parts[0], mid = parts[1];
+    for (var i = 0; i < S.models.length; i++) {
+      var p = S.models[i];
+      if (p.id !== pid) continue;
+      for (var j = 0; j < p.models.length; j++) if (p.models[j].id === mid) return Boolean(p.models[j].vision);
+      for (var k = 0; k < p.models.length; k++) if (p.models[k].id === p.defaultModel) return Boolean(p.models[k].vision);
+      return true;
+    }
+    return true;
+  }
+  function renderThumbs() {
+    var wrap = $('thumbs');
+    if (!wrap) return;
+    if (!S.pendingImages.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    wrap.hidden = false;
+    wrap.innerHTML = S.pendingImages.map(function (im, i) {
+      return '<span class="th"><img src="' + im.dataUrl + '" alt="' + esc(im.name) + '" title="' + esc(im.name) + '"><button class="rm" data-rm="' + i + '" title="remove">&#10005;</button></span>';
+    }).join('');
+    wrap.querySelectorAll('[data-rm]').forEach(function (el) {
+      el.onclick = function () { S.pendingImages.splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
+    });
+  }
+  function downscaleImage(dataUrl, cb) {
+    var img = new Image();
+    img.onload = function () {
+      var max = 1280;
+      var scale = Math.min(1, max / Math.max(img.width, img.height));
+      if (scale === 1 && dataUrl.length < 700000) { cb(dataUrl); return; }
+      var c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.width * scale));
+      c.height = Math.max(1, Math.round(img.height * scale));
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      try { cb(c.toDataURL('image/jpeg', 0.85)); } catch (e) { cb(dataUrl); }
+    };
+    img.onerror = function () { cb(dataUrl); };
+    img.src = dataUrl;
+  }
+  function onAttachFiles(files) {
+    Array.prototype.slice.call(files).forEach(function (f) {
+      if (!f.type || f.type.indexOf('image/') !== 0) { toast('Only image files can be attached', true); return; }
+      if (S.pendingImages.length >= 4) { toast('Maximum 4 images per message', true); return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        downscaleImage(String(reader.result), function (final) {
+          S.pendingImages.push({ name: f.name, dataUrl: final });
+          renderThumbs();
+        });
+      };
+      reader.readAsDataURL(f);
+    });
   }
   function bindControls() {
     var wf = $('wf'), model = $('model'), effort = $('effort');
@@ -452,8 +537,20 @@ export const UI_HTML = String.raw`<!doctype html>
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
     if (wf) wf.onchange = function () { S.sel.wf = wf.value; persist(); };
-    if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); persist(); };
+    if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); persist(); updateAttachState(); };
     if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
+    var attach = $('attachBtn'), input = $('attachInput');
+    if (attach) attach.onclick = function () { if (!attach.hasAttribute('disabled') && input) input.click(); };
+    if (input) input.onchange = function () { onAttachFiles(input.files); input.value = ''; };
+    updateAttachState();
+    renderThumbs();
+  }
+  function updateAttachState() {
+    var attach = $('attachBtn');
+    if (!attach) return;
+    var vision = currentVision();
+    if (vision) { attach.removeAttribute('disabled'); attach.title = 'attach images'; }
+    else { attach.setAttribute('disabled', '1'); attach.title = 'current model does not support images'; }
   }
 
   function startRun() {
@@ -470,10 +567,12 @@ export const UI_HTML = String.raw`<!doctype html>
         effort: S.sel.effort,
         projectPath: S.settings.projectPath || undefined,
         scope: S.settings.scope || [],
-        constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
+        constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
+        images: S.pendingImages.length ? S.pendingImages : undefined
       })
     }).then(function (r) {
       S.draft = ''; persist();
+      S.pendingImages = [];
       openRun(r.runId);
       renderSidebar();
     }).catch(function (e) { toast('Failed to start: ' + e.message, true); });
@@ -491,14 +590,21 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="progress" id="progress" style="display:none"><span id="progText"></span><div class="pbar"><span id="progFill"></span></div></div>' +
       '<div class="stream" id="stream"></div>' +
       '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Hermes… Enter sends to this session while working, or continues it when done"></textarea>' +
+      '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
       '<aside class="run-side"><div class="side-tabs">' +
       '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
       '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>' +
-      '</div><div class="side-body" id="sideBody"></div></aside></div>';
+      '<button class="side-tab ' + (sess.side === 'browser' ? 'active' : '') + '" data-side="browser">' + icon('globe') + ' Browser</button>' +
+      '<button class="collapse-tab" id="rsCollapse" title="collapse panel">&#187;</button>' +
+      '</div><div class="side-body" id="sideBody"></div>' +
+      '<div class="rail"><button id="rsExpand" title="expand panel">PANEL &#171;</button></div></aside></div>';
     var tabs = document.querySelectorAll('.side-tab');
     for (var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRunSide(runId); };
+    $('rsCollapse').onclick = function () { S.settings.rightCollapsed = true; persist(); applyLayout(); };
+    $('rsExpand').onclick = function () { S.settings.rightCollapsed = false; persist(); applyLayout(); };
+    applyLayout();
     $('follow').addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
       e.preventDefault();
@@ -555,8 +661,11 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function sendFollow(text) {
     var runId = S.active;
-    api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text }) })
+    var imgs = S.pendingImages.length ? S.pendingImages : undefined;
+    api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, images: imgs }) })
       .then(function () {
+        S.pendingImages = [];
+        renderThumbs();
         var f = $('follow');
         if (f) f.value = '';
         setWorking('Thinking…');
@@ -574,7 +683,8 @@ export const UI_HTML = String.raw`<!doctype html>
               review: S.sel.wf === 'review' ? S.settings.review : false,
               autoApprove: S.settings.autoApprove,
               effort: S.sel.effort,
-              projectPath: S.settings.projectPath || undefined
+              projectPath: S.settings.projectPath || undefined,
+              images: imgs
             })
           }).then(function (r) { openRun(r.runId); }).catch(function (e2) { toast(e2.message, true); });
         } else toast(msg, true);
@@ -631,6 +741,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
+    if (sess && sess.side === 'browser' && (text.indexOf('browse') >= 0 || text.indexOf('image') === 0)) refreshBrowser(true);
     var working = $('working');
     function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
 
@@ -987,6 +1098,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var body = $('sideBody');
     if (!body || !sess) return;
     if (sess.side === 'context') { renderContext(runId); return; }
+    if (sess.side === 'browser') { renderBrowserPanel(runId); return; }
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
@@ -1013,6 +1125,69 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (L.report) html += '<div class="summary-card" style="margin:12px 0 0"><h3 style="margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Completion report</h3><pre style="font-family:var(--mono);font-size:12px;white-space:pre-wrap;margin:0">' + esc(reportText(L.report)) + '</pre></div>';
     body.innerHTML = html;
+  }
+
+  function applyLayout() {
+    var shell = document.querySelector('.shell');
+    if (shell) shell.classList.toggle('left-collapsed', !!S.settings.leftCollapsed);
+    var run = document.querySelector('.run');
+    if (run) run.classList.toggle('collapsed-side', !!S.settings.rightCollapsed);
+    var btn = $('sbCollapse');
+    if (btn) btn.innerHTML = S.settings.leftCollapsed ? '&#187;' : '&#171;';
+  }
+
+  function renderBrowserPanel(runId) {
+    var body = $('sideBody');
+    body.innerHTML =
+      '<div class="bpanel">' +
+      '<div class="nav"><input id="bUrl" placeholder="localhost:3000 or https://…"><button class="btn dark" id="bGo">Go</button></div>' +
+      '<div class="nav">' +
+      '<button class="ubtn" id="bBack" title="back" style="width:28px;height:26px">' + icon('back') + '</button>' +
+      '<button class="ubtn" id="bFwd" title="forward" style="width:28px;height:26px;transform:scaleX(-1)">' + icon('back') + '</button>' +
+      '<button class="ubtn" id="bReload" title="reload" style="width:28px;height:26px">' + icon('retry') + '</button>' +
+      '<button class="btn ghost" id="bShot" style="margin-left:auto">Screenshot</button></div>' +
+      '<div class="empty" id="bStatus" style="margin:4px 0 8px"></div>' +
+      '<img class="shot" id="bImg" alt="browser screenshot"></div>';
+    $('bGo').onclick = function () { browserNav('navigate', $('bUrl').value); };
+    $('bUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') browserNav('navigate', $('bUrl').value); });
+    $('bBack').onclick = function () { browserNav('back'); };
+    $('bFwd').onclick = function () { browserNav('forward'); };
+    $('bReload').onclick = function () { browserNav('reload'); };
+    $('bShot').onclick = function () { refreshBrowser(true); };
+    refreshBrowser(true);
+  }
+
+  function browserNav(action, url) {
+    var opts = action === 'navigate'
+      ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url }) }
+      : { method: 'POST' };
+    api('/api/browser/' + action, opts)
+      .then(function () { refreshBrowser(true); })
+      .catch(function (e) { toast(e.message, true); });
+  }
+
+  function refreshBrowser(withShot) {
+    api('/api/browser').then(function (d) {
+      var st = $('bStatus');
+      if (!st) return;
+      if (!d.has) {
+        st.textContent = 'The in-app browser runs inside the desktop app. Start it with: npm run app';
+        return;
+      }
+      var s = d.state;
+      var urlIn = $('bUrl');
+      if (urlIn && document.activeElement !== urlIn && s.url) urlIn.value = s.url;
+      st.textContent = (s.title || '(blank page)') + (s.loading ? ' · loading…' : '');
+      if (withShot) {
+        api('/api/browser/screenshot').then(function (shot) {
+          var img = $('bImg');
+          if (img) { img.src = 'data:image/png;base64,' + shot.pngBase64; img.style.display = 'block'; }
+        }).catch(function () {});
+      }
+    }).catch(function (e) {
+      var st2 = $('bStatus');
+      if (st2) st2.textContent = e.message;
+    });
   }
 
   function reportText(r) {
@@ -1147,8 +1322,8 @@ export const UI_HTML = String.raw`<!doctype html>
             '<div class="d">default: ' + esc(p.defaultModel) + (p.keyEnvVars && !p.hasKey ? ' · env: ' + esc(p.keyEnvVars.join(' | ')) : '') + '</div>' +
             '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">' +
             shown.map(function (m) {
-              var val = p.id + '::' + m;
-              return '<button class="btn ' + (cur === val ? 'dark' : 'ghost') + '" data-model="' + esc(val) + '" style="padding:3px 9px;font-size:11px">' + esc(m) + '</button>';
+              var val = p.id + '::' + m.id;
+              return '<button class="btn ' + (cur === val ? 'dark' : 'ghost') + '" data-model="' + esc(val) + '" style="padding:3px 9px;font-size:11px" title="' + (m.vision ? 'supports images' : 'text only') + '">' + esc(m.id) + (m.vision ? ' ◉' : '') + '</button>';
             }).join('') +
             (models.length > shown.length ? '<span class="meta">+' + (models.length - shown.length) + ' more</span>' : '') +
             '</div>' +
@@ -1362,6 +1537,7 @@ export const UI_HTML = String.raw`<!doctype html>
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     $('gearBtn').onclick = function () { openSettings('general'); };
     $('gearBtn').innerHTML = icon('gear');
+    $('sbCollapse').onclick = function () { S.settings.leftCollapsed = !S.settings.leftCollapsed; persist(); applyLayout(); };
     $('browseCancel').onclick = function () { $('browseModal').hidden = true; };
     $('projChip').style.cursor = 'pointer';
     $('projChip').title = 'Choose a project folder';
@@ -1369,6 +1545,7 @@ export const UI_HTML = String.raw`<!doctype html>
     updateProjChip();
     renderSidebar();
     renderTopbar();
+    applyLayout();
     openHome();
   }
   boot();

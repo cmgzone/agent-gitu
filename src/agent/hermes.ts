@@ -338,13 +338,27 @@ export class Hermes {
       this.emit('think  composing answer');
       messages.push({
         role: 'user',
-        content: `User request (chat mode — answer directly and helpfully, no tools): ${resumeNote ?? goal}`,
+        content: `User request (chat mode — answer directly and helpfully in plain text only; no tools, no JSON): ${resumeNote ?? goal}`,
       });
-      const reply = await llm.completeStream(messages, { effort: this.config.effort }, (d) => this.emit(`tdelta ${d}`));
-      if (reply.trim()) this.emit(`say ${reply.trim()}`);
+      let seenBrace = false;
+      const reply = await llm.completeStream(messages, { effort: this.config.effort }, (delta) => {
+        if (seenBrace) return;
+        const braceAt = delta.indexOf('{');
+        if (braceAt >= 0) {
+          seenBrace = true;
+          const pre = delta.slice(0, braceAt);
+          if (pre.trim()) this.emit(`tdelta ${pre}`);
+          return;
+        }
+        this.emit(`tdelta ${delta}`);
+      });
+      const parsedReply = parseAction(extractJson(reply));
+      const braceIdx = reply.indexOf('{');
+      const prose = (parsedReply && braceIdx >= 0 ? reply.slice(0, braceIdx) : reply).trim();
+      if (prose) this.emit(`say ${prose}`);
       ledger.setStatus('completed');
       const report = reporter.build(ledger, 'complete', {
-        summary: reply.trim().slice(0, 600) || 'Answered.',
+        summary: prose.slice(0, 600) || 'Answered.',
         risks: [],
         followUps: [],
       });

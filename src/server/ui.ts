@@ -154,6 +154,17 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: var(--bg); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
+  .drawer { position: fixed; top: 47px; left: 0; bottom: 0; width: 360px; background: var(--card); border-right: 1px solid var(--border); z-index: 20; transform: translateX(-100%); transition: transform .18s ease; overflow-y: auto; padding: 16px 18px; }
+  .drawer.open { transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,.12); }
+  .drawer h3 { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 18px 0 8px; }
+  .drawer h3:first-child { margin-top: 0; }
+  .drawer .item { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; margin-bottom: 6px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
+  .drawer .item .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .drawer .item .x { color: var(--faint); cursor: pointer; }
+  .drawer .item .x:hover { color: var(--red); }
+  .drawer input, .drawer textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 6px 9px; font-size: 12px; margin-bottom: 6px; }
+  .drawer .row { display: flex; gap: 6px; }
+  .drawer .meta { color: var(--muted); font-size: 11px; }
   .tool .lines { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--green); background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px; padding: 1px 7px; flex: none; }
   .qcard { border: 1px solid #bfdbfe; background: #eff6ff; border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   .qcard h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--blue); }
@@ -180,17 +191,20 @@ export const UI_HTML = String.raw`<!doctype html>
 </head>
 <body>
 <div class="topbar">
-  <button class="icon-btn" title="menu">&#9776;</button>
+  <button class="icon-btn" id="menuBtn" title="menu">&#9776;</button>
   <span class="logo">HERMES</span>
   <nav class="tabs" id="tabs"></nav>
   <button class="icon-btn" id="newTab" title="new session">+</button>
   <span class="spacer"></span>
   <span class="proj-chip" id="projChip">loading…</span>
 </div>
+<div class="drawer" id="drawer"></div>
 <div class="view" id="view"></div>
 <script>
 (function () {
-  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, settings: { scope: '', constraints: '' }, files: [], draft: '', sel: { wf: 'review', model: '', budget: '40', effort: 'high' } };
+  var S = { tabs: [{ id: 'home', label: 'New session', status: null }], active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, settings: { scope: '', constraints: '' }, files: [], draft: '', sel: { wf: 'review', model: '', budget: '40', effort: 'high' }, projectPath: '' };
+  try { S.projectPath = localStorage.getItem('hermes.project') || ''; } catch (e) {}
+  function basename(p) { var parts = String(p).replace(/\\/g, '/').split('/'); return parts[parts.length - 1] || p; }
 
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
@@ -250,7 +264,13 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function renderTabs() {
-    $('tabs').innerHTML = S.tabs.map(function (t) {
+    var visible = S.tabs.filter(function (t) {
+      if (t.id === 'home') return true;
+      if (!S.projectPath) return true;
+      if (!t.project) return true;
+      return t.project === basename(S.projectPath);
+    });
+    $('tabs').innerHTML = visible.map(function (t) {
       var dot = t.id === 'home' ? '' : '<span class="dot ' + esc(t.status || '') + '"></span>';
       var x = t.id === 'home' ? '' : '<span class="x" data-x="' + esc(t.id) + '">&#10005;</span>';
       return '<button class="tab ' + (S.active === t.id ? 'active' : '') + '" data-tab="' + esc(t.id) + '">' + dot + '<span class="label">' + esc(t.label) + '</span>' + x + '</button>';
@@ -264,18 +284,19 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function openTab(id) { S.active = id; stopStreams(); renderTabs(); if (id === 'home') renderHome(); else renderRun(id); }
   function closeTab(id) { S.tabs = S.tabs.filter(function (t) { return t.id !== id; }); delete S.sessions[id]; if (S.active === id) openTab('home'); else renderTabs(); }
-  function ensureRunTab(runId, label, status) {
+  function ensureRunTab(runId, label, status, project) {
     var t = null;
     for (var i = 0; i < S.tabs.length; i++) if (S.tabs[i].id === runId) t = S.tabs[i];
-    if (!t) { t = { id: runId, label: label, status: status }; S.tabs.push(t); }
+    if (!t) { t = { id: runId, label: label, status: status, project: project }; S.tabs.push(t); }
     if (status) t.status = status;
+    if (project) t.project = project;
     return t;
   }
   function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
 
   function renderHome() {
     var git = S.project && S.project.branch ? S.project.branch : 'No Git';
-    var name = S.project ? S.project.name : 'no project';
+    var name = S.projectPath ? basename(S.projectPath) : (S.project ? S.project.name : 'no project');
     $('view').innerHTML =
       '<div class="home"><div class="wordmark">hermes</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
@@ -302,13 +323,14 @@ export const UI_HTML = String.raw`<!doctype html>
         mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
         review: S.sel.wf === 'review',
         effort: S.sel.effort,
+        projectPath: S.projectPath || undefined,
         maxActions: Number(S.sel.budget),
         scope: S.settings.scope.split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
         constraints: S.settings.constraints.split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
       })
     }).then(function (r) {
       S.draft = '';
-      ensureRunTab(r.runId, goal.slice(0, 40), 'running');
+      ensureRunTab(r.runId, goal.slice(0, 40), 'running', basename(S.projectPath || ''));
       openTab(r.runId);
     }).catch(function (e) { alert('Failed to start: ' + e.message); });
   }
@@ -336,26 +358,9 @@ export const UI_HTML = String.raw`<!doctype html>
       e.preventDefault();
       var g = $('follow').value.trim();
       if (!g) return;
-      var cur = S.sessions[runId];
-      var running = cur && cur.session && cur.session.status === 'running';
-      if (running) {
-        api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: g }) })
-          .then(function () { $('follow').value = ''; })
-          .catch(function (er) { alert(er.message); });
-      } else {
-        var mc = (S.sel.model || '').split('::');
-        api('/api/runs', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            goal: g, provider: mc[0], model: mc[1],
-            mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-            review: S.sel.wf === 'review',
-            effort: S.sel.effort
-          })
-        })
-          .then(function (r) { ensureRunTab(r.runId, g.slice(0, 40), 'running'); openTab(r.runId); })
-          .catch(function (er) { alert(er.message); });
-      }
+      api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: g }) })
+        .then(function () { $('follow').value = ''; })
+        .catch(function (er) { alert(er.message); });
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
     $('stopBtn').onclick = function () {
@@ -586,7 +591,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess) return;
       sess.session = session;
-      ensureRunTab(runId, session.goal.slice(0, 40), session.status);
+      ensureRunTab(runId, session.goal.slice(0, 40), session.status, session.project);
       renderTabs();
       var g = $('rGoal'); if (g) g.textContent = session.goal;
       var c = $('rChip'); if (c) c.innerHTML = chipFor(session.status) + ' <span class="chip">' + esc(runId) + '</span>';
@@ -615,20 +620,30 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderApprovals(runId, session) {
     var stream = $('stream');
     if (!stream) return;
-    var old = stream.querySelectorAll('.approval');
-    for (var i = 0; i < old.length; i++) old[i].remove();
+    var sess = S.sessions[runId];
+    sess.apprShown = sess.apprShown || {};
+    var pending = {};
     (session.pendingApprovals || []).forEach(function (a) {
+      pending[a.id] = true;
+      if (sess.apprShown[a.id]) return;
+      sess.apprShown[a.id] = true;
       var div = document.createElement('div');
       div.className = 'approval';
+      div.setAttribute('data-aid', a.id);
       div.innerHTML =
         '<h3>approval required — ' + esc(a.tool) + '</h3>' +
         '<div class="meta-line">' + esc(a.why) + '</div>' +
         '<pre>' + esc(a.summary) + '</pre>' +
         '<div class="actions"><button class="btn dark" data-appr="' + esc(a.id) + '" data-ok="1">Approve</button>' +
         '<button class="btn red" data-appr="' + esc(a.id) + '" data-ok="0">Deny</button></div>';
-      stream.appendChild(div);
+      var working = $('working');
+      if (working) stream.insertBefore(div, working); else stream.appendChild(div);
       stream.scrollTop = stream.scrollHeight;
     });
+    var olds = stream.querySelectorAll('.approval');
+    for (var i = 0; i < olds.length; i++) {
+      if (!pending[olds[i].getAttribute('data-aid')]) olds[i].remove();
+    }
     stream.onclick = function (e) {
       var id = e.target.getAttribute && e.target.getAttribute('data-appr');
       if (id) {
@@ -647,10 +662,20 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderPlanReview(runId, session) {
     var stream = $('stream');
     if (!stream) return;
-    var old = stream.querySelectorAll('.review-card');
-    for (var i = 0; i < old.length; i++) old[i].remove();
+    var sess = S.sessions[runId];
     var pr = session.pendingPlanReview;
-    if (!pr) return;
+    if (!pr) {
+      if (sess.prShown) {
+        sess.prShown = null;
+        var olds = stream.querySelectorAll('.review-card');
+        for (var i = 0; i < olds.length; i++) olds[i].remove();
+      }
+      return;
+    }
+    if (sess.prShown === pr.id) return;
+    sess.prShown = pr.id;
+    var old = stream.querySelectorAll('.review-card');
+    for (var j = 0; j < old.length; j++) old[j].remove();
     var div = document.createElement('div');
     div.className = 'review-card';
     div.innerHTML =
@@ -704,10 +729,20 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderQuestions(runId, session) {
     var stream = $('stream');
     if (!stream) return;
-    var old = stream.querySelectorAll('.qcard');
-    for (var i = 0; i < old.length; i++) old[i].remove();
+    var sess = S.sessions[runId];
     var q = session.pendingQuestions;
-    if (!q) return;
+    if (!q) {
+      if (sess.qShown) {
+        sess.qShown = null;
+        var olds = stream.querySelectorAll('.qcard');
+        for (var i = 0; i < olds.length; i++) olds[i].remove();
+      }
+      return;
+    }
+    if (sess.qShown === q.id) return;
+    sess.qShown = q.id;
+    var old = stream.querySelectorAll('.qcard');
+    for (var j = 0; j < old.length; j++) old[j].remove();
     var selections = {};
     var div = document.createElement('div');
     div.className = 'qcard';
@@ -909,6 +944,102 @@ export const UI_HTML = String.raw`<!doctype html>
     body.innerHTML = html;
   }
 
+  function toggleDrawer() {
+    var d = $('drawer');
+    d.classList.toggle('open');
+    if (d.classList.contains('open')) loadDrawer();
+  }
+
+  function loadDrawer() {
+    Promise.all([
+      api('/api/runs').catch(function () { return []; }),
+      api('/api/skills').catch(function () { return { skills: [] }; }),
+      api('/api/mcp').catch(function () { return { servers: [], tools: [] }; }),
+      api('/api/cron').catch(function () { return { jobs: [] }; })
+    ]).then(function (vals) {
+      renderDrawer(vals[0], vals[1].skills, vals[2], vals[3].jobs);
+    });
+  }
+
+  function renderDrawer(sessions, skills, mcp, jobs) {
+    var d = $('drawer');
+    var html = '<h3>Project</h3>' +
+      '<input id="dProj" placeholder="C:\\path\\to\\project" value="' + esc(S.projectPath) + '">' +
+      '<div class="row"><button class="btn dark" id="dProjSave">Use this project</button></div>' +
+      '<div class="meta" style="margin-top:6px">Each project gets its own sessions, skills, MCP servers and cron jobs.</div>' +
+      '<h3>Sessions</h3>';
+    if (!sessions.length) html += '<div class="meta">none yet</div>';
+    sessions.forEach(function (s) {
+      html += '<div class="item"><span class="grow" data-open="' + esc(s.runId) + '" data-label="' + esc(s.goal.slice(0, 40)) + '" data-proj="' + esc(s.project || '') + '">' +
+        esc(s.project || '?') + ' · ' + esc(s.status) + ' · ' + esc(s.goal.slice(0, 34)) + '</span></div>';
+    });
+    html += '<h3>Skills (reusable knowledge)</h3>';
+    if (!skills.length) html += '<div class="meta">none yet — the agent can create skills with create_skill</div>';
+    skills.forEach(function (sk) {
+      html += '<div class="item"><span class="grow" title="' + esc(sk.description) + '">' + esc(sk.name) + ' <span class="meta">(' + esc(sk.createdBy) + ')</span></span><span class="x" data-delskill="' + esc(sk.name) + '">&#10005;</span></div>';
+    });
+    html += '<input id="dSkillName" placeholder="skill name (e.g. deploy-checklist)">' +
+      '<input id="dSkillDesc" placeholder="short description">' +
+      '<textarea id="dSkillInstr" rows="3" placeholder="step-by-step instructions the agent should follow"></textarea>' +
+      '<div class="row"><button class="btn dark" id="dSkillAdd">Add skill</button></div>' +
+      '<h3>MCP servers</h3>';
+    if (!mcp.servers.length) html += '<div class="meta">none — add e.g. a filesystem MCP server</div>';
+    mcp.servers.forEach(function (sv) {
+      html += '<div class="item"><span class="grow">' + esc(sv.name) + ' <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><span class="x" data-delmcp="' + esc(sv.name) + '">&#10005;</span></div>';
+    });
+    html += '<div class="row"><input id="dMcpName" placeholder="name (e.g. fs)" style="margin:0"><input id="dMcpCmd" placeholder="command (e.g. npx)" style="margin:0"></div>' +
+      '<input id="dMcpArgs" placeholder="args separated by spaces (e.g. -y @modelcontextprotocol/server-filesystem C:\\path)">' +
+      '<div class="row"><button class="btn dark" id="dMcpAdd">Add MCP server</button></div>' +
+      '<h3>Cron jobs / heartbeat</h3>';
+    if (!jobs.length) html += '<div class="meta">none</div>';
+    jobs.forEach(function (jb) {
+      html += '<div class="item"><span class="grow">every ' + esc(jb.every) + ' — ' + esc(jb.goal.slice(0, 40)) + '</span><span class="x" data-delcron="' + esc(jb.id) + '">&#10005;</span></div>';
+    });
+    html += '<div class="row"><input id="dCronEvery" placeholder="every 30m" style="margin:0"><input id="dCronGoal" placeholder="goal for the agent" style="margin:0"></div>' +
+      '<div class="row" style="margin-top:6px"><button class="btn dark" id="dCronAdd">Add cron job</button>' +
+      '<button class="btn ghost" id="dHeart">+ heartbeat (30m)</button></div>';
+    d.innerHTML = html;
+
+    $('dProjSave').onclick = function () {
+      S.projectPath = $('dProj').value.trim();
+      try { localStorage.setItem('hermes.project', S.projectPath); } catch (e) {}
+      renderTabs();
+      loadDrawer();
+    };
+    d.querySelectorAll('[data-open]').forEach(function (el) {
+      el.onclick = function () {
+        ensureRunTab(el.getAttribute('data-open'), el.getAttribute('data-label'), null, el.getAttribute('data-proj'));
+        openTab(el.getAttribute('data-open'));
+        d.classList.remove('open');
+      };
+    });
+    d.querySelectorAll('[data-delskill]').forEach(function (el) {
+      el.onclick = function () { api('/api/skills/' + el.getAttribute('data-delskill'), { method: 'DELETE' }).then(loadDrawer); };
+    });
+    d.querySelectorAll('[data-delmcp]').forEach(function (el) {
+      el.onclick = function () { api('/api/mcp/' + el.getAttribute('data-delmcp'), { method: 'DELETE' }).then(loadDrawer); };
+    });
+    d.querySelectorAll('[data-delcron]').forEach(function (el) {
+      el.onclick = function () { api('/api/cron/' + el.getAttribute('data-delcron'), { method: 'DELETE' }).then(loadDrawer); };
+    });
+    $('dSkillAdd').onclick = function () {
+      api('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('dSkillName').value, description: $('dSkillDesc').value, instructions: $('dSkillInstr').value }) })
+        .then(loadDrawer).catch(function (e) { alert(e.message); });
+    };
+    $('dMcpAdd').onclick = function () {
+      api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('dMcpName').value, command: $('dMcpCmd').value, args: $('dMcpArgs').value.split(/\s+/).filter(Boolean) }) })
+        .then(loadDrawer).catch(function (e) { alert(e.message); });
+    };
+    $('dCronAdd').onclick = function () {
+      api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: $('dCronEvery').value, goal: $('dCronGoal').value }) })
+        .then(loadDrawer).catch(function (e) { alert(e.message); });
+    };
+    $('dHeart').onclick = function () {
+      api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: '30m', goal: 'Heartbeat: inspect the project, run tests/typecheck, fix or report anything broken.' }) })
+        .then(loadDrawer).catch(function (e) { alert(e.message); });
+    };
+  }
+
   function boot() {
     api('/api/project').then(function (p) {
       S.project = p;
@@ -917,10 +1048,11 @@ export const UI_HTML = String.raw`<!doctype html>
     api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') renderHome(); }).catch(function () {});
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     api('/api/runs').then(function (sessions) {
-      sessions.slice(0, 6).forEach(function (s) { ensureRunTab(s.runId, s.goal.slice(0, 40), s.status); });
+      sessions.slice(0, 12).forEach(function (s) { ensureRunTab(s.runId, s.goal.slice(0, 40), s.status, s.project); });
       renderTabs();
     }).catch(function () {});
     $('newTab').onclick = function () { openTab('home'); };
+    $('menuBtn').onclick = toggleDrawer;
     renderTabs();
     renderHome();
   }

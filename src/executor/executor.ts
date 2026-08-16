@@ -1,15 +1,21 @@
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
+import type { McpManager } from '../mcp/client.js';
 import type { PolicyEngine } from '../policy/policy.js';
+import type { SkillStore } from '../skills/skills.js';
 import type { ActionRecord, ToolResult } from '../types.js';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
 import {
   toolApplyEdit,
+  toolCreateSkill,
   toolListFiles,
+  toolListSkills,
   toolReadFile,
   toolRunCommand,
   toolSearchFiles,
+  toolUseSkill,
+  toolWebFetch,
   toolWriteFile,
   type ToolContext,
 } from '../tools/tools.js';
@@ -36,6 +42,8 @@ export class Executor {
     private readonly policy: PolicyEngine,
     private readonly loopDetector: LoopDetector,
     private readonly onEvent?: (event: string) => void,
+    private readonly skills?: SkillStore,
+    private readonly mcp?: McpManager,
   ) {}
 
   private emit(event: string): void {
@@ -90,7 +98,7 @@ export class Executor {
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
-    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot };
+    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot, skills: this.skills, mcp: this.mcp };
     let result: ToolResult;
     try {
       switch (req.tool) {
@@ -109,10 +117,32 @@ export class Executor {
         case 'search_files':
           result = toolSearchFiles(ctx, req.params);
           break;
+        case 'web_fetch':
+          result = await toolWebFetch(ctx, req.params);
+          break;
+        case 'list_skills':
+          result = toolListSkills(ctx);
+          break;
+        case 'create_skill':
+          result = toolCreateSkill(ctx, req.params);
+          break;
+        case 'use_skill':
+          result = toolUseSkill(ctx, req.params);
+          break;
         case 'run_command':
           result = await toolRunCommand(ctx, req.params);
           break;
         default:
+          if (req.tool.startsWith('mcp:') && this.mcp) {
+            try {
+              const output = await this.mcp.call(req.tool, req.params);
+              result = { ok: true, output: excerpt(output, 4000) };
+            } catch (err) {
+              const msg = (err as Error).message;
+              result = { ok: false, output: `mcp call failed: ${msg}`, errorSignature: msg.slice(0, 16) };
+            }
+            break;
+          }
           result = { ok: false, output: `Unknown tool: ${req.tool}`, errorSignature: 'unknown-tool' };
       }
     } catch (err) {

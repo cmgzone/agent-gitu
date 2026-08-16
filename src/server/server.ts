@@ -1,11 +1,14 @@
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Hermes } from '../agent/hermes.js';
+import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import type { LlmClient } from '../llm/llm.js';
 import { PROVIDERS, ProviderError, fetchLiveModels, providerKey, resolveLlm } from '../llm/providers.js';
+import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
+import { SkillStore } from '../skills/skills.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, shortId } from '../util.js';
 import { UI_HTML } from './ui.js';
@@ -50,6 +53,7 @@ export interface RunSessionView {
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
+  project?: string;
   provider?: string;
   model?: string;
   pendingApprovals: PendingApproval[];
@@ -66,6 +70,7 @@ interface RunSession {
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
+  project?: string;
   provider?: string;
   model?: string;
   events: { i: number; t: string; text: string }[];
@@ -92,9 +97,19 @@ export class HermesServer {
   private readonly config: HermesServerConfig;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
+  private scheduler?: CronScheduler;
+  private cronStore?: CronStore;
 
   constructor(config: HermesServerConfig) {
     this.config = config;
+  }
+
+  private projectRoot(): string | undefined {
+    try {
+      return ProjectGuard.detect(this.config.cwd).lock.repoRoot;
+    } catch {
+      return undefined;
+    }
   }
 
   async start(): Promise<number> {
@@ -107,15 +122,44 @@ export class HermesServer {
       server.listen(this.config.port ?? 8321, this.config.host ?? '127.0.0.1', resolve);
     });
     this.server = server;
+    const root = this.projectRoot();
+    if (root) {
+      this.cronStore = CronStore.forProject(root);
+      this.scheduler = new CronScheduler(this.cronStore, (job) => this.startCronRun(root, job));
+      this.scheduler.start();
+    }
     return (server.address() as AddressInfo).port;
   }
 
   async stop(): Promise<void> {
+    this.scheduler?.stop();
     if (!this.server) return;
     await new Promise<void>((resolve, reject) => {
       this.server!.close((err) => (err ? reject(err) : resolve()));
     });
     this.server = undefined;
+  }
+
+  private startCronRun(root: string, job: CronJob): string | undefined {
+    let llm: LlmClient;
+    try {
+      llm = this.config.llm ?? resolveLlm({}).client;
+    } catch {
+      return undefined;
+    }
+    const session: RunSession = {
+      runId: shortId('run'),
+      goal: `[cron ${job.every}] ${job.goal}`,
+      status: 'running',
+      startedAt: nowIso(),
+      events: [],
+      subscribers: new Set(),
+      approvals: new Map(),
+    };
+    this.sessions.set(session.runId, session);
+    this.pushEvent(session, `cron job ${job.id} triggered (${job.every})`);
+    void this.executeRun(session, llm, { goal: job.goal, mode: 'standard', review: false, projectPath: root });
+    return session.runId;
   }
 
   private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -148,6 +192,7 @@ export class HermesServer {
       startedAt: s.startedAt,
       finishedAt: s.finishedAt,
       taskId: s.taskId,
+      project: s.project,
       provider: s.provider,
       model: s.model,
       pendingApprovals: [...s.approvals.values()].map(({ id, tool, why, summary, requestedAt }) => ({ id, tool, why, summary, requestedAt })),
@@ -208,6 +253,99 @@ export class HermesServer {
       const withKey = providers.find((p) => p.hasKey);
       this.sendJson(res, 200, { providers, defaultProvider: withKey?.id ?? 'alibaba' });
       return;
+    }
+
+    const skillsMatch = path.match(/^\/api\/skills(?:\/([\w-]+))?$/);
+    if (skillsMatch) {
+      const root = this.projectRoot();
+      if (!root) {
+        this.sendJson(res, 400, { error: 'no project detected' });
+        return;
+      }
+      const store = SkillStore.forProject(root);
+      if (method === 'GET') {
+        this.sendJson(res, 200, { skills: store.list() });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const skill = store.create({
+            name: String(body['name'] ?? ''),
+            description: String(body['description'] ?? ''),
+            instructions: String(body['instructions'] ?? ''),
+            createdBy: 'user',
+          });
+          this.sendJson(res, 200, { ok: true, skill });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
+      }
+      if (method === 'DELETE' && skillsMatch[1]) {
+        this.sendJson(res, 200, { ok: store.remove(skillsMatch[1]) });
+        return;
+      }
+    }
+
+    const mcpMatch = path.match(/^\/api\/mcp(?:\/([\w-]+))?$/);
+    if (mcpMatch) {
+      const root = this.projectRoot();
+      if (!root) {
+        this.sendJson(res, 400, { error: 'no project detected' });
+        return;
+      }
+      const manager = McpManager.forProject(root);
+      if (method === 'GET') {
+        const tools = await manager.listAllTools();
+        this.sendJson(res, 200, { servers: manager.servers(), tools });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        const name = String(body['name'] ?? '').trim();
+        const command = String(body['command'] ?? '').trim();
+        if (!name || !command) {
+          this.sendJson(res, 400, { error: 'name and command are required' });
+          return;
+        }
+        const args = Array.isArray(body['args']) ? (body['args'] as unknown[]).map(String) : [];
+        manager.addServer({ name, command, args });
+        this.sendJson(res, 200, { ok: true, servers: manager.servers() });
+        return;
+      }
+      if (method === 'DELETE' && mcpMatch[1]) {
+        this.sendJson(res, 200, { ok: true, servers: manager.removeServer(mcpMatch[1]) });
+        return;
+      }
+    }
+
+    const cronMatch = path.match(/^\/api\/cron(?:\/([\w-]+))?$/);
+    if (cronMatch) {
+      const root = this.projectRoot();
+      if (!root) {
+        this.sendJson(res, 400, { error: 'no project detected' });
+        return;
+      }
+      const store = CronStore.forProject(root);
+      if (method === 'GET') {
+        this.sendJson(res, 200, { jobs: store.jobs() });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const job = store.add({ every: String(body['every'] ?? ''), goal: String(body['goal'] ?? '') });
+          this.sendJson(res, 200, { ok: true, job });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
+      }
+      if (method === 'DELETE' && cronMatch[1]) {
+        this.sendJson(res, 200, { ok: true, jobs: store.remove(cronMatch[1]) });
+        return;
+      }
     }
 
     if (method === 'GET' && path === '/api/files') {
@@ -299,6 +437,7 @@ export class HermesServer {
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
       const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : 'standard';
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
+      const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
       const review = body['review'] !== false;
       const maxActions = typeof body['maxActions'] === 'number' && Number.isFinite(body['maxActions']) ? body['maxActions'] : undefined;
 
@@ -323,6 +462,7 @@ export class HermesServer {
         goal,
         status: 'running',
         startedAt: nowIso(),
+        taskId: undefined,
         provider: resolvedInfo?.providerId,
         model: resolvedInfo?.model,
         events: [],
@@ -331,7 +471,7 @@ export class HermesServer {
       };
       this.sessions.set(session.runId, session);
       this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort });
+      void this.executeRun(session, llm!, { goal, criteria, mode, maxActions, review, scope, constraints, effort, projectPath });
       return;
     }
 
@@ -415,9 +555,39 @@ export class HermesServer {
         this.sendJson(res, 400, { error: 'text is required' });
         return;
       }
-      session.hermes?.queueMessage(text);
-      this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
-      this.sendJson(res, 200, { ok: true, queued: session.status === 'running' });
+      if (session.status === 'running') {
+        session.hermes?.queueMessage(text);
+        this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
+        this.sendJson(res, 200, { ok: true, queued: true });
+        return;
+      }
+      if (!session.taskId) {
+        this.sendJson(res, 409, { error: 'run has no task yet' });
+        return;
+      }
+      let llm = this.config.llm;
+      if (!llm) {
+        try {
+          llm = resolveLlm({}).client;
+        } catch (err) {
+          if (err instanceof ProviderError) {
+            this.sendJson(res, 400, { error: err.message });
+            return;
+          }
+          throw err;
+        }
+      }
+      session.status = 'running';
+      session.report = undefined;
+      session.finishedAt = undefined;
+      this.pushEvent(session, `continue "${text}" — resuming this session`);
+      void this.executeRun(session, llm, {
+        goal: session.goal,
+        mode: 'standard',
+        review: false,
+        resume: { taskId: session.taskId, message: text },
+      });
+      this.sendJson(res, 200, { ok: true, resumed: true });
       return;
     }
 
@@ -485,16 +655,30 @@ export class HermesServer {
       scope?: string[];
       constraints?: string[];
       effort?: 'low' | 'medium' | 'high' | 'max';
+      projectPath?: string;
+      resume?: { taskId: string; message: string };
     },
   ): Promise<void> {
+    let root: string;
+    try {
+      root = ProjectGuard.detect(opts.projectPath ?? this.config.cwd).lock.repoRoot;
+    } catch {
+      root = this.config.cwd;
+    }
+    const skills = SkillStore.forProject(root);
+    const mcp = McpManager.forProject(root);
+    session.project = root.split(/[\\/]/).filter(Boolean).pop();
     const hermes = new Hermes({
-      cwd: this.config.cwd,
+      cwd: opts.projectPath ?? this.config.cwd,
       llm,
       mode: opts.mode,
       criteria: opts.criteria,
       scopeFiles: opts.scope,
       extraConstraints: opts.constraints,
       effort: opts.effort,
+      skills,
+      mcp,
+      resume: opts.resume,
       budgets: opts.maxActions ? { maxActions: opts.maxActions } : undefined,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
@@ -543,7 +727,7 @@ export class HermesServer {
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
       onEvent: (text) => {
-        const ledgerMatch = text.match(/ledger\s+created:\s+(\S+)/);
+        const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
         if (ledgerMatch) session.taskId = ledgerMatch[1];
         this.pushEvent(session, text);
       },

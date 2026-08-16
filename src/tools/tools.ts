@@ -2,12 +2,16 @@ import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ProjectGuard } from '../guard/project-guard.js';
+import type { McpManager } from '../mcp/client.js';
+import type { SkillStore } from '../skills/skills.js';
 import type { ToolResult } from '../types.js';
 import { errorSignature, excerpt } from '../util.js';
 
 export interface ToolContext {
   guard: ProjectGuard;
   cwd: string;
+  skills?: SkillStore;
+  mcp?: McpManager;
 }
 
 const MAX_FILE_BYTES = 512 * 1024;
@@ -228,5 +232,62 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
   });
 }
 
-export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command'] as const;
+export function toolListSkills(ctx: ToolContext): ToolResult {
+  if (!ctx.skills) return fail('skills not available');
+  const skills = ctx.skills.list();
+  if (skills.length === 0) return { ok: true, output: '(no skills yet)' };
+  return { ok: true, output: skills.map((s) => `${s.name} — ${s.description} (${s.createdBy})`).join('\n') };
+}
+
+export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  if (!ctx.skills) return fail('skills not available');
+  try {
+    const skill = ctx.skills.create({
+      name: String(params['name'] ?? ''),
+      description: String(params['description'] ?? ''),
+      instructions: String(params['instructions'] ?? ''),
+      createdBy: 'agent',
+    });
+    return { ok: true, output: `Skill "${skill.name}" saved. It will be available in all future tasks.` };
+  } catch (err) {
+    return fail(`create_skill failed: ${(err as Error).message}`);
+  }
+}
+
+export function toolUseSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  if (!ctx.skills) return fail('skills not available');
+  const skill = ctx.skills.get(String(params['name'] ?? ''));
+  if (!skill) return fail(`Unknown skill: ${params['name']}. Use list_skills.`);
+  return { ok: true, output: `SKILL ${skill.name}: ${skill.description}\n${skill.instructions}` };
+}
+
+export function toolWebFetch(_ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const url = String(params['url'] ?? '');
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    return Promise.resolve(fail('web_fetch: url must start with http(s)://'));
+  }
+  const maxChars = Math.min(12000, Number(params['maxChars'] ?? 6000));
+  return fetch(url, { headers: { 'user-agent': 'hermes-agent/0.1' }, redirect: 'follow' })
+    .then(async (res) => {
+      if (!res.ok) return fail(`web_fetch: HTTP ${res.status} for ${url}`);
+      const type = res.headers.get('content-type') ?? '';
+      let text = await res.text();
+      if (type.includes('html')) {
+        text = text
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&amp;/g, '&')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&#39;|&quot;/g, '"');
+      }
+      text = text.replace(/\s+/g, ' ').trim();
+      return { ok: true, output: excerpt(text || '(empty page)', maxChars) };
+    })
+    .catch((err) => fail(`web_fetch failed: ${(err as Error).message}`));
+}
+
+export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

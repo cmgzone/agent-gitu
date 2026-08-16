@@ -7,9 +7,11 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
 import { extractJson, type LlmClient, type LlmMessage } from '../llm/llm.js';
 import { MemoryStore } from '../memory/memory-store.js';
+import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
+import type { SkillStore } from '../skills/skills.js';
 import type { Budgets, CompletionReport, EvidenceKind } from '../types.js';
 import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 
@@ -27,6 +29,9 @@ export interface HermesConfig {
   scopeFiles?: string[];
   extraConstraints?: string[];
   effort?: 'low' | 'medium' | 'high' | 'max';
+  skills?: SkillStore;
+  mcp?: McpManager;
+  resume?: { taskId: string; message: string };
   onEvent?: (event: string) => void;
 }
 
@@ -193,17 +198,33 @@ export class Hermes {
     this.emit(`project  locked: ${guard.lock.name} @ ${guard.lock.repoRoot} (${guard.lock.branch ?? 'no branch'})`);
 
     const memory = MemoryStore.forProject(guard.lock.repoRoot);
-    const ledger = TaskLedger.create({
-      repoRoot: guard.lock.repoRoot,
-      goal,
-      project: guard.lock,
-      mode: this.config.mode ?? 'standard',
-      budgets: this.config.budgets,
-    });
-    if (this.config.extraConstraints && this.config.extraConstraints.length > 0) {
-      ledger.data.constraints = [...ledger.data.constraints, ...this.config.extraConstraints];
+    let ledger: TaskLedger;
+    let resumeNote: string | undefined;
+    if (this.config.resume) {
+      const loaded = TaskLedger.load(guard.lock.repoRoot, this.config.resume.taskId);
+      if (!loaded) {
+        throw new ProjectGuardError(`Cannot resume: task not found: ${this.config.resume.taskId}`);
+      }
+      ledger = loaded;
+      ledger.data.planApproved = false;
+      ledger.data.blockers = [];
+      ledger.data.completedAt = undefined;
+      ledger.data.report = undefined;
+      resumeNote = this.config.resume.message;
+      this.emit(`ledger   resumed: ${ledger.data.taskId}`);
+    } else {
+      ledger = TaskLedger.create({
+        repoRoot: guard.lock.repoRoot,
+        goal,
+        project: guard.lock,
+        mode: this.config.mode ?? 'standard',
+        budgets: this.config.budgets,
+      });
+      if (this.config.extraConstraints && this.config.extraConstraints.length > 0) {
+        ledger.data.constraints = [...ledger.data.constraints, ...this.config.extraConstraints];
+      }
+      this.emit(`ledger   created: ${ledger.data.taskId}`);
     }
-    this.emit(`ledger   created: ${ledger.data.taskId}`);
 
     const checkpoints = new CheckpointManager(guard);
     const branchInfo = checkpoints.ensureTaskBranch(ledger.data.taskId);
@@ -212,7 +233,7 @@ export class Hermes {
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler);
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
-    const executor = new Executor(guard, ledger, policy, loopDetector, this.emit);
+    const executor = new Executor(guard, ledger, policy, loopDetector, this.emit, this.config.skills, this.config.mcp);
     const context = new ContextEngine(guard);
     const reporter = new Reporter();
 
@@ -235,10 +256,20 @@ export class Hermes {
         content: buildSystemPrompt(guard, memory, {
           scopeFiles: this.config.scopeFiles,
           extraConstraints: this.config.extraConstraints,
+          skillsSection: this.config.skills ? this.config.skills.renderForPrompt() : undefined,
+          mcpSection: this.config.mcp
+            ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined
+            : undefined,
         }),
       },
     ];
     if (contextNote) messages.push({ role: 'user', content: contextNote });
+    if (resumeNote) {
+      messages.push({
+        role: 'user',
+        content: `CONTINUATION of a previous task in the same session. The user now asks:\n"${resumeNote}"\nUpdate acceptance criteria and plan as needed (set_criteria / set_plan), then execute. Reuse what was already built.`,
+      });
+    }
 
     if (ledger.data.mode === 'chat') {
       ledger.setStatus('executing');

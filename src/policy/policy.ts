@@ -74,11 +74,15 @@ export class PolicyEngine {
       case 'read_file':
       case 'list_files':
       case 'search_files':
+      case 'web_fetch':
+      case 'list_skills':
+      case 'use_skill':
         tier = 'safe';
         why = 'read-only';
         break;
       case 'write_file':
       case 'apply_edit':
+      case 'create_skill':
         tier = 'moderate';
         why = 'file mutation';
         break;
@@ -89,6 +93,11 @@ export class PolicyEngine {
         break;
       }
       default:
+        if (tool.startsWith('mcp:')) {
+          tier = 'dangerous';
+          why = 'external MCP tool (requires approval)';
+          break;
+        }
         tier = 'dangerous';
         why = 'unknown tool (fail closed)';
     }

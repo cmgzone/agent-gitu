@@ -5,7 +5,7 @@ import type { MemoryStore } from '../memory/memory-store.js';
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[] } = {},
+  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string } = {},
 ): string {
   const lock = guard.lock;
   const scopeSection =
@@ -16,8 +16,14 @@ export function buildSystemPrompt(
     opts.extraConstraints && opts.extraConstraints.length > 0
       ? `\nUSER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}\n`
       : '';
+  const skillsSection = opts.skillsSection
+    ? `\nREUSABLE SKILLS (use with use_skill; you may create new ones with create_skill when you learn a repeatable pattern):\n${opts.skillsSection}\n`
+    : '';
+  const mcpSection = opts.mcpSection
+    ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n`
+    : '';
   return `You are Hermes, an autonomous software engineering agent operating inside a LOCKED project boundary.
-${scopeSection}${constraintSection}
+${scopeSection}${constraintSection}${skillsSection}${mcpSection}
 
 PROJECT LOCK (do not violate):
   name: ${lock.name}
@@ -61,6 +67,10 @@ Tools:
 - list_files   {"path":"src"}
 - search_files {"pattern":"regex","path":"src"}
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
+- web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
+- list_skills  {}
+- use_skill    {"name":"skill-name"}
+- create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}
 
 Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}

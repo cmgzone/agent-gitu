@@ -29,6 +29,17 @@ export function ensureHermesHome(): HermesHome {
   for (const dir of [home.root, home.projects, home.workspace, home.sessions, home.settings, home.cache]) {
     mkdirSync(dir, { recursive: true });
   }
+  const marker = path.join(home.workspace, 'package.json');
+  if (!existsSync(marker)) {
+    writeFileSync(
+      marker,
+      `${JSON.stringify(
+        { name: 'hermes-workspace', version: '0.1.0', private: true, description: 'Default Hermes scratch project', scripts: { test: 'node --version' } },
+        null,
+        2,
+      )}\n`,
+    );
+  }
   return home;
 }
 

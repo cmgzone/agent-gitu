@@ -48,7 +48,7 @@ function fakeBridge(): BrowserBridge & { log: string[] } {
     },
     async screenshot() {
       log.push('screenshot');
-      return { pngBase64: Buffer.from('fake-png-bytes').toString('base64'), state: state() };
+      return { pngBase64: Buffer.alloc(4096, 7).toString('base64'), state: state() };
     },
   };
 }
@@ -132,6 +132,6 @@ describe('Hermes with in-app browser', () => {
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', browser: bridge, supportsImages: false });
     await hermes.run('check the page');
-    expect(note).toMatch(/cannot see images/i);
+    expect(note).toMatch(/not deliverable/i);
   }, 30000);
 });

@@ -511,14 +511,16 @@ export class Hermes {
           const resultText =
             `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n` +
             `${outcome.result.output.slice(0, 2500)}${evidenceNote}`;
-          if (outcome.result.image && this.config.supportsImages) {
+          const img = outcome.result.image;
+          const imgValid = typeof img === 'string' && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]{200,}$/.test(img);
+          if (imgValid && this.config.supportsImages) {
             observe([
               { type: 'text', text: resultText },
-              { type: 'image_url', image_url: { url: outcome.result.image } },
+              { type: 'image_url', image_url: { url: img! } },
             ]);
             this.emit('image    visual result attached to model context');
-          } else if (outcome.result.image) {
-            observe(`${resultText}\n(A screenshot was captured and is visible in the desktop Browser panel, but the current model cannot see images.)`);
+          } else if (img) {
+            observe(`${resultText}\n(A screenshot was captured but is not deliverable to the current model${this.config.supportsImages ? ' (invalid image data)' : ' (no image support)'}; it is visible in the desktop Browser panel.)`);
           } else {
             observe(resultText);
           }

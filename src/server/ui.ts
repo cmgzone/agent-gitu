@@ -1228,6 +1228,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var rs = document.documentElement.style;
     rs.setProperty('--sbw', (S.settings.sbWidth || 264) + 'px');
     rs.setProperty('--rsw', (S.settings.sideWidth || 380) + 'px');
+    positionBrowserHost();
   }
 
   function bindResize(id, side) {
@@ -1322,8 +1323,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if ($('browserHost')) return;
     var host = document.createElement('div');
     host.id = 'browserHost';
-    host.className = 'bhost';
-    host.hidden = true;
+    host.className = 'bhost offscreen';
     host.innerHTML =
       '<div class="bchrome">' +
       '<div class="btabstrip"><div class="btab"><span class="bspin" id="bSpin" hidden></span><img id="bFav" class="bfav" alt="" hidden><span id="bTabTitle">New tab</span></div></div>' +
@@ -1359,8 +1359,13 @@ export const UI_HTML = String.raw`<!doctype html>
       api('/api/browser/state', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(st) }).catch(function () {});
     }
     wv.addEventListener('did-start-loading', pushState);
+    wv.addEventListener('dom-ready', function () { S.bDomReady = true; pushState(); });
     wv.addEventListener('did-stop-loading', function () { pushState(); if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(true); } });
-    wv.addEventListener('did-fail-load', function (e) { if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(false, 'load failed: ' + (e.errorDescription || e.errorCode)); } pushState(); });
+    wv.addEventListener('did-fail-load', function (e) {
+      if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(false, 'load failed: ' + (e.errorDescription || e.errorCode)); }
+      if (!S.driving) toast('Browser: ' + (e.errorDescription || ('load failed (' + e.errorCode + ')')), true);
+      pushState();
+    });
     wv.addEventListener('did-navigate', pushState);
     wv.addEventListener('did-navigate-in-page', pushState);
     wv.addEventListener('page-title-updated', pushState);
@@ -1368,7 +1373,17 @@ export const UI_HTML = String.raw`<!doctype html>
     $('bBack').onclick = function () { try { wv.goBack(); } catch (e) {} };
     $('bFwd').onclick = function () { try { wv.goForward(); } catch (e) {} };
     $('bReload').onclick = function () { try { wv.reload(); } catch (e) {} };
-    $('bUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var url = clientNormalize($('bUrl').value); if (url) { try { wv.loadURL(url); } catch (er) { toast(er.message, true); } } } });
+    $('bUrl').addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        var url = clientNormalize($('bUrl').value);
+        if (url) {
+          try {
+            var p = wv.loadURL(url);
+            if (p && p.catch) p.catch(function (er) { if (!S.driving) toast('Browser: ' + er.message, true); });
+          } catch (er) { toast(er.message, true); }
+        }
+      }
+    });
     $('bShot').onclick = function () {
       wv.capturePage().then(function (img) {
         var data = img.toDataURL();
@@ -1434,41 +1449,44 @@ export const UI_HTML = String.raw`<!doctype html>
     ensureBrowserHost();
     var host = $('browserHost');
     var wv = $('bWeb');
-    var wasVisible = !host.hidden && !host.classList.contains('offscreen');
-    if (host.hidden) {
-      host.hidden = false;
-      host.classList.add('offscreen');
-      if (!wasVisible) toast('Hermes is using the in-app browser');
-    }
+    var panelOpen = !host.classList.contains('offscreen');
+    if (!panelOpen) toast('Hermes is using the in-app browser');
     showDriving(true);
     var finish = function (ok, extra) {
       var payload = { id: cmd.id, ok: ok };
       if (extra) for (var k in extra) payload[k] = extra[k];
       payload.state = currentState();
       api('/api/browser/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).catch(function () {});
-      setTimeout(function () { if (!S.drivingMore) showDriving(false); }, 400);
-      if (!wasVisible) {
-        setTimeout(function () {
-          if (!S.driving) { host.classList.remove('offscreen'); host.hidden = true; positionBrowserHost(); }
-        }, 1200);
-      }
+      setTimeout(function () { showDriving(false); }, 400);
     };
     var waitLoad = function (then) {
       S.bNavWait = then;
-      setTimeout(function () { if (S.bNavWait === then) { S.bNavWait = null; then(true, 'timed out waiting for page load'); } }, 20000);
+      setTimeout(function () { if (S.bNavWait === then) { S.bNavWait = null; then(false, 'timed out waiting for page load'); } }, 20000);
+    };
+    var whenReady = function (cb) {
+      if (S.bDomReady) return cb();
+      var done = false;
+      var go = function () { if (!done) { done = true; S.bDomReady = true; cb(); } };
+      wv.addEventListener('dom-ready', go, { once: true });
+      setTimeout(go, 4000);
     };
     try {
       switch (cmd.action) {
         case 'navigate': {
           var url = clientNormalize(cmd.url);
           if (!url) { finish(false, { error: 'url is required' }); return; }
-          waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); });
-          wv.loadURL(url);
+          whenReady(function () {
+            waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); });
+            try {
+              var p = wv.loadURL(url);
+              if (p && p.catch) p.catch(function (er) { if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(false, er.message); } });
+            } catch (er) { if (S.bNavWait) { var f2 = S.bNavWait; S.bNavWait = null; f2(false, er.message); } }
+          });
           return;
         }
-        case 'back': waitLoad(function (ok) { finish(ok); }); try { wv.goBack(); } catch (e) { finish(false, { error: e.message }); } return;
-        case 'forward': waitLoad(function (ok) { finish(ok); }); try { wv.goForward(); } catch (e) { finish(false, { error: e.message }); } return;
-        case 'reload': waitLoad(function (ok) { finish(ok); }); try { wv.reload(); } catch (e) { finish(false, { error: e.message }); } return;
+        case 'back': whenReady(function () { waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); }); try { wv.goBack(); } catch (e) { finish(false, { error: e.message }); } }); return;
+        case 'forward': whenReady(function () { waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); }); try { wv.goForward(); } catch (e) { finish(false, { error: e.message }); } }); return;
+        case 'reload': whenReady(function () { waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); }); try { wv.reload(); } catch (e) { finish(false, { error: e.message }); } }); return;
         case 'click': {
           var x = Number(cmd.x || 0), y = Number(cmd.y || 0);
           moveCursor(x, y, true);
@@ -1493,9 +1511,14 @@ export const UI_HTML = String.raw`<!doctype html>
           return;
         }
         case 'screenshot': {
-          wv.capturePage().then(function (img) {
-            finish(true, { pngBase64: img.toDataURL().split(',')[1] });
-          }).catch(function (e) { finish(false, { error: e.message }); });
+          whenReady(function () {
+            setTimeout(function () {
+              wv.capturePage().then(function (img) {
+                if (!img || img.isEmpty()) { finish(false, { error: 'screenshot is empty — the browser surface is not ready yet' }); return; }
+                finish(true, { pngBase64: img.toDataURL().split(',')[1] });
+              }).catch(function (e) { finish(false, { error: e.message }); });
+            }, 300);
+          });
           return;
         }
         default:
@@ -1521,11 +1544,12 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function positionBrowserHost() {
     var host = $('browserHost');
-    if (!host) return;
+    if (!host || S.driving) return;
+    var settingsOpen = $('settings') && !$('settings').hidden;
     var sess = S.sessions[S.active];
-    var show = sess && sess.side === 'browser' && !S.settings.rightCollapsed && $('sideBody');
-    if (!show || host.classList.contains('offscreen')) {
-      if (!host.classList.contains('offscreen')) host.hidden = true;
+    var show = sess && sess.side === 'browser' && !S.settings.rightCollapsed && $('sideBody') && !settingsOpen;
+    if (!show) {
+      host.classList.add('offscreen');
       return;
     }
     var r = $('sideBody').getBoundingClientRect();
@@ -1533,15 +1557,13 @@ export const UI_HTML = String.raw`<!doctype html>
     host.style.left = r.left + 'px';
     host.style.width = r.width + 'px';
     host.style.height = r.height + 'px';
-    host.hidden = false;
+    host.classList.remove('offscreen');
   }
 
   function showBrowserPanel(runId) {
     var body = $('sideBody');
     if (!isElectron()) {
       body.innerHTML = '<div class="empty" style="padding:20px 6px">The in-app browser runs inside the desktop app (real Chromium you can also use).<br><br>Start it with: <b>npm run app</b></div>';
-      var host = $('browserHost');
-      if (host && !host.classList.contains('offscreen')) host.hidden = true;
       return;
     }
     ensureBrowserHost();
@@ -1615,8 +1637,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function openSettings(section) {
     S.setSection = section || 'general';
     $('settings').hidden = false;
-    var h = $('browserHost');
-    if (h && !h.classList.contains('offscreen')) h.hidden = true;
+    positionBrowserHost();
     renderSettings();
   }
   function closeSettings() { $('settings').hidden = true; positionBrowserHost(); }

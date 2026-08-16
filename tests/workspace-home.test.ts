@@ -27,6 +27,8 @@ describe('Hermes home', () => {
     }
     expect(existsSync(path.join(homeDir, 'Projects'))).toBe(true);
     expect(existsSync(path.join(homeDir, 'Settings'))).toBe(true);
+    expect(existsSync(path.join(homeDir, 'Workspace', 'package.json'))).toBe(true);
+    expect(ProjectGuard.detect(home.workspace).lock.repoRoot).toBe(home.workspace);
   });
 
   it('creates new projects under Projects with a detectable package.json', () => {

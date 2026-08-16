@@ -48,7 +48,7 @@ async function start() {
   const homeMod = await import(pathToFileURL(path.join(dist, 'workspace', 'home.js')).href);
   const home = homeMod.ensureHermesHome();
   log(`hermes home at ${home.root}`);
-  const cwd = process.env.HERMES_CWD || home.root;
+  const cwd = process.env.HERMES_CWD || home.workspace;
 
   server = new HermesServer({ cwd, port: DESIRED_PORT });
   try {

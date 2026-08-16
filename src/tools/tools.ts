@@ -344,6 +344,7 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
       }
       case 'screenshot': {
         const shot = await ctx.browser.screenshot();
+        if (!shot.pngBase64) return fail('browse: screenshot was empty — the browser surface is not ready yet');
         return {
           ok: true,
           output: `screenshot of ${shot.state.url} — "${shot.state.title}" (${Math.round((shot.pngBase64.length * 3) / 4 / 1024)} KB png attached)`,

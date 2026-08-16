@@ -233,7 +233,12 @@ async function main(): Promise<void> {
         return;
       }
       if (pick) {
-        await listProviderModels(PROVIDERS['alibaba']!, true);
+        const pickProvider = positional[1]?.toLowerCase();
+        const pickSpec = pickProvider ? PROVIDERS[pickProvider] : undefined;
+        if (pickProvider && !pickSpec) {
+          throw new ProviderError(`Unknown provider "${pickProvider}". Available: ${Object.keys(PROVIDERS).join(', ')}`);
+        }
+        await listProviderModels(pickSpec ?? PROVIDERS['alibaba']!, true);
         return;
       }
       for (const spec of Object.values(PROVIDERS)) {
@@ -311,6 +316,16 @@ async function main(): Promise<void> {
         },
         approvalHandler: async ({ tool, why, summary }) =>
           askApproval(`\nAPPROVAL REQUIRED [${tool}] (${why})\n${summary}\nApprove? (y/N) `),
+        askUserHandler: async (questions) => {
+          const answers: string[] = [];
+          for (const q of questions) {
+            console.log(`\nQUESTION${q.header ? ` [${q.header}]` : ''}: ${q.question}`);
+            q.options.forEach((o, i) => console.log(`  ${i + 1}. ${o}`));
+            const reply = await askLine(q.options.length > 0 ? 'Your answer (number or text): ' : 'Your answer: ');
+            answers.push(reply || '(no answer)');
+          }
+          return answers.join('\n');
+        },
         onEvent: (e) => console.error(`[hermes] ${e}`),
       });
 

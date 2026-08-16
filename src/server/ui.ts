@@ -287,7 +287,7 @@ export const UI_HTML = String.raw`<!doctype html>
     try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: S.draft })); } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
-  function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+  function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   function toast(msg, isErr) {
     var wrap = $('toasts');
     if (!wrap) return;
@@ -554,7 +554,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function appendLive(stream, el) {
     var w = $('working');
-    if (w && w.style.display !== 'none') stream.insertBefore(el, w); else stream.appendChild(el);
+    if (w) stream.insertBefore(el, w); else stream.appendChild(el);
   }
 
   function sendFollow(text) {
@@ -981,7 +981,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (r.remainingRisks.length) html += '<div class="sec"><h4>Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
     if (r.followUps.length) html += '<div class="sec"><h4>Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
     div.innerHTML = html;
-    stream.appendChild(div);
+    var working = $('working');
+    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
     stream.scrollTop = stream.scrollHeight;
   }
 

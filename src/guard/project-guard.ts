@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import type { ProjectLock } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
 
 const MARKER_FILES = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle'];
-const DEFAULT_IGNORES = ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.venv', '__pycache__', 'target'];
+const DEFAULT_IGNORES = ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.venv', '__pycache__', 'target', '.hermes'];
 
 export class ProjectGuardError extends Error {}
 
@@ -149,7 +149,37 @@ export class ProjectGuard {
 
   isInsideProject(absPath: string): boolean {
     const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
-    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  }
+
+  private assertNoSymlinkEscape(absPath: string): void {
+    let rootReal: string;
+    try {
+      rootReal = realpathSync(this.lock.repoRoot);
+    } catch {
+      return;
+    }
+    let probe = path.resolve(absPath);
+    for (;;) {
+      if (existsSync(probe)) {
+        let real: string;
+        try {
+          real = realpathSync(probe);
+        } catch {
+          return;
+        }
+        const rel = path.relative(rootReal, real);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+          throw new ProjectGuardError(
+            `Path ${absPath} resolves outside the locked project ${this.lock.name} (symlink escape).`,
+          );
+        }
+        return;
+      }
+      const parent = path.dirname(probe);
+      if (parent === probe) return;
+      probe = parent;
+    }
   }
 
   assertInside(absPath: string): void {
@@ -159,10 +189,16 @@ export class ProjectGuard {
       );
     }
     const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
+    if (rel === '.hermes' || rel.startsWith(`.hermes${path.sep}`)) {
+      throw new ProjectGuardError(
+        `Path ${absPath} is inside Hermes' private state directory (.hermes) and cannot be touched by tools.`,
+      );
+    }
     const top = rel.split(path.sep)[0];
     if (top && this.lock.ignorePaths.includes(top)) {
       throw new ProjectGuardError(`Path ${absPath} is inside an ignored directory (${top}).`);
     }
+    this.assertNoSymlinkEscape(absPath);
   }
 
   resolve(relOrAbs: string): string {

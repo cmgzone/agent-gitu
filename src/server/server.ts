@@ -140,7 +140,15 @@ export class HermesServer {
   async start(): Promise<number> {
     const server = http.createServer((req, res) => {
       this.route(req, res).catch((err) => {
-        this.sendJson(res, 500, { error: (err as Error).message });
+        const msg = (err as Error).message;
+        let status = 500;
+        if (msg === 'Body too large') status = 413;
+        else if (msg === 'Invalid JSON body' || msg === 'Content-Type must be application/json') status = 400;
+        if (res.headersSent) {
+          res.destroy();
+          return;
+        }
+        this.sendJson(res, status, { error: msg });
       });
     });
     await new Promise<void>((resolve) => {
@@ -182,7 +190,7 @@ export class HermesServer {
     this.server = undefined;
   }
 
-  private startCronRun(root: string, job: CronJob): string | undefined {
+  private async startCronRun(root: string, job: CronJob): Promise<string | undefined> {
     let llm: LlmClient;
     try {
       llm = this.config.llm ?? resolveLlm({}).client;
@@ -202,7 +210,7 @@ export class HermesServer {
     this.sessions.set(session.runId, session);
     this.saveRegistry();
     this.pushEvent(session, `cron job ${job.id} triggered (${job.every})`);
-    void this.executeRun(session, llm, { goal: job.goal, mode: 'standard', review: false, projectPath: root });
+    await this.executeRun(session, llm, { goal: job.goal, mode: 'standard', review: false, projectPath: root });
     return session.runId;
   }
 
@@ -213,6 +221,10 @@ export class HermesServer {
   }
 
   private async readBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+    const contentType = (req.headers['content-type'] ?? '').split(';')[0]!.trim().toLowerCase();
+    if (contentType && contentType !== 'application/json') {
+      throw new Error('Content-Type must be application/json');
+    }
     let size = 0;
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
@@ -225,6 +237,19 @@ export class HermesServer {
       return JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;
     } catch {
       throw new Error('Invalid JSON body');
+    }
+  }
+
+  private isSameOrigin(req: http.IncomingMessage): boolean {
+    const origin = req.headers['origin'];
+    if (origin === undefined) return true;
+    if (typeof origin !== 'string' || origin === '' || origin === 'null') return false;
+    const host = req.headers['host'];
+    if (!host) return false;
+    try {
+      return new URL(origin).host === host;
+    } catch {
+      return false;
     }
   }
 
@@ -261,6 +286,11 @@ export class HermesServer {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
     const method = req.method ?? 'GET';
+
+    if (method !== 'GET' && method !== 'HEAD' && !this.isSameOrigin(req)) {
+      this.sendJson(res, 403, { error: 'cross-origin request rejected' });
+      return;
+    }
 
     if (method === 'GET' && (path === '/' || path === '/index.html')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -452,7 +482,7 @@ export class HermesServer {
           for (const name of entries.sort()) {
             if (files.length >= 300) return;
             if (guard.lock.ignorePaths.includes(name) || name.startsWith('.')) continue;
-            const full = `${dir}\\${name}`;
+            const full = nodePath.join(dir, name);
             let st;
             try {
               st = statSync(full);
@@ -589,16 +619,27 @@ export class HermesServer {
         'cache-control': 'no-cache',
         connection: 'keep-alive',
       });
-      for (const ev of session.events) res.write(`data: ${JSON.stringify(ev)}\n\n`);
+      const safeWrite = (data: string): void => {
+        if (res.writableEnded || res.destroyed) return;
+        try {
+          res.write(data);
+        } catch {
+          /* socket already gone */
+        }
+      };
+      for (const ev of session.events) safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       const send = (ev: { i: number; t: string; text: string }): void => {
-        res.write(`data: ${JSON.stringify(ev)}\n\n`);
+        safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       };
       session.subscribers.add(send);
-      const heartbeat = setInterval(() => res.write(': hb\n\n'), 15000);
-      req.on('close', () => {
+      const heartbeat = setInterval(() => safeWrite(': hb\n\n'), 15000);
+      const cleanup = (): void => {
         clearInterval(heartbeat);
         session.subscribers.delete(send);
-      });
+      };
+      req.on('close', cleanup);
+      res.on('error', cleanup);
+      res.on('close', cleanup);
       return;
     }
 
@@ -800,6 +841,13 @@ export class HermesServer {
           };
           session.planReview = waiter;
           this.pushEvent(session, `plan-review ${waiter.id} waiting for your review`);
+          setTimeout(() => {
+            if (session.planReview === waiter) {
+              session.planReview = undefined;
+              this.pushEvent(session, `plan-review ${waiter.id} timed out — treating as denied`);
+              resolve({ approved: false, note: 'Plan review timed out.' });
+            }
+          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
       approvalHandler: ({ tool, why, summary }) =>
         new Promise<boolean>((resolve) => {

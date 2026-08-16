@@ -1,6 +1,8 @@
 import type { AcceptanceCriterion, Evidence, EvidenceKind, TaskLedgerData } from '../types.js';
 import { excerpt, nowIso, shortId } from '../util.js';
 
+const TRIVIAL_EVIDENCE_RE = /^\s*(echo|pwd|true|:|cd|ls|dir|whoami|hostname|date|type|ver|git\s+status|git\s+log)\b/i;
+
 export interface GateResult {
   open: boolean;
   missing: string[];
@@ -43,6 +45,12 @@ export class EvidenceEngine {
     if (!evidence) return { ok: false, reason: `Unknown evidence: ${evidenceId}` };
     if (!evidence.passed) {
       return { ok: false, reason: `Evidence ${evidenceId} did not pass; it cannot satisfy a criterion.` };
+    }
+    if (evidence.kind === 'command' && evidence.command && TRIVIAL_EVIDENCE_RE.test(evidence.command)) {
+      return {
+        ok: false,
+        reason: `Evidence ${evidenceId} is a no-op command ("${evidence.command.trim()}") and cannot verify a criterion. Run a real test/build/lint/typecheck.`,
+      };
     }
     if (!criterion.evidenceIds.includes(evidenceId)) criterion.evidenceIds.push(evidenceId);
     criterion.satisfied = true;

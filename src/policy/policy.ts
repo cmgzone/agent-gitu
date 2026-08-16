@@ -8,9 +8,10 @@ export interface PolicyDecision {
 }
 
 const DANGEROUS_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
-  { re: /\brm\s+(-[a-z]*[rf][a-z]*\s+|--recursive\b).{0,80}(\/|~|\$|\*|\.)/i, why: 'recursive delete' },
+  { re: /\brm\s+(?:-[a-z]*r[a-z]*\s+|--recursive\b)/i, why: 'recursive delete' },
   { re: /\b(del|erase|rmdir)\b\s+\/[sqf]/i, why: 'windows bulk delete' },
-  { re: /\bgit\s+push\s+([^\n]*)(--force\b|-f\b|--force-with-lease)/i, why: 'force push' },
+  { re: /\bremove-item\b[^\n]*-(?:recurse|r)\b/i, why: 'windows recursive delete' },
+  { re: /\bgit\s+push\s+([^\n]*)(--force\b|-f\b|--force-with-lease|\s\+\S+)/i, why: 'force push' },
   { re: /\bgit\s+reset\s+--hard\s+origin/i, why: 'hard reset to remote' },
   { re: /\b(sudo|doas|runas)\b/i, why: 'privilege escalation' },
   { re: /\bnpm\s+(publish|unpublish)\b/i, why: 'package publish' },
@@ -19,10 +20,12 @@ const DANGEROUS_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /\btruncate\s+table\b/i, why: 'destructive sql' },
   { re: /\b(mkfs|format|diskpart|fdisk)\b/i, why: 'disk operation' },
   { re: /\b(shutdown|reboot|halt|poweroff)\b/i, why: 'system power control' },
-  { re: /\bcurl\b[^\n]*\|\s*(ba)?sh\b/i, why: 'pipe remote script to shell' },
+  { re: /\b(curl|wget)\b[^\n]*\|\s*(ba|z|pw)?sh\b/i, why: 'pipe remote script to shell' },
   { re: /\biwr\b[^\n]*-usebasicparsing[^\n]*\|\s*iex/i, why: 'pipe remote script to shell' },
+  { re: /\biex\b[^\n]*(downloadstring|invoke-expression[^\n]*download)/i, why: 'remote code execution' },
+  { re: /\bpowershell(?:\.exe)?\s+(?:-[a-z]*enc(?:odedcommand)?\b|-e\s+)/i, why: 'encoded powershell payload' },
   { re: /\bset-executionpolicy\b/i, why: 'powershell security policy change' },
-  { re: /\bchmod\s+777\b/i, why: 'world-writable permissions' },
+  { re: /\bchmod\s+(?:-[a-z]+\s+)*777\b/i, why: 'world-writable permissions' },
   { re: /--no-verify\b/i, why: 'skips git hooks/verification' },
   { re: /\bgit\s+clean\s+-[a-z]*f/i, why: 'git clean destroys untracked work' },
   { re: /\bdeploy\b\s+(prod|production)\b/i, why: 'production deployment' },
@@ -36,11 +39,15 @@ const MODERATE_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /\bpip(install)?\s+install\b/i, why: 'dependency mutation' },
   { re: /\bcargo\s+(add|build|run)\b/i, why: 'build/run mutation' },
   { re: /\b(npm|pnpm|yarn)\s+run\s+(?!(test|lint|typecheck|type-check|tsc|build)\b)[\w:.-]+/i, why: 'script execution' },
+  { re: /\b(node|tsx|ts-node|python3?|deno|bun)\b/i, why: 'runtime execution' },
+  { re: /\b(make|cmake|go\s+build|gradle|mvn)\b/i, why: 'build execution' },
   { re: /\bmkdir\b/i, why: 'filesystem mutation' },
 ];
 
 const SAFE_COMMAND_RE =
   /^(git\s+(status|log|diff|show|branch(\s+-a|\s+--list)?|remote\s+-v|rev-parse|ls-files)|ls|dir|cat|type|echo|pwd|node\s+--version|npm\s+(run\s+(test|lint|typecheck|build)|test|ls)|npx\s+tsc|pytest|cargo\s+test|go\s+test)\b/i;
+
+const COMPOUND_COMMAND_RE = /&&|\|\||[;|`]|\$\(|\r?\n/;
 
 export function classifyCommand(command: string): { tier: RiskTier; why: string } {
   for (const { re, why } of DANGEROUS_COMMAND_PATTERNS) {
@@ -49,8 +56,10 @@ export function classifyCommand(command: string): { tier: RiskTier; why: string 
   for (const { re, why } of MODERATE_COMMAND_PATTERNS) {
     if (re.test(command)) return { tier: 'moderate', why };
   }
-  if (SAFE_COMMAND_RE.test(command.trim())) return { tier: 'safe', why: 'read-only/verification command' };
-  return { tier: 'moderate', why: 'unrecognized command (fail closed)' };
+  if (!COMPOUND_COMMAND_RE.test(command) && SAFE_COMMAND_RE.test(command.trim())) {
+    return { tier: 'safe', why: 'read-only/verification command' };
+  }
+  return { tier: 'dangerous', why: 'unrecognized command (fail closed)' };
 }
 
 export type ApprovalHandler = (request: {

@@ -45,6 +45,23 @@ export class LoopDetector {
             `Repeating it is blocked. Form a new hypothesis or reduce scope.`,
         };
       }
+    } else {
+      const sigCounts = new Map<string, number>();
+      for (const f of failures) {
+        if (f.errorSignature) sigCounts.set(f.errorSignature, (sigCounts.get(f.errorSignature) ?? 0) + 1);
+      }
+      for (const [sig, count] of sigCounts) {
+        if (count >= this.policy.maxSameActionSameError) {
+          return {
+            allowed: false,
+            attempts: sameAction.length,
+            priorFailures,
+            reason:
+              `Action failed ${count}× with the same error signature (${sig}). ` +
+              `Repeating it is blocked. Form a new hypothesis or reduce scope.`,
+          };
+        }
+      }
     }
 
     if (failures.length >= this.policy.maxSameActionFailures) {

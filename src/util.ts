@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export function nowIso(): string {
@@ -84,7 +84,9 @@ export function readJson<T>(file: string): T | undefined {
 
 export function writeJson(file: string, data: unknown): void {
   mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  const tmp = `${file}.${process.pid}.${Date.now()}.${Math.floor(Math.random() * 1e6)}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  renameSync(tmp, file);
 }
 
 export function summarizeParams(tool: string, params: Record<string, unknown>): string {

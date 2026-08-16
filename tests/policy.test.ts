@@ -25,7 +25,7 @@ describe('classifyCommand', () => {
   });
 
   it('fails closed on unknown commands', () => {
-    expect(classifyCommand('some-unknown-binary --do-things').tier).toBe('moderate');
+    expect(classifyCommand('some-unknown-binary --do-things').tier).toBe('dangerous');
   });
 });
 

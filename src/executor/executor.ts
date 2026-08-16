@@ -79,6 +79,32 @@ export class Executor {
       return { record, result: { ok: false, output: message }, blockedByLoop: message };
     }
 
+    if (req.tool === 'write_file' || req.tool === 'apply_edit') {
+      const file = String(req.params['path'] ?? '');
+      if (file) {
+        const passedEvidence = this.ledger.data.evidence.filter((e) => e.passed).length;
+        const pressure = this.loopDetector.fileEditPressure(this.ledger.data.actions, passedEvidence, file);
+        if (pressure.blocked) {
+          const message =
+            `EDIT PRESSURE: ${pressure.edits} edits to ${file} with no passing evidence yet. ` +
+            `Run a verification command (test/build/lint/typecheck) before editing further.`;
+          const record = this.ledger.recordAction({
+            stepId,
+            tool: req.tool,
+            paramsHash,
+            paramsSummary: summary,
+            status: 'blocked',
+            reason: req.reason,
+            expected: req.expected,
+            observation: message,
+            durationMs: Date.now() - started,
+          });
+          this.emit(`blocked  ${summary} (edit pressure)`);
+          return { record, result: { ok: false, output: message }, blockedByLoop: message };
+        }
+      }
+    }
+
     const decision = await this.policy.evaluate(req.tool, req.params);
     if (!decision.allowed) {
       const message = `DENIED by policy [${decision.tier}]: ${decision.reason}`;

@@ -210,6 +210,7 @@ export class Hermes {
       ledger.data.blockers = [];
       ledger.data.completedAt = undefined;
       ledger.data.report = undefined;
+      ledger.data.startedAt = undefined;
       resumeNote = this.config.resume.message;
       this.emit(`ledger   resumed: ${ledger.data.taskId}`);
     } else {
@@ -237,9 +238,10 @@ export class Hermes {
     const context = new ContextEngine(guard);
     const reporter = new Reporter();
 
-    if (this.config.criteria && this.config.criteria.length > 0) {
-      ledger.setCriteria(this.config.criteria);
-      this.emit(`criteria provided by user (${this.config.criteria.length})`);
+    const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
+    if (userCriteriaProvided) {
+      ledger.setCriteria(this.config.criteria!);
+      this.emit(`criteria provided by user (${this.config.criteria!.length})`);
     }
 
     let contextNote = '';
@@ -367,6 +369,21 @@ export class Hermes {
 
       switch (action.type) {
         case 'set_criteria': {
+          const criteriaAlreadySet = ledger.data.acceptanceCriteria.length > 0;
+          const hasEvidence = ledger.data.evidence.length > 0;
+          if (userCriteriaProvided) {
+            observe(
+              'Acceptance criteria were provided by the user and are immutable. Work against the existing criteria; do not redefine them.',
+            );
+            break;
+          }
+          if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
+            observe(
+              'Criteria are locked once a plan is approved or evidence is recorded; they cannot be redefined. ' +
+                'Continue working against them, or request_block if the scope is wrong.',
+            );
+            break;
+          }
           ledger.setCriteria(action.criteria);
           this.emit(`criteria ${action.criteria.map((c) => `"${c}"`).join('; ')}`);
           observe('Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');

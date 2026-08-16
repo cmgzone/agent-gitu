@@ -20,6 +20,15 @@ export interface LlmClient {
 
 export class LlmError extends Error {}
 
+const LLM_REQUEST_TIMEOUT_MS = 300_000;
+
+function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
+  const timeout = AbortSignal.timeout(ms);
+  if (!signal) return timeout;
+  const agg = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  return agg ? agg([signal, timeout]) : signal;
+}
+
 export interface OpenAiCompatConfig {
   apiKey: string;
   baseUrl?: string;
@@ -61,7 +70,7 @@ export class OpenAiCompatClient implements LlmClient {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: opts.signal,
+        signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
       throw new LlmError(`LLM request failed: ${(err as Error).message}`);
@@ -113,7 +122,7 @@ export class OpenAiCompatClient implements LlmClient {
           authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify(body),
-        signal: opts.signal,
+        signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
       });
     } catch (err) {
       throw new LlmError(`LLM request failed: ${(err as Error).message}`);

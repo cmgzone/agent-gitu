@@ -18,6 +18,9 @@ const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST_ENTRIES = 400;
 const MAX_SEARCH_MATCHES = 60;
 
+const STDERR_FAIL_RE =
+  /(is not recognized as|not recognized as the name of|CommandNotFoundException|ItemNotFoundException|The term ['"].*['"] is not recognized|No such file or directory|Permission denied|Access is denied|cannot find path)/i;
+
 function fail(output: string): ToolResult {
   return { ok: false, output, errorSignature: errorSignature(output) };
 }
@@ -198,7 +201,8 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
 export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
   const command = String(params['command'] ?? '');
   if (!command) return Promise.resolve(fail('run_command: missing "command"'));
-  const timeoutMs = Math.min(300_000, Number(params['timeoutMs'] ?? 120_000));
+  const rawTimeout = Number(params['timeoutMs'] ?? 120_000);
+  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.min(300_000, rawTimeout) : 120_000;
 
   return new Promise((resolve) => {
     const isWindows = process.platform === 'win32';
@@ -225,7 +229,17 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
             errorSignature: errorSignature(body || err.message),
           });
         } else {
-          resolve({ ok: true, exitCode: 0, output: excerpt(body || '(ok)', 4000) });
+          const stderrFailed = !stdout.trim() && stderr.trim().length > 0 && STDERR_FAIL_RE.test(stderr);
+          if (stderrFailed) {
+            resolve({
+              ok: false,
+              exitCode: 1,
+              output: `${output}\n[exit 0 but stderr indicates failure]`,
+              errorSignature: errorSignature(stderr),
+            });
+          } else {
+            resolve({ ok: true, exitCode: 0, output: excerpt(body || '(ok)', 4000) });
+          }
         }
       },
     );

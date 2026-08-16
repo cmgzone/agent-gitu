@@ -39,6 +39,7 @@ describe('cron', () => {
     expect(parseEvery('30s')).toBe(30000);
     expect(parseEvery('5m')).toBe(300000);
     expect(parseEvery('1h')).toBe(3600000);
+    expect(parseEvery('80')).toBe(80 * 60000);
     expect(() => parseEvery('soon')).toThrow();
   });
 

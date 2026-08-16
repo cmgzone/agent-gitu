@@ -12,8 +12,10 @@ export interface CronJob {
 }
 
 export function parseEvery(every: string): number {
-  const m = every.trim().match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hours?)$/i);
-  if (!m) throw new Error(`Invalid schedule "${every}". Use e.g. 30s, 5m, 1h.`);
+  const trimmed = every.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 60 * 1000;
+  const m = trimmed.match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hours?)$/i);
+  if (!m) throw new Error(`Invalid schedule "${every}". Use e.g. 30, 30s, 5m, 1h (bare numbers are minutes).`);
   const n = Number(m[1]);
   const unit = m[2]!.toLowerCase();
   if (unit.startsWith('s')) return n * 1000;

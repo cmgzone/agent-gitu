@@ -211,6 +211,21 @@ export const UI_HTML = String.raw`<!doctype html>
   .setlist .x:hover { color: var(--red); }
   .setlist input, .setlist textarea { width: 100%; border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 6px 9px; font-size: 12px; margin-bottom: 6px; }
   .setlist .meta { color: var(--muted); font-size: 11px; }
+  .toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex; flex-direction: column; gap: 8px; }
+  .toast { background: #2a2a26; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 12.5px; max-width: 380px; box-shadow: 0 6px 24px rgba(0,0,0,.25); animation: tin .18s ease; white-space: pre-wrap; }
+  .toast.err { background: #7f1d1d; }
+  @keyframes tin { from { transform: translateY(-6px); opacity: 0; } }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 60; display: flex; align-items: center; justify-content: center; }
+  .modal .box { width: 580px; max-width: 94vw; max-height: 72vh; background: var(--card); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+  .modal .bar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .modal .bar .crumb { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .modal .list { flex: 1; overflow-y: auto; padding: 6px; }
+  .modal .frow { display: flex; gap: 9px; align-items: center; padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  .modal .frow:hover { background: #f0f0ec; }
+  .modal .frow .ico { color: var(--muted); display: inline-flex; }
+  .modal .foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .sb .navitem .ico, .sb .proj .ico, .setnav .item .ico, .sug .ico { display: inline-flex; align-items: center; color: var(--muted); }
+  .setlist .x svg { width: 12px; height: 12px; }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
@@ -236,6 +251,14 @@ export const UI_HTML = String.raw`<!doctype html>
   <aside class="setnav" id="setnav"></aside>
   <div class="setbody" id="setbody"></div>
 </div>
+<div class="toasts" id="toasts"></div>
+<div class="modal" id="browseModal" hidden>
+  <div class="box">
+    <div class="bar"><span style="font-weight:600;font-size:13px">Choose a project folder</span><span class="crumb" id="browseCrumb"></span></div>
+    <div class="list" id="browseList"></div>
+    <div class="foot"><span class="chip ok" id="browseProjChip" style="display:none">project detected</span><span style="flex:1"></span><button class="btn ghost" id="browseCancel">Cancel</button><button class="btn dark" id="browseUse">Use this folder</button></div>
+  </div>
+</div>
 <script>
 (function () {
   var S = {
@@ -250,6 +273,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (saved) {
       if (saved.sel) for (var k in saved.sel) S.sel[k] = saved.sel[k];
       if (saved.settings) for (var k2 in saved.settings) S.settings[k2] = saved.settings[k2];
+      if (typeof S.settings.scope === 'string') S.settings.scope = S.settings.scope.split('\n').map(function (s) { return s.trim(); }).filter(Boolean);
+      if (!Array.isArray(S.settings.scope)) S.settings.scope = [];
       S.draft = saved.draft || '';
     }
   } catch (e) {}
@@ -258,6 +283,32 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML; }
+  function toast(msg, isErr) {
+    var wrap = $('toasts');
+    if (!wrap) return;
+    var t = document.createElement('div');
+    t.className = 'toast' + (isErr ? ' err' : '');
+    t.textContent = String(msg);
+    wrap.appendChild(t);
+    setTimeout(function () { t.remove(); }, 4500);
+  }
+  var SVG_OPEN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
+  var ICONS = {
+    gear: SVG_OPEN + '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    shield: SVG_OPEN + '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+    folder: SVG_OPEN + '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
+    bolt: SVG_OPEN + '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>',
+    plug: SVG_OPEN + '<path d="M9 7V3"/><path d="M15 7V3"/><path d="M6 7h12v4a6 6 0 0 1-12 0V7z"/><path d="M12 17v4"/></svg>',
+    clock: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>',
+    pencil: SVG_OPEN + '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>',
+    x: SVG_OPEN + '<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
+    back: SVG_OPEN + '<line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>',
+    search: SVG_OPEN + '<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>',
+    check: SVG_OPEN + '<polyline points="20 6 9 17 4 12"/></svg>',
+    wrench: SVG_OPEN + '<path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6L14 13l-3-3 3.7-3.7z"/></svg>',
+    layers: SVG_OPEN + '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>'
+  };
+  function icon(name) { return ICONS[name] || ''; }
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
       if (!r.ok) return r.text().then(function (t) { throw new Error(t || String(r.status)); });
@@ -282,15 +333,16 @@ export const UI_HTML = String.raw`<!doctype html>
         var p = s.project || basename(S.settings.projectPath || '') || 'project';
         (byProj[p] = byProj[p] || []).push(s);
       });
-      var html = '<button class="newbtn" id="sbNew">&#9998; New session</button>' +
-        '<button class="navitem" data-set="cron"><span class="ico">&#9200;</span>Scheduled</button>' +
-        '<button class="navitem" data-set="skills"><span class="ico">&#9889;</span>Skills</button>' +
-        '<button class="navitem" data-set="mcp"><span class="ico">&#128268;</span>MCP servers</button>' +
+      var html = '<button class="newbtn" id="sbNew">' + icon('pencil') + ' New session</button>' +
+        '<button class="navitem" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
+        '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
+        '<button class="navitem" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
+        '<button class="navitem" data-set="workspace"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
         '<div class="sect">Projects</div>';
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
       names.forEach(function (p) {
-        html += '<div class="proj" data-projpick="' + esc(p) + '">&#128193; ' + esc(p) + '</div>';
+        html += '<div class="proj" data-projpick="' + esc(p) + '"><span class="ico">' + icon('folder') + '</span>' + esc(p) + '</div>';
         byProj[p].slice(0, 8).forEach(function (s) {
           html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '">' +
             '<span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></button>';
@@ -334,7 +386,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<span class="spacer"></span>' +
       '<button class="btn red" id="stopBtn" style="' + (s && s.status === 'running' ? '' : 'display:none') + '">Stop</button>';
     var stop = $('stopBtn');
-    if (stop) stop.onclick = function () { api('/api/runs/' + S.active + '/stop', { method: 'POST' }).catch(function (e) { alert(e.message); }); };
+    if (stop) stop.onclick = function () { api('/api/runs/' + S.active + '/stop', { method: 'POST' }).catch(function (e) { toast(e.message, true); }); };
   }
 
   function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
@@ -349,10 +401,10 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="home">' +
       '<h1>What should we work on in <span class="u">' + esc(name) + '</span>?</h1>' +
       '<div class="sugs">' +
-      '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:#2563eb">&#128269;</span>Explore and understand code</button>' +
-      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:#7c6cf0">&#128296;</span>Build a new feature, app, or tool</button>' +
-      '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:#16a34a">&#9989;</span>Review code and suggest changes</button>' +
-      '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:#dc2626">&#128295;</span>Fix issues and failures</button>' +
+      '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:#2563eb">' + icon('search') + '</span>Explore and understand code</button>' +
+      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:#7c6cf0">' + icon('bolt') + '</span>Build a new feature, app, or tool</button>' +
+      '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:#16a34a">' + icon('layers') + '</span>Review code and suggest changes</button>' +
+      '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:#dc2626">' + icon('wrench') + '</span>Fix issues and failures</button>' +
       '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
       '<div class="composer-bar">' + controlsHtml(true) + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
@@ -422,14 +474,14 @@ export const UI_HTML = String.raw`<!doctype html>
         effort: S.sel.effort,
         projectPath: S.settings.projectPath || undefined,
         maxActions: Number(S.sel.budget),
-        scope: (S.settings.scope || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
+        scope: S.settings.scope || [],
         constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean)
       })
     }).then(function (r) {
       S.draft = ''; persist();
       openRun(r.runId);
       renderSidebar();
-    }).catch(function (e) { alert('Failed to start: ' + e.message); });
+    }).catch(function (e) { toast('Failed to start: ' + e.message, true); });
   }
 
   function openRun(runId) {
@@ -484,7 +536,7 @@ export const UI_HTML = String.raw`<!doctype html>
                 effort: S.sel.effort,
                 projectPath: S.settings.projectPath || undefined
               })
-            }).then(function (r) { openRun(r.runId); }).catch(function (e2) { alert(e2.message); });
+            }).then(function (r) { openRun(r.runId); }).catch(function (e2) { toast(e2.message, true); });
           } else alert(msg);
         });
     });
@@ -761,7 +813,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var id = e.target.getAttribute && e.target.getAttribute('data-appr');
       if (id) {
         api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: e.target.getAttribute('data-ok') === '1' }) })
-          .catch(function (er) { alert(er.message); });
+          .catch(function (er) { toast(er.message, true); });
         return;
       }
       var head = e.target.closest && e.target.closest('.tool .head');
@@ -821,7 +873,7 @@ export const UI_HTML = String.raw`<!doctype html>
         return qq.question + ' → ' + val;
       }).join('\n');
       api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer: answers }) })
-        .catch(function (er) { alert(er.message); });
+        .catch(function (er) { toast(er.message, true); });
     };
   }
 
@@ -885,11 +937,11 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     $('prApprove').onclick = function () {
       api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(true)) })
-        .catch(function (er) { alert(er.message); });
+        .catch(function (er) { toast(er.message, true); });
     };
     $('prChange').onclick = function () {
       api('/api/plan-review/' + pr.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload(false)) })
-        .catch(function (er) { alert(er.message); });
+        .catch(function (er) { toast(er.message, true); });
     };
   }
 
@@ -1027,18 +1079,19 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function renderSettings() {
     var items = [
-      ['general', '⚙', 'General'],
-      ['permissions', '🛡', 'Permissions'],
-      ['project', '📁', 'Project'],
-      ['skills', '⚡', 'Skills'],
-      ['mcp', '🔌', 'MCP servers'],
-      ['cron', '⏰', 'Scheduled / heartbeat']
+      ['general', 'gear', 'General'],
+      ['permissions', 'shield', 'Permissions'],
+      ['workspace', 'folder', 'Workspace'],
+      ['project', 'search', 'Project'],
+      ['skills', 'bolt', 'Skills'],
+      ['mcp', 'plug', 'MCP servers'],
+      ['cron', 'clock', 'Scheduled / heartbeat']
     ];
     $('setnav').innerHTML =
-      '<button class="back" id="setBack">&#8592; Back to app</button>' +
+      '<button class="back" id="setBack">' + icon('back') + ' Back to app</button>' +
       '<div class="sect">Settings</div>' +
       items.map(function (it) {
-        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '"><span>' + it[1] + '</span>' + it[2] + '</button>';
+        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '"><span class="ico">' + icon(it[1]) + '</span>' + it[2] + '</button>';
       }).join('');
     $('setBack').onclick = closeSettings;
     $('setnav').querySelectorAll('[data-sec]').forEach(function (el) {
@@ -1071,6 +1124,30 @@ export const UI_HTML = String.raw`<!doctype html>
         '</div>';
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
       $('pAuto').onclick = function () { S.settings.autoApprove = !S.settings.autoApprove; persist(); renderSettings(); };
+    } else if (S.setSection === 'workspace') {
+      api('/api/files').then(function (d) {
+        var files = d.files || [];
+        var sel = S.settings.scope || [];
+        b.innerHTML = '<h1>Workspace</h1>' +
+          '<p style="color:var(--muted);font-size:12.5px">Choose which files Hermes should work on. The agent is instructed to stay inside this selection. Leave empty to allow the whole project.</p>' +
+          '<div class="setcard"><div class="setlist" style="max-height:300px;overflow-y:auto">' +
+          (files.map(function (f) {
+            return '<div class="row"><label style="display:flex;gap:8px;align-items:center;font-family:var(--mono);font-size:11.5px"><input type="checkbox" data-f="' + esc(f) + '"' + (sel.indexOf(f) >= 0 ? ' checked' : '') + ' style="width:auto;margin:0">' + esc(f) + '</label></div>';
+          }).join('') || '<div class="meta">no files found</div>') +
+          '</div></div>' +
+          '<h2>Constraints</h2><div class="setcard"><div class="setlist">' +
+          '<textarea id="wsCons" rows="3" placeholder="Extra rules, one per line (e.g. Do not touch the billing module)">' + esc(S.settings.constraints || '') + '</textarea>' +
+          '<div class="row"><button class="btn dark" id="wsSave">Save workspace</button><button class="btn ghost" id="wsClear">Clear selection</button></div></div></div>';
+        $('wsSave').onclick = function () {
+          var chosen = [];
+          b.querySelectorAll('input[data-f]').forEach(function (cb) { if (cb.checked) chosen.push(cb.getAttribute('data-f')); });
+          S.settings.scope = chosen;
+          S.settings.constraints = $('wsCons').value;
+          persist();
+          toast('Workspace saved — ' + chosen.length + ' file(s) in scope');
+        };
+        $('wsClear').onclick = function () { S.settings.scope = []; persist(); renderSettings(); };
+      });
     } else if (S.setSection === 'project') {
       b.innerHTML = '<h1>Project</h1>' +
         '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Active project path</div><div class="d">Each project has its own chats, skills, MCP servers and cron jobs.</div></div></div>' +
@@ -1087,7 +1164,7 @@ export const UI_HTML = String.raw`<!doctype html>
         b.innerHTML = '<h1>Skills</h1><p style="color:var(--muted);font-size:12.5px">Reusable knowledge. The agent can learn new skills with create_skill; you can add your own here.</p>' +
           '<div class="setcard"><div class="setlist">' +
           (d.skills.length ? d.skills.map(function (sk) {
-            return '<div class="row"><span class="grow"><b>' + esc(sk.name) + '</b> — ' + esc(sk.description) + ' <span class="meta">(' + esc(sk.createdBy) + ')</span></span><button class="x" data-x="' + esc(sk.name) + '">✕</button></div>';
+            return '<div class="row"><span class="grow"><b>' + esc(sk.name) + '</b> — ' + esc(sk.description) + ' <span class="meta">(' + esc(sk.createdBy) + ')</span></span><button class="x" data-x="' + esc(sk.name) + '' + icon('x') + '</button></div>';
           }).join('') : '<div class="meta">no skills yet</div>') +
           '<div style="height:8px"></div><input id="skName" placeholder="skill name (e.g. deploy-checklist)"><input id="skDesc" placeholder="short description"><textarea id="skInstr" rows="3" placeholder="step-by-step instructions"></textarea>' +
           '<div class="row"><button class="btn dark" id="skAdd">Add skill</button></div></div></div>';
@@ -1096,7 +1173,7 @@ export const UI_HTML = String.raw`<!doctype html>
         });
         $('skAdd').onclick = function () {
           api('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('skName').value, description: $('skDesc').value, instructions: $('skInstr').value }) })
-            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+            .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
         };
       });
     } else if (S.setSection === 'mcp') {
@@ -1104,17 +1181,23 @@ export const UI_HTML = String.raw`<!doctype html>
         b.innerHTML = '<h1>MCP servers</h1><p style="color:var(--muted);font-size:12.5px">External tool servers (filesystem, browser, databases…). Their tools require approval before running.</p>' +
           '<div class="setcard"><div class="setlist">' +
           (d.servers.length ? d.servers.map(function (sv) {
-            return '<div class="row"><span class="grow"><b>' + esc(sv.name) + '</b> <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><button class="x" data-x="' + esc(sv.name) + '">✕</button></div>';
+            return '<div class="row"><span class="grow"><b>' + esc(sv.name) + '</b> <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><button class="x" data-x="' + esc(sv.name) + '' + icon('x') + '</button></div>';
           }).join('') : '<div class="meta">no servers yet</div>') +
           (d.tools.length ? '<div class="meta" style="margin-top:6px">tools: ' + esc(d.tools.map(function (t) { return 'mcp:' + t.server + ':' + t.name; }).join(', ')) + '</div>' : '') +
           '<div style="height:8px"></div><div class="row"><input id="mcName" placeholder="name (e.g. fs)" style="margin:0"><input id="mcCmd" placeholder="command (e.g. npx)" style="margin:0"></div><input id="mcArgs" placeholder="args separated by spaces">' +
-          '<div class="row"><button class="btn dark" id="mcAdd">Add MCP server</button></div></div></div>';
+          '<div class="row"><button class="btn dark" id="mcAdd">Add MCP server</button><button class="btn ghost" id="mcFs">+ filesystem MCP (official)</button></div></div></div>';
         b.querySelectorAll('[data-x]').forEach(function (el) {
           el.onclick = function () { api('/api/mcp/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }); };
         });
         $('mcAdd').onclick = function () {
           api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('mcName').value, command: $('mcCmd').value, args: $('mcArgs').value.split(/\s+/).filter(Boolean) }) })
-            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+            .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
+        };
+        $('mcFs').onclick = function () {
+          var root = S.settings.projectPath || (S.project && S.project.repoRoot) || '.';
+          api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'fs', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', root] }) })
+            .then(function () { toast('Filesystem MCP added for ' + root); renderSettings(); })
+            .catch(function (e) { toast(e.message, true); });
         };
       });
     } else if (S.setSection === 'cron') {
@@ -1122,23 +1205,66 @@ export const UI_HTML = String.raw`<!doctype html>
         b.innerHTML = '<h1>Scheduled / heartbeat</h1><p style="color:var(--muted);font-size:12.5px">Cron jobs start agent runs on a schedule. A heartbeat periodically checks project health.</p>' +
           '<div class="setcard"><div class="setlist">' +
           (d.jobs.length ? d.jobs.map(function (jb) {
-            return '<div class="row"><span class="grow">every <b>' + esc(jb.every) + '</b> — ' + esc(jb.goal) + (jb.lastRunAt ? ' <span class="meta">(last ' + new Date(jb.lastRunAt).toLocaleTimeString() + ')</span>' : '') + '</span><button class="x" data-x="' + esc(jb.id) + '">✕</button></div>';
+            return '<div class="row"><span class="grow">every <b>' + esc(jb.every) + '</b> — ' + esc(jb.goal) + (jb.lastRunAt ? ' <span class="meta">(last ' + new Date(jb.lastRunAt).toLocaleTimeString() + ')</span>' : '') + '</span><button class="x" data-x="' + esc(jb.id) + '' + icon('x') + '</button></div>';
           }).join('') : '<div class="meta">no jobs yet</div>') +
-          '<div style="height:8px"></div><div class="row"><input id="crEvery" placeholder="every 30m" style="margin:0"><input id="crGoal" placeholder="goal for the agent" style="margin:0"></div>' +
+          '<div style="height:8px"></div><div class="row"><div style="flex:1"><div class="meta">Schedule (e.g. 30, 30s, 5m, 1h — bare numbers are minutes)</div><input id="crEvery" placeholder="30m" style="margin:0"></div><div style="flex:2"><div class="meta">Goal for the agent</div><input id="crGoal" placeholder="e.g. run tests and fix failures" style="margin:0"></div></div>' +
           '<div class="row"><button class="btn dark" id="crAdd">Add cron job</button><button class="btn ghost" id="crHeart">+ heartbeat (30m)</button></div></div></div>';
         b.querySelectorAll('[data-x]').forEach(function (el) {
           el.onclick = function () { api('/api/cron/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }); };
         });
         $('crAdd').onclick = function () {
           api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: $('crEvery').value, goal: $('crGoal').value }) })
-            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+            .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
         };
         $('crHeart').onclick = function () {
           api('/api/cron', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ every: '30m', goal: 'Heartbeat: inspect the project, run tests/typecheck, fix or report anything broken.' }) })
-            .then(function () { renderSettings(); }).catch(function (e) { alert(e.message); });
+            .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
         };
       });
     }
+  }
+
+  function openFolderBrowser() {
+    $('browseModal').hidden = false;
+    browseTo(S.settings.projectPath || '');
+  }
+
+  function browseTo(p) {
+    api('/api/browse?path=' + encodeURIComponent(p || '')).then(renderBrowser).catch(function (e) { toast(e.message, true); });
+  }
+
+  function renderBrowser(d) {
+    var box = $('browseList');
+    var html = '';
+    if (!d.atRoot && d.path) {
+      html += '<div class="frow" data-up="1"><span class="ico">' + icon('back') + '</span><span style="color:var(--muted)">..</span></div>';
+    }
+    if (d.atRoot) html += '<div class="empty" style="padding:6px 10px">This computer — pick a drive</div>';
+    html += (d.dirs || []).map(function (n) {
+      return '<div class="frow" data-dir="' + esc(n) + '"><span class="ico">' + icon('folder') + '</span>' + esc(n) + '</div>';
+    }).join('');
+    if (!d.atRoot && !(d.dirs || []).length) html += '<div class="empty" style="padding:6px 10px">no subfolders</div>';
+    box.innerHTML = html;
+    $('browseCrumb').textContent = d.atRoot ? 'This computer' : d.path;
+    $('browseProjChip').style.display = d.isProject ? '' : 'none';
+    box.querySelectorAll('[data-dir]').forEach(function (el) {
+      el.onclick = function () {
+        var name = el.getAttribute('data-dir');
+        var base = d.atRoot ? '' : String(d.path).replace(/[\\/]$/, '');
+        browseTo(base ? base + '\\' + name : name);
+      };
+    });
+    var up = box.querySelector('[data-up]');
+    if (up) up.onclick = function () { browseTo(d.parent || ''); };
+    $('browseUse').onclick = function () {
+      if (d.atRoot || !d.path) { toast('Open a folder first', true); return; }
+      S.settings.projectPath = d.path;
+      persist();
+      updateProjChip();
+      renderSidebar();
+      $('browseModal').hidden = true;
+      toast('Project set to ' + d.path);
+    };
   }
 
   function boot() {
@@ -1146,6 +1272,11 @@ export const UI_HTML = String.raw`<!doctype html>
     api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') openHome(); }).catch(function () {});
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     $('gearBtn').onclick = function () { openSettings('general'); };
+    $('gearBtn').innerHTML = icon('gear');
+    $('browseCancel').onclick = function () { $('browseModal').hidden = true; };
+    $('projChip').style.cursor = 'pointer';
+    $('projChip').title = 'Choose a project folder';
+    $('projChip').onclick = openFolderBrowser;
     updateProjChip();
     renderSidebar();
     renderTopbar();

@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Hermes } from '../agent/hermes.js';
 import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
@@ -384,6 +386,49 @@ export class HermesServer {
         this.sendJson(res, 200, { ok: true, jobs: store.remove(cronMatch[1]) });
         return;
       }
+    }
+
+    if (method === 'GET' && path === '/api/browse') {
+      const requestedRaw = (url.searchParams.get('path') ?? '').trim();
+      try {
+        let requested = requestedRaw;
+        if (!requested) {
+          if (process.platform === 'win32') {
+            const drives: string[] = [];
+            for (let i = 65; i <= 90; i++) {
+              const letter = String.fromCharCode(i);
+              if (existsSync(`${letter}:\\`)) drives.push(`${letter}:\\`);
+            }
+            this.sendJson(res, 200, { path: '', parent: '', dirs: drives, isProject: false, atRoot: true });
+            return;
+          }
+          requested = '/';
+        }
+        const abs = nodePath.resolve(requested);
+        const st = statSync(abs);
+        if (!st.isDirectory()) {
+          this.sendJson(res, 400, { error: 'not a directory' });
+          return;
+        }
+        const entries = readdirSync(abs, { withFileTypes: true });
+        const dirs = entries
+          .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+          .map((d) => d.name)
+          .sort((a, b) => a.localeCompare(b));
+        const parent = nodePath.dirname(abs);
+        const markers = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', '.git'];
+        const isProject = markers.some((m) => existsSync(nodePath.join(abs, m)));
+        this.sendJson(res, 200, {
+          path: abs,
+          parent: parent === abs ? '' : parent,
+          dirs,
+          isProject,
+          atRoot: false,
+        });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
     }
 
     if (method === 'GET' && path === '/api/files') {

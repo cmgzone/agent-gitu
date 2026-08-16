@@ -642,6 +642,7 @@ export const UI_HTML = String.raw`<!doctype html>
       el.onclick = function () { ta.value = el.getAttribute('data-sug'); S.draft = ta.value; persist(); ta.focus(); };
     });
     bindControls();
+    bindPaste('goal');
     $('send').onclick = startRun;
     $('homeProj').onclick = openFolderBrowser;
   }
@@ -713,6 +714,34 @@ export const UI_HTML = String.raw`<!doctype html>
     img.onerror = function () { cb(dataUrl); };
     img.src = dataUrl;
   }
+  function bindPaste(id) {
+    var ta = $(id);
+    if (!ta || ta.dataset.pasteBound) return;
+    ta.dataset.pasteBound = '1';
+    ta.addEventListener('paste', function (e) {
+      var cd = e.clipboardData || window.clipboardData;
+      if (!cd || !cd.items) return;
+      for (var i = 0; i < cd.items.length; i++) {
+        var it = cd.items[i];
+        if (it.type && it.type.indexOf('image/') === 0) {
+          var file = it.getAsFile();
+          if (!file) continue;
+          e.preventDefault();
+          var reader = new FileReader();
+          reader.onload = function () {
+            if (S.pendingImages.length >= 4) { toast('Maximum 4 images per message', true); return; }
+            downscaleImage(String(reader.result), function (final) {
+              S.pendingImages.push({ name: 'pasted-image', dataUrl: final });
+              renderThumbs();
+              toast('Image pasted — it will be sent with your next message');
+            });
+          };
+          reader.readAsDataURL(file);
+        }
+      }
+    });
+  }
+
   function onAttachFiles(files) {
     Array.prototype.slice.call(files).forEach(function (f) {
       if (!f.type || f.type.indexOf('image/') !== 0) { toast('Only image files can be attached', true); return; }
@@ -808,7 +837,7 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
     bindControls();
-    if (opts && opts.chatish && opts.goal) $('stream').appendChild(userBubble(opts.goal));
+    bindPaste('follow');
     sess.events.forEach(function (ev) { appendEvent(runId, ev); });
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
@@ -943,7 +972,7 @@ export const UI_HTML = String.raw`<!doctype html>
       text.indexOf('project ') === 0 || text.indexOf('ledger ') === 0 || text.indexOf('branch ') === 0 ||
       text.indexOf('context ') === 0 || text.indexOf('done ') === 0 || text.indexOf('run finished:') === 0 ||
       text.indexOf('criteria') === 0 || text.indexOf('plan ') === 0 || text.indexOf('think') === 0 ||
-      text.indexOf('continue ') === 0 || text.indexOf('say ') === 0)) {
+      text.indexOf('continue ') === 0)) {
       return;
     }
     var working = $('working');
@@ -976,6 +1005,19 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('say ') === 0) {
       var prose = text.slice(4);
       if (!prose.trim()) { closeThought(runId); return; }
+      if (sess && sess.chatish) {
+        if (sess.nodes.abubble) {
+          sess.nodes.abubble = null;
+        } else {
+          var ab2 = document.createElement('div');
+          ab2.className = 'abubble';
+          ab2.innerHTML = '<span class="who">Hermes</span><span class="txt"></span>';
+          ab2.querySelector('.txt').textContent = prose;
+          appendLive(stream, ab2);
+          stream.scrollTop = stream.scrollHeight;
+        }
+        return;
+      }
       var cur = sess.nodes.thought ? sess.nodes.thought.querySelector('.txt').textContent : '';
       cur = (cur || '').trim();
       if (!cur || (prose.indexOf(cur) !== 0 && cur.indexOf(prose) !== 0)) {

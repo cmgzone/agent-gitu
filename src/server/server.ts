@@ -993,6 +993,7 @@ export class HermesServer {
       };
     this.sessions.set(session.runId, session);
     this.saveRegistry();
+    this.pushEvent(session, `user-msg ${goal}`);
     this.sendJson(res, 202, { runId: session.runId });
       void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, images, model: resolvedInfo?.model ?? model });
       return;

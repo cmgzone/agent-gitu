@@ -1,15 +1,20 @@
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import { ensureHermesHome } from '../workspace/home.js';
 import { readJson, writeJson } from '../util.js';
 
-const KEY_FILE = path.join(os.homedir(), '.hermes', 'keys.json');
+function keyFiles(): string[] {
+  return [path.join(ensureHermesHome().settings, 'keys.json'), path.join(os.homedir(), '.hermes', 'keys.json')];
+}
 
 export function loadStoredKeys(): Record<string, string> {
-  const data = readJson<Record<string, unknown>>(KEY_FILE) ?? {};
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(data)) {
-    if (typeof v === 'string' && v) out[k] = v;
+  for (const file of [...keyFiles()].reverse()) {
+    const data = readJson<Record<string, unknown>>(file) ?? {};
+    for (const [k, v] of Object.entries(data)) {
+      if (typeof v === 'string' && v) out[k] = v;
+    }
   }
   return out;
 }
@@ -56,13 +61,18 @@ export function mergedEnv(): NodeJS.ProcessEnv {
 }
 
 export function setStoredKey(envVar: string, key: string): void {
-  const data = loadStoredKeys();
+  const file = keyFiles()[0]!;
+  const data = readJson<Record<string, unknown>>(file) ?? {};
   data[envVar] = key;
-  writeJson(KEY_FILE, data);
+  writeJson(file, data);
 }
 
 export function removeStoredKey(envVar: string): void {
-  const data = loadStoredKeys();
-  delete data[envVar];
-  writeJson(KEY_FILE, data);
+  for (const file of keyFiles()) {
+    const data = readJson<Record<string, unknown>>(file);
+    if (data && envVar in data) {
+      delete data[envVar];
+      writeJson(file, data);
+    }
+  }
 }

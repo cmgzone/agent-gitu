@@ -16,6 +16,7 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, shortId } from '../util.js';
+import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, saveWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 
 export interface PendingApproval {
@@ -172,6 +173,7 @@ export class HermesServer {
   }
 
   async start(): Promise<number> {
+    ensureHermesHome();
     const server = http.createServer((req, res) => {
       this.route(req, res).catch((err) => {
         const msg = (err as Error).message;
@@ -359,6 +361,45 @@ export class HermesServer {
         this.sendJson(res, 200, guard.lock);
       } catch (err) {
         this.sendJson(res, 200, { name: '(none)', repoRoot: this.config.cwd, error: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/home') {
+      const home = ensureHermesHome();
+      const settings = loadWorkspaceSettings();
+      this.sendJson(res, 200, {
+        ...home,
+        projectsPath: projectsDir(),
+        customProjectsPath: settings.projectsPath ? !isDriveRoot(settings.projectsPath) : false,
+      });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/home/workspace') {
+      const body = await this.readBody(req);
+      const projectsPath = typeof body['projectsPath'] === 'string' ? body['projectsPath'].trim() : '';
+      if (!projectsPath) {
+        saveWorkspaceSettings({});
+        this.sendJson(res, 200, { ok: true, projectsPath: projectsDir() });
+        return;
+      }
+      if (isDriveRoot(projectsPath)) {
+        this.sendJson(res, 400, { error: 'The workspace cannot be a drive root — pick a folder like <home>/Projects' });
+        return;
+      }
+      saveWorkspaceSettings({ projectsPath });
+      this.sendJson(res, 200, { ok: true, projectsPath: projectsDir() });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/projects') {
+      const body = await this.readBody(req);
+      try {
+        const created = createProject(String(body['name'] ?? ''));
+        this.sendJson(res, 200, created);
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
       }
       return;
     }

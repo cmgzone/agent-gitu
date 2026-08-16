@@ -30,7 +30,7 @@ export const UI_HTML = String.raw`<!doctype html>
   [hidden] { display: none !important; }
 
   .shell { display: flex; height: 100%; }
-  .sb { width: 264px; flex: none; border-right: 1px solid var(--border); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+  .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
   .sb .head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px; }
   .sb .head .name { font-weight: 700; letter-spacing: 2px; font-size: 14px; }
   .sb .head .spacer { flex: 1; }
@@ -152,7 +152,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .working .shimmer { height: 9px; width: 120px; border-radius: 5px; background: linear-gradient(90deg, #e8e8e3 25%, #f6f6f2 50%, #e8e8e3 75%); background-size: 600px 100%; animation: shimmer 1.3s linear infinite; flex: none; }
   .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  .run-side { width: 380px; flex: none; display: flex; flex-direction: column; min-height: 0; }
+  .run-side { width: var(--rsw, 380px); flex: none; display: flex; flex-direction: column; min-height: 0; }
   .side-tabs { display: flex; gap: 4px; padding: 10px 14px 0; flex: none; }
   .side-tab { border: 1px solid transparent; background: none; color: var(--muted); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12.5px; }
   .side-tab.active { background: var(--card); border-color: var(--border); border-bottom-color: var(--card); color: var(--text); }
@@ -246,6 +246,10 @@ export const UI_HTML = String.raw`<!doctype html>
   .run.collapsed-side .side-tabs, .run.collapsed-side .side-body { display: none; }
   .run.collapsed-side .run-side .rail { display: flex; }
 
+  .vresize { width: 6px; flex: none; cursor: col-resize; margin: 0 -3px; z-index: 6; }
+  .vresize:hover, .vresize.active { background: rgba(124, 108, 240, .35); }
+  .shell.left-collapsed #sbResize, .run.collapsed-side #rsResize { display: none; }
+
   .thumbs { display: flex; gap: 6px; padding: 8px 8px 0; flex-wrap: wrap; }
   .thumbs .th { position: relative; }
   .thumbs img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
@@ -273,6 +277,7 @@ export const UI_HTML = String.raw`<!doctype html>
       <span class="chip" id="projChip">…</span>
     </div>
   </aside>
+  <div class="vresize" id="sbResize"></div>
   <div class="main">
     <div class="topbar" id="topbar"></div>
     <div class="view" id="view"></div>
@@ -369,6 +374,7 @@ export const UI_HTML = String.raw`<!doctype html>
         (byProj[p] = byProj[p] || []).push(s);
       });
       var html = '<button class="newbtn" id="sbNew">' + icon('pencil') + ' New session</button>' +
+        '<button class="newbtn" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
         '<button class="navitem" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
         '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
         '<button class="navitem" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
@@ -385,6 +391,7 @@ export const UI_HTML = String.raw`<!doctype html>
       });
       $('sbScroll').innerHTML = html;
       $('sbNew').onclick = function () { openHome(); };
+      $('sbNewProject').onclick = newProject;
       $('sbScroll').querySelectorAll('[data-run]').forEach(function (el) {
         el.onclick = function () { openRun(el.getAttribute('data-run')); };
       });
@@ -398,6 +405,21 @@ export const UI_HTML = String.raw`<!doctype html>
   function updateProjChip() {
     var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'no project');
     $('projChip').textContent = ' ' + name;
+  }
+
+  function newProject() {
+    var name = prompt('New project name (created as a folder under the Hermes Projects directory):');
+    if (!name || !name.trim()) return;
+    api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
+      .then(function (d) {
+        S.settings.projectPath = d.path;
+        persist();
+        updateProjChip();
+        renderSidebar();
+        toast('Project created at ' + d.path);
+        openHome();
+      })
+      .catch(function (e) { toast(e.message, true); });
   }
 
   function renderTopbar() {
@@ -593,17 +615,12 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
       '</div>' +
-      '<aside class="run-side"><div class="side-tabs">' +
-      '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>' +
-      '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>' +
-      '<button class="side-tab ' + (sess.side === 'browser' ? 'active' : '') + '" data-side="browser">' + icon('globe') + ' Browser</button>' +
-      '<button class="collapse-tab" id="rsCollapse" title="collapse panel">&#187;</button>' +
-      '</div><div class="side-body" id="sideBody"></div>' +
+      '<div class="vresize" id="rsResize"></div>' +
+      '<aside class="run-side"><div class="side-tabs" id="sideTabs"></div><div class="side-body" id="sideBody"></div>' +
       '<div class="rail"><button id="rsExpand" title="expand panel">PANEL &#171;</button></div></aside></div>';
-    var tabs = document.querySelectorAll('.side-tab');
-    for (var i = 0; i < tabs.length; i++) tabs[i].onclick = function () { sess.side = this.getAttribute('data-side'); renderRunSide(runId); };
-    $('rsCollapse').onclick = function () { S.settings.rightCollapsed = true; persist(); applyLayout(); };
+    renderSideTabs(sess, runId);
     $('rsExpand').onclick = function () { S.settings.rightCollapsed = false; persist(); applyLayout(); };
+    bindResize('rsResize', 'right');
     applyLayout();
     $('follow').addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
@@ -1128,12 +1145,105 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function applyLayout() {
+    applyWidths();
     var shell = document.querySelector('.shell');
     if (shell) shell.classList.toggle('left-collapsed', !!S.settings.leftCollapsed);
     var run = document.querySelector('.run');
     if (run) run.classList.toggle('collapsed-side', !!S.settings.rightCollapsed);
     var btn = $('sbCollapse');
     if (btn) btn.innerHTML = S.settings.leftCollapsed ? '&#187;' : '&#171;';
+  }
+
+  function applyWidths() {
+    var rs = document.documentElement.style;
+    rs.setProperty('--sbw', (S.settings.sbWidth || 264) + 'px');
+    rs.setProperty('--rsw', (S.settings.sideWidth || 380) + 'px');
+  }
+
+  function bindResize(id, side) {
+    var h = $(id);
+    if (!h) return;
+    h.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      var el = side === 'left' ? document.querySelector('.sb') : document.querySelector('.run-side');
+      if (!el) return;
+      var startX = e.clientX;
+      var startW = el.getBoundingClientRect().width;
+      h.classList.add('active');
+      var move = function (ev) {
+        var dx = ev.clientX - startX;
+        var w = Math.max(200, Math.min(760, Math.round(side === 'left' ? startW + dx : startW - dx)));
+        if (side === 'left') S.settings.sbWidth = w; else S.settings.sideWidth = w;
+        applyWidths();
+      };
+      var up = function () {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        h.classList.remove('active');
+        persist();
+      };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+  }
+
+  function sideTabsState() {
+    if (!S.settings.sideTabs) S.settings.sideTabs = { state: true, context: true, browser: true };
+    return S.settings.sideTabs;
+  }
+
+  function renderSideTabs(sess, runId) {
+    var el = $('sideTabs');
+    if (!el) return;
+    var tabs = sideTabsState();
+    if (tabs[sess.side] === false) {
+      sess.side = tabs.state !== false ? 'state' : tabs.context !== false ? 'context' : 'browser';
+    }
+    var html = '';
+    if (tabs.state !== false) html += '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>';
+    if (tabs.context !== false) html += '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>';
+    if (tabs.browser !== false) html += '<button class="side-tab ' + (sess.side === 'browser' ? 'active' : '') + '" data-side="browser">' + icon('globe') + ' Browser</button>';
+    html += '<button class="collapse-tab" id="tabMgr" title="add / remove tabs" style="font-size:14px">+</button>';
+    html += '<button class="collapse-tab" id="rsCollapse" title="collapse panel">&#187;</button>';
+    el.innerHTML = html;
+    el.querySelectorAll('.side-tab').forEach(function (t) {
+      t.onclick = function () { sess.side = t.getAttribute('data-side'); renderSideTabs(sess, runId); renderRunSide(runId); };
+    });
+    $('tabMgr').onclick = function () { openTabMgr($('tabMgr'), sess, runId); };
+    $('rsCollapse').onclick = function () { S.settings.rightCollapsed = true; persist(); applyLayout(); };
+  }
+
+  function closeTabMgr() { var m = $('tabMgrMenu'); if (m) m.remove(); }
+
+  function openTabMgr(anchor, sess, runId) {
+    closeTabMgr();
+    var defs = [['state', 'State'], ['context', 'Context'], ['browser', 'Browser']];
+    var tabs = sideTabsState();
+    var d = document.createElement('div');
+    d.id = 'tabMgrMenu';
+    var r = anchor.getBoundingClientRect();
+    d.style.cssText = 'position:fixed;z-index:70;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:6px;min-width:150px;top:' + (r.bottom + 6) + 'px;right:' + (window.innerWidth - r.right) + 'px';
+    d.innerHTML = defs.map(function (x) {
+      return '<label style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:7px;cursor:pointer;font-size:12.5px"><input type="checkbox" data-tab="' + x[0] + '"' + (tabs[x[0]] !== false ? ' checked' : '') + ' style="margin:0;width:auto">' + x[1] + '</label>';
+    }).join('');
+    document.body.appendChild(d);
+    d.querySelectorAll('input[data-tab]').forEach(function (cb) {
+      cb.onchange = function () {
+        var key = cb.getAttribute('data-tab');
+        var count = 0;
+        defs.forEach(function (x) { if (x[0] === key ? cb.checked : S.settings.sideTabs[x[0]] !== false) count++; });
+        if (count === 0) { cb.checked = true; toast('At least one tab must stay visible', true); return; }
+        S.settings.sideTabs[key] = cb.checked;
+        persist();
+        renderSideTabs(sess, runId);
+        renderRunSide(runId);
+      };
+    });
+    setTimeout(function () {
+      document.addEventListener('mousedown', function close(e) {
+        if (!d.contains(e.target) && e.target !== anchor) { d.remove(); document.removeEventListener('mousedown', close); }
+      });
+    }, 0);
   }
 
   function renderBrowserPanel(runId) {
@@ -1378,10 +1488,16 @@ export const UI_HTML = String.raw`<!doctype html>
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
       $('pAuto').onclick = function () { S.settings.autoApprove = !S.settings.autoApprove; persist(); renderSettings(); };
     } else if (S.setSection === 'workspace') {
-      api('/api/files').then(function (d) {
-        var files = d.files || [];
+      Promise.all([api('/api/files'), api('/api/home')]).then(function (res) {
+        var files = res[0].files || [];
+        var home = res[1];
         var sel = S.settings.scope || [];
         b.innerHTML = '<h1>Workspace</h1>' +
+          '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Hermes home</div><div class="d" style="font-family:var(--mono)">' + esc(home.root) + '</div></div></div>' +
+          '<div class="setrow"><div class="grow"><div class="t">Projects folder</div><div class="d">Where "New project" creates folders. Defaults to &lt;home&gt;/Projects.</div></div></div>' +
+          '<div class="setlist"><input type="text" id="wsProjects" value="' + esc(home.projectsPath) + '" placeholder="' + esc(home.projects) + '">' +
+          '<div class="row"><button class="btn dark" id="wsProjectsSave">Save projects folder</button><button class="btn ghost" id="wsProjectsReset">Reset to default</button></div></div></div>' +
+          '<h2>File scope</h2>' +
           '<p style="color:var(--muted);font-size:12.5px">Choose which files Hermes should work on. The agent is instructed to stay inside this selection. Leave empty to allow the whole project.</p>' +
           '<div class="setcard"><div class="setlist" style="max-height:300px;overflow-y:auto">' +
           (files.map(function (f) {
@@ -1400,6 +1516,16 @@ export const UI_HTML = String.raw`<!doctype html>
           toast('Workspace saved — ' + chosen.length + ' file(s) in scope');
         };
         $('wsClear').onclick = function () { S.settings.scope = []; persist(); renderSettings(); };
+        $('wsProjectsSave').onclick = function () {
+          api('/api/home/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectsPath: $('wsProjects').value.trim() }) })
+            .then(function (d) { toast('Projects folder: ' + d.projectsPath); renderSettings(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        $('wsProjectsReset').onclick = function () {
+          api('/api/home/workspace', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ projectsPath: '' }) })
+            .then(function () { toast('Projects folder reset to default'); renderSettings(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
       });
     } else if (S.setSection === 'project') {
       b.innerHTML = '<h1>Project</h1>' +
@@ -1538,6 +1664,7 @@ export const UI_HTML = String.raw`<!doctype html>
     $('gearBtn').onclick = function () { openSettings('general'); };
     $('gearBtn').innerHTML = icon('gear');
     $('sbCollapse').onclick = function () { S.settings.leftCollapsed = !S.settings.leftCollapsed; persist(); applyLayout(); };
+    bindResize('sbResize', 'left');
     $('browseCancel').onclick = function () { $('browseModal').hidden = true; };
     $('projChip').style.cursor = 'pointer';
     $('projChip').title = 'Choose a project folder';

@@ -1,7 +1,8 @@
-import { mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { ensureHermesHome } from '../workspace/home.js';
 
 export interface StoredSession {
   runId: string;
@@ -23,9 +24,19 @@ export class SessionStore {
   private readonly db: DatabaseSync;
 
   constructor(file?: string) {
-    const dir = path.join(os.homedir(), '.hermes');
-    mkdirSync(dir, { recursive: true });
-    this.db = new DatabaseSync(file ?? path.join(dir, 'hermes.db'));
+    const home = ensureHermesHome();
+    const primary = path.join(home.sessions, 'hermes.db');
+    const legacy = path.join(os.homedir(), '.hermes', 'hermes.db');
+    let target = file ?? primary;
+    if (!file && !existsSync(primary) && existsSync(legacy)) {
+      try {
+        copyFileSync(legacy, primary);
+      } catch {
+        target = legacy;
+      }
+    }
+    mkdirSync(path.dirname(target), { recursive: true });
+    this.db = new DatabaseSync(target);
     this.db.exec(
       `CREATE TABLE IF NOT EXISTS sessions (
          runId TEXT PRIMARY KEY,

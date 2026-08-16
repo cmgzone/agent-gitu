@@ -119,15 +119,19 @@ async function start() {
   const { HermesServer } = await import(pathToFileURL(path.join(dist, 'server', 'server.js')).href);
   log('server module loaded');
   const browserMod = await import(pathToFileURL(path.join(dist, 'browser', 'browser.js')).href);
+  const homeMod = await import(pathToFileURL(path.join(dist, 'workspace', 'home.js')).href);
+  const home = homeMod.ensureHermesHome();
+  log(`hermes home at ${home.root}`);
+  const cwd = process.env.HERMES_CWD || home.root;
   const bridge = makeBrowserBridge(browserMod.normalizeUrl);
 
-  server = new HermesServer({ cwd: process.cwd(), port: DESIRED_PORT, browser: bridge });
+  server = new HermesServer({ cwd, port: DESIRED_PORT, browser: bridge });
   try {
     boundPort = await server.start();
   } catch (err) {
     log(`first start failed: ${err && err.code} ${err && err.message}`);
     if (String(err && err.code) === 'EADDRINUSE') {
-      server = new HermesServer({ cwd: process.cwd(), port: 0, browser: bridge });
+      server = new HermesServer({ cwd, port: 0, browser: bridge });
       boundPort = await server.start();
     } else {
       throw err;

@@ -117,6 +117,12 @@ export class SessionStore {
     return rows.length;
   }
 
+  deleteSession(runId: string): boolean {
+    this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(runId);
+    const res = this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(runId);
+    return Number(res.changes) > 0;
+  }
+
   close(): void {
     this.db.close();
   }

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/hermes.js';
+import { SubAgentRunner } from '../src/agent/subagent.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 
 function makeProject(name: string): string {
@@ -310,6 +311,59 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(events.some((e) => e.startsWith('user-msg '))).toBe(true);
     expect(ledger.data.blockers.some((b) => b.includes('Stopped by user'))).toBe(true);
     expect(['blocked', 'failed']).toContain(ledger.data.status);
+  }, 30000);
+
+  it('answers follow-up comments conversationally without forcing task work', async () => {
+    const dir = makeProject('chatty');
+    const first = new Hermes({
+      cwd: dir,
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['something verified'] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } }),
+        () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped for the test' } }),
+      ]),
+      mode: 'fast',
+    });
+    const { ledger: led1 } = await first.run('original task');
+    expect(led1.data.status).toBe('blocked');
+
+    const second = new Hermes({
+      cwd: dir,
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'complete', summary: 'Thanks! Glad you like it.', chat: true } }),
+      ]),
+      mode: 'fast',
+      resume: { taskId: led1.data.taskId, message: 'this is good' },
+    });
+    const { ledger, report } = await second.run('original task');
+    expect(report.status).toBe('complete');
+    expect(ledger.data.status).toBe('completed');
+    expect(report.summary).toContain('Glad you like it');
+  }, 30000);
+
+  it('delegates parallel sub-tasks to named sub-agents', async () => {
+    const dir = makeProject('delegate');
+    let sawDelegate = false;
+    const workerLlm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'answer', summary: 'worker done: implemented X' } }),
+    ]);
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => workerLlm,
+      agentRole: (n) => 'test specialist ' + n,
+    });
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['delegation works'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'delegate', verification: 'n/a' }] } }),
+      () => JSON.stringify({ action: { type: 'delegate', tasks: [{ agent: 'worker', task: 'do X' }, { agent: 'worker2', task: 'do Y' }] } }),
+      (_n, messages: LlmMessage[]) => {
+        sawDelegate = messages.some((m) => typeof m.content === 'string' && m.content.includes('worker done'));
+        return JSON.stringify({ action: { type: 'request_block', reason: 'stop' } });
+      },
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner });
+    await hermes.run('delegate test');
+    expect(sawDelegate).toBe(true);
   }, 30000);
 
   it('denies dangerous commands that are not approved', async () => {

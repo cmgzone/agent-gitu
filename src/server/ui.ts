@@ -57,6 +57,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .chat .dot.completed { background: var(--green); }
   .sb .chat .dot.blocked, .sb .chat .dot.failed { background: var(--red); }
   .sb .foot { border-top: 1px solid var(--border); padding: 10px 12px; display: flex; gap: 8px; align-items: center; }
+  .bulkbar { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--bg); }
+  .bulkbar #bulkCount { flex: 1; font-size: 12px; color: var(--muted); }
+  .sb .chk { margin: 0; width: auto; accent-color: var(--accent); }
   .sb .foot .chip { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   @keyframes pulse { 50% { opacity: .35; } }
 
@@ -254,6 +257,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .vresize:hover, .vresize.active { background: rgba(124, 108, 240, .35); }
   .shell.left-collapsed #sbResize, .run.collapsed-side #rsResize { display: none; }
 
+  .abubble { max-width: 80%; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; margin: 10px 0; font-size: 13px; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .abubble .who { display: block; color: var(--accent); font-size: 10.5px; font-weight: 600; margin-bottom: 2px; }
+
   .shotmsg { margin: 10px 0; }
   .shotmsg img { display: block; max-width: 340px; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-top: 4px; }
 
@@ -290,6 +296,11 @@ export const UI_HTML = String.raw`<!doctype html>
       <button class="iconbtn" id="sbCollapse" title="collapse sidebar">&#171;</button>
     </div>
     <div class="scroll" id="sbScroll"></div>
+    <div class="bulkbar" id="bulkBar" hidden>
+      <span id="bulkCount">0 selected</span>
+      <button class="btn red" id="bulkDel">Delete</button>
+      <button class="btn ghost" id="bulkDone">Done</button>
+    </div>
     <div class="foot">
       <span class="chip" id="projChip">…</span>
     </div>
@@ -384,6 +395,14 @@ export const UI_HTML = String.raw`<!doctype html>
     return '<span class="chip">' + esc(status || 'idle') + '</span>';
   }
 
+  function looksChat(text) {
+    var t = String(text || '').trim().toLowerCase();
+    if (!t || t.length > 120) return false;
+    if (/(https?:|localhost|\bwww\.|\.[a-z]{2,6}\b)/.test(t)) return false;
+    if (/\b(fix|build|create|make|write|add|implement|refactor|deploy|install|run|test|explore|open|navigate|screenshot|scrape|search|analyz|review|update|change|delete|remove|rename|generate|design|compare|improve|optimize|debug|check|setup|set up)\b/.test(t)) return false;
+    return true;
+  }
+
   function renderSidebar() {
     api('/api/runs').then(function (sessions) {
       var byProj = {};
@@ -399,21 +418,47 @@ export const UI_HTML = String.raw`<!doctype html>
         '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
         '<button class="navitem" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
         '<button class="navitem" data-set="workspace"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
-        '<div class="sect">Projects</div>';
+        '<div class="sect" style="display:flex;align-items:center">Projects<span style="flex:1"></span><button class="ubtn" id="sbManage" title="select multiple to delete" style="display:inline-flex">' + (S.manage ? icon('check') : icon('pencil')) + '</button></div>';
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
       names.forEach(function (p) {
-        html += '<div class="proj"><span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span><button class="delx" data-delproj="' + esc(p) + '" title="delete project and its sessions">' + icon('x') + '</button></div>';
-        byProj[p].slice(0, 8).forEach(function (s) {
-          html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '">' +
-            '<span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></button>';
+        if (S.manage) {
+          html += '<label class="proj"><input type="checkbox" class="chk" data-selproj="' + esc(p) + '"' + (S.selProj && S.selProj[p] ? ' checked' : '') + '><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span></label>';
+        } else {
+          html += '<div class="proj" data-proj="' + esc(p) + '" title="set as active project for new sessions"><span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span><button class="delx" data-delproj="' + esc(p) + '" title="delete project and its sessions">' + icon('x') + '</button></div>';
+        }
+        byProj[p].slice(0, S.manage ? 200 : 8).forEach(function (s) {
+          if (S.manage) {
+            html += '<label class="chat"><input type="checkbox" class="chk" data-selrun="' + esc(s.runId) + '"' + (S.selRuns && S.selRuns[s.runId] ? ' checked' : '') + '><span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></label>';
+          } else {
+            html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '">' +
+              '<span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></button>';
+          }
         });
       });
       $('sbScroll').innerHTML = html;
       $('sbNew').onclick = function () { openHome(); };
       $('sbNewProject').onclick = newProject;
+      var byId = {};
+      sessions.forEach(function (s) { byId[s.runId] = s; });
       $('sbScroll').querySelectorAll('[data-run]').forEach(function (el) {
-        el.onclick = function () { openRun(el.getAttribute('data-run')); };
+        el.onclick = function () {
+          var s = byId[el.getAttribute('data-run')];
+          if (s && s.projectPath) S.lastProjectPath = s.projectPath;
+          openRun(el.getAttribute('data-run'));
+        };
+      });
+      $('sbScroll').querySelectorAll('[data-proj]').forEach(function (el) {
+        el.onclick = function () {
+          var n = el.getAttribute('data-proj');
+          if (projPath[n]) {
+            S.settings.projectPath = projPath[n];
+            S.lastProjectPath = projPath[n];
+            persist();
+            updateProjChip();
+            toast('Active project: ' + n);
+          }
+        };
       });
       $('sbScroll').querySelectorAll('[data-set]').forEach(function (el) {
         el.onclick = function () { openSettings(el.getAttribute('data-set')); };
@@ -424,6 +469,14 @@ export const UI_HTML = String.raw`<!doctype html>
           deleteProjectFlow(el.getAttribute('data-delproj'), projPath[el.getAttribute('data-delproj')]);
         };
       });
+      if ($('sbManage')) $('sbManage').onclick = function () { S.manage = !S.manage; S.selProj = {}; S.selRuns = {}; renderSidebar(); };
+      $('sbScroll').querySelectorAll('[data-selproj]').forEach(function (el) {
+        el.onchange = function () { var n = el.getAttribute('data-selproj'); if (el.checked) S.selProj[n] = projPath[n] || ''; else delete S.selProj[n]; updateBulk(); };
+      });
+      $('sbScroll').querySelectorAll('[data-selrun]').forEach(function (el) {
+        el.onchange = function () { var id = el.getAttribute('data-selrun'); if (el.checked) S.selRuns[id] = true; else delete S.selRuns[id]; updateBulk(); };
+      });
+      updateBulk();
     }).catch(function () {});
     api('/api/cron').then(function (d) { S.cronCount = (d.jobs || []).length; }).catch(function () {});
   }
@@ -463,6 +516,57 @@ export const UI_HTML = String.raw`<!doctype html>
     modal.querySelector('#npGo').onclick = create;
     modal.querySelector('#npName').addEventListener('keydown', function (e) { if (e.key === 'Enter') create(); });
     setTimeout(function () { var n = $('npName'); if (n) n.focus(); }, 0);
+  }
+
+  function updateBulk() {
+    var bar = $('bulkBar');
+    if (!bar) return;
+    bar.hidden = !S.manage;
+    var np = Object.keys(S.selProj || {}).length;
+    var nr = Object.keys(S.selRuns || {}).length;
+    var c = $('bulkCount');
+    if (c) c.textContent = np + ' project(s), ' + nr + ' session(s) selected';
+  }
+
+  function bulkDelete() {
+    var projs = Object.keys(S.selProj || {});
+    var runs = Object.keys(S.selRuns || {});
+    if (!projs.length && !runs.length) { toast('Nothing selected', true); return; }
+    var go = function (deleteFiles) {
+      var chain = Promise.resolve();
+      projs.forEach(function (p) {
+        chain = chain.then(function () {
+          return api('/api/projects', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: p, path: S.selProj[p] || undefined, deleteFiles: deleteFiles }) }).catch(function (e) { toast(e.message, true); });
+        });
+      });
+      if (runs.length) {
+        chain = chain.then(function () {
+          return api('/api/runs/delete-many', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: runs }) }).catch(function (e) { toast(e.message, true); });
+        });
+      }
+      chain.then(function () {
+        var goneActive = runs.indexOf(S.active) >= 0;
+        S.selProj = {}; S.selRuns = {}; S.manage = false;
+        if (goneActive) openHome();
+        renderSidebar();
+        toast('Deleted ' + projs.length + ' project(s), ' + runs.length + ' session(s)');
+      });
+    };
+    if (projs.length) {
+      var modal = document.createElement('div');
+      modal.className = 'modal';
+      modal.innerHTML = '<div class="box" style="width:460px"><div class="bar"><span style="font-weight:600;font-size:13px">Delete selection</span></div>' +
+        '<div style="padding:14px 16px;font-size:13px">Delete <b>' + projs.length + '</b> project(s) and <b>' + runs.length + '</b> session(s)?' +
+        '<label style="display:flex;gap:8px;margin-top:10px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="bdFiles" style="margin:2px 0 0;width:auto"> Also delete the project folders (only folders inside Hermes Projects are removed)</label>' +
+        '<div style="margin-top:8px;color:var(--muted);font-size:12px">This cannot be undone.</div></div>' +
+        '<div class="foot"><span style="flex:1"></span><button class="btn ghost" id="bdCancel">Cancel</button><button class="btn red" id="bdGo">Delete</button></div></div>';
+      document.body.appendChild(modal);
+      modal.querySelector('#bdCancel').onclick = function () { modal.remove(); };
+      modal.querySelector('#bdGo').onclick = function () { var df = modal.querySelector('#bdFiles').checked; modal.remove(); go(df); };
+    } else {
+      if (!confirm('Delete ' + runs.length + ' session(s)?')) return;
+      go(false);
+    }
   }
 
   function deleteProjectFlow(name, path) {
@@ -515,7 +619,8 @@ export const UI_HTML = String.raw`<!doctype html>
     stopBrowserPoll();
     renderSidebar();
     renderTopbar();
-    var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'this project');
+    var effProj = S.settings.projectPath || S.lastProjectPath;
+    var name = effProj ? basename(effProj) : (S.project ? S.project.name : 'this project');
     $('view').innerHTML =
       '<div class="home">' +
       '<h1>What should we work on in <span class="u">' + esc(name) + '</span>?</h1>' +
@@ -527,7 +632,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Hermes to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
+      '<div class="composer-bar"><span class="pill" id="homeProj" title="active project for this session — click to change" style="max-width:180px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></span>' + controlsHtml() + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
       '</div>';
     var ta = $('goal');
     ta.value = S.draft;
@@ -538,6 +643,7 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     bindControls();
     $('send').onclick = startRun;
+    $('homeProj').onclick = openFolderBrowser;
   }
 
   function modelOptionsHtml() {
@@ -648,15 +754,16 @@ export const UI_HTML = String.raw`<!doctype html>
     var goal = $('goal') ? $('goal').value.trim() : '';
     if (!goal) { if ($('goal')) $('goal').focus(); return; }
     var mc = (S.sel.model || '').split('::');
+    var chatish = S.sel.wf === 'chat' || (S.sel.wf !== 'auto' && looksChat(goal));
     api('/api/runs', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         goal: goal, provider: mc[0], model: mc[1],
-        mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+        mode: chatish ? 'chat' : 'standard',
         review: S.sel.wf === 'review' ? S.settings.review : false,
         autoApprove: S.settings.autoApprove,
         effort: S.sel.effort,
-        projectPath: S.settings.projectPath || undefined,
+        projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
         scope: S.settings.scope || [],
         constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
         images: S.pendingImages.length ? S.pendingImages : undefined
@@ -664,16 +771,17 @@ export const UI_HTML = String.raw`<!doctype html>
     }).then(function (r) {
       S.draft = ''; persist();
       S.pendingImages = [];
-      openRun(r.runId);
+      openRun(r.runId, { chatish: chatish, goal: goal });
       renderSidebar();
     }).catch(function (e) { toast('Failed to start: ' + e.message, true); });
   }
 
-  function openRun(runId) {
+  function openRun(runId, opts) {
     S.active = runId;
     stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
     sess.nodes = {};
+    if (opts && opts.chatish !== undefined) sess.chatish = opts.chatish;
     renderSidebar();
     renderTopbar();
     $('view').innerHTML =
@@ -700,6 +808,7 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     $('send2').onclick = function () { $('follow').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter' })); };
     bindControls();
+    if (opts && opts.chatish && opts.goal) $('stream').appendChild(userBubble(opts.goal));
     sess.events.forEach(function (ev) { appendEvent(runId, ev); });
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
@@ -747,6 +856,8 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function sendFollow(text) {
     var runId = S.active;
+    var sess = S.sessions[runId];
+    if (sess && sess.session && sess.session.status !== 'running') sess.chatish = looksChat(text);
     var imgs = S.pendingImages.length ? S.pendingImages : undefined;
     api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, images: imgs }) })
       .then(function () {
@@ -769,7 +880,7 @@ export const UI_HTML = String.raw`<!doctype html>
               review: S.sel.wf === 'review' ? S.settings.review : false,
               autoApprove: S.settings.autoApprove,
               effort: S.sel.effort,
-              projectPath: S.settings.projectPath || undefined,
+              projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
               images: imgs
             })
           }).then(function (r) { openRun(r.runId); }).catch(function (e2) { toast(e2.message, true); });
@@ -828,10 +939,29 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
+    if (sess && sess.chatish && (
+      text.indexOf('project ') === 0 || text.indexOf('ledger ') === 0 || text.indexOf('branch ') === 0 ||
+      text.indexOf('context ') === 0 || text.indexOf('done ') === 0 || text.indexOf('run finished:') === 0 ||
+      text.indexOf('criteria') === 0 || text.indexOf('plan ') === 0 || text.indexOf('think') === 0 ||
+      text.indexOf('continue ') === 0 || text.indexOf('say ') === 0)) {
+      return;
+    }
     var working = $('working');
     function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
 
     if (text.indexOf('tdelta ') === 0) {
+      if (sess && sess.chatish) {
+        if (!sess.nodes.abubble) {
+          var ab = document.createElement('div');
+          ab.className = 'abubble';
+          ab.innerHTML = '<span class="who">Hermes</span><span class="txt"></span>';
+          insert(ab);
+          sess.nodes.abubble = ab;
+        }
+        sess.nodes.abubble.querySelector('.txt').appendChild(document.createTextNode(text.slice(7)));
+        stream.scrollTop = stream.scrollHeight;
+        return;
+      }
       if (!sess.nodes.thought) {
         var p = document.createElement('div');
         p.className = 'thought';
@@ -860,7 +990,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
-    if (text.indexOf('user-msg ') === 0) { appendLive(stream, userBubble(text.slice(9))); stream.scrollTop = stream.scrollHeight; return; }
+    if (text.indexOf('user-msg ') === 0) { sess.nodes.abubble = null; sess.nodes.thought = null; appendLive(stream, userBubble(text.slice(9))); stream.scrollTop = stream.scrollHeight; return; }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
       qm.className = 'meta-line';
@@ -984,7 +1114,12 @@ export const UI_HTML = String.raw`<!doctype html>
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
-          if (s2) { s2.ledger = ledger; renderRunSide(runId); updateProgress(ledger); }
+          if (s2) {
+            s2.ledger = ledger;
+            if (session.status !== 'running' && !s2.chatish && !ledger.acceptanceCriteria.length && !ledger.plan.length && !ledger.actions.length) s2.chatish = true;
+            renderRunSide(runId);
+            if (s2.chatish) { var pp = $('progress'); if (pp) pp.style.display = 'none'; } else updateProgress(ledger);
+          }
         }).catch(function () {});
       } else renderRunSide(runId);
       if (session.status !== 'running') {
@@ -1161,8 +1296,9 @@ export const UI_HTML = String.raw`<!doctype html>
   function appendSummary(runId, session) {
     var stream = $('stream');
     if (!stream) return;
-    var r = session.report;
     var sess = S.sessions[runId];
+    if (sess && sess.chatish) return;
+    var r = session.report;
     var lineCounts = {};
     (sess.events || []).forEach(function (ev) {
       var t = String(ev.text);
@@ -1196,6 +1332,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (sess.side === 'context') { renderContext(runId); stopBrowserPoll(); return; }
     if (sess.side === 'browser') { showBrowserPanel(runId); return; }
     stopBrowserPoll();
+    if (sess.chatish) { body.innerHTML = '<div class="empty" style="padding:16px 6px">Conversation session — no task state. Send a task message (e.g. "fix…", "build…") to switch to agent mode.</div>'; return; }
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
@@ -1480,6 +1617,7 @@ export const UI_HTML = String.raw`<!doctype html>
       ['permissions', 'shield', 'Permissions'],
       ['workspace', 'folder', 'Workspace'],
       ['project', 'search', 'Project'],
+      ['agents', 'plug', 'Specialist agents'],
       ['skills', 'bolt', 'Skills'],
       ['mcp', 'plug', 'MCP servers'],
       ['cron', 'clock', 'Scheduled / heartbeat']
@@ -1637,6 +1775,82 @@ export const UI_HTML = String.raw`<!doctype html>
         updateProjChip();
         renderSidebar();
       };
+    } else if (S.setSection === 'agents') {
+      Promise.all([api('/api/agents'), api('/api/models')]).then(function (res) {
+        var agents = res[0].agents || [];
+        var provs = res[1].providers || [];
+        function modelOptions(sel) {
+          var out = '<option value="">(default model)</option>';
+          provs.forEach(function (p) {
+            out += '<optgroup label="' + esc(p.id) + (p.hasKey ? '' : ' (no key)') + '">';
+            (p.models || []).forEach(function (m) {
+              out += '<option value="' + esc(p.id + '::' + m.id) + '"' + (sel === p.id + '::' + m.id ? ' selected' : '') + '>' + esc(m.id) + (m.vision ? ' ◉' : '') + '</option>';
+            });
+            out += '</optgroup>';
+          });
+          return out;
+        }
+        b.innerHTML = '<h1>Specialist agents</h1>' +
+          '<p style="color:var(--muted);font-size:12.5px">Named worker agents that the main agent can run in parallel with the delegate tool on big projects. Each agent can use a different provider and model. You can also assign them work by naming them in a task.</p>' +
+          '<div style="margin:12px 0"><button class="btn dark" id="agNew">+ New agent</button></div>' +
+          '<div class="setcard" id="agForm" hidden><div class="setlist">' +
+          '<input id="agName" placeholder="agent name (e.g. frontend, tester, researcher)">' +
+          '<div class="row"><select id="agModel" style="flex:1">' + modelOptions('') + '</select><select id="agEffort"><option value="">effort: default</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select></div>' +
+          '<textarea id="agRole" rows="3" placeholder="role / specialty instructions (e.g. You are a frontend specialist: React, CSS, accessibility…)"></textarea>' +
+          '<div class="row"><button class="btn dark" id="agSave">Save agent</button><button class="btn ghost" id="agCancel">Cancel</button><span class="meta" id="agMeta"></span></div></div></div>' +
+          '<div class="setcard">' +
+          (agents.length ? agents.map(function (a) {
+            return '<div class="skcard"><div class="skhead"><b>' + esc(a.name) + '</b>' +
+              '<span class="chip info">' + esc(a.provider ? a.provider + '/' : '') + esc(a.model || 'default') + '</span>' +
+              (a.effort ? '<span class="chip">' + esc(a.effort) + '</span>' : '') +
+              '<span style="flex:1"></span>' +
+              '<button class="ubtn" data-agedit="' + esc(a.id) + '" title="edit">' + icon('pencil') + '</button>' +
+              '<button class="ubtn" data-agdel="' + esc(a.id) + '" title="delete">' + icon('x') + '</button></div>' +
+              '<div class="skdesc">' + esc(a.role) + '</div></div>';
+          }).join('') : '<div class="setlist"><div class="meta">no agents yet — create one and the main agent will start delegating independent sub-tasks to it.</div></div>') +
+          '</div>';
+        var form = $('agForm');
+        $('agNew').onclick = function () {
+          form.hidden = false;
+          $('agName').value = ''; $('agRole').value = ''; $('agModel').value = ''; $('agEffort').value = ''; $('agMeta').textContent = '';
+        };
+        $('agCancel').onclick = function () { form.hidden = true; };
+        $('agSave').onclick = function () {
+          var mv = ($('agModel').value || '').split('::');
+          var payload = {
+            id: S.agEditing || undefined,
+            name: $('agName').value,
+            role: $('agRole').value,
+            provider: mv[0] || undefined,
+            model: mv[1] || undefined,
+            effort: $('agEffort').value || undefined
+          };
+          api('/api/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+            .then(function () { S.agEditing = null; toast('Agent saved'); renderSettings(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        b.querySelectorAll('[data-agedit]').forEach(function (el) {
+          el.onclick = function () {
+            var a = agents.filter(function (x) { return x.id === el.getAttribute('data-agedit'); })[0];
+            if (!a) return;
+            form.hidden = false;
+            S.agEditing = a.id;
+            $('agName').value = a.name;
+            $('agRole').value = a.role;
+            $('agEffort').value = a.effort || '';
+            $('agModel').value = a.provider && a.model ? a.provider + '::' + a.model : (a.model || '');
+            $('agMeta').textContent = 'editing ' + a.name;
+          };
+        });
+        b.querySelectorAll('[data-agdel]').forEach(function (el) {
+          el.onclick = function () {
+            var id = el.getAttribute('data-agdel');
+            var a = agents.filter(function (x) { return x.id === id; })[0];
+            if (!confirm('Delete agent "' + (a ? a.name : id) + '"?')) return;
+            api('/api/agents/' + id, { method: 'DELETE' }).then(function () { toast('Agent deleted'); renderSettings(); }).catch(function (e) { toast(e.message, true); });
+          };
+        });
+      });
     } else if (S.setSection === 'skills') {
       api('/api/skills').then(function (d) {
         var all = d.skills || [];
@@ -1820,6 +2034,8 @@ export const UI_HTML = String.raw`<!doctype html>
     $('gearBtn').innerHTML = icon('gear');
     $('sbCollapse').onclick = function () { S.settings.leftCollapsed = !S.settings.leftCollapsed; persist(); applyLayout(); };
     bindResize('sbResize', 'left');
+    $('bulkDel').onclick = bulkDelete;
+    $('bulkDone').onclick = function () { S.manage = false; S.selProj = {}; S.selRuns = {}; renderSidebar(); };
     $('browseCancel').onclick = function () { $('browseModal').hidden = true; };
     $('projChip').style.cursor = 'pointer';
     $('projChip').title = 'Choose a project folder';

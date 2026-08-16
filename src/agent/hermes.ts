@@ -13,6 +13,7 @@ import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
+import type { SubAgentRunner } from './subagent.js';
 import type { CompletionReport, EvidenceKind } from '../types.js';
 import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 
@@ -32,6 +33,8 @@ export interface HermesConfig {
   skills?: SkillStore;
   mcp?: McpManager;
   browser?: BrowserBridge;
+  subagents?: SubAgentRunner;
+  agentsSection?: string;
   images?: { name: string; dataUrl: string }[];
   supportsImages?: boolean;
   resume?: { taskId: string; message: string };
@@ -71,9 +74,10 @@ type ParsedAction =
   | { type: 'set_hypothesis'; text: string }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
   | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
-  | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[] }
+    | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
   | { type: 'request_block'; reason: string }
   | { type: 'ask_user'; questions: AskUserQuestion[] }
+  | { type: 'delegate'; tasks: { agent: string; task: string }[] }
   | {
       type: 'parallel';
       calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
@@ -121,10 +125,26 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       return { type, criterionId: action['criterionId'], evidenceId: action['evidenceId'], justification: action['justification'] ? String(action['justification']) : undefined };
     case 'complete':
       if (typeof action['summary'] !== 'string') return undefined;
-      return { type, summary: action['summary'], risks: Array.isArray(action['risks']) ? action['risks'].map(String) : [], followUps: Array.isArray(action['followUps']) ? action['followUps'].map(String) : [] };
+      return {
+        type,
+        summary: action['summary'],
+        risks: Array.isArray(action['risks']) ? action['risks'].map(String) : [],
+        followUps: Array.isArray(action['followUps']) ? action['followUps'].map(String) : [],
+        chat: action['chat'] === true,
+      };
     case 'request_block':
       if (typeof action['reason'] !== 'string') return undefined;
       return { type, reason: action['reason'] };
+    case 'delegate': {
+      const tasks = action['tasks'];
+      if (!Array.isArray(tasks) || tasks.length === 0) return undefined;
+      const parsed = (tasks as Record<string, unknown>[])
+        .map((t) => ({ agent: String(t?.['agent'] ?? ''), task: String(t?.['task'] ?? '') }))
+        .filter((t) => t.agent && t.task)
+        .slice(0, 4);
+      if (parsed.length === 0) return undefined;
+      return { type, tasks: parsed };
+    }
     case 'ask_user': {
       const questions = action['questions'];
       if (!Array.isArray(questions) || questions.length === 0) return undefined;
@@ -236,7 +256,17 @@ export class Hermes {
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler);
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
-    const executor = new Executor(guard, ledger, policy, loopDetector, this.emit, this.config.skills, this.config.mcp, this.config.browser);
+    const executor = new Executor(
+      guard,
+      ledger,
+      policy,
+      loopDetector,
+      this.emit,
+      this.config.skills,
+      this.config.mcp,
+      this.config.browser,
+      this.config.subagents ? (specs) => this.config.subagents!.runMany(specs) : undefined,
+    );
     const context = new ContextEngine(guard);
     const reporter = new Reporter();
 
@@ -263,6 +293,7 @@ export class Hermes {
           scopeFiles: this.config.scopeFiles,
           extraConstraints: this.config.extraConstraints,
           skillsSection: this.config.skills ? this.config.skills.renderForPrompt() : undefined,
+          agentsSection: this.config.agentsSection,
           mcpSection: this.config.mcp
             ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined
             : undefined,
@@ -293,7 +324,11 @@ export class Hermes {
     if (resumeNote && ledger.data.mode !== 'chat') {
       messages.push({
         role: 'user',
-        content: `CONTINUATION of a previous task in the same session. The user now asks:\n"${resumeNote}"\nUpdate acceptance criteria and plan as needed (set_criteria / set_plan), then execute. Reuse what was already built.`,
+        content:
+          `FOLLOW-UP MESSAGE in an ongoing session. The user wrote:\n"${resumeNote}"\n` +
+          `First and foremost, reply conversationally and directly to what they said — like a helpful chat assistant, in plain language. ` +
+          `ONLY if the message clearly requests new work or a change, update acceptance criteria/plan (set_criteria / set_plan) and execute it, reusing what was already built. ` +
+          `If it is just a comment, thanks, opinion or question, answer it briefly and friendly, then end with {"type":"complete","summary":"<your short conversational reply>","chat":true} without doing any work.`,
       });
     }
 
@@ -322,6 +357,7 @@ export class Hermes {
 
     let invalidStreak = 0;
     let loopBlocks = 0;
+    const actionsAtStart = ledger.data.actions.length;
     let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
     let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
 
@@ -539,7 +575,8 @@ export class Hermes {
         }
         case 'complete': {
           const gate = evidence.gate(ledger.data);
-          if (!gate.open) {
+          const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
+          if (!gate.open && !chatOnly) {
             observe(
               `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
                 `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
@@ -596,6 +633,17 @@ export class Hermes {
           ledger.addBlocker(action.reason);
           exitReason = 'blocked';
           observe(`Block recorded: ${action.reason}`);
+          break;
+        }
+        case 'delegate': {
+          this.emit(`delegate ${action.tasks.length} sub-task(s) to ${action.tasks.map((t) => t.agent).join(', ')}`);
+          const outcome = await executor.execute({
+            tool: 'delegate',
+            params: { tasks: action.tasks },
+            reason: 'parallel specialist sub-tasks',
+            expected: 'summaries from each agent',
+          });
+          observe(`DELEGATE RESULTS [${outcome.result.ok ? 'all agents ok' : 'some agents failed'}]\n${outcome.result.output.slice(0, 5000)}`);
           break;
         }
       }

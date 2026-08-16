@@ -93,6 +93,7 @@ export class PolicyEngine {
       case 'write_file':
       case 'apply_edit':
       case 'create_skill':
+      case 'delegate':
         tier = 'moderate';
         why = 'file mutation';
         break;

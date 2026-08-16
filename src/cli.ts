@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
 import { Hermes } from './agent/hermes.js';
+import { SubAgentRunner } from './agent/subagent.js';
+import { AgentStore } from './agents/registry.js';
 import { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
 import { TaskLedger } from './ledger/task-ledger.js';
 import { LlmError } from './llm/llm.js';
@@ -295,12 +297,29 @@ async function main(): Promise<void> {
       const criteriaFlag = flags.get('criteria');
       const criteria = typeof criteriaFlag === 'string' ? criteriaFlag.split('|').map((s) => s.trim()).filter(Boolean) : undefined;
 
+      const agentStore = new AgentStore();
+      const subagents =
+        agentStore.list().length > 0
+          ? new SubAgentRunner({
+              cwd,
+              resolveLlm: (name) => {
+                const def = agentStore.get(name);
+                if (!def) throw new Error(`unknown agent "${name}"`);
+                return resolveLlm({ provider: def.provider, model: def.model }).client;
+              },
+              agentRole: (name) => agentStore.get(name)?.role,
+              onEvent: (e) => console.error(`[hermes] ${e}`),
+            })
+          : undefined;
+
       const hermes = new Hermes({
         cwd,
         llm,
         mode: flags.get('fast') ? 'fast' : 'standard',
         autoApprove: Boolean(flags.get('yes')),
         criteria,
+        subagents,
+        agentsSection: agentStore.renderForPrompt() || undefined,
         requirePlanReview: Boolean(flags.get('review')),
         planReviewHandler: async ({ criteria: crits, steps }) => {
           console.log('\nPLAN REVIEW');

@@ -5,7 +5,7 @@ import type { MemoryStore } from '../memory/memory-store.js';
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; vision?: boolean; hasBrowser?: boolean } = {},
+  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; vision?: boolean; hasBrowser?: boolean } = {},
 ): string {
   const lock = guard.lock;
   const scopeSection =
@@ -22,6 +22,9 @@ export function buildSystemPrompt(
   const mcpSection = opts.mcpSection
     ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n`
     : '';
+  const agentsSection = opts.agentsSection
+    ? `\nDELEGATABLE SPECIALIST AGENTS (named workers you can run IN PARALLEL with the delegate tool — use them on big projects by splitting independent sub-tasks):\n${opts.agentsSection}\n`
+    : '';
   const browserSection = opts.hasBrowser
     ? `\nIN-APP BROWSER (visual verification): a real Chromium browser is embedded in the desktop app and you control it with the browse tool. WHENEVER the task touches UI, frontend, styling, or anything visual, you MUST verify visually: start the app/dev server with run_command if needed, browse navigate to it (e.g. http://localhost:PORT), take a screenshot, and actually LOOK at it before claiming the work is done. Use click/type to exercise interactions (forms, buttons, navigation) and screenshot again to confirm the effect.${
         opts.vision
@@ -30,7 +33,7 @@ export function buildSystemPrompt(
       }\n`
     : '';
   return `You are Hermes, an autonomous software engineering agent operating inside a LOCKED project boundary.
-${scopeSection}${constraintSection}${skillsSection}${mcpSection}${browserSection}
+${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}
 
 PROJECT LOCK (do not violate):
   name: ${lock.name}
@@ -90,6 +93,7 @@ Tools:
 Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
 {"thought":"...","action":{"type":"complete","summary":"...","risks":["..."],"followUps":["..."]}}
+{"thought":"...","action":{"type":"complete","summary":"<conversational reply>","chat":true}}  (chat-only close: answering a comment/question without doing work; allowed only when you took no actions this turn)
 {"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried"}}
 
 Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
@@ -97,6 +101,9 @@ Clarifying the task (use BEFORE planning when the request is ambiguous or has re
 
 Parallel independent work (only for tools that do not depend on each other, max 4):
 {"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
+
+Delegate independent sub-tasks to specialist agents (max 4, run concurrently, each returns a summary):
+{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<agent name>","task":"self-contained sub-task with enough context to work alone"}]}}
 
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.

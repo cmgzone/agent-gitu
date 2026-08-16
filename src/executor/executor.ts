@@ -11,6 +11,7 @@ import {
   toolApplyEdit,
   toolBrowse,
   toolCreateSkill,
+  toolDelegate,
   toolListFiles,
   toolListSkills,
   toolReadFile,
@@ -19,6 +20,7 @@ import {
   toolUseSkill,
   toolWebFetch,
   toolWriteFile,
+  type DelegateFn,
   type ToolContext,
 } from '../tools/tools.js';
 
@@ -47,6 +49,7 @@ export class Executor {
     private readonly skills?: SkillStore,
     private readonly mcp?: McpManager,
     private readonly browser?: BrowserBridge,
+    private readonly delegate?: DelegateFn,
   ) {}
 
   private emit(event: string): void {
@@ -130,7 +133,7 @@ export class Executor {
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
-    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot, skills: this.skills, mcp: this.mcp, browser: this.browser };
+    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot, skills: this.skills, mcp: this.mcp, browser: this.browser, delegate: this.delegate };
     let result: ToolResult;
     try {
       switch (req.tool) {
@@ -154,6 +157,9 @@ export class Executor {
           break;
         case 'browse':
           result = await toolBrowse(ctx, req.params);
+          break;
+        case 'delegate':
+          result = await toolDelegate(ctx, req.params);
           break;
         case 'list_skills':
           result = toolListSkills(ctx);

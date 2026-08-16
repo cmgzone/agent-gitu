@@ -14,7 +14,10 @@ export interface ToolContext {
   skills?: SkillStore;
   mcp?: McpManager;
   browser?: BrowserBridge;
+  delegate?: DelegateFn;
 }
+
+export type DelegateFn = (specs: { agent: string; task: string }[]) => Promise<{ agent: string; task: string; ok: boolean; summary: string }[]>;
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST_ENTRIES = 400;
@@ -397,5 +400,22 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
   }
 }
 
-export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse'] as const;
+export async function toolDelegate(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  if (!ctx.delegate) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
+  let specs: { agent: string; task: string }[] = [];
+  if (Array.isArray(params['tasks'])) {
+    specs = (params['tasks'] as Record<string, unknown>[])
+      .map((t) => ({ agent: String(t['agent'] ?? ''), task: String(t['task'] ?? '') }))
+      .filter((t) => t.agent && t.task);
+  } else if (params['agent'] && params['task']) {
+    specs = [{ agent: String(params['agent']), task: String(params['task']) }];
+  }
+  if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]}');
+  if (specs.length > 4) specs = specs.slice(0, 4);
+  const results = await ctx.delegate(specs);
+  const output = results.map((r) => `[${r.agent}] ${r.ok ? 'OK' : 'FAILED'} — task: ${r.task.slice(0, 120)}\n${r.summary}`).join('\n\n');
+  return { ok: results.every((r) => r.ok), output: output.slice(0, 6000) };
+}
+
+export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse', 'delegate'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

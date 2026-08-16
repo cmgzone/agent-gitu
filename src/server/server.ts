@@ -3,6 +3,8 @@ import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Hermes } from '../agent/hermes.js';
+import { SubAgentRunner } from '../agent/subagent.js';
+import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
 import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
@@ -646,6 +648,36 @@ export class HermesServer {
       return;
     }
 
+    const agentsMatch = path.match(/^\/api\/agents(?:\/([\w-]+))?$/);
+    if (agentsMatch) {
+      const store = new AgentStore();
+      if (method === 'GET') {
+        this.sendJson(res, 200, { agents: store.list() });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const def = store.save({
+            id: agentsMatch[1] ?? (typeof body['id'] === 'string' ? body['id'] : undefined),
+            name: String(body['name'] ?? ''),
+            role: String(body['role'] ?? ''),
+            provider: typeof body['provider'] === 'string' && body['provider'] ? body['provider'] : undefined,
+            model: typeof body['model'] === 'string' && body['model'] ? body['model'] : undefined,
+            effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
+          });
+          this.sendJson(res, 200, { ok: true, agent: def });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
+      }
+      if (method === 'DELETE' && agentsMatch[1]) {
+        this.sendJson(res, 200, { ok: store.remove(agentsMatch[1]) });
+        return;
+      }
+    }
+
     const skillsMatch = path.match(/^\/api\/skills(?:\/([\w-]+))?$/);
     if (skillsMatch) {
       const root = this.projectRoot();
@@ -1031,6 +1063,27 @@ export class HermesServer {
       return;
     }
 
+    if (method === 'POST' && path === '/api/runs/delete-many') {
+      const body = await this.readBody(req);
+      const ids = Array.isArray(body['ids']) ? (body['ids'] as unknown[]).map(String) : [];
+      let removed = 0;
+      for (const id of ids) {
+        this.sessions.delete(id);
+        if (this.db().deleteSession(id)) removed += 1;
+      }
+      this.sendJson(res, 200, { ok: true, removed });
+      return;
+    }
+
+    const runDeleteMatch = path.match(/^\/api\/runs\/([\w-]+)$/);
+    if (method === 'DELETE' && runDeleteMatch) {
+      const id = runDeleteMatch[1]!;
+      this.sessions.delete(id);
+      const removed = this.db().deleteSession(id);
+      this.sendJson(res, 200, { ok: true, removed });
+      return;
+    }
+
     const stopMatch = path.match(/^\/api\/runs\/([\w-]+)\/stop$/);
     if (method === 'POST' && stopMatch) {
       const session = this.sessions.get(stopMatch[1]!);
@@ -1181,6 +1234,21 @@ export class HermesServer {
     }
     const skills = SkillStore.forProject(root);
     const mcp = McpManager.forProject(root);
+    const agentStore = new AgentStore();
+    const agentDefs = agentStore.list();
+    const subagents =
+      agentDefs.length > 0
+        ? new SubAgentRunner({
+            cwd: root,
+            resolveLlm: (name) => {
+              const def = agentStore.get(name);
+              if (!def) throw new Error(`unknown agent "${name}" — create it in Settings → Agents`);
+              return resolveLlm({ provider: def.provider, model: def.model }).client;
+            },
+            agentRole: (name) => agentStore.get(name)?.role,
+            onEvent: (t) => this.pushEvent(session, t),
+          })
+        : undefined;
     session.project = root.split(/[\\/]/).filter(Boolean).pop();
     const hermes = new Hermes({
       cwd: opts.projectPath ?? this.config.cwd,
@@ -1193,6 +1261,8 @@ export class HermesServer {
       effort: opts.effort,
       skills,
       mcp,
+      subagents,
+      agentsSection: agentStore.renderForPrompt() || undefined,
       resume: opts.resume,
       browser: this.browserImpl(),
       images: opts.images,

@@ -1,4 +1,5 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
+import { mergedEnv } from './keys.js';
 
 export interface ProviderSpec {
   id: string;
@@ -83,7 +84,7 @@ export async function fetchLiveModels(opts: {
   }
 }
 
-export function providerKey(spec: ProviderSpec, env: NodeJS.ProcessEnv = process.env): { key: string; envVar: string } | undefined {
+export function providerKey(spec: ProviderSpec, env: NodeJS.ProcessEnv = mergedEnv()): { key: string; envVar: string } | undefined {
   const envVar = spec.keyEnvVars.find((v) => env[v]);
   if (!envVar) return undefined;
   return { key: env[envVar]!, envVar };
@@ -126,7 +127,7 @@ function build(
 }
 
 export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
-  const env = opts.env ?? process.env;
+  const env = opts.env ?? mergedEnv();
 
   if (opts.provider) {
     const spec = PROVIDERS[opts.provider.toLowerCase()];

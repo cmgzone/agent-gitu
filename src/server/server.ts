@@ -8,6 +8,7 @@ import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import type { LlmClient } from '../llm/llm.js';
 import { PROVIDERS, ProviderError, fetchLiveModels, providerKey, resolveLlm } from '../llm/providers.js';
+import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
@@ -468,6 +469,46 @@ export class HermesServer {
         this.sendJson(res, 200, { ok: true, jobs: store.remove(cronMatch[1]) });
         return;
       }
+    }
+
+    const allowedKeyVars = new Set<string>([
+      ...Object.values(PROVIDERS).flatMap((s) => s.keyEnvVars),
+      'HERMES_API_KEY',
+      'OPENAI_API_KEY',
+    ]);
+
+    if (method === 'GET' && path === '/api/keys') {
+      this.sendJson(res, 200, { stored: storedKeyVars() });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/keys') {
+      const body = await this.readBody(req);
+      const envVar = String(body['envVar'] ?? '');
+      const key = String(body['key'] ?? '').trim();
+      if (!allowedKeyVars.has(envVar)) {
+        this.sendJson(res, 400, { error: 'unknown provider key' });
+        return;
+      }
+      if (!key) {
+        this.sendJson(res, 400, { error: 'key is required' });
+        return;
+      }
+      setStoredKey(envVar, key);
+      this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const keyMatch = path.match(/^\/api\/keys\/([A-Z0-9_]+)$/);
+    if (method === 'DELETE' && keyMatch) {
+      const envVar = keyMatch[1]!;
+      if (!allowedKeyVars.has(envVar)) {
+        this.sendJson(res, 400, { error: 'unknown provider key' });
+        return;
+      }
+      removeStoredKey(envVar);
+      this.sendJson(res, 200, { ok: true });
+      return;
     }
 
     if (method === 'GET' && path === '/api/browse') {

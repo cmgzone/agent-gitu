@@ -1088,6 +1088,12 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function closeSettings() { $('settings').hidden = true; }
 
+  function refreshModels() {
+    api('/api/models')
+      .then(function (data) { S.models = data.providers; renderSettings(); })
+      .catch(function () { renderSettings(); });
+  }
+
   function renderSettings() {
     var items = [
       ['general', 'gear', 'General'],
@@ -1130,25 +1136,36 @@ export const UI_HTML = String.raw`<!doctype html>
       b.innerHTML = '<h1>Providers</h1>' +
         '<p style="color:var(--muted);font-size:12.5px">LLM providers and API-key status. Click a model to make it the default for new runs.</p>' +
         '<div class="setcard" id="provBody"><div class="meta">loading providers…</div></div>';
-      api('/api/models').then(function (d) {
+      Promise.all([api('/api/models'), api('/api/keys').catch(function () { return { stored: [] }; })]).then(function (res) {
+        var d = res[0];
+        var stored = (res[1] && res[1].stored) || [];
         var body = $('provBody');
         if (!body) return;
         var cur = S.sel.model || '';
-        body.innerHTML = (d.providers || []).map(function (p) {
+        var prov = d.providers || [];
+        body.innerHTML = prov.map(function (p, i) {
+          var storedVar = (p.keyEnvVars || []).filter(function (v) { return stored.indexOf(v) >= 0; })[0];
           var keyChip = p.hasKey ? '<span class="chip ok">key ready</span>' : '<span class="chip bad">no key</span>';
+          var storedChip = storedVar ? '<span class="chip">stored</span>' : '';
           var liveChip = p.live ? '<span class="chip">live</span>' : '';
           var models = p.models || [];
           var shown = models.slice(0, 12);
           return '<div class="setrow" style="align-items:flex-start"><div class="grow">' +
-            '<div class="t">' + esc(p.label) + ' <span class="meta">(' + esc(p.id) + ')</span> ' + keyChip + ' ' + liveChip + '</div>' +
-            '<div class="d">default: ' + esc(p.defaultModel) + (p.keyEnvVars && !p.hasKey ? ' · set ' + esc(p.keyEnvVars.join(' | ')) : '') + '</div>' +
+            '<div class="t">' + esc(p.label) + ' <span class="meta">(' + esc(p.id) + ')</span> ' + keyChip + storedChip + ' ' + liveChip + '</div>' +
+            '<div class="d">default: ' + esc(p.defaultModel) + (p.keyEnvVars && !p.hasKey ? ' · env: ' + esc(p.keyEnvVars.join(' | ')) : '') + '</div>' +
             '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">' +
             shown.map(function (m) {
               var val = p.id + '::' + m;
               return '<button class="btn ' + (cur === val ? 'dark' : 'ghost') + '" data-model="' + esc(val) + '" style="padding:3px 9px;font-size:11px">' + esc(m) + '</button>';
             }).join('') +
             (models.length > shown.length ? '<span class="meta">+' + (models.length - shown.length) + ' more</span>' : '') +
-            '</div></div></div>';
+            '</div>' +
+            '<div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap">' +
+            '<input type="password" id="keyin-' + i + '" placeholder="paste ' + esc(p.id) + ' API key" style="margin:0;max-width:280px">' +
+            '<button class="btn dark" data-savekey="' + i + '">Save key</button>' +
+            (storedVar ? '<button class="btn ghost" data-delkey="' + esc(storedVar) + '">Remove stored key</button>' : '') +
+            '</div>' +
+            '</div></div>';
         }).join('') || '<div class="meta">no providers available</div>';
         body.querySelectorAll('[data-model]').forEach(function (btn) {
           btn.onclick = function () {
@@ -1156,6 +1173,27 @@ export const UI_HTML = String.raw`<!doctype html>
             persist();
             toast('Default model: ' + S.sel.model);
             renderSettings();
+          };
+        });
+        body.querySelectorAll('[data-savekey]').forEach(function (btn) {
+          btn.onclick = function () {
+            var i = Number(btn.getAttribute('data-savekey'));
+            var p = prov[i];
+            var input = $('keyin-' + i);
+            var key = input ? input.value.trim() : '';
+            if (!p || !key) { toast('Paste an API key first', true); return; }
+            var envVar = (p.keyEnvVars || [])[0];
+            api('/api/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ envVar: envVar, key: key }) })
+              .then(function () { toast('Key saved for ' + p.id); refreshModels(); })
+              .catch(function (e) { toast(e.message, true); });
+          };
+        });
+        body.querySelectorAll('[data-delkey]').forEach(function (btn) {
+          btn.onclick = function () {
+            var v = btn.getAttribute('data-delkey');
+            api('/api/keys/' + v, { method: 'DELETE' })
+              .then(function () { toast('Removed ' + v); refreshModels(); })
+              .catch(function (e) { toast(e.message, true); });
           };
         });
       }).catch(function () {

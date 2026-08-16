@@ -103,6 +103,13 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
       return `list ${params['path'] ?? '.'}`;
     case 'search_files':
       return `search /${params['pattern']}/ in ${params['path'] ?? '.'}`;
+    case 'browse': {
+      const a = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
+      if (a === 'navigate') return `browse ${params['url']}`;
+      if (a === 'click') return `browse click (${params['x']}, ${params['y']})`;
+      if (a === 'type') return `browse type "${String(params['text'] ?? '').slice(0, 60)}"`;
+      return `browse ${a}`;
+    }
     default:
       return `${tool} ${canonicalJson(params).slice(0, 120)}`;
   }

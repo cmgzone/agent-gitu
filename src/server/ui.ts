@@ -254,6 +254,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .vresize:hover, .vresize.active { background: rgba(124, 108, 240, .35); }
   .shell.left-collapsed #sbResize, .run.collapsed-side #rsResize { display: none; }
 
+  .shotmsg { margin: 10px 0; }
+  .shotmsg img { display: block; max-width: 340px; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-top: 4px; }
+
   .skcard { padding: 12px 16px; border-bottom: 1px solid var(--border); }
   .skcard:last-child { border-bottom: 0; }
   .skhead { display: flex; gap: 8px; align-items: center; font-size: 13px; }
@@ -268,32 +271,12 @@ export const UI_HTML = String.raw`<!doctype html>
   .thumbs .rm:hover { color: var(--red); border-color: #fecaca; }
   .pill[disabled] { opacity: .4; cursor: not-allowed; }
 
-  .bhost { position: fixed; z-index: 30; display: flex; flex-direction: column; background: #202124; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
-  .bhost.offscreen { left: -10000px !important; top: 0 !important; width: 1280px; height: 900px; }
-  .bhost.driving .bview { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .btabstrip { display: flex; align-items: flex-end; gap: 6px; padding: 7px 8px 0; background: #292a2d; }
-  .btab { display: flex; align-items: center; gap: 7px; background: #202124; color: #e8eaed; border-radius: 9px 9px 0 0; padding: 7px 12px; font-size: 12px; max-width: 220px; min-width: 120px; }
-  .btab span#bTabTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-  .bfav { width: 14px; height: 14px; border-radius: 3px; }
-  .bspin { width: 11px; height: 11px; border: 2px solid #5f6368; border-top-color: #e8eaed; border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
-  .bbar { display: flex; align-items: center; gap: 4px; padding: 7px 8px; background: #202124; }
-  .bnav { width: 28px; height: 28px; border: 0; border-radius: 50%; background: none; color: #e8eaed; display: inline-flex; align-items: center; justify-content: center; flex: none; }
-  .bnav:hover { background: #3c4043; }
-  .bnav svg { width: 14px; height: 14px; }
-  .burl { flex: 1; display: flex; align-items: center; background: #303134; border-radius: 999px; padding: 6px 14px; }
-  .burl input { flex: 1; border: 0; outline: none; background: none; color: #e8eaed; font-family: var(--mono); font-size: 12px; }
-  .burl input::placeholder { color: #9aa0a6; }
-  .bprog { height: 2px; background: transparent; }
-  .bprog span { display: block; height: 100%; width: 40%; background: var(--accent); animation: bprog 1.1s ease-in-out infinite; }
-  @keyframes bprog { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
-  .bview { position: relative; flex: 1; background: #fff; }
-  .bview webview { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .bdrive { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 7px; background: var(--accent); color: #fff; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; box-shadow: 0 4px 16px rgba(124,108,240,.5); animation: pulse 1.4s infinite; }
+  .bpanel2 .nav { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .bpanel2 .nav input { flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; background: #fff; min-width: 0; }
+  .bpanel2 .bwrap { position: relative; }
+  .bpanel2 .bwrap img { width: 100%; display: block; border: 1px solid var(--border); border-radius: 10px; background: #fff; min-height: 160px; object-fit: top left; }
+  .bdrive { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 7px; background: var(--accent); color: #fff; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; box-shadow: 0 4px 16px rgba(124,108,240,.5); animation: pulse 1.4s infinite; white-space: nowrap; }
   .bdrive svg { width: 13px; height: 13px; }
-  .bcursor { position: absolute; z-index: 7; width: 20px; height: 20px; color: #111; pointer-events: none; transition: left .5s cubic-bezier(.2,.7,.3,1), top .5s cubic-bezier(.2,.7,.3,1); filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); }
-  .bcursor svg { width: 20px; height: 20px; }
-  .bclickripple { position: absolute; z-index: 7; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px solid var(--accent); border-radius: 50%; pointer-events: none; animation: ripple .65s ease-out forwards; }
-  @keyframes ripple { from { transform: scale(.4); opacity: .9; } to { transform: scale(1.6); opacity: 0; } }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
@@ -451,18 +434,35 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function newProject() {
-    var name = prompt('New project name (created as a folder under the Hermes Projects directory):');
-    if (!name || !name.trim()) return;
-    api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
-      .then(function (d) {
-        S.settings.projectPath = d.path;
-        persist();
-        updateProjChip();
-        renderSidebar();
-        toast('Project created at ' + d.path);
-        openHome();
-      })
-      .catch(function (e) { toast(e.message, true); });
+    var modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.innerHTML = '<div class="box" style="width:460px"><div class="bar"><span style="font-weight:600;font-size:13px">New project</span></div>' +
+      '<div style="padding:14px 16px">' +
+      '<input id="npName" placeholder="project name (e.g. my-app)" style="width:100%;border:1px solid var(--border);border-radius:8px;background:#fff;padding:8px 10px" autofocus>' +
+      '<div id="npWhere" style="margin-top:8px;color:var(--muted);font-size:12px">Created under the Hermes Projects folder.</div>' +
+      '</div>' +
+      '<div class="foot"><span style="flex:1"></span><button class="btn ghost" id="npCancel">Cancel</button><button class="btn dark" id="npGo">Create project</button></div></div>';
+    document.body.appendChild(modal);
+    api('/api/home').then(function (h) { var w = $('npWhere'); if (w) w.innerHTML = 'Created under <span style="font-family:var(--mono)">' + esc(h.projectsPath) + '</span>'; }).catch(function () {});
+    var create = function () {
+      var name = $('npName').value.trim();
+      if (!name) { $('npName').focus(); return; }
+      api('/api/projects', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name }) })
+        .then(function (d) {
+          modal.remove();
+          S.settings.projectPath = d.path;
+          persist();
+          updateProjChip();
+          renderSidebar();
+          toast('Project created at ' + d.path);
+          openHome();
+        })
+        .catch(function (e) { toast(e.message, true); });
+    };
+    modal.querySelector('#npCancel').onclick = function () { modal.remove(); };
+    modal.querySelector('#npGo').onclick = create;
+    modal.querySelector('#npName').addEventListener('keydown', function (e) { if (e.key === 'Enter') create(); });
+    setTimeout(function () { var n = $('npName'); if (n) n.focus(); }, 0);
   }
 
   function deleteProjectFlow(name, path) {
@@ -512,9 +512,9 @@ export const UI_HTML = String.raw`<!doctype html>
   function openHome() {
     S.active = 'home';
     stopStreams();
+    stopBrowserPoll();
     renderSidebar();
     renderTopbar();
-    positionBrowserHost();
     var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'this project');
     $('view').innerHTML =
       '<div class="home">' +
@@ -789,6 +789,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (summary.indexOf('list ') === 0) return 'list';
     if (summary.indexOf('search ') === 0) return 'search';
     if (summary.indexOf('$ ') === 0) return 'shell';
+    if (summary.indexOf('browse') === 0) return 'web';
     return 'tool';
   }
   function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
@@ -894,6 +895,16 @@ export const UI_HTML = String.raw`<!doctype html>
           if (pr >= 1) clearInterval(anim);
         }, 40);
       }
+      return;
+    }
+
+    if (text.indexOf('browseshot ') === 0) {
+      var shot = document.createElement('div');
+      shot.className = 'shotmsg';
+      shot.innerHTML = '<div class="meta-line"><b>browser</b> screenshot</div><img alt="browser screenshot">';
+      shot.querySelector('img').src = text.slice(11);
+      appendLive(stream, shot);
+      stream.scrollTop = stream.scrollHeight;
       return;
     }
 
@@ -1182,9 +1193,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     var body = $('sideBody');
     if (!body || !sess) return;
-    if (sess.side === 'context') { renderContext(runId); positionBrowserHost(); return; }
+    if (sess.side === 'context') { renderContext(runId); stopBrowserPoll(); return; }
     if (sess.side === 'browser') { showBrowserPanel(runId); return; }
-    positionBrowserHost();
+    stopBrowserPoll();
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
@@ -1221,14 +1232,12 @@ export const UI_HTML = String.raw`<!doctype html>
     if (run) run.classList.toggle('collapsed-side', !!S.settings.rightCollapsed);
     var btn = $('sbCollapse');
     if (btn) btn.innerHTML = S.settings.leftCollapsed ? '&#187;' : '&#171;';
-    positionBrowserHost();
   }
 
   function applyWidths() {
     var rs = document.documentElement.style;
     rs.setProperty('--sbw', (S.settings.sbWidth || 264) + 'px');
     rs.setProperty('--rsw', (S.settings.sideWidth || 380) + 'px');
-    positionBrowserHost();
   }
 
   function bindResize(id, side) {
@@ -1317,89 +1326,6 @@ export const UI_HTML = String.raw`<!doctype html>
     }, 0);
   }
 
-  function isElectron() { return /Electron\//.test(navigator.userAgent); }
-
-  function ensureBrowserHost() {
-    if ($('browserHost')) return;
-    var host = document.createElement('div');
-    host.id = 'browserHost';
-    host.className = 'bhost offscreen';
-    host.innerHTML =
-      '<div class="bchrome">' +
-      '<div class="btabstrip"><div class="btab"><span class="bspin" id="bSpin" hidden></span><img id="bFav" class="bfav" alt="" hidden><span id="bTabTitle">New tab</span></div></div>' +
-      '<div class="bbar">' +
-      '<button class="bnav" id="bBack" title="back">' + icon('back') + '</button>' +
-      '<button class="bnav" id="bFwd" title="forward" style="transform:scaleX(-1)">' + icon('back') + '</button>' +
-      '<button class="bnav" id="bReload" title="reload">' + icon('retry') + '</button>' +
-      '<div class="burl"><input id="bUrl" placeholder="Search or enter address" spellcheck="false"></div>' +
-      '<button class="bnav" id="bShot" title="copy screenshot">' + icon('image') + '</button>' +
-      '</div>' +
-      '<div class="bprog" id="bProg" hidden><span></span></div>' +
-      '</div>' +
-      '<div class="bview" id="bView">' +
-      '<div class="bdrive" id="bDrive" hidden>' + icon('bolt') + ' Hermes is driving the browser</div>' +
-      '<div class="bcursor" id="bCursor" hidden>' + SVG_OPEN + '<path d="M4 2l14 12-6 1 3.5 6.5-3 1.5L9 16l-5 4z" fill="currentColor" stroke="#fff" stroke-width="1"/></svg></div>' +
-      '</div>';
-    document.body.appendChild(host);
-    var wv = document.createElement('webview');
-    wv.id = 'bWeb';
-    wv.setAttribute('allowpopups', 'false');
-    $('bView').appendChild(wv);
-
-    function pushState() {
-      var st = { url: '', title: '', canBack: false, canForward: false, loading: false };
-      try {
-        st = { url: wv.getURL() || '', title: wv.getTitle() || '', canBack: wv.canBack(), canForward: wv.canForward(), loading: wv.isLoading() };
-      } catch (e) {}
-      $('bTabTitle').textContent = st.title || 'New tab';
-      var u = $('bUrl');
-      if (document.activeElement !== u) u.value = st.url === 'about:blank' ? '' : st.url;
-      $('bSpin').hidden = !st.loading;
-      $('bProg').hidden = !st.loading;
-      api('/api/browser/state', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(st) }).catch(function () {});
-    }
-    wv.addEventListener('did-start-loading', pushState);
-    wv.addEventListener('dom-ready', function () { S.bDomReady = true; pushState(); });
-    wv.addEventListener('did-stop-loading', function () { pushState(); if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(true); } });
-    wv.addEventListener('did-fail-load', function (e) {
-      if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(false, 'load failed: ' + (e.errorDescription || e.errorCode)); }
-      if (!S.driving) toast('Browser: ' + (e.errorDescription || ('load failed (' + e.errorCode + ')')), true);
-      pushState();
-    });
-    wv.addEventListener('did-navigate', pushState);
-    wv.addEventListener('did-navigate-in-page', pushState);
-    wv.addEventListener('page-title-updated', pushState);
-
-    $('bBack').onclick = function () { try { wv.goBack(); } catch (e) {} };
-    $('bFwd').onclick = function () { try { wv.goForward(); } catch (e) {} };
-    $('bReload').onclick = function () { try { wv.reload(); } catch (e) {} };
-    $('bUrl').addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') {
-        var url = clientNormalize($('bUrl').value);
-        if (url) {
-          try {
-            var p = wv.loadURL(url);
-            if (p && p.catch) p.catch(function (er) { if (!S.driving) toast('Browser: ' + er.message, true); });
-          } catch (er) { toast(er.message, true); }
-        }
-      }
-    });
-    $('bShot').onclick = function () {
-      wv.capturePage().then(function (img) {
-        var data = img.toDataURL();
-        return navigator.clipboard.write([new ClipboardItem({ 'image/png': dataUrlToBlob(data) })]).then(function () { toast('Screenshot copied to clipboard'); });
-      }).catch(function (e) { toast('Screenshot failed: ' + e.message, true); });
-    };
-  }
-
-  function dataUrlToBlob(dataUrl) {
-    var parts = dataUrl.split(',');
-    var bin = atob(parts[1]);
-    var arr = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    return new Blob([arr], { type: 'image/png' });
-  }
-
   function clientNormalize(input) {
     var url = String(input || '').trim();
     if (!url) return '';
@@ -1411,165 +1337,65 @@ export const UI_HTML = String.raw`<!doctype html>
     return url;
   }
 
-  function currentState() {
-    var wv = $('bWeb');
-    try {
-      return { available: true, url: wv.getURL() || '', title: wv.getTitle() || '', canBack: wv.canBack(), canForward: wv.canForward(), loading: wv.isLoading() };
-    } catch (e) {
-      return { available: true, url: '', title: '', canBack: false, canForward: false, loading: false };
-    }
+  function stopBrowserPoll() { if (S.bPoll) { clearInterval(S.bPoll); S.bPoll = null; } }
+
+  function startBrowserPoll() {
+    stopBrowserPoll();
+    S.bPoll = setInterval(refreshBrowserView, 2500);
   }
 
-  function showDriving(on) {
-    S.driving = on;
-    var d = $('bDrive');
-    if (d) d.hidden = !on;
-    var host = $('browserHost');
-    if (host) host.classList.toggle('driving', on);
-  }
-
-  function moveCursor(x, y, click) {
-    var c = $('bCursor');
-    var view = $('bView');
-    if (!c || !view) return;
-    c.hidden = false;
-    c.style.left = x + 'px';
-    c.style.top = y + 'px';
-    if (click) {
-      var r = document.createElement('span');
-      r.className = 'bclickripple';
-      r.style.left = x + 'px';
-      r.style.top = y + 'px';
-      view.appendChild(r);
-      setTimeout(function () { r.remove(); }, 700);
-    }
-  }
-
-  function runBrowserCommand(cmd) {
-    ensureBrowserHost();
-    var host = $('browserHost');
-    var wv = $('bWeb');
-    var panelOpen = !host.classList.contains('offscreen');
-    if (!panelOpen) toast('Hermes is using the in-app browser');
-    showDriving(true);
-    var finish = function (ok, extra) {
-      var payload = { id: cmd.id, ok: ok };
-      if (extra) for (var k in extra) payload[k] = extra[k];
-      payload.state = currentState();
-      api('/api/browser/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).catch(function () {});
-      setTimeout(function () { showDriving(false); }, 400);
-    };
-    var waitLoad = function (then) {
-      S.bNavWait = then;
-      setTimeout(function () { if (S.bNavWait === then) { S.bNavWait = null; then(false, 'timed out waiting for page load'); } }, 20000);
-    };
-    var whenReady = function (cb) {
-      if (S.bDomReady) return cb();
-      var done = false;
-      var go = function () { if (!done) { done = true; S.bDomReady = true; cb(); } };
-      wv.addEventListener('dom-ready', go, { once: true });
-      setTimeout(go, 4000);
-    };
-    try {
-      switch (cmd.action) {
-        case 'navigate': {
-          var url = clientNormalize(cmd.url);
-          if (!url) { finish(false, { error: 'url is required' }); return; }
-          whenReady(function () {
-            waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); });
-            try {
-              var p = wv.loadURL(url);
-              if (p && p.catch) p.catch(function (er) { if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(false, er.message); } });
-            } catch (er) { if (S.bNavWait) { var f2 = S.bNavWait; S.bNavWait = null; f2(false, er.message); } }
-          });
-          return;
-        }
-        case 'back': whenReady(function () { waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); }); try { wv.goBack(); } catch (e) { finish(false, { error: e.message }); } }); return;
-        case 'forward': whenReady(function () { waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); }); try { wv.goForward(); } catch (e) { finish(false, { error: e.message }); } }); return;
-        case 'reload': whenReady(function () { waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); }); try { wv.reload(); } catch (e) { finish(false, { error: e.message }); } }); return;
-        case 'click': {
-          var x = Number(cmd.x || 0), y = Number(cmd.y || 0);
-          moveCursor(x, y, true);
-          setTimeout(function () {
-            try {
-              wv.sendInputEvent({ type: 'mouseDown', x: x, y: y, button: 'left', clickCount: 1 });
-              wv.sendInputEvent({ type: 'mouseUp', x: x, y: y, button: 'left', clickCount: 1 });
-              finish(true);
-            } catch (e) { finish(false, { error: e.message }); }
-          }, 550);
-          return;
-        }
-        case 'type': {
-          moveCursor(200, 120, false);
-          var text = String(cmd.text || '');
-          var i = 0;
-          var timer = setInterval(function () {
-            if (i >= text.length) { clearInterval(timer); finish(true); return; }
-            try { wv.sendInputEvent({ type: 'char', keyCode: text[i] }); } catch (e) { clearInterval(timer); finish(false, { error: e.message }); return; }
-            i++;
-          }, 30);
-          return;
-        }
-        case 'screenshot': {
-          whenReady(function () {
-            setTimeout(function () {
-              wv.capturePage().then(function (img) {
-                if (!img || img.isEmpty()) { finish(false, { error: 'screenshot is empty — the browser surface is not ready yet' }); return; }
-                finish(true, { pngBase64: img.toDataURL().split(',')[1] });
-              }).catch(function (e) { finish(false, { error: e.message }); });
-            }, 300);
-          });
-          return;
-        }
-        default:
-          finish(false, { error: 'unknown action ' + cmd.action });
+  function refreshBrowserView() {
+    api('/api/browser').then(function (d) {
+      var hint = $('bHint2');
+      if (!hint) return;
+      if (!d.has) {
+        hint.textContent = 'The browser window opens in the desktop app on first use (npm run app).';
+        var im = $('bImg2');
+        if (im) im.removeAttribute('src');
+        return;
       }
-    } catch (e) {
-      finish(false, { error: e.message });
-    }
-  }
-
-  function startBrowserDriver() {
-    if (!isElectron() || S.bDriver) return;
-    S.bDriver = true;
-    ensureBrowserHost();
-    var es = new EventSource('/api/browser/stream');
-    es.onmessage = function (msg) {
-      var cmd;
-      try { cmd = JSON.parse(msg.data); } catch (e) { return; }
-      if (!cmd || cmd.hello) return;
-      runBrowserCommand(cmd);
-    };
-  }
-
-  function positionBrowserHost() {
-    var host = $('browserHost');
-    if (!host || S.driving) return;
-    var settingsOpen = $('settings') && !$('settings').hidden;
-    var sess = S.sessions[S.active];
-    var show = sess && sess.side === 'browser' && !S.settings.rightCollapsed && $('sideBody') && !settingsOpen;
-    if (!show) {
-      host.classList.add('offscreen');
-      return;
-    }
-    var r = $('sideBody').getBoundingClientRect();
-    host.style.top = r.top + 'px';
-    host.style.left = r.left + 'px';
-    host.style.width = r.width + 'px';
-    host.style.height = r.height + 'px';
-    host.classList.remove('offscreen');
+      hint.textContent = (d.state.title || '(blank page)') + (d.state.driving ? ' — Hermes is driving' : '');
+      var u = $('bUrl2');
+      if (u && document.activeElement !== u) u.value = d.state.url === 'about:blank' ? '' : d.state.url || '';
+      var bb = $('bBack2'), ff = $('bFwd2');
+      if (bb) bb.disabled = !d.state.canBack;
+      if (ff) ff.disabled = !d.state.canForward;
+      var drv = $('bDrive2');
+      if (drv) drv.hidden = !d.state.driving;
+      api('/api/browser/screenshot').then(function (shot) {
+        var img = $('bImg2');
+        if (img && shot.pngBase64) img.src = 'data:image/png;base64,' + shot.pngBase64;
+      }).catch(function () {});
+    }).catch(function () {});
   }
 
   function showBrowserPanel(runId) {
     var body = $('sideBody');
-    if (!isElectron()) {
-      body.innerHTML = '<div class="empty" style="padding:20px 6px">The in-app browser runs inside the desktop app (real Chromium you can also use).<br><br>Start it with: <b>npm run app</b></div>';
-      return;
-    }
-    ensureBrowserHost();
-    startBrowserDriver();
-    body.innerHTML = '';
-    positionBrowserHost();
+    body.innerHTML =
+      '<div class="bpanel2">' +
+      '<div class="nav">' +
+      '<button class="ubtn" id="bBack2" title="back" style="width:28px;height:26px">' + icon('back') + '</button>' +
+      '<button class="ubtn" id="bFwd2" title="forward" style="width:28px;height:26px;transform:scaleX(-1)">' + icon('back') + '</button>' +
+      '<button class="ubtn" id="bReload2" title="reload" style="width:28px;height:26px">' + icon('retry') + '</button>' +
+      '<input id="bUrl2" placeholder="Enter address" spellcheck="false">' +
+      '<button class="btn dark" id="bGo2">Go</button>' +
+      '<button class="btn ghost" id="bOpen2" title="open / focus the browser window">Open</button>' +
+      '</div>' +
+      '<div class="bwrap"><div class="bdrive" id="bDrive2" hidden>' + icon('bolt') + ' Hermes is driving the browser</div><img id="bImg2" alt="live browser view"></div>' +
+      '<div class="empty" id="bHint2" style="margin-top:8px"></div></div>';
+    $('bBack2').onclick = function () { api('/api/browser/back', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
+    $('bFwd2').onclick = function () { api('/api/browser/forward', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
+    $('bReload2').onclick = function () { api('/api/browser/reload', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
+    $('bGo2').onclick = function () {
+      var url = clientNormalize($('bUrl2').value);
+      if (!url) return;
+      api('/api/browser/navigate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url }) })
+        .then(refreshBrowserView).catch(function (e) { toast(e.message, true); });
+    };
+    $('bUrl2').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('bGo2').click(); });
+    $('bOpen2').onclick = function () { api('/api/browser/focus', { method: 'POST' }).then(refreshBrowserView).catch(function (e) { toast(e.message, true); }); };
+    refreshBrowserView();
+    startBrowserPoll();
   }
 
   function reportText(r) {
@@ -1637,10 +1463,9 @@ export const UI_HTML = String.raw`<!doctype html>
   function openSettings(section) {
     S.setSection = section || 'general';
     $('settings').hidden = false;
-    positionBrowserHost();
     renderSettings();
   }
-  function closeSettings() { $('settings').hidden = true; positionBrowserHost(); }
+  function closeSettings() { $('settings').hidden = true; }
 
   function refreshModels() {
     api('/api/models')
@@ -2003,8 +1828,6 @@ export const UI_HTML = String.raw`<!doctype html>
     renderSidebar();
     renderTopbar();
     applyLayout();
-    startBrowserDriver();
-    window.addEventListener('resize', positionBrowserHost);
     openHome();
   }
   boot();

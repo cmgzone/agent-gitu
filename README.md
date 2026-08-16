@@ -158,12 +158,14 @@ renders the agent's **state**, not a chat transcript:
 - live activity feed via Server-Sent Events
 - **approval gates**: dangerous actions pause the run until approved/denied in the UI
 - collapsible left/right sidebars (tab handles, persisted per browser)
-- **Browser panel**: the desktop app embeds a real Chromium browser (a
-  `<webview>` — Chrome under the hood) that you can use like a normal browser.
-  The agent drives it with the `browse` tool (navigate / screenshot / click /
-  type / back / forward / reload); while it does, a "Hermes is driving the
-  browser" banner and an animated cursor with click ripples make the agent's
-  actions visible. Screenshots are delivered to vision-capable models.
+- **Browser panel**: the desktop app opens a real Chromium browser window
+  (Chrome under the hood) that you can use like a normal browser. The agent
+  drives it with the `browse` tool (navigate / screenshot / click / type /
+  back / forward / reload); while it does, a "Hermes is driving the browser"
+  banner and an animated cursor with click ripples are injected into the page
+  so you always notice what it is doing. The Browser tab in the side panel is
+  a live view of that window with its own address bar and an Open/Focus
+  button. Screenshots are delivered to vision-capable models.
 - **image attachments**: the composer accepts up to 4 images; they are sent to
   vision-capable models only (the model picker marks them, attach is disabled
   for text-only models)

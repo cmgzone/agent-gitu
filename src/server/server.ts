@@ -371,10 +371,10 @@ export class HermesServer {
     };
   }
 
-  private pushEvent(s: RunSession, text: string): void {
+  private pushEvent(s: RunSession, text: string, persistDb = true): void {
     const ev = { i: s.events.length, t: nowIso(), text };
     s.events.push(ev);
-    if (!text.startsWith('tdelta')) {
+    if (persistDb && !text.startsWith('tdelta')) {
       try {
         this.db().addEvent(s.runId, ev);
         this.db().upsertSession({
@@ -592,7 +592,7 @@ export class HermesServer {
       return;
     }
 
-    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot|click|type)$/);
+    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot|click|type|focus)$/);
     if (browserMatch) {
       const b = this.browserImpl();
       if (!b.available()) {
@@ -613,6 +613,12 @@ export class HermesServer {
           this.sendJson(res, 200, await b.click(Number(body['x'] ?? 0), Number(body['y'] ?? 0)));
         } else if (browserMatch[1] === 'type') {
           this.sendJson(res, 200, await b.type(String(body['text'] ?? '')));
+        } else if (browserMatch[1] === 'focus') {
+          if (!b.focus) {
+            this.sendJson(res, 503, { error: 'the browser window lives in the desktop app' });
+            return;
+          }
+          this.sendJson(res, 200, await b.focus());
         } else {
           this.sendJson(res, 200, await b.reload());
         }
@@ -1229,7 +1235,7 @@ export class HermesServer {
       onEvent: (text) => {
         const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
         if (ledgerMatch) session.taskId = ledgerMatch[1];
-        this.pushEvent(session, text);
+        this.pushEvent(session, text, !text.startsWith('browseshot '));
       },
     });
     session.hermes = hermes;

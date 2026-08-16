@@ -5,6 +5,7 @@ export interface BrowserState {
   canBack: boolean;
   canForward: boolean;
   loading: boolean;
+  driving?: boolean;
 }
 
 export interface BrowserScreenshot {
@@ -22,6 +23,7 @@ export interface BrowserBridge {
   click(x: number, y: number): Promise<BrowserState>;
   type(text: string): Promise<BrowserState>;
   screenshot(): Promise<BrowserScreenshot>;
+  focus?(): Promise<BrowserState>;
 }
 
 export function normalizeUrl(input: string): string {

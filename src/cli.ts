@@ -325,7 +325,7 @@ async function main(): Promise<void> {
           }
           return answers.join('\n');
         },
-        onEvent: (e) => console.error(`[hermes] ${e}`),
+        onEvent: (e) => console.error(`[hermes] ${e.startsWith('browseshot ') ? 'browseshot <image attached to chat>' : e}`),
       });
 
       try {

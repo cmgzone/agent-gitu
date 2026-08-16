@@ -500,6 +500,10 @@ export class Hermes {
             this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
           }
 
+          if (action.tool === 'browse' && outcome.result.image) {
+            this.emit(`browseshot ${outcome.result.image}`);
+          }
+
           if (action.stepId && outcome.result.ok) {
             const step = ledger.step(action.stepId);
             if (step && step.status === 'in_progress') {

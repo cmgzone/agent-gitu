@@ -23,9 +23,9 @@ export function buildSystemPrompt(
     ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n`
     : '';
   const browserSection = opts.hasBrowser
-    ? `\nIN-APP BROWSER (visual verification): a real browser is embedded in the desktop app.${
+    ? `\nIN-APP BROWSER (visual verification): a real Chromium browser is embedded in the desktop app and you control it with the browse tool. WHENEVER the task touches UI, frontend, styling, or anything visual, you MUST verify visually: start the app/dev server with run_command if needed, browse navigate to it (e.g. http://localhost:PORT), take a screenshot, and actually LOOK at it before claiming the work is done. Use click/type to exercise interactions (forms, buttons, navigation) and screenshot again to confirm the effect.${
         opts.vision
-          ? ' You CAN see screenshots: navigate to the running app/page (e.g. a localhost dev server), take a screenshot, and inspect it visually before claiming visual work is done.'
+          ? ' You CAN see screenshots — ground every visual claim in what they show.'
           : ' The current model cannot see images; screenshots are captured for the user but not delivered to you — rely on DOM/tests or ask for a vision-capable model.'
       }\n`
     : '';
@@ -75,7 +75,7 @@ Tools:
 - search_files {"pattern":"regex","path":"src"}
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
 - web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
-- browse       {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"}  (in-app browser; screenshot is delivered as an image when the model supports vision)
+- browse       {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"} | {"action":"click","x":120,"y":340} | {"action":"type","text":"hello"}  (in-app Chromium browser; screenshots are delivered as images when the model supports vision)
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
 - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}

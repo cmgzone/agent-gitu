@@ -106,6 +106,17 @@ export class SessionStore {
     return this.db.prepare(`SELECT idx AS i, t, text FROM events WHERE runId = ? ORDER BY idx ASC`).all(runId) as unknown as StoredEvent[];
   }
 
+  deleteSessionsForProject(filter: { path?: string; name?: string }): number {
+    const rows = this.db
+      .prepare(`SELECT runId FROM sessions WHERE (?1 IS NOT NULL AND projectPath = ?1) OR (?2 IS NOT NULL AND project = ?2)`)
+      .all(filter.path ?? null, filter.name ?? null) as { runId: string }[];
+    for (const r of rows) {
+      this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(r.runId);
+      this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(r.runId);
+    }
+    return rows.length;
+  }
+
   close(): void {
     this.db.close();
   }

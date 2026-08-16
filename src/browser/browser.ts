@@ -13,11 +13,14 @@ export interface BrowserScreenshot {
 }
 
 export interface BrowserBridge {
+  available(): boolean;
   state(): BrowserState;
   navigate(url: string): Promise<BrowserState>;
   back(): Promise<BrowserState>;
   forward(): Promise<BrowserState>;
   reload(): Promise<BrowserState>;
+  click(x: number, y: number): Promise<BrowserState>;
+  type(text: string): Promise<BrowserState>;
   screenshot(): Promise<BrowserScreenshot>;
 }
 

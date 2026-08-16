@@ -50,6 +50,21 @@ export class SkillStore {
     return skill;
   }
 
+  update(name: string, patch: { description?: string; instructions?: string }): Skill {
+    const existing = this.get(name);
+    if (!existing) throw new Error(`Unknown skill: ${name}`);
+    if (patch.instructions !== undefined && !patch.instructions.trim()) {
+      throw new Error('Skill instructions are required');
+    }
+    const skill: Skill = {
+      ...existing,
+      description: (patch.description ?? existing.description).trim().slice(0, 300),
+      instructions: (patch.instructions ?? existing.instructions).trim(),
+    };
+    writeFileSync(path.join(this.dir, `${existing.name}.json`), JSON.stringify(skill, null, 2));
+    return skill;
+  }
+
   remove(name: string): boolean {
     const file = path.join(this.dir, `${name}.json`);
     if (!existsSync(file)) return false;

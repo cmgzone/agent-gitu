@@ -267,7 +267,7 @@ export class Hermes {
             ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined
             : undefined,
           vision: this.config.supportsImages ?? false,
-          hasBrowser: Boolean(this.config.browser),
+          hasBrowser: this.config.browser ? this.config.browser.available() : false,
         }),
       },
     ];

@@ -1,9 +1,9 @@
 import http from 'node:http';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Hermes } from '../agent/hermes.js';
-import type { BrowserBridge } from '../browser/browser.js';
+import type { BrowserBridge, BrowserState } from '../browser/browser.js';
 import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
@@ -108,6 +108,60 @@ export class HermesServer {
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
   private store?: SessionStore;
+
+  private readonly browserSubs = new Set<(msg: Record<string, unknown>) => void>();
+  private browserState: { available: boolean; url: string; title: string; canBack: boolean; canForward: boolean; loading: boolean } = {
+    available: false,
+    url: '',
+    title: '',
+    canBack: false,
+    canForward: false,
+    loading: false,
+  };
+  private readonly browserPending = new Map<string, { resolve: (v: Record<string, unknown>) => void; timer: NodeJS.Timeout }>();
+
+  private browserImpl(): BrowserBridge {
+    if (this.config.browser) return this.config.browser;
+    const send = (action: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
+      if (this.browserSubs.size === 0) {
+        return Promise.reject(new Error('no in-app browser connected — open the desktop app (npm run app)'));
+      }
+      const id = shortId('bcmd');
+      return new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.browserPending.delete(id);
+          reject(new Error('the in-app browser did not respond (is the Hermes window open?)'));
+        }, 30000);
+        this.browserPending.set(id, { resolve, timer });
+        for (const sub of this.browserSubs) sub({ id, action, ...payload });
+      });
+    };
+    const stateOf = (r: Record<string, unknown>): BrowserState => {
+      const st = (r['state'] ?? {}) as Partial<BrowserState>;
+      return {
+        available: true,
+        url: String(st.url ?? ''),
+        title: String(st.title ?? ''),
+        canBack: Boolean(st.canBack),
+        canForward: Boolean(st.canForward),
+        loading: Boolean(st.loading),
+      };
+    };
+    return {
+      available: () => this.browserSubs.size > 0,
+      state: () => ({ ...this.browserState, available: this.browserSubs.size > 0 }),
+      navigate: async (url) => stateOf(await send('navigate', { url })),
+      back: async () => stateOf(await send('back')),
+      forward: async () => stateOf(await send('forward')),
+      reload: async () => stateOf(await send('reload')),
+      click: async (x, y) => stateOf(await send('click', { x, y })),
+      type: async (text) => stateOf(await send('type', { text })),
+      screenshot: async () => {
+        const r = await send('screenshot');
+        return { pngBase64: String(r['pngBase64'] ?? ''), state: stateOf(r) };
+      },
+    };
+  }
 
   private db(): SessionStore {
     if (!this.store) this.store = new SessionStore();
@@ -404,6 +458,45 @@ export class HermesServer {
       return;
     }
 
+    if (method === 'DELETE' && path === '/api/projects') {
+      const body = await this.readBody(req);
+      const projectPath = typeof body['path'] === 'string' && body['path'] ? nodePath.resolve(String(body['path'])) : undefined;
+      const name = typeof body['name'] === 'string' && body['name'] ? String(body['name']) : undefined;
+      if (!projectPath && !name) {
+        this.sendJson(res, 400, { error: 'path or name is required' });
+        return;
+      }
+      const deleteFiles = body['deleteFiles'] === true;
+      if (deleteFiles) {
+        if (!projectPath) {
+          this.sendJson(res, 400, { error: 'path is required to delete files' });
+          return;
+        }
+        const base = projectsDir();
+        if (!(projectPath.startsWith(base + nodePath.sep) || projectPath === base)) {
+          this.sendJson(res, 400, { error: 'only projects inside the Hermes Projects folder can have their files deleted' });
+          return;
+        }
+      }
+      for (const [runId, s] of [...this.sessions.entries()]) {
+        if ((projectPath && s.projectPath === projectPath) || (name && s.project === name)) {
+          this.sessions.delete(runId);
+        }
+      }
+      const removed = this.db().deleteSessionsForProject({ path: projectPath, name });
+      if (deleteFiles && projectPath) {
+        try {
+          rmSync(projectPath, { recursive: true, force: true });
+        } catch (err) {
+          this.sendJson(res, 200, { ok: true, removedSessions: removed, filesDeleted: false, error: (err as Error).message });
+          return;
+        }
+      }
+      this.saveRegistry();
+      this.sendJson(res, 200, { ok: true, removedSessions: removed, filesDeleted: deleteFiles && Boolean(projectPath) });
+      return;
+    }
+
     if (method === 'GET' && path === '/api/models') {
       const providers = await Promise.all(
         Object.values(PROVIDERS).map(async (spec) => {
@@ -436,28 +529,90 @@ export class HermesServer {
     }
 
     if (method === 'GET' && path === '/api/browser') {
-      const b = this.config.browser;
-      this.sendJson(res, 200, { has: Boolean(b), state: b ? b.state() : undefined });
+      const b = this.browserImpl();
+      this.sendJson(res, 200, { has: b.available(), state: b.state() });
       return;
     }
 
-    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot)$/);
+    if (method === 'GET' && path === '/api/browser/stream') {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      const safeWrite = (data: string): void => {
+        if (res.writableEnded || res.destroyed) return;
+        try {
+          res.write(data);
+        } catch {
+          /* socket gone */
+        }
+      };
+      const sub = (msg: Record<string, unknown>): void => safeWrite(`data: ${JSON.stringify(msg)}\n\n`);
+      this.browserSubs.add(sub);
+      safeWrite(`data: ${JSON.stringify({ hello: true })}\n\n`);
+      const heartbeat = setInterval(() => safeWrite(': hb\n\n'), 15000);
+      const cleanup = (): void => {
+        clearInterval(heartbeat);
+        this.browserSubs.delete(sub);
+      };
+      req.on('close', cleanup);
+      res.on('error', cleanup);
+      res.on('close', cleanup);
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/browser/state') {
+      const body = await this.readBody(req);
+      this.browserState = {
+        available: true,
+        url: String(body['url'] ?? ''),
+        title: String(body['title'] ?? ''),
+        canBack: Boolean(body['canBack']),
+        canForward: Boolean(body['canForward']),
+        loading: Boolean(body['loading']),
+      };
+      this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/browser/result') {
+      const body = await this.readBody(req, 20_000_000);
+      const id = String(body['id'] ?? '');
+      const pending = this.browserPending.get(id);
+      if (!pending) {
+        this.sendJson(res, 404, { error: 'unknown browser command id' });
+        return;
+      }
+      clearTimeout(pending.timer);
+      this.browserPending.delete(id);
+      if (body['ok'] === false) pending.resolve({ error: String(body['error'] ?? 'browser error') });
+      else pending.resolve(body as Record<string, unknown>);
+      this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot|click|type)$/);
     if (browserMatch) {
-      const b = this.config.browser;
-      if (!b) {
-        this.sendJson(res, 503, { error: 'no in-app browser available — run the desktop app (npm run app)' });
+      const b = this.browserImpl();
+      if (!b.available()) {
+        this.sendJson(res, 503, { error: 'no in-app browser connected — run the desktop app (npm run app)' });
         return;
       }
       try {
+        const body = browserMatch[1] === 'navigate' || browserMatch[1] === 'click' || browserMatch[1] === 'type' ? await this.readBody(req) : {};
         if (browserMatch[1] === 'screenshot') {
           this.sendJson(res, 200, await b.screenshot());
         } else if (browserMatch[1] === 'navigate') {
-          const body = await this.readBody(req);
           this.sendJson(res, 200, await b.navigate(String(body['url'] ?? '')));
         } else if (browserMatch[1] === 'back') {
           this.sendJson(res, 200, await b.back());
         } else if (browserMatch[1] === 'forward') {
           this.sendJson(res, 200, await b.forward());
+        } else if (browserMatch[1] === 'click') {
+          this.sendJson(res, 200, await b.click(Number(body['x'] ?? 0), Number(body['y'] ?? 0)));
+        } else if (browserMatch[1] === 'type') {
+          this.sendJson(res, 200, await b.type(String(body['text'] ?? '')));
         } else {
           this.sendJson(res, 200, await b.reload());
         }
@@ -482,13 +637,21 @@ export class HermesServer {
       if (method === 'POST') {
         const body = await this.readBody(req);
         try {
-          const skill = store.create({
-            name: String(body['name'] ?? ''),
-            description: String(body['description'] ?? ''),
-            instructions: String(body['instructions'] ?? ''),
-            createdBy: 'user',
-          });
-          this.sendJson(res, 200, { ok: true, skill });
+          if (skillsMatch[1]) {
+            const skill = store.update(skillsMatch[1], {
+              description: typeof body['description'] === 'string' ? body['description'] : undefined,
+              instructions: typeof body['instructions'] === 'string' ? body['instructions'] : undefined,
+            });
+            this.sendJson(res, 200, { ok: true, skill });
+          } else {
+            const skill = store.create({
+              name: String(body['name'] ?? ''),
+              description: String(body['description'] ?? ''),
+              instructions: String(body['instructions'] ?? ''),
+              createdBy: 'user',
+            });
+            this.sendJson(res, 200, { ok: true, skill });
+          }
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
         }
@@ -1007,7 +1170,7 @@ export class HermesServer {
       skills,
       mcp,
       resume: opts.resume,
-      browser: this.config.browser,
+      browser: this.browserImpl(),
       images: opts.images,
       supportsImages: modelSupportsImages(opts.model ?? session.model ?? ''),
       askUserHandler: (questions) =>

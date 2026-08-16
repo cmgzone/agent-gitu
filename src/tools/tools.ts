@@ -306,8 +306,8 @@ export function toolWebFetch(_ctx: ToolContext, params: Record<string, unknown>)
 }
 
 export async function toolBrowse(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
-  if (!ctx.browser) {
-    return fail('browse: no in-app browser available (run the desktop app: npm run app)');
+  if (!ctx.browser || !ctx.browser.available()) {
+    return fail('browse: no in-app browser connected (run the desktop app: npm run app)');
   }
   const action = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
   try {
@@ -329,6 +329,19 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
         const st = await ctx.browser.reload();
         return { ok: true, output: `reloaded ${st.url} — "${st.title}"` };
       }
+      case 'click': {
+        const x = Number(params['x'] ?? 0);
+        const y = Number(params['y'] ?? 0);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return fail('browse click: x and y must be numbers');
+        const st = await ctx.browser.click(x, y);
+        return { ok: true, output: `clicked (${x}, ${y}) on ${st.url}` };
+      }
+      case 'type': {
+        const text = String(params['text'] ?? '');
+        if (!text) return fail('browse type: "text" is required');
+        const st = await ctx.browser.type(text);
+        return { ok: true, output: `typed ${text.length} character(s) on ${st.url}` };
+      }
       case 'screenshot': {
         const shot = await ctx.browser.screenshot();
         return {
@@ -338,7 +351,7 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
         };
       }
       default:
-        return fail(`browse: unknown action "${action}" (navigate|screenshot|back|forward|reload)`);
+        return fail(`browse: unknown action "${action}" (navigate|screenshot|back|forward|reload|click|type)`);
     }
   } catch (err) {
     return fail(`browse failed: ${(err as Error).message}`);

@@ -21,6 +21,7 @@ function fakeBridge(): BrowserBridge & { log: string[] } {
   return {
     log,
     state,
+    available: () => true,
     async navigate(url: string) {
       log.push(`navigate ${url}`);
       return state();
@@ -35,6 +36,14 @@ function fakeBridge(): BrowserBridge & { log: string[] } {
     },
     async reload() {
       log.push('reload');
+      return state();
+    },
+    async click(x: number, y: number) {
+      log.push(`click ${x},${y}`);
+      return state();
+    },
+    async type(text: string) {
+      log.push(`type ${text}`);
       return state();
     },
     async screenshot() {

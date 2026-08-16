@@ -45,6 +45,10 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .sect { font-size: 11px; color: var(--muted); margin: 14px 10px 4px; }
   .sb .proj { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12.5px; font-weight: 600; color: var(--text); border-radius: 8px; cursor: pointer; }
   .sb .proj:hover { background: #ebebe7; }
+  .sb .proj .delx { display: none; border: 0; background: none; color: var(--muted); width: 20px; height: 20px; border-radius: 6px; align-items: center; justify-content: center; flex: none; padding: 0; }
+  .sb .proj:hover .delx { display: inline-flex; }
+  .sb .proj .delx:hover { color: var(--red); background: #fef2f2; }
+  .sb .proj .delx svg { width: 11px; height: 11px; }
   .sb .chat { display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 26px; font-size: 12.5px; color: var(--muted); border-radius: 8px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
   .sb .chat:hover { background: #ebebe7; color: var(--text); }
   .sb .chat.active { background: #e5e3fb; color: var(--text); }
@@ -250,6 +254,13 @@ export const UI_HTML = String.raw`<!doctype html>
   .vresize:hover, .vresize.active { background: rgba(124, 108, 240, .35); }
   .shell.left-collapsed #sbResize, .run.collapsed-side #rsResize { display: none; }
 
+  .skcard { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .skcard:last-child { border-bottom: 0; }
+  .skhead { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  .skhead .meta { color: var(--faint); font-size: 11px; }
+  .skdesc { color: var(--muted); font-size: 12.5px; margin-top: 3px; }
+  .skinstr { font-family: var(--mono); font-size: 11.5px; background: #fafaf8; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 8px; white-space: pre-wrap; max-height: 260px; overflow: auto; }
+
   .thumbs { display: flex; gap: 6px; padding: 8px 8px 0; flex-wrap: wrap; }
   .thumbs .th { position: relative; }
   .thumbs img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
@@ -257,9 +268,32 @@ export const UI_HTML = String.raw`<!doctype html>
   .thumbs .rm:hover { color: var(--red); border-color: #fecaca; }
   .pill[disabled] { opacity: .4; cursor: not-allowed; }
 
-  .bpanel .nav { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
-  .bpanel .nav input { flex: 1; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; background: #fff; min-width: 0; }
-  .bpanel img.shot { width: 100%; border: 1px solid var(--border); border-radius: 10px; display: none; background: #fff; }
+  .bhost { position: fixed; z-index: 30; display: flex; flex-direction: column; background: #202124; border-radius: 10px; overflow: hidden; box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  .bhost.offscreen { left: -10000px !important; top: 0 !important; width: 1280px; height: 900px; }
+  .bhost.driving .bview { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .btabstrip { display: flex; align-items: flex-end; gap: 6px; padding: 7px 8px 0; background: #292a2d; }
+  .btab { display: flex; align-items: center; gap: 7px; background: #202124; color: #e8eaed; border-radius: 9px 9px 0 0; padding: 7px 12px; font-size: 12px; max-width: 220px; min-width: 120px; }
+  .btab span#bTabTitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .bfav { width: 14px; height: 14px; border-radius: 3px; }
+  .bspin { width: 11px; height: 11px; border: 2px solid #5f6368; border-top-color: #e8eaed; border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  .bbar { display: flex; align-items: center; gap: 4px; padding: 7px 8px; background: #202124; }
+  .bnav { width: 28px; height: 28px; border: 0; border-radius: 50%; background: none; color: #e8eaed; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+  .bnav:hover { background: #3c4043; }
+  .bnav svg { width: 14px; height: 14px; }
+  .burl { flex: 1; display: flex; align-items: center; background: #303134; border-radius: 999px; padding: 6px 14px; }
+  .burl input { flex: 1; border: 0; outline: none; background: none; color: #e8eaed; font-family: var(--mono); font-size: 12px; }
+  .burl input::placeholder { color: #9aa0a6; }
+  .bprog { height: 2px; background: transparent; }
+  .bprog span { display: block; height: 100%; width: 40%; background: var(--accent); animation: bprog 1.1s ease-in-out infinite; }
+  @keyframes bprog { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+  .bview { position: relative; flex: 1; background: #fff; }
+  .bview webview { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .bdrive { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 7px; background: var(--accent); color: #fff; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; box-shadow: 0 4px 16px rgba(124,108,240,.5); animation: pulse 1.4s infinite; }
+  .bdrive svg { width: 13px; height: 13px; }
+  .bcursor { position: absolute; z-index: 7; width: 20px; height: 20px; color: #111; pointer-events: none; transition: left .5s cubic-bezier(.2,.7,.3,1), top .5s cubic-bezier(.2,.7,.3,1); filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); }
+  .bcursor svg { width: 20px; height: 20px; }
+  .bclickripple { position: absolute; z-index: 7; width: 26px; height: 26px; margin: -13px 0 0 -13px; border: 2px solid var(--accent); border-radius: 50%; pointer-events: none; animation: ripple .65s ease-out forwards; }
+  @keyframes ripple { from { transform: scale(.4); opacity: .9; } to { transform: scale(1.6); opacity: 0; } }
   @media (max-width: 1080px) { .run-side { display: none; } }
 </style>
 </head>
@@ -346,6 +380,7 @@ export const UI_HTML = String.raw`<!doctype html>
     retry: SVG_OPEN + '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
     layers: SVG_OPEN + '<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>',
     image: SVG_OPEN + '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
+    copy: SVG_OPEN + '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
     globe: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z"/></svg>'
   };
   function icon(name) { return ICONS[name] || ''; }
@@ -369,9 +404,11 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderSidebar() {
     api('/api/runs').then(function (sessions) {
       var byProj = {};
+      var projPath = {};
       sessions.forEach(function (s) {
         var p = s.project || basename(S.settings.projectPath || '') || 'project';
         (byProj[p] = byProj[p] || []).push(s);
+        if (s.projectPath && !projPath[p]) projPath[p] = s.projectPath;
       });
       var html = '<button class="newbtn" id="sbNew">' + icon('pencil') + ' New session</button>' +
         '<button class="newbtn" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
@@ -383,7 +420,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
       names.forEach(function (p) {
-        html += '<div class="proj"><span class="ico">' + icon('folder') + '</span>' + esc(p) + '</div>';
+        html += '<div class="proj"><span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span><button class="delx" data-delproj="' + esc(p) + '" title="delete project and its sessions">' + icon('x') + '</button></div>';
         byProj[p].slice(0, 8).forEach(function (s) {
           html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '">' +
             '<span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></button>';
@@ -397,6 +434,12 @@ export const UI_HTML = String.raw`<!doctype html>
       });
       $('sbScroll').querySelectorAll('[data-set]').forEach(function (el) {
         el.onclick = function () { openSettings(el.getAttribute('data-set')); };
+      });
+      $('sbScroll').querySelectorAll('[data-delproj]').forEach(function (el) {
+        el.onclick = function (e) {
+          e.stopPropagation();
+          deleteProjectFlow(el.getAttribute('data-delproj'), projPath[el.getAttribute('data-delproj')]);
+        };
       });
     }).catch(function () {});
     api('/api/cron').then(function (d) { S.cronCount = (d.jobs || []).length; }).catch(function () {});
@@ -420,6 +463,31 @@ export const UI_HTML = String.raw`<!doctype html>
         openHome();
       })
       .catch(function (e) { toast(e.message, true); });
+  }
+
+  function deleteProjectFlow(name, path) {
+    var modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.innerHTML = '<div class="box" style="width:460px"><div class="bar"><span style="font-weight:600;font-size:13px">Delete project</span></div>' +
+      '<div style="padding:14px 16px;font-size:13px">Delete <b>' + esc(name) + '</b> and all of its sessions?' +
+      (path ? '<label style="display:flex;gap:8px;align-items:flex-start;margin-top:12px;font-size:12.5px;cursor:pointer"><input type="checkbox" id="dpFiles" style="margin:2px 0 0;width:auto"> <span>Also delete the project folder<br><span style="color:var(--muted);font-family:var(--mono);font-size:11px">' + esc(path) + '</span></span></label>' : '') +
+      '<div style="margin-top:10px;color:var(--muted);font-size:12px">Sessions are removed permanently. This cannot be undone.</div></div>' +
+      '<div class="foot"><span style="flex:1"></span><button class="btn ghost" id="dpCancel">Cancel</button><button class="btn red" id="dpGo">Delete</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#dpCancel').onclick = function () { modal.remove(); };
+    modal.querySelector('#dpGo').onclick = function () {
+      var cb = modal.querySelector('#dpFiles');
+      var del = cb ? cb.checked : false;
+      api('/api/projects', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: name, path: path, deleteFiles: del }) })
+        .then(function (d) {
+          modal.remove();
+          toast('Project deleted' + (d.removedSessions ? ' — ' + d.removedSessions + ' session(s) removed' : ''));
+          var sess = S.sessions[S.active];
+          if (sess && sess.session && (sess.session.project === name || (path && sess.session.projectPath === path))) openHome();
+          renderSidebar();
+        })
+        .catch(function (e) { toast(e.message, true); });
+    };
   }
 
   function renderTopbar() {
@@ -446,6 +514,7 @@ export const UI_HTML = String.raw`<!doctype html>
     stopStreams();
     renderSidebar();
     renderTopbar();
+    positionBrowserHost();
     var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'this project');
     $('view').innerHTML =
       '<div class="home">' +
@@ -758,7 +827,6 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
-    if (sess && sess.side === 'browser' && (text.indexOf('browse') >= 0 || text.indexOf('image') === 0)) refreshBrowser(true);
     var working = $('working');
     function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
 
@@ -1114,8 +1182,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     var body = $('sideBody');
     if (!body || !sess) return;
-    if (sess.side === 'context') { renderContext(runId); return; }
-    if (sess.side === 'browser') { renderBrowserPanel(runId); return; }
+    if (sess.side === 'context') { renderContext(runId); positionBrowserHost(); return; }
+    if (sess.side === 'browser') { showBrowserPanel(runId); return; }
+    positionBrowserHost();
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
@@ -1152,6 +1221,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (run) run.classList.toggle('collapsed-side', !!S.settings.rightCollapsed);
     var btn = $('sbCollapse');
     if (btn) btn.innerHTML = S.settings.leftCollapsed ? '&#187;' : '&#171;';
+    positionBrowserHost();
   }
 
   function applyWidths() {
@@ -1246,58 +1316,238 @@ export const UI_HTML = String.raw`<!doctype html>
     }, 0);
   }
 
-  function renderBrowserPanel(runId) {
+  function isElectron() { return /Electron\//.test(navigator.userAgent); }
+
+  function ensureBrowserHost() {
+    if ($('browserHost')) return;
+    var host = document.createElement('div');
+    host.id = 'browserHost';
+    host.className = 'bhost';
+    host.hidden = true;
+    host.innerHTML =
+      '<div class="bchrome">' +
+      '<div class="btabstrip"><div class="btab"><span class="bspin" id="bSpin" hidden></span><img id="bFav" class="bfav" alt="" hidden><span id="bTabTitle">New tab</span></div></div>' +
+      '<div class="bbar">' +
+      '<button class="bnav" id="bBack" title="back">' + icon('back') + '</button>' +
+      '<button class="bnav" id="bFwd" title="forward" style="transform:scaleX(-1)">' + icon('back') + '</button>' +
+      '<button class="bnav" id="bReload" title="reload">' + icon('retry') + '</button>' +
+      '<div class="burl"><input id="bUrl" placeholder="Search or enter address" spellcheck="false"></div>' +
+      '<button class="bnav" id="bShot" title="copy screenshot">' + icon('image') + '</button>' +
+      '</div>' +
+      '<div class="bprog" id="bProg" hidden><span></span></div>' +
+      '</div>' +
+      '<div class="bview" id="bView">' +
+      '<div class="bdrive" id="bDrive" hidden>' + icon('bolt') + ' Hermes is driving the browser</div>' +
+      '<div class="bcursor" id="bCursor" hidden>' + SVG_OPEN + '<path d="M4 2l14 12-6 1 3.5 6.5-3 1.5L9 16l-5 4z" fill="currentColor" stroke="#fff" stroke-width="1"/></svg></div>' +
+      '</div>';
+    document.body.appendChild(host);
+    var wv = document.createElement('webview');
+    wv.id = 'bWeb';
+    wv.setAttribute('allowpopups', 'false');
+    $('bView').appendChild(wv);
+
+    function pushState() {
+      var st = { url: '', title: '', canBack: false, canForward: false, loading: false };
+      try {
+        st = { url: wv.getURL() || '', title: wv.getTitle() || '', canBack: wv.canBack(), canForward: wv.canForward(), loading: wv.isLoading() };
+      } catch (e) {}
+      $('bTabTitle').textContent = st.title || 'New tab';
+      var u = $('bUrl');
+      if (document.activeElement !== u) u.value = st.url === 'about:blank' ? '' : st.url;
+      $('bSpin').hidden = !st.loading;
+      $('bProg').hidden = !st.loading;
+      api('/api/browser/state', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(st) }).catch(function () {});
+    }
+    wv.addEventListener('did-start-loading', pushState);
+    wv.addEventListener('did-stop-loading', function () { pushState(); if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(true); } });
+    wv.addEventListener('did-fail-load', function (e) { if (S.bNavWait) { var f = S.bNavWait; S.bNavWait = null; f(false, 'load failed: ' + (e.errorDescription || e.errorCode)); } pushState(); });
+    wv.addEventListener('did-navigate', pushState);
+    wv.addEventListener('did-navigate-in-page', pushState);
+    wv.addEventListener('page-title-updated', pushState);
+
+    $('bBack').onclick = function () { try { wv.goBack(); } catch (e) {} };
+    $('bFwd').onclick = function () { try { wv.goForward(); } catch (e) {} };
+    $('bReload').onclick = function () { try { wv.reload(); } catch (e) {} };
+    $('bUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') { var url = clientNormalize($('bUrl').value); if (url) { try { wv.loadURL(url); } catch (er) { toast(er.message, true); } } } });
+    $('bShot').onclick = function () {
+      wv.capturePage().then(function (img) {
+        var data = img.toDataURL();
+        return navigator.clipboard.write([new ClipboardItem({ 'image/png': dataUrlToBlob(data) })]).then(function () { toast('Screenshot copied to clipboard'); });
+      }).catch(function (e) { toast('Screenshot failed: ' + e.message, true); });
+    };
+  }
+
+  function dataUrlToBlob(dataUrl) {
+    var parts = dataUrl.split(',');
+    var bin = atob(parts[1]);
+    var arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: 'image/png' });
+  }
+
+  function clientNormalize(input) {
+    var url = String(input || '').trim();
+    if (!url) return '';
+    if (!/^https?:\/\//i.test(url)) {
+      if (/^localhost(:\d+)?/i.test(url) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?/.test(url)) url = 'http://' + url;
+      else if (url.indexOf('.') < 0 && url.indexOf(':') < 0) url = 'https://www.bing.com/search?q=' + encodeURIComponent(url);
+      else url = 'https://' + url;
+    }
+    return url;
+  }
+
+  function currentState() {
+    var wv = $('bWeb');
+    try {
+      return { available: true, url: wv.getURL() || '', title: wv.getTitle() || '', canBack: wv.canBack(), canForward: wv.canForward(), loading: wv.isLoading() };
+    } catch (e) {
+      return { available: true, url: '', title: '', canBack: false, canForward: false, loading: false };
+    }
+  }
+
+  function showDriving(on) {
+    S.driving = on;
+    var d = $('bDrive');
+    if (d) d.hidden = !on;
+    var host = $('browserHost');
+    if (host) host.classList.toggle('driving', on);
+  }
+
+  function moveCursor(x, y, click) {
+    var c = $('bCursor');
+    var view = $('bView');
+    if (!c || !view) return;
+    c.hidden = false;
+    c.style.left = x + 'px';
+    c.style.top = y + 'px';
+    if (click) {
+      var r = document.createElement('span');
+      r.className = 'bclickripple';
+      r.style.left = x + 'px';
+      r.style.top = y + 'px';
+      view.appendChild(r);
+      setTimeout(function () { r.remove(); }, 700);
+    }
+  }
+
+  function runBrowserCommand(cmd) {
+    ensureBrowserHost();
+    var host = $('browserHost');
+    var wv = $('bWeb');
+    var wasVisible = !host.hidden && !host.classList.contains('offscreen');
+    if (host.hidden) {
+      host.hidden = false;
+      host.classList.add('offscreen');
+      if (!wasVisible) toast('Hermes is using the in-app browser');
+    }
+    showDriving(true);
+    var finish = function (ok, extra) {
+      var payload = { id: cmd.id, ok: ok };
+      if (extra) for (var k in extra) payload[k] = extra[k];
+      payload.state = currentState();
+      api('/api/browser/result', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) }).catch(function () {});
+      setTimeout(function () { if (!S.drivingMore) showDriving(false); }, 400);
+      if (!wasVisible) {
+        setTimeout(function () {
+          if (!S.driving) { host.classList.remove('offscreen'); host.hidden = true; positionBrowserHost(); }
+        }, 1200);
+      }
+    };
+    var waitLoad = function (then) {
+      S.bNavWait = then;
+      setTimeout(function () { if (S.bNavWait === then) { S.bNavWait = null; then(true, 'timed out waiting for page load'); } }, 20000);
+    };
+    try {
+      switch (cmd.action) {
+        case 'navigate': {
+          var url = clientNormalize(cmd.url);
+          if (!url) { finish(false, { error: 'url is required' }); return; }
+          waitLoad(function (ok, err) { finish(ok, err ? { error: err } : undefined); });
+          wv.loadURL(url);
+          return;
+        }
+        case 'back': waitLoad(function (ok) { finish(ok); }); try { wv.goBack(); } catch (e) { finish(false, { error: e.message }); } return;
+        case 'forward': waitLoad(function (ok) { finish(ok); }); try { wv.goForward(); } catch (e) { finish(false, { error: e.message }); } return;
+        case 'reload': waitLoad(function (ok) { finish(ok); }); try { wv.reload(); } catch (e) { finish(false, { error: e.message }); } return;
+        case 'click': {
+          var x = Number(cmd.x || 0), y = Number(cmd.y || 0);
+          moveCursor(x, y, true);
+          setTimeout(function () {
+            try {
+              wv.sendInputEvent({ type: 'mouseDown', x: x, y: y, button: 'left', clickCount: 1 });
+              wv.sendInputEvent({ type: 'mouseUp', x: x, y: y, button: 'left', clickCount: 1 });
+              finish(true);
+            } catch (e) { finish(false, { error: e.message }); }
+          }, 550);
+          return;
+        }
+        case 'type': {
+          moveCursor(200, 120, false);
+          var text = String(cmd.text || '');
+          var i = 0;
+          var timer = setInterval(function () {
+            if (i >= text.length) { clearInterval(timer); finish(true); return; }
+            try { wv.sendInputEvent({ type: 'char', keyCode: text[i] }); } catch (e) { clearInterval(timer); finish(false, { error: e.message }); return; }
+            i++;
+          }, 30);
+          return;
+        }
+        case 'screenshot': {
+          wv.capturePage().then(function (img) {
+            finish(true, { pngBase64: img.toDataURL().split(',')[1] });
+          }).catch(function (e) { finish(false, { error: e.message }); });
+          return;
+        }
+        default:
+          finish(false, { error: 'unknown action ' + cmd.action });
+      }
+    } catch (e) {
+      finish(false, { error: e.message });
+    }
+  }
+
+  function startBrowserDriver() {
+    if (!isElectron() || S.bDriver) return;
+    S.bDriver = true;
+    ensureBrowserHost();
+    var es = new EventSource('/api/browser/stream');
+    es.onmessage = function (msg) {
+      var cmd;
+      try { cmd = JSON.parse(msg.data); } catch (e) { return; }
+      if (!cmd || cmd.hello) return;
+      runBrowserCommand(cmd);
+    };
+  }
+
+  function positionBrowserHost() {
+    var host = $('browserHost');
+    if (!host) return;
+    var sess = S.sessions[S.active];
+    var show = sess && sess.side === 'browser' && !S.settings.rightCollapsed && $('sideBody');
+    if (!show || host.classList.contains('offscreen')) {
+      if (!host.classList.contains('offscreen')) host.hidden = true;
+      return;
+    }
+    var r = $('sideBody').getBoundingClientRect();
+    host.style.top = r.top + 'px';
+    host.style.left = r.left + 'px';
+    host.style.width = r.width + 'px';
+    host.style.height = r.height + 'px';
+    host.hidden = false;
+  }
+
+  function showBrowserPanel(runId) {
     var body = $('sideBody');
-    body.innerHTML =
-      '<div class="bpanel">' +
-      '<div class="nav"><input id="bUrl" placeholder="localhost:3000 or https://…"><button class="btn dark" id="bGo">Go</button></div>' +
-      '<div class="nav">' +
-      '<button class="ubtn" id="bBack" title="back" style="width:28px;height:26px">' + icon('back') + '</button>' +
-      '<button class="ubtn" id="bFwd" title="forward" style="width:28px;height:26px;transform:scaleX(-1)">' + icon('back') + '</button>' +
-      '<button class="ubtn" id="bReload" title="reload" style="width:28px;height:26px">' + icon('retry') + '</button>' +
-      '<button class="btn ghost" id="bShot" style="margin-left:auto">Screenshot</button></div>' +
-      '<div class="empty" id="bStatus" style="margin:4px 0 8px"></div>' +
-      '<img class="shot" id="bImg" alt="browser screenshot"></div>';
-    $('bGo').onclick = function () { browserNav('navigate', $('bUrl').value); };
-    $('bUrl').addEventListener('keydown', function (e) { if (e.key === 'Enter') browserNav('navigate', $('bUrl').value); });
-    $('bBack').onclick = function () { browserNav('back'); };
-    $('bFwd').onclick = function () { browserNav('forward'); };
-    $('bReload').onclick = function () { browserNav('reload'); };
-    $('bShot').onclick = function () { refreshBrowser(true); };
-    refreshBrowser(true);
-  }
-
-  function browserNav(action, url) {
-    var opts = action === 'navigate'
-      ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url }) }
-      : { method: 'POST' };
-    api('/api/browser/' + action, opts)
-      .then(function () { refreshBrowser(true); })
-      .catch(function (e) { toast(e.message, true); });
-  }
-
-  function refreshBrowser(withShot) {
-    api('/api/browser').then(function (d) {
-      var st = $('bStatus');
-      if (!st) return;
-      if (!d.has) {
-        st.textContent = 'The in-app browser runs inside the desktop app. Start it with: npm run app';
-        return;
-      }
-      var s = d.state;
-      var urlIn = $('bUrl');
-      if (urlIn && document.activeElement !== urlIn && s.url) urlIn.value = s.url;
-      st.textContent = (s.title || '(blank page)') + (s.loading ? ' · loading…' : '');
-      if (withShot) {
-        api('/api/browser/screenshot').then(function (shot) {
-          var img = $('bImg');
-          if (img) { img.src = 'data:image/png;base64,' + shot.pngBase64; img.style.display = 'block'; }
-        }).catch(function () {});
-      }
-    }).catch(function (e) {
-      var st2 = $('bStatus');
-      if (st2) st2.textContent = e.message;
-    });
+    if (!isElectron()) {
+      body.innerHTML = '<div class="empty" style="padding:20px 6px">The in-app browser runs inside the desktop app (real Chromium you can also use).<br><br>Start it with: <b>npm run app</b></div>';
+      var host = $('browserHost');
+      if (host && !host.classList.contains('offscreen')) host.hidden = true;
+      return;
+    }
+    ensureBrowserHost();
+    startBrowserDriver();
+    body.innerHTML = '';
+    positionBrowserHost();
   }
 
   function reportText(r) {
@@ -1365,9 +1615,11 @@ export const UI_HTML = String.raw`<!doctype html>
   function openSettings(section) {
     S.setSection = section || 'general';
     $('settings').hidden = false;
+    var h = $('browserHost');
+    if (h && !h.classList.contains('offscreen')) h.hidden = true;
     renderSettings();
   }
-  function closeSettings() { $('settings').hidden = true; }
+  function closeSettings() { $('settings').hidden = true; positionBrowserHost(); }
 
   function refreshModels() {
     api('/api/models')
@@ -1541,20 +1793,77 @@ export const UI_HTML = String.raw`<!doctype html>
       };
     } else if (S.setSection === 'skills') {
       api('/api/skills').then(function (d) {
-        b.innerHTML = '<h1>Skills</h1><p style="color:var(--muted);font-size:12.5px">Reusable knowledge. The agent can learn new skills with create_skill; you can add your own here.</p>' +
-          '<div class="setcard"><div class="setlist">' +
-          (d.skills.length ? d.skills.map(function (sk) {
-            return '<div class="row"><span class="grow"><b>' + esc(sk.name) + '</b> — ' + esc(sk.description) + ' <span class="meta">(' + esc(sk.createdBy) + ')</span></span><button class="x" data-x="' + esc(sk.name) + '' + icon('x') + '</button></div>';
-          }).join('') : '<div class="meta">no skills yet</div>') +
-          '<div style="height:8px"></div><input id="skName" placeholder="skill name (e.g. deploy-checklist)"><input id="skDesc" placeholder="short description"><textarea id="skInstr" rows="3" placeholder="step-by-step instructions"></textarea>' +
-          '<div class="row"><button class="btn dark" id="skAdd">Add skill</button></div></div></div>';
-        b.querySelectorAll('[data-x]').forEach(function (el) {
-          el.onclick = function () { api('/api/skills/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }); };
-        });
-        $('skAdd').onclick = function () {
-          api('/api/skills', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('skName').value, description: $('skDesc').value, instructions: $('skInstr').value }) })
-            .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
+        var all = d.skills || [];
+        var q = (S.skillQuery || '').toLowerCase();
+        var skills = all.filter(function (sk) { return !q || sk.name.indexOf(q) >= 0 || (sk.description || '').toLowerCase().indexOf(q) >= 0; });
+        b.innerHTML = '<h1>Skills</h1>' +
+          '<p style="color:var(--muted);font-size:12.5px">Reusable step-by-step knowledge. The agent applies them with use_skill and learns new ones with create_skill.</p>' +
+          '<div style="display:flex;gap:8px;margin:12px 0"><input type="text" id="skSearch" placeholder="Search skills…" value="' + esc(S.skillQuery || '') + '" style="flex:1;border:1px solid var(--border);border-radius:8px;background:#fff;padding:7px 10px">' +
+          '<button class="btn dark" id="skNew">+ New skill</button></div>' +
+          '<div class="setcard" id="skFormCard" hidden style="margin-bottom:12px"><div class="setlist">' +
+          '<input id="skName" placeholder="skill name (e.g. deploy-checklist)">' +
+          '<input id="skDesc" placeholder="short description (shown to the agent)">' +
+          '<textarea id="skInstr" rows="6" placeholder="step-by-step instructions"></textarea>' +
+          '<div class="row"><button class="btn dark" id="skSave">Save skill</button><button class="btn ghost" id="skCancel">Cancel</button><span class="meta" id="skEditMeta"></span></div></div></div>' +
+          '<div class="setcard">' +
+          (skills.length ? skills.map(function (sk) {
+            return '<div class="skcard">' +
+              '<div class="skhead"><b>' + esc(sk.name) + '</b>' +
+              '<span class="chip ' + (sk.createdBy === 'agent' ? 'info' : '') + '">' + esc(sk.createdBy || 'agent') + '</span>' +
+              '<span class="meta">' + esc((sk.createdAt || '').slice(0, 10)) + '</span>' +
+              '<span style="flex:1"></span>' +
+              '<button class="ubtn" data-skview="' + esc(sk.name) + '" title="view instructions">' + icon('layers') + '</button>' +
+              '<button class="ubtn" data-skedit="' + esc(sk.name) + '" title="edit">' + icon('pencil') + '</button>' +
+              '<button class="ubtn" data-skcopy="' + esc(sk.name) + '" title="copy instructions">' + icon('copy') + '</button>' +
+              '<button class="ubtn" data-skdel="' + esc(sk.name) + '" title="delete">' + icon('x') + '</button></div>' +
+              '<div class="skdesc">' + esc(sk.description || '(no description)') + '</div>' +
+              '<pre class="skinstr" data-pre="' + esc(sk.name) + '" hidden>' + esc(sk.instructions || '') + '</pre>' +
+              '</div>';
+          }).join('') : '<div class="setlist"><div class="meta">no skills' + (q ? ' match "' + esc(q) + '"' : ' yet — the agent creates skills when it learns repeatable patterns') + '</div></div>') +
+          '</div>';
+        $('skSearch').oninput = function () {
+          S.skillQuery = $('skSearch').value;
+          renderSettings();
+          setTimeout(function () { var el = $('skSearch'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0);
         };
+        var form = $('skFormCard');
+        function openForm(skill) {
+          form.hidden = false;
+          $('skName').value = skill ? skill.name : '';
+          $('skName').disabled = Boolean(skill);
+          $('skDesc').value = skill ? skill.description : '';
+          $('skInstr').value = skill ? skill.instructions : '';
+          $('skEditMeta').textContent = skill ? 'editing ' + skill.name : '';
+          S.skEditing = skill ? skill.name : null;
+        }
+        $('skNew').onclick = function () { openForm(null); };
+        $('skCancel').onclick = function () { form.hidden = true; S.skEditing = null; };
+        $('skSave').onclick = function () {
+          var payload = { name: $('skName').value, description: $('skDesc').value, instructions: $('skInstr').value };
+          var url = S.skEditing ? '/api/skills/' + encodeURIComponent(S.skEditing) : '/api/skills';
+          api(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+            .then(function () { S.skEditing = null; toast('Skill saved'); renderSettings(); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        b.querySelectorAll('[data-skview]').forEach(function (el) {
+          el.onclick = function () { var pre = b.querySelector('[data-pre="' + el.getAttribute('data-skview') + '"]'); if (pre) pre.hidden = !pre.hidden; };
+        });
+        b.querySelectorAll('[data-skedit]').forEach(function (el) {
+          el.onclick = function () { openForm(all.filter(function (x) { return x.name === el.getAttribute('data-skedit'); })[0]); };
+        });
+        b.querySelectorAll('[data-skcopy]').forEach(function (el) {
+          el.onclick = function () {
+            var sk = all.filter(function (x) { return x.name === el.getAttribute('data-skcopy'); })[0];
+            if (sk) navigator.clipboard.writeText(sk.instructions).then(function () { toast('Instructions copied'); }, function () { toast('Copy failed', true); });
+          };
+        });
+        b.querySelectorAll('[data-skdel]').forEach(function (el) {
+          el.onclick = function () {
+            var name = el.getAttribute('data-skdel');
+            if (!confirm('Delete skill "' + name + '"?')) return;
+            api('/api/skills/' + encodeURIComponent(name), { method: 'DELETE' }).then(function () { toast('Skill deleted'); renderSettings(); }).catch(function (e) { toast(e.message, true); });
+          };
+        });
       });
     } else if (S.setSection === 'mcp') {
       api('/api/mcp').then(function (d) {
@@ -1673,6 +1982,8 @@ export const UI_HTML = String.raw`<!doctype html>
     renderSidebar();
     renderTopbar();
     applyLayout();
+    startBrowserDriver();
+    window.addEventListener('resize', positionBrowserHost);
     openHome();
   }
   boot();

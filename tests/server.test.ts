@@ -243,11 +243,14 @@ describe('HermesServer', () => {
     const dir = makeProject('browserapi');
     const state = { available: true, url: 'http://localhost:1/', title: 'T', canBack: false, canForward: false, loading: false };
     const bridge = {
+      available: () => true,
       state: () => state,
       navigate: async (url: string) => ({ ...state, url }),
       back: async () => state,
       forward: async () => state,
       reload: async () => state,
+      click: async () => state,
+      type: async () => state,
       screenshot: async () => ({ pngBase64: Buffer.from('png').toString('base64'), state }),
     };
     const server = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: bridge });

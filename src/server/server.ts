@@ -145,6 +145,7 @@ export class HermesServer {
         canBack: Boolean(st.canBack),
         canForward: Boolean(st.canForward),
         loading: Boolean(st.loading),
+        driving: Boolean(st.driving),
       };
     };
     return {
@@ -592,7 +593,7 @@ export class HermesServer {
       return;
     }
 
-    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot|click|type|focus)$/);
+    const browserMatch = path.match(/^\/api\/browser\/(navigate|back|forward|reload|screenshot|click|type|focus|hover|scroll|fill|select|press|wait)$/);
     if (browserMatch) {
       const b = this.browserImpl();
       if (!b.available()) {
@@ -600,7 +601,8 @@ export class HermesServer {
         return;
       }
       try {
-        const body = browserMatch[1] === 'navigate' || browserMatch[1] === 'click' || browserMatch[1] === 'type' ? await this.readBody(req) : {};
+        const needsBody = ['navigate', 'click', 'type', 'hover', 'scroll', 'fill', 'select', 'press', 'wait'].includes(browserMatch[1] ?? '');
+        const body = needsBody ? await this.readBody(req) : {};
         if (browserMatch[1] === 'screenshot') {
           this.sendJson(res, 200, await b.screenshot());
         } else if (browserMatch[1] === 'navigate') {
@@ -610,7 +612,23 @@ export class HermesServer {
         } else if (browserMatch[1] === 'forward') {
           this.sendJson(res, 200, await b.forward());
         } else if (browserMatch[1] === 'click') {
-          this.sendJson(res, 200, await b.click(Number(body['x'] ?? 0), Number(body['y'] ?? 0)));
+          if (typeof body['selector'] === 'string' && body['selector'] && b.clickSelector) {
+            this.sendJson(res, 200, await b.clickSelector(String(body['selector'])));
+          } else {
+            this.sendJson(res, 200, await b.click(Number(body['x'] ?? 0), Number(body['y'] ?? 0)));
+          }
+        } else if (browserMatch[1] === 'hover' && b.hover) {
+          this.sendJson(res, 200, await b.hover(Number(body['x'] ?? 0), Number(body['y'] ?? 0)));
+        } else if (browserMatch[1] === 'scroll' && b.scroll) {
+          this.sendJson(res, 200, await b.scroll(Number(body['x'] ?? 640), Number(body['y'] ?? 450), Number(body['deltaY'] ?? 300)));
+        } else if (browserMatch[1] === 'fill' && b.fill) {
+          this.sendJson(res, 200, await b.fill(String(body['selector'] ?? ''), String(body['text'] ?? '')));
+        } else if (browserMatch[1] === 'select' && b.select) {
+          this.sendJson(res, 200, await b.select(String(body['selector'] ?? ''), String(body['value'] ?? '')));
+        } else if (browserMatch[1] === 'press' && b.press) {
+          this.sendJson(res, 200, await b.press(String(body['key'] ?? 'Enter')));
+        } else if (browserMatch[1] === 'wait' && b.wait) {
+          this.sendJson(res, 200, await b.wait(Number(body['ms'] ?? 1000)));
         } else if (browserMatch[1] === 'type') {
           this.sendJson(res, 200, await b.type(String(body['text'] ?? '')));
         } else if (browserMatch[1] === 'focus') {

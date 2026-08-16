@@ -75,7 +75,14 @@ Tools:
 - search_files {"pattern":"regex","path":"src"}
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
 - web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
-- browse       {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"} | {"action":"click","x":120,"y":340} | {"action":"type","text":"hello"}  (in-app Chromium browser; screenshots are delivered as images when the model supports vision)
+- browse       full human-like browser control:
+                 {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"}
+                 {"action":"click","selector":"#submit"} (preferred) or {"action":"click","x":120,"y":340}
+                 {"action":"hover","x":10,"y":20} | {"action":"scroll","x":640,"y":450,"deltaY":400} (positive = down)
+                 {"action":"fill","selector":"input[name=email]","text":"value"} (forms; works with React/Vue inputs)
+                 {"action":"select","selector":"#country","value":"France"} | {"action":"press","key":"Enter|Tab|Escape|Backspace|Down…"}
+                 {"action":"type","text":"..."} (types into the focused element) | {"action":"wait","ms":1000}
+                 Interact like a human: screenshot → act → screenshot to confirm the effect. Prefer selector-based click/fill over raw coordinates.
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
 - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}

@@ -106,8 +106,14 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
     case 'browse': {
       const a = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
       if (a === 'navigate') return `browse ${params['url']}`;
-      if (a === 'click') return `browse click (${params['x']}, ${params['y']})`;
+      if (a === 'click') return params['selector'] ? `browse click ${params['selector']}` : `browse click (${params['x']}, ${params['y']})`;
       if (a === 'type') return `browse type "${String(params['text'] ?? '').slice(0, 60)}"`;
+      if (a === 'fill') return `browse fill ${params['selector']} = "${String(params['text'] ?? '').slice(0, 40)}"`;
+      if (a === 'select') return `browse select ${params['selector']} → ${params['value']}`;
+      if (a === 'scroll') return `browse scroll ${params['deltaY'] ?? 300}px`;
+      if (a === 'press') return `browse press ${params['key']}`;
+      if (a === 'hover') return `browse hover (${params['x']}, ${params['y']})`;
+      if (a === 'wait') return `browse wait ${params['ms'] ?? 1000}ms`;
       return `browse ${a}`;
     }
     default:

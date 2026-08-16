@@ -119,6 +119,50 @@ async function withDriving(win, fn) {
   }
 }
 
+const KEY_MAP = {
+  enter: 'Return',
+  return: 'Return',
+  tab: 'Tab',
+  escape: 'Escape',
+  esc: 'Escape',
+  backspace: 'Backspace',
+  delete: 'Delete',
+  space: 'Space',
+  up: 'Up',
+  down: 'Down',
+  left: 'Left',
+  right: 'Right',
+  home: 'Home',
+  end: 'End',
+  pageup: 'PageUp',
+  pagedown: 'PageDown',
+};
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function rectOfSelector(win, selector) {
+  return win.webContents.executeJavaScript(
+    `(function(sel){
+      var el = document.querySelector(sel);
+      if (!el) return null;
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      var r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })(${JSON.stringify(String(selector))})`,
+  );
+}
+
+function realClick(win, x, y) {
+  const wc = win.webContents;
+  const px = Math.round(x);
+  const py = Math.round(y);
+  wc.sendInputEvent({ type: 'mouseMove', x: px, y: py });
+  wc.sendInputEvent({ type: 'mouseDown', x: px, y: py, button: 'left', clickCount: 1 });
+  wc.sendInputEvent({ type: 'mouseUp', x: px, y: py, button: 'left', clickCount: 1 });
+}
+
 function makeBrowserBridge(normalizeUrl) {
   return {
     available: () => true,
@@ -154,9 +198,41 @@ function makeBrowserBridge(normalizeUrl) {
       const win = ensureBrowserWin();
       await withDriving(win, async () => {
         await injectCursor(win, x, y);
-        await new Promise((r) => setTimeout(r, 500));
-        win.webContents.sendInputEvent({ type: 'mouseDown', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
-        win.webContents.sendInputEvent({ type: 'mouseUp', x: Math.round(x), y: Math.round(y), button: 'left', clickCount: 1 });
+        await sleep(500);
+        realClick(win, x, y);
+      });
+      return stateOf(win);
+    },
+    async clickSelector(selector) {
+      const win = ensureBrowserWin();
+      await withDriving(win, async () => {
+        const pos = await rectOfSelector(win, selector);
+        if (!pos) throw new Error(`selector not found on page: ${selector}`);
+        await injectCursor(win, pos.x, pos.y);
+        await sleep(500);
+        realClick(win, pos.x, pos.y);
+      });
+      return stateOf(win);
+    },
+    async hover(x, y) {
+      const win = ensureBrowserWin();
+      await withDriving(win, async () => {
+        await injectCursor(win, x, y);
+        await sleep(300);
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(x), y: Math.round(y) });
+      });
+      return stateOf(win);
+    },
+    async scroll(x, y, deltaY) {
+      const win = ensureBrowserWin();
+      await withDriving(win, async () => {
+        await injectCursor(win, x, y);
+        const steps = Math.max(1, Math.min(10, Math.ceil(Math.abs(deltaY) / 120)));
+        const per = Math.round(deltaY / steps);
+        for (let i = 0; i < steps; i++) {
+          win.webContents.sendInputEvent({ type: 'mouseWheel', x: Math.round(x), y: Math.round(y), deltaX: 0, deltaY: per });
+          await sleep(60);
+        }
       });
       return stateOf(win);
     },
@@ -165,9 +241,68 @@ function makeBrowserBridge(normalizeUrl) {
       await withDriving(win, async () => {
         for (const ch of String(text)) {
           win.webContents.sendInputEvent({ type: 'char', keyCode: ch });
-          await new Promise((r) => setTimeout(r, 25));
+          await sleep(25);
         }
       });
+      return stateOf(win);
+    },
+    async fill(selector, text) {
+      const win = ensureBrowserWin();
+      await withDriving(win, async () => {
+        const pos = await rectOfSelector(win, selector);
+        if (!pos) throw new Error(`selector not found on page: ${selector}`);
+        await injectCursor(win, pos.x, pos.y);
+        const result = await win.webContents.executeJavaScript(
+          `(function(sel, text){
+            var el = document.querySelector(sel);
+            if (!el) return { ok: false };
+            el.focus();
+            var proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : (el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype);
+            var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+            if (desc && desc.set) desc.set.call(el, text); else el.value = text;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { ok: true };
+          })(${JSON.stringify(String(selector))}, ${JSON.stringify(String(text))})`,
+        );
+        if (!result || !result.ok) throw new Error(`could not fill ${selector}`);
+      });
+      return stateOf(win);
+    },
+    async select(selector, value) {
+      const win = ensureBrowserWin();
+      await withDriving(win, async () => {
+        const result = await win.webContents.executeJavaScript(
+          `(function(sel, val){
+            var el = document.querySelector(sel);
+            if (!el || el.tagName !== 'SELECT') return { ok: false };
+            var opt = null;
+            for (var i = 0; i < el.options.length; i++) {
+              var o = el.options[i];
+              if (o.value === val || (o.text || '').toLowerCase() === String(val).toLowerCase()) { opt = o; break; }
+            }
+            if (!opt) return { ok: false };
+            el.value = opt.value;
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return { ok: true, chosen: opt.value };
+          })(${JSON.stringify(String(selector))}, ${JSON.stringify(String(value))})`,
+        );
+        if (!result || !result.ok) throw new Error(`could not select "${value}" in ${selector}`);
+      });
+      return stateOf(win);
+    },
+    async press(key) {
+      const win = ensureBrowserWin();
+      await withDriving(win, async () => {
+        const mapped = KEY_MAP[String(key).toLowerCase()] ?? String(key);
+        win.webContents.sendInputEvent({ type: 'rawKeyDown', keyCode: mapped });
+        win.webContents.sendInputEvent({ type: 'keyUp', keyCode: mapped });
+      });
+      return stateOf(win);
+    },
+    async wait(ms) {
+      const win = ensureBrowserWin();
+      await sleep(Math.max(0, Math.min(10000, Number(ms) || 0)));
       return stateOf(win);
     },
     async screenshot() {

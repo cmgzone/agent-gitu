@@ -330,11 +330,49 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
         return { ok: true, output: `reloaded ${st.url} — "${st.title}"` };
       }
       case 'click': {
+        const selector = typeof params['selector'] === 'string' && params['selector'] ? String(params['selector']) : undefined;
+        if (selector) {
+          if (!ctx.browser.clickSelector) return fail('browse click by selector is not supported by this browser');
+          const st = await ctx.browser.clickSelector(selector);
+          return { ok: true, output: `clicked element "${selector}" on ${st.url}` };
+        }
         const x = Number(params['x'] ?? 0);
         const y = Number(params['y'] ?? 0);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return fail('browse click: x and y must be numbers');
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return fail('browse click: x and y must be numbers (or use "selector")');
         const st = await ctx.browser.click(x, y);
         return { ok: true, output: `clicked (${x}, ${y}) on ${st.url}` };
+      }
+      case 'hover': {
+        if (!ctx.browser.hover) return fail('browse hover is not supported by this browser');
+        const st = await ctx.browser.hover(Number(params['x'] ?? 0), Number(params['y'] ?? 0));
+        return { ok: true, output: `hovered (${params['x']}, ${params['y']}) on ${st.url}` };
+      }
+      case 'scroll': {
+        if (!ctx.browser.scroll) return fail('browse scroll is not supported by this browser');
+        const st = await ctx.browser.scroll(Number(params['x'] ?? 640), Number(params['y'] ?? 450), Number(params['deltaY'] ?? 300));
+        return { ok: true, output: `scrolled ${Number(params['deltaY'] ?? 300)}px on ${st.url}` };
+      }
+      case 'fill': {
+        if (!ctx.browser.fill) return fail('browse fill is not supported by this browser');
+        const sel = String(params['selector'] ?? '');
+        if (!sel) return fail('browse fill: "selector" is required');
+        const st = await ctx.browser.fill(sel, String(params['text'] ?? ''));
+        return { ok: true, output: `filled "${sel}" with ${String(params['text'] ?? '').length} character(s) on ${st.url}` };
+      }
+      case 'select': {
+        if (!ctx.browser.select) return fail('browse select is not supported by this browser');
+        const st = await ctx.browser.select(String(params['selector'] ?? ''), String(params['value'] ?? ''));
+        return { ok: true, output: `selected "${params['value']}" in "${params['selector']}" on ${st.url}` };
+      }
+      case 'press': {
+        if (!ctx.browser.press) return fail('browse press is not supported by this browser');
+        const st = await ctx.browser.press(String(params['key'] ?? 'Enter'));
+        return { ok: true, output: `pressed key "${params['key'] ?? 'Enter'}" on ${st.url}` };
+      }
+      case 'wait': {
+        if (!ctx.browser.wait) return fail('browse wait is not supported by this browser');
+        const st = await ctx.browser.wait(Number(params['ms'] ?? 1000));
+        return { ok: true, output: `waited ${Math.min(10000, Number(params['ms'] ?? 1000))}ms on ${st.url}` };
       }
       case 'type': {
         const text = String(params['text'] ?? '');
@@ -352,7 +390,7 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
         };
       }
       default:
-        return fail(`browse: unknown action "${action}" (navigate|screenshot|back|forward|reload|click|type)`);
+        return fail(`browse: unknown action "${action}" (navigate|screenshot|back|forward|reload|click|hover|scroll|type|fill|select|press|wait)`);
     }
   } catch (err) {
     return fail(`browse failed: ${(err as Error).message}`);

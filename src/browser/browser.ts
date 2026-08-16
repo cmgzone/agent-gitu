@@ -24,6 +24,13 @@ export interface BrowserBridge {
   type(text: string): Promise<BrowserState>;
   screenshot(): Promise<BrowserScreenshot>;
   focus?(): Promise<BrowserState>;
+  clickSelector?(selector: string): Promise<BrowserState>;
+  hover?(x: number, y: number): Promise<BrowserState>;
+  scroll?(x: number, y: number, deltaY: number): Promise<BrowserState>;
+  fill?(selector: string, text: string): Promise<BrowserState>;
+  select?(selector: string, value: string): Promise<BrowserState>;
+  press?(key: string): Promise<BrowserState>;
+  wait?(ms: number): Promise<BrowserState>;
 }
 
 export function normalizeUrl(input: string): string {

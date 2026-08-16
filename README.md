@@ -60,6 +60,9 @@ npm run build
 # Web UI — agent state viewer (live task state, evidence, approval gates)
 node dist/cli.js ui --port 8321        # then open http://localhost:8321
 
+# Desktop app — Electron shell around the same Web UI, with the in-app browser
+npm run app                            # builds, then launches the desktop window
+
 # inside any project (package.json / pyproject.toml / cargo.toml / go.mod …)
 node dist/cli.js init
 node dist/cli.js run "Fix the streaming renderer" \
@@ -125,7 +128,9 @@ src/
   memory/     MemoryStore — typed, scoped memory (.hermes/memory.json)
   report/     Reporter — completion reports
   llm/        LlmClient interface, OpenAI-compatible client, scripted mock
-  tools/      read/write/edit/list/search/shell implementations
+  browser/    BrowserBridge interface + url normalization for the in-app browser
+  tools/      read/write/edit/list/search/shell/browse implementations
+desktop/      Electron main — desktop shell + offscreen agent browser
 tests/        unit + end-to-end (mock LLM) suites
 ```
 
@@ -137,7 +142,7 @@ tests/        unit + end-to-end (mock LLM) suites
 - [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs
 - [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs
 - [x] Phase 5 — UI: agent-state viewer WebUI (SSE live feed, criteria/plan/evidence panels, approval gates)
-- [ ] Electron desktop shell
+- [x] Electron desktop shell (offline, in-app browser for visual verification)
 - [ ] Deeper context: import graphs, semantic search, edit history signals
 
 ## Web UI
@@ -152,6 +157,17 @@ renders the agent's **state**, not a chat transcript:
 - files changed, blockers, completion report
 - live activity feed via Server-Sent Events
 - **approval gates**: dangerous actions pause the run until approved/denied in the UI
+- collapsible left/right sidebars (tab handles, persisted per browser)
+- **Browser panel**: the desktop app embeds a real browser; the agent drives it
+  with the `browse` tool (navigate / screenshot / back / forward / reload) and
+  screenshots are delivered to the model as images when it supports vision
+- **image attachments**: the composer accepts up to 4 images; they are sent to
+  vision-capable models only (the model picker marks them, attach is disabled
+  for text-only models)
+
+The desktop shell (`npm run app`) is fully offline-capable: the server and UI
+run locally inside Electron; only LLM calls need network. If port 8321 is
+taken it binds a free port automatically.
 
 API: `GET /api/project|models|tasks|runs`, `POST /api/runs`,
 `GET /api/runs/:id/stream` (SSE), `POST /api/approvals/:id`.

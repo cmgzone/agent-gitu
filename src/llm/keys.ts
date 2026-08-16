@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { readJson, writeJson } from '../util.js';
@@ -17,8 +18,41 @@ export function storedKeyVars(): string[] {
   return Object.keys(loadStoredKeys());
 }
 
+let registryEnvCache: Record<string, string> | undefined;
+
+export function registryEnv(): Record<string, string> {
+  if (registryEnvCache) return registryEnvCache;
+  const out: Record<string, string> = {};
+  if (process.platform === 'win32') {
+    const hives = [
+      'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
+      'HKEY_CURRENT_USER\\Environment',
+    ];
+    for (const hive of hives) {
+      let raw = '';
+      try {
+        raw = execFileSync('reg', ['query', hive], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+      } catch {
+        continue;
+      }
+      for (const line of raw.split(/\r?\n/)) {
+        const m = line.match(/^\s+(\S+)\s+REG_(SZ|EXPAND_SZ)\s+(.*)$/i);
+        if (!m) continue;
+        const name = m[1]!;
+        let value = (m[3] ?? '').trim();
+        if (/^expand_sz$/i.test(m[2]!)) {
+          value = value.replace(/%([^%]+)%/g, (all, v: string) => process.env[v] ?? out[v] ?? '');
+        }
+        out[name] = value;
+      }
+    }
+  }
+  registryEnvCache = out;
+  return out;
+}
+
 export function mergedEnv(): NodeJS.ProcessEnv {
-  return { ...loadStoredKeys(), ...process.env } as NodeJS.ProcessEnv;
+  return { ...registryEnv(), ...loadStoredKeys(), ...process.env } as NodeJS.ProcessEnv;
 }
 
 export function setStoredKey(envVar: string, key: string): void {

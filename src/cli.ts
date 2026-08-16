@@ -5,6 +5,7 @@ import { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
 import { TaskLedger } from './ledger/task-ledger.js';
 import { LlmError } from './llm/llm.js';
 import { PROVIDERS, ProviderError, fetchLiveModels, providerKey, resolveLlm, type ProviderSpec } from './llm/providers.js';
+import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
 import { HermesServer } from './server/server.js';
@@ -205,15 +206,16 @@ async function main(): Promise<void> {
     }
 
     case 'providers': {
+      const env = mergedEnv();
       for (const spec of Object.values(PROVIDERS)) {
-        const keyEnvVar = spec.keyEnvVars.find((v) => process.env[v]);
+        const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
         const status = keyEnvVar ? `ready (${keyEnvVar})` : 'no key';
         console.log(`${spec.id.padEnd(9)} ${status.padEnd(28)} ${spec.label}`);
         console.log(`          base: ${spec.baseUrl}`);
         console.log(`          keys: ${spec.keyEnvVars.join(' | ')}`);
         console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`hermes models --provider ${spec.id}\``);
       }
-      const generic = process.env['HERMES_API_KEY'] ?? process.env['OPENAI_API_KEY'];
+      const generic = env['HERMES_API_KEY'] ?? env['OPENAI_API_KEY'];
       console.log(`${'custom'.padEnd(9)} ${generic ? 'ready (HERMES_API_KEY/OPENAI_API_KEY)' : 'no key'}`);
       return;
     }

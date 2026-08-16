@@ -4,10 +4,12 @@ import { LoopDetector } from '../loop/loop-detector.js';
 import type { McpManager } from '../mcp/client.js';
 import type { PolicyEngine } from '../policy/policy.js';
 import type { SkillStore } from '../skills/skills.js';
+import type { BrowserBridge } from '../browser/browser.js';
 import type { ActionRecord, ToolResult } from '../types.js';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
 import {
   toolApplyEdit,
+  toolBrowse,
   toolCreateSkill,
   toolListFiles,
   toolListSkills,
@@ -44,6 +46,7 @@ export class Executor {
     private readonly onEvent?: (event: string) => void,
     private readonly skills?: SkillStore,
     private readonly mcp?: McpManager,
+    private readonly browser?: BrowserBridge,
   ) {}
 
   private emit(event: string): void {
@@ -127,7 +130,7 @@ export class Executor {
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
-    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot, skills: this.skills, mcp: this.mcp };
+    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot, skills: this.skills, mcp: this.mcp, browser: this.browser };
     let result: ToolResult;
     try {
       switch (req.tool) {
@@ -148,6 +151,9 @@ export class Executor {
           break;
         case 'web_fetch':
           result = await toolWebFetch(ctx, req.params);
+          break;
+        case 'browse':
+          result = await toolBrowse(ctx, req.params);
           break;
         case 'list_skills':
           result = toolListSkills(ctx);

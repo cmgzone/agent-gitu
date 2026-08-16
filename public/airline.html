@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SkyVoyage Airlines - Fly Beyond Limits</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      color: #1a1a2e;
+      line-height: 1.6;
+    }
+
+    /* Hero Section */
+    .hero {
+      background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+      color: #ffffff;
+      text-align: center;
+      padding: 120px 20px 100px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 50px 50px;
+    }
+
+    .hero h1 {
+      font-size: 3.5rem;
+      margin-bottom: 10px;
+      letter-spacing: 2px;
+    }
+
+    .hero .tagline {
+      font-size: 1.4rem;
+      color: #a8d8ea;
+      margin-bottom: 30px;
+    }
+
+    .hero .cta-btn {
+      display: inline-block;
+      padding: 16px 40px;
+      background: linear-gradient(90deg, #f7971e, #ffd200);
+      color: #1a1a2e;
+      text-decoration: none;
+      border-radius: 50px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .hero .cta-btn:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 30px rgba(247, 151, 30, 0.4);
+    }
+
+    /* Section Styles */
+    section {
+      padding: 80px 20px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    section h2 {
+      text-align: center;
+      font-size: 2.4rem;
+      margin-bottom: 50px;
+      color: #1a1a2e;
+    }
+
+    /* Destinations Section */
+    .destinations {
+      background: #f8f9fa;
+    }
+
+    .destinations-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 30px;
+    }
+
+    .dest-card {
+      background: #ffffff;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      transition: transform 0.3s;
+    }
+
+    .dest-card:hover {
+      transform: translateY(-8px);
+    }
+
+    .dest-card .dest-img {
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+    }
+
+    .dest-card:nth-child(1) .dest-img { background: linear-gradient(135deg, #667eea, #764ba2); }
+    .dest-card:nth-child(2) .dest-img { background: linear-gradient(135deg, #f093fb, #f5576c); }
+    .dest-card:nth-child(3) .dest-img { background: linear-gradient(135deg, #4facfe, #00f2fe); }
+    .dest-card:nth-child(4) .dest-img { background: linear-gradient(135deg, #43e97b, #38f9d7); }
+
+    .dest-card .dest-info {
+      padding: 24px;
+    }
+
+    .dest-card .dest-info h3 {
+      font-size: 1.3rem;
+      margin-bottom: 8px;
+    }
+
+    .dest-card .dest-info p {
+      color: #666;
+      font-size: 0.95rem;
+    }
+
+    .dest-card .dest-info .price {
+      margin-top: 12px;
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: #302b63;
+    }
+
+    /* Services Section */
+    .services-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 30px;
+    }
+
+    .service-card {
+      text-align: center;
+      padding: 40px 24px;
+      border-radius: 16px;
+      background: #ffffff;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+      transition: transform 0.3s;
+    }
+
+    .service-card:hover {
+      transform: translateY(-5px);
+    }
+
+    .service-card .icon {
+      font-size: 2.8rem;
+      margin-bottom: 16px;
+    }
+
+    .service-card h3 {
+      font-size: 1.2rem;
+      margin-bottom: 10px;
+    }
+
+    .service-card p {
+      color: #666;
+      font-size: 0.95rem;
+    }
+
+    /* Booking CTA Section */
+    .booking-cta {
+      background: linear-gradient(135deg, #302b63, #24243e);
+      color: #ffffff;
+      text-align: center;
+      padding: 80px 20px;
+      border-radius: 24px;
+      margin: 0 20px 80px;
+      max-width: 1200px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .booking-cta h2 {
+      color: #ffffff;
+      margin-bottom: 20px;
+    }
+
+    .booking-cta p {
+      font-size: 1.1rem;
+      color: #a8d8ea;
+      margin-bottom: 30px;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .booking-cta .book-btn {
+      display: inline-block;
+      padding: 16px 48px;
+      background: linear-gradient(90deg, #f7971e, #ffd200);
+      color: #1a1a2e;
+      text-decoration: none;
+      border-radius: 50px;
+      font-weight: 700;
+      font-size: 1.1rem;
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+
+    .booking-cta .book-btn:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 30px rgba(247, 151, 30, 0.4);
+    }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 30px 20px;
+      background: #1a1a2e;
+      color: #888;
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 768px) {
+      .hero h1 {
+        font-size: 2.2rem;
+      }
+
+      .hero .tagline {
+        font-size: 1.1rem;
+      }
+
+      section h2 {
+        font-size: 1.8rem;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Hero Section -->
+  <section class="hero">
+    <h1>&#9992;&#65039; SkyVoyage Airlines</h1>
+    <p class="tagline">Fly Beyond Limits &mdash; Connecting You to 200+ Destinations Worldwide</p>
+    <a href="#booking" class="cta-btn">Book Your Flight</a>
+  </section>
+
+  <!-- Destinations Section -->
+  <section class="destinations">
+    <h2>Popular Destinations</h2>
+    <div class="destinations-grid">
+      <div class="dest-card">
+        <div class="dest-img">&#128507;</div>
+        <div class="dest-info">
+          <h3>Paris, France</h3>
+          <p>The City of Light awaits. Direct flights daily from all major hubs.</p>
+          <div class="price">From $499</div>
+        </div>
+      </div>
+      <div class="dest-card">
+        <div class="dest-img">&#128510;</div>
+        <div class="dest-info">
+          <h3>Tokyo, Japan</h3>
+          <p>Experience the perfect blend of tradition and innovation.</p>
+          <div class="price">From $699</div>
+        </div>
+      </div>
+      <div class="dest-card">
+        <div class="dest-img">&#127965;</div>
+        <div class="dest-info">
+          <h3>New York, USA</h3>
+          <p>The city that never sleeps. Multiple daily departures.</p>
+          <div class="price">From $349</div>
+        </div>
+      </div>
+      <div class="dest-card">
+        <div class="dest-img">&#127796;</div>
+        <div class="dest-info">
+          <h3>Bali, Indonesia</h3>
+          <p>Tropical paradise with pristine beaches and rich culture.</p>
+          <div class="price">From $599</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Services Section -->
+  <section class="services">
+    <h2>World-Class Services</h2>
+    <div class="services-grid">
+      <div class="service-card">
+        <div class="icon">&#128186;</div>
+        <h3>Business Class</h3>
+        <p>Lie-flat seats, gourmet dining, and priority boarding for the ultimate comfort.</p>
+      </div>
+      <div class="service-card">
+        <div class="icon">&#128246;</div>
+        <h3>In-Flight Entertainment</h3>
+        <p>500+ movies, live TV, and high-speed Wi-Fi on every flight.</p>
+      </div>
+      <div class="service-card">
+        <div class="icon">&#127860;</div>
+        <h3>Gourmet Dining</h3>
+        <p>Award-winning cuisine crafted by world-renowned chefs.</p>
+      </div>
+      <div class="service-card">
+        <div class="icon">&#128747;</div>
+        <h3>Loyalty Rewards</h3>
+        <p>Earn miles on every flight and redeem for free travel and upgrades.</p>
+      </div>
+      <div class="service-card">
+        <div class="icon">&#128748;</div>
+        <h3>Extra Baggage</h3>
+        <p>Generous baggage allowance with easy add-on options.</p>
+      </div>
+      <div class="service-card">
+        <div class="icon">&#128274;</div>
+        <h3>Travel Insurance</h3>
+        <p>Comprehensive coverage for peace of mind on every journey.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Booking CTA Section -->
+  <section class="booking-cta" id="booking">
+    <h2>Ready to Take Off?</h2>
+    <p>Join over 10 million happy travelers. Book your next adventure with SkyVoyage Airlines and enjoy exclusive member fares.</p>
+    <a href="#" class="book-btn">Book Now &rarr;</a>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <p>&copy; 2025 SkyVoyage Airlines. All rights reserved. | Fly Beyond Limits.</p>
+  </footer>
+
+</body>
+</html>

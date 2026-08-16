@@ -34,7 +34,7 @@ const DANGEROUS_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
 ];
 
 const MODERATE_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
-  { re: /\bgit\s+(commit|checkout\s+-b|switch\s+-c|branch|add|stash|merge|rebase|tag)\b/i, why: 'git mutation' },
+  { re: /\bgit\s+(commit|push|pull|fetch|add|restore|checkout|switch|branch|stash|merge|rebase|tag)\b/i, why: 'git mutation' },
   { re: /\b(npm|pnpm|yarn)\s+(install|add|remove|i|ci)\b/i, why: 'dependency mutation' },
   { re: /\bpip(install)?\s+install\b/i, why: 'dependency mutation' },
   { re: /\bcargo\s+(add|build|run)\b/i, why: 'build/run mutation' },

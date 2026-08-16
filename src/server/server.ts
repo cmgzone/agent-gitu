@@ -8,6 +8,7 @@ import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
 import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
+import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import type { LlmClient } from '../llm/llm.js';
 import { PROVIDERS, ProviderError, fetchLiveModels, modelSupportsImages, providerKey, resolveLlm } from '../llm/providers.js';
@@ -641,6 +642,57 @@ export class HermesServer {
           this.sendJson(res, 200, await b.focus());
         } else {
           this.sendJson(res, 200, await b.reload());
+        }
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    const gitRoot = (queryPath: string | null): string => {
+      const candidates = [queryPath ?? undefined, this.config.cwd];
+      for (const c of candidates) {
+        if (!c) continue;
+        try {
+          return ProjectGuard.detect(c).lock.repoRoot;
+        } catch {
+          /* try next */
+        }
+      }
+      return this.config.cwd;
+    };
+
+    if (method === 'GET' && path === '/api/git') {
+      const root = gitRoot(url.searchParams.get('path'));
+      this.sendJson(res, 200, { root, ...(await gitInfo(root)) });
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/git/diff') {
+      const root = gitRoot(url.searchParams.get('path'));
+      const file = url.searchParams.get('file') ?? undefined;
+      try {
+        this.sendJson(res, 200, { diff: await gitDiff(root, file) });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    const gitAction = path.match(/^\/api\/git\/(init|commit|push|discard)$/);
+    if (gitAction && method === 'POST') {
+      const body = await this.readBody(req);
+      const root = gitRoot(typeof body['path'] === 'string' ? String(body['path']) : null);
+      try {
+        if (gitAction[1] === 'init') {
+          this.sendJson(res, 200, { ok: true, output: await gitInit(root) });
+        } else if (gitAction[1] === 'commit') {
+          const files = Array.isArray(body['files']) ? (body['files'] as unknown[]).map(String) : undefined;
+          this.sendJson(res, 200, { ok: true, commit: await gitCommit(root, String(body['message'] ?? ''), files) });
+        } else if (gitAction[1] === 'push') {
+          this.sendJson(res, 200, { ok: true, output: (await gitPush(root)) || 'pushed' });
+        } else {
+          this.sendJson(res, 200, { ok: true, output: await gitDiscard(root, String(body['file'] ?? '')) });
         }
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });

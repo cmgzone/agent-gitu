@@ -9,6 +9,7 @@ const VENDOR_THREE = nodePath.join(
   '../../node_modules/three/build/three.module.min.js',
 );
 import { Hermes } from '../agent/hermes.js';
+import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
@@ -16,8 +17,8 @@ import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
-import type { LlmClient } from '../llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, modelSupportsImages, providerKey, resolveLlm } from '../llm/providers.js';
+import type { LlmClient, LlmMessage } from '../llm/llm.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, providerKey, resolveLlm } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { SessionStore } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -69,6 +70,8 @@ export interface RunSessionView {
   finishedAt?: string;
   taskId?: string;
   project?: string;
+  projectPath?: string;
+  mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
   pendingApprovals: PendingApproval[];
@@ -87,6 +90,7 @@ interface RunSession {
   taskId?: string;
   project?: string;
   projectPath?: string;
+  mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
   events: { i: number; t: string; text: string }[];
@@ -111,6 +115,7 @@ export interface HermesServerConfig {
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
 
 export class HermesServer {
+  private readonly indexWatchers = new Map<string, CodeIndex>();
   private readonly config: HermesServerConfig;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
@@ -207,16 +212,7 @@ export class HermesServer {
     return undefined;
   }
 
-  private loadRegistry(): {
-    runId: string;
-    taskId?: string;
-    goal: string;
-    project?: string;
-    projectPath?: string;
-    startedAt: string;
-    status: string;
-    events?: { i: number; t: string; text: string }[];
-  }[] {
+  private loadRegistry() {
     return this.db()
       .listSessions()
       .map((s) => ({ ...s, events: this.db().eventsFor(s.runId) }));
@@ -232,6 +228,12 @@ export class HermesServer {
         projectPath: s.projectPath,
         startedAt: s.startedAt,
         status: s.status,
+        finishedAt: s.finishedAt,
+        mode: s.mode,
+        provider: s.provider,
+        model: s.model,
+        report: s.report,
+        error: s.error,
       });
     }
   }
@@ -265,34 +267,77 @@ export class HermesServer {
       this.cronStore = CronStore.forProject(root);
       this.scheduler = new CronScheduler(this.cronStore, (job) => this.startCronRun(root, job));
       this.scheduler.start();
+      try {
+        const lock = ProjectGuard.detect(root).lock;
+        this.sharedIndex(lock.repoRoot, lock.ignorePaths);
+      } catch {
+        /* not a project yet */
+      }
     }
     for (const entry of this.loadRegistry()) {
       if (this.sessions.has(entry.runId)) continue;
       let status: RunSession['status'] = entry.status as RunSession['status'];
-      if (status !== 'completed' && status !== 'blocked' && status !== 'failed') status = 'blocked';
-      this.sessions.set(entry.runId, {
+      const interrupted = status !== 'completed' && status !== 'blocked' && status !== 'failed';
+      if (interrupted) status = 'blocked';
+      let mode = entry.mode;
+      let report = entry.report;
+      let finishedAt = entry.finishedAt;
+      if (entry.taskId && (!mode || !report || !finishedAt)) {
+        const root = this.resolveTaskRoot(entry.taskId, entry.projectPath);
+        const ledger = root ? TaskLedger.load(root, entry.taskId) : undefined;
+        mode ??= ledger?.data.mode;
+        report ??= ledger?.data.report;
+        finishedAt ??= ledger?.data.completedAt;
+      }
+      const session: RunSession = {
         runId: entry.runId,
         goal: entry.goal,
         status,
         startedAt: entry.startedAt,
+        finishedAt,
         taskId: entry.taskId,
         project: entry.project,
         projectPath: entry.projectPath,
+        mode,
+        provider: entry.provider,
+        model: entry.model,
+        report,
+        error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : entry.error,
         events: Array.isArray(entry.events) ? entry.events : [],
         subscribers: new Set(),
         approvals: new Map(),
-      });
+      };
+      this.sessions.set(entry.runId, session);
+      if (interrupted) this.pushEvent(session, 'application restarted — run paused; send a message to resume');
     }
     return (server.address() as AddressInfo).port;
   }
 
   async stop(): Promise<void> {
     this.scheduler?.stop();
+    for (const idx of this.indexWatchers.values()) {
+      idx.stopWatch();
+      idx.close();
+    }
+    this.indexWatchers.clear();
     if (!this.server) return;
     await new Promise<void>((resolve, reject) => {
       this.server!.close((err) => (err ? reject(err) : resolve()));
     });
     this.server = undefined;
+    this.store?.close();
+    this.store = undefined;
+  }
+
+  /** One watched code index per repo root, kept alive across runs. */
+  private sharedIndex(repoRoot: string, ignores?: Iterable<string>): CodeIndex {
+    let idx = this.indexWatchers.get(repoRoot);
+    if (!idx) {
+      idx = new CodeIndex(repoRoot);
+      idx.startWatch(ignores);
+      this.indexWatchers.set(repoRoot, idx);
+    }
+    return idx;
   }
 
   private async startCronRun(root: string, job: CronJob): Promise<string | undefined> {
@@ -308,6 +353,7 @@ export class HermesServer {
       status: 'running',
       startedAt: nowIso(),
       projectPath: root,
+      mode: 'standard',
       events: [],
       subscribers: new Set(),
       approvals: new Map(),
@@ -367,6 +413,8 @@ export class HermesServer {
       finishedAt: s.finishedAt,
       taskId: s.taskId,
       project: s.project,
+      projectPath: s.projectPath,
+      mode: s.mode,
       provider: s.provider,
       model: s.model,
       pendingApprovals: [...s.approvals.values()].map(({ id, tool, why, summary, requestedAt }) => ({ id, tool, why, summary, requestedAt })),
@@ -382,7 +430,12 @@ export class HermesServer {
   }
 
   private pushEvent(s: RunSession, text: string, persistDb = true): void {
-    const ev = { i: s.events.length, t: nowIso(), text };
+    // Streaming deltas are intentionally not persisted.  After a restart the
+    // in-memory array is therefore sparse, so its length is not a safe event
+    // cursor: reusing it can overwrite an old persisted event (including a
+    // user message) and make the SSE client skip it.  Keep event ids strictly
+    // monotonic from the highest known id instead.
+    const ev = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text };
     s.events.push(ev);
     if (persistDb && !text.startsWith('tdelta')) {
       try {
@@ -392,15 +445,49 @@ export class HermesServer {
           taskId: s.taskId,
           goal: s.goal,
           project: s.project,
-          projectPath: s.projectPath,
-          startedAt: s.startedAt,
-          status: s.status,
-        });
+        projectPath: s.projectPath,
+        startedAt: s.startedAt,
+        status: s.status,
+        finishedAt: s.finishedAt,
+        mode: s.mode,
+        provider: s.provider,
+        model: s.model,
+        report: s.report,
+        error: s.error,
+      });
       } catch {
         /* persistence must never break the run */
       }
     }
     for (const send of s.subscribers) send(ev);
+  }
+
+  /**
+   * Events are the durable transcript for a session. Turn the user-visible
+   * portions back into model messages when a completed/paused run is resumed.
+   * Streaming deltas are deliberately not stored, because every completed
+   * response also produces one durable `say` event.
+   */
+  private conversationHistory(s: RunSession): LlmMessage[] {
+    const turns: LlmMessage[] = [];
+    for (const event of s.events) {
+      const text = event.text;
+      const user = text.startsWith('user-msg ') ? text.slice('user-msg '.length).trim() : '';
+      const assistant = text.startsWith('say ') ? text.slice('say '.length).trim() : '';
+      if (!user && !assistant) continue;
+      const turn: LlmMessage = user ? { role: 'user', content: user } : { role: 'assistant', content: assistant };
+      const previous = turns[turns.length - 1];
+      if (previous?.role === turn.role && previous.content === turn.content) continue;
+      turns.push(turn);
+    }
+
+    const recent = turns.slice(-24);
+    let total = recent.reduce((size, turn) => size + (typeof turn.content === 'string' ? turn.content.length : 0), 0);
+    while (recent.length > 2 && total > 24_000) {
+      const removed = recent.shift()!;
+      total -= typeof removed.content === 'string' ? removed.content.length : 0;
+    }
+    return recent;
   }
 
   private async route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -518,7 +605,8 @@ export class HermesServer {
     }
 
     if (method === 'GET' && path === '/api/models') {
-      const providers = await Promise.all(
+      const catalogPromise = fetchModelCatalog();
+      const providerRows = await Promise.all(
         Object.values(PROVIDERS).map(async (spec) => {
           const keyInfo = providerKey(spec);
           let models = spec.models;
@@ -534,19 +622,28 @@ export class HermesServer {
               live = true;
             }
           }
-          return {
-            id: spec.id,
-            label: spec.label,
-            defaultModel: spec.defaultModel,
-            hasKey: Boolean(keyInfo),
-            live,
-            models: models.map((id) => ({ id, vision: modelSupportsImages(id) })),
-            effortLevels: spec.effortLevels,
-            keyEnvVars: spec.keyEnvVars,
-            baseUrl: spec.baseUrl,
-          };
+          return { spec, keyInfo, models, live };
         }),
       );
+      const catalog = await catalogPromise;
+      const providers = providerRows.map(({ spec, keyInfo, models, live }) => {
+        return {
+          id: spec.id,
+          label: spec.label,
+          defaultModel: spec.defaultModel,
+          hasKey: Boolean(keyInfo),
+          live,
+          models: models.map((id) => ({
+            id,
+            vision: modelSupportsImages(id),
+            free: isFreeModel(id),
+            metadata: modelMetadataFor(catalog, spec.id, id),
+          })),
+          effortLevels: spec.effortLevels,
+          keyEnvVars: spec.keyEnvVars,
+          baseUrl: spec.baseUrl,
+        };
+      });
       const withKey = providers.find((p) => p.hasKey);
       this.sendJson(res, 200, { providers, defaultProvider: withKey?.id ?? 'alibaba' });
       return;
@@ -1060,6 +1157,7 @@ export class HermesServer {
         provider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
         model: resolvedInfo?.model ?? model,
         projectPath,
+        mode,
         events: [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -1067,7 +1165,7 @@ export class HermesServer {
     this.sessions.set(session.runId, session);
     this.saveRegistry();
     this.pushEvent(session, `user-msg ${goal}`);
-    this.sendJson(res, 202, { runId: session.runId });
+    this.sendJson(res, 202, { runId: session.runId, mode });
       void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, autoLearn, images, model: resolvedInfo?.model ?? model });
       return;
     }
@@ -1190,6 +1288,19 @@ export class HermesServer {
             .filter((im) => im.dataUrl.startsWith('data:image/'))
             .slice(0, 4)
         : undefined;
+      // Older sessions created before provider/model persistence have no
+      // model identity. Let the current picker supply it once so they can be
+      // resumed after an app upgrade instead of falling back to an unrelated
+      // provider default.
+      const selectedProvider = typeof body['provider'] === 'string' && body['provider'].trim() ? body['provider'].trim() : undefined;
+      const selectedModel = typeof body['model'] === 'string' && body['model'].trim() ? body['model'].trim() : undefined;
+      const useSelectedModel = body['useSelectedModel'] === true;
+      // An explicit mode in the body is a deliberate workflow switch (the UI
+      // always sends it from the dropdown): update the durable session mode so
+      // this continuation — and later ones — run in the newly chosen mode.
+      const modeSwitch = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : undefined;
+      const reviewSwitch = typeof body['review'] === 'boolean' ? body['review'] : undefined;
+      if (modeSwitch) session.mode = modeSwitch;
       if (session.status === 'running') {
         session.hermes?.queueMessage(text);
         this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
@@ -1201,9 +1312,28 @@ export class HermesServer {
         return;
       }
       let llm = this.config.llm;
+      let provider = session.provider;
+      let model = session.model;
+      if (useSelectedModel && selectedProvider && selectedModel) {
+        // The UI only sends this flag after the user changes the picker for
+        // this session, so a deliberate recovery from an unavailable model is
+        // possible without silently changing models on every continuation.
+        provider = selectedProvider;
+        model = selectedModel;
+        session.provider = provider;
+        session.model = model;
+      } else if ((!provider || !model) && selectedProvider && selectedModel && (!provider || provider === selectedProvider)) {
+        provider ??= selectedProvider;
+        model ??= selectedModel;
+        session.provider = provider;
+        session.model = model;
+      }
       if (!llm) {
         try {
-          llm = resolveLlm({}).client;
+          // Keep a continuation on the model the user selected for the
+          // original session instead of silently falling back to the current
+          // global default after an app restart.
+          llm = resolveLlm({ provider, model }).client;
         } catch (err) {
           if (err instanceof ProviderError) {
             this.sendJson(res, 400, { error: err.message });
@@ -1212,19 +1342,22 @@ export class HermesServer {
           throw err;
         }
       }
+      const conversationHistory = this.conversationHistory(session);
       session.status = 'running';
       session.report = undefined;
       session.finishedAt = undefined;
+      session.error = undefined;
       this.pushEvent(session, `user-msg ${text}`);
       this.pushEvent(session, `continue — resuming this session`);
       void this.executeRun(session, llm, {
         goal: session.goal,
-        mode: 'standard',
-        review: false,
+        mode: session.mode ?? 'standard',
+        review: reviewSwitch ?? false,
         projectPath: session.projectPath,
         resume: { taskId: session.taskId, message: text },
+        conversationHistory,
         images,
-        model: session.model,
+        model,
       });
       this.sendJson(res, 200, { ok: true, resumed: true });
       return;
@@ -1299,14 +1432,21 @@ export class HermesServer {
       autoLearn?: boolean;
       images?: { name: string; dataUrl: string }[];
       model?: string;
+      conversationHistory?: LlmMessage[];
     },
   ): Promise<void> {
     let root: string;
+    let ignorePaths: string[] | undefined;
     try {
-      root = ProjectGuard.detect(opts.projectPath ?? this.config.cwd).lock.repoRoot;
+      const lock = ProjectGuard.detect(opts.projectPath ?? this.config.cwd).lock;
+      root = lock.repoRoot;
+      ignorePaths = lock.ignorePaths;
     } catch {
       root = this.config.cwd;
     }
+    const index = this.sharedIndex(root, ignorePaths);
+    const catalog = await fetchModelCatalog();
+    const contextWindowTokens = modelMetadataFor(catalog, session.provider ?? '', opts.model ?? session.model ?? '')?.contextTokens;
     const skills = SkillStore.forProject(root);
     const mcp = McpManager.forProject(root);
     const agentStore = new AgentStore();
@@ -1325,8 +1465,10 @@ export class HermesServer {
           })
         : undefined;
     session.project = root.split(/[\\/]/).filter(Boolean).pop();
+    session.mode ??= opts.mode;
     const hermes = new Hermes({
       cwd: opts.projectPath ?? this.config.cwd,
+      index,
       llm,
       mode: opts.mode,
       autoApprove: opts.autoApprove ?? false,
@@ -1340,9 +1482,11 @@ export class HermesServer {
       subagents,
       agentsSection: agentStore.renderForPrompt() || undefined,
       resume: opts.resume,
+      conversationHistory: opts.conversationHistory,
       browser: this.browserImpl(),
       images: opts.images,
       supportsImages: modelSupportsImages(opts.model ?? session.model ?? ''),
+      contextWindowTokens,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };

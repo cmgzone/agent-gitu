@@ -1,5 +1,6 @@
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
-import { ContextEngine } from '../context/context-engine.js';
+import { CodeIndex } from '../context/code-index.js';
+import { ContextEngine, contextBudgetForWindow } from '../context/context-engine.js';
 import { EvidenceEngine } from '../evidence/evidence.js';
 import { Executor } from '../executor/executor.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
@@ -20,6 +21,8 @@ import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 export interface HermesConfig {
   cwd: string;
   llm: LlmClient;
+  /** Shared code index to reuse (e.g. a watched one owned by the server). */
+  index?: CodeIndex;
   mode?: 'fast' | 'standard' | 'chat';
   autoApprove?: boolean;
   approvalHandler?: ApprovalHandler;
@@ -37,7 +40,11 @@ export interface HermesConfig {
   agentsSection?: string;
   images?: { name: string; dataUrl: string }[];
   supportsImages?: boolean;
+  /** Live context-window metadata for the selected provider/model. */
+  contextWindowTokens?: number;
   resume?: { taskId: string; message: string };
+  /** Prior user/assistant turns for a resumed server session. */
+  conversationHistory?: LlmMessage[];
   autoLearn?: boolean;
   onEvent?: (event: string) => void;
 }
@@ -72,6 +79,8 @@ export interface HermesRunResult {
 type ParsedAction =
   | { type: 'set_criteria'; criteria: string[] }
   | { type: 'set_plan'; steps: { description: string; verification: string }[] }
+  | { type: 'add_criteria'; criteria: string[] }
+  | { type: 'append_plan'; steps: { description: string; verification: string }[] }
   | { type: 'set_hypothesis'; text: string }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
   | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
@@ -90,12 +99,14 @@ function parseAction(raw: unknown): ParsedAction | undefined {
   const action = (root['action'] ?? root) as Record<string, unknown>;
   const type = action['type'];
   switch (type) {
-    case 'set_criteria': {
+    case 'set_criteria':
+    case 'add_criteria': {
       const criteria = action['criteria'];
       if (!Array.isArray(criteria) || criteria.length === 0) return undefined;
       return { type, criteria: criteria.map(String).slice(0, 10) };
     }
-    case 'set_plan': {
+    case 'set_plan':
+    case 'append_plan': {
       const steps = action['steps'];
       if (!Array.isArray(steps) || steps.length === 0) return undefined;
       const parsed = steps
@@ -230,6 +241,13 @@ export class Hermes {
         throw new ProjectGuardError(`Cannot resume: task not found: ${this.config.resume.taskId}`);
       }
       ledger = loaded;
+      // An explicit mode change from the caller (e.g. the UI's workflow
+      // dropdown) switches this continuation to the newly chosen mode instead
+      // of being locked into the mode the session was created with.
+      if (this.config.mode && this.config.mode !== ledger.data.mode) {
+        ledger.data.mode = this.config.mode;
+        this.emit(`mode     switched to ${this.config.mode} for this continuation`);
+      }
       ledger.data.planApproved = false;
       ledger.data.blockers = [];
       ledger.data.completedAt = undefined;
@@ -269,7 +287,7 @@ export class Hermes {
       this.config.browser,
       this.config.subagents ? (specs) => this.config.subagents!.runMany(specs) : undefined,
     );
-    const context = new ContextEngine(guard);
+    const context = new ContextEngine(guard, this.config.index ?? new CodeIndex(guard.lock.repoRoot));
     const reporter = new Reporter();
 
     const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
@@ -280,11 +298,13 @@ export class Hermes {
 
     let contextNote = '';
     if (ledger.data.mode === 'standard') {
-      const pack = context.buildPack(goal);
+      const contextBudget = contextBudgetForWindow(this.config.contextWindowTokens);
+      const pack = context.buildPack(goal, contextBudget);
       ledger.data.contextPack = pack;
       contextNote = `CONTEXT PACK (ranked, role-labeled, budgeted):\n${context.renderPackWithContent(pack)}`;
       this.emit(
-        `context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected (code attached for grounding)`,
+        `context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected ` +
+          `(${this.config.contextWindowTokens ? `${this.config.contextWindowTokens} token model window; ` : ''}${pack.budget.maxBytes} character source budget)`,
       );
     }
 
@@ -306,6 +326,9 @@ export class Hermes {
       },
     ];
     if (contextNote) messages.push({ role: 'user', content: contextNote });
+    if (this.config.conversationHistory?.length) {
+      messages.push(...this.config.conversationHistory);
+    }
     if (this.config.images && this.config.images.length > 0) {
       if (this.config.supportsImages) {
         const parts: LlmContentPart[] = [
@@ -329,9 +352,23 @@ export class Hermes {
         role: 'user',
         content:
           `FOLLOW-UP MESSAGE in an ongoing session. The user wrote:\n"${resumeNote}"\n` +
-          `First and foremost, reply conversationally and directly to what they said — like a helpful chat assistant, in plain language. ` +
-          `ONLY if the message clearly requests new work or a change, update acceptance criteria/plan (set_criteria / set_plan) and execute it, reusing what was already built. ` +
-          `If it is just a comment, thanks, opinion or question, answer it briefly and friendly, then end with {"type":"complete","summary":"<your short conversational reply>","chat":true} without doing any work.`,
+          `If the user asks to continue, resume, finish, proceed, or keep working — or the existing task is unfinished — resume the existing task immediately. Review the ledger and take the next useful action; do not return a chat-only completion. ` +
+          `If they clearly request a change, update the acceptance criteria/plan as needed and execute it, reusing what was already built. ` +
+          `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`,
+      });
+    }
+
+    if (
+      resumeNote &&
+      ledger.data.mode !== 'chat' &&
+      ledger.data.acceptanceCriteria.length > 0 &&
+      ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied)
+    ) {
+      messages.push({
+        role: 'user',
+        content:
+          'The earlier scope is fully satisfied. If this follow-up asks for different work, keep this task and use add_criteria followed by append_plan. ' +
+          'Do not erase prior criteria/evidence and do not request_block just because the earlier scope is complete.',
       });
     }
 
@@ -374,6 +411,7 @@ export class Hermes {
 
     let invalidStreak = 0;
     let loopBlocks = 0;
+    let followUpCriteriaAdded = false;
     const actionsAtStart = ledger.data.actions.length;
     let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
     let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
@@ -451,9 +489,25 @@ export class Hermes {
             break;
           }
           if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
+            const completedScope = ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied);
+            if (resumeNote && completedScope) {
+              const added = ledger.appendCriteria(action.criteria);
+              if (added.length > 0) {
+                followUpCriteriaAdded = true;
+                this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
+                observe(
+                  'The previous scope is complete. Added ' +
+                    added.length +
+                    ' acceptance criterion/criteria for this follow-up work. Now use append_plan with small, verifiable steps for the new scope.',
+                );
+              } else {
+                observe('Those follow-up criteria are already recorded. Use append_plan for the remaining work, or continue the current plan.');
+              }
+              break;
+            }
             observe(
               'Criteria are locked once a plan is approved or evidence is recorded; they cannot be redefined. ' +
-                'Continue working against them, or request_block if the scope is wrong.',
+                'For a new scope in a resumed completed task, use add_criteria instead; otherwise continue working against them.',
             );
             break;
           }
@@ -462,16 +516,38 @@ export class Hermes {
           observe('Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');
           break;
         }
-        case 'set_plan': {
-          ledger.setPlan(action.steps);
-          checkpoints.snapshot(ledger, 'plan', 'plan created');
-          this.emit(`plan     ${action.steps.length} steps`);
+        case 'add_criteria': {
+          if (!resumeNote) {
+            observe('add_criteria is for a new scope in a resumed task. Use set_criteria for a new task.');
+            break;
+          }
+          const added = ledger.appendCriteria(action.criteria);
+          if (added.length === 0) {
+            observe('Those criteria are already recorded. Use append_plan for the remaining work.');
+            break;
+          }
+          followUpCriteriaAdded = true;
+          this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
+          observe(
+            'Added ' +
+              added.length +
+              ' follow-up acceptance criterion/criteria while preserving the earlier completed scope. Now use append_plan with small, verifiable steps.',
+          );
+          break;
+        }
+        case 'set_plan':
+        case 'append_plan': {
+          const append = action.type === 'append_plan' || followUpCriteriaAdded;
+          if (append) ledger.appendPlan(action.steps);
+          else ledger.setPlan(action.steps);
+          checkpoints.snapshot(ledger, append ? 'follow-up-plan' : 'plan', append ? 'follow-up plan created' : 'plan created');
+          this.emit('plan     ' + action.steps.length + (append ? ' follow-up' : '') + ' steps');
           if (this.config.requirePlanReview && this.config.planReviewHandler && !ledger.data.planApproved) {
             ledger.setStatus('review');
             this.emit('plan-review waiting for user review');
             const decision = await this.config.planReviewHandler({
               criteria: ledger.data.acceptanceCriteria.map((c) => c.text),
-              steps: action.steps,
+              steps: append ? ledger.data.plan.map((step) => ({ description: step.description, verification: step.verification })) : action.steps,
             });
             if (decision.criteria && decision.criteria.length > 0) ledger.setCriteria(decision.criteria);
             if (decision.steps && decision.steps.length > 0) ledger.setPlan(decision.steps);
@@ -695,7 +771,10 @@ export class Hermes {
 
     memory.add({
       type: 'task',
-      claim: `Task "${goal}" finished as ${status}: ${report.summary}`,
+      claim:
+        `Task "${goal}" finished as ${status}: ${report.summary}` +
+        `${ledger.data.filesChanged.length ? ` Changed files: ${ledger.data.filesChanged.slice(0, 16).join(', ')}.` : ''}` +
+        `${ledger.data.evidence.some((e) => e.passed) ? ` Passing checks: ${ledger.data.evidence.filter((e) => e.passed).slice(-4).map((e) => e.label).join('; ')}.` : ''}`,
       evidence: ledger.data.taskId,
       scope: guard.lock.name,
       confidence: 0.9,

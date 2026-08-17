@@ -31,6 +31,23 @@ describe('HermesServer', () => {
   it('serves a syntactically valid inline UI script', () => {
     const js = UI_HTML.split('<script>')[1]!.split('</script>')[0]!;
     expect(() => new Function(js)).not.toThrow();
+    expect(UI_HTML).toContain("sess.chatish = session.mode === 'chat';");
+    expect(UI_HTML).not.toContain('looksChat');
+  });
+
+  it('keeps event ids monotonic when non-persisted stream deltas leave gaps', () => {
+    const server = new HermesServer({ cwd: makeProject('event-cursor'), port: 0, llm: new ScriptedMockLlm([]) });
+    const session = {
+      events: [
+        { i: 0, t: '2026-01-01T00:00:00.000Z', text: 'user-msg original task' },
+        // A streaming delta at i=1 is not persisted, so a restored session
+        // can contain a gap like this one.
+        { i: 2, t: '2026-01-01T00:00:01.000Z', text: 'run finished: failed' },
+      ],
+      subscribers: new Set<(event: { i: number; t: string; text: string }) => void>(),
+    };
+    (server as unknown as { pushEvent: (target: typeof session, text: string, persist: boolean) => void }).pushEvent(session, 'user-msg continue', false);
+    expect(session.events.at(-1)?.i).toBe(3);
   });
 
   afterAll(async () => {
@@ -51,6 +68,37 @@ describe('HermesServer', () => {
     expect(html).toContain('AGENT GITU');
     const project = await fetch(`${base}/api/project`).then((r) => r.json());
     expect(project.name).toBe('web-ui');
+  });
+
+  it('exposes live token limits and prices with the model catalog', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://models.dev/api.json') {
+        return new Response(
+          JSON.stringify({
+            openai: {
+              models: {
+                'gpt-4.1-mini': { limit: { context: 1_047_576, output: 32_768 }, cost: { input: 0.4, output: 1.6 } },
+              },
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url.startsWith('http://127.0.0.1:')) return originalFetch(input, init);
+      return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const dir = makeProject('model-catalog');
+      const { base } = await startServer(dir, new ScriptedMockLlm([]));
+      const data = await fetch(`${base}/api/models`).then((r) => r.json());
+      const openai = data.providers.find((p: { id: string }) => p.id === 'openai');
+      const model = openai.models.find((m: { id: string }) => m.id === 'gpt-4.1-mini');
+      expect(model.metadata).toMatchObject({ contextTokens: 1_047_576, outputTokens: 32_768, inputPricePerMillion: 0.4, outputPricePerMillion: 1.6 });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('runs a task end-to-end over HTTP with live state', async () => {
@@ -93,6 +141,191 @@ describe('HermesServer', () => {
     const streamRes = await fetch(`${base}/api/runs/${created.runId}/stream`);
     expect(streamRes.headers.get('content-type')).toContain('text/event-stream');
     await streamRes.body?.cancel();
+  }, 30000);
+
+  it('restores a chat transcript, its metadata, and conversational context after restart', async () => {
+    const dir = makeProject('chat-restart');
+    const firstServer = new HermesServer({
+      cwd: dir,
+      port: 0,
+      llm: new ScriptedMockLlm([() => 'I remember this first reply.']),
+    });
+    servers.push(firstServer);
+    const firstPort = await firstServer.start();
+    const firstBase = `http://127.0.0.1:${firstPort}`;
+
+    const created = await fetch(`${firstBase}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Remember the blue widget', mode: 'chat', review: false }),
+    }).then((r) => r.json());
+    const completed = await waitFor(async () => {
+      const session = await fetch(`${firstBase}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(completed.mode).toBe('chat');
+    expect(completed.report.summary).toContain('I remember this first reply');
+
+    await firstServer.stop();
+
+    let receivedHistory = false;
+    const secondServer = new HermesServer({
+      cwd: dir,
+      port: 0,
+      llm: new ScriptedMockLlm([
+        (_n, messages) => {
+          const text = messages
+            .map((m) => (typeof m.content === 'string' ? m.content : ''))
+            .join('\n');
+          receivedHistory = text.includes('Remember the blue widget') && text.includes('I remember this first reply.');
+          return 'The widget is blue.';
+        },
+      ]),
+    });
+    servers.push(secondServer);
+    const secondPort = await secondServer.start();
+    const secondBase = `http://127.0.0.1:${secondPort}`;
+
+    const restored = await fetch(`${secondBase}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(restored.status).toBe('completed');
+    expect(restored.mode).toBe('chat');
+    expect(restored.report.summary).toContain('I remember this first reply');
+    expect(restored.finishedAt).toBeTruthy();
+
+    const stream = await fetch(`${secondBase}/api/runs/${created.runId}/stream`);
+    const reader = stream.body!.getReader();
+    const firstChunk = await reader.read();
+    await reader.cancel();
+    expect(new TextDecoder().decode(firstChunk.value)).toContain('user-msg Remember the blue widget');
+
+    const resumed = await fetch(`${secondBase}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'What color was the widget?' }),
+    }).then((r) => r.json());
+    expect(resumed.resumed).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const session = await fetch(`${secondBase}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(receivedHistory).toBe(true);
+    expect(finished.report.summary).toContain('The widget is blue');
+  }, 30000);
+
+  it('switches a chat session to build mode when the follow-up sends mode: standard', async () => {
+    let secondPrompt = '';
+    const llm = new ScriptedMockLlm([
+      () => 'First chat reply.',
+      (_n, messages) => {
+        secondPrompt = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+        return JSON.stringify({ action: { type: 'request_block', reason: 'paused for review' } });
+      },
+    ]);
+    const dir = makeProject('chat-to-build');
+    const { base } = await startServer(dir, llm);
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Chat first', mode: 'chat', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+
+    const resumed = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'now build it', mode: 'standard', review: false }),
+    }).then((r) => r.json());
+    expect(resumed.resumed).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(finished.mode).toBe('standard');
+    expect(finished.taskId).toBeTruthy();
+    expect(secondPrompt).toContain('FOLLOW-UP MESSAGE');
+    expect(secondPrompt).not.toContain('chat mode — answer directly');
+  }, 30000);
+
+  it('switches a build session to chat mode when the follow-up sends mode: chat', async () => {
+    let secondPrompt = '';
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'paused first' } }),
+      (_n, messages) => {
+        secondPrompt = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+        return 'A direct answer.';
+      },
+    ]);
+    const dir = makeProject('build-to-chat');
+    const { base } = await startServer(dir, llm);
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Build first', mode: 'standard', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+
+    const resumed = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'just answer', mode: 'chat' }),
+    }).then((r) => r.json());
+    expect(resumed.resumed).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(finished.mode).toBe('chat');
+    expect(secondPrompt).toContain('chat mode — answer directly');
+  }, 30000);
+
+  it('resumes a standard session as a task and adopts the picker model for legacy sessions', async () => {
+    let sawContinuationInstruction = false;
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'paused for a follow-up' } }),
+      (_n, messages) => {
+        const transcript = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+        sawContinuationInstruction = transcript.includes('FOLLOW-UP MESSAGE') && transcript.includes('"continue working"');
+        return JSON.stringify({ action: { type: 'request_block', reason: 'paused again' } });
+      },
+    ]);
+    const dir = makeProject('standard-resume');
+    const { base } = await startServer(dir, llm);
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Finish the existing task', mode: 'standard', review: false }),
+    }).then((r) => r.json());
+    const paused = await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(paused.mode).toBe('standard');
+    expect(paused.provider).toBeUndefined();
+
+    const resumed = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue working', provider: 'opencode-zen', model: 'hy3-free' }),
+    }).then((r) => r.json());
+    expect(resumed.resumed).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(finished.mode).toBe('standard');
+    expect(finished.provider).toBe('opencode-zen');
+    expect(finished.model).toBe('hy3-free');
+    expect(sawContinuationInstruction).toBe(true);
   }, 30000);
 
   it('gates dangerous actions behind the approval API', async () => {

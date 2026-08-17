@@ -1,6 +1,7 @@
 import { readdirSync } from 'node:fs';
 import path from 'node:path';
 import type {
+  AcceptanceCriterion,
   ActionRecord,
   PlanStep,
   ProjectLock,
@@ -96,6 +97,36 @@ export class TaskLedger {
     this.save();
   }
 
+  /**
+   * Extend a completed task with a new, follow-up scope without discarding
+   * the criteria and evidence that made the earlier work complete.
+   */
+  appendCriteria(texts: string[]): AcceptanceCriterion[] {
+    const known = new Set(this.data.acceptanceCriteria.map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
+    const next = this.data.acceptanceCriteria.reduce((max, c) => {
+      const match = /^ac-(\d+)$/.exec(c.id);
+      return Math.max(max, match ? Number(match[1]) : 0);
+    }, 0);
+    const added: AcceptanceCriterion[] = [];
+    for (const raw of texts) {
+      const text = raw.trim().replace(/\s+/g, ' ');
+      const key = text.toLowerCase();
+      if (!text || known.has(key)) continue;
+      known.add(key);
+      added.push({
+        id: 'ac-' + (next + added.length + 1),
+        text,
+        evidenceIds: [],
+        satisfied: false,
+      });
+    }
+    if (added.length > 0) {
+      this.data.acceptanceCriteria.push(...added);
+      this.save();
+    }
+    return added;
+  }
+
   setPlan(steps: { description: string; verification: string }[]): void {
     this.data.plan = steps.map((s, i) => ({
       id: `step-${i + 1}`,
@@ -105,6 +136,26 @@ export class TaskLedger {
       attempts: 0,
     }));
     this.save();
+  }
+
+  /** Add plan steps for a follow-up scope, retaining completed plan history. */
+  appendPlan(steps: { description: string; verification: string }[]): PlanStep[] {
+    const next = this.data.plan.reduce((max, step) => {
+      const match = /^step-(\d+)$/.exec(step.id);
+      return Math.max(max, match ? Number(match[1]) : 0);
+    }, 0);
+    const added = steps.map((s, index) => ({
+      id: 'step-' + (next + index + 1),
+      description: s.description,
+      verification: s.verification,
+      status: 'pending' as const,
+      attempts: 0,
+    }));
+    if (added.length > 0) {
+      this.data.plan.push(...added);
+      this.save();
+    }
+    return added;
   }
 
   step(id: string): PlanStep | undefined {

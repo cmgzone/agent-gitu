@@ -53,7 +53,7 @@ describe('cron', () => {
 });
 
 describe('resume (same-session continuation)', () => {
-  it('continues an existing ledger instead of creating a new task', async () => {
+  it('adds a new work phase after completed criteria instead of blocking or replacing history', async () => {
     const dir = makeProject('resume');
     const first = new ScriptedMockLlm([
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['file exists'] } }),
@@ -81,15 +81,15 @@ describe('resume (same-session continuation)', () => {
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['file updated'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'update file', verification: 'node --version' }] } }),
       () => JSON.stringify({
-        action: { type: 'tool_call', stepId: 'step-1', tool: 'apply_edit', params: { path: 'src/a.txt', oldString: 'v1', newString: 'v2' }, reason: 'update', expected: 'updated' },
+        action: { type: 'tool_call', stepId: 'step-2', tool: 'apply_edit', params: { path: 'src/a.txt', oldString: 'v1', newString: 'v2' }, reason: 'update', expected: 'updated' },
       }),
       () => JSON.stringify({
-        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+        action: { type: 'tool_call', stepId: 'step-2', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
       }),
       (_n, messages) => {
         const text = messages.map((m) => m.content).join('\n');
         const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
-        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-2', evidenceId: evId } });
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'continuation done', risks: [], followUps: [] } }),
     ]);
@@ -98,6 +98,14 @@ describe('resume (same-session continuation)', () => {
 
     expect(l2.data.taskId).toBe(taskId);
     expect(l2.data.status).toBe('completed');
+    expect(l2.data.acceptanceCriteria).toMatchObject([
+      { id: 'ac-1', text: 'file exists', satisfied: true },
+      { id: 'ac-2', text: 'file updated', satisfied: true },
+    ]);
+    expect(l2.data.plan).toMatchObject([
+      { id: 'step-1', description: 'create file', status: 'done' },
+      { id: 'step-2', description: 'update file', status: 'done' },
+    ]);
     void guard;
   }, 60000);
 });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/hermes.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
+import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { SkillStore } from '../src/skills/skills.js';
 
@@ -222,6 +223,35 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.status).toBe('completed');
     expect(report.summary).toContain('Hermes can plan');
     expect(events.some((e) => e.startsWith('tdelta '))).toBe(true);
+  }, 30000);
+
+  it('switches a chat ledger to build mode when resuming with a different mode', async () => {
+    const dir = makeProject('chat-to-build');
+    const chat = new Hermes({ cwd: dir, llm: new ScriptedMockLlm([() => 'Chat reply.']), mode: 'chat' });
+    const { ledger } = await chat.run('just chat');
+    expect(ledger.data.mode).toBe('chat');
+
+    let sawFollowUp = false;
+    let sawChatPrompt = false;
+    const second = new ScriptedMockLlm([
+      (_n, messages) => {
+        const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+        sawFollowUp = text.includes('FOLLOW-UP MESSAGE');
+        sawChatPrompt = text.includes('chat mode — answer directly');
+        return JSON.stringify({ action: { type: 'request_block', reason: 'paused' } });
+      },
+    ]);
+    const resumed = new Hermes({
+      cwd: dir,
+      llm: second,
+      mode: 'standard',
+      resume: { taskId: ledger.data.taskId, message: 'now build it' },
+    });
+    await resumed.run('now build it');
+    expect(sawFollowUp).toBe(true);
+    expect(sawChatPrompt).toBe(false);
+    const reloaded = TaskLedger.load(dir, ledger.data.taskId);
+    expect(reloaded?.data.mode).toBe('standard');
   }, 30000);
 
   it('asks the user clarifying questions and uses the answers', async () => {

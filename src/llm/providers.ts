@@ -171,6 +171,32 @@ export interface ModelInfo {
   ownedBy?: string;
 }
 
+/** Provider-specific limits and USD prices per one million tokens. */
+export interface ModelMetadata {
+  contextTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  inputPricePerMillion?: number;
+  outputPricePerMillion?: number;
+  cachedInputPricePerMillion?: number;
+  source: 'models.dev';
+}
+
+export type ModelCatalog = Map<string, Map<string, ModelMetadata>>;
+
+const MODEL_CATALOG_URL = 'https://models.dev/api.json';
+const MODEL_CATALOG_TTL_MS = 10 * 60 * 1000;
+const MODEL_CATALOG_RETRY_MS = 60 * 1000;
+const CATALOG_PROVIDER_IDS: Record<string, string> = {
+  'opencode-zen': 'opencode',
+  'opencode-go': 'opencode-go',
+};
+
+let catalogCache: ModelCatalog | undefined;
+let catalogExpiresAt = 0;
+let catalogRetryAt = 0;
+let catalogPending: Promise<ModelCatalog | undefined> | undefined;
+
 const VISION_PATTERNS: RegExp[] = [
   /\bvl\b/,
   /vision/,
@@ -197,6 +223,85 @@ export function modelSupportsImages(model: string): boolean {
   const m = model.toLowerCase();
   if (TEXT_ONLY_PATTERNS.some((re) => re.test(m))) return false;
   return VISION_PATTERNS.some((re) => re.test(m));
+}
+
+/** OpenCode Zen-style free promotional models (no credits needed). */
+export function isFreeModel(model: string): boolean {
+  return /-free$/i.test(model) || model === 'big-pickle';
+}
+
+/**
+ * Fetch provider-specific limits and token prices from Models.dev. The catalog
+ * is public and refreshed every ten minutes; callers still work when it is
+ * unavailable and simply receive no pricing metadata for unknown models.
+ */
+export async function fetchModelCatalog(timeoutMs = 2500): Promise<ModelCatalog | undefined> {
+  if (catalogCache && Date.now() < catalogExpiresAt) return catalogCache;
+  if (Date.now() < catalogRetryAt) return undefined;
+  if (catalogPending) return catalogPending;
+
+  catalogPending = (async (): Promise<ModelCatalog | undefined> => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await fetch(MODEL_CATALOG_URL, { signal: controller.signal });
+      clearTimeout(timer);
+      if (!res.ok) return undefined;
+      const data = (await res.json()) as unknown;
+      const catalog = parseModelCatalog(data);
+      if (catalog.size === 0) return undefined;
+      catalogCache = catalog;
+      catalogExpiresAt = Date.now() + MODEL_CATALOG_TTL_MS;
+      catalogRetryAt = 0;
+      return catalog;
+    } catch {
+      catalogRetryAt = Date.now() + MODEL_CATALOG_RETRY_MS;
+      return undefined;
+    } finally {
+      catalogPending = undefined;
+    }
+  })();
+  return catalogPending;
+}
+
+/** Return live metadata for a model served by one of Agent Gitu's providers. */
+export function modelMetadataFor(catalog: ModelCatalog | undefined, providerId: string, model: string): ModelMetadata | undefined {
+  const catalogProvider = CATALOG_PROVIDER_IDS[providerId] ?? providerId;
+  return catalog?.get(catalogProvider)?.get(model);
+}
+
+function parseModelCatalog(value: unknown): ModelCatalog {
+  const catalog = new Map<string, Map<string, ModelMetadata>>();
+  if (!isRecord(value)) return catalog;
+  for (const [providerId, provider] of Object.entries(value)) {
+    if (!isRecord(provider) || !isRecord(provider['models'])) continue;
+    const models = new Map<string, ModelMetadata>();
+    for (const [modelId, model] of Object.entries(provider['models'])) {
+      if (!isRecord(model)) continue;
+      const limit = isRecord(model['limit']) ? model['limit'] : {};
+      const cost = isRecord(model['cost']) ? model['cost'] : {};
+      const metadata: ModelMetadata = {
+        contextTokens: finiteNumber(limit['context']),
+        inputTokens: finiteNumber(limit['input']),
+        outputTokens: finiteNumber(limit['output']),
+        inputPricePerMillion: finiteNumber(cost['input']),
+        outputPricePerMillion: finiteNumber(cost['output']),
+        cachedInputPricePerMillion: finiteNumber(cost['cache_read']),
+        source: 'models.dev',
+      };
+      if (Object.values(metadata).some((v) => typeof v === 'number')) models.set(modelId, metadata);
+    }
+    if (models.size > 0) catalog.set(providerId, models);
+  }
+  return catalog;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 export async function fetchLiveModels(opts: {

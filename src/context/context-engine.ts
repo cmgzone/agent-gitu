@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import type { CodeIndex } from './code-index.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { ContextPack, FileRef, FileRole } from '../types.js';
 
@@ -8,12 +9,45 @@ const STOPWORDS = new Set([
   'make', 'so', 'that', 'this', 'it', 'is', 'are', 'be', 'as', 'at', 'by', 'from',
 ]);
 
+export interface ContextBudget {
+  maxFiles: number;
+  /** Character budget for source attached to the model prompt. */
+  maxBytes: number;
+}
+
+export const DEFAULT_CONTEXT_BUDGET: ContextBudget = { maxFiles: 12, maxBytes: 40_000 };
+
+/**
+ * Convert a model's context window into a safe source-context budget. More
+ * than half of the window remains available for system instructions, user
+ * history, tool observations, and the model's response.
+ */
+export function contextBudgetForWindow(contextWindowTokens?: number): ContextBudget {
+  if (!contextWindowTokens || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) {
+    return { ...DEFAULT_CONTEXT_BUDGET };
+  }
+  const sourceTokens = Math.floor(contextWindowTokens * 0.4);
+  return {
+    maxFiles: Math.max(8, Math.min(24, Math.floor(sourceTokens / 3_000))),
+    maxBytes: Math.max(30_000, Math.min(160_000, sourceTokens * 4)),
+  };
+}
+
 export function tokenize(text: string): string[] {
   return text
     .toLowerCase()
     .split(/[^a-z0-9_.]+/)
     .map((t) => t.replace(/[_-]+/g, ''))
     .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+}
+
+/** Dotfile configs that are useful to code context and safe to read. */
+export function isContextConfigDotfile(name: string): boolean {
+  const base = path.basename(name).toLowerCase();
+  return (
+    base.startsWith('.eslintrc') || base.startsWith('.prettierrc') || base.startsWith('.stylelintrc') ||
+    base === '.editorconfig' || base === '.npmrc' || base === '.babelrc'
+  );
 }
 
 export function classifyRole(relPath: string): FileRole {
@@ -25,7 +59,8 @@ export function classifyRole(relPath: string): FileRole {
   if (/\.(d\.ts)$/.test(base) || /(^|\/)(types?|interfaces?)\.[a-z]+$/.test(base)) return 'interface';
   if (
     base === 'package.json' || base === 'tsconfig.json' || /\.(config|rc)\.[a-z]+$/.test(base) ||
-    base.startsWith('.eslintrc') || base === 'vite.config.ts' || base === 'vitest.config.ts' ||
+    isContextConfigDotfile(base) ||
+    base === 'vite.config.ts' || base === 'vitest.config.ts' ||
     /\.(ya?ml|toml|ini)$/.test(p)
   ) {
     return 'config';
@@ -37,43 +72,61 @@ export function classifyRole(relPath: string): FileRole {
 }
 
 export class ContextEngine {
-  constructor(private readonly guard: ProjectGuard) {}
+  constructor(
+    private readonly guard: ProjectGuard,
+    private readonly index?: CodeIndex,
+  ) {}
 
-  buildPack(goal: string, budget = { maxFiles: 12, maxBytes: 40000 }): ContextPack {
+  buildPack(goal: string, budget: ContextBudget = DEFAULT_CONTEXT_BUDGET): ContextPack {
     const root = this.guard.lock.repoRoot;
     const goalTokens = new Set(tokenize(goal));
     const files: FileRef[] = [];
     const ignores = new Set(this.guard.lock.ignorePaths);
 
-    const walk = (dir: string, depth: number): void => {
-      if (depth > 8 || files.length > 2000) return;
-      let entries: string[];
-      try {
-        entries = readdirSync(dir);
-      } catch {
-        return;
+    if (this.index) {
+      // A watcher is an optimisation, not a consistency boundary. It may be
+      // inside its debounce window (or unavailable on the current platform)
+      // when a new run starts, so take a cheap metadata snapshot here. Only
+      // changed files are read and re-tokenized by CodeIndex.refresh().
+      this.index.refresh(root, ignores);
+      const contentMatches = this.index.contentMatches(goalTokens);
+      for (const f of this.index.fileList()) {
+        files.push({ path: f.path, role: f.role, score: this.score(f.path, f.role, goalTokens, contentMatches.get(f.path)) });
       }
-      for (const name of entries) {
-        if (ignores.has(name) || name.startsWith('.')) continue;
-        const full = path.join(dir, name);
-        let st;
+    } else {
+      const walk = (dir: string, depth: number): void => {
+        if (depth > 8 || files.length > 2000) return;
+        let entries: string[];
         try {
-          st = statSync(full);
+          entries = readdirSync(dir);
         } catch {
-          continue;
+          return;
         }
-        if (st.isDirectory()) {
-          walk(full, depth + 1);
-        } else if (st.size < 200 * 1024) {
-          const rel = this.guard.toRelative(full);
-          const role = classifyRole(rel);
-          if (role === 'artifact' || role === 'unknown') continue;
-          files.push({ path: rel, role, score: this.score(rel, role, goalTokens) });
+        for (const name of entries) {
+          // Keep private VCS/agent state out. Safe config dotfiles are handled
+          // by classifyRole; unknown dotfiles, including .env, are not read.
+          if (ignores.has(name) || name === '.git' || name === '.hermes' || (name.startsWith('.') && name !== '.github' && !isContextConfigDotfile(name))) continue;
+          const full = path.join(dir, name);
+          let st;
+          try {
+            st = statSync(full);
+          } catch {
+            continue;
+          }
+          if (st.isDirectory()) {
+            if (name.startsWith('.') && name !== '.github') continue;
+            walk(full, depth + 1);
+          } else if (st.size < 200 * 1024) {
+            const rel = this.guard.toRelative(full);
+            const role = classifyRole(rel);
+            if (role === 'artifact' || role === 'unknown') continue;
+            files.push({ path: rel, role, score: this.score(rel, role, goalTokens) });
+          }
         }
-      }
-    };
+      };
 
-    walk(root, 0);
+      walk(root, 0);
+    }
 
     const entrypoints = new Set(this.guard.lock.entrypoints);
     for (const f of files) {
@@ -95,7 +148,7 @@ export class ContextEngine {
     return pack;
   }
 
-  private score(relPath: string, role: FileRole, goalTokens: Set<string>): number {
+  private score(relPath: string, role: FileRole, goalTokens: Set<string>, contentTerms?: Set<string>): number {
     const pathTokens = new Set(tokenize(relPath));
     let overlap = 0;
     for (const t of goalTokens) {
@@ -110,6 +163,9 @@ export class ContextEngine {
       }
     }
     const pathMatch = goalTokens.size > 0 ? overlap / goalTokens.size : 0;
+    // Content recall: fraction of goal terms found in the file's body (from the
+    // persistent index). Boosts files the goal's wording matches semantically.
+    const contentMatch = contentTerms ? contentTerms.size / Math.max(1, goalTokens.size) : 0;
     const roleBonus: Record<FileRole, number> = {
       entrypoint: 0.15,
       implementation: 0.1,
@@ -123,7 +179,7 @@ export class ContextEngine {
       artifact: -1,
       unknown: -0.1,
     };
-    return Math.round((pathMatch * 0.7 + roleBonus[role] + 0.01) * 100) / 100;
+    return Math.round((pathMatch * 0.7 + contentMatch * 0.2 + roleBonus[role] + 0.01) * 100) / 100;
   }
 
   renderPack(pack: ContextPack): string {
@@ -140,8 +196,8 @@ export class ContextEngine {
   }
 
   renderPackWithContent(pack: ContextPack): string {
-    const maxTotal = Math.min(pack.budget.maxBytes || 40_000, 40_000);
-    const perFile = 4_000;
+    const maxTotal = Math.min(pack.budget.maxBytes || DEFAULT_CONTEXT_BUDGET.maxBytes, 160_000);
+    const perFile = Math.max(4_000, Math.min(8_000, Math.floor(maxTotal / Math.max(1, pack.budget.maxFiles))));
     const parts: string[] = [this.renderPack(pack)];
 
     const targets: FileRef[] = [...pack.primaryFiles, ...pack.testFiles];

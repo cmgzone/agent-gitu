@@ -12,6 +12,10 @@ export interface LlmOptions {
   json?: boolean;
   effort?: 'low' | 'medium' | 'high' | 'max';
   signal?: AbortSignal;
+  /** Max retries for transient HTTP errors (429, 5xx). Defaults to 3. */
+  retries?: number;
+  /** Base backoff delay in ms between retries (doubles each attempt). Defaults to 1000. */
+  retryDelayMs?: number;
 }
 
 export type LlmDeltaHandler = (delta: string) => void;
@@ -25,12 +29,85 @@ export interface LlmClient {
 export class LlmError extends Error {}
 
 const LLM_REQUEST_TIMEOUT_MS = 300_000;
+const LLM_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const LLM_DEFAULT_RETRIES = 3;
+const LLM_RETRY_BASE_MS = 1_000;
 
 function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
   if (!signal) return timeout;
   const agg = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
   return agg ? agg([signal, timeout]) : signal;
+}
+
+function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    if (signal) {
+      signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          reject(new Error('LLM request aborted'));
+        },
+        { once: true },
+      );
+    }
+  });
+}
+
+function llmErrorMessage(status: number, text: string): string {
+  const trimmed = text.slice(0, 300);
+  let message = trimmed;
+  let type = '';
+  try {
+    const parsed = JSON.parse(text) as { error?: { type?: string; message?: string } };
+    if (parsed.error?.message) message = parsed.error.message;
+    if (parsed.error?.type) type = parsed.error.type;
+  } catch {
+    /* keep raw text */
+  }
+  if (status === 429 || type === 'FreeUsageLimitError' || /rate limit/i.test(message)) {
+    return `LLM rate limited (HTTP 429): ${message} — try again later or switch to a less busy model`;
+  }
+  if (type === 'CreditsError' || /insufficient balance/i.test(message)) {
+    return `LLM HTTP ${status} (no credits): ${message} — this is a paid model; add credits or subscribe to use it`;
+  }
+  if (status === 403 || /access.*denied|not eligible|opt in/i.test(message)) {
+    return `LLM HTTP 403 (model not available to you): ${message} — your plan/key can't use this model; switch to a model your plan includes (free ones are marked "free")`;
+  }
+  if (status === 503 || type === 'server_error' || /unavailable/i.test(message)) {
+    return `LLM HTTP 503 (upstream unavailable): ${message} — try again later or pick a different model`;
+  }
+  return `LLM HTTP ${status}: ${message}`;
+}
+
+async function postChatCompletion(opts: {
+  baseUrl: string;
+  apiKey: string;
+  body: Record<string, unknown>;
+  signal?: AbortSignal;
+  retries?: number;
+  retryDelayMs?: number;
+}): Promise<Response> {
+  const maxRetries = opts.retries ?? LLM_DEFAULT_RETRIES;
+  const baseDelay = opts.retryDelayMs ?? LLM_RETRY_BASE_MS;
+  let res: Response | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    res = await fetch(`${opts.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${opts.apiKey}`,
+      },
+      body: JSON.stringify(opts.body),
+      signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
+    });
+    if (!LLM_RETRYABLE_STATUS.has(res.status) || attempt === maxRetries) return res;
+    const delay = Math.min(baseDelay * 2 ** attempt, 8000) + Math.random() * 200;
+    await sleep(delay, opts.signal);
+  }
+  return res!;
 }
 
 export interface OpenAiCompatConfig {
@@ -67,21 +144,20 @@ export class OpenAiCompatClient implements LlmClient {
 
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
+      res = await postChatCompletion({
+        baseUrl: this.baseUrl,
+        apiKey: this.apiKey,
+        body,
+        signal: opts.signal,
+        retries: opts.retries,
+        retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
       throw new LlmError(`LLM request failed: ${(err as Error).message}`);
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new LlmError(`LLM HTTP ${res.status}: ${text.slice(0, 300)}`);
+      throw new LlmError(llmErrorMessage(res.status, text));
     }
     const data = (await res.json()) as {
       choices?: { message?: { content?: string } }[];
@@ -119,21 +195,20 @@ export class OpenAiCompatClient implements LlmClient {
     const body = this.buildBody(messages, opts, true);
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
+      res = await postChatCompletion({
+        baseUrl: this.baseUrl,
+        apiKey: this.apiKey,
+        body,
+        signal: opts.signal,
+        retries: opts.retries,
+        retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
       throw new LlmError(`LLM request failed: ${(err as Error).message}`);
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      if (!res.ok) throw new LlmError(`LLM HTTP ${res.status}: ${text.slice(0, 300)}`);
+      if (!res.ok) throw new LlmError(llmErrorMessage(res.status, text));
       return this.complete(messages, opts);
     }
 

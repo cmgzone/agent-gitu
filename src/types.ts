@@ -137,10 +137,22 @@ export interface CompletionReport {
   changes: string[];
   filesChanged: string[];
   verification: string[];
+  /** Structured evidence for the UI. `verification` remains for text/CLI reports. */
+  verificationDetails?: VerificationReportItem[];
   evidence: string[];
   remainingRisks: string[];
   followUps: string[];
   generatedAt: string;
+}
+
+export interface VerificationReportItem {
+  id: string;
+  kind: EvidenceKind;
+  label: string;
+  passed: boolean;
+  exitCode?: number;
+  command?: string;
+  outputExcerpt?: string;
 }
 
 export interface TaskLedgerData {

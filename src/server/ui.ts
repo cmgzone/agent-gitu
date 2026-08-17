@@ -84,6 +84,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .pill { background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
   .pill:hover { background: #f0f0ec; color: var(--text); }
   .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; max-width: 220px; }
+  .model-meta { color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
   .pill .caret { color: var(--faint); font-size: 10px; }
   .send { margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--dark); color: #fff; font-size: 14px; }
   .send:disabled { background: #c9c9c3; }
@@ -145,12 +146,23 @@ export const UI_HTML = String.raw`<!doctype html>
   .qcard .custom { width: 100%; margin-top: 6px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12px; background: #fff; }
 
   .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
-  .summary-card h2 { margin: 0 0 4px; font-size: 15px; }
+  .summary-card .summary-head { display: flex; gap: 9px; align-items: center; justify-content: space-between; }
+  .summary-card h2 { margin: 0; font-size: 15px; min-width: 0; }
+  .summary-card .summary-stats { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .summary-card .summary-stat { color: var(--muted); font: 11px var(--mono); border: 1px solid var(--border); border-radius: 999px; padding: 3px 8px; background: #fafaf8; }
   .summary-card .sec { margin-top: 12px; }
   .summary-card .sec h4 { margin: 0 0 5px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+  .summary-card .summary-copy { margin: 0; font-size: 12.5px; line-height: 1.55; white-space: pre-line; }
   .summary-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
   .summary-card li { margin: 2px 0; }
   .file-chip { display: inline-block; font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; margin: 2px 4px 2px 0; background: #fafaf8; }
+  .summary-card .verify-list { display: grid; gap: 6px; }
+  .summary-card .verify-row { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font-size: 12px; display: flex; gap: 7px; align-items: flex-start; flex-wrap: wrap; }
+  .summary-card .verify-kind { color: var(--muted); font: 10.5px var(--mono); padding-top: 3px; }
+  .summary-card .verify-label { flex: 1; min-width: 150px; line-height: 1.4; }
+  .summary-card .verify-row details { width: 100%; color: var(--muted); font-size: 11px; }
+  .summary-card .verify-row summary { cursor: pointer; width: fit-content; }
+  .summary-card .verify-row pre { margin: 6px 0 0; padding: 7px; max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; background: #fafaf8; font: 10.5px var(--mono); color: var(--muted); }
 
   @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -406,14 +418,6 @@ export const UI_HTML = String.raw`<!doctype html>
     return '<span class="chip">' + esc(status || 'idle') + '</span>';
   }
 
-  function looksChat(text) {
-    var t = String(text || '').trim().toLowerCase();
-    if (!t || t.length > 120) return false;
-    if (/(https?:|localhost|\bwww\.|\.[a-z]{2,6}\b)/.test(t)) return false;
-    if (/\b(fix|build|create|make|write|add|implement|refactor|deploy|install|run|test|explore|open|navigate|screenshot|scrape|search|analyz|review|update|change|delete|remove|rename|generate|design|compare|improve|optimize|debug|check|setup|set up)\b/.test(t)) return false;
-    return true;
-  }
-
   function renderSidebar() {
     api('/api/runs').then(function (sessions) {
       var byProj = {};
@@ -456,7 +460,7 @@ export const UI_HTML = String.raw`<!doctype html>
         el.onclick = function () {
           var s = byId[el.getAttribute('data-run')];
           if (s && s.projectPath) S.lastProjectPath = s.projectPath;
-          openRun(el.getAttribute('data-run'));
+          openRun(el.getAttribute('data-run'), { chatish: s && s.mode === 'chat', mode: s && s.mode });
         };
       });
       $('sbScroll').querySelectorAll('[data-proj]').forEach(function (el) {
@@ -658,13 +662,62 @@ export const UI_HTML = String.raw`<!doctype html>
     $('homeProj').onclick = openFolderBrowser;
   }
 
+  function isFreeModelId(id) {
+    id = String(id || '');
+    return /-free$/i.test(id) || id === 'big-pickle';
+  }
+
+  function modelInfo(value) {
+    var parts = String(value || '').split('::');
+    var pid = parts[0], mid = parts[1];
+    for (var i = 0; i < S.models.length; i++) {
+      var p = S.models[i];
+      if (p.id !== pid) continue;
+      for (var j = 0; j < p.models.length; j++) if (p.models[j].id === mid) return p.models[j];
+    }
+    return null;
+  }
+  function formatTokens(n) {
+    if (typeof n !== 'number') return '';
+    if (n >= 1000000) return (Math.round(n / 100000) / 10) + 'M';
+    return Math.round(n / 1000) + 'K';
+  }
+  function formatPrice(n) {
+    if (typeof n !== 'number') return '';
+    if (n === 0) return 'free';
+    if (n < 0.01) return '$' + n.toFixed(4);
+    if (n < 1) return '$' + n.toFixed(2);
+    return '$' + (Math.round(n * 100) / 100).toFixed(2);
+  }
+  function modelMetaText(model) {
+    if (!model) return 'limits and pricing unavailable';
+    var meta = model.metadata || {};
+    var parts = [];
+    if (meta.contextTokens) parts.push(formatTokens(meta.contextTokens) + ' context');
+    if (typeof meta.inputPricePerMillion === 'number' && typeof meta.outputPricePerMillion === 'number') {
+      parts.push(formatPrice(meta.inputPricePerMillion) + ' in / ' + formatPrice(meta.outputPricePerMillion) + ' out per 1M');
+    } else if (model.free) {
+      parts.push('free');
+    }
+    return parts.length ? parts.join(' · ') : 'limits and pricing unavailable';
+  }
+  function updateModelMeta() {
+    var el = $('modelMeta');
+    if (!el) return;
+    var m = modelInfo(S.sel.model);
+    el.textContent = modelMetaText(m);
+    el.title = m && m.metadata ? 'Live provider pricing and token limits via Models.dev' : 'Provider did not publish live pricing/limits for this model';
+  }
+
   function modelOptionsHtml() {
     var out = '';
     S.models.forEach(function (p) {
-      out += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(p.id + ' / ' + titleCase(p.defaultModel)) + '</option>';
+      var defaultInfo = null;
+      for (var d = 0; d < p.models.length; d++) if (p.models[d].id === p.defaultModel) defaultInfo = p.models[d];
+      out += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(p.id + ' / ' + titleCase(p.defaultModel)) + (isFreeModelId(p.defaultModel) ? ' (free)' : '') + (defaultInfo ? ' — ' + esc(modelMetaText(defaultInfo)) : '') + '</option>';
       p.models.forEach(function (m) {
         if (m.id === p.defaultModel) return;
-        out += '<option value="' + esc(p.id + '::' + m.id) + '">' + esc(p.id + ' / ' + titleCase(m.id)) + '</option>';
+        out += '<option value="' + esc(p.id + '::' + m.id) + '">' + esc(p.id + ' / ' + titleCase(m.id)) + (m.free ? ' (free)' : '') + ' — ' + esc(modelMetaText(m)) + '</option>';
       });
     });
     return out;
@@ -681,7 +734,7 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function controlsHtml() {
     return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span>' +
+      '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span><span class="model-meta" id="modelMeta"></span>' +
       '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill" id="attachBtn" title="attach images (vision models only)" style="cursor:pointer">' + icon('image') + '</span>' +
       '<input type="file" id="attachInput" accept="image/*" multiple hidden>';
@@ -774,12 +827,18 @@ export const UI_HTML = String.raw`<!doctype html>
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
     if (wf) wf.onchange = function () { S.sel.wf = wf.value; persist(); };
-    if (model) model.onchange = function () { S.sel.model = model.value; fillEffort('effort', provOf(model.value)); persist(); updateAttachState(); };
+    if (model) model.onchange = function () {
+      S.sel.model = model.value;
+      var activeSession = S.sessions[S.active];
+      if (activeSession) activeSession.modelOverride = true;
+      fillEffort('effort', provOf(model.value)); persist(); updateAttachState(); updateModelMeta();
+    };
     if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
     var attach = $('attachBtn'), input = $('attachInput');
     if (attach) attach.onclick = function () { if (!attach.hasAttribute('disabled') && input) input.click(); };
     if (input) input.onchange = function () { onAttachFiles(input.files); input.value = ''; };
     updateAttachState();
+    updateModelMeta();
     renderThumbs();
   }
   function updateAttachState() {
@@ -794,7 +853,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var goal = $('goal') ? $('goal').value.trim() : '';
     if (!goal) { if ($('goal')) $('goal').focus(); return; }
     var mc = (S.sel.model || '').split('::');
-    var chatish = S.sel.wf === 'chat' || (S.sel.wf !== 'auto' && looksChat(goal));
+    // Workflow is an explicit user choice.  Guessing from a short prompt was
+    // able to turn an unfinished task into a conversation and hide its state.
+    var chatish = S.sel.wf === 'chat';
     api('/api/runs', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -823,6 +884,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
     sess.nodes = {};
     if (opts && opts.chatish !== undefined) sess.chatish = opts.chatish;
+    // Reflect the session's real mode in the workflow dropdown so changing it
+    // and sending is an explicit switch (chat -> plan/build, or the reverse).
+    if (opts && opts.mode) S.sel.wf = opts.mode === 'chat' ? 'chat' : opts.mode === 'fast' ? 'auto' : 'review';
     renderSidebar();
     renderTopbar();
     $('view').innerHTML =
@@ -898,14 +962,32 @@ export const UI_HTML = String.raw`<!doctype html>
   function sendFollow(text) {
     var runId = S.active;
     var sess = S.sessions[runId];
-    if (sess && sess.session && sess.session.status !== 'running') sess.chatish = looksChat(text);
+    if (sess && sess.session && sess.session.status !== 'running') {
+      // A continuation cannot change the kind of its existing session.  In
+      // particular, "continue" must not make a failed standard task look like
+      // a chat session and hide its ledger/transcript.
+      sess.chatish = sess.session.mode === 'chat';
+      renderRunSide(runId);
+    }
     var imgs = S.pendingImages.length ? S.pendingImages : undefined;
-    api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, images: imgs }) })
+    var mc = (S.sel.model || '').split('::');
+    var useSelectedModel = Boolean(sess && (sess.modelOverride || !sess.session || !sess.session.provider || !sess.session.model));
+    // Show the outgoing message immediately. The server will replace this
+    // pending display with its durable user-msg event once it is recorded.
+    appendPendingUserMessage(runId, text);
+    var follow = $('follow');
+    if (follow) follow.value = '';
+    api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      text: text, images: imgs,
+      provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
+      // The workflow dropdown drives continuations too: an explicit selection
+      // switches an existing session's mode (chat <-> plan/build).
+      mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
+      review: S.sel.wf === 'review' ? S.settings.review : false
+    }) })
       .then(function () {
         S.pendingImages = [];
         renderThumbs();
-        var f = $('follow');
-        if (f) f.value = '';
         setWorking('Thinking…');
         if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
       })
@@ -925,9 +1007,21 @@ export const UI_HTML = String.raw`<!doctype html>
               projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
               images: imgs
             })
-          }).then(function (r) { openRun(r.runId); }).catch(function (e2) { toast(e2.message, true); });
+          }).then(function (r) { openRun(r.runId, { chatish: r.mode === 'chat' }); }).catch(function (e2) { toast(e2.message, true); });
         } else toast(msg, true);
       });
+  }
+
+  function appendPendingUserMessage(runId, text) {
+    var stream = $('stream');
+    var sess = S.sessions[runId];
+    if (!stream || !sess) return;
+    if (!sess.pendingUserMessages) sess.pendingUserMessages = [];
+    sess.pendingUserMessages.push(text);
+    sess.nodes.abubble = null;
+    sess.nodes.thought = null;
+    appendLive(stream, userBubble(text));
+    stream.scrollTop = stream.scrollHeight;
   }
 
   function closeThought(runId) {
@@ -1046,7 +1140,13 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
-    if (text.indexOf('user-msg ') === 0) { sess.nodes.abubble = null; sess.nodes.thought = null; appendLive(stream, userBubble(text.slice(9))); stream.scrollTop = stream.scrollHeight; return; }
+    if (text.indexOf('user-msg ') === 0) {
+      var userText = text.slice(9);
+      var pending = sess && sess.pendingUserMessages;
+      var pendingAt = pending ? pending.indexOf(userText) : -1;
+      if (pendingAt >= 0) { pending.splice(pendingAt, 1); return; }
+      sess.nodes.abubble = null; sess.nodes.thought = null; appendLive(stream, userBubble(userText)); stream.scrollTop = stream.scrollHeight; return;
+    }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
       qm.className = 'meta-line';
@@ -1159,6 +1259,23 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess) return;
       sess.session = session;
+      // On opening a persisted task, place its model in the composer. That
+      // makes continuing it stable; a later picker change is deliberate and
+      // is sent as a one-session model override.
+      if (!sess.modelSynced && !sess.modelOverride && session.provider && session.model) {
+        var sessionModel = session.provider + '::' + session.model;
+        if (modelInfo(sessionModel)) {
+          S.sel.model = sessionModel;
+          var picker = $('model');
+          if (picker) picker.value = sessionModel;
+          updateAttachState();
+          updateModelMeta();
+        }
+        sess.modelSynced = true;
+      }
+      // Session mode is durable. Never infer chat mode from an empty ledger:
+      // a task can fail before it has planned anything and still be a task.
+      sess.chatish = session.mode === 'chat';
       renderTopbar();
       renderApprovals(runId, session);
       renderPlanReview(runId, session);
@@ -1172,7 +1289,6 @@ export const UI_HTML = String.raw`<!doctype html>
           var s2 = S.sessions[runId];
           if (s2) {
             s2.ledger = ledger;
-            if (session.status !== 'running' && !s2.chatish && !ledger.acceptanceCriteria.length && !ledger.plan.length && !ledger.actions.length) s2.chatish = true;
             renderRunSide(runId);
             if (s2.chatish) { var pp = $('progress'); if (pp) pp.style.display = 'none'; } else updateProgress(ledger);
           }
@@ -1349,6 +1465,91 @@ export const UI_HTML = String.raw`<!doctype html>
     };
   }
 
+  function reportableFile(file) {
+    var path = String(file || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    var lower = path.toLowerCase();
+    if (!path || /(^|\/)(?:\.hermes|node_modules|coverage|\.cache|\.freebuff)(?:\/|$)/.test(lower)) return false;
+    return !/(^|\/)(?:[^/]*[_-]tmp|tmp[_-][^/]*)\.[^/]+$/i.test(path);
+  }
+
+  function reportFiles(report) {
+    var seen = {};
+    return (report.filesChanged || []).filter(function (file) {
+      if (!reportableFile(file) || seen[file]) return false;
+      seen[file] = true;
+      return true;
+    });
+  }
+
+  function readableSummary(summary) {
+    return String(summary || '')
+      .replace(/\s+\((\d+)\)\s+/g, function (_all, number) { return '\n' + number + '. '; })
+      .replace(/\s+•\s+/g, '\n• ')
+      .trim();
+  }
+
+  function shortText(text, limit) {
+    text = String(text || '').replace(/\s+/g, ' ').trim();
+    return text.length > limit ? text.slice(0, Math.max(1, limit - 1)).trim() + '…' : text;
+  }
+
+  function readableCheckLabel(label) {
+    label = String(label || '').replace(/\s+/g, ' ').trim();
+    var lower = label.toLowerCase();
+    if (/\bnpm\s+(?:run\s+)?test\b/.test(lower)) return 'Project test suite';
+    if (/\bnpm\s+run\s+(?:build|lint|typecheck)\b/.test(lower)) return shortText(label.match(/npm\s+run\s+\S+/i)?.[0] || label, 100);
+    if (/^\$?\s*node\s+-e\b/i.test(label)) return 'Node verification command';
+    return shortText(label, 150);
+  }
+
+  function compactVerification(text) {
+    var raw = String(text || '').replace(/\s+/g, ' ').trim();
+    var match = raw.match(/^(PASS|FAIL)\s*\[([^\]]+)\]\s*(.*)$/i);
+    var status = match ? match[1].toUpperCase() : (/\bFAIL\b/i.test(raw) ? 'FAIL' : 'PASS');
+    var kind = match ? match[2] : 'check';
+    var label = match ? match[3] : raw;
+    label = readableCheckLabel(label);
+    return { passed: status === 'PASS', kind: kind, label: label || 'Verification recorded', details: raw };
+  }
+
+  function reportChecks(report) {
+    if (Array.isArray(report.verificationDetails) && report.verificationDetails.length) {
+      return report.verificationDetails.map(function (item) {
+        var details = '';
+        if (item.command) details += 'Command\n' + item.command;
+        if (item.outputExcerpt) details += (details ? '\n\n' : '') + 'Output\n' + item.outputExcerpt;
+        return { passed: item.passed !== false, kind: item.kind || 'check', label: readableCheckLabel(item.label || 'Verification recorded'), details: details };
+      });
+    }
+    return (report.verification || []).map(compactVerification);
+  }
+
+  function checkRow(check) {
+    var details = check.details
+      ? '<details><summary>Show command and output</summary><pre>' + esc(check.details) + '</pre></details>'
+      : '';
+    return '<div class="verify-row"><span class="chip ' + (check.passed ? 'ok' : 'bad') + '">' + (check.passed ? 'PASS' : 'FAIL') + '</span>' +
+      '<span class="verify-kind">' + esc(check.kind) + '</span><span class="verify-label">' + esc(check.label) + '</span>' + details + '</div>';
+  }
+
+  function verificationSection(checks) {
+    if (!checks.length) return '';
+    var shown = checks.slice(0, 6);
+    var html = '<div class="sec"><h4>Verification</h4><div class="verify-list">' + shown.map(checkRow).join('') + '</div>';
+    if (checks.length > shown.length) {
+      html += '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Show ' + (checks.length - shown.length) + ' more checks</summary><div class="verify-list" style="margin-top:7px">' + checks.slice(shown.length).map(checkRow).join('') + '</div></details>';
+    }
+    return html + '</div>';
+  }
+
+  function reportSideCard(report) {
+    var checks = reportChecks(report);
+    var passed = checks.filter(function (check) { return check.passed; }).length;
+    return '<div class="summary-card" style="margin:12px 0 0"><div class="summary-head"><h3 style="margin:0;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Completion report</h3><span class="chip ' + (report.status === 'complete' ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
+      '<p class="summary-copy" style="margin-top:9px">' + esc(shortText(readableSummary(report.summary), 360)) + '</p>' +
+      '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + reportFiles(report).length + ' product files</span></div></div>';
+  }
+
   function appendSummary(runId, session) {
     var stream = $('stream');
     if (!stream) return;
@@ -1363,16 +1564,20 @@ export const UI_HTML = String.raw`<!doctype html>
         lineCounts[parts[0]] = (lineCounts[parts[0]] || 0) + (parseInt(parts[1], 10) || 0);
       }
     });
+    var files = reportFiles(r);
+    var checks = reportChecks(r);
+    var passed = checks.filter(function (check) { return check.passed; }).length;
     var div = document.createElement('div');
     div.className = 'summary-card';
-    var html = '<h2>' + esc(session.goal) + '</h2>' + chipFor(session.status);
-    html += '<div class="sec"><h4>What was done</h4><p style="margin:0;font-size:12.5px">' + esc(r.summary) + '</p></div>';
-    if (r.filesChanged.length) {
-      html += '<div class="sec"><h4>Files</h4><ul>' + r.filesChanged.map(function (f) {
+    var html = '<div class="summary-head"><h2>' + esc(session.goal) + '</h2>' + chipFor(session.status) + '</div>';
+    html += '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + files.length + ' product files changed</span></div>';
+    html += '<div class="sec"><h4>Outcome</h4><p class="summary-copy">' + esc(readableSummary(r.summary)) + '</p></div>';
+    if (files.length) {
+      html += '<div class="sec"><h4>Product files changed</h4><ul>' + files.map(function (f) {
         return '<li><span class="file-chip">' + esc(f) + '</span>' + (lineCounts[f] ? ' <span style="color:var(--green);font-family:var(--mono);font-size:11px">+' + lineCounts[f] + ' lines</span>' : '') + '</li>';
       }).join('') + '</ul></div>';
     }
-    if (r.verification.length) html += '<div class="sec"><h4>Verification evidence</h4><ul>' + r.verification.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    html += verificationSection(checks);
     if (r.remainingRisks.length) html += '<div class="sec"><h4>Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
     if (r.followUps.length) html += '<div class="sec"><h4>Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
     div.innerHTML = html;
@@ -1389,10 +1594,14 @@ export const UI_HTML = String.raw`<!doctype html>
     if (sess.side === 'browser') { showBrowserPanel(runId); return; }
     if (sess.side === 'git') { renderGitPanel(runId); stopBrowserPoll(); return; }
     stopBrowserPoll();
-    if (sess.chatish) { body.innerHTML = '<div class="empty" style="padding:16px 6px">Conversation session — no task state. Send a task message (e.g. "fix…", "build…") to switch to agent mode.</div>'; return; }
+    if (sess.chatish) { body.innerHTML = '<div class="empty" style="padding:16px 6px">Conversation session — no task state.</div>'; return; }
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
-    var html = '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
+    var failure = sess.session && sess.session.error;
+    var html = failure
+      ? '<div style="margin:0 0 14px;padding:10px;border:1px solid #f2caca;border-radius:9px;background:#fff5f5;color:#9b2828;font-size:12px;line-height:1.45"><b>Last attempt failed.</b> ' + esc(failure) + '<br>Choose an available model in the composer, then send a message to retry. Your task and history are preserved.</div>'
+      : '';
+    html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
     if (!L.acceptanceCriteria.length) html += '<div class="empty">none set yet</div>';
     L.acceptanceCriteria.forEach(function (c) {
       html += '<div class="crit ' + (c.satisfied ? 'done' : '') + '"><span class="dot"></span><div>' + esc(c.text) +
@@ -1409,12 +1618,13 @@ export const UI_HTML = String.raw`<!doctype html>
       html += '<div class="step"><span class="st ' + (e.passed ? 'done' : 'failed') + '">' + (e.passed ? 'PASS' : 'FAIL') + '</span><div>' + esc(e.label) + '</div></div>';
     });
     html += '<div class="section-h">Files changed</div>';
-    html += L.filesChanged.length ? L.filesChanged.map(function (f) { return '<span class="file-chip">' + esc(f) + '</span>'; }).join('') : '<div class="empty">none</div>';
+    var visibleFiles = L.filesChanged.filter(reportableFile);
+    html += visibleFiles.length ? visibleFiles.map(function (f) { return '<span class="file-chip">' + esc(f) + '</span>'; }).join('') : '<div class="empty">none</div>';
     if (L.blockers.length) {
       html += '<div class="section-h">Blockers</div>';
       L.blockers.forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
     }
-    if (L.report) html += '<div class="summary-card" style="margin:12px 0 0"><h3 style="margin:0 0 8px;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Completion report</h3><pre style="font-family:var(--mono);font-size:12px;white-space:pre-wrap;margin:0">' + esc(reportText(L.report)) + '</pre></div>';
+    if (L.report) html += reportSideCard(L.report);
     body.innerHTML = html;
   }
 
@@ -1824,7 +2034,7 @@ export const UI_HTML = String.raw`<!doctype html>
             '<div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:6px">' +
             shown.map(function (m) {
               var val = p.id + '::' + m.id;
-              return '<button class="btn ' + (cur === val ? 'dark' : 'ghost') + '" data-model="' + esc(val) + '" style="padding:3px 9px;font-size:11px" title="' + (m.vision ? 'supports images' : 'text only') + '">' + esc(m.id) + (m.vision ? ' ◉' : '') + '</button>';
+              return '<button class="btn ' + (cur === val ? 'dark' : 'ghost') + '" data-model="' + esc(val) + '" style="padding:3px 9px;font-size:11px" title="' + esc((m.vision ? 'supports images' : 'text only') + (m.free ? ' · free (no credits needed)' : '') + ' · ' + modelMetaText(m)) + '">' + esc(m.id) + (m.vision ? ' ◉' : '') + (m.free ? ' (free)' : '') + '<span class="meta"> · ' + esc(modelMetaText(m)) + '</span></button>';
             }).join('') +
             (models.length > shown.length ? '<span class="meta">+' + (models.length - shown.length) + ' more</span>' : '') +
             '</div>' +
@@ -1941,7 +2151,7 @@ export const UI_HTML = String.raw`<!doctype html>
           provs.forEach(function (p) {
             out += '<optgroup label="' + esc(p.id) + (p.hasKey ? '' : ' (no key)') + '">';
             (p.models || []).forEach(function (m) {
-              out += '<option value="' + esc(p.id + '::' + m.id) + '"' + (sel === p.id + '::' + m.id ? ' selected' : '') + '>' + esc(m.id) + (m.vision ? ' ◉' : '') + '</option>';
+              out += '<option value="' + esc(p.id + '::' + m.id) + '"' + (sel === p.id + '::' + m.id ? ' selected' : '') + '>' + esc(m.id) + (m.vision ? ' ◉' : '') + (m.free ? ' (free)' : '') + '</option>';
             });
             out += '</optgroup>';
           });

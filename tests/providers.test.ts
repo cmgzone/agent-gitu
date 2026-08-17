@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROVIDERS, ProviderError, fetchLiveModels, modelSupportsImages, resolveLlm } from '../src/llm/providers.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, resolveLlm } from '../src/llm/providers.js';
 
 const WS_URL = 'https://ws-rn94romkyqmcy5ka.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
 
@@ -121,6 +121,53 @@ describe('fetchLiveModels', () => {
       throw new Error('network down');
     }) as typeof fetch;
     expect(await fetchLiveModels({ baseUrl: 'https://example.test/v1', apiKey: 'x', timeoutMs: 100 })).toBeUndefined();
+  });
+});
+
+describe('fetchModelCatalog', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('maps live context limits and provider-specific token prices', async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          openai: {
+            models: {
+              'gpt-test': { limit: { context: 128000, output: 16000 }, cost: { input: 0.5, output: 2, cache_read: 0.1 } },
+            },
+          },
+          opencode: {
+            models: {
+              'shared-model': { limit: { context: 200000 }, cost: { input: 1, output: 4 } },
+            },
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )) as typeof fetch;
+
+    const catalog = await fetchModelCatalog();
+    expect(modelMetadataFor(catalog, 'openai', 'gpt-test')).toMatchObject({
+      contextTokens: 128000,
+      outputTokens: 16000,
+      inputPricePerMillion: 0.5,
+      outputPricePerMillion: 2,
+      cachedInputPricePerMillion: 0.1,
+    });
+    expect(modelMetadataFor(catalog, 'opencode-zen', 'shared-model')).toMatchObject({ contextTokens: 200000, inputPricePerMillion: 1, outputPricePerMillion: 4 });
+  });
+});
+
+describe('isFreeModel', () => {
+  it('flags opencode free promotional models and keeps paid ones clean', () => {
+    for (const free of ['hy3-free', 'deepseek-v4-flash-free', 'mimo-v2.5-free', 'nemotron-3-ultra-free', 'nemotron-3.5-lightning-free', 'laguna-s-2.1-free', 'big-pickle']) {
+      expect(isFreeModel(free)).toBe(true);
+    }
+    for (const paid of ['deepseek-v4-flash', 'deepseek-v4-pro', 'claude-sonnet-4-5', 'qwen3.8-max', 'gpt-5.2']) {
+      expect(isFreeModel(paid)).toBe(false);
+    }
   });
 });
 

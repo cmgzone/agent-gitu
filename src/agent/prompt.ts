@@ -74,6 +74,8 @@ PROTOCOL — each turn you MUST respond in this exact shape:
 Intake/planning actions:
 {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
 {"thought":"...","action":{"type":"set_plan","steps":[{"description":"...","verification":"how this step is verified"}]}}
+{"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
+{"thought":"...","action":{"type":"append_plan","steps":[{"description":"...","verification":"how this step is verified"}]}}  (plan the new follow-up work without erasing completed steps)
 {"thought":"...","action":{"type":"set_hypothesis","text":"current hypothesis about the problem/solution"}}
 
 Execution:
@@ -117,6 +119,7 @@ Delegate independent sub-tasks to specialist agents (max 4, run concurrently, ea
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.
 - BEFORE set_plan on a project with existing code: study the CURRENT CODE context, then read_file/search_files every file you intend to change. Your plan steps must name the concrete files and functions that actually exist in this codebase and describe real edits to them. If the context is not enough to plan confidently, read more first — do not plan from file names or guess at the implementation.
+- When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: use add_criteria, then append_plan. Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
 - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
 - Evidence ids come from verification results reported to you (ev-...).
 - If the same action failed twice, you MUST propose a different action or request_block.`;

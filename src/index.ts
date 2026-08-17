@@ -1,6 +1,7 @@
 export { Hermes, type HermesConfig, type HermesRunResult } from './agent/hermes.js';
 export { buildStateMessage, buildSystemPrompt } from './agent/prompt.js';
 export { CheckpointManager } from './checkpoint/checkpoint.js';
+export { CodeIndex, defaultIndexPath, type IndexedFile, type RefreshStats } from './context/code-index.js';
 export { ContextEngine, classifyRole, tokenize } from './context/context-engine.js';
 export { EvidenceEngine, type GateResult } from './evidence/evidence.js';
 export { Executor, type ExecuteOutcome, type ExecuteRequest } from './executor/executor.js';

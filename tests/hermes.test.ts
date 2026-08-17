@@ -363,6 +363,59 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(store.get('design')!.instructions).toContain('svg');
   }, 30000);
 
+  it('auto-learns a reusable skill after completing a task', async () => {
+    const dir = makeProject('learn');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['deploy script works'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'write deploy.sh', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'write_file', params: { path: 'deploy.sh', content: '#!/bin/sh\necho deploy\n' }, reason: 'deploy step', expected: 'file created' },
+      }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }),
+      (_n, messages) => JSON.stringify({
+        action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) },
+      }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'Deploy flow ready.', risks: [], followUps: [] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'create_skill', params: { name: 'deploy-flow', description: 'standard deploy steps for this project', instructions: '1. run tests\n2. npm run dist\n3. upload to github' }, reason: 'auto-learned from completed task', expected: 'skill saved' },
+      }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', skills: SkillStore.forProject(path.resolve(dir)) });
+    const { ledger } = await hermes.run('set up a deploy flow');
+
+    expect(ledger.data.status).toBe('completed');
+    const learned = ledger.data.actions.find((a) => a.tool === 'create_skill');
+    expect(learned?.status).toBe('success');
+    const store = SkillStore.forProject(path.resolve(dir));
+    expect(store.get('deploy-flow')).toBeTruthy();
+    expect(store.get('deploy-flow')!.instructions).toContain('dist');
+  }, 30000);
+
+  it('does not auto-learn or create skills when the user disables it', async () => {
+    const dir = makeProject('nolearn');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }),
+      (_n, messages) => JSON.stringify({
+        action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) },
+      }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'Done.', risks: [], followUps: [] } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', autoLearn: false, onEvent: (e) => events.push(e) });
+    const { ledger } = await hermes.run('do a quick task');
+
+    expect(ledger.data.status).toBe('completed');
+    expect(ledger.data.actions.some((a) => a.tool === 'create_skill')).toBe(false);
+    expect(events.some((e) => e.startsWith('learn '))).toBe(false);
+    expect(SkillStore.forProject(path.resolve(dir)).list()).toHaveLength(0);
+  }, 30000);
+
   it('delegates parallel sub-tasks to named sub-agents', async () => {
     const dir = makeProject('delegate');
     let sawDelegate = false;

@@ -1024,6 +1024,7 @@ export class HermesServer {
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
       const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : 'standard';
       const autoApprove = body['autoApprove'] === true;
+      const autoLearn = body['autoLearn'] !== false;
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
       const review = body['review'] !== false;
@@ -1067,7 +1068,7 @@ export class HermesServer {
     this.saveRegistry();
     this.pushEvent(session, `user-msg ${goal}`);
     this.sendJson(res, 202, { runId: session.runId });
-      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, images, model: resolvedInfo?.model ?? model });
+      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, autoLearn, images, model: resolvedInfo?.model ?? model });
       return;
     }
 
@@ -1295,6 +1296,7 @@ export class HermesServer {
       projectPath?: string;
       resume?: { taskId: string; message: string };
       autoApprove?: boolean;
+      autoLearn?: boolean;
       images?: { name: string; dataUrl: string }[];
       model?: string;
     },
@@ -1328,6 +1330,7 @@ export class HermesServer {
       llm,
       mode: opts.mode,
       autoApprove: opts.autoApprove ?? false,
+      autoLearn: opts.autoLearn ?? true,
       criteria: opts.criteria,
       scopeFiles: opts.scope,
       extraConstraints: opts.constraints,

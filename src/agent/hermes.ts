@@ -38,6 +38,7 @@ export interface HermesConfig {
   images?: { name: string; dataUrl: string }[];
   supportsImages?: boolean;
   resume?: { taskId: string; message: string };
+  autoLearn?: boolean;
   onEvent?: (event: string) => void;
 }
 
@@ -300,6 +301,7 @@ export class Hermes {
             : undefined,
           vision: this.config.supportsImages ?? false,
           hasBrowser: this.config.browser ? this.config.browser.available() : false,
+          autoLearn: this.config.autoLearn ?? true,
         }),
       },
     ];
@@ -687,6 +689,10 @@ export class Hermes {
     ledger.data.report = report;
     ledger.save();
 
+    if ((this.config.autoLearn ?? true) && exitReason === 'complete') {
+      await this.autoLearn(messages, ledger, executor, skills);
+    }
+
     memory.add({
       type: 'task',
       claim: `Task "${goal}" finished as ${status}: ${report.summary}`,
@@ -705,5 +711,53 @@ export class Hermes {
 
     this.emit(`done     ${status} — ${report.summary.slice(0, 160)}`);
     return { ledger, report };
+  }
+
+  private async autoLearn(
+    messages: LlmMessage[],
+    ledger: TaskLedger,
+    executor: Executor,
+    skills: SkillStore,
+  ): Promise<void> {
+    const d = ledger.data;
+    const didWork = d.actions.length > 0 && (d.filesChanged.length > 0 || d.evidence.some((e) => e.passed));
+    const alreadyLearned = d.actions.some((a) => a.tool === 'create_skill' && a.status === 'success');
+    if (!didWork || alreadyLearned) return;
+    this.emit('learn   reflecting on the completed work to extract a reusable skill');
+    const existing = skills.list().map((s) => s.name).join(', ') || '(none)';
+    messages.push({
+      role: 'user',
+      content:
+        `REFLECTION (auto-learn pass — optional, after a successful task).\n` +
+        `Goal: ${d.goal}\nSummary: ${d.report?.summary ?? ''}\nFiles changed: ${d.filesChanged.join(', ') || '(none)'}\n` +
+        `Existing skills: ${existing}\n` +
+        `If this task revealed a genuinely repeatable multi-step pattern (deploy flow, design convention, checklist, project-specific process), save it as a skill:\n` +
+        `{"thought":"...","action":{"type":"tool_call","stepId":"step-1","tool":"create_skill","params":{"name":"kebab-case-name","description":"when to use it","instructions":"step-by-step reusable knowledge"},"reason":"auto-learned from completed task","expected":"skill saved"}}\n` +
+        `Otherwise respond with: {"thought":"nothing reusable","action":{"type":"complete","summary":"nothing to learn","chat":true}}`,
+    });
+    const reply = await this.config.llm.completeStream(
+      messages,
+      { effort: this.config.effort, signal: this.abortController?.signal },
+      () => {},
+    );
+    messages.push({ role: 'assistant', content: reply });
+    const parsed = parseAction(extractJson(reply));
+    if (parsed?.type === 'tool_call' && parsed.tool === 'create_skill') {
+      const outcome = await executor.execute({
+        tool: 'create_skill',
+        params: parsed.params,
+        reason: 'auto-learned from completed task',
+        expected: 'skill saved',
+      });
+      ledger.save();
+      const name = String(parsed.params['name'] ?? 'skill');
+      this.emit(
+        outcome.result.ok
+          ? `learn   auto-saved skill "${name}"`
+          : `learn   could not save skill: ${outcome.result.output.slice(0, 200)}`,
+      );
+    } else {
+      this.emit('learn   nothing new worth saving');
+    }
   }
 }

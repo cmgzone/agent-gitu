@@ -333,7 +333,7 @@ export const UI_HTML = String.raw`<!doctype html>
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     draft: '',
     sel: { wf: 'review', model: '', effort: 'high' },
-    settings: { review: true, autoApprove: false, projectPath: '' },
+    settings: { review: true, autoApprove: false, autoLearn: true, projectPath: '' },
     setSection: 'general',
     pendingImages: []
   };
@@ -802,6 +802,7 @@ export const UI_HTML = String.raw`<!doctype html>
         mode: chatish ? 'chat' : 'standard',
         review: S.sel.wf === 'review' ? S.settings.review : false,
         autoApprove: S.settings.autoApprove,
+        autoLearn: S.settings.autoLearn,
         effort: S.sel.effort,
         projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
         scope: S.settings.scope || [],
@@ -919,6 +920,7 @@ export const UI_HTML = String.raw`<!doctype html>
               mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
               review: S.sel.wf === 'review' ? S.settings.review : false,
               autoApprove: S.settings.autoApprove,
+              autoLearn: S.settings.autoLearn,
               effort: S.sel.effort,
               projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
               images: imgs
@@ -1869,11 +1871,13 @@ export const UI_HTML = String.raw`<!doctype html>
     } else if (S.setSection === 'permissions') {
       b.innerHTML = '<h1>Permissions</h1>' +
         '<div class="setcard">' +
+        '<div class="setrow"><div class="grow"><div class="t">Auto-learn reusable skills</div><div class="d">After a successful task the agent reflects on what it did and saves any repeatable multi-step pattern (deploy flows, design conventions, checklists) as a skill with create_skill. Turn off to stop all proactive skill creation.</div></div><button class="toggle ' + (S.settings.autoLearn ? 'on' : '') + '" id="pLearn"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">In Plan mode the agent waits for your approval before building.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Auto-approve dangerous actions</div><div class="d">Skips the approval gate for destructive commands. Significantly increases risk of data loss.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Loop prevention</div><div class="d">Repeated failing actions are blocked automatically. Always on.</div></div><button class="toggle on" disabled></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Evidence gate</div><div class="d">Tasks cannot complete without passing evidence for every criterion. Always on.</div></div><button class="toggle on" disabled></button></div>' +
         '</div>';
+      $('pLearn').onclick = function () { S.settings.autoLearn = !S.settings.autoLearn; persist(); renderSettings(); };
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
       $('pAuto').onclick = function () { S.settings.autoApprove = !S.settings.autoApprove; persist(); renderSettings(); };
     } else if (S.setSection === 'workspace') {

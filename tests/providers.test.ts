@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROVIDERS, ProviderError, fetchLiveModels, resolveLlm } from '../src/llm/providers.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, modelSupportsImages, resolveLlm } from '../src/llm/providers.js';
 
 const WS_URL = 'https://ws-rn94romkyqmcy5ka.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
 
@@ -16,6 +16,23 @@ describe('provider registry', () => {
     const models = PROVIDERS['alibaba']!.models;
     for (const expected of ['qwen3.7-max', 'qwen3.7-plus', 'qwen3.6-flash', 'qwen3-coder-plus', 'deepseek-v4-pro', 'kimi-k2.7-code', 'glm-5.2']) {
       expect(models).toContain(expected);
+    }
+  });
+
+  it('registers opencode zen and go with their plan-specific endpoints and public catalogs', () => {
+    const zen = PROVIDERS['opencode-zen']!;
+    const go = PROVIDERS['opencode-go']!;
+    expect(zen.baseUrl).toBe('https://opencode.ai/zen/v1');
+    expect(go.baseUrl).toBe('https://opencode.ai/zen/go/v1');
+    expect(zen.publicModels).toBe(true);
+    expect(go.publicModels).toBe(true);
+    expect(zen.keyEnvVars).toContain('OPENCODE_API_KEY');
+    expect(go.keyEnvVars).toContain('OPENCODE_API_KEY');
+    for (const flagship of ['claude-sonnet-4-5', 'gemini-3-flash', 'gpt-5.2', 'deepseek-v4-flash']) {
+      expect(zen.models).toContain(flagship);
+    }
+    for (const open of ['qwen3.8-max', 'glm-5.2', 'kimi-k3', 'deepseek-v4-flash', 'grok-4.5']) {
+      expect(go.models).toContain(open);
     }
   });
 });
@@ -59,6 +76,17 @@ describe('resolveLlm', () => {
     expect(resolved.keyEnvVar).toBe('HERMES_ALIBABA_API_KEY');
   });
 
+  it('resolves opencode zen and go from the shared OPENCODE_API_KEY', () => {
+    const zen = resolveLlm({ provider: 'opencode-zen', env: { OPENCODE_API_KEY: 'oc-x' } });
+    expect(zen.baseUrl).toBe('https://opencode.ai/zen/v1');
+    expect(zen.keyEnvVar).toBe('OPENCODE_API_KEY');
+    expect(zen.model).toBe('claude-sonnet-4-5');
+    const go = resolveLlm({ provider: 'opencode-go', env: { HERMES_OPENCODE_API_KEY: 'oc-x' } });
+    expect(go.baseUrl).toBe('https://opencode.ai/zen/go/v1');
+    expect(go.keyEnvVar).toBe('HERMES_OPENCODE_API_KEY');
+    expect(go.model).toBe('qwen3.8-max');
+  });
+
   it('prefers generic HERMES_API_KEY as custom provider', () => {
     const resolved = resolveLlm({ env: { HERMES_API_KEY: 'sk-x', HERMES_BASE_URL: 'https://custom.test/v1' } });
     expect(resolved.providerId).toBe('custom');
@@ -93,5 +121,16 @@ describe('fetchLiveModels', () => {
       throw new Error('network down');
     }) as typeof fetch;
     expect(await fetchLiveModels({ baseUrl: 'https://example.test/v1', apiKey: 'x', timeoutMs: 100 })).toBeUndefined();
+  });
+});
+
+describe('modelSupportsImages', () => {
+  it('flags multimodal opencode models and keeps text-only ones clean', () => {
+    for (const vision of ['claude-sonnet-4-5', 'gemini-3-flash', 'gpt-5.2', 'grok-4.5', 'kimi-k3', 'glm-5.2', 'qwen3.8-max']) {
+      expect(modelSupportsImages(vision)).toBe(true);
+    }
+    for (const textOnly of ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.3-codex', 'minimax-m3']) {
+      expect(modelSupportsImages(textOnly)).toBe(false);
+    }
   });
 });

@@ -523,8 +523,12 @@ export class HermesServer {
           const keyInfo = providerKey(spec);
           let models = spec.models;
           let live = false;
-          if (keyInfo) {
-            const fetched = await fetchLiveModels({ baseUrl: spec.baseUrl, apiKey: keyInfo.key, timeoutMs: 6000 });
+          if (keyInfo || spec.publicModels) {
+            const fetched = await fetchLiveModels({
+              baseUrl: spec.baseUrl,
+              apiKey: keyInfo?.key ?? '',
+              timeoutMs: 6000,
+            });
             if (fetched && fetched.length > 0) {
               models = fetched.map((m) => m.id);
               live = true;

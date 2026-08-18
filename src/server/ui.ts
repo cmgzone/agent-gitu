@@ -86,6 +86,24 @@ export const UI_HTML = String.raw`<!doctype html>
   .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; max-width: 220px; }
   .model-meta { color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
   .pill .caret { color: var(--faint); font-size: 10px; }
+  .model-pick { position: relative; cursor: pointer; }
+  .model-pick.open, .model-pick.open:hover { background: #f0f0ec; color: var(--text); }
+  .model-pick .mp-label { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; width: 370px; max-width: calc(100vw - 48px); background: var(--card); border: 1px solid var(--border2); border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.15); padding: 6px; }
+  .model-menu input { width: 100%; border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px; font-size: 12.5px; outline: none; background: #fafaf8; color: var(--text); }
+  .model-menu input:focus { border-color: var(--accent); }
+  .model-list { max-height: 300px; overflow-y: auto; margin-top: 6px; }
+  .model-sec { position: sticky; top: 0; z-index: 1; background: var(--card); padding: 6px 10px 3px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .model-sec:first-child { padding-top: 2px; }
+  .model-item { display: block; padding: 6px 10px 7px; border-radius: 7px; cursor: pointer; font-size: 12.5px; line-height: 1.35; }
+  .model-item:hover, .model-item.hl { background: #f0f0ec; }
+  .model-item.cur { box-shadow: inset 2px 0 0 var(--accent); }
+  .model-item .mi-top { display: flex; align-items: center; gap: 8px; }
+  .model-item .mi-prov { color: var(--muted); font-size: 10.5px; flex: none; }
+  .model-item .mi-meta { margin-left: auto; color: var(--faint); font-size: 10px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58%; flex: none; }
+  .model-item .mi-name { font-weight: 600; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-item .mi-name .vmark { color: var(--blue); font-style: normal; }
+  .model-empty { color: var(--faint); font-size: 12px; padding: 10px 9px; text-align: center; }
   .send { margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--dark); color: #fff; font-size: 14px; }
   .send:disabled { background: #c9c9c3; }
 
@@ -722,6 +740,133 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     return out;
   }
+  function modelLabelText(value) {
+    var parts = String(value || '').split('::');
+    var pid = parts[0], mid = parts[1];
+    for (var i = 0; i < S.models.length; i++) {
+      var p = S.models[i];
+      if (p.id !== pid) continue;
+      for (var j = 0; j < p.models.length; j++) {
+        if (p.models[j].id !== mid) continue;
+        return p.id + ' / ' + titleCase(mid) + (p.models[j].free ? ' (free)' : '');
+      }
+      return p.id + ' / ' + titleCase(mid);
+    }
+    return String(value || '');
+  }
+  function syncModelLabel() {
+    var lab = $('modelLabel');
+    var model = $('model');
+    var text = model ? modelLabelText(model.value) : '';
+    if (lab) lab.textContent = text;
+    var pick = $('modelPick');
+    if (pick) pick.title = 'model: ' + (model ? model.value : '');
+  }
+  function modelMenuGroups(query) {
+    var q = String(query || '').toLowerCase().trim();
+    var out = [];
+    S.models.forEach(function (p) {
+      var matched = [];
+      p.models.forEach(function (m) {
+        var hay = (p.id + ' ' + m.id + ' ' + titleCase(m.id) + ' ' + modelMetaText(m)).toLowerCase();
+        if (q && hay.indexOf(q) < 0) return;
+        matched.push(m);
+      });
+      if (matched.length) out.push({ p: p, models: matched });
+    });
+    return out;
+  }
+  function renderModelMenu(query) {
+    var list = $('modelList');
+    if (!list) return;
+    var groups = modelMenuGroups(query);
+    var cur = $('model') ? $('model').value : '';
+    if (!groups.length) {
+      list.innerHTML = '<div class="model-empty">No models match “' + esc(query || '') + '”</div>';
+      return;
+    }
+    var html = '';
+    groups.forEach(function (g) {
+      html += '<div class="model-sec" title="' + esc(g.p.label || g.p.id) + '">' + esc(g.p.label || g.p.id) + '</div>';
+      g.models.forEach(function (m) {
+        var val = g.p.id + '::' + m.id;
+        html += '<div class="model-item' + (val === cur ? ' cur' : '') + '" data-val="' + esc(val) + '">' +
+          '<div class="mi-top"><span class="mi-prov">' + esc(g.p.id) + '</span>' +
+          '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span></div>' +
+          '<div class="mi-name">' + esc(titleCase(m.id)) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+          '</div>';
+      });
+    });
+    list.innerHTML = html;
+    var first = list.querySelector('.model-item');
+    if (first) first.classList.add('hl');
+  }
+  function modelMenuMove(dir) {
+    var items = $('modelList') ? $('modelList').querySelectorAll('.model-item') : [];
+    if (!items.length) return;
+    var cur = -1;
+    for (var i = 0; i < items.length; i++) if (items[i].classList.contains('hl')) { cur = i; break; }
+    var next = cur < 0 ? (dir > 0 ? 0 : items.length - 1) : (cur + dir + items.length) % items.length;
+    if (cur >= 0) items[cur].classList.remove('hl');
+    items[next].classList.add('hl');
+    if (items[next].scrollIntoView) items[next].scrollIntoView({ block: 'nearest' });
+  }
+  function pickModel(val) {
+    var model = $('model');
+    if (!model || !val) return;
+    model.value = val;
+    model.dispatchEvent(new Event('change'));
+    syncModelLabel();
+    closeModelMenu();
+  }
+  function openModelMenu() {
+    var menu = $('modelMenu'), pick = $('modelPick'), filter = $('modelFilter');
+    if (!menu || !pick) return;
+    menu.hidden = false;
+    pick.classList.add('open');
+    if (filter) {
+      filter.value = '';
+      renderModelMenu('');
+      setTimeout(function () { filter.focus(); }, 0);
+    } else renderModelMenu('');
+  }
+  function closeModelMenu() {
+    var menu = $('modelMenu'), pick = $('modelPick');
+    if (menu) menu.hidden = true;
+    if (pick) pick.classList.remove('open');
+  }
+  function bindModelMenu() {
+    var pick = $('modelPick'), filter = $('modelFilter'), menu = $('modelMenu');
+    if (!pick || !menu) return;
+    pick.onclick = function (e) {
+      if (e.target.closest('.model-menu')) return;
+      if (menu.hidden) openModelMenu(); else closeModelMenu();
+    };
+    if (filter) {
+      filter.oninput = function () { renderModelMenu(filter.value); };
+      filter.onkeydown = function (e) {
+        if (e.key === 'Enter') {
+          var hl = $('modelList').querySelector('.model-item.hl') || $('modelList').querySelector('.model-item');
+          if (hl) pickModel(hl.getAttribute('data-val'));
+          e.preventDefault();
+        } else if (e.key === 'ArrowDown') { modelMenuMove(1); e.preventDefault(); }
+        else if (e.key === 'ArrowUp') { modelMenuMove(-1); e.preventDefault(); }
+        else if (e.key === 'Escape') { closeModelMenu(); }
+        e.stopPropagation();
+      };
+    }
+    if ($('modelList')) $('modelList').onmousedown = function (e) {
+      var item = e.target.closest ? e.target.closest('.model-item') : null;
+      if (item) { e.preventDefault(); pickModel(item.getAttribute('data-val')); }
+    };
+    if (!S.modelMenuDocBound) {
+      S.modelMenuDocBound = true;
+      document.addEventListener('click', function (e) {
+        var p = $('modelPick');
+        if (p && !e.target.closest('#modelPick')) closeModelMenu();
+      });
+    }
+  }
   function provOf(v) { return v.split('::')[0]; }
   function effortLevelsFor(pid) {
     for (var i = 0; i < S.models.length; i++) if (S.models[i].id === pid) return S.models[i].effortLevels || ['low', 'medium', 'high', 'max'];
@@ -734,7 +879,8 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function controlsHtml() {
     return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill"><select id="model">' + modelOptionsHtml() + '</select><span class="caret">&#9662;</span></span><span class="model-meta" id="modelMeta"></span>' +
+      '<span class="pill model-pick" id="modelPick" title="choose model"><select id="model" hidden>' + modelOptionsHtml() + '</select><span class="mp-label" id="modelLabel"></span><span class="caret">&#9662;</span>' +
+      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models — provider, name, pricing…" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill" id="attachBtn" title="attach images (vision models only)" style="cursor:pointer">' + icon('image') + '</span>' +
       '<input type="file" id="attachInput" accept="image/*" multiple hidden>';
@@ -840,6 +986,8 @@ export const UI_HTML = String.raw`<!doctype html>
     updateAttachState();
     updateModelMeta();
     renderThumbs();
+    syncModelLabel();
+    bindModelMenu();
   }
   function updateAttachState() {
     var attach = $('attachBtn');
@@ -1268,6 +1416,7 @@ export const UI_HTML = String.raw`<!doctype html>
           S.sel.model = sessionModel;
           var picker = $('model');
           if (picker) picker.value = sessionModel;
+          syncModelLabel();
           updateAttachState();
           updateModelMeta();
         }

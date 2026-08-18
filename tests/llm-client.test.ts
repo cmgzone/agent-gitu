@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   OpenAiCompatClient,
+  DASHSCOPE_THINKING_BUDGETS,
+  effortStyleFor,
+  effortWireValue,
   extractJson,
   findXmlCallStart,
   parseXmlFunctionCall,
@@ -80,6 +83,26 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(calls()).toBe(2);
   });
 
+  it('does not issue a duplicate completion when a healthy stream yields reasoning-only content', async () => {
+    const calls = mockFetch(async () => {
+      const body = 'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: 'thinking...' } }] }) + '\n\ndata: [DONE]\n\n';
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const out = await client().completeStream(msg, {}, () => {});
+    expect(out).toBe('');
+    expect(calls()).toBe(1);
+  });
+
+  it('falls back to a single completion only when the stream is broken or unsupported', async () => {
+    const calls = mockFetch(async () => {
+      if (calls() === 1) return new Response('not an sse stream at all', { status: 200, headers: { 'content-type': 'text/html' } });
+      return jsonResponse({ choices: [{ message: { content: 'plain json' } }] });
+    });
+    const out = await client().completeStream(msg, {}, () => {});
+    expect(out).toBe('plain json');
+    expect(calls()).toBe(2);
+  });
+
   it('retries by default (no opts) on transient errors', async () => {
     const calls = mockFetch(async () => {
       if (calls() === 1) return jsonResponse({ error: { message: 'busy' } }, 429);
@@ -130,6 +153,26 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(err.message).toContain('upstream unavailable');
     expect(err.message).toContain('try again later');
     expect(calls()).toBe(1);
+  });
+});
+
+describe('effort semantics', () => {
+  it('detects the DashScope effort style from the base URL', () => {
+    expect(effortStyleFor('https://dashscope-intl.aliyuncs.com/compatible-mode/v1')).toBe('dashscope');
+    expect(effortStyleFor('https://api.openai.com/v1')).toBe('openai');
+  });
+
+  it('keeps max distinct on DashScope via thinking budgets', () => {
+    expect(DASHSCOPE_THINKING_BUDGETS['max']).toBeGreaterThan(DASHSCOPE_THINKING_BUDGETS['high']);
+    expect(DASHSCOPE_THINKING_BUDGETS['high']).toBeGreaterThan(DASHSCOPE_THINKING_BUDGETS['medium']);
+    expect(DASHSCOPE_THINKING_BUDGETS['medium']).toBeGreaterThan(DASHSCOPE_THINKING_BUDGETS['low']);
+    expect(effortWireValue('max', 'dashscope')).toBe('max');
+  });
+
+  it('collapses max to high for generic OpenAI-compatible endpoints', () => {
+    expect(effortWireValue('max', 'openai')).toBe('high');
+    expect(effortWireValue('low', 'openai')).toBe('low');
+    expect(effortWireValue('high', 'openai')).toBe('high');
   });
 });
 

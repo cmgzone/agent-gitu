@@ -840,12 +840,31 @@ export class Hermes {
         }
         case 'parallel': {
           this.emit(`parallel ${action.calls.length} concurrent tool calls`);
-          const outcomes = await Promise.all(
-            action.calls.map((c) =>
-              executor.execute({ tool: c.tool, params: c.params, reason: c.reason, expected: c.expected }),
-            ),
-          );
+          // The in-app browser is stateful: only one state-changing browser
+          // operation may run at a time.  Non-browser tools stay parallel;
+          // browser calls are serialized afterwards so a click/type/screenshot
+          // sequence never races against itself.
+          const browserCalls: { call: typeof action.calls[number]; index: number }[] = [];
+          const otherCalls: { call: typeof action.calls[number]; index: number }[] = [];
+          action.calls.forEach((call, index) => {
+            (call.tool === 'browse' ? browserCalls : otherCalls).push({ call, index });
+          });
+          const outcomes: (Awaited<ReturnType<typeof executor.execute>> | undefined)[] = new Array(action.calls.length);
+          const runOne = async (call: typeof action.calls[number], index: number): Promise<void> => {
+            outcomes[index] = await executor.execute({
+              tool: call.tool,
+              params: call.params,
+              reason: call.reason,
+              expected: call.expected,
+            });
+          };
+          await Promise.all(otherCalls.map(({ call, index }) => runOne(call, index)));
+          for (const { call, index } of browserCalls) {
+            await runOne(call, index);
+            this.emit(`browser action serialized — one state-changing operation at a time`);
+          }
           const parts = outcomes.map((o, i) => {
+            if (!o) return `[${i + 1}] (not executed)`;
             if (o.record.tool === 'run_command') {
               const kind = classifyEvidenceKind(String(action.calls[i]?.params['command'] ?? ''));
               const ev = evidence.record(ledger.data, {

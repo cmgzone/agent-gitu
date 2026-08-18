@@ -931,10 +931,18 @@ export const UI_HTML = String.raw`<!doctype html>
     for (var i = 0; i < S.models.length; i++) if (S.models[i].id === pid) return S.models[i].effortLevels || ['low', 'medium', 'high', 'max'];
     return ['low', 'medium', 'high', 'max'];
   }
+  function effortMaxHint(pid) {
+    for (var i = 0; i < S.models.length; i++) if (S.models[i].id === pid) return S.models[i].maxEffort || 'collapses-to-high';
+    return 'collapses-to-high';
+  }
   function fillEffort(id, pid) {
     var el = $(id);
     if (!el) return;
-    el.innerHTML = effortLevelsFor(pid).map(function (l) { return '<option value="' + l + '">' + l + '</option>'; }).join('');
+    var collapses = effortMaxHint(pid) === 'collapses-to-high';
+    el.innerHTML = effortLevelsFor(pid).map(function (l) {
+      var label = l === 'max' && collapses ? 'max (= high)' : l;
+      return '<option value="' + l + '">' + label + '</option>';
+    }).join('');
   }
   function controlsHtml() {
     return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +

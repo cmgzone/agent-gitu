@@ -38,6 +38,33 @@ export interface LlmClient {
 
 export class LlmError extends Error {}
 
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * DashScope's compatible mode exposes real effort budgets (thinking tokens),
+ * so every level is genuinely distinct.  Generic OpenAI-compatible endpoints
+ * only accept reasoning_effort low|medium|high; "max" collapses to "high"
+ * there.  Exported so the UI can label levels honestly per provider.
+ */
+export type EffortStyle = 'dashscope' | 'openai';
+
+export const DASHSCOPE_THINKING_BUDGETS: Record<EffortLevel, number> = {
+  low: 1024,
+  medium: 4096,
+  high: 16384,
+  max: 38912,
+};
+
+export function effortStyleFor(baseUrl: string): EffortStyle {
+  return /aliyuncs|dashscope/i.test(baseUrl) ? 'dashscope' : 'openai';
+}
+
+/** The wire-level value for an effort level on a given provider style. */
+export function effortWireValue(effort: EffortLevel, style: EffortStyle): string {
+  if (style === 'dashscope') return effort;
+  return effort === 'max' ? 'high' : effort;
+}
+
 const LLM_REQUEST_TIMEOUT_MS = 300_000;
 const LLM_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const LLM_DEFAULT_RETRIES = 3;
@@ -215,12 +242,12 @@ export class OpenAiCompatClient implements LlmClient {
     }
     if (opts.json) body['response_format'] = { type: 'json_object' };
     if (opts.effort) {
-      if (/aliyuncs|dashscope/i.test(this.baseUrl)) {
+      const style = effortStyleFor(this.baseUrl);
+      if (style === 'dashscope') {
         body['enable_thinking'] = opts.effort !== 'low';
-        const budgets: Record<string, number> = { low: 1024, medium: 4096, high: 16384, max: 38912 };
-        body['thinking_budget'] = budgets[opts.effort] ?? 4096;
+        body['thinking_budget'] = DASHSCOPE_THINKING_BUDGETS[opts.effort];
       } else {
-        body['reasoning_effort'] = opts.effort === 'max' ? 'high' : opts.effort;
+        body['reasoning_effort'] = effortWireValue(opts.effort, 'openai');
       }
     }
     return body;
@@ -248,6 +275,8 @@ export class OpenAiCompatClient implements LlmClient {
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
       if (!res.ok) throw new LlmError(llmErrorMessage(res.status, text));
+      // Streaming is not supported by this endpoint (no body); fall back to a
+      // single non-stream completion.
       return this.complete(messages, opts);
     }
 
@@ -257,37 +286,55 @@ export class OpenAiCompatClient implements LlmClient {
     let full = '';
     let reasoning = '';
     let streamUsage: LlmUsage | undefined;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline: number;
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline).trim();
-        buffer = buffer.slice(newline + 1);
-        if (!line.startsWith('data:')) continue;
-        const payload = line.slice(5).trim();
-        if (payload === '[DONE]') continue;
-        try {
-          const json = JSON.parse(payload) as {
-            choices?: { delta?: { content?: string; reasoning_content?: string }; message?: { content?: string } }[];
-            usage?: unknown;
-          };
-          const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
-          if (delta) {
-            full += delta;
-            onDelta(delta);
+    let sawEvent = false;
+    let streamFailed = false;
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (payload === '[DONE]') {
+            sawEvent = true;
+            continue;
           }
-          const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
-          if (reasonDelta) reasoning += reasonDelta;
-          const chunkUsage = parseUsage(json.usage);
-          if (chunkUsage) streamUsage = chunkUsage;
-        } catch {
-          /* partial line */
+          try {
+            const json = JSON.parse(payload) as {
+              choices?: { delta?: { content?: string; reasoning_content?: string }; message?: { content?: string } }[];
+              usage?: unknown;
+            };
+            sawEvent = true;
+            const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
+            if (delta) {
+              full += delta;
+              onDelta(delta);
+            }
+            const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
+            if (reasonDelta) reasoning += reasonDelta;
+            const chunkUsage = parseUsage(json.usage);
+            if (chunkUsage) streamUsage = chunkUsage;
+          } catch {
+            /* partial line */
+          }
         }
       }
+    } catch {
+      // The connection died mid-stream; the content we already forwarded is
+      // unreliable, so retry as a single completion instead of returning a
+      // truncated answer.
+      streamFailed = true;
     }
-    if (!full) return this.complete(messages, opts);
+    if (streamFailed || !sawEvent) {
+      // Only fall back when the stream itself was broken or unsupported.  A
+      // healthy stream that produced reasoning-only or empty content must NOT
+      // trigger a second (paid) completion request.
+      return this.complete(messages, opts);
+    }
     this.lastReasoning = reasoning || undefined;
     if (streamUsage && opts.onUsage) opts.onUsage(streamUsage);
     return full;

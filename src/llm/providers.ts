@@ -9,6 +9,8 @@ export interface ProviderSpec {
   defaultModel: string;
   models: string[];
   effortLevels: string[];
+  /** Whether "max" effort is a genuinely distinct level on this provider. DashScope has real thinking budgets; generic OpenAI-compatible endpoints collapse max → high. */
+  maxEffort?: 'distinct' | 'collapses-to-high';
   /** Model catalog is publicly fetchable without an API key (e.g. OpenCode Zen / Go). */
   publicModels?: boolean;
 }
@@ -44,6 +46,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
       'glm-5.1',
     ],
     effortLevels: ['low', 'medium', 'high', 'max'],
+    maxEffort: 'distinct',
   },
   openai: {
     id: 'openai',

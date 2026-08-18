@@ -669,6 +669,7 @@ export class HermesServer {
             metadata: modelMetadataFor(catalog, spec.id, id),
           })),
           effortLevels: spec.effortLevels,
+          maxEffort: spec.maxEffort ?? 'collapses-to-high',
           keyEnvVars: spec.keyEnvVars,
           baseUrl: spec.baseUrl,
         };

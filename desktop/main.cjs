@@ -170,6 +170,26 @@ function triggerAndWaitForLoad(win, trigger) {
   });
 }
 
+// Post-action verification: after a state-changing browser action (click,
+// fill, press, ...), wait until the page finishes loading or stays quiet for
+// `quietMs`, so the state returned to the agent reflects the settled page
+// (new URL, new title, loading=false) instead of a mid-navigation snapshot.
+async function settle(win, quietMs) {
+  const wc = win.webContents;
+  const deadline = Date.now() + 15_000;
+  let quietStart = Date.now();
+  for (;;) {
+    if (Date.now() > deadline) return;
+    if (wc.isLoading()) {
+      quietStart = Date.now();
+      await new Promise((resolve) => wc.once('did-stop-loading', resolve));
+      return;
+    }
+    await sleep(120);
+    if (!wc.isLoading() && Date.now() - quietStart >= (quietMs || 500)) return;
+  }
+}
+
 function rectOfSelector(win, selector) {
   return win.webContents.executeJavaScript(
     `(function(sel){
@@ -232,6 +252,7 @@ function makeBrowserBridge(normalizeUrl) {
         await injectCursor(win, x, y);
         await sleep(500);
         realClick(win, x, y);
+        await settle(win);
       });
       return stateOf(win);
     },
@@ -243,6 +264,7 @@ function makeBrowserBridge(normalizeUrl) {
         await injectCursor(win, pos.x, pos.y);
         await sleep(500);
         realClick(win, pos.x, pos.y);
+        await settle(win);
       });
       return stateOf(win);
     },
@@ -298,6 +320,7 @@ function makeBrowserBridge(normalizeUrl) {
           })(${JSON.stringify(String(selector))}, ${JSON.stringify(String(text))})`,
         );
         if (!result || !result.ok) throw new Error(`could not fill ${selector}`);
+        await settle(win);
       });
       return stateOf(win);
     },
@@ -320,6 +343,7 @@ function makeBrowserBridge(normalizeUrl) {
           })(${JSON.stringify(String(selector))}, ${JSON.stringify(String(value))})`,
         );
         if (!result || !result.ok) throw new Error(`could not select "${value}" in ${selector}`);
+        await settle(win);
       });
       return stateOf(win);
     },
@@ -329,6 +353,8 @@ function makeBrowserBridge(normalizeUrl) {
         const mapped = KEY_MAP[String(key).toLowerCase()] ?? String(key);
         win.webContents.sendInputEvent({ type: 'rawKeyDown', keyCode: mapped });
         win.webContents.sendInputEvent({ type: 'keyUp', keyCode: mapped });
+        // Enter/Escape can navigate or dismiss dialogs; confirm the page state.
+        await settle(win);
       });
       return stateOf(win);
     },

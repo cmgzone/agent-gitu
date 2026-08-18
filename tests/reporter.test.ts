@@ -35,6 +35,24 @@ describe('Reporter', () => {
       exitCode: 0,
       output: 'all tests passed',
     });
+    ledger.recordAction({
+      tool: 'browse',
+      paramsHash: 'browse-shot',
+      paramsSummary: 'browse screenshot',
+      status: 'success',
+      reason: 'visually verify the application',
+      expected: 'a screenshot',
+      durationMs: 20,
+    });
+    ledger.recordAction({
+      tool: 'browse',
+      paramsHash: 'browse-click',
+      paramsSummary: 'browse click #save',
+      status: 'error',
+      reason: 'exercise the save button',
+      expected: 'the page saves',
+      durationMs: 20,
+    });
 
     const report = new Reporter().build(ledger, 'complete', {
       summary: 'The application was verified.',
@@ -47,6 +65,8 @@ describe('Reporter', () => {
     expect(report.verificationDetails).toMatchObject([
       { kind: 'test', passed: true, command: 'npm run test -- --coverage', outputExcerpt: 'all tests passed' },
     ]);
+    expect(report.browserActivity).toEqual({ total: 2, successful: 1, screenshots: 1 });
     expect(new Reporter().render(report)).not.toContain('(npm run test -- --coverage)');
+    expect(new Reporter().render(report)).toContain('Visual verification:');
   });
 });

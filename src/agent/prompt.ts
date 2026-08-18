@@ -88,7 +88,8 @@ Tools:
 - list_files   {"path":"src"}
 - search_files {"pattern":"regex","path":"src"}
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
-- web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
+  - web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
+  - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
 - browse       full human-like browser control:
                  {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"}
                  {"action":"click","selector":"#submit"} (preferred) or {"action":"click","x":120,"y":340}
@@ -110,11 +111,13 @@ Completion/escalation:
 Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
 {"thought":"...","action":{"type":"ask_user","questions":[{"question":"...","header":"short label","options":["option A","option B"]}]}}
 
-Parallel independent work (only for tools that do not depend on each other, max 4):
+Parallel independent work (only for tools that do not depend on each other, max 6 — always batch independent reads/searches/commands together instead of one per turn):
 {"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
 
-Delegate independent sub-tasks to specialist agents (max 4, run concurrently, each returns a summary):
+Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once, each returns a summary):
 {"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<agent name>","task":"self-contained sub-task with enough context to work alone"}]}}
+For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
+{"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<agent name>","task":"self-contained non-conflicting task"}]}}
 
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.
@@ -122,6 +125,7 @@ Rules for the protocol:
 - When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: use add_criteria, then append_plan. Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
 - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
 - Evidence ids come from verification results reported to you (ev-...).
+- Use background agents only for work that cannot conflict with your own edits. Poll agent_status and incorporate completed results before claiming their work is done.
 - If the same action failed twice, you MUST propose a different action or request_block.`;
 }
 

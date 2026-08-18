@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
+import { ensureHermesHome } from '../workspace/home.js';
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine, contextBudgetForWindow } from '../context/context-engine.js';
@@ -6,7 +9,16 @@ import { Executor } from '../executor/executor.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
-import { extractJson, type LlmClient, type LlmContentPart, type LlmMessage } from '../llm/llm.js';
+import {
+  extractJson,
+  findXmlCallStart,
+  parseXmlFunctionCall,
+  xmlMarkerHoldBack,
+  type LlmClient,
+  type LlmContentPart,
+  type LlmMessage,
+} from '../llm/llm.js';
+import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
@@ -87,7 +99,7 @@ type ParsedAction =
     | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
   | { type: 'request_block'; reason: string }
   | { type: 'ask_user'; questions: AskUserQuestion[] }
-  | { type: 'delegate'; tasks: { agent: string; task: string }[] }
+  | { type: 'delegate'; tasks: { agent: string; task: string }[]; background?: boolean }
   | {
       type: 'parallel';
       calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
@@ -98,6 +110,27 @@ function parseAction(raw: unknown): ParsedAction | undefined {
   const root = raw as Record<string, unknown>;
   const action = (root['action'] ?? root) as Record<string, unknown>;
   const type = action['type'];
+  // Some models emit dots-style JSON where the tool name is the action type
+  // ({"type":"run_command",...}) instead of {"type":"tool_call","tool":...}.
+  if (typeof type === 'string' && !KNOWN_ACTION_TYPES.has(type) && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
+    const nested = action['params'];
+    const params: Record<string, unknown> = {};
+    if (nested && typeof nested === 'object') {
+      Object.assign(params, nested as Record<string, unknown>);
+    } else {
+      for (const [key, value] of Object.entries(action)) {
+        if (key !== 'type' && key !== 'thought' && key !== 'reason' && key !== 'expected' && key !== 'stepId') params[key] = value;
+      }
+    }
+    return {
+      type: 'tool_call',
+      tool: type,
+      params,
+      reason: String(action['reason'] ?? ''),
+      expected: String(action['expected'] ?? ''),
+      stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
+    };
+  }
   switch (type) {
     case 'set_criteria':
     case 'add_criteria': {
@@ -153,9 +186,9 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       const parsed = (tasks as Record<string, unknown>[])
         .map((t) => ({ agent: String(t?.['agent'] ?? ''), task: String(t?.['task'] ?? '') }))
         .filter((t) => t.agent && t.task)
-        .slice(0, 4);
+        .slice(0, 6);
       if (parsed.length === 0) return undefined;
-      return { type, tasks: parsed };
+      return { type, tasks: parsed, background: action['background'] === true };
     }
     case 'ask_user': {
       const questions = action['questions'];
@@ -182,11 +215,118 @@ function parseAction(raw: unknown): ParsedAction | undefined {
         }))
         .filter((c) => c.tool);
       if (parsedCalls.length < 2) return undefined;
-      return { type, calls: parsedCalls.slice(0, 4) };
+      return { type, calls: parsedCalls.slice(0, 6) };
     }
     default:
       return undefined;
   }
+}
+
+const KNOWN_ACTION_TYPES = new Set([
+  'set_criteria',
+  'set_plan',
+  'add_criteria',
+  'append_plan',
+  'set_hypothesis',
+  'tool_call',
+  'claim_criterion',
+  'complete',
+  'request_block',
+  'ask_user',
+  'delegate',
+  'parallel',
+]);
+
+function parseReplyAction(reply: string): ParsedAction | undefined {
+  const fromJson = parseAction(extractJson(reply));
+  if (fromJson) return fromJson;
+  const xml = parseXmlFunctionCall(reply);
+  if (!xml) return undefined;
+  const type = String(xml['type'] ?? '');
+  if (!type) return undefined;
+  if (KNOWN_ACTION_TYPES.has(type)) return parseAction({ action: xml });
+  if (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:')) {
+    const params: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(xml)) {
+      if (key !== 'type') params[key] = value;
+    }
+    return parseAction({ action: { type: 'tool_call', tool: type, params, reason: '', expected: '' } });
+  }
+  return undefined;
+}
+
+export const COMPACT_KEEP_RECENT = 12;
+const COMPACT_TRIGGER = 32;
+
+/**
+ * Compact a growing conversation as the run goes: older turns collapse into a
+ * single digest while the recent tail stays verbatim. The ledger state message
+ * re-emitted on every turn remains authoritative, so compacted details (old
+ * tool outputs, stale file dumps) are exactly the noise the model doesn't
+ * need — keeping the context small and protocol adherence sharp on long tasks.
+ */
+export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) => void): boolean {
+  if (messages.length <= COMPACT_TRIGGER) return false;
+  const keepFrom = messages.length - COMPACT_KEEP_RECENT;
+  const old = messages.splice(1, keepFrom - 1);
+  const excerpts = old
+    .map((m) => {
+      const text = typeof m.content === 'string' ? m.content : '[image attached]';
+      return `${m.role}: ${text.replace(/\s+/g, ' ').trim().slice(0, 220)}`;
+    })
+    .join('\n');
+  messages.splice(1, 0, {
+    role: 'user',
+    content:
+      `COMPACTED HISTORY — ${old.length} earlier messages were condensed into the excerpts below. ` +
+      `The TASK STATE message that follows is authoritative; do not re-read or repeat work already recorded there.\n${excerpts.slice(0, 8000)}`,
+  });
+  onEvent?.(`context compacted ${old.length} earlier messages into a digest — ${messages.length} messages retained`);
+  return true;
+}
+
+/** Persist raw unparseable replies so stalls can be diagnosed from logs. */
+function logParseFailure(taskId: string, reply: string, reasoning?: string): void {
+  try {
+    const logs = path.join(ensureHermesHome().root, 'logs');
+    mkdirSync(logs, { recursive: true });
+    const entry =
+      `\n=== ${new Date().toISOString()} task=${taskId} ===\n--- reply ---\n${reply.slice(0, 4000)}\n` +
+      (reasoning ? `--- reasoning ---\n${reasoning.slice(0, 4000)}\n` : '');
+    appendFileSync(path.join(logs, 'parse-failures.log'), entry);
+  } catch {
+    /* diagnostics must never break the run */
+  }
+}
+
+function proseCutIndex(text: string): number {
+  const brace = text.indexOf('{');
+  const xml = findXmlCallStart(text);
+  if (brace < 0) return xml;
+  if (xml < 0) return brace;
+  return Math.min(brace, xml);
+}
+
+function createProseStreamer(emitDelta: (chunk: string) => void): (delta: string) => void {
+  let raw = '';
+  let emitted = 0;
+  let stopped = false;
+  return (delta: string) => {
+    if (stopped) return;
+    raw += delta;
+    const cut = proseCutIndex(raw);
+    let upTo: number;
+    if (cut >= 0) {
+      stopped = true;
+      upTo = cut;
+    } else {
+      upTo = raw.length - xmlMarkerHoldBack(raw);
+    }
+    if (upTo > emitted) {
+      emitDelta(raw.slice(emitted, upTo));
+      emitted = upTo;
+    }
+  };
 }
 
 function classifyEvidenceKind(command: string): EvidenceKind {
@@ -286,6 +426,8 @@ export class Hermes {
       this.config.mcp,
       this.config.browser,
       this.config.subagents ? (specs) => this.config.subagents!.runMany(specs) : undefined,
+      this.config.subagents ? (specs) => this.config.subagents!.startMany(specs) : undefined,
+      this.config.subagents ? (ids) => this.config.subagents!.status(ids) : undefined,
     );
     const context = new ContextEngine(guard, this.config.index ?? new CodeIndex(guard.lock.repoRoot));
     const reporter = new Reporter();
@@ -379,21 +521,14 @@ export class Hermes {
         role: 'user',
         content: `User request (chat mode — answer directly and helpfully in plain text only; no tools, no JSON): ${resumeNote ?? goal}`,
       });
-      let seenBrace = false;
-      const reply = await llm.completeStream(messages, { effort: this.config.effort }, (delta) => {
-        if (seenBrace) return;
-        const braceAt = delta.indexOf('{');
-        if (braceAt >= 0) {
-          seenBrace = true;
-          const pre = delta.slice(0, braceAt);
-          if (pre.trim()) this.emit(`tdelta ${pre}`);
-          return;
-        }
-        this.emit(`tdelta ${delta}`);
-      });
-      const parsedReply = parseAction(extractJson(reply));
-      const braceIdx = reply.indexOf('{');
-      const prose = (parsedReply && braceIdx >= 0 ? reply.slice(0, braceIdx) : reply).trim();
+      const reply = await llm.completeStream(
+        messages,
+        { effort: this.config.effort },
+        createProseStreamer((chunk) => this.emit(`tdelta ${chunk}`)),
+      );
+      const parsedReply = parseReplyAction(reply);
+      const cutAt = proseCutIndex(reply);
+      const prose = (parsedReply && cutAt >= 0 ? reply.slice(0, cutAt) : reply).trim();
       if (prose) this.emit(`say ${prose}`);
       ledger.setStatus('completed');
       const report = reporter.build(ledger, 'complete', {
@@ -419,7 +554,6 @@ export class Hermes {
     const ask = async (note?: string): Promise<ParsedAction | undefined> => {
       messages.push({ role: 'user', content: buildStateMessage(ledger, note) });
       this.emit('think  reviewing task state and choosing the next action');
-      let seenBrace = false;
       let pending = '';
       let lastFlush = Date.now();
       const flush = (): void => {
@@ -427,35 +561,39 @@ export class Hermes {
         pending = '';
         lastFlush = Date.now();
       };
-      this.abortController = new AbortController();
-      const reply = await llm.completeStream(messages, { effort: this.config.effort, signal: this.abortController.signal }, (delta) => {
-        if (seenBrace) return;
-        const braceAt = delta.indexOf('{');
-        if (braceAt >= 0) {
-          seenBrace = true;
-          pending += delta.slice(0, braceAt);
-          flush();
-          return;
-        }
-        pending += delta;
+      const streamer = createProseStreamer((chunk) => {
+        pending += chunk;
         if (pending.length >= 32 || Date.now() - lastFlush > 50) flush();
       });
+      this.abortController = new AbortController();
+      const reply = await llm.completeStream(
+        messages,
+        { effort: this.config.effort, signal: this.abortController.signal },
+        (delta) => streamer(delta),
+      );
       flush();
-      const braceIdx = reply.indexOf('{');
-      const prose = (braceIdx >= 0 ? reply.slice(0, braceIdx) : '').trim();
+      const cutAt = proseCutIndex(reply);
+      const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
       if (prose) this.emit(`say ${prose}`);
       messages.push({ role: 'assistant', content: reply });
-      const parsed = parseAction(extractJson(reply));
-      if (!parsed) invalidStreak += 1;
-      else invalidStreak = 0;
+      let parsed = parseReplyAction(reply);
+      const reasoning = llm.lastReasoning;
+      // Thinking models under long context sometimes keep the action JSON in
+      // the reasoning trace and only emit commentary as visible content.
+      if (!parsed && reasoning) parsed = parseReplyAction(reasoning);
+      if (!parsed) {
+        invalidStreak += 1;
+        logParseFailure(ledger.data.taskId, reply, reasoning);
+        this.emit(`warn    response ${invalidStreak}/3 had no executable action — raw reply saved to logs/parse-failures.log`);
+      } else {
+        invalidStreak = 0;
+      }
       return parsed;
     };
 
     const observe = (content: string | LlmContentPart[]): void => {
       messages.push({ role: 'user', content });
-      if (messages.length > 40) {
-        messages.splice(1, messages.length - 40);
-      }
+      compactHistory(messages, (t) => this.emit(t));
     };
 
     try {
@@ -474,7 +612,11 @@ export class Hermes {
           exitReason = 'stalled';
           break;
         }
-        observe('Your last response was not a valid protocol action. Reply with exactly one JSON action object.');
+        observe(
+          'Your last response contained no executable JSON action — describing intentions is not enough. ' +
+            'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
+            '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
+        );
         continue;
       }
 
@@ -729,14 +871,14 @@ export class Hermes {
           break;
         }
         case 'delegate': {
-          this.emit(`delegate ${action.tasks.length} sub-task(s) to ${action.tasks.map((t) => t.agent).join(', ')}`);
+          this.emit(`delegate ${action.tasks.length} sub-task(s) to ${action.tasks.map((t) => t.agent).join(', ')}${action.background ? ' in background' : ''}`);
           const outcome = await executor.execute({
             tool: 'delegate',
-            params: { tasks: action.tasks },
-            reason: 'parallel specialist sub-tasks',
-            expected: 'summaries from each agent',
+            params: { tasks: action.tasks, background: action.background },
+            reason: action.background ? 'background specialist sub-tasks' : 'parallel specialist sub-tasks',
+            expected: action.background ? 'tracked background agent jobs' : 'summaries from each agent',
           });
-          observe(`DELEGATE RESULTS [${outcome.result.ok ? 'all agents ok' : 'some agents failed'}]\n${outcome.result.output.slice(0, 5000)}`);
+          observe(`${action.background ? 'BACKGROUND AGENTS' : 'DELEGATE RESULTS'} [${outcome.result.ok ? 'started/ok' : 'some agents failed'}]\n${outcome.result.output.slice(0, 5000)}`);
           break;
         }
       }
@@ -820,7 +962,7 @@ export class Hermes {
       () => {},
     );
     messages.push({ role: 'assistant', content: reply });
-    const parsed = parseAction(extractJson(reply));
+    const parsed = parseReplyAction(reply);
     if (parsed?.type === 'tool_call' && parsed.tool === 'create_skill') {
       const outcome = await executor.execute({
         tool: 'create_skill',

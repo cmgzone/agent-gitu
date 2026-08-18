@@ -139,6 +139,8 @@ export interface CompletionReport {
   verification: string[];
   /** Structured evidence for the UI. `verification` remains for text/CLI reports. */
   verificationDetails?: VerificationReportItem[];
+  /** Browser work recorded during the task, when visual verification was used. */
+  browserActivity?: BrowserActivity;
   evidence: string[];
   remainingRisks: string[];
   followUps: string[];
@@ -153,6 +155,12 @@ export interface VerificationReportItem {
   exitCode?: number;
   command?: string;
   outputExcerpt?: string;
+}
+
+export interface BrowserActivity {
+  total: number;
+  successful: number;
+  screenshots: number;
 }
 
 export interface TaskLedgerData {

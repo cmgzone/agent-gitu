@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { OpenAiCompatClient } from '../src/llm/llm.js';
+import {
+  OpenAiCompatClient,
+  extractJson,
+  findXmlCallStart,
+  parseXmlFunctionCall,
+  xmlMarkerHoldBack,
+} from '../src/llm/llm.js';
 
 describe('OpenAiCompatClient retry behavior', () => {
   const originalFetch = globalThis.fetch;
@@ -124,5 +130,63 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(err.message).toContain('upstream unavailable');
     expect(err.message).toContain('try again later');
     expect(calls()).toBe(1);
+  });
+});
+
+describe('extractJson', () => {
+  it('extracts a JSON object embedded in prose', () => {
+    expect(extractJson('I will now act.\n{"action":{"type":"complete","summary":"done"}}')).toEqual({
+      action: { type: 'complete', summary: 'done' },
+    });
+  });
+  it('extracts a fenced json block', () => {
+    expect(extractJson('```\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+  it('returns undefined when there is no JSON', () => {
+    expect(extractJson('just plain text')).toBeUndefined();
+  });
+});
+
+describe('parseXmlFunctionCall', () => {
+  it('parses a dots_function_call block with a JSON-array parameter', () => {
+    const text =
+      'I will start by setting the acceptance criteria.\n' +
+      '<dots_function_call>\n<invoke name="set_criteria">\n<parameter name="criteria">\n' +
+      '["hello.ts exists", "tests pass"]\n</parameter>\n</invoke>\n</dots_function_call>';
+    const out = parseXmlFunctionCall(text);
+    expect(out).toEqual({ type: 'set_criteria', criteria: ['hello.ts exists', 'tests pass'] });
+  });
+  it('parses a tool call with object params (dots format)', () => {
+    const text =
+      '<dots_function_call>\n<invoke name="write_file">\n<parameter name="path">src/a.ts</parameter>\n' +
+      '<parameter name="content">export const a = 1;</parameter>\n</invoke>\n</dots_function_call>';
+    const out = parseXmlFunctionCall(text);
+    expect(out).toEqual({ type: 'write_file', path: 'src/a.ts', content: 'export const a = 1;' });
+  });
+  it('parses a generic <function_call> variant', () => {
+    const text = '<function_call name="run_command"><parameter name="command">node --version</parameter></function_call>';
+    expect(parseXmlFunctionCall(text)).toEqual({ type: 'run_command', command: 'node --version' });
+  });
+  it('returns undefined when no invoke is present', () => {
+    expect(parseXmlFunctionCall('just thinking out loud')).toBeUndefined();
+  });
+});
+
+describe('findXmlCallStart', () => {
+  it('locates the first marker', () => {
+    const text = 'prose <dots_function_call>...';
+    expect(findXmlCallStart(text)).toBe(6);
+  });
+  it('returns -1 when no marker is present', () => {
+    expect(findXmlCallStart('no markers here')).toBe(-1);
+  });
+});
+
+describe('xmlMarkerHoldBack', () => {
+  it('holds back a partial marker at the tail', () => {
+    expect(xmlMarkerHoldBack('thinking <dots_func')).toBe(10); // length of '<dots_func'
+  });
+  it('returns 0 when the tail cannot start a marker', () => {
+    expect(xmlMarkerHoldBack('plain text ')).toBe(0);
   });
 });

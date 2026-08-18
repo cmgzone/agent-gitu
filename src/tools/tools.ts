@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import type { SubAgentJob } from '../agent/subagent.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { McpManager } from '../mcp/client.js';
 import type { SkillStore } from '../skills/skills.js';
@@ -15,9 +16,29 @@ export interface ToolContext {
   mcp?: McpManager;
   browser?: BrowserBridge;
   delegate?: DelegateFn;
+  delegateBackground?: BackgroundDelegateFn;
+  backgroundAgentStatus?: BackgroundAgentStatusFn;
 }
 
 export type DelegateFn = (specs: { agent: string; task: string }[]) => Promise<{ agent: string; task: string; ok: boolean; summary: string }[]>;
+export type BackgroundDelegateFn = (specs: { agent: string; task: string }[]) => SubAgentJob[];
+export type BackgroundAgentStatusFn = (ids?: string[]) => SubAgentJob[];
+
+export const KNOWN_TOOL_NAMES = new Set([
+  'read_file',
+  'write_file',
+  'apply_edit',
+  'list_files',
+  'search_files',
+  'web_fetch',
+  'browse',
+  'delegate',
+  'agent_status',
+  'list_skills',
+  'create_skill',
+  'use_skill',
+  'run_command',
+]);
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST_ENTRIES = 400;
@@ -401,7 +422,6 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
 }
 
 export async function toolDelegate(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
-  if (!ctx.delegate) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
   let specs: { agent: string; task: string }[] = [];
   if (Array.isArray(params['tasks'])) {
     specs = (params['tasks'] as Record<string, unknown>[])
@@ -412,10 +432,37 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
   }
   if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]}');
   if (specs.length > 4) specs = specs.slice(0, 4);
+  if (params['background'] === true) {
+    if (!ctx.delegateBackground) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
+    const jobs = ctx.delegateBackground(specs);
+    return {
+      ok: true,
+      output:
+        `Started ${jobs.length} background agent(s). Continue independent work, then call agent_status before relying on their results.\n` +
+        jobs.map((job) => `[${job.id}] ${job.agent} — ${job.status}`).join('\n'),
+    };
+  }
+  if (!ctx.delegate) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
   const results = await ctx.delegate(specs);
   const output = results.map((r) => `[${r.agent}] ${r.ok ? 'OK' : 'FAILED'} — task: ${r.task.slice(0, 120)}\n${r.summary}`).join('\n\n');
   return { ok: results.every((r) => r.ok), output: output.slice(0, 6000) };
 }
 
-export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse', 'delegate'] as const;
+export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  if (!ctx.backgroundAgentStatus) return fail('agent_status: no specialist agents configured — create them in Settings → Agents');
+  const id = typeof params['id'] === 'string' && params['id'] ? params['id'] : undefined;
+  const jobs = ctx.backgroundAgentStatus(id ? [id] : undefined);
+  if (jobs.length === 0) return { ok: true, output: id ? `No background agent found for ${id}.` : 'No background agents have been started.' };
+  return {
+    ok: true,
+    output: jobs
+      .map((job) => {
+        const detail = job.summary ? `\n${job.summary.slice(0, 1200)}` : '';
+        return `[${job.status.toUpperCase()}] ${job.agent} (${job.id}) — ${job.task.slice(0, 160)}${detail}`;
+      })
+      .join('\n\n'),
+  };
+}
+
+export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse', 'delegate', 'agent_status'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

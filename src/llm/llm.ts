@@ -16,12 +16,22 @@ export interface LlmOptions {
   retries?: number;
   /** Base backoff delay in ms between retries (doubles each attempt). Defaults to 1000. */
   retryDelayMs?: number;
+  /** Called once per request with provider-reported token usage, when available. */
+  onUsage?: (usage: LlmUsage) => void;
+}
+
+export interface LlmUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
 }
 
 export type LlmDeltaHandler = (delta: string) => void;
 
 export interface LlmClient {
   readonly name: string;
+  /** Raw thinking trace from the last response, when the provider returns one. */
+  lastReasoning?: string;
   complete(messages: LlmMessage[], opts?: LlmOptions): Promise<string>;
   completeStream(messages: LlmMessage[], opts: LlmOptions, onDelta: LlmDeltaHandler): Promise<string>;
 }
@@ -54,6 +64,24 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
       );
     }
   });
+}
+
+function usageNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+}
+
+function parseUsage(value: unknown): LlmUsage | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const u = value as Record<string, unknown>;
+  const input = usageNumber(u['prompt_tokens']) ?? usageNumber(u['input_tokens']);
+  const output = usageNumber(u['completion_tokens']) ?? usageNumber(u['output_tokens']);
+  if (input === undefined && output === undefined) return undefined;
+  const details = u['prompt_tokens_details'];
+  const cached =
+    usageNumber(u['cached_tokens']) ??
+    (typeof details === 'object' && details !== null ? usageNumber((details as Record<string, unknown>)['cached_tokens']) : undefined) ??
+    usageNumber(u['prompt_cache_hit_tokens']);
+  return { inputTokens: input ?? 0, outputTokens: output ?? 0, cachedTokens: cached ?? 0 };
 }
 
 function llmErrorMessage(status: number, text: string): string {
@@ -118,6 +146,7 @@ export interface OpenAiCompatConfig {
 
 export class OpenAiCompatClient implements LlmClient {
   readonly name: string;
+  lastReasoning?: string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly model: string;
@@ -160,8 +189,15 @@ export class OpenAiCompatClient implements LlmClient {
       throw new LlmError(llmErrorMessage(res.status, text));
     }
     const data = (await res.json()) as {
-      choices?: { message?: { content?: string } }[];
+      choices?: { message?: { content?: string; reasoning_content?: string } }[];
+      usage?: unknown;
     };
+    const reasoning = data.choices?.[0]?.message?.reasoning_content;
+    this.lastReasoning = typeof reasoning === 'string' && reasoning ? reasoning : undefined;
+    if (opts.onUsage) {
+      const usage = parseUsage(data.usage);
+      if (usage) opts.onUsage(usage);
+    }
     const content = data.choices?.[0]?.message?.content;
     if (typeof content !== 'string') throw new LlmError('LLM returned no content');
     return content;
@@ -173,7 +209,10 @@ export class OpenAiCompatClient implements LlmClient {
       messages,
       temperature: opts.temperature ?? 0.2,
     };
-    if (stream) body['stream'] = true;
+    if (stream) {
+      body['stream'] = true;
+      if (opts.onUsage) body['stream_options'] = { include_usage: true };
+    }
     if (opts.json) body['response_format'] = { type: 'json_object' };
     if (opts.effort) {
       if (/aliyuncs|dashscope/i.test(this.baseUrl)) {
@@ -216,6 +255,8 @@ export class OpenAiCompatClient implements LlmClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let full = '';
+    let reasoning = '';
+    let streamUsage: LlmUsage | undefined;
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -229,20 +270,77 @@ export class OpenAiCompatClient implements LlmClient {
         if (payload === '[DONE]') continue;
         try {
           const json = JSON.parse(payload) as {
-            choices?: { delta?: { content?: string }; message?: { content?: string } }[];
+            choices?: { delta?: { content?: string; reasoning_content?: string }; message?: { content?: string } }[];
+            usage?: unknown;
           };
           const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
           if (delta) {
             full += delta;
             onDelta(delta);
           }
+          const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
+          if (reasonDelta) reasoning += reasonDelta;
+          const chunkUsage = parseUsage(json.usage);
+          if (chunkUsage) streamUsage = chunkUsage;
         } catch {
           /* partial line */
         }
       }
     }
     if (!full) return this.complete(messages, opts);
+    this.lastReasoning = reasoning || undefined;
+    if (streamUsage && opts.onUsage) opts.onUsage(streamUsage);
     return full;
+  }
+}
+
+/**
+ * Delegates to another client while observing token usage. The callback fires
+ * once per request (with undefined when the provider reports no usage), so
+ * callers can count messages and accumulate tokens without touching agents.
+ */
+export class UsageTrackingClient implements LlmClient {
+  readonly name: string;
+
+  constructor(
+    private readonly inner: LlmClient,
+    private readonly onCall: (usage: LlmUsage | undefined) => void,
+  ) {
+    this.name = inner.name;
+  }
+
+  get lastReasoning(): string | undefined {
+    return this.inner.lastReasoning;
+  }
+
+  async complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<string> {
+    let seen = false;
+    const out = await this.inner.complete(messages, {
+      ...opts,
+      onUsage: (usage) => {
+        seen = true;
+        this.onCall(usage);
+      },
+    });
+    if (!seen) this.onCall(undefined);
+    return out;
+  }
+
+  async completeStream(messages: LlmMessage[], opts: LlmOptions = {}, onDelta: LlmDeltaHandler): Promise<string> {
+    let seen = false;
+    const out = await this.inner.completeStream(
+      messages,
+      {
+        ...opts,
+        onUsage: (usage) => {
+          seen = true;
+          this.onCall(usage);
+        },
+      },
+      onDelta,
+    );
+    if (!seen) this.onCall(undefined);
+    return out;
   }
 }
 
@@ -271,6 +369,74 @@ export class ScriptedMockLlm implements LlmClient {
     }
     return full;
   }
+}
+
+const XML_CALL_MARKERS = [
+  '<dots_function_call',
+  '<function_calls',
+  '<function_call',
+  '<tool_calls',
+  '<tool_call',
+  '<antml:invoke',
+  '<invoke',
+  '<json>',
+];
+
+export function findXmlCallStart(text: string): number {
+  let best = -1;
+  for (const marker of XML_CALL_MARKERS) {
+    const at = text.indexOf(marker);
+    if (at >= 0 && (best < 0 || at < best)) best = at;
+  }
+  return best;
+}
+
+export function xmlMarkerHoldBack(text: string): number {
+  let hold = 0;
+  for (const marker of XML_CALL_MARKERS) {
+    for (let prefix = 1; prefix < marker.length; prefix++) {
+      if (text.endsWith(marker.slice(0, prefix))) hold = Math.max(hold, prefix);
+    }
+  }
+  return hold;
+}
+
+export function parseXmlFunctionCall(text: string): Record<string, unknown> | undefined {
+  const start = findXmlCallStart(text);
+  if (start < 0) return undefined;
+  const block = text.slice(start);
+  const invoke = block.match(/<(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*)/i);
+  if (!invoke || !invoke[1] || invoke[2] === undefined) return undefined;
+  const name = invoke[1];
+  const body = invoke[2] as string;
+  const params: Record<string, unknown> = {};
+  const paramRe = /<(?:[\w]+:)?parameter\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)<\/(?:[\w]+:)?parameter\s*>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = paramRe.exec(body))) {
+    if (!match[1] || match[2] === undefined) continue;
+    const key = match[1];
+    const rawValue = (match[2] as string).trim();
+    try {
+      params[key] = JSON.parse(rawValue);
+    } catch {
+      params[key] = rawValue;
+    }
+  }
+  if (Object.keys(params).length === 0) {
+    const bare = body.replace(/<\/(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s*>[\s\S]*$/, '').trim();
+    if (bare) {
+      try {
+        const parsed = JSON.parse(bare) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return { type: name, ...(parsed as Record<string, unknown>) };
+        }
+      } catch {
+        return undefined;
+      }
+    }
+    return undefined;
+  }
+  return { type: name, ...params };
 }
 
 export function extractJson(text: string): unknown {

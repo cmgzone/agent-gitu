@@ -213,6 +213,95 @@ describe('HermesServer', () => {
     expect(finished.report.summary).toContain('The widget is blue');
   }, 30000);
 
+  it('retry and edited resends supersede the original message instead of cloning it', async () => {
+    const dir = makeProject('retry');
+    const { base } = await startServer(
+      dir,
+      new ScriptedMockLlm([() => 'first reply', () => 'second reply', () => 'third reply']),
+    );
+    const server = servers[servers.length - 1]!;
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'original message', mode: 'chat', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+
+    const resend = async (text: string, supersede: string) => {
+      const posted = await fetch(`${base}/api/runs/${created.runId}/message`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text, mode: 'chat', supersede }),
+      }).then((r) => r.json());
+      if (!posted.ok) throw new Error('resend rejected');
+      await waitFor(async () => {
+        const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+        return s.status !== 'running' ? s : undefined;
+      });
+    };
+
+    await resend('original message', 'original message');
+    await resend('edited message', 'original message');
+
+    const events = (server as unknown as { sessions: Map<string, { events: { text: string }[] }> })
+      .sessions.get(created.runId)!
+      .events.map((e) => e.text);
+    const userMsgs = events.filter((t) => t.startsWith('user-msg '));
+    expect(userMsgs).toEqual(['user-msg edited message']);
+    const view = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(view.goal).toBe('edited message');
+  }, 30000);
+
+  it('auto-approve applies to continuations when the client sends it', async () => {
+    const dir = makeProject('autoapprove');
+    const { base } = await startServer(
+      dir,
+      new ScriptedMockLlm([
+        () => 'hello',
+        () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['auto-approved command ran'] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run command', verification: 'Write-Host ok' }] } }),
+        () => JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'Write-Host auto-approved' }, reason: 'test', expected: 'output' },
+        }),
+        (_n, messages) => {
+          const text = messages.map((m) => m.content).join('\n');
+          const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
+          return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+        },
+        () => JSON.stringify({ action: { type: 'complete', summary: 'ran with auto-approve', risks: [], followUps: [] } }),
+      ]),
+    );
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'chat first', mode: 'chat', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+
+    await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'now run the command', mode: 'standard', autoApprove: true }),
+    });
+    const session = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(session.status).toBe('completed');
+    expect(session.pendingApprovals).toEqual([]);
+    const ledger = await fetch(`${base}/api/tasks/${session.taskId}`).then((r) => r.json());
+    const cmd = ledger.actions.find((a: { tool: string }) => a.tool === 'run_command');
+    expect(cmd.status).toBe('success');
+  }, 30000);
+
   it('switches a chat session to build mode when the follow-up sends mode: standard', async () => {
     let secondPrompt = '';
     const llm = new ScriptedMockLlm([

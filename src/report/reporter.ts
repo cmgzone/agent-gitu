@@ -37,6 +37,14 @@ export class Reporter {
     const changes = d.actions
       .filter((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success')
       .map((a) => a.paramsSummary);
+    const browserActions = d.actions.filter((a) => a.tool === 'browse');
+    const browserActivity = browserActions.length
+      ? {
+          total: browserActions.length,
+          successful: browserActions.filter((a) => a.status === 'success').length,
+          screenshots: browserActions.filter((a) => a.status === 'success' && a.paramsSummary === 'browse screenshot').length,
+        }
+      : undefined;
 
     const statusMap: Record<typeof exitReason, CompletionReport['status']> = {
       complete: 'complete',
@@ -57,6 +65,7 @@ export class Reporter {
       filesChanged: unique(d.filesChanged.filter(isReportableFile)),
       verification,
       verificationDetails,
+      browserActivity,
       evidence: d.evidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
       remainingRisks: completionInput?.risks ?? (d.blockers.length > 0 ? [`Unresolved blockers: ${d.blockers.join('; ')}`] : []),
       followUps: completionInput?.followUps ?? [],
@@ -80,6 +89,14 @@ export class Reporter {
       '',
       'Verification:',
       ...(report.verification.length > 0 ? report.verification.map((v) => `  - ${v}`) : ['  (none recorded)']),
+      ...(report.browserActivity
+        ? [
+            '',
+            'Visual verification:',
+            `  - ${report.browserActivity.successful}/${report.browserActivity.total} browser actions succeeded`,
+            `  - ${report.browserActivity.screenshots} screenshot(s) captured`,
+          ]
+        : []),
       '',
       'Remaining risks:',
       ...(report.remainingRisks.length > 0 ? report.remainingRisks.map((r) => `  - ${r}`) : ['  (none noted)']),

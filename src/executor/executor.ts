@@ -9,6 +9,7 @@ import type { ActionRecord, ToolResult } from '../types.js';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
 import {
   toolApplyEdit,
+  toolAgentStatus,
   toolBrowse,
   toolCreateSkill,
   toolDelegate,
@@ -21,6 +22,8 @@ import {
   toolWebFetch,
   toolWriteFile,
   type DelegateFn,
+  type BackgroundAgentStatusFn,
+  type BackgroundDelegateFn,
   type ToolContext,
 } from '../tools/tools.js';
 
@@ -50,6 +53,8 @@ export class Executor {
     private readonly mcp?: McpManager,
     private readonly browser?: BrowserBridge,
     private readonly delegate?: DelegateFn,
+    private readonly delegateBackground?: BackgroundDelegateFn,
+    private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
   ) {}
 
   private emit(event: string): void {
@@ -133,7 +138,16 @@ export class Executor {
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
-    const ctx: ToolContext = { guard: this.guard, cwd: this.guard.lock.repoRoot, skills: this.skills, mcp: this.mcp, browser: this.browser, delegate: this.delegate };
+    const ctx: ToolContext = {
+      guard: this.guard,
+      cwd: this.guard.lock.repoRoot,
+      skills: this.skills,
+      mcp: this.mcp,
+      browser: this.browser,
+      delegate: this.delegate,
+      delegateBackground: this.delegateBackground,
+      backgroundAgentStatus: this.backgroundAgentStatus,
+    };
     let result: ToolResult;
     try {
       switch (req.tool) {
@@ -160,6 +174,9 @@ export class Executor {
           break;
         case 'delegate':
           result = await toolDelegate(ctx, req.params);
+          break;
+        case 'agent_status':
+          result = toolAgentStatus(ctx, req.params);
           break;
         case 'list_skills':
           result = toolListSkills(ctx);

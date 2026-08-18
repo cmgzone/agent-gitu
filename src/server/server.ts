@@ -17,10 +17,11 @@ import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
-import type { LlmClient, LlmMessage } from '../llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, providerKey, resolveLlm } from '../llm/providers.js';
+import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
+import { UsageTrackingClient } from '../llm/llm.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, peekModelCatalog, providerKey, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { SessionStore } from './session-store.js';
+import { SessionStore, type SessionUsage } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
@@ -79,6 +80,7 @@ export interface RunSessionView {
   pendingQuestions?: PendingQuestions;
   report?: CompletionReport;
   error?: string;
+  usage?: SessionUsage & { costUsd?: number };
 }
 
 interface RunSession {
@@ -93,6 +95,7 @@ interface RunSession {
   mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
+  autoApprove?: boolean;
   events: { i: number; t: string; text: string }[];
   subscribers: Set<(ev: { i: number; t: string; text: string }) => void>;
   approvals: Map<string, ApprovalWaiter>;
@@ -101,6 +104,7 @@ interface RunSession {
   hermes?: InstanceType<typeof Hermes>;
   report?: CompletionReport;
   error?: string;
+  usage?: SessionUsage;
 }
 
 export interface HermesServerConfig {
@@ -219,23 +223,26 @@ export class HermesServer {
   }
 
   private saveRegistry(): void {
-    for (const s of this.sessions.values()) {
-      this.db().upsertSession({
-        runId: s.runId,
-        taskId: s.taskId,
-        goal: s.goal,
-        project: s.project,
-        projectPath: s.projectPath,
-        startedAt: s.startedAt,
-        status: s.status,
-        finishedAt: s.finishedAt,
-        mode: s.mode,
-        provider: s.provider,
-        model: s.model,
-        report: s.report,
-        error: s.error,
-      });
-    }
+    for (const s of this.sessions.values()) this.persistSession(s);
+  }
+
+  private persistSession(s: RunSession): void {
+    this.db().upsertSession({
+      runId: s.runId,
+      taskId: s.taskId,
+      goal: s.goal,
+      project: s.project,
+      projectPath: s.projectPath,
+      startedAt: s.startedAt,
+      status: s.status,
+      finishedAt: s.finishedAt,
+      mode: s.mode,
+      provider: s.provider,
+      model: s.model,
+      report: s.report,
+      error: s.error,
+      usage: s.usage,
+    });
   }
 
   async start(): Promise<number> {
@@ -303,6 +310,7 @@ export class HermesServer {
         model: entry.model,
         report,
         error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : entry.error,
+        usage: entry.usage,
         events: Array.isArray(entry.events) ? entry.events : [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -426,6 +434,12 @@ export class HermesServer {
         : undefined,
       report: s.report,
       error: s.error,
+      usage: s.usage
+        ? {
+            ...s.usage,
+            costUsd: usageCostUsd(modelMetadataFor(peekModelCatalog(), s.provider ?? '', s.model ?? ''), s.usage),
+          }
+        : undefined,
     };
   }
 
@@ -440,26 +454,41 @@ export class HermesServer {
     if (persistDb && !text.startsWith('tdelta')) {
       try {
         this.db().addEvent(s.runId, ev);
-        this.db().upsertSession({
-          runId: s.runId,
-          taskId: s.taskId,
-          goal: s.goal,
-          project: s.project,
-        projectPath: s.projectPath,
-        startedAt: s.startedAt,
-        status: s.status,
-        finishedAt: s.finishedAt,
-        mode: s.mode,
-        provider: s.provider,
-        model: s.model,
-        report: s.report,
-        error: s.error,
-      });
+        this.persistSession(s);
       } catch {
         /* persistence must never break the run */
       }
     }
     for (const send of s.subscribers) send(ev);
+  }
+
+  /**
+   * A retry or an edited resend replaces the original user message instead of
+   * cloning it: drop the durable event for the old message (and refresh the
+   * goal when it was the original one) before the new one is recorded.
+   */
+  private supersedeUserMessage(s: RunSession, oldText: string, newText: string): void {
+    const target = `user-msg ${oldText}`;
+    for (let i = s.events.length - 1; i >= 0; i--) {
+      if (s.events[i]!.text === target) {
+        const idx = s.events[i]!.i;
+        s.events.splice(i, 1);
+        try {
+          this.db().deleteEvent(s.runId, idx);
+        } catch {
+          /* persistence must never break the run */
+        }
+        break;
+      }
+    }
+    if (s.goal === oldText) {
+      s.goal = newText;
+      try {
+        this.persistSession(s);
+      } catch {
+        /* persistence must never break the run */
+      }
+    }
   }
 
   /**
@@ -1158,6 +1187,7 @@ export class HermesServer {
         model: resolvedInfo?.model ?? model,
         projectPath,
         mode,
+        autoApprove,
         events: [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -1300,6 +1330,9 @@ export class HermesServer {
       // this continuation — and later ones — run in the newly chosen mode.
       const modeSwitch = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : undefined;
       const reviewSwitch = typeof body['review'] === 'boolean' ? body['review'] : undefined;
+      const supersede = typeof body['supersede'] === 'string' && body['supersede'].trim() ? body['supersede'].trim() : undefined;
+      if (body['autoApprove'] === true) session.autoApprove = true;
+      else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
       if (session.status === 'running') {
         session.hermes?.queueMessage(text);
@@ -1347,6 +1380,7 @@ export class HermesServer {
       session.report = undefined;
       session.finishedAt = undefined;
       session.error = undefined;
+      if (supersede) this.supersedeUserMessage(session, supersede, text);
       this.pushEvent(session, `user-msg ${text}`);
       this.pushEvent(session, `continue — resuming this session`);
       void this.executeRun(session, llm, {
@@ -1358,6 +1392,7 @@ export class HermesServer {
         conversationHistory,
         images,
         model,
+        autoApprove: session.autoApprove,
       });
       this.sendJson(res, 200, { ok: true, resumed: true });
       return;
@@ -1451,6 +1486,16 @@ export class HermesServer {
     const mcp = McpManager.forProject(root);
     const agentStore = new AgentStore();
     const agentDefs = agentStore.list();
+    const usage: SessionUsage = (session.usage ??= { inputTokens: 0, outputTokens: 0, cachedTokens: 0, messages: 0 });
+    const trackUsage = (u: LlmUsage | undefined): void => {
+      usage.messages += 1;
+      if (u) {
+        usage.inputTokens += u.inputTokens;
+        usage.outputTokens += u.outputTokens;
+        usage.cachedTokens += u.cachedTokens;
+      }
+    };
+    const trackedLlm = new UsageTrackingClient(llm, trackUsage);
     const subagents =
       agentDefs.length > 0
         ? new SubAgentRunner({
@@ -1458,9 +1503,10 @@ export class HermesServer {
             resolveLlm: (name) => {
               const def = agentStore.get(name);
               if (!def) throw new Error(`unknown agent "${name}" — create it in Settings → Agents`);
-              return resolveLlm({ provider: def.provider, model: def.model }).client;
+              return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model }).client, trackUsage);
             },
             agentRole: (name) => agentStore.get(name)?.role,
+            agentEffort: (name) => agentStore.get(name)?.effort,
             onEvent: (t) => this.pushEvent(session, t),
           })
         : undefined;
@@ -1469,7 +1515,7 @@ export class HermesServer {
     const hermes = new Hermes({
       cwd: opts.projectPath ?? this.config.cwd,
       index,
-      llm,
+      llm: trackedLlm,
       mode: opts.mode,
       autoApprove: opts.autoApprove ?? false,
       autoLearn: opts.autoLearn ?? true,

@@ -117,18 +117,45 @@ export const UI_HTML = String.raw`<!doctype html>
   .thought .caret { display: inline-block; width: 7px; height: 14px; background: var(--dark); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
   .meta-line { color: var(--muted); font-size: 12px; padding: 3px 2px; }
   .meta-line b { color: var(--text); font-weight: 600; }
-  .tool { border: 1px solid var(--border); background: var(--card); border-radius: 10px; margin: 8px 0; overflow: hidden; }
+  .meta-line.subagent-line { margin: 6px 0; padding: 7px 9px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #315d9f; }
+  .meta-line.subagent-line b { color: var(--blue); }
+  .tool { border: 1px solid var(--border); background: var(--card); border-radius: 10px; margin: 8px 0; overflow: hidden; animation: toolIn .28s cubic-bezier(.21,1.02,.55,1.01) both; transition: box-shadow .3s, border-color .3s; }
+  @keyframes toolIn { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
   .tool .head { display: flex; align-items: center; gap: 9px; padding: 8px 12px; cursor: pointer; }
   .tool .head:hover { background: #fbfbf9; }
+  .tool .tico { width: 24px; height: 24px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; flex: none; background: #f0f0ec; color: var(--muted); transition: background .3s, color .3s; }
+  .tool .tico svg { width: 13px; height: 13px; }
   .tool .kind { font-family: var(--mono); font-size: 10px; letter-spacing: .5px; color: var(--muted); background: #f0f0ec; border-radius: 5px; padding: 2px 7px; flex: none; }
   .tool .sum { font-family: var(--mono); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .tool .reason { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .tool .st { margin-left: auto; flex: none; }
-  .tool .spin { width: 10px; height: 10px; border: 2px solid var(--border2); border-top-color: var(--dark); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  .tool .st { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 6px; }
+  .tool .spin { width: 12px; height: 12px; border: 2px solid #e4e4de; border-top-color: var(--dark); border-radius: 50%; animation: spin .7s linear infinite; flex: none; }
   .tool details { border-top: 1px solid var(--border); }
+  .tool details[open] pre { animation: outFade .25s ease; }
+  @keyframes outFade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
   .tool summary { padding: 5px 12px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
   .tool pre { margin: 0; padding: 8px 12px 10px; font-family: var(--mono); font-size: 11.5px; color: #55554f; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
   .tool .lines { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--green); background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px; padding: 1px 7px; flex: none; }
+  .tool.running { position: relative; border-color: #d9d9d3; }
+  .tool.running::before { content: ''; position: absolute; top: 0; left: -40%; height: 2px; width: 40%; background: linear-gradient(90deg, transparent, var(--dark), transparent); animation: toolSweep 1.15s ease-in-out infinite; }
+  @keyframes toolSweep { 0% { left: -40%; } 100% { left: 100%; } }
+  .tool.running .tico { animation: ticoPulse 1.2s ease-in-out infinite; }
+  @keyframes ticoPulse { 50% { transform: scale(1.1); opacity: .7; } }
+  .tool.done-ok { border-color: #bbf7d0; box-shadow: 0 0 0 3px rgba(34,197,94,.08); }
+  .tool.done-ok .tico { background: #f0fdf4; color: var(--green); }
+  .tool.done-bad { border-color: #fecaca; box-shadow: 0 0 0 3px rgba(239,68,68,.08); animation: toolShake .32s; }
+  .tool.done-bad .tico { background: #fef2f2; color: var(--red); }
+  @keyframes toolShake { 20% { transform: translateX(-3px); } 50% { transform: translateX(3px); } 80% { transform: translateX(-2px); } }
+  .tool .okmark { display: inline-flex; color: var(--green); }
+  .tool .okmark svg polyline { stroke-dasharray: 26; stroke-dashoffset: 26; animation: drawCheck .45s ease .04s forwards; }
+  @keyframes drawCheck { to { stroke-dashoffset: 0; } }
+  .tool.k-edit .tico { background: #eef2ff; color: #4c5fd6; }
+  .tool.k-read .tico { background: #eff6ff; color: var(--blue); }
+  .tool.k-list .tico { background: #f0fdf4; color: var(--green); }
+  .tool.k-search .tico { background: #fffbeb; color: var(--amber); }
+  .tool.k-shell .tico { background: #16181d; color: #7ee2a8; }
+  .tool.browser-tool { border-color: #c4b5fd; background: #faf9ff; box-shadow: inset 3px 0 0 var(--accent); }
+  .tool.browser-tool .kind { color: #5b45c5; background: #ede9fe; }
 
   .chip { font-size: 11px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--border2); color: var(--muted); }
   .chip.ok { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
@@ -292,6 +319,13 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .shotmsg { margin: 10px 0; }
   .shotmsg img { display: block; max-width: 340px; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.06); margin-top: 4px; }
+  .browser-shot img { border-color: #c4b5fd; }
+  .browser-chat-highlight { display: flex; align-items: center; gap: 7px; width: fit-content; padding: 3px 8px; border-radius: 999px; color: #5b45c5; background: #ede9fe; font-size: 11px; }
+  .browser-chat-highlight span { color: #7665ce; }
+  .browser-highlight { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 9px 10px; border: 1px solid #c4b5fd; border-radius: 9px; background: #faf9ff; color: #4c3bb1; font-size: 12px; }
+  .browser-highlight > div { display: flex; align-items: center; gap: 7px; }
+  .browser-highlight b { font-size: 11px; letter-spacing: .7px; text-transform: uppercase; }
+  .browser-highlight > span { color: #6d5ac5; font: 10.5px var(--mono); }
 
   .skcard { padding: 12px 16px; border-bottom: 1px solid var(--border); }
   .skcard:last-child { border-bottom: 0; }
@@ -416,8 +450,15 @@ export const UI_HTML = String.raw`<!doctype html>
     image: SVG_OPEN + '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>',
     copy: SVG_OPEN + '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>',
     branch: SVG_OPEN + '<line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>',
-    globe: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z"/></svg>'
+    globe: SVG_OPEN + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z"/></svg>',
+    terminal: SVG_OPEN + '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+    file: SVG_OPEN + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>',
+    list: SVG_OPEN + '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+    chevDown: SVG_OPEN + '<polyline points="6 9 12 15 18 9"/></svg>',
+    chevRight: SVG_OPEN + '<polyline points="9 6 15 12 9 18"/></svg>'
   };
+  var TOOL_ICONS = { edit: 'pencil', read: 'file', list: 'list', search: 'search', shell: 'terminal', browser: 'globe', tool: 'wrench' };
+  function toolIconFor(kind) { return TOOL_ICONS[kind] || 'wrench'; }
   function icon(name) { return ICONS[name] || ''; }
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
@@ -454,13 +495,21 @@ export const UI_HTML = String.raw`<!doctype html>
         '<div class="sect" style="display:flex;align-items:center">Projects<span style="flex:1"></span><button class="ubtn" id="sbManage" title="select multiple to delete" style="display:inline-flex">' + (S.manage ? icon('check') : icon('pencil')) + '</button></div>';
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
+      if (!S.settings.collapsedProj) S.settings.collapsedProj = {};
+      var collapsed = S.settings.collapsedProj;
       names.forEach(function (p) {
+        var hasActive = byProj[p].some(function (s) { return s.runId === S.active; });
+        var isCol = !S.manage && collapsed[p] === true && !hasActive;
         if (S.manage) {
           html += '<label class="proj"><input type="checkbox" class="chk" data-selproj="' + esc(p) + '"' + (S.selProj && S.selProj[p] ? ' checked' : '') + '><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span></label>';
         } else {
-          html += '<div class="proj" data-proj="' + esc(p) + '" title="set as active project for new sessions"><span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span><button class="delx" data-delproj="' + esc(p) + '" title="delete project and its sessions">' + icon('x') + '</button></div>';
+          html += '<div class="proj" data-proj="' + esc(p) + '" title="set as active project for new sessions">' +
+            '<button class="ubtn" data-collapse="' + esc(p) + '" title="' + (isCol ? 'expand sessions' : 'collapse sessions') + '" style="display:inline-flex;padding:2px;margin-right:2px">' + icon(isCol ? 'chevRight' : 'chevDown') + '</button>' +
+            '<span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span>' +
+            (isCol ? '<span class="chip" style="margin-right:6px">' + byProj[p].length + '</span>' : '') +
+            '<button class="delx" data-delproj="' + esc(p) + '" title="delete project and its sessions">' + icon('x') + '</button></div>';
         }
-        byProj[p].slice(0, S.manage ? 200 : 8).forEach(function (s) {
+        if (!isCol) byProj[p].slice(0, S.manage ? 200 : 8).forEach(function (s) {
           if (S.manage) {
             html += '<label class="chat"><input type="checkbox" class="chk" data-selrun="' + esc(s.runId) + '"' + (S.selRuns && S.selRuns[s.runId] ? ' checked' : '') + '><span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></label>';
           } else {
@@ -500,6 +549,15 @@ export const UI_HTML = String.raw`<!doctype html>
         el.onclick = function (e) {
           e.stopPropagation();
           deleteProjectFlow(el.getAttribute('data-delproj'), projPath[el.getAttribute('data-delproj')]);
+        };
+      });
+      $('sbScroll').querySelectorAll('[data-collapse]').forEach(function (el) {
+        el.onclick = function (e) {
+          e.stopPropagation();
+          var n = el.getAttribute('data-collapse');
+          if (collapsed[n]) delete collapsed[n]; else collapsed[n] = true;
+          persist();
+          renderSidebar();
         };
       });
       if ($('sbManage')) $('sbManage').onclick = function () { S.manage = !S.manage; S.selProj = {}; S.selRuns = {}; renderSidebar(); };
@@ -648,6 +706,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function openHome() {
     S.active = 'home';
+    S.supersedeNext = null;
     stopStreams();
     stopBrowserPoll();
     renderSidebar();
@@ -1028,6 +1087,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function openRun(runId, opts) {
     S.active = runId;
+    S.supersedeNext = null;
     stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
     sess.nodes = {};
@@ -1087,19 +1147,37 @@ export const UI_HTML = String.raw`<!doctype html>
     };
   }
 
-  function userBubble(text) {
+  function userBubble(text, runId) {
     var div = document.createElement('div');
     div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
+    div.setAttribute('data-ubtext', text);
     div.innerHTML = '<div style="max-width:75%;background:#eef2ff;border:1px solid #dbe3ff;border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
       '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) +
       '<div class="ubtns"><button class="ubtn" title="edit and resend" data-ub="edit">' + icon('pencil') + '</button>' +
-      '<button class="ubtn" title="retry" data-ub="retry">' + icon('retry') + '</button></div></div>';
+      '<button class="ubtn" title="retry" data-ub="retry">' + icon('retry') + '</button>' + '</div></div>';
     div.querySelector('[data-ub="edit"]').onclick = function () {
       var f = $('follow') || $('goal');
       if (f) { f.value = text; f.focus(); }
+      S.supersedeNext = text;
     };
-    div.querySelector('[data-ub="retry"]').onclick = function () { sendFollow(text); };
+    div.querySelector('[data-ub="retry"]').onclick = function () {
+      var sess = S.sessions[runId || S.active];
+      var running = sess && sess.session && sess.session.status === 'running';
+      if (running) { sendFollow(text); return; }
+      div.remove();
+      sendFollow(text, text);
+    };
     return div;
+  }
+
+  function removeUserBubble(runId, text) {
+    var stream = $('stream');
+    if (!stream) return;
+    var target = null;
+    stream.querySelectorAll('div[data-ubtext]').forEach(function (b) {
+      if (b.getAttribute('data-ubtext') === text) target = b;
+    });
+    if (target) target.remove();
   }
 
   function appendLive(stream, el) {
@@ -1107,9 +1185,14 @@ export const UI_HTML = String.raw`<!doctype html>
     if (w) stream.insertBefore(el, w); else stream.appendChild(el);
   }
 
-  function sendFollow(text) {
+  function sendFollow(text, supersede) {
     var runId = S.active;
     var sess = S.sessions[runId];
+    var sup = supersede || S.supersedeNext || undefined;
+    S.supersedeNext = null;
+    var running = sess && sess.session && sess.session.status === 'running';
+    if (sup && running) sup = undefined;
+    if (sup) removeUserBubble(runId, sup);
     if (sess && sess.session && sess.session.status !== 'running') {
       // A continuation cannot change the kind of its existing session.  In
       // particular, "continue" must not make a failed standard task look like
@@ -1131,7 +1214,9 @@ export const UI_HTML = String.raw`<!doctype html>
       // The workflow dropdown drives continuations too: an explicit selection
       // switches an existing session's mode (chat <-> plan/build).
       mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-      review: S.sel.wf === 'review' ? S.settings.review : false
+      review: S.sel.wf === 'review' ? S.settings.review : false,
+      supersede: sup,
+      autoApprove: S.settings.autoApprove
     }) })
       .then(function () {
         S.pendingImages = [];
@@ -1168,7 +1253,7 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.pendingUserMessages.push(text);
     sess.nodes.abubble = null;
     sess.nodes.thought = null;
-    appendLive(stream, userBubble(text));
+    appendLive(stream, userBubble(text, runId));
     stream.scrollTop = stream.scrollHeight;
   }
 
@@ -1184,7 +1269,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (summary.indexOf('list ') === 0) return 'list';
     if (summary.indexOf('search ') === 0) return 'search';
     if (summary.indexOf('$ ') === 0) return 'shell';
-    if (summary.indexOf('browse') === 0) return 'web';
+    if (summary.indexOf('browse') === 0) return 'browser';
     return 'tool';
   }
   function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
@@ -1197,7 +1282,8 @@ export const UI_HTML = String.raw`<!doctype html>
       if (k === 'edit') return 'Editing ' + summary.slice(summary.indexOf(' ') + 1) + '…';
       if (k === 'read') return 'Reading ' + summary.slice(5) + '…';
       if (k === 'list') return 'Listing ' + summary.slice(5) + '…';
-      if (k === 'search') return 'Searching…';
+       if (k === 'search') return 'Searching…';
+       if (k === 'browser') return 'Checking in browser…';
       if (k === 'shell') return 'Running ' + summary.slice(2) + '…';
       return 'Working: ' + summary + '…';
     }
@@ -1293,7 +1379,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var pending = sess && sess.pendingUserMessages;
       var pendingAt = pending ? pending.indexOf(userText) : -1;
       if (pendingAt >= 0) { pending.splice(pendingAt, 1); return; }
-      sess.nodes.abubble = null; sess.nodes.thought = null; appendLive(stream, userBubble(userText)); stream.scrollTop = stream.scrollHeight; return;
+      sess.nodes.abubble = null; sess.nodes.thought = null; appendLive(stream, userBubble(userText, runId)); stream.scrollTop = stream.scrollHeight; return;
     }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
@@ -1334,8 +1420,8 @@ export const UI_HTML = String.raw`<!doctype html>
 
     if (text.indexOf('browseshot ') === 0) {
       var shot = document.createElement('div');
-      shot.className = 'shotmsg';
-      shot.innerHTML = '<div class="meta-line"><b>browser</b> screenshot</div><img alt="browser screenshot">';
+      shot.className = 'shotmsg browser-shot';
+      shot.innerHTML = '<div class="browser-chat-highlight"><b>Visual check</b><span>Browser screenshot</span></div><img alt="browser screenshot">';
       shot.querySelector('img').src = text.slice(11);
       appendLive(stream, shot);
       stream.scrollTop = stream.scrollHeight;
@@ -1347,12 +1433,14 @@ export const UI_HTML = String.raw`<!doctype html>
     var body = text.slice(tag.length).trim();
 
     if (tag === 'run') {
-      var summary = splitSummary(body);
-      var reason = splitReason(body);
-      var card = document.createElement('div');
-      card.className = 'tool';
+       var kind = toolKind(body);
+       var summary = splitSummary(body);
+       var reason = splitReason(body);
+       var card = document.createElement('div');
+       card.className = 'tool k-' + kind + ' running' + (kind === 'browser' ? ' browser-tool' : '');
       card.innerHTML =
-        '<div class="head"><span class="kind">' + esc(toolKind(summary)) + '</span>' +
+        '<div class="head"><span class="tico">' + icon(toolIconFor(kind)) + '</span>' +
+        '<span class="kind">' + esc(kind) + '</span>' +
         '<span class="sum">' + esc(summary) + '</span>' +
         (reason ? '<span class="reason">— ' + esc(reason) + '</span>' : '') +
         '<span class="st"><span class="spin"></span></span></div>' +
@@ -1367,8 +1455,21 @@ export const UI_HTML = String.raw`<!doctype html>
     if (tag === 'ok' || tag === 'error' || tag === 'denied' || tag === 'blocked') {
       var tool = sess.nodes.lastTool;
       if (tool) {
+        tool.classList.remove('running');
         var st = tool.querySelector('.st');
-        st.innerHTML = tag === 'ok' ? '<span class="chip ok">ok</span>' : tag === 'error' ? '<span class="chip bad">error</span>' : tag === 'denied' ? '<span class="chip bad">denied</span>' : '<span class="chip warn">blocked</span>';
+        if (tag === 'ok') {
+          tool.classList.add('done-ok');
+          st.innerHTML = '<span class="okmark">' + icon('check') + '</span><span class="chip ok">ok</span>';
+        } else if (tag === 'error') {
+          tool.classList.add('done-bad');
+          st.innerHTML = '<span class="chip bad">error</span>';
+        } else if (tag === 'denied') {
+          tool.classList.add('done-bad');
+          st.innerHTML = '<span class="chip bad">denied</span>';
+        } else {
+          tool.classList.add('done-bad');
+          st.innerHTML = '<span class="chip warn">blocked</span>';
+        }
       }
       setWorking('Thinking…');
       return;
@@ -1382,6 +1483,7 @@ export const UI_HTML = String.raw`<!doctype html>
     meta.className = 'meta-line';
     if (tag === 'evidence') meta.innerHTML = '<b style="color:' + (body.indexOf('PASS') >= 0 ? 'var(--green)' : 'var(--red)') + '">evidence</b> ' + esc(body);
     else if (tag === 'plan') meta.innerHTML = '<b>plan</b> ' + esc(body) + ' — review it, then approve to build';
+    else if (tag === 'subagent') { meta.className = 'meta-line subagent-line'; meta.innerHTML = '<b>specialist</b> ' + esc(body); }
     else meta.innerHTML = '<b>' + esc(tag) + '</b> ' + esc(body);
     insert(meta);
     var wt2 = workingTextFor(text);
@@ -1691,11 +1793,21 @@ export const UI_HTML = String.raw`<!doctype html>
     return html + '</div>';
   }
 
+  function browserHighlight(activity) {
+    if (!activity || !Number(activity.total)) return '';
+    var total = Math.max(0, Number(activity.total) || 0);
+    var successful = Math.max(0, Math.min(total, Number(activity.successful) || 0));
+    var screenshots = Math.max(0, Number(activity.screenshots) || 0);
+    return '<div class="browser-highlight"><div><b>Visual verification</b></div><span>' + successful + '/' + total + ' browser actions succeeded' +
+      (screenshots ? ' · ' + screenshots + ' screenshot' + (screenshots === 1 ? '' : 's') : '') + '</span></div>';
+  }
+
   function reportSideCard(report) {
     var checks = reportChecks(report);
     var passed = checks.filter(function (check) { return check.passed; }).length;
     return '<div class="summary-card" style="margin:12px 0 0"><div class="summary-head"><h3 style="margin:0;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Completion report</h3><span class="chip ' + (report.status === 'complete' ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
       '<p class="summary-copy" style="margin-top:9px">' + esc(shortText(readableSummary(report.summary), 360)) + '</p>' +
+      browserHighlight(report.browserActivity) +
       '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + reportFiles(report).length + ' product files</span></div></div>';
   }
 
@@ -1721,6 +1833,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var html = '<div class="summary-head"><h2>' + esc(session.goal) + '</h2>' + chipFor(session.status) + '</div>';
     html += '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + files.length + ' product files changed</span></div>';
     html += '<div class="sec"><h4>Outcome</h4><p class="summary-copy">' + esc(readableSummary(r.summary)) + '</p></div>';
+    html += browserHighlight(r.browserActivity);
     if (files.length) {
       html += '<div class="sec"><h4>Product files changed</h4><ul>' + files.map(function (f) {
         return '<li><span class="file-chip">' + esc(f) + '</span>' + (lineCounts[f] ? ' <span style="color:var(--green);font-family:var(--mono);font-size:11px">+' + lineCounts[f] + ' lines</span>' : '') + '</li>';
@@ -2081,6 +2194,14 @@ export const UI_HTML = String.raw`<!doctype html>
       stat('Checkpoints', L.checkpoints.length);
     }
     html += '</div>';
+    var U = session && session.usage;
+    html += '<div class="section-h">Usage &amp; cost</div><div class="stat-grid">';
+    stat('Messages', U ? U.messages : 0);
+    stat('Input tokens', U ? formatTokens(U.inputTokens) : '—', true);
+    stat('Cached tokens', U ? formatTokens(U.cachedTokens) : '—', true);
+    stat('Output tokens', U ? formatTokens(U.outputTokens) : '—', true);
+    stat('Total cost', U && typeof U.costUsd === 'number' ? '$' + U.costUsd.toFixed(4) : '—', true);
+    html += '</div>';
     if (L && L.actions.length) {
       var counts = { read: 0, write: 0, command: 0, other: 0 };
       L.actions.forEach(function (a) {
@@ -2307,7 +2428,7 @@ export const UI_HTML = String.raw`<!doctype html>
           return out;
         }
         b.innerHTML = '<h1>Specialist agents</h1>' +
-          '<p style="color:var(--muted);font-size:12.5px">Named worker agents that the main agent can run in parallel with the delegate tool on big projects. Each agent can use a different provider and model. You can also assign them work by naming them in a task.</p>' +
+          '<p style="color:var(--muted);font-size:12.5px">Named worker agents that the main agent can run in parallel with the delegate tool on big projects. Up to three run at once; extra work stays queued with live status updates. Each agent can use a different provider, model, and reasoning effort.</p>' +
           '<div style="margin:12px 0"><button class="btn dark" id="agNew">+ New agent</button></div>' +
           '<div class="setcard" id="agForm" hidden><div class="setlist">' +
           '<input id="agName" placeholder="agent name (e.g. frontend, tester, researcher)">' +

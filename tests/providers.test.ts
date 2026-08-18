@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, resolveLlm } from '../src/llm/providers.js';
 
-const WS_URL = 'https://ws-rn94romkyqmcy5ka.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1';
+const WS_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
 
 describe('provider registry', () => {
-  it('registers alibaba with the workspace endpoint and current qwen default', () => {
+  it('registers alibaba with the DashScope intl endpoint and current qwen default', () => {
     const alibaba = PROVIDERS['alibaba'];
     expect(alibaba).toBeDefined();
     expect(alibaba!.baseUrl).toBe(WS_URL);

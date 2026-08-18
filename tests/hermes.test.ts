@@ -2,10 +2,10 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { compactHistory, Hermes } from '../src/agent/hermes.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
-import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { SkillStore } from '../src/skills/skills.js';
 
 function makeProject(name: string): string {
@@ -88,6 +88,103 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(readFileSync(path.join(dir, 'src', 'hello.ts'), 'utf8')).toContain('greet');
     expect(ledger.data.evidence.length).toBeGreaterThanOrEqual(1);
     expect(report.verification.length).toBeGreaterThanOrEqual(1);
+  }, 30000);
+
+  it('recovers the action from the reasoning trace when the visible reply is prose-only', async () => {
+    const dir = makeProject('reasoning');
+    const llm = {
+      name: 'reasoning-mock',
+      lastReasoning: undefined as string | undefined,
+      call: 0,
+      reply(messages: { role: string; content: string }[]): string {
+        const n = this.call++;
+        this.lastReasoning = undefined;
+        if (n === 0) {
+          this.lastReasoning = JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification command passes'] } });
+          return 'I will define the acceptance criteria now.';
+        }
+        if (n === 1) return JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } });
+        if (n === 2) return JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } });
+        if (n === 3) return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) } });
+        return JSON.stringify({ action: { type: 'complete', summary: 'verified', risks: [], followUps: [] } });
+      },
+      async complete(messages: { role: string; content: string }[]): Promise<string> {
+        return this.reply(messages);
+      },
+      async completeStream(
+        messages: { role: string; content: string }[],
+        _o: unknown,
+        onDelta: (d: string) => void,
+      ): Promise<string> {
+        const r = this.reply(messages);
+        onDelta(r);
+        return r;
+      },
+    };
+
+    const hermes = new Hermes({ cwd: dir, llm: llm as never, mode: 'fast' });
+    const { ledger, report } = await hermes.run('Verify node works');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.acceptanceCriteria[0]!.text).toBe('verification command passes');
+    expect(ledger.data.blockers.some((b) => b.includes('unparseable'))).toBe(false);
+  }, 30000);
+
+  it('does not leak <json> fence tags into the streamed prose', async () => {
+    const dir = makeProject('jsonfence');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification command passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } }),
+      () => 'I will verify now.\n<json>\n' + JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }) + '\n</json>',
+      (_n, messages) => JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) } }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'verified', risks: [], followUps: [] } }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    const { report } = await hermes.run('Verify node works');
+
+    expect(report.status).toBe('complete');
+    expect(events.some((e) => e.includes('<json>'))).toBe(false);
+  }, 30000);
+
+  it('compacts old history while keeping the system prompt and recent tail', () => {
+    const messages: LlmMessage[] = [{ role: 'system', content: 'SYS' }];
+    for (let i = 0; i < 40; i++) {
+      messages.push({ role: i % 2 ? 'user' : 'assistant', content: `turn ${i} ${'x'.repeat(200)}` });
+    }
+    const events: string[] = [];
+    expect(compactHistory(messages, (t) => events.push(t))).toBe(true);
+    expect(messages[0]!.content).toBe('SYS');
+    expect(String(messages[1]!.content).startsWith('COMPACTED HISTORY')).toBe(true);
+    expect(messages.length).toBe(1 + 1 + 12);
+    expect(String(messages.at(-1)!.content)).toContain('turn 39');
+    expect(String(messages[1]!.content)).toContain('turn 1');
+    expect(events).toHaveLength(1);
+    expect(compactHistory(messages)).toBe(false);
+  });
+
+  it('accepts JSON actions that use the tool name as the action type', async () => {
+    const dir = makeProject('tooltype');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification command passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        thought: 'dots-style json action',
+        action: { type: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }),
+      (_n, messages) => JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) } }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'verified', risks: [], followUps: [] } }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+    const { ledger, report } = await hermes.run('Verify node works');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.evidence.length).toBeGreaterThanOrEqual(1);
+    expect(ledger.data.blockers.some((b) => b.includes('unparseable'))).toBe(false);
   }, 30000);
 
   it('rejects premature completion until criteria have evidence', async () => {
@@ -469,6 +566,73 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner });
     await hermes.run('delegate test');
     expect(sawDelegate).toBe(true);
+  }, 30000);
+
+  it('starts independent specialist work in the background and exposes its status', async () => {
+    const dir = makeProject('background-delegate');
+    const workerLlm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'answer', summary: 'background check complete' } }),
+    ]);
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => workerLlm,
+      agentRole: () => 'background tester',
+    });
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['background work starts'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'start worker', verification: 'agent status' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'delegate', background: true, tasks: [{ agent: 'worker', task: 'check the independent concern' }] },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'worker runs independently' } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner });
+
+    await hermes.run('start a background specialist');
+    const jobs = runner.status();
+    expect(jobs).toHaveLength(1);
+    const results = await runner.waitFor(jobs.map((job) => job.id));
+    expect(results).toMatchObject([{ agent: 'worker', ok: true, summary: 'background check complete' }]);
+    expect(runner.status()[0]?.status).toBe('completed');
+  }, 30000);
+
+  it('parses dots-style XML function calls instead of leaking raw XML', async () => {
+    const dir = makeProject('xml');
+    const events: string[] = [];
+    const criteriaXml = () =>
+      'I will start by setting the acceptance criteria.\n' +
+      '<dots_function_call>\n<invoke name="set_criteria">\n<parameter name="criteria">\n' +
+      '["hi.ts exists with greet()", "node --version passes"]\n</parameter>\n</invoke>\n</dots_function_call>';
+    const llm = new ScriptedMockLlm([
+      criteriaXml,
+      () =>
+        '<dots_function_call>\n<invoke name="set_plan">\n<parameter name="steps">\n' +
+        '[{"description":"create hi.ts","verification":"node --version"}]\n</parameter>\n</invoke>\n</dots_function_call>',
+      () =>
+        '<dots_function_call>\n<invoke name="write_file">\n<parameter name="path">src/hi.ts</parameter>\n' +
+        '<parameter name="content">export function greet(){return "hi"}\n</parameter>\n</invoke>\n</dots_function_call>',
+      () =>
+        '<dots_function_call>\n<invoke name="run_command">\n<parameter name="command">node --version</parameter>\n</invoke>\n</dots_function_call>',
+      (_n, messages) =>
+        JSON.stringify({
+          action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) },
+        }),
+      (_n, messages) =>
+        JSON.stringify({
+          action: { type: 'claim_criterion', criterionId: 'ac-2', evidenceId: findEvidenceId(messages) },
+        }),
+      () => '<dots_function_call>\n<invoke name="complete">\n<parameter name="summary">Created hi.ts and verified.</parameter>\n</invoke>\n</dots_function_call>',
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    const { ledger, report } = await hermes.run('Create a hi module (dots XML model)');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.filesChanged).toContain('src/hi.ts');
+    expect(ledger.data.acceptanceCriteria.length).toBe(2);
+    // The raw XML must never reach the streamed thought bubbles as prose.
+    expect(events.some((e) => e.startsWith('tdelta ') && e.includes('dots_function_call'))).toBe(false);
+    expect(events.some((e) => e.startsWith('say ') && e.includes('dots_function_call'))).toBe(false);
   }, 30000);
 
   it('denies dangerous commands that are not approved', async () => {

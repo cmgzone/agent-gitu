@@ -310,8 +310,9 @@ async function main(): Promise<void> {
                 if (!def) throw new Error(`unknown agent "${name}"`);
                 return resolveLlm({ provider: def.provider, model: def.model }).client;
               },
-              agentRole: (name) => agentStore.get(name)?.role,
-              onEvent: (e) => console.error(`[hermes] ${e}`),
+                agentRole: (name) => agentStore.get(name)?.role,
+                agentEffort: (name) => agentStore.get(name)?.effort,
+                onEvent: (e) => console.error(`[hermes] ${e}`),
             })
           : undefined;
 

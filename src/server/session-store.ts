@@ -3,7 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { CompletionReport } from '../types.js';
-import { ensureHermesHome } from '../workspace/home.js';
+import { ensureHermesHome, homeEnvOverride } from '../workspace/home.js';
+
+export interface SessionUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  messages: number;
+}
 
 export interface StoredSession {
   runId: string;
@@ -19,6 +26,7 @@ export interface StoredSession {
   model?: string;
   report?: CompletionReport;
   error?: string;
+  usage?: SessionUsage;
 }
 
 export interface StoredEvent {
@@ -35,7 +43,9 @@ export class SessionStore {
     const primary = path.join(home.sessions, 'hermes.db');
     const legacy = path.join(os.homedir(), '.hermes', 'hermes.db');
     let target = file ?? primary;
-    if (!file && !existsSync(primary) && existsSync(legacy)) {
+    // An explicitly overridden home (tests, scratch instances) stays isolated
+    // and must never inherit the user's real session history.
+    if (!file && !existsSync(primary) && existsSync(legacy) && !homeEnvOverride()) {
       try {
         copyFileSync(legacy, primary);
       } catch {
@@ -59,6 +69,7 @@ export class SessionStore {
          model TEXT,
          report TEXT,
          error TEXT,
+         usage TEXT,
          updatedAt TEXT
        );
        CREATE TABLE IF NOT EXISTS events (
@@ -72,7 +83,7 @@ export class SessionStore {
     // Existing installations created the sessions table before these fields
     // existed. SQLite has no ADD COLUMN IF NOT EXISTS, so ignore the harmless
     // duplicate-column error on an already-migrated database.
-    for (const column of ['finishedAt TEXT', 'mode TEXT', 'provider TEXT', 'model TEXT', 'report TEXT', 'error TEXT']) {
+    for (const column of ['finishedAt TEXT', 'mode TEXT', 'provider TEXT', 'model TEXT', 'report TEXT', 'error TEXT', 'usage TEXT']) {
       try {
         this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
       } catch {
@@ -84,8 +95,8 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, startedAt, status, finishedAt, mode, provider, model, report, error, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, startedAt, status, finishedAt, mode, provider, model, report, error, usage, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
@@ -98,6 +109,7 @@ export class SessionStore {
            model = excluded.model,
            report = excluded.report,
            error = excluded.error,
+           usage = excluded.usage,
            updatedAt = excluded.updatedAt`,
       )
       .run(
@@ -114,6 +126,7 @@ export class SessionStore {
         s.model ?? null,
         s.report ? JSON.stringify(s.report) : null,
         s.error ?? null,
+        s.usage ? JSON.stringify(s.usage) : null,
         new Date().toISOString(),
       );
   }
@@ -122,9 +135,13 @@ export class SessionStore {
     this.db.prepare(`INSERT OR REPLACE INTO events (runId, idx, t, text) VALUES (?, ?, ?, ?)`).run(runId, ev.i, ev.t, ev.text);
   }
 
+  deleteEvent(runId: string, idx: number): void {
+    this.db.prepare(`DELETE FROM events WHERE runId = ? AND idx = ?`).run(runId, idx);
+  }
+
   listSessions(): StoredSession[] {
     const rows = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, startedAt, status, finishedAt, mode, provider, model, report, error FROM sessions ORDER BY startedAt DESC`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, startedAt, status, finishedAt, mode, provider, model, report, error, usage FROM sessions ORDER BY startedAt DESC`)
       .all() as {
         runId: string;
         taskId: string | null;
@@ -139,6 +156,7 @@ export class SessionStore {
         model: string | null;
         report: string | null;
         error: string | null;
+        usage: string | null;
       }[];
     return rows.map((r) => ({
       runId: r.runId,
@@ -154,6 +172,7 @@ export class SessionStore {
       model: r.model ?? undefined,
       report: parseReport(r.report),
       error: r.error ?? undefined,
+      usage: parseUsage(r.usage),
     }));
   }
 
@@ -180,6 +199,22 @@ export class SessionStore {
 
   close(): void {
     this.db.close();
+  }
+}
+
+function parseUsage(value: string | null): SessionUsage | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<SessionUsage>;
+    const usage: SessionUsage = {
+      inputTokens: Number(parsed.inputTokens) || 0,
+      outputTokens: Number(parsed.outputTokens) || 0,
+      cachedTokens: Number(parsed.cachedTokens) || 0,
+      messages: Number(parsed.messages) || 0,
+    };
+    return usage.inputTokens || usage.outputTokens || usage.cachedTokens || usage.messages ? usage : undefined;
+  } catch {
+    return undefined;
   }
 }
 

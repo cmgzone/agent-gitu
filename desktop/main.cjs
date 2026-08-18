@@ -142,6 +142,34 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function triggerAndWaitForLoad(win, trigger) {
+  const wc = win.webContents;
+  return new Promise((resolve) => {
+    let settled = false;
+    let quietTimer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      wc.removeListener('did-stop-loading', finish);
+      if (quietTimer) clearTimeout(quietTimer);
+      clearTimeout(timeout);
+      resolve();
+    };
+    // History navigation and reload are asynchronous.  Wait for Electron's
+    // completion signal so a follow-up screenshot observes the new document.
+    const timeout = setTimeout(finish, 15_000);
+    wc.once('did-stop-loading', finish);
+    trigger();
+    // A disabled history action does not emit loading events, so do not leave
+    // the caller waiting for the full timeout in that case.
+    if (!settled) {
+      quietTimer = setTimeout(() => {
+        if (!wc.isLoading()) finish();
+      }, 150);
+    }
+  });
+}
+
 function rectOfSelector(win, selector) {
   return win.webContents.executeJavaScript(
     `(function(sel){
@@ -176,21 +204,25 @@ function makeBrowserBridge(normalizeUrl) {
     async back() {
       const win = ensureBrowserWin();
       await withDriving(win, async () => {
-        if (win.webContents.canGoBack()) win.webContents.goBack();
+        if (win.webContents.canGoBack()) {
+          await triggerAndWaitForLoad(win, () => win.webContents.goBack());
+        }
       });
       return stateOf(win);
     },
     async forward() {
       const win = ensureBrowserWin();
       await withDriving(win, async () => {
-        if (win.webContents.canGoForward()) win.webContents.goForward();
+        if (win.webContents.canGoForward()) {
+          await triggerAndWaitForLoad(win, () => win.webContents.goForward());
+        }
       });
       return stateOf(win);
     },
     async reload() {
       const win = ensureBrowserWin();
       await withDriving(win, async () => {
-        win.webContents.reload();
+        await triggerAndWaitForLoad(win, () => win.webContents.reload());
       });
       return stateOf(win);
     },

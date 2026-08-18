@@ -17,7 +17,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
   alibaba: {
     id: 'alibaba',
     label: 'Alibaba Cloud Model Studio (DashScope, OpenAI-compatible)',
-    baseUrl: 'https://ws-rn94romkyqmcy5ka.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1',
+    baseUrl: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1',
     keyEnvVars: ['HERMES_ALIBABA_API_KEY', 'DASHSCOPE_API_KEY', 'ALIBABA_API_KEY'],
     defaultModel: 'qwen3.8-max',
     models: [
@@ -268,6 +268,29 @@ export async function fetchModelCatalog(timeoutMs = 2500): Promise<ModelCatalog 
 export function modelMetadataFor(catalog: ModelCatalog | undefined, providerId: string, model: string): ModelMetadata | undefined {
   const catalogProvider = CATALOG_PROVIDER_IDS[providerId] ?? providerId;
   return catalog?.get(catalogProvider)?.get(model);
+}
+
+/** Synchronous view of the cached catalog (undefined when not fetched yet). */
+export function peekModelCatalog(): ModelCatalog | undefined {
+  return catalogCache && Date.now() < catalogExpiresAt ? catalogCache : undefined;
+}
+
+/** Estimate the USD cost of accumulated token usage from catalog prices. */
+export function usageCostUsd(
+  meta: ModelMetadata | undefined,
+  usage: { inputTokens: number; outputTokens: number; cachedTokens: number },
+): number | undefined {
+  if (!meta) return undefined;
+  const inputPrice = meta.inputPricePerMillion;
+  const outputPrice = meta.outputPricePerMillion;
+  if (inputPrice === undefined && outputPrice === undefined) return undefined;
+  const cached = Math.min(usage.cachedTokens, usage.inputTokens);
+  const cachedPrice = meta.cachedInputPricePerMillion ?? inputPrice ?? 0;
+  return (
+    ((usage.inputTokens - cached) / 1_000_000) * (inputPrice ?? 0) +
+    (cached / 1_000_000) * cachedPrice +
+    (usage.outputTokens / 1_000_000) * (outputPrice ?? 0)
+  );
 }
 
 function parseModelCatalog(value: unknown): ModelCatalog {

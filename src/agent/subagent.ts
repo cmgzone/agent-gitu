@@ -325,13 +325,11 @@ export class SubAgentRunner {
       // Never merge the specialist's private .hermes state (ledgers, locks)
       // back into the main working tree — only its product changes.
       await gitExec(wt.root, ['add', '-A', '--', ':(exclude).hermes']);
-      try {
-        await gitExec(wt.root, ['commit', '-m', commitMsg]);
-      } catch {
-        // Some machines have no global git identity; fall back to a neutral
-        // author so the work is not lost because of missing config.
-        await gitExec(wt.root, ['-c', 'user.name=Agent Gitu', '-c', 'user.email=agent@agentgitu.dev', 'commit', '-m', commitMsg]);
-      }
+      // Some machines (fresh CI, new laptops) have no git identity at all:
+      // without it both the worktree commit AND the merge commit fail. Detect
+      // it upfront and use a neutral author so the work is never lost.
+      const ident = await this.identityArgs(repoRoot);
+      await gitExec(wt.root, [...ident, 'commit', '-m', commitMsg]);
       emit(`subagent ${name} — merging worktree changes back`);
       // The merge and any conflict cleanup run inside the same serialized
       // chain slot: a conflicting merge is aborted before the next merge ever
@@ -341,7 +339,7 @@ export class SubAgentRunner {
         .catch(() => {})
         .then(async (): Promise<{ ok: boolean; summary: string }> => {
           try {
-            await gitExec(repoRoot, ['merge', wt.branch, '--no-ff', '-m', `merge ${commitMsg}`]);
+            await gitExec(repoRoot, [...ident, 'merge', wt.branch, '--no-ff', '-m', `merge ${commitMsg}`]);
             emit(`subagent ${name} — merged cleanly into the main working tree`);
             return { ok: true, summary: '(isolated worktree: changes committed and merged back cleanly)' };
           } catch (err) {
@@ -377,6 +375,21 @@ export class SubAgentRunner {
       }
       return { ok: false, summary: `Worktree changes were NOT merged: ${(err as Error).message}` };
     }
+  }
+
+  /**
+   * Returns git -c identity flags when the repo (or machine) has no
+   * user.name / user.email configured — commits and merges would otherwise
+   * fail with "Committer identity unknown". An empty array means the machine
+   * already has an identity and commits keep the user's real author.
+   */
+  private async identityArgs(repoRoot: string): Promise<string[]> {
+    const [name, email] = await Promise.all([
+      gitExec(repoRoot, ['config', 'user.name']).catch(() => ''),
+      gitExec(repoRoot, ['config', 'user.email']).catch(() => ''),
+    ]);
+    if (name.trim() && email.trim()) return [];
+    return ['-c', 'user.name=Agent Gitu', '-c', 'user.email=agent@agentgitu.dev'];
   }
 
   private async removeWorktree(wt: Worktree, repoRoot: string): Promise<void> {

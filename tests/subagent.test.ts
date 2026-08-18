@@ -246,4 +246,43 @@ describe('SubAgentRunner', () => {
     const worktrees = await gitExec(dir, ['worktree', 'list']);
     expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(1);
   });
+
+  it('uses a neutral git identity when none is configured, so worktree commits AND merges still succeed on fresh machines', async () => {
+    const dir = makeProject();
+    await initGitRepo(dir);
+
+    // Simulate a fresh machine: no global/system git config at all.
+    const oldGlobal = process.env.GIT_CONFIG_GLOBAL;
+    const oldSystem = process.env.GIT_CONFIG_SYSTEM;
+    const noGlobal = path.join(dir, '.no-global');
+    const noSystem = path.join(dir, '.no-system');
+    writeFileSync(noGlobal, '');
+    writeFileSync(noSystem, '');
+    process.env.GIT_CONFIG_GLOBAL = noGlobal;
+    process.env.GIT_CONFIG_SYSTEM = noSystem;
+    try {
+      const llm = scriptedLlm([
+        () => JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'src/fresh.txt', content: 'identity-free content' }, reason: 'e2e', expected: 'file' } }),
+        () => JSON.stringify({ action: { type: 'answer', summary: 'fresh machine done' } }),
+      ]);
+      const runner = new SubAgentRunner({
+        cwd: dir,
+        resolveLlm: () => llm,
+        agentRole: () => 'tester',
+      });
+
+      const [result] = await runner.runMany([{ agent: 'writer', task: 'create fresh.txt' }]);
+
+      expect(result.ok).toBe(true);
+      expect(result.summary).toContain('merged back cleanly');
+      expect(readFileSync(path.join(dir, 'src', 'fresh.txt'), 'utf8')).toBe('identity-free content');
+      const authors = await gitExec(dir, ['log', '--pretty=%an', '-2']);
+      expect(authors).toContain('Agent Gitu');
+    } finally {
+      if (oldGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = oldGlobal;
+      if (oldSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+      else process.env.GIT_CONFIG_SYSTEM = oldSystem;
+    }
+  });
 });

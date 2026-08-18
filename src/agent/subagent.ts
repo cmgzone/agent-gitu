@@ -325,23 +325,57 @@ export class SubAgentRunner {
       // Never merge the specialist's private .hermes state (ledgers, locks)
       // back into the main working tree — only its product changes.
       await gitExec(wt.root, ['add', '-A', '--', ':(exclude).hermes']);
-      await gitExec(wt.root, ['commit', '-m', commitMsg]);
+      try {
+        await gitExec(wt.root, ['commit', '-m', commitMsg]);
+      } catch {
+        // Some machines have no global git identity; fall back to a neutral
+        // author so the work is not lost because of missing config.
+        await gitExec(wt.root, ['-c', 'user.name=Agent Gitu', '-c', 'user.email=agent@agentgitu.dev', 'commit', '-m', commitMsg]);
+      }
       emit(`subagent ${name} — merging worktree changes back`);
-      await (mergeChain = mergeChain.then(() => gitExec(repoRoot, ['merge', wt.branch, '--no-ff', '-m', `merge ${commitMsg}`])));
-      emit(`subagent ${name} — merged cleanly into the main working tree`);
-      return { ok: true, summary: '(isolated worktree: changes committed and merged back cleanly)' };
+      // The merge and any conflict cleanup run inside the same serialized
+      // chain slot: a conflicting merge is aborted before the next merge ever
+      // starts, and the slot never rejects, so one failure cannot poison or
+      // race with later merges.
+      const settle = mergeChain
+        .catch(() => {})
+        .then(async (): Promise<{ ok: boolean; summary: string }> => {
+          try {
+            await gitExec(repoRoot, ['merge', wt.branch, '--no-ff', '-m', `merge ${commitMsg}`]);
+            emit(`subagent ${name} — merged cleanly into the main working tree`);
+            return { ok: true, summary: '(isolated worktree: changes committed and merged back cleanly)' };
+          } catch (err) {
+            const dirty = await gitExec(repoRoot, ['status', '--porcelain']).catch(() => '');
+            const unmerged = dirty
+              .split(/\r?\n/)
+              .filter((l) => /^(UU|AA|DD|AU|UA|UD|DU)\s/.test(l))
+              .map((l) => l.slice(3).trim());
+            await gitExec(repoRoot, ['merge', '--abort']).catch(() => {});
+            if (unmerged.length > 0) {
+              emit(`subagent ${name} — merge conflict, changes NOT merged`);
+              return {
+                ok: false,
+                summary: `Merge conflict when reconciling worktree changes — they were NOT merged into the main tree. Conflicting paths: ${unmerged.join(', ')}`,
+              };
+            }
+            emit(`subagent ${name} — merge refused, changes NOT merged`);
+            return {
+              ok: false,
+              summary: `Worktree changes were NOT merged: ${(err as Error).message} (the main working tree likely has conflicting uncommitted changes)`,
+            };
+          }
+        });
+      mergeChain = settle;
+      return settle;
     } catch (err) {
+      // Safety net — the slot above already swallows its own errors, but if
+      // the worktree commit itself failed, discard any partial merge state.
       try {
         await gitExec(repoRoot, ['merge', '--abort']);
       } catch {
         /* not mid-merge */
       }
-      const conflicts = await gitExec(repoRoot, ['status', '--porcelain']).catch(() => '');
-      emit(`subagent ${name} — merge conflict, changes NOT merged`);
-      return {
-        ok: false,
-        summary: `Merge conflict when reconciling worktree changes — they were NOT merged into the main tree. Conflicting paths: ${conflicts.trim() || 'unknown'}`,
-      };
+      return { ok: false, summary: `Worktree changes were NOT merged: ${(err as Error).message}` };
     }
   }
 

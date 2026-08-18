@@ -660,4 +660,94 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(denied.length).toBe(1);
     expect(denied[0]!.observation).toContain('DENIED');
   }, 30000);
+
+  it('rejects completion when evidence does not match orchestrator-specified structured criteria', async () => {
+    const dir = makeProject('lying-specialist');
+    const llm = new ScriptedMockLlm([
+      // LLM proposes a plan (criteria are pre-set by the orchestrator)
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'implement JWT', verification: 'npm test -- auth' }] } }),
+      // Specialist runs the WRONG command
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          stepId: 'step-1',
+          tool: 'run_command',
+          params: { command: 'node --version' },
+          reason: 'verify JWT works',
+          expected: 'exit 0',
+        },
+      }),
+      // Specialist tries to claim the criterion with the wrong evidence
+      (_n: number, messages: LlmMessage[]) => JSON.stringify({
+        action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) },
+      }),
+      // Specialist tries to complete anyway
+      () => JSON.stringify({ action: { type: 'complete', summary: 'JWT authentication implemented' } }),
+      // After rejection, specialist gives up
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'cannot satisfy criterion with available evidence' } }),
+    ]);
+
+    const events: string[] = [];
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      // Orchestrator passes structured criteria with required verification
+      criteria: [
+        { text: 'JWT authentication works', verification: 'npm test -- auth', evidenceType: 'test_success' },
+      ],
+      onEvent: (e) => events.push(e),
+    });
+    const { ledger, report } = await hermes.run('Implement JWT authentication');
+
+    // ❌ Evidence was rejected — criterion not satisfied
+    expect(ledger.data.acceptanceCriteria[0]!.satisfied).toBe(false);
+    // ❌ The criterion has the structured verification
+    expect(ledger.data.acceptanceCriteria[0]!.verification).toBe('npm test -- auth');
+    expect(ledger.data.acceptanceCriteria[0]!.evidenceType).toBe('test_success');
+    // ❌ The claim was rejected (event logged)
+    expect(events.some((e) => e.includes('claim') && e.includes('does not match'))).toBe(true);
+    // ❌ Completion was rejected by the evidence gate
+    expect(report.status).toBe('blocked');
+  }, 30000);
+
+  it('accepts completion when evidence matches orchestrator-specified structured criteria', async () => {
+    const dir = makeProject('honest-specialist');
+    const llm = new ScriptedMockLlm([
+      // LLM proposes a plan (criteria are pre-set by the orchestrator)
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify build', verification: 'node --version' }] } }),
+      // Specialist runs the CORRECT command
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          stepId: 'step-1',
+          tool: 'run_command',
+          params: { command: 'node --version' },
+          reason: 'verify node is available',
+          expected: 'exit 0',
+        },
+      }),
+      // Specialist claims the criterion with correct evidence
+      (_n: number, messages: LlmMessage[]) => JSON.stringify({
+        action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) },
+      }),
+      // Completion succeeds
+      () => JSON.stringify({ action: { type: 'complete', summary: 'Node verified.', risks: [], followUps: [] } }),
+    ]);
+
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      // Orchestrator passes structured criteria — verification matches the command
+      criteria: [
+        { text: 'Node is available', verification: 'node --version', evidenceType: 'command_success' },
+      ],
+    });
+    const { ledger, report } = await hermes.run('Verify node is installed');
+
+    // ✅ Evidence accepted — criterion satisfied
+    expect(ledger.data.acceptanceCriteria[0]!.satisfied).toBe(true);
+    expect(report.status).toBe('complete');
+  }, 30000);
 });

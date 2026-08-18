@@ -23,9 +23,27 @@ export interface ProjectLock {
   lockedAt: string;
 }
 
+export type CriterionEvidenceType =
+  | 'command_success'
+  | 'test_success'
+  | 'build_success'
+  | 'lint_success'
+  | 'typecheck_success'
+  | 'any';
+
+export interface CriterionSpec {
+  text: string;
+  verification?: string;
+  evidenceType?: CriterionEvidenceType;
+}
+
 export interface AcceptanceCriterion {
   id: string;
   text: string;
+  /** When set, the criterion can ONLY be satisfied by evidence from this exact command. */
+  verification?: string;
+  /** Expected evidence type. Default: 'any' (any passing evidence). */
+  evidenceType?: CriterionEvidenceType;
   evidenceIds: string[];
   satisfied: boolean;
 }

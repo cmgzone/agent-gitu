@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   AcceptanceCriterion,
   ActionRecord,
+  CriterionSpec,
   PlanStep,
   ProjectLock,
   TaskLedgerData,
@@ -91,6 +92,18 @@ export class TaskLedger {
     this.data.acceptanceCriteria = texts.map((text, i) => ({
       id: `ac-${i + 1}`,
       text,
+      evidenceIds: [],
+      satisfied: false,
+    }));
+    this.save();
+  }
+
+  setCriteriaFromSpecs(specs: CriterionSpec[]): void {
+    this.data.acceptanceCriteria = specs.map((spec, i) => ({
+      id: `ac-${i + 1}`,
+      text: spec.text,
+      verification: spec.verification,
+      evidenceType: spec.evidenceType,
       evidenceIds: [],
       satisfied: false,
     }));

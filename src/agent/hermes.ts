@@ -27,7 +27,7 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentRunner } from './subagent.js';
-import type { CompletionReport, EvidenceKind } from '../types.js';
+import type { CompletionReport, CriterionSpec, EvidenceKind } from '../types.js';
 import { buildStateMessage, buildSystemPrompt } from './prompt.js';
 
 export interface HermesConfig {
@@ -38,7 +38,7 @@ export interface HermesConfig {
   mode?: 'fast' | 'standard' | 'chat';
   autoApprove?: boolean;
   approvalHandler?: ApprovalHandler;
-  criteria?: string[];
+  criteria?: string[] | CriterionSpec[];
   requirePlanReview?: boolean;
   planReviewHandler?: PlanReviewHandler;
   askUserHandler?: AskUserHandler;
@@ -434,8 +434,15 @@ export class Hermes {
 
     const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
     if (userCriteriaProvided) {
-      ledger.setCriteria(this.config.criteria!);
-      this.emit(`criteria provided by user (${this.config.criteria!.length})`);
+      const raw = this.config.criteria!;
+      const hasSpecs = raw.some((c) => typeof c === 'object');
+      if (hasSpecs) {
+        const specs = EvidenceEngine.normalizeCriteria(raw as (string | CriterionSpec)[]);
+        ledger.setCriteriaFromSpecs(specs);
+      } else {
+        ledger.setCriteria(raw as string[]);
+      }
+      this.emit(`criteria provided by user (${raw.length})`);
     }
 
     let contextNote = '';

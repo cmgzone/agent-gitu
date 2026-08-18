@@ -422,13 +422,21 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
 }
 
 export async function toolDelegate(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
-  let specs: { agent: string; task: string }[] = [];
+  let specs: { agent: string; task: string; criteria?: (string | Record<string, unknown>)[] }[] = [];
   if (Array.isArray(params['tasks'])) {
     specs = (params['tasks'] as Record<string, unknown>[])
-      .map((t) => ({ agent: String(t['agent'] ?? ''), task: String(t['task'] ?? '') }))
+      .map((t) => ({
+        agent: String(t['agent'] ?? ''),
+        task: String(t['task'] ?? ''),
+        criteria: Array.isArray(t['criteria']) ? (t['criteria'] as (string | Record<string, unknown>)[]) : undefined,
+      }))
       .filter((t) => t.agent && t.task);
   } else if (params['agent'] && params['task']) {
-    specs = [{ agent: String(params['agent']), task: String(params['task']) }];
+    specs = [{
+      agent: String(params['agent']),
+      task: String(params['task']),
+      criteria: Array.isArray(params['criteria']) ? (params['criteria'] as (string | Record<string, unknown>)[]) : undefined,
+    }];
   }
   if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]}');
   if (specs.length > 4) specs = specs.slice(0, 4);

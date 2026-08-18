@@ -4,7 +4,7 @@ import { ensureHermesHome } from '../workspace/home.js';
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine, contextBudgetForWindow } from '../context/context-engine.js';
-import { EvidenceEngine } from '../evidence/evidence.js';
+import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
 import { Executor } from '../executor/executor.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
@@ -99,7 +99,7 @@ type ParsedAction =
     | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
   | { type: 'request_block'; reason: string }
   | { type: 'ask_user'; questions: AskUserQuestion[] }
-  | { type: 'delegate'; tasks: { agent: string; task: string }[]; background?: boolean }
+  | { type: 'delegate'; tasks: { agent: string; task: string; criteria?: (string | CriterionSpec)[] }[]; background?: boolean }
   | {
       type: 'parallel';
       calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
@@ -184,7 +184,23 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       const tasks = action['tasks'];
       if (!Array.isArray(tasks) || tasks.length === 0) return undefined;
       const parsed = (tasks as Record<string, unknown>[])
-        .map((t) => ({ agent: String(t?.['agent'] ?? ''), task: String(t?.['task'] ?? '') }))
+        .map((t) => {
+          const agent = String(t?.['agent'] ?? '');
+          const task = String(t?.['task'] ?? '');
+          const rawCrit = t?.['criteria'];
+          const criteria = Array.isArray(rawCrit)
+            ? (rawCrit as unknown[])
+                .map((c) =>
+                  typeof c === 'string'
+                    ? c
+                    : typeof c === 'object' && c !== null
+                      ? (c as CriterionSpec)
+                      : String(c),
+                )
+                .slice(0, 10)
+            : undefined;
+          return { agent, task, criteria };
+        })
         .filter((t) => t.agent && t.task)
         .slice(0, 6);
       if (parsed.length === 0) return undefined;
@@ -329,14 +345,7 @@ function createProseStreamer(emitDelta: (chunk: string) => void): (delta: string
   };
 }
 
-function classifyEvidenceKind(command: string): EvidenceKind {
-  const c = command.toLowerCase();
-  if (/\b(test|vitest|jest|pytest|cargo test|go test)\b/.test(c)) return 'test';
-  if (/\b(lint|eslint)\b/.test(c)) return 'lint';
-  if (/\b(typecheck|tsc)\b/.test(c)) return 'typecheck';
-  if (/\bbuild\b/.test(c)) return 'build';
-  return 'command';
-}
+
 
 export class Hermes {
   private readonly config: HermesConfig;

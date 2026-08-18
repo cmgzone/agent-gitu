@@ -37,6 +37,15 @@ export function commandsMatch(required: string, actual: string): boolean {
   return normalizeCommand(required) === normalizeCommand(actual);
 }
 
+export function classifyEvidenceKind(command: string): EvidenceKind {
+  const c = command.toLowerCase();
+  if (/\b(test|vitest|jest|pytest|cargo test|go test)\b/.test(c)) return 'test';
+  if (/\b(lint|eslint)\b/.test(c)) return 'lint';
+  if (/\b(typecheck|tsc)\b/.test(c)) return 'typecheck';
+  if (/\bbuild\b/.test(c)) return 'build';
+  return 'command';
+}
+
 export interface GateResult {
   open: boolean;
   missing: string[];

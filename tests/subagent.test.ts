@@ -285,4 +285,182 @@ describe('SubAgentRunner', () => {
       else process.env.GIT_CONFIG_SYSTEM = oldSystem;
     }
   });
+
+  it('rejects specialist completion and discards worktree when evidence gate is unsatisfied (lying specialist attack)', async () => {
+    const dir = makeProject();
+    await initGitRepo(dir);
+
+    // Specialist tries to write code, run an irrelevant command (node --version),
+    // claim criterion, and answer. The evidence gate MUST reject the answer.
+    let sawRejection = false;
+    const llm = scriptedLlm([
+      // Turn 1: Write code
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          tool: 'write_file',
+          params: { path: 'src/auth.ts', content: 'export const fakeAuth = true;' },
+          reason: 'implement fake auth',
+          expected: 'file written',
+        },
+      }),
+      // Turn 2: Run irrelevant command
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          tool: 'run_command',
+          params: { command: 'node --version' },
+          reason: 'run irrelevant check',
+          expected: 'exit 0',
+        },
+      }),
+      // Turn 3: Try to claim criterion with irrelevant evidence
+      (_messages) => JSON.stringify({
+        action: {
+          type: 'claim_criterion',
+          criterionId: 'ac-1',
+          evidenceId: 'ev-fake', // will be rejected
+        },
+      }),
+      // Turn 4: Try to answer anyway without gate open
+      () => JSON.stringify({
+        action: {
+          type: 'answer',
+          summary: 'JWT authentication implemented (fake)',
+        },
+      }),
+      // Turn 5: The gate rejected the answer, specialist receives rejection prompt and gives up
+      (_messages) => {
+        sawRejection = true;
+        return JSON.stringify({ action: { type: 'tool_call', tool: 'list_files', params: { path: 'src' }, reason: 'stuck', expected: 'files' } });
+      },
+    ]);
+
+    const events: string[] = [];
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => llm,
+      agentRole: () => 'auth specialist',
+      onEvent: (e) => events.push(e),
+    });
+
+    const [result] = await runner.runMany([
+      {
+        agent: 'lying-specialist',
+        task: 'Implement JWT authentication',
+        criteria: [
+          { text: 'JWT authentication works', verification: 'npm test -- auth', evidenceType: 'test_success' },
+        ],
+      },
+    ]);
+
+    // ❌ Specialist failed because evidence gate never opened
+    expect(result.ok).toBe(false);
+    expect(sawRejection).toBe(true);
+    expect(events.some((e) => e.includes('completion rejected by evidence gate'))).toBe(true);
+
+    // ❌ Worktree changes were DISCARDED — fake auth file never reached main branch!
+    expect(() => readFileSync(path.join(dir, 'src', 'auth.ts'), 'utf8')).toThrow();
+
+    // ❌ No merge commit on main
+    const log = await gitExec(dir, ['log', '--oneline']);
+    expect(log).not.toContain('fakeAuth');
+    expect(log).not.toContain('lying-specialist');
+  });
+
+  it('accepts specialist completion and merges worktree when required verification is satisfied', async () => {
+    const dir = makeProject();
+    await initGitRepo(dir);
+
+    function findSubEvidenceId(messages: LlmMessage[]): string {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const content = typeof messages[i]?.content === 'string' ? (messages[i]?.content as string) : '';
+        const match = content.match(/(ev-\d{8}-[0-9a-f]{6})/);
+        if (match?.[1]) return match[1];
+      }
+      return 'ev-missing';
+    }
+
+    let capturedMessages: LlmMessage[] = [];
+    let callIdx = 0;
+    const replies = [
+      // Turn 1: Write code
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          tool: 'write_file',
+          params: { path: 'src/auth.ts', content: 'export const realAuth = true;' },
+          reason: 'implement real auth',
+          expected: 'file written',
+        },
+      }),
+      // Turn 2: Run EXACT required test command
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          tool: 'run_command',
+          params: { command: 'node -e "process.exit(0)"' }, // we match on this verification
+          reason: 'run verification',
+          expected: 'exit 0',
+        },
+      }),
+      // Turn 3: Claim criterion with recorded evidence
+      () => JSON.stringify({
+        action: {
+          type: 'claim_criterion',
+          criterionId: 'ac-1',
+          evidenceId: findSubEvidenceId(capturedMessages),
+        },
+      }),
+      // Turn 4: Answer with gate open
+      () => JSON.stringify({
+        action: {
+          type: 'answer',
+          summary: 'JWT authentication implemented and verified.',
+        },
+      }),
+    ];
+
+    const llm: LlmClient = {
+      name: 'honest-specialist-llm',
+      async complete(messages: LlmMessage[]): Promise<string> {
+        capturedMessages = messages;
+        const reply = replies[Math.min(callIdx, replies.length - 1)]!();
+        callIdx++;
+        return reply;
+      },
+      async completeStream(messages: LlmMessage[], _opts: unknown, onDelta: (d: string) => void): Promise<string> {
+        const r = await this.complete(messages);
+        onDelta(r);
+        return r;
+      },
+    };
+
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => llm,
+      agentRole: () => 'auth specialist',
+    });
+
+    const [result] = await runner.runMany([
+      {
+        agent: 'honest-specialist',
+        task: 'Implement JWT authentication',
+        criteria: [
+          { text: 'Auth passes', verification: 'node -e "process.exit(0)"', evidenceType: 'command_success' },
+        ],
+      },
+    ]);
+
+    // ✅ Specialist succeeded because evidence gate opened
+    expect(result.ok).toBe(true);
+
+    // ✅ Worktree changes were COMMITTED AND MERGED into main!
+    expect(readFileSync(path.join(dir, 'src', 'auth.ts'), 'utf8')).toContain('realAuth');
+
+    // ✅ Merge commit exists on main
+    const log = await gitExec(dir, ['log', '--oneline']);
+    expect(log).toContain('honest-specialist');
+  });
 });
+

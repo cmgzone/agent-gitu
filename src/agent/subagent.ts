@@ -1,6 +1,7 @@
 import { rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
 import { Executor } from '../executor/executor.js';
 import { gitExec, isGitRepo } from '../git/git.js';
 import { ProjectGuard } from '../guard/project-guard.js';
@@ -9,10 +10,12 @@ import { extractJson, parseXmlFunctionCall, type LlmClient, type LlmMessage } fr
 import { LoopDetector } from '../loop/loop-detector.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import type { AcceptanceCriterion, CriterionSpec } from '../types.js';
 
 export interface SubAgentSpec {
   agent: string;
   task: string;
+  criteria?: (string | CriterionSpec)[];
 }
 
 export interface SubAgentResult {
@@ -28,6 +31,7 @@ export interface SubAgentJob {
   id: string;
   agent: string;
   task: string;
+  criteria?: (string | CriterionSpec)[];
   status: SubAgentJobStatus;
   queuedAt: string;
   startedAt?: string;
@@ -65,29 +69,36 @@ interface Worktree {
 // finish at the same time never race for git's index lock.
 let mergeChain: Promise<unknown> = Promise.resolve();
 
-function buildSystemPrompt(name: string, role: string, root: string, isolated: boolean): string {
+function buildSystemPrompt(name: string, role: string, root: string, isolated: boolean, criteria?: AcceptanceCriterion[]): string {
+  const criteriaSection = criteria && criteria.length > 0
+    ? `\nACCEPTANCE CRITERIA (you MUST satisfy each criterion with passing evidence before answering):\n` +
+      criteria.map((c) => `- [${c.id}] ${c.text}${c.verification ? ` (required verification: ${c.verification})` : ''}`).join('\n')
+    : '';
+
   return `You are "${name}", a specialist worker agent dispatched to handle one self-contained task.
 Specialty: ${role}
 You work inside the locked project at ${root}.
-${isolated ? 'You are working in an ISOLATED git worktree copy of the project. Your changes are committed and merged back by the orchestrator when you finish; you can never conflict with other specialists while you work.' : ''}
+${isolated ? 'You are working in an ISOLATED git worktree copy of the project. Your changes are committed and merged back by the orchestrator when you finish; you can never conflict with other specialists while you work.' : ''}${criteriaSection}
 
 RULES:
 1. Read files before editing them. Ground every edit in actual code.
 2. Make small, focused changes. Verify with commands (test/build/typecheck/lint) when relevant.
-3. Never claim success without evidence from a command or a file you actually wrote.
-4. Stay inside the task you were given. Do not expand scope.
+3. When criteria are specified, run the exact verification command and claim it with claim_criterion. Your work WILL BE REJECTED and discarded if the evidence gate is closed.
+4. Never claim success without evidence from a command or a file you actually wrote.
+5. Stay inside the task you were given. Do not expand scope.
 
 PROTOCOL — respond each turn with EXACTLY ONE JSON object:
 {"action":{"type":"tool_call","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}
 Tools:
-- read_file    {"path":"src/x.ts"}
-- write_file   {"path":"src/x.ts","content":"full content"}
-- apply_edit   {"path":"src/x.ts","oldString":"exact text","newString":"replacement"}
-- list_files   {"path":"src"}
-- search_files {"pattern":"regex","path":"src"}
-- run_command  {"command":"npm test"}
+- read_file       {"path":"src/x.ts"}
+- write_file      {"path":"src/x.ts","content":"full content"}
+- apply_edit      {"path":"src/x.ts","oldString":"exact text","newString":"replacement"}
+- list_files      {"path":"src"}
+- search_files    {"pattern":"regex","path":"src"}
+- run_command     {"command":"npm test"}
+- claim_criterion {"criterionId":"ac-1","evidenceId":"ev-..."}
 
-When the task is finished, respond with:
+When the task is finished and all criteria are verified, respond with:
 {"action":{"type":"answer","summary":"what you did, files touched, verification results, open issues"}}`;
 }
 
@@ -111,8 +122,8 @@ export class SubAgentRunner {
     return this.waitFor(jobs.map((job) => job.id));
   }
 
-  async runOne(name: string, task: string): Promise<SubAgentResult> {
-    const [job] = this.startMany([{ agent: name, task }]);
+  async runOne(name: string, task: string, criteria?: (string | CriterionSpec)[]): Promise<SubAgentResult> {
+    const [job] = this.startMany([{ agent: name, task, criteria }]);
     return (await this.waitFor([job!.id]))[0]!;
   }
 
@@ -145,6 +156,7 @@ export class SubAgentRunner {
       id: `sub-${Date.now().toString(36)}-${this.nextJob++}`,
       agent: spec.agent,
       task: spec.task,
+      criteria: spec.criteria,
       status: 'queued',
       queuedAt,
       completion,
@@ -192,7 +204,7 @@ export class SubAgentRunner {
   }
 
   private async executeOne(job: InternalSubAgentJob): Promise<SubAgentResult> {
-    const { agent: name, task } = job;
+    const { agent: name, task, criteria: rawCriteria } = job;
     const emit = this.deps.onEvent ?? (() => {});
     const role = this.deps.agentRole(name) ?? 'general-purpose engineer';
     const llm = this.deps.resolveLlm(name);
@@ -211,13 +223,23 @@ export class SubAgentRunner {
         project: guard.lock,
         mode: 'fast',
       });
+      const evidenceEngine = new EvidenceEngine();
+      if (rawCriteria && rawCriteria.length > 0) {
+        const specs = EvidenceEngine.normalizeCriteria(rawCriteria);
+        ledger.setCriteriaFromSpecs(specs);
+      }
       ledger.setStatus('executing');
       const policy = new PolicyEngine(false);
       const executor = new Executor(guard, ledger, policy, new LoopDetector(), (e) => emit(`subagent ${name}: ${e}`));
 
+      const criteriaList = ledger.data.acceptanceCriteria;
+      const criteriaPrompt = criteriaList.length > 0
+        ? `\nACCEPTANCE CRITERIA:\n` + criteriaList.map((c) => `  - [${c.id}] ${c.text}${c.verification ? ` (run: ${c.verification})` : ''}`).join('\n')
+        : '';
+
       const messages: LlmMessage[] = [
-        { role: 'system', content: buildSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt)) },
-        { role: 'user', content: `TASK: ${task}` },
+        { role: 'system', content: buildSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt), criteriaList) },
+        { role: 'user', content: `TASK: ${task}${criteriaPrompt}` },
       ];
 
       for (let turn = 0; turn < MAX_TURNS; turn++) {
@@ -238,7 +260,7 @@ export class SubAgentRunner {
           messages.push({ role: 'user', content: 'Reply with exactly one JSON action object.' });
           continue;
         }
-        if (type !== 'tool_call' && type !== 'answer' && type !== 'complete' && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
+        if (type !== 'tool_call' && type !== 'answer' && type !== 'complete' && type !== 'claim_criterion' && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
           const params: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(action)) if (k !== 'type') params[k] = v;
           action['tool'] = type;
@@ -248,25 +270,72 @@ export class SubAgentRunner {
           action['type'] = 'tool_call';
           type = 'tool_call';
         }
+        if (type === 'claim_criterion' || (typeof action['criterionId'] === 'string' && typeof action['evidenceId'] === 'string')) {
+          const critId = String(action['criterionId']);
+          const evId = String(action['evidenceId']);
+          const link = evidenceEngine.link(ledger.data, critId, evId);
+          ledger.save();
+          emit(`subagent ${name} claim ${critId} <- ${evId}: ${link.ok ? 'accepted' : link.reason}`);
+          messages.push({
+            role: 'user',
+            content: link.ok ? `Accepted: ${link.reason}` : `Rejected: ${link.reason}`,
+          });
+          continue;
+        }
         if (type === 'answer' || type === 'complete') {
+          // If the specialist had acceptance criteria, enforce the evidence gate!
+          if (ledger.data.acceptanceCriteria.length > 0) {
+            const gate = evidenceEngine.gate(ledger.data);
+            if (!gate.open) {
+              emit(`subagent ${name} — completion rejected by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria satisfied)`);
+              messages.push({
+                role: 'user',
+                content:
+                  `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
+                  `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
+                  `You must run the required verification commands and link them with claim_criterion before answering.`,
+              });
+              continue;
+            }
+          }
+
           summary = String(action['summary'] ?? '').slice(0, 4000);
           ok = true;
           break;
         }
         if (type === 'tool_call' && typeof action['tool'] === 'string') {
+          const toolName = String(action['tool']);
           const outcome = await executor.execute({
-            tool: String(action['tool']),
+            tool: toolName,
             params: (action['params'] ?? {}) as Record<string, unknown>,
             reason: String(action['reason'] ?? ''),
             expected: String(action['expected'] ?? ''),
           });
+
+          let evidenceNote = '';
+          if (toolName === 'run_command') {
+            const cmd = String((action['params'] as Record<string, unknown>)?.['command'] ?? '');
+            const kind = classifyEvidenceKind(cmd);
+            const ev = evidenceEngine.record(ledger.data, {
+              kind,
+              label: String(action['expected'] || cmd),
+              command: cmd,
+              exitCode: outcome.result.exitCode,
+              passed: outcome.result.ok,
+              output: outcome.result.output,
+            });
+            ledger.save();
+            evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). If this satisfies a criterion, use {"action":{"type":"claim_criterion","criterionId":"<id>","evidenceId":"${ev.id}"}}.`;
+            emit(`subagent ${name} evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+          }
+
           messages.push({
             role: 'user',
-            content: `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 3000)}`,
+            content: `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 3000)}${evidenceNote}`,
           });
           continue;
         }
-        messages.push({ role: 'user', content: 'Unknown action. Use tool_call or answer.' });
+        messages.push({ role: 'user', content: 'Unknown action. Use tool_call, claim_criterion, or answer.' });
       }
 
       if (!ok) summary = summary || `subagent ${name} stopped after ${MAX_TURNS} turns without a final answer`;

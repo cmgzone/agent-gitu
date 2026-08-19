@@ -115,9 +115,10 @@ Parallel independent work (only for tools that do not depend on each other, max 
 {"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
 
 Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once, each returns a summary):
-{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<agent name>","task":"self-contained sub-task with enough context to work alone"}]}}
+{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"self-contained sub-task with enough context to work alone"}]}}
+IMPORTANT: \`agent\` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
 For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
-{"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<agent name>","task":"self-contained non-conflicting task"}]}}
+{"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<registered specialist name>","task":"self-contained non-conflicting task"}]}}
 
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.

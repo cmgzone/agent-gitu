@@ -307,7 +307,12 @@ async function main(): Promise<void> {
               cwd,
               resolveLlm: (name) => {
                 const def = agentStore.get(name);
-                if (!def) throw new Error(`unknown agent "${name}"`);
+                if (!def) {
+                  const available = agentStore.list().map((a) => `"${a.name}"`).join(', ');
+                  throw new Error(
+                    `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name, NOT a model/provider identifier.`,
+                  );
+                }
                 return resolveLlm({ provider: def.provider, model: def.model }).client;
               },
                 agentRole: (name) => agentStore.get(name)?.role,

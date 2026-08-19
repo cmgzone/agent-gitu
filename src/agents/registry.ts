@@ -12,13 +12,15 @@ export interface AgentDef {
   createdAt: string;
 }
 
-function agentsFile(): string {
-  return path.join(ensureHermesHome().settings, 'agents.json');
-}
-
 export class AgentStore {
+  constructor(private readonly customFilePath?: string) {}
+
+  private filePath(): string {
+    return this.customFilePath ?? path.join(ensureHermesHome().settings, 'agents.json');
+  }
+
   list(): AgentDef[] {
-    const file = agentsFile();
+    const file = this.filePath();
     if (!existsSync(file)) return [];
     try {
       const data = JSON.parse(readFileSync(file, 'utf8')) as { agents?: AgentDef[] };
@@ -29,8 +31,21 @@ export class AgentStore {
   }
 
   get(nameOrId: string): AgentDef | undefined {
-    const q = nameOrId.toLowerCase();
-    return this.list().find((a) => a.name.toLowerCase() === q || a.id === nameOrId);
+    if (!nameOrId) return undefined;
+    const q = nameOrId.toLowerCase().trim();
+    const agents = this.list();
+    // 1. Exact match on name or id
+    const exact = agents.find((a) => a.name.toLowerCase() === q || a.id === nameOrId);
+    if (exact) return exact;
+    // 2. Defensive fallback if the caller mistakenly passed provider/model or model name
+    const byModel = agents.find((a) => {
+      const fullSlash = `${a.provider ? `${a.provider}/` : ''}${a.model || ''}`.toLowerCase();
+      const fullColon = `${a.provider ? `${a.provider}::` : ''}${a.model || ''}`.toLowerCase();
+      const modelOnly = (a.model || '').toLowerCase();
+      return (fullSlash && q === fullSlash) || (fullColon && q === fullColon) || (modelOnly && q === modelOnly);
+    });
+    if (byModel) return byModel;
+    return undefined;
   }
 
   save(input: { id?: string; name: string; role: string; provider?: string; model?: string; effort?: AgentDef['effort'] }): AgentDef {
@@ -49,7 +64,7 @@ export class AgentStore {
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
     const next = existing ? agents.map((a) => (a.id === def.id ? def : a)) : [...agents, def];
-    writeFileSync(agentsFile(), JSON.stringify({ agents: next }, null, 2));
+    writeFileSync(this.filePath(), JSON.stringify({ agents: next }, null, 2));
     return def;
   }
 
@@ -57,15 +72,23 @@ export class AgentStore {
     const agents = this.list();
     const next = agents.filter((a) => a.id !== id);
     if (next.length === agents.length) return false;
-    writeFileSync(agentsFile(), JSON.stringify({ agents: next }, null, 2));
+    writeFileSync(this.filePath(), JSON.stringify({ agents: next }, null, 2));
     return true;
   }
 
   renderForPrompt(): string {
     const agents = this.list();
     if (agents.length === 0) return '';
-    return agents
-      .map((a) => `- ${a.name}${a.model ? ` (${a.provider ?? 'auto'}/${a.model})` : ''}: ${a.role.slice(0, 140)}`)
-      .join('\n');
+    return (
+      `AVAILABLE SPECIALISTS (use the exact Agent Name in the "agent" field of delegate):\n` +
+      agents
+        .map(
+          (a, i) =>
+            `${i + 1}. Agent Name: "${a.name}"\n` +
+            `   Model: ${a.provider ? `${a.provider}/` : ''}${a.model || 'default'}${a.effort ? ` (effort: ${a.effort})` : ''}\n` +
+            `   Role: ${a.role.slice(0, 200)}`,
+        )
+        .join('\n\n')
+    );
   }
 }

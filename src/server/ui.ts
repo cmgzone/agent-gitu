@@ -117,8 +117,10 @@ export const UI_HTML = String.raw`<!doctype html>
   .thought .caret { display: inline-block; width: 7px; height: 14px; background: var(--dark); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
   .meta-line { color: var(--muted); font-size: 12px; padding: 3px 2px; }
   .meta-line b { color: var(--text); font-weight: 600; }
-  .meta-line.subagent-line { margin: 6px 0; padding: 7px 9px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #315d9f; }
+  .meta-line.subagent-line { margin: 6px 0; padding: 8px 11px; border: 1px solid #bfdbfe; border-radius: 9px; background: #eff6ff; color: #1e40af; }
   .meta-line.subagent-line b { color: var(--blue); }
+  .meta-line.evidence-line { margin: 6px 0; padding: 7px 11px; border: 1px solid #bbf7d0; border-radius: 9px; background: #f0fdf4; color: #166534; }
+  .meta-line.evidence-line.evidence-fail { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
   .tool { border: 1px solid var(--border); background: var(--card); border-radius: 10px; margin: 8px 0; overflow: hidden; animation: toolIn .28s cubic-bezier(.21,1.02,.55,1.01) both; transition: box-shadow .3s, border-color .3s; }
   @keyframes toolIn { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
   .tool .head { display: flex; align-items: center; gap: 9px; padding: 8px 12px; cursor: pointer; }
@@ -133,9 +135,16 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool details { border-top: 1px solid var(--border); }
   .tool details[open] pre { animation: outFade .25s ease; }
   @keyframes outFade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
-  .tool summary { padding: 5px 12px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; }
+  .tool summary { padding: 5px 12px; font-size: 11px; color: var(--muted); cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
   .tool pre { margin: 0; padding: 8px 12px 10px; font-family: var(--mono); font-size: 11.5px; color: #55554f; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; }
+  .tool pre.folded { max-height: 110px; overflow: hidden; position: relative; }
+  .tool .fold-btn { display: block; width: 100%; padding: 5px 12px; background: #fafaf8; border: 0; border-top: 1px solid var(--border); color: var(--blue); font-size: 11px; text-align: left; cursor: pointer; font-family: var(--mono); }
+  .tool .fold-btn:hover { background: #f0f0ec; }
   .tool .lines { margin-left: 8px; font-family: var(--mono); font-size: 10.5px; color: var(--green); background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 5px; padding: 1px 7px; flex: none; }
+  .tool-btn-copy { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--border); border-radius: 5px; padding: 2px 7px; font-size: 10.5px; color: var(--muted); cursor: pointer; transition: all .2s; }
+  .tool-btn-copy:hover { background: #f0f0ec; color: var(--text); }
+  .tool-btn-copy.copied { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+  .tool-btn-copy svg { width: 11px; height: 11px; }
   .tool.running { position: relative; border-color: #d9d9d3; }
   .tool.running::before { content: ''; position: absolute; top: 0; left: -40%; height: 2px; width: 40%; background: linear-gradient(90deg, transparent, var(--dark), transparent); animation: toolSweep 1.15s ease-in-out infinite; }
   @keyframes toolSweep { 0% { left: -40%; } 100% { left: 100%; } }
@@ -162,6 +171,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .chip.bad { color: var(--red); border-color: #fecaca; background: #fef2f2; }
   .chip.info { color: var(--blue); border-color: #bfdbfe; background: #eff6ff; }
   .chip.warn { color: var(--amber); border-color: #fde68a; background: var(--amber-bg); }
+  .crit-req { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
+  .crit-req code { background: #f0f0ec; border-radius: 4px; padding: 1px 5px; color: var(--text); }
 
   .review-card, .approval { border: 1px solid #fde68a; background: var(--amber-bg); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   .review-card h3, .approval h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--amber); }
@@ -416,10 +427,13 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
-  function mascotPulse() {
-    if (window.__mascot) window.__mascot.setMode('shoot');
+  function mascotState(mode) {
+    if (window.__mascot) window.__mascot.setMode(mode);
     if (S.mascotTimer) clearTimeout(S.mascotTimer);
-    S.mascotTimer = setTimeout(function () { if (window.__mascot) window.__mascot.setMode('idle'); }, 2500);
+    S.mascotTimer = setTimeout(function () { if (window.__mascot) window.__mascot.setMode('idle'); }, 1800);
+  }
+  function mascotPulse() {
+    mascotState('testing');
   }
 
   function toast(msg, isErr) {
@@ -1312,46 +1326,110 @@ export const UI_HTML = String.raw`<!doctype html>
     if (t && t.textContent !== text) t.textContent = text;
   }
 
+  function setupCopyButton(btn, textGetter) {
+    if (!btn) return;
+    btn.onclick = function (e) {
+      e.stopPropagation();
+      var str = typeof textGetter === 'function' ? textGetter() : String(textGetter || '');
+      if (!str) return;
+      navigator.clipboard.writeText(str).then(function () {
+        btn.classList.add('copied');
+        var old = btn.innerHTML;
+        btn.innerHTML = icon('check') + ' Copied';
+        setTimeout(function () {
+          btn.classList.remove('copied');
+          btn.innerHTML = old;
+        }, 1500);
+      }).catch(function () {});
+    };
+  }
+
+  function setupOutputFolding(detailsEl, preEl, text) {
+    if (!detailsEl || !preEl) return;
+    preEl.textContent = text;
+    var lines = text.split('\n');
+    var oldBtn = detailsEl.querySelector('.fold-btn');
+    if (oldBtn) oldBtn.remove();
+    if (lines.length > 8) {
+      preEl.classList.add('folded');
+      var foldBtn = document.createElement('button');
+      foldBtn.className = 'fold-btn';
+      foldBtn.type = 'button';
+      var hiddenCount = lines.length - 6;
+      foldBtn.textContent = 'Show ' + hiddenCount + ' more lines…';
+      foldBtn.onclick = function (e) {
+        e.stopPropagation();
+        var isFolded = preEl.classList.toggle('folded');
+        foldBtn.textContent = isFolded ? ('Show ' + hiddenCount + ' more lines…') : 'Show less';
+      };
+      detailsEl.appendChild(foldBtn);
+    } else {
+      preEl.classList.remove('folded');
+    }
+  }
+
   function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
-    if (text.indexOf('run ') === 0 || text.indexOf('think') === 0 || text.indexOf('delegate') === 0 || text.indexOf('subagent') === 0) mascotPulse();
+    if (text.indexOf('think') === 0 || text.indexOf('plan ') === 0) mascotState('thinking');
+    else if (text.indexOf('run write') === 0 || text.indexOf('run edit') === 0) mascotState('coding');
+    else if (text.indexOf('run $') === 0 || text.indexOf('run ') === 0) mascotState('testing');
+    else if (text.indexOf('evidence') === 0 && text.indexOf('PASS') >= 0) mascotState('celebrate');
+    else if (text.indexOf('blocked') === 0 || text.indexOf('denied') === 0) mascotState('shield');
+    else mascotPulse();
+
     if (sess && sess.chatish && (
-      text.indexOf('project ') === 0 || text.indexOf('ledger ') === 0 || text.indexOf('branch ') === 0 ||
-      text.indexOf('context ') === 0 || text.indexOf('done ') === 0 || text.indexOf('run finished:') === 0 ||
-      text.indexOf('criteria') === 0 || text.indexOf('plan ') === 0 || text.indexOf('think') === 0 ||
-      text.indexOf('continue ') === 0)) {
-      return;
-    }
+      text.indexOf('run ') === 0 || text.indexOf('ok ') === 0 || text.indexOf('error ') === 0 ||
+      text.indexOf('denied ') === 0 || text.indexOf('blocked ') === 0 || text.indexOf('out ') === 0 ||
+      text.indexOf('meta ') === 0 || text.indexOf('checkpoint ') === 0 || text.indexOf('plan ') === 0 ||
+      text.indexOf('criteria ') === 0 || text.indexOf('evidence ') === 0 || text.indexOf('hypothesis ') === 0 ||
+      text.indexOf('context ') === 0 || text.indexOf('delegate ') === 0 || text.indexOf('subagent ') === 0
+    )) return;
+
     var working = $('working');
     function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
 
-    if (text.indexOf('tdelta ') === 0) {
+    if (text.indexOf('tdelta ') === 0 || text.indexOf('thought ') === 0) {
+      var chunk = text.indexOf('tdelta ') === 0 ? text.slice(7) : text.slice(8);
       if (sess && sess.chatish) {
         if (!sess.nodes.abubble) {
           var ab = document.createElement('div');
           ab.className = 'abubble';
           ab.innerHTML = '<span class="who">Agent Gitu</span><span class="txt"></span>';
-          insert(ab);
+          appendLive(stream, ab);
           sess.nodes.abubble = ab;
         }
-        sess.nodes.abubble.querySelector('.txt').appendChild(document.createTextNode(text.slice(7)));
+        sess.nodes.abubble.querySelector('.txt').appendChild(document.createTextNode(chunk));
         stream.scrollTop = stream.scrollHeight;
         return;
       }
       if (!sess.nodes.thought) {
-        var p = document.createElement('div');
-        p.className = 'thought';
-        p.innerHTML = '<span class="txt"></span><span class="caret"></span>';
-        insert(p);
-        sess.nodes.thought = p;
+        var t = document.createElement('div');
+        t.className = 'thought';
+        t.innerHTML = '<span class="txt"></span><span class="caret"></span>';
+        insert(t);
+        sess.nodes.thought = t;
+      }
+      sess.nodes.thought.querySelector('.txt').appendChild(document.createTextNode(chunk));
+      stream.scrollTop = stream.scrollHeight;
+      return;
+    }
+    if (text.indexOf('reason ') === 0) {
+      if (sess && sess.chatish) return;
+      if (!sess.nodes.thought) {
+        var t3 = document.createElement('div');
+        t3.className = 'thought';
+        t3.innerHTML = '<span class="txt"></span><span class="caret"></span>';
+        insert(t3);
+        sess.nodes.thought = t3;
       }
       sess.nodes.thought.querySelector('.txt').appendChild(document.createTextNode(text.slice(7)));
       stream.scrollTop = stream.scrollHeight;
       return;
     }
+
     if (text.indexOf('say ') === 0) {
       var prose = text.slice(4);
       if (!prose.trim()) { closeThought(runId); return; }
@@ -1441,18 +1519,25 @@ export const UI_HTML = String.raw`<!doctype html>
     var body = text.slice(tag.length).trim();
 
     if (tag === 'run') {
-       var kind = toolKind(body);
-       var summary = splitSummary(body);
-       var reason = splitReason(body);
-       var card = document.createElement('div');
-       card.className = 'tool k-' + kind + ' running' + (kind === 'browser' ? ' browser-tool' : '');
+      var kind = toolKind(body);
+      var summary = splitSummary(body);
+      var reason = splitReason(body);
+      var card = document.createElement('div');
+      card.className = 'tool k-' + kind + ' running' + (kind === 'browser' ? ' browser-tool' : '');
       card.innerHTML =
         '<div class="head"><span class="tico">' + icon(toolIconFor(kind)) + '</span>' +
         '<span class="kind">' + esc(kind) + '</span>' +
         '<span class="sum">' + esc(summary) + '</span>' +
         (reason ? '<span class="reason">— ' + esc(reason) + '</span>' : '') +
         '<span class="st"><span class="spin"></span></span></div>' +
-        '<details><summary>output</summary><pre></pre></details>';
+        '<details><summary><span>output</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary><pre></pre></details>';
+
+      var copyBtn = card.querySelector('.tool-btn-copy');
+      setupCopyButton(copyBtn, function () {
+        var pre = card.querySelector('pre');
+        return (pre && pre.textContent) || summary;
+      });
+
       insert(card);
       sess.nodes.lastTool = card;
       var wt = workingTextFor(text);
@@ -1484,15 +1569,28 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (tag === 'out') {
       var t2 = sess.nodes.lastTool;
-      if (t2) t2.querySelector('pre').textContent = body.replace(/ ⏎ /g, '\n');
+      if (t2) {
+        var detailsEl = t2.querySelector('details');
+        var preEl = t2.querySelector('pre');
+        var cleanOut = body.replace(/ ⏎ /g, '\n');
+        setupOutputFolding(detailsEl, preEl, cleanOut);
+      }
       return;
     }
     var meta = document.createElement('div');
     meta.className = 'meta-line';
-    if (tag === 'evidence') meta.innerHTML = '<b style="color:' + (body.indexOf('PASS') >= 0 ? 'var(--green)' : 'var(--red)') + '">evidence</b> ' + esc(body);
-    else if (tag === 'plan') meta.innerHTML = '<b>plan</b> ' + esc(body) + ' — review it, then approve to build';
-    else if (tag === 'subagent') { meta.className = 'meta-line subagent-line'; meta.innerHTML = '<b>specialist</b> ' + esc(body); }
-    else meta.innerHTML = '<b>' + esc(tag) + '</b> ' + esc(body);
+    if (tag === 'evidence') {
+      var isPass = body.indexOf('PASS') >= 0;
+      meta.className = 'meta-line evidence-line' + (isPass ? '' : ' evidence-fail');
+      meta.innerHTML = '<b style="color:' + (isPass ? 'var(--green)' : 'var(--red)') + '">evidence</b> ' + esc(body);
+    } else if (tag === 'plan') {
+      meta.innerHTML = '<b>plan</b> ' + esc(body) + ' — review it, then approve to build';
+    } else if (tag === 'subagent') {
+      meta.className = 'meta-line subagent-line';
+      meta.innerHTML = '<b>specialist</b> ' + esc(body);
+    } else {
+      meta.innerHTML = '<b>' + esc(tag) + '</b> ' + esc(body);
+    }
     insert(meta);
     var wt2 = workingTextFor(text);
     if (wt2) setWorking(wt2);
@@ -1874,8 +1972,13 @@ export const UI_HTML = String.raw`<!doctype html>
     html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
     if (!L.acceptanceCriteria.length) html += '<div class="empty">none set yet</div>';
     L.acceptanceCriteria.forEach(function (c) {
-      html += '<div class="crit ' + (c.satisfied ? 'done' : '') + '"><span class="dot"></span><div>' + esc(c.text) +
-        (c.evidenceIds.length ? '<div class="ev-ids">' + esc(c.evidenceIds.join(', ')) + '</div>' : '') + '</div></div>';
+      var reqHtml = c.verification
+        ? '<div class="crit-req">Required: <code>' + esc(c.verification) + '</code>' +
+          (c.evidenceType && c.evidenceType !== 'any' ? ' <span class="chip" style="font-size:10px;padding:0 5px">' + esc(c.evidenceType) + '</span>' : '') + '</div>'
+        : '';
+      html += '<div class="crit ' + (c.satisfied ? 'done' : '') + '"><span class="dot"></span><div style="flex:1">' + esc(c.text) +
+        reqHtml +
+        (c.evidenceIds && c.evidenceIds.length ? '<div class="ev-ids">' + esc(c.evidenceIds.join(', ')) + ' ✓</div>' : '') + '</div></div>';
     });
     html += '<div class="section-h">Plan' + (L.planApproved ? ' <span class="chip ok" style="margin-left:6px">approved</span>' : '') + '</div>';
     if (!L.plan.length) html += '<div class="empty">no plan yet</div>';
@@ -2436,22 +2539,31 @@ export const UI_HTML = String.raw`<!doctype html>
           return out;
         }
         b.innerHTML = '<h1>Specialist agents</h1>' +
-          '<p style="color:var(--muted);font-size:12.5px">Named worker agents that the main agent can run in parallel with the delegate tool on big projects. Up to three run at once; extra work stays queued with live status updates. Each agent can use a different provider, model, and reasoning effort.</p>' +
+          '<p style="color:var(--muted);font-size:12.5px">Named worker agents that the main agent can run in parallel with the delegate tool on big projects. The main agent uses the <b>Agent ID / Name</b> to delegate tasks. Each agent can use a different provider, model, and reasoning effort.</p>' +
           '<div style="margin:12px 0"><button class="btn dark" id="agNew">+ New agent</button></div>' +
           '<div class="setcard" id="agForm" hidden><div class="setlist">' +
-          '<input id="agName" placeholder="agent name (e.g. frontend, tester, researcher)">' +
-          '<div class="row"><select id="agModel" style="flex:1">' + modelOptions('') + '</select><select id="agEffort"><option value="">effort: default</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select></div>' +
-          '<textarea id="agRole" rows="3" placeholder="role / specialty instructions (e.g. You are a frontend specialist: React, CSS, accessibility…)"></textarea>' +
+          '<div><label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Agent Name / Identifier (used by delegate):</label>' +
+          '<input id="agName" placeholder="e.g. explore, frontend, tester, researcher"></div>' +
+          '<div class="row"><div style="flex:1"><label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Model & Provider:</label>' +
+          '<select id="agModel" style="width:100%">' + modelOptions('') + '</select></div>' +
+          '<div><label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Effort:</label>' +
+          '<select id="agEffort"><option value="">effort: default</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="max">max</option></select></div></div>' +
+          '<div><label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px">Role & Specialty Instructions:</label>' +
+          '<textarea id="agRole" rows="3" placeholder="e.g. You are a repository exploration specialist: trace code paths, identify symbols, discover references…"></textarea></div>' +
           '<div class="row"><button class="btn dark" id="agSave">Save agent</button><button class="btn ghost" id="agCancel">Cancel</button><span class="meta" id="agMeta"></span></div></div></div>' +
           '<div class="setcard">' +
           (agents.length ? agents.map(function (a) {
-            return '<div class="skcard"><div class="skhead"><b>' + esc(a.name) + '</b>' +
-              '<span class="chip info">' + esc(a.provider ? a.provider + '/' : '') + esc(a.model || 'default') + '</span>' +
-              (a.effort ? '<span class="chip">' + esc(a.effort) + '</span>' : '') +
+            return '<div class="skcard"><div class="skhead"><b style="font-size:14px">' + esc(a.name) + '</b>' +
+              '<span class="chip" style="background:#eef2ff;color:#4338ca;font-weight:600;font-size:11px">SPECIALIST</span>' +
               '<span style="flex:1"></span>' +
               '<button class="ubtn" data-agedit="' + esc(a.id) + '" title="edit">' + icon('pencil') + '</button>' +
               '<button class="ubtn" data-agdel="' + esc(a.id) + '" title="delete">' + icon('x') + '</button></div>' +
-              '<div class="skdesc">' + esc(a.role) + '</div></div>';
+              '<div style="display:flex;gap:12px;align-items:center;margin:6px 0 4px;font-size:12px;flex-wrap:wrap">' +
+              '<span><b>Agent ID:</b> <code style="font-family:var(--mono);background:#f4f4f5;padding:2px 6px;border-radius:4px;color:#09090b;font-weight:600">' + esc(a.name) + '</code></span>' +
+              '<span><b>Model:</b> <code style="font-family:var(--mono);background:#f4f4f5;padding:2px 6px;border-radius:4px;color:var(--muted)">' + esc(a.provider ? a.provider + '/' : '') + esc(a.model || 'default') + '</code></span>' +
+              (a.effort ? '<span class="chip">' + esc(a.effort) + '</span>' : '') +
+              '</div>' +
+              '<div class="skdesc" style="margin-top:4px">' + esc(a.role) + '</div></div>';
           }).join('') : '<div class="setlist"><div class="meta">no agents yet — create one and the main agent will start delegating independent sub-tasks to it.</div></div>') +
           '</div>';
         var form = $('agForm');
@@ -2780,6 +2892,7 @@ import * as THREE from '/vendor/three.module.js';
     var dt = Math.min(0.05, clock.getDelta());
     t += dt;
     modeT += dt;
+
     if (mode === 'walk') {
       var s = Math.sin(t * 9);
       legL.rotation.x = s * 0.7; legR.rotation.x = -s * 0.7;
@@ -2787,7 +2900,43 @@ import * as THREE from '/vendor/three.module.js';
       armR.rotation.x = -0.5; armR.rotation.z = -0.12;
       root.position.x = Math.min(2, -9 + modeT * 3.2);
       root.position.y = Math.abs(Math.cos(t * 9)) * 0.15;
-      if (modeT > 4.5) { mode = 'idle'; modeT = 0; }
+      if (modeT > 4.0) { mode = 'idle'; modeT = 0; }
+    } else if (mode === 'thinking') {
+      legL.rotation.x = 0; legR.rotation.x = 0;
+      armL.rotation.x = -1.2; armL.rotation.z = 0.4;
+      armR.rotation.x = -0.5; armR.rotation.z = -0.1;
+      head.rotation.z = 0.15; head.rotation.x = Math.sin(t * 3) * 0.05;
+      root.position.x = 2;
+      root.position.y = Math.sin(t * 2) * 0.04;
+      if (modeT > 1.8) { mode = 'idle'; modeT = 0; head.rotation.z = 0; head.rotation.x = 0; }
+    } else if (mode === 'coding') {
+      legL.rotation.x = 0; legR.rotation.x = 0;
+      armL.rotation.x = -1.1 + Math.sin(t * 20) * 0.15; armL.rotation.z = 0.15;
+      armR.rotation.x = -1.1 + Math.cos(t * 20) * 0.15; armR.rotation.z = -0.15;
+      root.position.x = 2;
+      root.position.y = Math.sin(t * 2) * 0.04;
+      if (modeT > 1.8) { mode = 'idle'; modeT = 0; }
+    } else if (mode === 'testing') {
+      legL.rotation.x = 0; legR.rotation.x = 0;
+      armL.rotation.x = -0.3; armL.rotation.z = 0;
+      armR.rotation.x = -1.35 + Math.sin(t * 6) * 0.05; armR.rotation.z = -0.05;
+      root.position.x = 2;
+      root.position.y = Math.sin(t * 2) * 0.04;
+      if (modeT > 1.8) { mode = 'idle'; modeT = 0; }
+    } else if (mode === 'celebrate') {
+      legL.rotation.x = 0.15; legR.rotation.x = -0.15;
+      armL.rotation.x = -2.2 + Math.sin(t * 12) * 0.1; armL.rotation.z = 0.3;
+      armR.rotation.x = -2.2 + Math.sin(t * 12) * 0.1; armR.rotation.z = -0.3;
+      root.position.x = 2;
+      root.position.y = 0.3 + Math.abs(Math.sin(t * 10)) * 0.25;
+      if (modeT > 1.8) { mode = 'idle'; modeT = 0; }
+    } else if (mode === 'shield') {
+      legL.rotation.x = 0.2; legR.rotation.x = -0.2;
+      armL.rotation.x = -1.5; armL.rotation.z = 0.6;
+      armR.rotation.x = -1.5; armR.rotation.z = -0.6;
+      root.position.x = 2;
+      root.position.y = Math.sin(t * 2) * 0.03;
+      if (modeT > 1.8) { mode = 'idle'; modeT = 0; }
     } else if (mode === 'shoot') {
       legL.rotation.x = 0.25; legR.rotation.x = -0.25;
       armR.rotation.x = -1.35 + Math.sin(t * 28) * 0.07;
@@ -2796,10 +2945,12 @@ import * as THREE from '/vendor/three.module.js';
       flash.visible = (Math.floor(t * 14) % 2 === 0);
       root.position.x = 2;
       root.position.y = Math.sin(t * 28) * 0.04;
+      if (modeT > 1.8) { mode = 'idle'; modeT = 0; }
     } else {
       legL.rotation.x = 0; legR.rotation.x = 0;
       armR.rotation.x = -0.85; armR.rotation.z = -0.08;
-      armL.rotation.x = 0;
+      armL.rotation.x = 0; armL.rotation.z = 0;
+      head.rotation.z = 0; head.rotation.x = 0;
       flash.visible = false;
       root.position.x = 2;
       root.position.y = Math.sin(t * 2) * 0.06;

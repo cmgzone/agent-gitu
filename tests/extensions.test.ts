@@ -2,6 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { AgentStore } from '../src/agents/registry.js';
 import { CronStore, parseEvery } from '../src/cron/scheduler.js';
 import { Hermes } from '../src/agent/hermes.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -109,3 +110,39 @@ describe('resume (same-session continuation)', () => {
     void guard;
   }, 60000);
 });
+
+describe('AgentStore', () => {
+  it('supports exact name lookup, fallback model lookup, and explicit prompt rendering', () => {
+    const dir = makeProject('agents');
+    const store = new AgentStore(path.join(dir, 'agents.json'));
+    const agent = store.save({
+      name: 'Explore Specialist',
+      role: 'Repository exploration and discovery',
+      provider: 'opencode-zen',
+      model: 'hy3-free',
+      effort: 'medium',
+    });
+
+    expect(agent.name).toBe('explore-specialist');
+    // Exact name lookup (case-insensitive)
+    expect(store.get('explore-specialist')?.id).toBe(agent.id);
+    expect(store.get('EXPLORE-SPECIALIST')?.id).toBe(agent.id);
+
+    // Defensive fallback: provider/model or model name mistakenly passed
+    expect(store.get('opencode-zen/hy3-free')?.id).toBe(agent.id);
+    expect(store.get('opencode-zen::hy3-free')?.id).toBe(agent.id);
+    expect(store.get('hy3-free')?.id).toBe(agent.id);
+
+    // Prompt rendering clearly separates Name, Model, and Role
+    const promptText = store.renderForPrompt();
+    expect(promptText).toContain('AVAILABLE SPECIALISTS');
+    expect(promptText).toContain('Agent Name: "explore-specialist"');
+    expect(promptText).toContain('Model: opencode-zen/hy3-free (effort: medium)');
+    expect(promptText).toContain('Role: Repository exploration and discovery');
+
+    // Cleanup
+    expect(store.remove(agent.id)).toBe(true);
+    expect(store.list()).toHaveLength(0);
+  });
+});
+

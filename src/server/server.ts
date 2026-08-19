@@ -1503,7 +1503,12 @@ export class HermesServer {
             cwd: root,
             resolveLlm: (name) => {
               const def = agentStore.get(name);
-              if (!def) throw new Error(`unknown agent "${name}" — create it in Settings → Agents`);
+              if (!def) {
+                const available = agentStore.list().map((a) => `"${a.name}"`).join(', ');
+                throw new Error(
+                  `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name (e.g. ${agentStore.list()[0]?.name ? `"${agentStore.list()[0]?.name}"` : '"explore"'}), NOT a model/provider identifier.`,
+                );
+              }
               return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model }).client, trackUsage);
             },
             agentRole: (name) => agentStore.get(name)?.role,

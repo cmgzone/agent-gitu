@@ -1,6 +1,6 @@
 {
   "name": "agent-gitu",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Agent Gitu: an autonomous engineering agent with project guard, task ledger, evidence gates, specialist sub-agents, in-app browser and an animated voxel mascot",
   "type": "module",
   "main": "desktop/main.cjs",

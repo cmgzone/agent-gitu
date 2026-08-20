@@ -15,6 +15,14 @@ const EVIDENCE_TYPE_TO_KIND: Record<string, EvidenceKind> = {
   command_success: 'command',
 };
 
+export function evidenceKindForType(type: CriterionEvidenceType): EvidenceKind | undefined {
+  return EVIDENCE_TYPE_TO_KIND[type];
+}
+
+export function isTrivialEvidenceCommand(command: string): boolean {
+  return TRIVIAL_EVIDENCE_RE.test(command);
+}
+
 /**
  * Normalize a command string for exact comparison.
  * trim → collapse whitespace → lowercase.
@@ -64,6 +72,7 @@ export class EvidenceEngine {
       passed: boolean;
       output: string;
       artifactPath?: string;
+      workspaceFingerprint?: string;
     },
   ): Evidence {
     const evidence: Evidence = {
@@ -76,12 +85,19 @@ export class EvidenceEngine {
       outputExcerpt: excerpt(input.output),
       artifactPath: input.artifactPath,
       createdAt: nowIso(),
+      workspaceFingerprint: input.workspaceFingerprint,
+      stale: false,
     };
     ledger.evidence.push(evidence);
     return evidence;
   }
 
-  link(ledger: TaskLedgerData, criterionId: string, evidenceId: string): { ok: boolean; reason: string } {
+  link(
+    ledger: TaskLedgerData,
+    criterionId: string,
+    evidenceId: string,
+    currentFingerprint?: string,
+  ): { ok: boolean; reason: string } {
     const criterion = ledger.acceptanceCriteria.find((c) => c.id === criterionId);
     if (!criterion) return { ok: false, reason: `Unknown acceptance criterion: ${criterionId}` };
     const evidence = ledger.evidence.find((e) => e.id === evidenceId);
@@ -93,6 +109,15 @@ export class EvidenceEngine {
       return {
         ok: false,
         reason: `Evidence ${evidenceId} is a no-op command ("${evidence.command.trim()}") and cannot verify a criterion. Run a real test/build/lint/typecheck.`,
+      };
+    }
+
+    // Check stale fingerprint
+    if (currentFingerprint && evidence.workspaceFingerprint && evidence.workspaceFingerprint !== currentFingerprint) {
+      evidence.stale = true;
+      return {
+        ok: false,
+        reason: `Evidence ${evidenceId} is stale because the workspace was modified after the command ran. Re-run "${criterion.verification || evidence.command || 'verification'}" to produce fresh evidence.`,
       };
     }
 
@@ -128,14 +153,38 @@ export class EvidenceEngine {
     return { ok: true, reason: `Criterion "${criterion.text}" now backed by evidence ${evidence.label}.` };
   }
 
-  gate(ledger: TaskLedgerData): GateResult {
+  gate(ledger: TaskLedgerData, currentFingerprint?: string): GateResult {
     const missing: string[] = [];
     let satisfiedCount = 0;
+
     for (const c of ledger.acceptanceCriteria) {
-      const backed = c.satisfied && c.evidenceIds.some((id) => ledger.evidence.find((e) => e.id === id)?.passed);
-      if (backed) satisfiedCount += 1;
-      else missing.push(c.text);
+      // Check if any attached evidence is stale
+      if (currentFingerprint) {
+        for (const id of c.evidenceIds) {
+          const ev = ledger.evidence.find((e) => e.id === id);
+          if (ev && ev.workspaceFingerprint && ev.workspaceFingerprint !== currentFingerprint) {
+            ev.stale = true;
+          }
+        }
+      }
+
+      const validEvidence = c.evidenceIds
+        .map((id) => ledger.evidence.find((e) => e.id === id))
+        .filter((e): e is Evidence => Boolean(e && e.passed && !e.stale));
+
+      const backed = c.satisfied && validEvidence.length > 0;
+      if (backed) {
+        satisfiedCount += 1;
+      } else {
+        const hasStale = c.evidenceIds.some((id) => ledger.evidence.find((e) => e.id === id)?.stale);
+        if (hasStale) {
+          missing.push(`[STALE EVIDENCE] ${c.text} (workspace was modified after verification ran — re-run ${c.verification || 'test'})`);
+        } else {
+          missing.push(c.text);
+        }
+      }
     }
+
     return {
       open: ledger.acceptanceCriteria.length > 0 && missing.length === 0,
       missing,

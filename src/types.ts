@@ -69,6 +69,8 @@ export interface Evidence {
   outputExcerpt: string;
   artifactPath?: string;
   createdAt: string;
+  workspaceFingerprint?: string;
+  stale?: boolean;
 }
 
 export type StepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'blocked';
@@ -188,6 +190,10 @@ export interface TaskLedgerData {
   status: TaskStatus;
   mode: 'fast' | 'standard' | 'chat';
   project: ProjectLock;
+  gitBranch?: string;
+  worktreePath?: string;
+  activeSkills?: string[];
+  usedSkills?: string[];
   acceptanceCriteria: AcceptanceCriterion[];
   constraints: string[];
   nonGoals: string[];
@@ -207,6 +213,24 @@ export interface TaskLedgerData {
   report?: CompletionReport;
 }
 
+export type SpecialistStatus = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BLOCKED' | 'FAILED' | 'CANCELLED';
+
+export interface StructuredSpecialistReport {
+  agent: string;
+  task: string;
+  ok: boolean;
+  status: SpecialistStatus;
+  summary: string;
+  turnsUsed: number;
+  turnsBudgeted: number;
+  filesInspected: string[];
+  filesChanged: string[];
+  criteriaStatus?: { id: string; text: string; satisfied: boolean }[];
+  evidenceIds: string[];
+  blockers?: string[];
+  recommendation?: string;
+}
+
 export type RiskTier = 'safe' | 'moderate' | 'dangerous';
 
 export interface ToolResult {
@@ -217,4 +241,6 @@ export interface ToolResult {
   filesTouched?: string[];
   linesAdded?: number;
   image?: string;
+  /** Optional structured data that rides along in-memory (never serialized to the model). */
+  payload?: unknown;
 }

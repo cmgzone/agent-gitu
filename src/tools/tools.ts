@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'n
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
+import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { ToolResult } from '../types.js';
@@ -15,6 +16,7 @@ export interface ToolContext {
   skills?: SkillStore;
   mcp?: McpManager;
   browser?: BrowserBridge;
+  lsp?: LspManager;
   delegate?: DelegateFn;
   delegateBackground?: BackgroundDelegateFn;
   backgroundAgentStatus?: BackgroundAgentStatusFn;
@@ -38,6 +40,11 @@ export const KNOWN_TOOL_NAMES = new Set([
   'create_skill',
   'use_skill',
   'run_command',
+  'lsp_diagnostics',
+  'lsp_definition',
+  'lsp_references',
+  'lsp_hover',
+  'lsp_symbols',
 ]);
 
 const MAX_FILE_BYTES = 512 * 1024;
@@ -51,9 +58,335 @@ function fail(output: string): ToolResult {
   return { ok: false, output, errorSignature: errorSignature(output) };
 }
 
+export interface ToolValidationResult {
+  valid: boolean;
+  error?: string;
+  schema?: string;
+  correction?: string;
+}
+
+export function validateToolParams(tool: string, params: unknown): ToolValidationResult {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) {
+    return {
+      valid: false,
+      error: `Parameters must be a JSON object, but received ${params === null ? 'null' : typeof params}.`,
+      schema: `${tool}({ ... })`,
+      correction: `Provide a valid JSON object of named parameters.`,
+    };
+  }
+  const p = params as Record<string, unknown>;
+
+  const checkNonEmptyString = (name: string): string | undefined => {
+    const val = p[name];
+    if (val === undefined || val === null) return `Missing required parameter "${name}".`;
+    if (typeof val !== 'string') return `Parameter "${name}" must be a string, but received ${typeof val}.`;
+    if (val.trim() === '' || val.trim() === 'undefined' || val.trim() === 'null') {
+      return `Parameter "${name}" cannot be empty or "undefined". Provide a real value.`;
+    }
+    return undefined;
+  };
+
+  switch (tool) {
+    case 'read_file': {
+      const err = checkNonEmptyString('path');
+      if (err) {
+        return {
+          valid: false,
+          error: err,
+          schema: `read_file({ path: string, offset?: number, limit?: number })`,
+          correction: `Provide a valid file path string relative to the project root, e.g. read_file({ "path": "src/index.ts" }).`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'write_file': {
+      const pathErr = checkNonEmptyString('path');
+      if (pathErr) {
+        return {
+          valid: false,
+          error: pathErr,
+          schema: `write_file({ path: string, content: string })`,
+          correction: `Provide a valid file path string relative to the project root, e.g. write_file({ "path": "src/file.ts", "content": "..." }).`,
+        };
+      }
+      if (typeof p['content'] !== 'string') {
+        return {
+          valid: false,
+          error: `Missing or invalid "content" parameter (must be a string).`,
+          schema: `write_file({ path: string, content: string })`,
+          correction: `Provide the full file content as a string.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'apply_edit': {
+      const pathErr = checkNonEmptyString('path');
+      if (pathErr) {
+        return {
+          valid: false,
+          error: pathErr,
+          schema: `apply_edit({ path: string, oldString: string, newString: string })`,
+          correction: `Provide a valid file path string relative to the project root.`,
+        };
+      }
+      if (typeof p['oldString'] !== 'string' || !p['oldString']) {
+        return {
+          valid: false,
+          error: `Missing or empty "oldString" parameter.`,
+          schema: `apply_edit({ path: string, oldString: string, newString: string })`,
+          correction: `Provide the exact existing substring to replace.`,
+        };
+      }
+      if (typeof p['newString'] !== 'string') {
+        return {
+          valid: false,
+          error: `Missing or invalid "newString" parameter (must be a string).`,
+          schema: `apply_edit({ path: string, oldString: string, newString: string })`,
+          correction: `Provide the replacement text as a string.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'search_files': {
+      const patternErr = checkNonEmptyString('pattern');
+      if (patternErr) {
+        return {
+          valid: false,
+          error: patternErr,
+          schema: `search_files({ pattern: string, path?: string })`,
+          correction: `Provide a non-empty search regex or text pattern, e.g. search_files({ "pattern": "export function" }).`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'list_files': {
+      return { valid: true };
+    }
+    case 'run_command': {
+      const cmdErr = checkNonEmptyString('command');
+      if (cmdErr) {
+        return {
+          valid: false,
+          error: cmdErr,
+          schema: `run_command({ command: string, timeoutMs?: number })`,
+          correction: `Provide a valid command string to run, e.g. run_command({ "command": "npm test" }).`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'web_fetch': {
+      const urlErr = checkNonEmptyString('url');
+      if (urlErr) {
+        return {
+          valid: false,
+          error: urlErr,
+          schema: `web_fetch({ url: string, maxChars?: number })`,
+          correction: `Provide a valid http:// or https:// URL.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'create_skill': {
+      const nameErr = checkNonEmptyString('name');
+      const instErr = checkNonEmptyString('instructions');
+      if (nameErr || instErr) {
+        return {
+          valid: false,
+          error: nameErr ?? instErr,
+          schema: `create_skill({ name: string, description: string, instructions: string })`,
+          correction: `Provide a non-empty name, description, and instructions for the skill.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'use_skill': {
+      const nameErr = checkNonEmptyString('name');
+      if (nameErr) {
+        return {
+          valid: false,
+          error: nameErr,
+          schema: `use_skill({ name: string })`,
+          correction: `Provide the name of an existing skill to use.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'browse': {
+      const BROWSER_ACTIONS = ['navigate', 'back', 'forward', 'reload', 'screenshot', 'click', 'hover', 'scroll', 'type', 'fill', 'select', 'press', 'wait'] as const;
+      const action = p['action'] === undefined ? (p['url'] !== undefined ? 'navigate' : 'screenshot') : String(p['action']);
+      if (!BROWSER_ACTIONS.includes(action as (typeof BROWSER_ACTIONS)[number])) {
+        return {
+          valid: false,
+          error: `Unknown browse action "${action}".`,
+          schema: `browse({ action: string, url?: string, selector?: string, x?: number, y?: number, ... })`,
+          correction: `Use one of: ${BROWSER_ACTIONS.join(', ')}.`,
+        };
+      }
+      if (action === 'navigate') {
+        const urlErr = checkNonEmptyString('url');
+        if (urlErr) {
+          return {
+            valid: false,
+            error: urlErr,
+            schema: `browse({ action: "navigate", url: string })`,
+            correction: `Provide the URL to navigate to, e.g. browse({ "action": "navigate", "url": "https://example.com" }).`,
+          };
+        }
+      }
+      if (action === 'type' || action === 'fill') {
+        const textErr = checkNonEmptyString('text');
+        if (textErr) {
+          return {
+            valid: false,
+            error: textErr,
+            schema: `browse({ action: "${action}", ${action === 'fill' ? 'selector: string, ' : ''}text: string })`,
+            correction: `Provide the text to type as a non-empty string.`,
+          };
+        }
+        if (action === 'fill') {
+          const selErr = checkNonEmptyString('selector');
+          if (selErr) {
+            return {
+              valid: false,
+              error: selErr,
+              schema: `browse({ action: "fill", selector: string, text: string })`,
+              correction: `Provide the CSS selector of the field to fill.`,
+            };
+          }
+        }
+      }
+      if (action === 'click' && p['selector'] === undefined) {
+        const x = Number(p['x'] ?? Number.NaN);
+        const y = Number(p['y'] ?? Number.NaN);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+          return {
+            valid: false,
+            error: `browse click requires a "selector" or numeric "x" and "y".`,
+            schema: `browse({ action: "click", selector?: string, x?: number, y?: number })`,
+            correction: `Provide either a CSS selector or numeric coordinates.`,
+          };
+        }
+      }
+      return { valid: true };
+    }
+    case 'delegate': {
+      const tasks = p['tasks'];
+      if (Array.isArray(tasks)) {
+        if (tasks.length === 0) {
+          return {
+            valid: false,
+            error: `"tasks" array cannot be empty.`,
+            schema: `delegate({ tasks: [{ agent: string, task: string }] })`,
+            correction: `Provide at least one { agent, task } entry.`,
+          };
+        }
+        for (const t of tasks) {
+          const entry = (t ?? {}) as Record<string, unknown>;
+          if (typeof entry['agent'] !== 'string' || !entry['agent'].trim() || typeof entry['task'] !== 'string' || !entry['task'].trim()) {
+            return {
+              valid: false,
+              error: `Each delegate task needs non-empty string "agent" and "task" fields.`,
+              schema: `delegate({ tasks: [{ agent: string, task: string }] })`,
+              correction: `Provide a registered specialist agent name and a task description for every entry.`,
+            };
+          }
+        }
+        return { valid: true };
+      }
+      const agentErr = checkNonEmptyString('agent');
+      const taskErr = checkNonEmptyString('task');
+      if (agentErr || taskErr) {
+        return {
+          valid: false,
+          error: agentErr ?? taskErr,
+          schema: `delegate({ agent: string, task: string }) or delegate({ tasks: [{ agent: string, task: string }] })`,
+          correction: `Provide a registered specialist agent name and a task description.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'agent_status': {
+      if (p['id'] !== undefined && typeof p['id'] !== 'string') {
+        return {
+          valid: false,
+          error: `Parameter "id" must be a string when provided.`,
+          schema: `agent_status({ id?: string })`,
+          correction: `Provide a background agent job id string, or omit it to list all agents.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'list_skills':
+      return { valid: true };
+    case 'lsp_diagnostics':
+    case 'lsp_symbols': {
+      const err = checkNonEmptyString('path');
+      if (err) {
+        return {
+          valid: false,
+          error: err,
+          schema: `${tool}({ path: string })`,
+          correction: `Provide a file path relative to the project root, e.g. ${tool}({ "path": "src/auth.ts" }).`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'lsp_definition':
+    case 'lsp_references':
+    case 'lsp_hover': {
+      const pathErr = checkNonEmptyString('path');
+      if (pathErr) {
+        return {
+          valid: false,
+          error: pathErr,
+          schema: `${tool}({ path: string, line: number, column: number })`,
+          correction: `Provide a file path and a 1-based line/column position, e.g. ${tool}({ "path": "src/auth.ts", "line": 42, "column": 17 }).`,
+        };
+      }
+      const line = Number(p['line']);
+      const column = Number(p['column']);
+      if (!Number.isInteger(line) || line < 1) {
+        return {
+          valid: false,
+          error: `Missing or invalid "line" parameter (must be a positive integer).`,
+          schema: `${tool}({ path: string, line: number, column: number })`,
+          correction: `Provide the 1-based line number, e.g. ${tool}({ "path": "src/auth.ts", "line": 42, "column": 17 }).`,
+        };
+      }
+      if (!Number.isInteger(column) || column < 1) {
+        return {
+          valid: false,
+          error: `Missing or invalid "column" parameter (must be a positive integer).`,
+          schema: `${tool}({ path: string, line: number, column: number })`,
+          correction: `Provide the 1-based column number, e.g. ${tool}({ "path": "src/auth.ts", "line": 42, "column": 17 }).`,
+        };
+      }
+      return { valid: true };
+    }
+    default:
+      return { valid: true };
+  }
+}
+
+export function formatToolValidationError(tool: string, params: unknown, validation: ToolValidationResult): string {
+  return [
+    `INVALID TOOL CALL`,
+    `Tool: ${tool}`,
+    `Problem: ${validation.error}`,
+    `Required Schema:`,
+    `  ${validation.schema ?? `${tool}({ ... })`}`,
+    `Received:`,
+    `  ${JSON.stringify(params)}`,
+    validation.correction ? `Correction: ${validation.correction}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export function toolReadFile(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
-  const rel = String(params['path'] ?? '');
-  if (!rel) return fail('read_file: missing "path"');
+  const val = validateToolParams('read_file', params);
+  if (!val.valid) return fail(formatToolValidationError('read_file', params, val));
+  const rel = String(params['path']);
   const abs = ctx.guard.resolve(rel);
   ctx.guard.assertInside(abs);
   try {
@@ -222,6 +555,65 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
 
   walk(abs, 0);
   return { ok: true, output: matches.join('\n') || '(no matches)' };
+}
+
+function lspUnavailable(output: string): ToolResult {
+  return fail(output);
+}
+
+export async function toolLspDiagnostics(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const val = validateToolParams('lsp_diagnostics', params);
+  if (!val.valid) return fail(formatToolValidationError('lsp_diagnostics', params, val));
+  if (!ctx.lsp) return lspUnavailable('lsp_diagnostics: no LSP layer available in this session. Use read_file/search_files instead.');
+  const rel = String(params['path']);
+  const abs = ctx.guard.resolve(rel);
+  ctx.guard.assertInside(abs);
+  const call = await ctx.lsp.diagnostics(ctx.guard.toRelative(abs));
+  return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
+}
+
+export async function toolLspDefinition(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const val = validateToolParams('lsp_definition', params);
+  if (!val.valid) return fail(formatToolValidationError('lsp_definition', params, val));
+  if (!ctx.lsp) return lspUnavailable('lsp_definition: no LSP layer available in this session. Use search_files instead.');
+  const rel = String(params['path']);
+  const abs = ctx.guard.resolve(rel);
+  ctx.guard.assertInside(abs);
+  const call = await ctx.lsp.definition(ctx.guard.toRelative(abs), Number(params['line']), Number(params['column']));
+  return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
+}
+
+export async function toolLspReferences(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const val = validateToolParams('lsp_references', params);
+  if (!val.valid) return fail(formatToolValidationError('lsp_references', params, val));
+  if (!ctx.lsp) return lspUnavailable('lsp_references: no LSP layer available in this session. Use search_files instead.');
+  const rel = String(params['path']);
+  const abs = ctx.guard.resolve(rel);
+  ctx.guard.assertInside(abs);
+  const call = await ctx.lsp.references(ctx.guard.toRelative(abs), Number(params['line']), Number(params['column']));
+  return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
+}
+
+export async function toolLspHover(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const val = validateToolParams('lsp_hover', params);
+  if (!val.valid) return fail(formatToolValidationError('lsp_hover', params, val));
+  if (!ctx.lsp) return lspUnavailable('lsp_hover: no LSP layer available in this session. Use read_file instead.');
+  const rel = String(params['path']);
+  const abs = ctx.guard.resolve(rel);
+  ctx.guard.assertInside(abs);
+  const call = await ctx.lsp.hover(ctx.guard.toRelative(abs), Number(params['line']), Number(params['column']));
+  return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
+}
+
+export async function toolLspSymbols(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const val = validateToolParams('lsp_symbols', params);
+  if (!val.valid) return fail(formatToolValidationError('lsp_symbols', params, val));
+  if (!ctx.lsp) return lspUnavailable('lsp_symbols: no LSP layer available in this session. Use read_file/search_files instead.');
+  const rel = String(params['path']);
+  const abs = ctx.guard.resolve(rel);
+  ctx.guard.assertInside(abs);
+  const call = await ctx.lsp.symbols(ctx.guard.toRelative(abs));
+  return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
 }
 
 export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
@@ -453,7 +845,7 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
   if (!ctx.delegate) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
   const results = await ctx.delegate(specs);
   const output = results.map((r) => `[${r.agent}] ${r.ok ? 'OK' : 'FAILED'} — task: ${r.task.slice(0, 120)}\n${r.summary}`).join('\n\n');
-  return { ok: results.every((r) => r.ok), output: output.slice(0, 6000) };
+  return { ok: results.every((r) => r.ok), output: output.slice(0, 6000), payload: { results } };
 }
 
 export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -472,5 +864,5 @@ export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown
   };
 }
 
-export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse', 'delegate', 'agent_status'] as const;
+export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse', 'delegate', 'agent_status', 'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols'] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

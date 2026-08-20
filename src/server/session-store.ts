@@ -18,6 +18,8 @@ export interface StoredSession {
   goal: string;
   project?: string;
   projectPath?: string;
+  branch?: string;
+  worktreePath?: string;
   startedAt: string;
   status: string;
   finishedAt?: string;
@@ -61,6 +63,8 @@ export class SessionStore {
          goal TEXT,
          project TEXT,
          projectPath TEXT,
+         branch TEXT,
+         worktreePath TEXT,
          startedAt TEXT,
          status TEXT,
          finishedAt TEXT,
@@ -83,7 +87,17 @@ export class SessionStore {
     // Existing installations created the sessions table before these fields
     // existed. SQLite has no ADD COLUMN IF NOT EXISTS, so ignore the harmless
     // duplicate-column error on an already-migrated database.
-    for (const column of ['finishedAt TEXT', 'mode TEXT', 'provider TEXT', 'model TEXT', 'report TEXT', 'error TEXT', 'usage TEXT']) {
+    for (const column of [
+      'finishedAt TEXT',
+      'mode TEXT',
+      'provider TEXT',
+      'model TEXT',
+      'report TEXT',
+      'error TEXT',
+      'usage TEXT',
+      'branch TEXT',
+      'worktreePath TEXT',
+    ]) {
       try {
         this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
       } catch {
@@ -95,13 +109,15 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, startedAt, status, finishedAt, mode, provider, model, report, error, usage, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, report, error, usage, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
            project = excluded.project,
            projectPath = excluded.projectPath,
+           branch = excluded.branch,
+           worktreePath = excluded.worktreePath,
            status = excluded.status,
            finishedAt = excluded.finishedAt,
            mode = excluded.mode,
@@ -118,6 +134,8 @@ export class SessionStore {
         s.goal,
         s.project ?? null,
         s.projectPath ?? null,
+        s.branch ?? null,
+        s.worktreePath ?? null,
         s.startedAt,
         s.status,
         s.finishedAt ?? null,
@@ -141,13 +159,15 @@ export class SessionStore {
 
   listSessions(): StoredSession[] {
     const rows = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, startedAt, status, finishedAt, mode, provider, model, report, error, usage FROM sessions ORDER BY startedAt DESC`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, report, error, usage FROM sessions ORDER BY startedAt DESC`)
       .all() as {
         runId: string;
         taskId: string | null;
         goal: string;
         project: string | null;
         projectPath: string | null;
+        branch: string | null;
+        worktreePath: string | null;
         startedAt: string;
         status: string;
         finishedAt: string | null;
@@ -164,6 +184,8 @@ export class SessionStore {
       goal: r.goal,
       project: r.project ?? undefined,
       projectPath: r.projectPath ?? undefined,
+      branch: r.branch ?? undefined,
+      worktreePath: r.worktreePath ?? undefined,
       startedAt: r.startedAt,
       status: r.status,
       finishedAt: r.finishedAt ?? undefined,
@@ -174,6 +196,48 @@ export class SessionStore {
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
     }));
+  }
+
+  getSessionByTaskId(taskId: string): StoredSession | undefined {
+    const r = this.db
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, report, error, usage FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
+      .get(taskId) as {
+        runId: string;
+        taskId: string | null;
+        goal: string;
+        project: string | null;
+        projectPath: string | null;
+        branch: string | null;
+        worktreePath: string | null;
+        startedAt: string;
+        status: string;
+        finishedAt: string | null;
+        mode: string | null;
+        provider: string | null;
+        model: string | null;
+        report: string | null;
+        error: string | null;
+        usage: string | null;
+      } | undefined;
+    if (!r) return undefined;
+    return {
+      runId: r.runId,
+      taskId: r.taskId ?? undefined,
+      goal: r.goal,
+      project: r.project ?? undefined,
+      projectPath: r.projectPath ?? undefined,
+      branch: r.branch ?? undefined,
+      worktreePath: r.worktreePath ?? undefined,
+      startedAt: r.startedAt,
+      status: r.status,
+      finishedAt: r.finishedAt ?? undefined,
+      mode: r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
+      provider: r.provider ?? undefined,
+      model: r.model ?? undefined,
+      report: parseReport(r.report),
+      error: r.error ?? undefined,
+      usage: parseUsage(r.usage),
+    };
   }
 
   eventsFor(runId: string): StoredEvent[] {

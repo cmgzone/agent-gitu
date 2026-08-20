@@ -9,6 +9,7 @@ const VENDOR_THREE = nodePath.join(
   '../../node_modules/three/build/three.module.min.js',
 );
 import { Hermes } from '../agent/hermes.js';
+import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
@@ -72,6 +73,8 @@ export interface RunSessionView {
   taskId?: string;
   project?: string;
   projectPath?: string;
+  branch?: string;
+  worktreePath?: string;
   mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
@@ -92,6 +95,8 @@ interface RunSession {
   taskId?: string;
   project?: string;
   projectPath?: string;
+  branch?: string;
+  worktreePath?: string;
   mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
@@ -102,6 +107,8 @@ interface RunSession {
   planReview?: PlanReviewWaiter;
   questions?: QuestionsWaiter;
   hermes?: InstanceType<typeof Hermes>;
+  /** LSP servers are kept alive for the whole session (across continuations). */
+  lsp?: LspManager;
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage;
@@ -233,6 +240,8 @@ export class HermesServer {
       goal: s.goal,
       project: s.project,
       projectPath: s.projectPath,
+      branch: s.branch,
+      worktreePath: s.worktreePath,
       startedAt: s.startedAt,
       status: s.status,
       finishedAt: s.finishedAt,
@@ -289,12 +298,16 @@ export class HermesServer {
       let mode = entry.mode;
       let report = entry.report;
       let finishedAt = entry.finishedAt;
-      if (entry.taskId && (!mode || !report || !finishedAt)) {
+      let branch = entry.branch;
+      let worktreePath = entry.worktreePath;
+      if (entry.taskId && (!mode || !report || !finishedAt || !branch)) {
         const root = this.resolveTaskRoot(entry.taskId, entry.projectPath);
         const ledger = root ? TaskLedger.load(root, entry.taskId) : undefined;
         mode ??= ledger?.data.mode;
         report ??= ledger?.data.report;
         finishedAt ??= ledger?.data.completedAt;
+        branch ??= ledger?.data.gitBranch;
+        worktreePath ??= ledger?.data.worktreePath;
       }
       const session: RunSession = {
         runId: entry.runId,
@@ -305,6 +318,8 @@ export class HermesServer {
         taskId: entry.taskId,
         project: entry.project,
         projectPath: entry.projectPath,
+        branch,
+        worktreePath,
         mode,
         provider: entry.provider,
         model: entry.model,
@@ -422,6 +437,8 @@ export class HermesServer {
       taskId: s.taskId,
       project: s.project,
       projectPath: s.projectPath,
+      branch: s.branch,
+      worktreePath: s.worktreePath,
       mode: s.mode,
       provider: s.provider,
       model: s.model,
@@ -1295,6 +1312,7 @@ export class HermesServer {
         return;
       }
       session.hermes?.stop();
+      session.lsp?.shutdown().catch(() => {});
       this.pushEvent(session, 'stopped by user');
       this.sendJson(res, 200, { ok: true });
       return;
@@ -1343,6 +1361,21 @@ export class HermesServer {
       }
       if (!session.taskId) {
         this.sendJson(res, 409, { error: 'run has no task yet' });
+        return;
+      }
+      const taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
+      if (!taskRoot) {
+        this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
+        return;
+      }
+      const ledger = TaskLedger.load(taskRoot, session.taskId);
+      if (!ledger) {
+        this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
+        return;
+      }
+      const envCheck = await ledger.validateEnvironment(taskRoot);
+      if (!envCheck.ok) {
+        this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
         return;
       }
       let llm = this.config.llm;
@@ -1518,6 +1551,7 @@ export class HermesServer {
         : undefined;
     session.project = root.split(/[\\/]/).filter(Boolean).pop();
     session.mode ??= opts.mode;
+    const lsp = (session.lsp ??= new LspManager(root));
     const hermes = new Hermes({
       cwd: opts.projectPath ?? this.config.cwd,
       index,
@@ -1531,6 +1565,7 @@ export class HermesServer {
       effort: opts.effort,
       skills,
       mcp,
+      lsp,
       subagents,
       agentsSection: agentStore.renderForPrompt() || undefined,
       resume: opts.resume,
@@ -1594,7 +1629,15 @@ export class HermesServer {
         }),
       onEvent: (text) => {
         const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
-        if (ledgerMatch) session.taskId = ledgerMatch[1];
+        if (ledgerMatch) {
+          session.taskId = ledgerMatch[1];
+          this.persistSession(session);
+        }
+        const branchMatch = text.match(/branch\s+(?:Switched to existing|Created|Already on)\s+(\S+)/);
+        if (branchMatch) {
+          session.branch = branchMatch[1];
+          this.persistSession(session);
+        }
         this.pushEvent(session, text, !text.startsWith('browseshot '));
       },
     });

@@ -1,5 +1,7 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export interface GitFile {
@@ -16,6 +18,48 @@ export interface GitInfo {
   behind?: number;
   files?: GitFile[];
   error?: string;
+}
+
+export async function getWorkspaceFingerprint(root: string): Promise<string> {
+  if (!isGitRepo(root)) {
+    return 'non-git-repo';
+  }
+  try {
+    // The fingerprint is a content hash of the dirty/untracked project files.
+    // HEAD and mtimes are deliberately NOT part of it: the agent's own
+    // checkpoint commits change HEAD (and flip files dirty→clean) without
+    // changing any content, so evidence stays valid across them. The moment
+    // any project file content changes after a test ran, the fingerprint
+    // differs and the evidence goes stale.
+    const status = await gitExec(root, ['status', '--porcelain=v1', '-uall']).catch(() => '');
+    const lines = status.split(/\r?\n/).filter(Boolean);
+    const fileSignatures: string[] = [];
+    for (const line of lines) {
+      const p = line.slice(3).replace(/"$/g, '').replace(/^"/g, '');
+      const normPath = p.replace(/\\/g, '/');
+      if (
+        normPath.startsWith('.hermes/') ||
+        normPath === '.hermes' ||
+        normPath.startsWith('.git/') ||
+        normPath === '.git' ||
+        normPath.startsWith('node_modules/') ||
+        normPath === 'node_modules'
+      ) {
+        continue;
+      }
+      const full = path.join(root, p);
+      try {
+        const content = await readFile(full);
+        fileSignatures.push(`${normPath}:${createHash('sha256').update(content).digest('hex')}`);
+      } catch {
+        fileSignatures.push(`${normPath}:deleted`);
+      }
+    }
+    const payload = fileSignatures.sort().join('|') || 'clean-tree';
+    return createHash('sha256').update(payload).digest('hex').slice(0, 16);
+  } catch {
+    return 'unknown-fp';
+  }
 }
 
 export function gitExec(root: string, args: string[]): Promise<string> {

@@ -3,13 +3,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
 import { Executor } from '../executor/executor.js';
-import { gitExec, isGitRepo } from '../git/git.js';
+import { getWorkspaceFingerprint, gitExec, isGitRepo } from '../git/git.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { extractJson, parseXmlFunctionCall, type LlmClient, type LlmMessage } from '../llm/llm.js';
 import { LoopDetector } from '../loop/loop-detector.js';
+import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { buildSpecialistEvidenceReport, type SpecialistEvidenceReport } from './specialist-evidence.js';
 import type { AcceptanceCriterion, CriterionSpec } from '../types.js';
 
 export interface SubAgentSpec {
@@ -18,11 +20,24 @@ export interface SubAgentSpec {
   criteria?: (string | CriterionSpec)[];
 }
 
+export type SpecialistStatus = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BLOCKED' | 'FAILED' | 'CANCELLED';
+
 export interface SubAgentResult {
   agent: string;
   task: string;
   ok: boolean;
+  status: SpecialistStatus;
   summary: string;
+  turnsUsed: number;
+  turnsBudgeted: number;
+  filesInspected: string[];
+  filesChanged: string[];
+  criteriaStatus?: { id: string; text: string; satisfied: boolean }[];
+  evidenceIds: string[];
+  /** Structured evidence report (P1.1) for the orchestrator to revalidate. */
+  evidenceReport?: SpecialistEvidenceReport;
+  blockers?: string[];
+  recommendation?: string;
 }
 
 export type SubAgentJobStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -47,12 +62,17 @@ export interface SubAgentRunnerDeps {
   agentEffort?: (name: string) => 'low' | 'medium' | 'high' | 'max' | undefined;
   /** Limits simultaneous workers; excess work remains visible as queued. */
   maxConcurrent?: number;
+  /** Base turn budget before dynamic extension. Default 20. */
+  baseTurns?: number;
+  /** Maximum turns ceiling for dynamic execution. Default 100. */
+  hardCeilingTurns?: number;
   /** When the project is a git repo, run each specialist in its own worktree and merge back on success (default true). */
   isolate?: boolean;
   onEvent?: (text: string) => void;
 }
 
-const MAX_TURNS = 20;
+const DEFAULT_BASE_TURNS = 20;
+const DEFAULT_HARD_CEILING_TURNS = 100;
 const MAX_CONCURRENT_SUBAGENTS = 5;
 
 interface InternalSubAgentJob extends SubAgentJob {
@@ -181,7 +201,15 @@ export class SubAgentRunner {
             agent: job.agent,
             task: job.task,
             ok: false,
-            summary: (err as Error).message,
+            status: 'FAILED',
+            summary: `Specialist crashed before returning a structured result: ${(err as Error).message}`,
+            turnsUsed: job.turn ?? 0,
+            turnsBudgeted: this.deps.baseTurns ?? DEFAULT_BASE_TURNS,
+            filesInspected: [],
+            filesChanged: [],
+            evidenceIds: [],
+            blockers: [(err as Error).message],
+            recommendation: 'Retry the specialist task with clearer instructions; the previous run crashed.',
           }),
         )
         .then((result) => {
@@ -215,9 +243,23 @@ export class SubAgentRunner {
 
     let summary = '';
     let ok = false;
+    let status: SpecialistStatus = 'FAILED';
+    let turnBudget = this.deps.baseTurns ?? DEFAULT_BASE_TURNS;
+    const hardCeiling = this.deps.hardCeilingTurns ?? DEFAULT_HARD_CEILING_TURNS;
+    const filesInspected = new Set<string>();
+    const filesChanged = new Set<string>();
+    const evidenceIds: string[] = [];
+    const blockers: string[] = [];
+    let consecutiveNoProgress = 0;
+    let consecutiveErrors = 0;
+    const malformed = new MalformedCallTracker({ escalateAt: 3 });
+    let turnsUsed = 0;
+    let recommendation = '';
+    let ledger: TaskLedger | undefined;
+
     try {
       const guard = ProjectGuard.detect(workRoot);
-      const ledger = TaskLedger.create({
+      ledger = TaskLedger.create({
         repoRoot: workRoot,
         goal: `[subagent:${name}] ${task.slice(0, 120)}`,
         project: guard.lock,
@@ -234,7 +276,15 @@ export class SubAgentRunner {
 
       const criteriaList = ledger.data.acceptanceCriteria;
       const criteriaPrompt = criteriaList.length > 0
-        ? `\nACCEPTANCE CRITERIA:\n` + criteriaList.map((c) => `  - [${c.id}] ${c.text}${c.verification ? ` (run: ${c.verification})` : ''}`).join('\n')
+        ? `\nACCEPTANCE CRITERIA (you MUST satisfy every one of these before answering):\n` +
+          criteriaList
+            .map((c) =>
+              `  - [${c.id}] ${c.text}` +
+              (c.verification ? `\n    Required verification: ${c.verification}` : '') +
+              (c.evidenceType && c.evidenceType !== 'any' ? `\n    Evidence type: ${c.evidenceType}` : '') +
+              `\n    Do not claim this criterion using unrelated commands.`
+            )
+            .join('\n')
         : '';
 
       const messages: LlmMessage[] = [
@@ -242,9 +292,10 @@ export class SubAgentRunner {
         { role: 'user', content: `TASK: ${task}${criteriaPrompt}` },
       ];
 
-      for (let turn = 0; turn < MAX_TURNS; turn++) {
-        job.turn = turn + 1;
-        emit(`subagent ${name} [running] ${job.id} — turn ${job.turn}/${MAX_TURNS}`);
+      for (let turn = 0; turn < turnBudget; turn++) {
+        turnsUsed = turn + 1;
+        job.turn = turnsUsed;
+        emit(`subagent ${name} [running] ${job.id} — turn ${turnsUsed}/${turnBudget}`);
         const reply = await llm.complete(messages, { temperature: 0.2, effort: this.deps.agentEffort?.(name) });
         messages.push({ role: 'assistant', content: reply });
         let raw = extractJson(reply) as { action?: Record<string, unknown> } | Record<string, unknown> | null;
@@ -257,6 +308,14 @@ export class SubAgentRunner {
           : (raw as Record<string, unknown> | null)) ?? {};
         let type = String(action['type'] ?? '');
         if (!type) {
+          consecutiveNoProgress += 1;
+          if (consecutiveNoProgress >= 6) {
+            blockers.push(`Stalled after ${consecutiveNoProgress} consecutive turns without a valid action`);
+            status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
+            recommendation = 'Return structured JSON actions (tool_call / claim_criterion / answer) each turn.';
+            emit(`subagent ${name} — loop/stagnation detected, stopping early`);
+            break;
+          }
           messages.push({ role: 'user', content: 'Reply with exactly one JSON action object.' });
           continue;
         }
@@ -273,9 +332,16 @@ export class SubAgentRunner {
         if (type === 'claim_criterion' || (typeof action['criterionId'] === 'string' && typeof action['evidenceId'] === 'string')) {
           const critId = String(action['criterionId']);
           const evId = String(action['evidenceId']);
-          const link = evidenceEngine.link(ledger.data, critId, evId);
+          const currentFp = await getWorkspaceFingerprint(workRoot);
+          const link = evidenceEngine.link(ledger.data, critId, evId, currentFp);
           ledger.save();
           emit(`subagent ${name} claim ${critId} <- ${evId}: ${link.ok ? 'accepted' : link.reason}`);
+          if (link.ok) {
+            consecutiveNoProgress = 0;
+            consecutiveErrors = 0;
+          } else {
+            consecutiveErrors += 1;
+          }
           messages.push({
             role: 'user',
             content: link.ok ? `Accepted: ${link.reason}` : `Rejected: ${link.reason}`,
@@ -285,7 +351,8 @@ export class SubAgentRunner {
         if (type === 'answer' || type === 'complete') {
           // If the specialist had acceptance criteria, enforce the evidence gate!
           if (ledger.data.acceptanceCriteria.length > 0) {
-            const gate = evidenceEngine.gate(ledger.data);
+            const currentFp = await getWorkspaceFingerprint(workRoot);
+            const gate = evidenceEngine.gate(ledger.data, currentFp);
             if (!gate.open) {
               emit(`subagent ${name} — completion rejected by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria satisfied)`);
               messages.push({
@@ -295,11 +362,13 @@ export class SubAgentRunner {
                   `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
                   `You must run the required verification commands and link them with claim_criterion before answering.`,
               });
+              consecutiveNoProgress += 1;
               continue;
             }
           }
 
           summary = String(action['summary'] ?? '').slice(0, 4000);
+          status = 'SUCCESS';
           ok = true;
           break;
         }
@@ -312,10 +381,38 @@ export class SubAgentRunner {
             expected: String(action['expected'] ?? ''),
           });
 
+          if (outcome.result.ok) {
+            consecutiveNoProgress = 0;
+            consecutiveErrors = 0;
+            malformed.reset();
+            const params = (action['params'] ?? {}) as Record<string, unknown>;
+            if (toolName === 'read_file' && typeof params['path'] === 'string') {
+              filesInspected.add(String(params['path']));
+            }
+            if (outcome.result.filesTouched) {
+              for (const f of outcome.result.filesTouched) filesChanged.add(f);
+            }
+          } else {
+            consecutiveErrors += 1;
+            consecutiveNoProgress += 1;
+            const malformedKind = malformedKindFor(outcome.result.errorSignature);
+            const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
+            if (malformedVerdict?.escalate && !malformedVerdict.halt) {
+              emit(`subagent ${name} — malformed call streak ${malformedVerdict.streak} — strategy change injected`);
+            }
+            if (malformedVerdict?.halt) {
+              blockers.push(`Repeated malformed tool calls (${malformedVerdict.streak}×): ${toolName}`);
+              status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
+              emit(`subagent ${name} — malformed-call spiral detected, stopping early`);
+              break;
+            }
+          }
+
           let evidenceNote = '';
           if (toolName === 'run_command') {
             const cmd = String((action['params'] as Record<string, unknown>)?.['command'] ?? '');
             const kind = classifyEvidenceKind(cmd);
+            const currentFp = await getWorkspaceFingerprint(workRoot);
             const ev = evidenceEngine.record(ledger.data, {
               kind,
               label: String(action['expected'] || cmd),
@@ -323,22 +420,89 @@ export class SubAgentRunner {
               exitCode: outcome.result.exitCode,
               passed: outcome.result.ok,
               output: outcome.result.output,
+              workspaceFingerprint: currentFp,
             });
             ledger.save();
+            evidenceIds.push(ev.id);
             evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). If this satisfies a criterion, use {"action":{"type":"claim_criterion","criterionId":"<id>","evidenceId":"${ev.id}"}}.`;
             emit(`subagent ${name} evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
           }
 
+          // Dynamic budget extension: if making progress and approaching the current budget
+          if (turn >= turnBudget - 2 && consecutiveNoProgress <= 1 && turnBudget + 10 <= hardCeiling) {
+            turnBudget += 10;
+            emit(`subagent ${name} progress detected — dynamically extending budget to turn ${turnBudget}/${hardCeiling}`);
+          }
+
+          // Anti-loop / stagnation early exit:
+          if (consecutiveErrors >= 5 || consecutiveNoProgress >= 6) {
+            blockers.push(
+              malformed.currentStreak >= 3
+                ? `Repeated malformed tool calls (${malformed.currentStreak}×) stalled the specialist`
+                : `Stalled after ${consecutiveErrors} consecutive errors or zero progress`,
+            );
+            status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
+            recommendation = `Review tool arguments and provide more specific guidance or schemas.`;
+            emit(`subagent ${name} — loop/stagnation detected, stopping early`);
+            break;
+          }
+
           messages.push({
             role: 'user',
-            content: `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 3000)}${evidenceNote}`,
+            content:
+              `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 3000)}${evidenceNote}` +
+              (malformed.currentStreak >= 3 ? `\n${malformedIntervention(malformed.currentStreak, toolName)}` : ''),
           });
           continue;
+        }
+        consecutiveNoProgress += 1;
+        if (consecutiveNoProgress >= 6) {
+          blockers.push(`Stalled after ${consecutiveNoProgress} consecutive turns without a valid action`);
+          status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
+          recommendation = 'Return structured JSON actions (tool_call / claim_criterion / answer) each turn.';
+          emit(`subagent ${name} — loop/stagnation detected, stopping early`);
+          break;
         }
         messages.push({ role: 'user', content: 'Unknown action. Use tool_call, claim_criterion, or answer.' });
       }
 
-      if (!ok) summary = summary || `subagent ${name} stopped after ${MAX_TURNS} turns without a final answer`;
+      if (!ok) {
+        if (filesInspected.size > 0 || filesChanged.size > 0) {
+          status = 'PARTIAL_SUCCESS';
+        } else if (status !== 'BLOCKED') {
+          status = blockers.length > 0 ? 'BLOCKED' : 'FAILED';
+        }
+
+        const completedList: string[] = [
+          filesInspected.size > 0 ? `✓ Inspected ${filesInspected.size} file(s): ${[...filesInspected].slice(0, 5).join(', ')}` : '',
+          filesChanged.size > 0 ? `✓ Modified ${filesChanged.size} file(s): ${[...filesChanged].slice(0, 5).join(', ')}` : '',
+          evidenceIds.length > 0 ? `✓ Recorded evidence: ${evidenceIds.join(', ')}` : '',
+        ].filter(Boolean);
+
+        const unverified = ledger.data.acceptanceCriteria.filter((c) => !c.satisfied);
+        const blockedList: string[] = [
+          ...blockers,
+          unverified.length > 0 ? `✗ Criteria not yet verified: ${unverified.map((c) => `[${c.id}] ${c.text}`).join(', ')}` : '',
+          turnsUsed >= turnBudget ? `✗ Turn budget reached (${turnsUsed}/${turnBudget})` : '',
+        ].filter(Boolean);
+
+        recommendation = recommendation || (unverified.length > 0
+          ? `Run required verification command(s) for ${unverified.map((c) => c.id).join(', ')}.`
+          : `Continue exploration or refine instructions.`);
+
+        summary = [
+          `SPECIALIST PARTIAL RESULT`,
+          `Agent: ${name}`,
+          `Status: ${status}`,
+          `Turns: ${turnsUsed}/${turnBudget}`,
+          completedList.length > 0 ? `\nCompleted:\n${completedList.map((c) => `  ${c}`).join('\n')}` : '',
+          blockedList.length > 0 ? `\nBlocked/Incomplete:\n${blockedList.map((b) => `  ${b}`).join('\n')}` : '',
+          evidenceIds.length > 0 ? `\nEvidence:\n  ${evidenceIds.join(', ')}` : '',
+          `\nRecommendation:\n  ${recommendation}`,
+        ]
+          .filter(Boolean)
+          .join('\n');
+      }
       ledger.setStatus(ok ? 'completed' : 'blocked');
     } finally {
       if (wt) {
@@ -346,13 +510,33 @@ export class SubAgentRunner {
           const reconciled = await this.reconcileWorktree(wt, repoRoot, name, task);
           summary = reconciled.summary;
           ok = reconciled.ok;
+          if (!ok) status = 'FAILED';
         } else {
           emit(`subagent ${name} — discarding worktree changes (agent did not finish cleanly)`);
         }
         await this.removeWorktree(wt, repoRoot);
       }
     }
-    return { agent: name, task, ok, summary };
+    return {
+      agent: name,
+      task,
+      ok,
+      status,
+      summary,
+      turnsUsed,
+      turnsBudgeted: turnBudget,
+      filesInspected: [...filesInspected],
+      filesChanged: [...filesChanged],
+      criteriaStatus: (ledger?.data.acceptanceCriteria ?? []).map((c) => ({
+        id: c.id,
+        text: c.text,
+        satisfied: c.satisfied,
+      })),
+      evidenceIds,
+      evidenceReport: ledger ? buildSpecialistEvidenceReport(ledger.data, status) : undefined,
+      blockers: blockers.length > 0 ? blockers : undefined,
+      recommendation: recommendation || undefined,
+    };
   }
 
   /**

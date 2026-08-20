@@ -9,6 +9,7 @@ import type {
   TaskLedgerData,
   TaskStatus,
 } from '../types.js';
+import { gitExec } from '../git/git.js';
 import { nowIso, readJson, shortId, writeJson } from '../util.js';
 
 export class TaskLedger {
@@ -26,6 +27,9 @@ export class TaskLedger {
     goal: string;
     project: ProjectLock;
     mode: 'fast' | 'standard' | 'chat';
+    gitBranch?: string;
+    worktreePath?: string;
+    activeSkills?: string[];
   }): TaskLedger {
     const taskId = shortId('hermes-task');
     const now = nowIso();
@@ -36,6 +40,10 @@ export class TaskLedger {
       status: 'intake',
       mode: input.mode,
       project: input.project,
+      gitBranch: input.gitBranch ?? input.project.branch,
+      worktreePath: input.worktreePath,
+      activeSkills: input.activeSkills ?? [],
+      usedSkills: [],
       acceptanceCriteria: [],
       constraints: [],
       nonGoals: [],
@@ -204,6 +212,42 @@ export class TaskLedger {
   addBlocker(reason: string): void {
     this.data.blockers.push(reason);
     this.save();
+  }
+
+  setActiveSkills(skills: string[]): void {
+    this.data.activeSkills = [...new Set(skills)];
+    this.save();
+  }
+
+  addUsedSkill(skill: string): void {
+    const list = this.data.usedSkills ?? [];
+    if (!list.includes(skill)) {
+      list.push(skill);
+      this.data.usedSkills = list;
+      this.save();
+    }
+  }
+
+  async validateEnvironment(cwd: string): Promise<{ ok: boolean; reason?: string }> {
+    const expected = this.data.worktreePath || this.data.project.repoRoot;
+    const normCwd = path.resolve(cwd).toLowerCase();
+    const normExpected = path.resolve(expected).toLowerCase();
+    if (normCwd !== normExpected) {
+      return {
+        ok: false,
+        reason: `Environment path mismatch: task expected "${expected}", but current working directory is "${cwd}".`,
+      };
+    }
+    if (this.data.gitBranch) {
+      const current = await gitExec(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']).catch(() => '');
+      if (current.trim() && current.trim() !== this.data.gitBranch) {
+        return {
+          ok: false,
+          reason: `Branch mismatch: task is bound to branch "${this.data.gitBranch}", but the working tree is on "${current.trim()}".`,
+        };
+      }
+    }
+    return { ok: true };
   }
 
   transcriptTail(maxActions = 8): string {

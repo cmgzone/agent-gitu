@@ -88,6 +88,11 @@ export class PolicyEngine {
       case 'agent_status':
       case 'list_skills':
       case 'use_skill':
+      case 'lsp_diagnostics':
+      case 'lsp_definition':
+      case 'lsp_references':
+      case 'lsp_hover':
+      case 'lsp_symbols':
         tier = 'safe';
         why = 'read-only';
         break;

@@ -6,9 +6,11 @@ import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine, contextBudgetForWindow } from '../context/context-engine.js';
 import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
 import { Executor } from '../executor/executor.js';
+import { getWorkspaceFingerprint } from '../git/git.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
+import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import {
   extractJson,
   findXmlCallStart,
@@ -19,6 +21,7 @@ import {
   type LlmMessage,
 } from '../llm/llm.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { LspManager } from '../lsp/manager.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
@@ -26,9 +29,11 @@ import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
-import type { SubAgentRunner } from './subagent.js';
+import type { SubAgentResult, SubAgentRunner } from './subagent.js';
+import { validateSpecialistEvidence } from './specialist-evidence.js';
 import type { CompletionReport, CriterionSpec, EvidenceKind } from '../types.js';
 import { buildStateMessage, buildSystemPrompt } from './prompt.js';
+import { buildTaskStrategySection } from './task-strategy.js';
 
 export interface HermesConfig {
   cwd: string;
@@ -48,6 +53,8 @@ export interface HermesConfig {
   skills?: SkillStore;
   mcp?: McpManager;
   browser?: BrowserBridge;
+  /** Optional LSP intelligence layer. When omitted, one is created lazily for the repo. */
+  lsp?: LspManager;
   subagents?: SubAgentRunner;
   agentsSection?: string;
   images?: { name: string; dataUrl: string }[];
@@ -419,12 +426,17 @@ export class Hermes {
 
     const checkpoints = new CheckpointManager(guard);
     const branchInfo = checkpoints.ensureTaskBranch(ledger.data.taskId);
+    if (branchInfo.branch) {
+      ledger.data.gitBranch = branchInfo.branch;
+      ledger.save();
+    }
     this.emit(`branch   ${branchInfo.message}`);
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler);
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
     const skills = this.config.skills ?? SkillStore.forProject(guard.lock.repoRoot);
+    const lsp = this.config.lsp ?? new LspManager(guard.lock.repoRoot);
     const executor = new Executor(
       guard,
       ledger,
@@ -434,6 +446,7 @@ export class Hermes {
       skills,
       this.config.mcp,
       this.config.browser,
+      lsp,
       this.config.subagents ? (specs) => this.config.subagents!.runMany(specs) : undefined,
       this.config.subagents ? (specs) => this.config.subagents!.startMany(specs) : undefined,
       this.config.subagents ? (ids) => this.config.subagents!.status(ids) : undefined,
@@ -454,6 +467,27 @@ export class Hermes {
       this.emit(`criteria provided by user (${raw.length})`);
     }
 
+    // Auto-resolve high-confidence skills based on user goal & follow-up
+    const skillResolution = skills.resolver().resolve(goal + (resumeNote ? ` ${resumeNote}` : ''));
+    const activeSkills = new Set(ledger.data.activeSkills ?? []);
+    for (const match of skillResolution.highConfidence) {
+      if (!activeSkills.has(match.name)) {
+        activeSkills.add(match.name);
+        this.emit(`skill    auto-activated high-confidence skill "${match.name}" (${match.description})`);
+      }
+    }
+    ledger.data.activeSkills = [...activeSkills];
+    ledger.save();
+
+    const activeSkillsPrompt = ledger.data.activeSkills && ledger.data.activeSkills.length > 0
+      ? ledger.data.activeSkills
+          .map((name) => {
+            const s = skills.get(name);
+            return s ? `✓ ${s.name}: ${s.description}\n  Instructions:\n  ${s.instructions}` : `✓ ${name}`;
+          })
+          .join('\n\n')
+      : undefined;
+
     let contextNote = '';
     if (ledger.data.mode === 'standard') {
       const contextBudget = contextBudgetForWindow(this.config.contextWindowTokens);
@@ -472,10 +506,17 @@ export class Hermes {
         content: buildSystemPrompt(guard, memory, {
           scopeFiles: this.config.scopeFiles,
           extraConstraints: this.config.extraConstraints,
-          skillsSection: skills.renderForPrompt(),
+          skillsSection: skills.renderForPrompt(ledger.data.activeSkills),
           agentsSection: this.config.agentsSection,
           mcpSection: this.config.mcp
             ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined
+            : undefined,
+          lspSection: lsp.hasServers()
+            ? lsp
+                .status()
+                .filter((s) => s.configured)
+                .map((s) => `- ${s.server} server → lsp tools for: ${s.languageIds.join(', ')}`)
+                .join('\n')
             : undefined,
           vision: this.config.supportsImages ?? false,
           hasBrowser: this.config.browser ? this.config.browser.available() : false,
@@ -483,6 +524,10 @@ export class Hermes {
         }),
       },
     ];
+    if (ledger.data.mode !== 'chat') {
+      const strategy = buildTaskStrategySection(resumeNote ?? goal, lsp.hasServers());
+      if (strategy) messages.push({ role: 'user', content: strategy });
+    }
     if (contextNote) messages.push({ role: 'user', content: contextNote });
     if (this.config.conversationHistory?.length) {
       messages.push(...this.config.conversationHistory);
@@ -563,12 +608,13 @@ export class Hermes {
     let invalidStreak = 0;
     let loopBlocks = 0;
     let followUpCriteriaAdded = false;
+    const malformed = new MalformedCallTracker();
     const actionsAtStart = ledger.data.actions.length;
     let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
     let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
 
     const ask = async (note?: string): Promise<ParsedAction | undefined> => {
-      messages.push({ role: 'user', content: buildStateMessage(ledger, note) });
+      messages.push({ role: 'user', content: buildStateMessage(ledger, note, activeSkillsPrompt) });
       this.emit('think  reviewing task state and choosing the next action');
       let pending = '';
       let lastFlush = Date.now();
@@ -599,6 +645,7 @@ export class Hermes {
       if (!parsed && reasoning) parsed = parseReplyAction(reasoning);
       if (!parsed) {
         invalidStreak += 1;
+        malformed.note('unparseable');
         logParseFailure(ledger.data.taskId, reply, reasoning);
         this.emit(`warn    response ${invalidStreak}/3 had no executable action — raw reply saved to logs/parse-failures.log`);
       } else {
@@ -613,7 +660,7 @@ export class Hermes {
     };
 
     try {
-    for (;;) {
+    mainLoop: for (;;) {
       if (this.aborted) {
         ledger.addBlocker('Stopped by user.');
         exitReason = 'blocked';
@@ -749,6 +796,9 @@ export class Hermes {
             stepId: action.stepId,
           });
 
+          const malformedKind = malformedKindFor(outcome.result.errorSignature);
+          const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
+
           if (outcome.blockedByLoop) {
             loopBlocks += 1;
             memory.add({
@@ -774,6 +824,7 @@ export class Hermes {
           let evidenceNote = '';
           if (action.tool === 'run_command') {
             const kind = classifyEvidenceKind(String(action.params['command'] ?? ''));
+            const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
             const ev = evidence.record(ledger.data, {
               kind,
               label: action.expected || String(action.params['command']),
@@ -781,6 +832,7 @@ export class Hermes {
               exitCode: outcome.result.exitCode,
               passed: outcome.result.ok,
               output: outcome.result.output,
+              workspaceFingerprint: currentFp,
             });
             ledger.save();
             evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
@@ -791,6 +843,16 @@ export class Hermes {
             this.emit(`browseshot ${outcome.result.image}`);
           }
 
+          // Track every skill the model actually loads so continuations and the
+          // report can show which reusable knowledge drove the task.
+          if (action.tool === 'use_skill' && outcome.result.ok) {
+            const skillName = String(action.params['name'] ?? '').trim();
+            if (skillName) {
+              ledger.addUsedSkill(skillName);
+              this.emit(`skill    used "${skillName}"`);
+            }
+          }
+
           if (action.stepId && outcome.result.ok) {
             const step = ledger.step(action.stepId);
             if (step && step.status === 'in_progress') {
@@ -799,33 +861,73 @@ export class Hermes {
             }
           }
 
-          const resultText =
-            `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n` +
-            `${outcome.result.output.slice(0, 2500)}${evidenceNote}`;
+          // LSP post-edit gate: after any successful edit, surface diagnostics
+          // for the touched files so introduced errors are caught at the source
+          // instead of at the evidence gate. Silently skipped when no language
+          // server is configured for the file (LSP stays optional).
+          let lspNote = '';
+          if ((action.tool === 'write_file' || action.tool === 'apply_edit') && outcome.result.ok) {
+            const touched = outcome.result.filesTouched ?? [];
+            const issues: string[] = [];
+            for (const file of touched) {
+              const diag = await lsp.diagnostics(file);
+              if (diag.ok && /^\[(ERROR|WARNING)\]/m.test(diag.output)) {
+                issues.push(diag.output);
+              }
+            }
+            if (issues.length > 0) {
+              lspNote = `\nLSP DIAGNOSTICS (post-edit check):\n${issues.join('\n\n')}`;
+              this.emit(`lsp      post-edit diagnostics: issues in ${issues.length} file(s) — fix before the evidence gate`);
+            }
+          }
+
+          let observedResult = `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 2500)}${evidenceNote}${lspNote}`;
+          if (malformedVerdict) {
+            if (malformedVerdict.remind && !malformedVerdict.escalate) {
+              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/6 — schema errors repeating`);
+            } else if (malformedVerdict.escalate && !malformedVerdict.halt) {
+              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/6 — strategy change injected`);
+              observedResult = `${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`;
+            } else if (malformedVerdict.halt) {
+              memory.add({
+                type: 'failure',
+                claim: `Repeated malformed tool calls (${malformedVerdict.streak}×): ${action.tool}`,
+                scope: guard.lock.name,
+                confidence: 0.8,
+              });
+              ledger.addBlocker(`LLM produced ${malformedVerdict.streak} consecutive malformed tool calls (${action.tool}); task stalled.`);
+              exitReason = 'stalled';
+              this.emit('stall   malformed-call spiral detected — stopping');
+              observe(`${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`);
+              break mainLoop;
+            }
+          }
           const img = outcome.result.image;
           const imgValid = typeof img === 'string' && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]{200,}$/.test(img);
           if (imgValid && this.config.supportsImages) {
             observe([
-              { type: 'text', text: resultText },
+              { type: 'text', text: observedResult },
               { type: 'image_url', image_url: { url: img! } },
             ]);
             this.emit('image    visual result attached to model context');
           } else if (img) {
-            observe(`${resultText}\n(A screenshot was captured but is not deliverable to the current model${this.config.supportsImages ? ' (invalid image data)' : ' (no image support)'}; it is visible in the desktop Browser panel.)`);
+            observe(`${observedResult}\n(A screenshot was captured but is not deliverable to the current model${this.config.supportsImages ? ' (invalid image data)' : ' (no image support)'}; it is visible in the desktop Browser panel.)`);
           } else {
-            observe(resultText);
+            observe(observedResult);
           }
           break;
         }
         case 'claim_criterion': {
-          const link = evidence.link(ledger.data, action.criterionId, action.evidenceId);
+          const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+          const link = evidence.link(ledger.data, action.criterionId, action.evidenceId, currentFp);
           ledger.save();
           this.emit(`claim    ${action.criterionId} <- ${action.evidenceId}: ${link.ok ? 'accepted' : link.reason}`);
           observe(link.ok ? `Accepted: ${link.reason}` : `Rejected: ${link.reason}`);
           break;
         }
         case 'complete': {
-          const gate = evidence.gate(ledger.data);
+          const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+          const gate = evidence.gate(ledger.data, currentFp);
           const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
           if (!gate.open && !chatOnly) {
             observe(
@@ -879,6 +981,7 @@ export class Hermes {
             await runOne(call, index);
             this.emit(`browser action serialized — one state-changing operation at a time`);
           }
+          const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
           const parts = outcomes.map((o, i) => {
             if (!o) return `[${i + 1}] (not executed)`;
             if (o.record.tool === 'run_command') {
@@ -890,6 +993,7 @@ export class Hermes {
                 exitCode: o.result.exitCode,
                 passed: o.result.ok,
                 output: o.result.output,
+                workspaceFingerprint: currentFp,
               });
               ledger.save();
               this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
@@ -913,7 +1017,65 @@ export class Hermes {
             reason: action.background ? 'background specialist sub-tasks' : 'parallel specialist sub-tasks',
             expected: action.background ? 'tracked background agent jobs' : 'summaries from each agent',
           });
-          observe(`${action.background ? 'BACKGROUND AGENTS' : 'DELEGATE RESULTS'} [${outcome.result.ok ? 'started/ok' : 'some agents failed'}]\n${outcome.result.output.slice(0, 5000)}`);
+          const output = outcome.result.output;
+          const payload = (outcome.result.payload ?? {}) as { results?: SubAgentResult[] };
+          const results = payload.results ?? [];
+
+          // P1.1 — Specialist Evidence Inheritance: a specialist's evidence is
+          // evidence for Hermes to evaluate, never automatic proof. Each report
+          // is revalidated against the exact contract that was delegated; only
+          // evidence that passes is mirrored into the MAIN ledger through the
+          // EvidenceEngine so the acceptance gate keeps its authority.
+          const validationLines: string[] = [];
+          if (results.length > 0) {
+            for (let j = 0; j < results.length; j++) {
+              const r = results[j]!;
+              const specs = action.tasks[j]?.criteria ?? [];
+              const expected = specs.map((spec, k) => ({
+                id: `ac-${k + 1}`,
+                verification: typeof spec === 'object' ? spec.verification : undefined,
+                evidenceType: typeof spec === 'object' ? spec.evidenceType : undefined,
+              }));
+              const verdict = validateSpecialistEvidence(r.evidenceReport, expected);
+              for (const a of verdict.accepted) {
+                const mainCriterion = ledger.data.acceptanceCriteria.find((c) => c.id === a.criterionId);
+                if (!mainCriterion) {
+                  validationLines.push(`  ✗ ${a.criterionId}: main ledger has no criterion ${a.criterionId} to attach specialist evidence to`);
+                  this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — no matching criterion in the main ledger`);
+                  continue;
+                }
+                const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+                const ev = evidence.record(ledger.data, {
+                  kind: a.evidence.kind,
+                  label: `delegated: ${r.agent} — ${a.evidence.command ?? a.evidence.id}`,
+                  command: a.evidence.command,
+                  passed: true,
+                  output: a.evidence.outputExcerpt,
+                  workspaceFingerprint: currentFp,
+                });
+                ledger.save();
+                const link = evidence.link(ledger.data, a.criterionId, ev.id, currentFp);
+                ledger.save();
+                if (link.ok) {
+                  validationLines.push(`  ✓ ${a.criterionId} backed by ${a.evidenceId} (${a.evidence.command ?? a.evidence.id}) via ${r.agent}`);
+                  this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${a.evidenceId}: accepted — ${a.evidence.command ?? 'evidence'}`);
+                  this.emit(`evidence ${ev.id} PASS (delegated)`);
+                } else {
+                  validationLines.push(`  ✗ ${a.criterionId}: main ledger rejected the mirror evidence — ${link.reason}`);
+                  this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED by main ledger — ${link.reason}`);
+                }
+              }
+              for (const rej of verdict.rejected) {
+                validationLines.push(`  ✗ ${rej.criterionId}${rej.evidenceId ? ` (${rej.evidenceId})` : ''}: ${rej.reason} (via ${r.agent})`);
+                this.emit(`delegate-claim ${r.agent} ${rej.criterionId}: REJECTED — ${rej.reason}`);
+              }
+            }
+          }
+          const validationText =
+            validationLines.length > 0
+              ? `\nEVIDENCE VALIDATION (specialist evidence enters the gate only through the main ledger):\n${validationLines.join('\n')}`
+              : '';
+          observe(`${action.background ? 'BACKGROUND AGENTS' : 'DELEGATE RESULTS'} [${outcome.result.ok ? 'started/ok' : 'some agents failed'}]\n${output.slice(0, 5000)}${validationText}`);
           break;
         }
       }
@@ -966,6 +1128,10 @@ export class Hermes {
     }
 
     this.emit(`done     ${status} — ${report.summary.slice(0, 160)}`);
+    if (!this.config.lsp) {
+      // We created the LSP manager for this run — shut its servers down.
+      await lsp.shutdown().catch(() => {});
+    }
     return { ledger, report };
   }
 

@@ -47,9 +47,14 @@ Lock project → criteria → context pack → plan →
 | **ProjectGuard** | Editing the wrong project / files outside scope |
 | **TaskLedger** | Forgetting what was tried; lost state between turns |
 | **EvidenceEngine + gate** | Saying "done" without proof |
+| **Workspace fingerprint** | Citing stale evidence as fresh (any later edit invalidates it) |
 | **LoopDetector** | Repeating the same failing action forever |
+| **MalformedCallTracker** | Burning turns on a spiral of schema-broken tool calls |
 | **PolicyEngine** | Unapproved destructive commands (fail-closed tiers) |
 | **CheckpointManager** | Irreversible damage (git branch + snapshot per step) |
+| **Specialist evidence gate** | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract |
+| **Task↔session↔git binding** | Resuming a task in the wrong working tree or on the wrong branch |
+| **LSP intelligence layer** | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies |
 
 ## Quick start
 
@@ -109,7 +114,7 @@ is shown when offline or keyless.
 
 ```bash
 npm run typecheck   # strict TS
-npm test            # vitest: 41 tests incl. end-to-end runs with a mock LLM
+npm test            # vitest: 284 tests incl. end-to-end runs with a mock LLM
 ```
 
 ### Layout

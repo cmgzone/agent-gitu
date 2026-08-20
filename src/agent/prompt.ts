@@ -5,10 +5,13 @@ import type { MemoryStore } from '../memory/memory-store.js';
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean } = {},
+  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; lspSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean } = {},
 ): string {
   const lock = guard.lock;
   const autoLearn = opts.autoLearn ?? true;
+  const lspSection = opts.lspSection
+    ? `\nLSP CODE INTELLIGENCE (optional, read-only; language servers keep the project indexed, so prefer these over blind text search for symbol facts):\n${opts.lspSection}\n`
+    : '';
   const scopeSection =
     opts.scopeFiles && opts.scopeFiles.length > 0
       ? `\nUSER-SELECTED SCOPE (the user chose these files to work on — prefer them, avoid everything else):\n${opts.scopeFiles.map((f) => `  - ${f}`).join('\n')}\n`
@@ -41,7 +44,7 @@ export function buildSystemPrompt(
     ? '8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Never answer "I don\'t have that skill" without creating it. Also create skills proactively after any repeatable multi-step pattern (deploy flows, design conventions, checklists).'
     : '8. Skills: if the user explicitly asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge), THEN apply it with use_skill. Do NOT create skills proactively — auto-learn is disabled by the user.';
   return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
-${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}
+${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${lspSection}
 
 PROJECT LOCK (do not violate):
   name: ${lock.name}
@@ -88,6 +91,19 @@ Tools:
 - list_files   {"path":"src"}
 - search_files {"pattern":"regex","path":"src"}
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
+- lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
+- lsp_definition {"path":"src/auth.ts","line":42,"column":17}  (1-based; where the symbol at that position is defined)
+- lsp_references {"path":"src/auth.ts","line":42,"column":17}  (every place the symbol is used)
+- lsp_hover {"path":"src/auth.ts","line":42,"column":17}  (type + documentation at the position)
+- lsp_symbols {"path":"src/auth.ts"}  (classes, functions, interfaces... in a file)
+  (LSP is optional: when it reports "unavailable", fall back to search_files/read_file — never treat LSP failure as a task failure)
+  WHEN TO USE LSP (prefer it over blind text search for symbol facts):
+  - unfamiliar file → lsp_symbols first to see its structure, then read_file the symbols that matter
+  - "where is this defined/declared?" → lsp_definition at the use site
+  - "what else touches this?" → lsp_references before any refactor (all call sites)
+  - "what type is this / what does this API do?" → lsp_hover
+  - after edits: an automatic LSP post-edit check reports diagnostics for the file you changed — fix what it surfaces BEFORE running the real verification commands
+  - NEVER use LSP for whole-project search (search_files), and never treat "No diagnostics"/LSP as the task's verification (run the real test/typecheck/build commands)
   - web_fetch    {"url":"https://docs.example.com"}  (browser skill: read pages/docs)
   - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
 - browse       full human-like browser control:
@@ -130,7 +146,7 @@ Rules for the protocol:
 - If the same action failed twice, you MUST propose a different action or request_block.`;
 }
 
-export function buildStateMessage(ledger: TaskLedger, extra?: string): string {
+export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string): string {
   const d = ledger.data;
   const criteria = d.acceptanceCriteria
     .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${c.text}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
@@ -147,6 +163,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string): string {
     `TASK: ${d.goal}`,
     `STATUS: ${d.status} | mode: ${d.mode}`,
     d.currentHypothesis ? `CURRENT HYPOTHESIS: ${d.currentHypothesis}` : '',
+    activeSkillsSection ? `ACTIVE SKILLS IN TASK:\n${activeSkillsSection}` : '',
     `ACCEPTANCE CRITERIA:\n${criteria || '  (none set yet — use set_criteria)'}`,
     `PLAN:\n${plan || '  (none set yet — use set_plan after criteria)'}`,
     `EVIDENCE:\n${evidence || '  (none yet)'}`,

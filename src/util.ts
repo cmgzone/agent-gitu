@@ -103,6 +103,16 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
       return `list ${params['path'] ?? '.'}`;
     case 'search_files':
       return `search /${params['pattern']}/ in ${params['path'] ?? '.'}`;
+    case 'lsp_diagnostics':
+      return `lsp diagnostics ${params['path']}`;
+    case 'lsp_definition':
+      return `lsp definition ${params['path']}:${params['line']}:${params['column']}`;
+    case 'lsp_references':
+      return `lsp references ${params['path']}:${params['line']}:${params['column']}`;
+    case 'lsp_hover':
+      return `lsp hover ${params['path']}:${params['line']}:${params['column']}`;
+    case 'lsp_symbols':
+      return `lsp symbols ${params['path']}`;
     case 'browse': {
       const a = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
       if (a === 'navigate') return `browse ${params['url']}`;

@@ -1,6 +1,7 @@
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
+import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { PolicyEngine } from '../policy/policy.js';
 import type { SkillStore } from '../skills/skills.js';
@@ -8,19 +9,26 @@ import type { BrowserBridge } from '../browser/browser.js';
 import type { ActionRecord, ToolResult } from '../types.js';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
 import {
-  toolApplyEdit,
+  formatToolValidationError,
   toolAgentStatus,
+  toolApplyEdit,
   toolBrowse,
   toolCreateSkill,
   toolDelegate,
   toolListFiles,
   toolListSkills,
+  toolLspDefinition,
+  toolLspDiagnostics,
+  toolLspHover,
+  toolLspReferences,
+  toolLspSymbols,
   toolReadFile,
   toolRunCommand,
   toolSearchFiles,
   toolUseSkill,
   toolWebFetch,
   toolWriteFile,
+  validateToolParams,
   type DelegateFn,
   type BackgroundAgentStatusFn,
   type BackgroundDelegateFn,
@@ -52,6 +60,7 @@ export class Executor {
     private readonly skills?: SkillStore,
     private readonly mcp?: McpManager,
     private readonly browser?: BrowserBridge,
+    private readonly lsp?: LspManager,
     private readonly delegate?: DelegateFn,
     private readonly delegateBackground?: BackgroundDelegateFn,
     private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
@@ -73,6 +82,26 @@ export class Executor {
         const entering = step.status !== 'in_progress';
         this.ledger.updateStep(stepId, { status: 'in_progress', attempts: step.attempts + (entering ? 1 : 0) });
       }
+    }
+
+    // Schema validation boundary: reject malformed calls before touching filesystem/guard/policy
+    const validation = validateToolParams(req.tool, req.params);
+    if (!validation.valid) {
+      const message = formatToolValidationError(req.tool, req.params, validation);
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'error',
+        errorSignature: 'invalid-tool-params',
+        reason: req.reason,
+        expected: req.expected,
+        observation: message,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`error    ${summary} (invalid tool call schema: ${validation.error})`);
+      return { record, result: { ok: false, output: message, errorSignature: 'invalid-tool-params' } };
     }
 
     const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined);
@@ -144,6 +173,7 @@ export class Executor {
       skills: this.skills,
       mcp: this.mcp,
       browser: this.browser,
+      lsp: this.lsp,
       delegate: this.delegate,
       delegateBackground: this.delegateBackground,
       backgroundAgentStatus: this.backgroundAgentStatus,
@@ -189,6 +219,21 @@ export class Executor {
           break;
         case 'run_command':
           result = await toolRunCommand(ctx, req.params);
+          break;
+        case 'lsp_diagnostics':
+          result = await toolLspDiagnostics(ctx, req.params);
+          break;
+        case 'lsp_definition':
+          result = await toolLspDefinition(ctx, req.params);
+          break;
+        case 'lsp_references':
+          result = await toolLspReferences(ctx, req.params);
+          break;
+        case 'lsp_hover':
+          result = await toolLspHover(ctx, req.params);
+          break;
+        case 'lsp_symbols':
+          result = await toolLspSymbols(ctx, req.params);
           break;
         default:
           if (req.tool.startsWith('mcp:') && this.mcp) {

@@ -89,8 +89,9 @@ describe('resume (same-session continuation)', () => {
       }),
       (_n, messages) => {
         const text = messages.map((m) => m.content).join('\n');
-        const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
-        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-2', evidenceId: evId } });
+        // Cite the NEWEST evidence (older ids from prior phases are stale).
+        const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-2', evidenceId: ids.at(-1) ?? 'ev-x' } });
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'continuation done', risks: [], followUps: [] } }),
     ]);
@@ -142,7 +143,8 @@ describe('AgentStore', () => {
 
     // Cleanup
     expect(store.remove(agent.id)).toBe(true);
-    expect(store.list()).toHaveLength(0);
+    // Only the BUILT-IN roster remains once the custom entry is removed.
+    expect(store.list().every((a) => a.builtin)).toBe(true);
   });
 });
 

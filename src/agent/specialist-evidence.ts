@@ -37,7 +37,10 @@ export interface SpecialistEvidenceReportEntry {
 
 export interface SpecialistEvidenceReport {
   entries: SpecialistEvidenceReportEntry[];
-  /** All evidence referenced by the entries, self-contained for revalidation. */
+  /** ALL evidence the specialist recorded (linked or not — a FAILED
+   *  reproduction is exactly the signal that must survive revalidation),
+   *  self-contained so the orchestrator can inspect it after the
+   *  specialist's workspace is gone. */
   evidence: SpecialistEvidenceDetail[];
 }
 
@@ -70,7 +73,6 @@ export function buildSpecialistEvidenceReport(
   runStatus: string,
 ): SpecialistEvidenceReport | undefined {
   if (!ledger.acceptanceCriteria || ledger.acceptanceCriteria.length === 0) return undefined;
-  const referenced = new Set<string>();
   const entries: SpecialistEvidenceReportEntry[] = ledger.acceptanceCriteria.map((c) => {
     const satisfied = c.satisfied && c.evidenceIds.length > 0;
     const status: SpecialistEvidenceStatus = satisfied
@@ -78,7 +80,6 @@ export function buildSpecialistEvidenceReport(
       : runStatus === 'BLOCKED' || runStatus === 'FAILED'
         ? 'blocked'
         : 'unsatisfied';
-    for (const id of c.evidenceIds) referenced.add(id);
     return {
       criterionId: c.id,
       evidenceIds: [...c.evidenceIds],
@@ -90,17 +91,18 @@ export function buildSpecialistEvidenceReport(
           : `No valid evidence linked to criterion "${c.text}".`,
     };
   });
-  const evidence: SpecialistEvidenceDetail[] = [...referenced]
-    .map((id) => ledger.evidence.find((e) => e.id === id))
-    .filter((e): e is NonNullable<typeof e> => Boolean(e))
-    .map((e) => ({
-      id: e.id,
-      command: e.command,
-      kind: e.kind,
-      passed: e.passed,
-      outputExcerpt: e.outputExcerpt,
-      workspaceFingerprint: e.workspaceFingerprint,
-    }));
+  // Include every recorded evidence record, not only linked ones: a verifier
+  // that ran the reproduction command and FAILED can never link it (the
+  // engine rejects failed claims), but that failing record is precisely the
+  // false-positive signal downstream consumers need to see.
+  const evidence: SpecialistEvidenceDetail[] = ledger.evidence.map((e) => ({
+    id: e.id,
+    command: e.command,
+    kind: e.kind,
+    passed: e.passed,
+    outputExcerpt: e.outputExcerpt,
+    workspaceFingerprint: e.workspaceFingerprint,
+  }));
   return { entries, evidence };
 }
 

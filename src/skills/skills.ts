@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { ensureHermesHome } from '../workspace/home.js';
 
 export interface Skill {
   name: string;
@@ -9,6 +10,8 @@ export interface Skill {
   createdAt: string;
   aliases?: string[];
   keywords?: string[];
+  /** Which layer this entry lives in (set on read; persisted value ignored). */
+  scope?: 'global' | 'project';
 }
 
 export interface SkillMatch {
@@ -53,6 +56,16 @@ function levenshtein(a: string, b: string): number {
 
 const STOP_WORDS = new Set(['a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on', 'that', 'the', 'to', 'was', 'were', 'will', 'with', 'using', 'use', 'how', 'do', 'can', 'please']);
 
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Whole-word containment: a skill named "test" must NOT fire on "latest". */
+function containsAsWord(haystack: string, needle: string): boolean {
+  if (needle.length < 3 || haystack.length < needle.length) return false;
+  return new RegExp(`(^|[^a-z0-9_-])${escapeRegex(needle)}($|[^a-z0-9_-])`, 'i').test(haystack);
+}
+
 export class SkillResolver {
   constructor(private readonly store: SkillStore) {}
 
@@ -80,12 +93,12 @@ export class SkillResolver {
         continue;
       }
 
-      // Check if skill name or alias is contained in query as a full phrase or substring
-      if (skill.name.length >= 3 && query.toLowerCase().includes(skill.name.toLowerCase())) {
+      // Check if skill name or alias appears in the query as whole words
+      if (containsAsWord(query, skill.name)) {
         matches.push({ skill, score: 0.95, reason: `Skill name "${skill.name}" in task` });
         continue;
       }
-      const matchingAlias = (skill.aliases ?? []).find((a) => a.length >= 3 && query.toLowerCase().includes(a.toLowerCase()));
+      const matchingAlias = (skill.aliases ?? []).find((a) => containsAsWord(query, a));
       if (matchingAlias) {
         matches.push({ skill, score: 0.9, reason: `Alias "${matchingAlias}" in task` });
         continue;
@@ -138,24 +151,51 @@ export class SkillResolver {
 }
 
 export class SkillStore {
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    /** Optional workspace-level layer merged into this store (project wins). */
+    private readonly globalDir?: string,
+  ) {}
 
-  static forProject(repoRoot: string): SkillStore {
-    return new SkillStore(path.join(repoRoot, '.hermes', 'skills'));
+  static projectSkillsDir(repoRoot: string): string {
+    return path.join(repoRoot, '.hermes', 'skills');
   }
 
-  list(): Skill[] {
-    if (!existsSync(this.dir)) return [];
-    return readdirSync(this.dir)
+  static forProject(repoRoot: string): SkillStore {
+    return new SkillStore(SkillStore.projectSkillsDir(repoRoot), SkillStore.globalSkillsDir());
+  }
+
+  /** Workspace-wide skill layer shared by every project. */
+  static globalSkillsDir(): string {
+    return path.join(ensureHermesHome().root, 'Skills');
+  }
+
+  private readDir(dir: string | undefined): Skill[] {
+    if (!dir || !existsSync(dir)) return [];
+    return readdirSync(dir)
       .filter((f) => f.endsWith('.json'))
-      .map((f) => {
+      .map((f): Skill | undefined => {
         try {
-          return JSON.parse(readFileSync(path.join(this.dir, f), 'utf8')) as Skill;
+          const raw = JSON.parse(readFileSync(path.join(dir, f), 'utf8')) as Skill;
+          if (!raw || !raw.name) return undefined;
+          // Tag where the entry lives so callers/UI can distinguish layers.
+          const scope: 'global' | 'project' = dir === this.globalDir ? 'global' : 'project';
+          return { ...raw, scope };
         } catch {
           return undefined;
         }
       })
-      .filter((s): s is Skill => Boolean(s && s.name));
+      .filter((s): s is Skill => Boolean(s));
+  }
+
+  list(): Skill[] {
+    const globals = this.readDir(this.globalDir);
+    const project = this.readDir(this.dir);
+    // Project skills override same-name global ones; both remain visible.
+    const byName = new Map<string, Skill>();
+    for (const s of globals) byName.set(normalizeToken(s.name), s);
+    for (const s of project) byName.set(normalizeToken(s.name), { ...s, scope: 'project' });
+    return [...byName.values()];
   }
 
   get(name: string): Skill | undefined {
@@ -174,6 +214,8 @@ export class SkillStore {
     createdBy?: 'user' | 'agent';
     aliases?: string[];
     keywords?: string[];
+    /** Save to the workspace layer so EVERY project can use it. */
+    scope?: 'global' | 'project';
   }): Skill {
     const name = input.name.trim().toLowerCase().replace(/[^a-z0-9-_]+/g, '-').slice(0, 60);
     if (!name) throw new Error('Skill name is required');
@@ -187,8 +229,11 @@ export class SkillStore {
       aliases: input.aliases && input.aliases.length > 0 ? input.aliases.map((a) => a.trim().toLowerCase()).filter(Boolean) : undefined,
       keywords: input.keywords && input.keywords.length > 0 ? input.keywords.map((k) => k.trim().toLowerCase()).filter(Boolean) : undefined,
     };
-    mkdirSync(this.dir, { recursive: true });
-    writeFileSync(path.join(this.dir, `${name}.json`), JSON.stringify(skill, null, 2));
+    // Global skills live in the Agent Gitu home layer; project skills stay
+    // inside the project's .hermes dir (and shadow same-name globals).
+    const targetDir = input.scope === 'global' ? (this.globalDir ?? SkillStore.globalSkillsDir()) : this.dir;
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(path.join(targetDir, `${name}.json`), JSON.stringify(skill, null, 2));
     return skill;
   }
 
@@ -212,10 +257,16 @@ export class SkillStore {
   remove(name: string): boolean {
     const existing = this.get(name);
     if (!existing) return false;
-    const file = path.join(this.dir, `${existing.name}.json`);
-    if (!existsSync(file)) return false;
-    unlinkSync(file);
-    return true;
+    // Remove from whichever layer holds it (project first, then global).
+    for (const dir of [this.dir, this.globalDir]) {
+      if (!dir) continue;
+      const file = path.join(dir, `${existing.name}.json`);
+      if (existsSync(file)) {
+        unlinkSync(file);
+        return true;
+      }
+    }
+    return false;
   }
 
   renderForPrompt(activeSkillNames?: string[]): string {

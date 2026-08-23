@@ -3,12 +3,41 @@ import path from 'node:path';
 import type {
   AcceptanceCriterion,
   ActionRecord,
+  ArchitectureDecision,
   CriterionSpec,
+  DecisionBasis,
+  PlanArea,
+  PlanDesign,
   PlanStep,
   ProjectLock,
+  TaskFinding,
   TaskLedgerData,
   TaskStatus,
 } from '../types.js';
+
+/** Raw step spec accepted by setPlan/appendPlan; bounded on ingest. */
+export interface PlanStepInput {
+  description: string;
+  verification: string;
+  area?: PlanArea;
+  /** Raw todo texts for this step (≤8 kept, each ≤140 chars). */
+  subtasks?: string[];
+}
+
+const STEP_LIMITS = { count: 30, description: 220, verification: 180, todosPerStep: 8, todoText: 140 } as const;
+
+type NormalizedStep = Required<Pick<PlanStepInput, 'description' | 'verification'>> & Pick<PlanStepInput, 'area' | 'subtasks'>;
+
+function normalizeStepInput(steps: PlanStepInput[]): NormalizedStep[] {
+  return steps.map((s) => ({
+    description: String(s.description ?? '').slice(0, STEP_LIMITS.description),
+    verification: String(s.verification ?? '').slice(0, STEP_LIMITS.verification),
+    ...(s.area ? { area: s.area } : {}),
+    ...(Array.isArray(s.subtasks)
+      ? { subtasks: s.subtasks.map((t) => String(t).slice(0, STEP_LIMITS.todoText)).filter(Boolean).slice(0, STEP_LIMITS.todosPerStep) }
+      : {}),
+  }));
+}
 import { gitExec } from '../git/git.js';
 import { nowIso, readJson, shortId, writeJson } from '../util.js';
 
@@ -148,30 +177,43 @@ export class TaskLedger {
     return added;
   }
 
-  setPlan(steps: { description: string; verification: string }[]): void {
-    this.data.plan = steps.map((s, i) => ({
+  setPlan(steps: PlanStepInput[]): void {
+    const normalized = normalizeStepInput(steps).slice(0, STEP_LIMITS.count);
+    this.data.plan = normalized.map((s, i) => ({
       id: `step-${i + 1}`,
       description: s.description,
       verification: s.verification,
-      status: 'pending',
+      status: 'pending' as const,
       attempts: 0,
+      ...(s.area ? { area: s.area } : {}),
+      ...(s.subtasks && s.subtasks.length > 0
+        ? { subtasks: s.subtasks.map((text) => ({ text, done: false })) }
+        : {}),
     }));
     this.save();
   }
 
   /** Add plan steps for a follow-up scope, retaining completed plan history. */
-  appendPlan(steps: { description: string; verification: string }[]): PlanStep[] {
+  appendPlan(steps: PlanStepInput[]): PlanStep[] {
+    const room = Math.max(0, STEP_LIMITS.count - this.data.plan.length);
+    if (room === 0) return [];
     const next = this.data.plan.reduce((max, step) => {
       const match = /^step-(\d+)$/.exec(step.id);
       return Math.max(max, match ? Number(match[1]) : 0);
     }, 0);
-    const added = steps.map((s, index) => ({
-      id: 'step-' + (next + index + 1),
-      description: s.description,
-      verification: s.verification,
-      status: 'pending' as const,
-      attempts: 0,
-    }));
+    const added = normalizeStepInput(steps)
+      .slice(0, room)
+      .map((s, index) => ({
+        id: 'step-' + (next + index + 1),
+        description: s.description,
+        verification: s.verification,
+        status: 'pending' as const,
+        attempts: 0,
+        ...(s.area ? { area: s.area } : {}),
+        ...(s.subtasks && s.subtasks.length > 0
+          ? { subtasks: s.subtasks.map((text) => ({ text, done: false })) }
+          : {}),
+      }));
     if (added.length > 0) {
       this.data.plan.push(...added);
       this.save();
@@ -187,9 +229,91 @@ export class TaskLedger {
     const step = this.step(id);
     if (!step) return;
     Object.assign(step, patch);
+    // Completing a step completes its todo breakdown — todos are execution
+    // detail, not a second gate.
+    if (patch.status === 'done' && step.subtasks) {
+      for (const t of step.subtasks) t.done = true;
+    }
     this.save();
   }
 
+  /** Record compact design notes (bounded) for the current plan. */
+  setPlanDesign(design: { frontend?: string; backend?: string; integration?: string }): void {
+    const DESIGN_CAPS = { frontend: 1200, backend: 1200, integration: 800 } as const;
+    const next: PlanDesign = {};
+    let total = 0;
+    for (const key of ['frontend', 'backend', 'integration'] as const) {
+      const raw = design[key];
+      if (!raw || !raw.trim()) continue;
+      const text = raw.trim().slice(0, DESIGN_CAPS[key]);
+      total += text.length;
+      if (total > 3200) break;
+      next[key] = text;
+    }
+    this.data.planDesign = next;
+    this.save();
+  }
+
+  /**
+   * Dynamic replanning: revise ONE step in place and record why. The original
+   * intent stays reconstructable from the revision log; nothing else moves.
+   */
+  reviseStep(
+    stepId: string,
+    patch: { description?: string; verification?: string; area?: PlanArea; addSubtasks?: string[] },
+    reason: string,
+  ): PlanStep | undefined {
+    const step = this.step(stepId);
+    if (!step) return undefined;
+    if (patch.description !== undefined) step.description = patch.description.slice(0, STEP_LIMITS.description);
+    if (patch.verification !== undefined) step.verification = patch.verification.slice(0, STEP_LIMITS.verification);
+    if (patch.area !== undefined) step.area = patch.area;
+    if (patch.addSubtasks && patch.addSubtasks.length > 0) {
+      step.subtasks ??= [];
+      const room = Math.max(0, STEP_LIMITS.todosPerStep - step.subtasks.length);
+      for (const text of patch.addSubtasks.slice(0, room)) {
+        step.subtasks.push({ text: text.slice(0, STEP_LIMITS.todoText), done: false });
+      }
+    }
+    this.data.planRevisions ??= [];
+    this.data.planRevisions.push({ stepId, reason: reason.slice(0, 300), createdAt: nowIso() });
+    if (this.data.planRevisions.length > 20) this.data.planRevisions.splice(0, this.data.planRevisions.length - 20);
+    this.save();
+    return step;
+  }
+
+  /** Flip one subtask's done state (todo-level progress during execution). */
+  toggleSubtask(stepId: string, index: number, done?: boolean): boolean {
+    const step = this.step(stepId);
+    const subtask = step?.subtasks?.[index];
+    if (!subtask) return false;
+    subtask.done = done ?? !subtask.done;
+    // Step status mirrors its todos in BOTH directions: all checked → done,
+    // any unchecked → back to pending (unless a step was completed explicitly
+    // without todos, which this branch never touches).
+    if (step!.subtasks!.length > 0) {
+      step!.status = step!.subtasks!.every((t) => t.done) ? 'done' : 'pending';
+    }
+    this.save();
+    return true;
+  }
+
+  /** Aggregate plan/todo progress for the compact state line. */
+  planProgress(): { stepsDone: number; stepsTotal: number; todosDone: number; todosTotal: number } {
+    let stepsDone = 0;
+    let todosDone = 0;
+    let todosTotal = 0;
+    for (const s of this.data.plan) {
+      if (s.status === 'done') stepsDone += 1;
+      if (s.subtasks) {
+        for (const t of s.subtasks) {
+          todosTotal += 1;
+          if (t.done) todosDone += 1;
+        }
+      }
+    }
+    return { stepsDone, stepsTotal: this.data.plan.length, todosDone, todosTotal };
+  }
   recordAction(action: Omit<ActionRecord, 'id' | 'createdAt'>): ActionRecord {
     const record: ActionRecord = { ...action, id: shortId('act'), createdAt: nowIso() };
     this.data.actions.push(record);
@@ -226,6 +350,103 @@ export class TaskLedger {
       this.data.usedSkills = list;
       this.save();
     }
+  }
+
+  /** Register a discovered problem. Dedupes on normalized claim text. */
+  addFinding(finding: Omit<TaskFinding, 'id' | 'createdAt' | 'status' | 'evidenceIds'>): TaskFinding {
+    this.data.findings ??= [];
+    const key = finding.claim.trim().replace(/\s+/g, ' ').toLowerCase();
+    const existing = this.data.findings.find((f) => f.claim.trim().replace(/\s+/g, ' ').toLowerCase() === key);
+    if (existing) return existing;
+    const record: TaskFinding = {
+      ...finding,
+      id: shortId('finding'),
+      status: 'unverified',
+      evidenceIds: [],
+      createdAt: nowIso(),
+    };
+    this.data.findings.push(record);
+    this.save();
+    return record;
+  }
+
+  finding(id: string): TaskFinding | undefined {
+    return this.data.findings?.find((f) => f.id === id);
+  }
+
+  updateFinding(id: string, patch: Partial<Pick<TaskFinding, 'status' | 'evidenceIds' | 'verifierSummary'>>): TaskFinding | undefined {
+    const finding = this.finding(id);
+    if (!finding) return undefined;
+    Object.assign(finding, patch);
+    this.save();
+    return finding;
+  }
+
+  /**
+   * Record a compact architecture/technology decision. When `supersedes` is
+   * provided (or a single active decision exists), the prior decision is
+   * marked superseded — architecture drift must always be explicit, never
+   * silent.
+   */
+  recordArchitectureDecision(input: {
+    decision: string;
+    alternatives: string[];
+    repoEvidence: string;
+    requirements: string[];
+    rejected: { alternative: string; reason: string }[];
+    reconsiderIf?: string;
+    basis: DecisionBasis;
+    supersedes?: string;
+  }): ArchitectureDecision {
+    this.data.architectureDecisions ??= [];
+    const target = input.supersedes ?? (this.activeArchitectureDecisions().length === 1 ? this.activeArchitectureDecisions()[0]!.id : undefined);
+    if (target) {
+      const prior = this.data.architectureDecisions.find((d) => d.id === target && d.status === 'active');
+      if (prior) {
+        prior.status = 'superseded';
+        prior.supersededReason = `superseded by new decision: ${input.decision}`;
+      }
+    }
+    const record: ArchitectureDecision = {
+      id: shortId('ad'),
+      decision: input.decision,
+      alternatives: input.alternatives,
+      repoEvidence: input.repoEvidence,
+      requirements: input.requirements,
+      rejected: input.rejected,
+      reconsiderIf: input.reconsiderIf,
+      basis: input.basis,
+      status: 'active',
+      createdAt: nowIso(),
+    };
+    this.data.architectureDecisions.push(record);
+    this.save();
+    return record;
+  }
+
+  activeArchitectureDecisions(): ArchitectureDecision[] {
+    return (this.data.architectureDecisions ?? []).filter((d) => d.status === 'active');
+  }
+
+  /** Distinct recent failures (deduped by error signature) for the compact state. */
+  failureSummary(max = 3): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (let i = this.data.actions.length - 1; i >= 0 && out.length < max; i--) {
+      const a = this.data.actions[i]!;
+      if (a.status !== 'error') continue;
+      const key = a.errorSignature ?? a.paramsSummary;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const obs = a.observation ? ` → ${a.observation.slice(0, 140)}` : '';
+      out.push(`${a.paramsSummary}${obs}`);
+    }
+    return out;
+  }
+
+  /** The next plan step the agent should work on, for the compact state. */
+  nextStep(): PlanStep | undefined {
+    return this.data.plan.find((s) => s.status === 'pending' || s.status === 'in_progress');
   }
 
   async validateEnvironment(cwd: string): Promise<{ ok: boolean; reason?: string }> {

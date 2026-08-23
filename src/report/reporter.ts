@@ -15,6 +15,15 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)];
 }
 
+/** Keep the model's own summary honest: show whether passing verification
+ *  actually backs it. The model writes the summary; the evidence decides. */
+function summaryBacking(report: CompletionReport): string {
+  const passing = report.verificationDetails?.filter((v) => v.passed).length ?? 0;
+  if (report.status === 'complete' && passing === 0) return ' (note: no passing verification recorded)';
+  if (passing > 0) return ` (backed by ${passing} passing verification${passing === 1 ? '' : 's'})`;
+  return '';
+}
+
 export class Reporter {
   build(
     ledger: TaskLedger,
@@ -66,6 +75,10 @@ export class Reporter {
       verification,
       verificationDetails,
       browserActivity,
+      effortPlan: d.effortPlan,
+      findings: d.findings,
+      architectureDecisions: d.architectureDecisions,
+      tokenTelemetry: d.tokenTelemetry,
       evidence: d.evidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
       remainingRisks: completionInput?.risks ?? (d.blockers.length > 0 ? [`Unresolved blockers: ${d.blockers.join('; ')}`] : []),
       followUps: completionInput?.followUps ?? [],
@@ -79,7 +92,7 @@ export class Reporter {
       `Task ID: ${report.taskId}`,
       `Status: ${report.status.toUpperCase()}`,
       '',
-      `Summary: ${report.summary}`,
+      `Summary: ${report.summary}${summaryBacking(report)}`,
       '',
       'Changes made:',
       ...(report.changes.length > 0 ? report.changes.map((c) => `  - ${c}`) : ['  (none)']),
@@ -89,6 +102,26 @@ export class Reporter {
       '',
       'Verification:',
       ...(report.verification.length > 0 ? report.verification.map((v) => `  - ${v}`) : ['  (none recorded)']),
+      ...(report.architectureDecisions && report.architectureDecisions.length > 0
+        ? [
+            '',
+            'Architecture decisions:',
+            ...report.architectureDecisions.map(
+              (dec) =>
+                `  - [${dec.status}${dec.basis ? `, ${dec.basis}` : ''}] ${dec.decision}` +
+                (dec.rejected.length ? ` (rejected: ${dec.rejected.map((r) => r.alternative).join(', ')})` : ''),
+            ),
+          ]
+        : []),
+      ...(report.tokenTelemetry
+        ? [
+            '',
+            'Token telemetry:',
+            `  - ${report.tokenTelemetry.calls} model call(s); provider input=${report.tokenTelemetry.inputTokens} cached=${report.tokenTelemetry.cachedTokens} output=${report.tokenTelemetry.outputTokens}`,
+            `  - ~${report.tokenTelemetry.estimatedInputTokens} estimated input tokens: system/context=${report.tokenTelemetry.estimatedBySource.system + report.tokenTelemetry.estimatedBySource.contextPack}, history=${report.tokenTelemetry.estimatedBySource.history}, state=${report.tokenTelemetry.estimatedBySource.state}, images=${report.tokenTelemetry.estimatedBySource.images}`,
+            `  - ${report.tokenTelemetry.compactions} compaction(s), ${report.tokenTelemetry.toolCalls} tool call(s), ${report.tokenTelemetry.screenshots} screenshot(s), ${report.tokenTelemetry.wastedCalls} wasted call(s)`,
+          ]
+        : []),
       ...(report.browserActivity
         ? [
             '',
@@ -100,6 +133,18 @@ export class Reporter {
       '',
       'Remaining risks:',
       ...(report.remainingRisks.length > 0 ? report.remainingRisks.map((r) => `  - ${r}`) : ['  (none noted)']),
+      ...(report.findings && report.findings.length > 0
+        ? [
+            '',
+            'Findings (independently verified before reporting):',
+            ...report.findings.map(
+              (f) =>
+                `  - [${f.status.toUpperCase()}] (${f.kind}${f.severity ? `, ${f.severity}` : ''}) ${f.claim}` +
+                `${f.location ? ` @ ${f.location}` : ''}` +
+                `${f.verifierSummary ? `\n      verifier: ${f.verifierSummary.slice(0, 200)}` : ''}`,
+            ),
+          ]
+        : []),
       '',
       'Follow-ups:',
       ...(report.followUps.length > 0 ? report.followUps.map((f) => `  - ${f}`) : ['  (none)']),

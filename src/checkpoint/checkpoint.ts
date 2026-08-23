@@ -45,7 +45,9 @@ export class CheckpointManager {
     if (current === branch) return { ok: true, branch, message: `Already on ${branch}` };
     const exists = this.gitSafe(['rev-parse', '--verify', branch]);
     if (exists) {
-      this.git(['checkout', branch]);
+      if (this.gitSafe(['checkout', branch]) === undefined) {
+        return { ok: false, message: `Failed to switch to existing branch ${branch}` };
+      }
       return { ok: true, branch, message: `Switched to existing ${branch}` };
     }
     const created = this.gitSafe(['checkout', '-b', branch]);
@@ -59,7 +61,12 @@ export class CheckpointManager {
     if (!this.isGitRepo()) {
       return { ok: false, message: 'No git repository; skipping checkpoint.' };
     }
-    this.git(['add', '-A']);
+    // A transient git failure here (e.g. a stale index.lock from concurrent
+    // IDE activity) must never fail the whole run — degrade to "skipped".
+    const staged = this.gitSafe(['add', '-A']);
+    if (staged === undefined) {
+      return { ok: false, message: 'git add failed during checkpoint; skipping snapshot.' };
+    }
     const dirty = this.gitSafe(['status', '--porcelain']);
     const message = `hermes(${ledger.data.taskId}): ${stepId} ${label}`.slice(0, 200);
     if (!dirty) {

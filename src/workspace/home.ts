@@ -53,11 +53,18 @@ function mergeLegacyInto(root: string, legacy: string): void {
 }
 
 function healPaths(d: DatabaseSync, legacy: string, root: string): void {
-  d.prepare(`UPDATE sessions SET projectPath = ? || substr(projectPath, ?) WHERE projectPath LIKE ?`).run(
-    root,
-    legacy.length + 1,
-    `${legacy}\\%`,
-  );
+  // Match BOTH separators so a legacy Windows path recorded on one machine can
+  // be healed when the store moves to another OS. LIKE wildcards in the path
+  // (_ and %) must be escaped, or "C:\Users\jane_doe" would also match
+  // "janeXdoe"-style unrelated directories.
+  const esc = legacy.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+  const forward = `${esc}/%`;
+  const back = `${esc}\\%`;
+  for (const pattern of [forward, back]) {
+    d.prepare(
+      `UPDATE sessions SET projectPath = ? || substr(projectPath, ?) WHERE projectPath LIKE ? ESCAPE '\\'`,
+    ).run(root, legacy.length + 1, pattern);
+  }
 }
 
 export function ensureHermesHome(): HermesHome {
@@ -128,16 +135,47 @@ export function ensureHermesHome(): HermesHome {
 
 export interface WorkspaceSettings {
   projectsPath?: string;
+  /** Ordered model fallbacks as 'provider::model' entries, tried top-down when
+   *  a run fails on billing (HTTP 401 / no credits). User-configured — never
+   *  hardcoded. */
+  fallbackModels?: string[];
 }
 
 function settingsFile(): string {
   return path.join(ensureHermesHome().settings, 'settings.json');
 }
 
+function sanitizeFallbackModels(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'string') continue;
+    const entry = raw.trim();
+    if (!entry || entry.length > 200 || !/^[\w.-]+::[\w.\-/]+$/.test(entry)) continue;
+    if (seen.has(entry)) continue;
+    seen.add(entry);
+    out.push(entry);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 export function loadWorkspaceSettings(): WorkspaceSettings {
   const data = readJson<Record<string, unknown>>(settingsFile()) ?? {};
   const projectsPath = typeof data['projectsPath'] === 'string' && data['projectsPath'] ? String(data['projectsPath']) : undefined;
-  return { projectsPath };
+  const fallbackModels = sanitizeFallbackModels(data['fallbackModels']);
+  return { projectsPath, ...(fallbackModels ? { fallbackModels } : {}) };
+}
+
+export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): WorkspaceSettings {
+  const merged: WorkspaceSettings = { ...loadWorkspaceSettings() };
+  if ('projectsPath' in patch) merged.projectsPath = patch.projectsPath;
+  const fallback = sanitizeFallbackModels(patch.fallbackModels ?? []);
+  if (fallback && fallback.length > 0) merged.fallbackModels = fallback;
+  else delete merged.fallbackModels;
+  saveWorkspaceSettings(merged);
+  return merged;
 }
 
 export function saveWorkspaceSettings(settings: WorkspaceSettings): void {

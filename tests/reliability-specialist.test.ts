@@ -59,42 +59,42 @@ function makeRunner(dir: string, llm: LlmClient, events: string[], overrides: Pa
 }
 
 describe('SubAgentRunner — dynamic turn budgeting', () => {
-  it('starts at the base budget of 20 turns', async () => {
+  it('starts at the base budget of 30 turns', async () => {
     const dir = makeProject();
     const events: string[] = [];
-    // 18 successful inspections, then an answer on turn 19 — before the
-    // progress-extension at turn 20 (0-indexed 18) can fire.
-    const replies = Array.from({ length: 18 }, () => () => readFileAction('src/a.txt'));
+    // 28 successful inspections, then an answer on turn 29 — before the
+    // progress-extension at turn 30 (0-indexed 28) can fire.
+    const replies = Array.from({ length: 28 }, () => () => readFileAction('src/a.txt'));
     replies.push(() => JSON.stringify({ action: { type: 'answer', summary: 'inspected and finished' } }));
     const runner = makeRunner(dir, scriptedLlm(replies), events);
 
     const result = await runner.runOne('scout', 'inspect the repo');
 
-    expect(events.some((e) => e.includes('turn 1/20'))).toBe(true);
-    expect(events.some((e) => e.includes('turn 19/20'))).toBe(true);
+    expect(events.some((e) => e.includes('turn 1/30'))).toBe(true);
+    expect(events.some((e) => e.includes('turn 29/30'))).toBe(true);
     expect(events.some((e) => e.includes('dynamically extending budget'))).toBe(false);
     expect(result.status).toBe('SUCCESS');
     expect(result.ok).toBe(true);
-    expect(result.turnsUsed).toBe(19);
-    expect(result.turnsBudgeted).toBe(20);
+    expect(result.turnsUsed).toBe(29);
+    expect(result.turnsBudgeted).toBe(30);
   });
 
   it('extends the budget when productive work continues past the limit', async () => {
     const dir = makeProject();
     const events: string[] = [];
-    const replies = Array.from({ length: 19 }, () => () => readFileAction('src/a.txt'));
+    const replies = Array.from({ length: 29 }, () => () => readFileAction('src/a.txt'));
     replies.push(() => JSON.stringify({ action: { type: 'answer', summary: 'done after extension' } }));
     const runner = makeRunner(dir, scriptedLlm(replies), events);
 
     const result = await runner.runOne('scout', 'inspect the repo');
 
     // At turn 19 (0-indexed 18) progress was still flowing, so the budget
-    // grew to 30 and the specialist got to answer under the extended budget.
-    expect(events.some((e) => e.includes('dynamically extending budget to turn 30'))).toBe(true);
-    expect(events.some((e) => e.includes('turn 20/30'))).toBe(true);
+    // grew to 40 and the specialist got to answer under the extended budget.
+    expect(events.some((e) => e.includes('dynamically extending budget to turn 40'))).toBe(true);
+    expect(events.some((e) => e.includes('turn 30/40'))).toBe(true);
     expect(result.status).toBe('SUCCESS');
-    expect(result.turnsBudgeted).toBe(30);
-    expect(result.turnsUsed).toBe(20);
+    expect(result.turnsBudgeted).toBe(40);
+    expect(result.turnsUsed).toBe(30);
   });
 
   it('never exceeds the hard ceiling', async () => {
@@ -169,7 +169,7 @@ describe('SubAgentRunner — structured result guarantee', () => {
     expect(result.status).toBe('FAILED');
     expect(result.summary).toContain('simulated specialist crash');
     expect(result.turnsUsed).toBe(1);
-    expect(result.turnsBudgeted).toBe(20);
+    expect(result.turnsBudgeted).toBe(30);
     expect(result.filesInspected).toEqual([]);
     expect(result.filesChanged).toEqual([]);
     expect(result.evidenceIds).toEqual([]);

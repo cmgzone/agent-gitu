@@ -27,6 +27,7 @@
     "files": [
       "desktop/**/*",
       "dist/**/*",
+      "assets/**/*",
       "node_modules/**/*",
       "package.json"
     ],

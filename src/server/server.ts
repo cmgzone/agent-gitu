@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { createReadStream, existsSync, readdirSync, rmSync, statSync } from 'node:fs';
+import os from 'node:os';
+import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,17 @@ const VENDOR_THREE = nodePath.join(
   nodePath.dirname(fileURLToPath(import.meta.url)),
   '../../node_modules/three/build/three.module.min.js',
 );
+// Bundled UI fonts (Inter + JetBrains Mono, latin subset). Resolved relative
+// to the compiled file so it works from dist/, from tsx src/, and inside the
+// packaged app (assets/** is shipped by electron-builder).
+const FONTS_DIR = nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '../../assets/fonts');
+const FONT_FILES: Record<string, string> = {
+  'inter-latin-400-normal.woff2': 'font/woff2',
+  'inter-latin-500-normal.woff2': 'font/woff2',
+  'inter-latin-600-normal.woff2': 'font/woff2',
+  'jetbrains-mono-latin-400-normal.woff2': 'font/woff2',
+  'jetbrains-mono-latin-700-normal.woff2': 'font/woff2',
+};
 import { Hermes } from '../agent/hermes.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -18,9 +30,10 @@ import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
+import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { UsageTrackingClient } from '../llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, peekModelCatalog, providerKey, resolveLlm, usageCostUsd } from '../llm/providers.js';
+import { PROVIDERS, ProviderError, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { SessionStore, type SessionUsage } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -28,7 +41,7 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, shortId } from '../util.js';
-import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, saveWorkspaceSettings } from '../workspace/home.js';
+import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, saveWorkspaceSettings, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 
 export interface PendingApproval {
@@ -223,6 +236,89 @@ export class HermesServer {
     return undefined;
   }
 
+  /**
+   * Dedicated persistent git worktree for one session's bound branch, so an
+   * older session can be resumed without moving the branch of the shared
+   * checkout (which would detach whichever session owned it). The .hermes state
+   * directory is linked into the worktree so the existing task ledger stays the
+   * single source of truth; node_modules and .env are linked/copied so
+   * verification commands behave like they did in the main checkout.
+   * Returns undefined when git worktrees are unavailable or the branch is gone.
+   */
+  private async ensureSessionWorktree(repoRoot: string, taskId: string, branch: string): Promise<string | undefined> {
+    if (!taskId || !branch) return undefined;
+    const branchExists = await gitExec(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).then(
+      () => true,
+      () => false,
+    );
+    if (!branchExists) return undefined;
+    // Keep agent state out of git status in the main checkout AND in every
+    // worktree (worktrees share the common git dir), without touching the
+    // user's tracked .gitignore.
+    try {
+      const exclude = nodePath.join(repoRoot, '.git', 'info', 'exclude');
+      mkdirSync(nodePath.dirname(exclude), { recursive: true });
+      let content = '';
+      try {
+        content = readFileSync(exclude, 'utf8');
+      } catch {
+        /* new exclude file */
+      }
+      if (!/^\.hermes\/?\s*$/m.test(content)) appendFileSync(exclude, `${content && !content.endsWith('\n') ? '\n' : ''}.hermes/\n`);
+    } catch {
+      /* best effort */
+    }
+    const wtDir = nodePath.join(repoRoot, '.hermes', 'worktrees', taskId);
+    try {
+      const list = await gitExec(repoRoot, ['worktree', 'list', '--porcelain']);
+      const registered = list.split(/\r?\n/).some(
+        (line) =>
+          line.startsWith('worktree ') &&
+          nodePath.resolve(line.slice('worktree '.length)).toLowerCase() === nodePath.resolve(wtDir).toLowerCase(),
+      );
+      if (!registered) {
+        mkdirSync(nodePath.dirname(wtDir), { recursive: true });
+        await gitExec(repoRoot, ['worktree', 'add', wtDir, branch]);
+      }
+    } catch {
+      return undefined;
+    }
+    if (!existsSync(wtDir)) return undefined;
+    this.linkWorkspaceIntoWorktree(repoRoot, wtDir);
+    return wtDir;
+  }
+
+  /** Share agent state and environment into a session worktree: .hermes is
+   *  linked (single ledger source of truth), node_modules is linked when the
+   *  main checkout has one, .env is copied. All best-effort — a worktree with
+   *  none of these still works for chat-style continuations. */
+  private linkWorkspaceIntoWorktree(repoRoot: string, wtDir: string): void {
+    const ensureLink = (target: string, at: string, fallbackCopy: boolean): void => {
+      if (!existsSync(target) || existsSync(at)) return;
+      try {
+        symlinkSync(target, at, process.platform === 'win32' ? 'junction' : 'dir');
+      } catch {
+        if (!fallbackCopy) return;
+        try {
+          cpSync(target, at, { recursive: true });
+        } catch {
+          /* best effort */
+        }
+      }
+    };
+    ensureLink(nodePath.join(repoRoot, '.hermes'), nodePath.join(wtDir, '.hermes'), true);
+    ensureLink(nodePath.join(repoRoot, 'node_modules'), nodePath.join(wtDir, 'node_modules'), false);
+    const envFile = nodePath.join(repoRoot, '.env');
+    const wtEnv = nodePath.join(wtDir, '.env');
+    if (existsSync(envFile) && !existsSync(wtEnv)) {
+      try {
+        copyFileSync(envFile, wtEnv);
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+
   private loadRegistry() {
     return this.db()
       .listSessions()
@@ -230,7 +326,10 @@ export class HermesServer {
   }
 
   private saveRegistry(): void {
-    for (const s of this.sessions.values()) this.persistSession(s);
+    for (const s of this.sessions.values()) {
+      if (!s.runId) continue;
+      this.persistSession(s);
+    }
   }
 
   private persistSession(s: RunSession): void {
@@ -344,8 +443,19 @@ export class HermesServer {
     }
     this.indexWatchers.clear();
     if (!this.server) return;
-    await new Promise<void>((resolve, reject) => {
-      this.server!.close((err) => (err ? reject(err) : resolve()));
+    await new Promise<void>((resolve) => {
+      // Long-lived SSE streams count as open connections and would otherwise
+      // keep close() waiting forever (Ctrl+C hang). Force-close remaining
+      // sockets after a grace period instead.
+      const timer = setTimeout(() => {
+        this.server?.closeAllConnections?.();
+      }, 1500);
+      timer.unref?.();
+      this.server!.close((err) => {
+        clearTimeout(timer);
+        resolve();
+        void err;
+      });
     });
     this.server = undefined;
     this.store?.close();
@@ -414,14 +524,37 @@ export class HermesServer {
     }
   }
 
+  /**
+   * A Host header is trusted only when it names THIS machine: localhost,
+   * an IP literal, or the OS hostname. Comparing Origin against the raw
+   * Host header alone is useless under DNS rebinding, where an attacker
+   * controls BOTH (evil.com resolves to 127.0.0.1).
+   */
+  private isTrustedHost(host: string): boolean {
+    const name = host.replace(/^\[/, '').replace(/\]:.*$/, '').split(':')[0]?.toLowerCase() ?? '';
+    if (!name) return false;
+    if (name === 'localhost' || name.endsWith('.localhost')) return true;
+    if (name === '::1' || name === '[::1]') return true;
+    // Any IP literal (loopback or LAN) — browsers reach local servers by IP.
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(name)) return true;
+    if (/^[0-9a-f:]+:[0-9a-f:]*$/i.test(name)) return true; // IPv6 literal
+    try {
+      if (name === os.hostname().toLowerCase()) return true;
+    } catch {
+      /* hostname unavailable */
+    }
+    return false;
+  }
+
   private isSameOrigin(req: http.IncomingMessage): boolean {
+    const host = req.headers['host'];
+    if (!host || typeof host !== 'string' || !this.isTrustedHost(host)) return false;
     const origin = req.headers['origin'];
     if (origin === undefined) return true;
     if (typeof origin !== 'string' || origin === '' || origin === 'null') return false;
-    const host = req.headers['host'];
-    if (!host) return false;
     try {
-      return new URL(origin).host === host;
+      const parsed = new URL(origin);
+      return parsed.host === host && this.isTrustedHost(parsed.host);
     } catch {
       return false;
     }
@@ -533,6 +666,25 @@ export class HermesServer {
       const removed = recent.shift()!;
       total -= typeof removed.content === 'string' ? removed.content.length : 0;
     }
+
+    // Prose replay alone leaves a resumed model grounded in its own earlier
+    // claims rather than facts. Re-attach a compact digest of the run's actual
+    // observations (command output, errors, evidence verdicts) so continuation
+    // starts from what happened, not from what was said about it.
+    const obsLines: string[] = [];
+    for (const event of s.events) {
+      if (/^\s*(out|error|evidence|denied|blocked|stall)\b/.test(event.text)) {
+        obsLines.push(event.text.replace(/\s+/g, ' ').trim().slice(0, 180));
+      }
+    }
+    if (obsLines.length > 0) {
+      recent.push({
+        role: 'user',
+        content:
+          ('COMPACT OBSERVATIONS recorded earlier in this session (grounding for the history above; do not redo this work):\n' +
+            obsLines.slice(-40).join('\n')).slice(0, 3000),
+      });
+    }
     return recent;
   }
 
@@ -541,7 +693,9 @@ export class HermesServer {
     const path = url.pathname;
     const method = req.method ?? 'GET';
 
-    if (method !== 'GET' && method !== 'HEAD' && !this.isSameOrigin(req)) {
+    // API surface is protected for ALL methods (GET included — read endpoints
+    // enumerate the filesystem), not just writes.
+    if ((path.startsWith('/api/') || (method !== 'GET' && method !== 'HEAD')) && !this.isSameOrigin(req)) {
       this.sendJson(res, 403, { error: 'cross-origin request rejected' });
       return;
     }
@@ -559,6 +713,19 @@ export class HermesServer {
       }
       res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=86400' });
       createReadStream(VENDOR_THREE).pipe(res);
+      return;
+    }
+
+    if (method === 'GET' && path.startsWith('/fonts/')) {
+      const fontName = path.slice('/fonts/'.length);
+      const contentType = FONT_FILES[fontName];
+      const fontPath = contentType ? nodePath.join(FONTS_DIR, fontName) : undefined;
+      if (!contentType || !fontPath || !existsSync(fontPath)) {
+        this.sendJson(res, 404, { error: 'font not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
+      createReadStream(fontPath).pipe(res);
       return;
     }
 
@@ -626,13 +793,19 @@ export class HermesServer {
           return;
         }
         const base = projectsDir();
-        if (!(projectPath.startsWith(base + nodePath.sep) || projectPath === base)) {
+        // The root itself is explicitly EXCLUDED: allowing it made a single
+        // request rm -rf every project at once.
+        if (!projectPath.startsWith(base + nodePath.sep)) {
           this.sendJson(res, 400, { error: 'only projects inside the Agent Gitu Projects folder can have their files deleted' });
           return;
         }
       }
       for (const [runId, s] of [...this.sessions.entries()]) {
         if ((projectPath && s.projectPath === projectPath) || (name && s.project === name)) {
+          // Stop before forgetting: a still-running executeRun would resurrect
+          // the session row via its periodic persist calls.
+          s.hermes?.stop();
+          void s.lsp?.shutdown().catch(() => {});
           this.sessions.delete(runId);
         }
       }
@@ -655,16 +828,19 @@ export class HermesServer {
       const providerRows = await Promise.all(
         Object.values(PROVIDERS).map(async (spec) => {
           const keyInfo = providerKey(spec);
-          let models = spec.models;
+          const staticInfo = spec.models.map((id) => ({ id }));
+          let models: { id: string; vision?: boolean }[] = staticInfo;
           let live = false;
           if (keyInfo || spec.publicModels) {
-            const fetched = await fetchLiveModels({
+            // Shared cache — run-time image resolution must see the same
+            // modality data this picker reports to the UI.
+            const fetched = await cachedLiveModels({
               baseUrl: spec.baseUrl,
               apiKey: keyInfo?.key ?? '',
               timeoutMs: 6000,
             });
             if (fetched && fetched.length > 0) {
-              models = fetched.map((m) => m.id);
+              models = fetched;
               live = true;
             }
           }
@@ -679,11 +855,15 @@ export class HermesServer {
           defaultModel: spec.defaultModel,
           hasKey: Boolean(keyInfo),
           live,
-          models: models.map((id) => ({
-            id,
-            vision: modelSupportsImages(id),
-            free: isFreeModel(id),
-            metadata: modelMetadataFor(catalog, spec.id, id),
+          models: models.map((mi) => ({
+            id: mi.id,
+            // Provider's own live modality wins; the models.dev catalog and the
+            // offline name heuristic are fallbacks for providers that do not
+            // publish modality — so image support works for any current or
+            // future provider without maintaining name patterns.
+            vision: mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id),
+            free: isFreeModel(mi.id),
+            metadata: modelMetadataFor(catalog, spec.id, mi.id),
           })),
           effortLevels: spec.effortLevels,
           maxEffort: spec.maxEffort ?? 'collapses-to-high',
@@ -814,16 +994,33 @@ export class HermesServer {
     }
 
     const gitRoot = (queryPath: string | null): string => {
-      const candidates = [queryPath ?? undefined, this.config.cwd];
-      for (const c of candidates) {
-        if (!c) continue;
+      // Scope to THIS machine's known Agent Gitu surfaces: the configured cwd,
+      // projects under the managed Projects folder, and roots of currently
+      // known sessions (incl. their linked worktrees). Without this, any
+      // request could init/commit/push/discard an arbitrary repo elsewhere.
+      const known = new Set<string>([nodePath.resolve(this.config.cwd)]);
+      for (const s of this.sessions.values()) {
+        if (s.projectPath) known.add(nodePath.resolve(s.projectPath));
+        if (s.worktreePath) known.add(nodePath.resolve(s.worktreePath));
+      }
+      const base = projectsDir();
+      const isAllowed = (candidate: string): boolean => {
+        const resolved = nodePath.resolve(candidate);
+        if (resolved.startsWith(base + nodePath.sep)) return true;
+        for (const k of known) {
+          if (resolved === k || resolved.startsWith(k + nodePath.sep)) return true;
+        }
+        return false;
+      };
+      for (const c of [queryPath ?? undefined, this.config.cwd]) {
+        if (!c || !isAllowed(c)) continue;
         try {
-          return ProjectGuard.detect(c).lock.repoRoot;
+          return ProjectGuard.detect(nodePath.resolve(c)).lock.repoRoot;
         } catch {
           /* try next */
         }
       }
-      return this.config.cwd;
+      return ProjectGuard.detect(this.config.cwd).lock.repoRoot;
     };
 
     if (method === 'GET' && path === '/api/git') {
@@ -1288,6 +1485,13 @@ export class HermesServer {
       const ids = Array.isArray(body['ids']) ? (body['ids'] as unknown[]).map(String) : [];
       let removed = 0;
       for (const id of ids) {
+        // Stop in-flight runs first: otherwise executeRun keeps going and its
+        // pushEvent/persistSession calls silently resurrect the deleted row.
+        const s = this.sessions.get(id);
+        if (s) {
+          s.hermes?.stop();
+          void s.lsp?.shutdown().catch(() => {});
+        }
         this.sessions.delete(id);
         if (this.db().deleteSession(id)) removed += 1;
       }
@@ -1298,6 +1502,11 @@ export class HermesServer {
     const runDeleteMatch = path.match(/^\/api\/runs\/([\w-]+)$/);
     if (method === 'DELETE' && runDeleteMatch) {
       const id = runDeleteMatch[1]!;
+      const s = this.sessions.get(id);
+      if (s) {
+        s.hermes?.stop();
+        void s.lsp?.shutdown().catch(() => {});
+      }
       this.sessions.delete(id);
       const removed = this.db().deleteSession(id);
       this.sendJson(res, 200, { ok: true, removed });
@@ -1325,9 +1534,19 @@ export class HermesServer {
         this.sendJson(res, 404, { error: 'run not found' });
         return;
       }
+      // Synchronously reserve the session BEFORE any await. The setup below
+      // yields many times (body read, env validation, worktree checks, LLM
+      // resolution); a second POST landing in that window used to observe the
+      // stale non-running status and start a second concurrent Hermes run on
+      // the same session/ledger/worktree.
+      const prevStatus = session.status;
+      const wasRunning = prevStatus === 'running';
+      session.status = 'running';
+      try {
       const body = await this.readBody(req, 12_000_000);
       const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
       if (!text) {
+        if (!wasRunning) session.status = prevStatus;
         this.sendJson(res, 400, { error: 'text is required' });
         return;
       }
@@ -1353,28 +1572,57 @@ export class HermesServer {
       if (body['autoApprove'] === true) session.autoApprove = true;
       else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
-      if (session.status === 'running') {
+      if (wasRunning) {
         session.hermes?.queueMessage(text);
         this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
         this.sendJson(res, 200, { ok: true, queued: true });
         return;
       }
       if (!session.taskId) {
+        session.status = prevStatus;
         this.sendJson(res, 409, { error: 'run has no task yet' });
         return;
       }
       const taskRoot = this.resolveTaskRoot(session.taskId, session.projectPath);
       if (!taskRoot) {
+        session.status = prevStatus;
         this.sendJson(res, 409, { error: `Cannot resolve project root for task ${session.taskId}` });
         return;
       }
       const ledger = TaskLedger.load(taskRoot, session.taskId);
       if (!ledger) {
+        session.status = prevStatus;
         this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
         return;
       }
-      const envCheck = await ledger.validateEnvironment(taskRoot);
+      // A task is bound to its own hermes/* branch, but the shared checkout can
+      // only hold one branch at a time: any newer run (or a manual switch)
+      // moves it and would lock every older session out. Instead of stealing
+      // the checkout back — which detaches whichever session owned it — resume
+      // in a dedicated linked worktree on this session's own branch. The
+      // shared checkout stays exactly where it is.
+      let execRoot = taskRoot;
+      if (ledger.data.worktreePath && existsSync(ledger.data.worktreePath)) {
+        execRoot = ledger.data.worktreePath;
+      } else {
+        const precheck = await ledger.validateEnvironment(execRoot);
+        if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
+          const wt = await this.ensureSessionWorktree(execRoot, session.taskId, ledger.data.gitBranch ?? '');
+          if (wt) {
+            execRoot = wt;
+            ledger.data.worktreePath = wt;
+            ledger.save();
+            session.worktreePath = wt;
+            this.pushEvent(
+              session,
+              `git     resuming in isolated worktree ${wt} on ${ledger.data.gitBranch} — the main checkout keeps its current branch`,
+            );
+          }
+        }
+      }
+      const envCheck = await ledger.validateEnvironment(execRoot);
       if (!envCheck.ok) {
+        session.status = prevStatus;
         this.sendJson(res, 409, { error: `Execution rejected: ${envCheck.reason}` });
         return;
       }
@@ -1395,6 +1643,36 @@ export class HermesServer {
         session.provider = provider;
         session.model = model;
       }
+      // No-credits rescue: when the PREVIOUS attempt died on billing, walk the
+      // USER-CONFIGURED fallback list (Settings → Fallback models) first; with
+      // no usable entry, rescue to a free model from the SAME provider so the
+      // session keeps moving. An explicit picker override always wins.
+      const billingFailure = typeof session.error === 'string' && /(401|no credits|insufficient balance|billing)/i.test(session.error);
+      if (billingFailure && !useSelectedModel && provider && model) {
+        const chain = loadWorkspaceSettings().fallbackModels ?? [];
+        const configured = chain
+          .map((entry) => entry.split('::') as [string, string])
+          .find(([p, m]) => p && m && !(p === provider && m === model));
+        const freeModel = configured ? undefined : freeModelFallback(provider, model);
+        const candidate = configured ?? (freeModel ? ([provider, freeModel] as [string, string]) : undefined);
+        if (candidate) {
+          this.pushEvent(
+            session,
+            `model    ${provider}/${model} has no credits (last attempt failed) — falling back to ${candidate[0]}/${candidate[1]}${configured ? ' per your fallback list' : ' (same-provider free model)'}`,
+          );
+          provider = candidate[0];
+          model = candidate[1];
+          session.provider = provider;
+          session.model = model;
+          session.error = undefined;
+          this.persistSession(session);
+        } else {
+          this.pushEvent(
+            session,
+            `warn    ${provider}/${model} has no credits and no fallback models are configured — add one in Settings → Providers (e.g. ${provider}::<free-model-id>) or fix billing`,
+          );
+        }
+      }
       if (!llm) {
         try {
           // Keep a continuation on the model the user selected for the
@@ -1403,6 +1681,7 @@ export class HermesServer {
           llm = resolveLlm({ provider, model }).client;
         } catch (err) {
           if (err instanceof ProviderError) {
+            session.status = prevStatus;
             this.sendJson(res, 400, { error: err.message });
             return;
           }
@@ -1421,7 +1700,7 @@ export class HermesServer {
         goal: session.goal,
         mode: session.mode ?? 'standard',
         review: reviewSwitch ?? false,
-        projectPath: session.projectPath,
+        projectPath: execRoot,
         resume: { taskId: session.taskId, message: text },
         conversationHistory,
         images,
@@ -1430,6 +1709,12 @@ export class HermesServer {
       });
       this.sendJson(res, 200, { ok: true, resumed: true });
       return;
+      } catch (err) {
+        // Any failure during async setup must release the reservation or the
+        // session would be stuck "running" forever.
+        if (!wasRunning) session.status = prevStatus;
+        throw err;
+      }
     }
 
     const planReviewMatch = path.match(/^\/api\/plan-review\/([\w-]+)$/);
@@ -1506,6 +1791,9 @@ export class HermesServer {
   ): Promise<void> {
     let root: string;
     let ignorePaths: string[] | undefined;
+    // Catalog modality is the source of truth for image support; warm the
+    // catalog once per run so even brand-new providers report vision correctly.
+    peekModelCatalog() ?? (await fetchModelCatalog().catch(() => undefined));
     try {
       const lock = ProjectGuard.detect(opts.projectPath ?? this.config.cwd).lock;
       root = lock.repoRoot;
@@ -1568,11 +1856,19 @@ export class HermesServer {
       lsp,
       subagents,
       agentsSection: agentStore.renderForPrompt() || undefined,
+      specialists: agentStore.list().map((a) => ({ name: a.name, role: a.role })),
       resume: opts.resume,
       conversationHistory: opts.conversationHistory,
       browser: this.browserImpl(),
       images: opts.images,
-      supportsImages: modelSupportsImages(opts.model ?? session.model ?? ''),
+      // Full-precedence resolution (provider live /models → catalog → name
+      // heuristic) so any vision-capable model actually receives the attached
+      // images instead of having them silently skipped at run time.
+      supportsImages: await resolveImageSupport({
+        providerId: session.provider,
+        model: opts.model ?? session.model,
+        catalog,
+      }),
       contextWindowTokens,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
@@ -1644,9 +1940,18 @@ export class HermesServer {
     session.hermes = hermes;
 
     try {
-      const { report } = await hermes.run(opts.goal);
+      const { ledger, report } = await hermes.run(opts.goal);
       session.status = report.status === 'complete' ? 'completed' : report.status === 'blocked' ? 'blocked' : 'failed';
       session.report = report;
+      // Stalled/blocked runs previously left session.error null, so the UI
+      // failure card had nothing to show and the end looked like a silent
+      // crash. Surface the ledger blocker as the reason.
+      if (session.status !== 'completed' && !session.error) {
+        const blocker = (ledger.data.blockers || []).slice(-1)[0];
+        session.error =
+          blocker ||
+          (session.status === 'failed' ? 'Task ended without completion (stalled): the effort budget ran out without verified progress.' : undefined);
+      }
     } catch (err) {
       session.status = 'failed';
       session.error = (err as Error).message;

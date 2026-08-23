@@ -124,33 +124,79 @@ export function serverBinaryAvailable(config: LspServerConfig): boolean {
 }
 
 /**
+ * Quote one argument per Microsoft's CommandLineToArgvW rules so it survives
+ * being joined into a single cmd.exe command line. Needed because spawning
+ * .cmd/.bat shims requires a shell, and with a shell Node concatenates
+ * command+args WITHOUT escaping — args containing spaces or metacharacters
+ * would break out of their positions (DEP0190).
+ */
+export function windowsQuote(arg: string): string {
+  if (arg !== '' && !/[\s"]/.test(arg)) return arg;
+  let out = '"';
+  let backslashes = 0;
+  for (const ch of arg) {
+    if (ch === '\\') {
+      backslashes += 1;
+    } else if (ch === '"') {
+      out += '\\'.repeat(backslashes * 2 + 1) + '"';
+      backslashes = 0;
+    } else {
+      out += '\\'.repeat(backslashes) + ch;
+      backslashes = 0;
+    }
+  }
+  return `${out}${'\\'.repeat(backslashes * 2)}"`;
+}
+
+/**
+ * Resolve how a command+args pair should be spawned. Real executables
+ * (.exe/.com or a bare command resolving to one) spawn directly without a
+ * shell; only .cmd/.bat/.ps1 shims (e.g. npm-global typescript-language-server)
+ * need a shell on Windows. For those we return ONE pre-quoted command string
+ * with empty args — never raw `shell:true` + args array, which lets args break
+ * out of their positions.
+ */
+export function resolveSpawn(
+  command: string,
+  configArgs: string[] | undefined,
+): { command: string; args: string[]; shell: boolean } {
+  const args = configArgs ?? [];
+  if (process.platform !== 'win32') return { command, args, shell: false };
+  const needsShell = /\.(cmd|bat|ps1)$/i.test(command);
+  const looksLikePath = !needsShell && (command.includes('/') || command.includes('\\') || command.includes('.'));
+  if (needsShell || !looksLikePath) {
+    for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
+      if (!dir) continue;
+      if (!looksLikePath || needsShell) {
+        for (const ext of ['.exe', '.com']) {
+          if (existsSync(path.join(dir, command + ext))) {
+            return { command: path.join(dir, command + ext), args, shell: false };
+          }
+        }
+      }
+      for (const ext of ['.cmd', '.bat', '.ps1']) {
+        if (existsSync(path.join(dir, command + ext))) {
+          // Pre-quoted full cmdline; empty args array keeps Node from doing its
+          // own (unsafe) concatenation under a shell.
+          const cmdline = [command + ext, ...args].map(windowsQuote).join(' ');
+          return { command: cmdline, args: [], shell: true };
+        }
+      }
+    }
+    if (needsShell) {
+      const cmdline = [command, ...args].map(windowsQuote).join(' ');
+      return { command: cmdline, args: [], shell: true };
+    }
+  }
+  return { command, args, shell: false };
+}
+
+/**
  * Resolve how a server should be spawned. Real executables (.exe/.com or a
  * bare command resolving to one) spawn directly without a shell; only
  * .cmd/.bat/.ps1 shims (e.g. npm-global typescript-language-server) need a
- * shell on Windows. Direct spawn avoids Node's DEP0190 args-concatenation
- * warning and keeps control of the argument list.
+ * shell on Windows.
  */
 export function resolveSpawnCommand(config: LspServerConfig): { command: string; args: string[]; shell: boolean } {
-  const args = config.args ?? [];
-  if (process.platform !== 'win32') return { command: config.command, args, shell: false };
-  if (/\.(cmd|bat|ps1)$/i.test(config.command)) return { command: config.command, args, shell: true };
-  const looksLikePath = config.command.includes('/') || config.command.includes('\\') || config.command.includes('.');
-  if (looksLikePath) return { command: config.command, args, shell: false };
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of ['.exe', '.com']) {
-      if (existsSync(path.join(dir, config.command + ext))) {
-        return { command: path.join(dir, config.command + ext), args, shell: false };
-      }
-    }
-  }
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of ['.cmd', '.bat', '.ps1']) {
-      if (existsSync(path.join(dir, config.command + ext))) {
-        return { command: config.command, args, shell: true };
-      }
-    }
-  }
-  return { command: config.command, args, shell: false };
+  return resolveSpawn(config.command, config.args);
 }

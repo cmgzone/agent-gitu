@@ -188,14 +188,18 @@ export class ProjectGuard {
         `Path ${absPath} is outside the locked project ${this.lock.name} (${this.lock.repoRoot}).`,
       );
     }
+    // Windows filesystems are case-insensitive: textual comparison would let
+    // ".HERMES/..." or "NODE_MODULES/x" bypass protection. Case-fold there.
+    const fold = (s: string): string => (process.platform === 'win32' ? s.toLowerCase() : s);
     const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
-    if (rel === '.hermes' || rel.startsWith(`.hermes${path.sep}`)) {
+    const foldedRel = fold(rel);
+    if (foldedRel === '.hermes' || foldedRel.startsWith(`.hermes${path.sep}`)) {
       throw new ProjectGuardError(
         `Path ${absPath} is inside Hermes' private state directory (.hermes) and cannot be touched by tools.`,
       );
     }
-    const top = rel.split(path.sep)[0];
-    if (top && this.lock.ignorePaths.includes(top)) {
+    const top = foldedRel.split(path.sep)[0];
+    if (top && this.lock.ignorePaths.some((p) => fold(p) === top)) {
       throw new ProjectGuardError(`Path ${absPath} is inside an ignored directory (${top}).`);
     }
     this.assertNoSymlinkEscape(absPath);

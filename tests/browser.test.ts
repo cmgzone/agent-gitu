@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/hermes.js';
 import { normalizeUrl, type BrowserBridge, type BrowserState } from '../src/browser/browser.js';
 import { PolicyEngine } from '../src/policy/policy.js';
-import { toolBrowse } from '../src/tools/tools.js';
+import { formatPageDiagnostics, toolBrowse } from '../src/tools/tools.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { modelSupportsImages } from '../src/llm/providers.js';
 
@@ -48,7 +48,13 @@ function fakeBridge(): BrowserBridge & { log: string[] } {
     },
     async screenshot() {
       log.push('screenshot');
-      return { pngBase64: Buffer.alloc(4096, 7).toString('base64'), state: state() };
+      return {
+        pngBase64: Buffer.alloc(4096, 7).toString('base64'),
+        state: state(),
+        consoleErrors: ['warn: [vite] connection lost (main.tsx:1)'],
+        textDigest: 'Welcome to Fake App\nGet started',
+        loadIncomplete: false,
+      };
     },
   };
 }
@@ -85,10 +91,37 @@ describe('browse tool', () => {
     const shot = await toolBrowse({ guard, cwd: '.', browser: bridge }, { action: 'screenshot' });
     expect(shot.ok).toBe(true);
     expect(shot.image).toMatch(/^data:image\/png;base64,/);
+    expect(shot.output).toContain('CONSOLE PROBLEMS (1)');
+    expect(shot.output).toContain('PAGE TEXT (digest)');
+    expect(shot.output).toContain('Welcome to Fake App');
 
     const missing = await toolBrowse({ guard, cwd: '.' }, { action: 'screenshot' });
     expect(missing.ok).toBe(false);
     expect(missing.output).toMatch(/desktop/i);
+  });
+});
+
+describe('formatPageDiagnostics', () => {
+  it('returns empty string when the bridge provides no diagnostics', () => {
+    expect(formatPageDiagnostics({})).toBe('');
+  });
+
+  it('lists console problems and an explicit clean signal', () => {
+    const dirty = formatPageDiagnostics({ consoleErrors: ['error: Uncaught TypeError: x is undefined (app.js:12)'] });
+    expect(dirty).toContain('CONSOLE PROBLEMS (1)');
+    expect(dirty).toContain('Uncaught TypeError');
+
+    const clean = formatPageDiagnostics({ consoleErrors: [] });
+    expect(clean).toContain('CONSOLE PROBLEMS: none');
+    expect(clean).not.toContain('PAGE TEXT');
+  });
+
+  it('surfaces incomplete loads and caps the text digest', () => {
+    const out = formatPageDiagnostics({ loadIncomplete: true, textDigest: 't'.repeat(2000) });
+    expect(out).toContain('PAGE LOAD: incomplete');
+    expect(out).toContain('PAGE TEXT (digest)');
+    const digest = out.split('PAGE TEXT (digest):\n')[1] ?? '';
+    expect(digest.length).toBeLessThanOrEqual(1200);
   });
 });
 

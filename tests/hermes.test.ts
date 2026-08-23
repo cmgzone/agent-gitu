@@ -750,4 +750,209 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.acceptanceCriteria[0]!.satisfied).toBe(true);
     expect(report.status).toBe('complete');
   }, 30000);
+
+  it('halts a runaway task when the effort turn budget is exhausted', async () => {
+    const dir = makeProject('turn-budget');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['some verified result'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'work', verification: 'node --version' }] } }),
+      // Cycles forever from here: productive-looking work that never completes.
+      () =>
+        JSON.stringify({
+          thought: 'keep going',
+          action: {
+            type: 'tool_call',
+            stepId: 'step-1',
+            tool: 'list_files',
+            params: { path: '.' },
+            reason: 'continue',
+            expected: 'listing',
+          },
+        }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
+    const { ledger, report } = await hermes.run('do some work');
+
+    expect(ledger.data.effortPlan?.maxTurns).toBe(20); // low effort budget
+    expect(report.status).toBe('failed');
+    expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(true);
+    expect(events.some((e) => e.includes('effort budget of 20 turns reached'))).toBe(true);
+  }, 30000);
+
+  it('extends the turn budget while the run keeps producing verified progress', async () => {
+    const dir = makeProject('dynamic-budget');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['files are written'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'write files', verification: 'n/a' }] } }),
+      // Real work: every turn writes a NEW file, so filesChanged keeps growing.
+      // The base low-effort budget (20 turns) is crossed on a productive run —
+      // the dynamic budget must extend instead of killing the run.
+      (call) =>
+        call < 24
+          ? JSON.stringify({
+              thought: 'working',
+              action: { type: 'tool_call', stepId: 'step-1', tool: 'write_file', params: { path: `gen-${call}.txt`, content: 'x' }, reason: 'work', expected: 'file written' },
+            })
+          : JSON.stringify({ action: { type: 'request_block', reason: 'wrapped up' } }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
+    const { report, ledger } = await hermes.run('generate files');
+
+    expect(events.some((e) => e.includes('budget extended by 10 turns'))).toBe(true);
+    expect(report.status).toBe('blocked'); // ended by its own request_block, not a stall
+    expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(false);
+  }, 30000);
+
+  it('coaches through unparseable replies instead of stopping after three warnings', async () => {
+    const dir = makeProject('garbage-recovery');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => 'I think I should look around first.',
+      () => 'Let me check the directory listing next.',
+      () => 'Probably src has the answer.',
+      () => 'One more moment please.',
+      // The model recovers and finishes the task properly.
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['Node is available'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify node', verification: 'node --version' }] } }),
+      () =>
+        JSON.stringify({
+          thought: 'working',
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+        }),
+      (_n, messages) => {
+        const text = messages.map((m) => m.content).join('\n');
+        const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+      },
+      () => JSON.stringify({ action: { type: 'complete', summary: 'recovered and completed', risks: [], followUps: [] } }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
+    const { report, ledger } = await hermes.run('say something useful');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.blockers.some((b) => b.includes('unparseable'))).toBe(false);
+    expect(ledger.data.blockers.some((b) => b.includes('3 consecutive'))).toBe(false);
+    expect(events.some((e) => e.includes('final instruction repeated'))).toBe(true);
+  }, 30000);
+
+  it('clamps delegate calls to the task specialist budget', async () => {
+    const dir = makeProject('spec-budget');
+    const workerLlm = new ScriptedMockLlm([() => JSON.stringify({ action: { type: 'answer', summary: 'worker done' } })]);
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => workerLlm,
+      agentRole: () => 'cap worker',
+    });
+    const seen: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['delegation capped'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'delegate once', verification: 'n/a' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'delegate', tasks: [{ agent: 'worker', task: 'a' }, { agent: 'worker2', task: 'b' }] },
+        }),
+      (_n, messages) => {
+        seen.push(messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n'));
+        return JSON.stringify({ action: { type: 'delegate', tasks: [{ agent: 'worker3', task: 'c' }] } });
+      },
+      (_n, messages) => {
+        seen.push(messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n'));
+        return JSON.stringify({ action: { type: 'request_block', reason: 'stop' } });
+      },
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner, effort: 'low' });
+    await hermes.run('specialist budget test');
+
+    // low effort -> maxSpecialists 1: the first 2-task delegate is clamped to 1,
+    // and the second delegate is rejected outright.
+    expect(runner.status()).toHaveLength(1);
+    const joined = seen.join('\n');
+    expect(joined).toContain('SPECIALIST BUDGET EXHAUSTED');
+  }, 30000);
+
+  it('records the risk plan and steers delegations toward the recommended specialists', async () => {
+    const dir = makeProject('risk-plan');
+    const events: string[] = [];
+    const workerLlm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'answer', summary: 'security review done' } }),
+    ]);
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => workerLlm,
+      agentRole: () => 'security reviewer',
+    });
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['auth hardened'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'delegate', verification: 'n/a' }] } }),
+      () => JSON.stringify({ action: { type: 'delegate', tasks: [{ agent: 'security-auditor', task: 'review the session flow' }] } }),
+      (_n, messages) => {
+        events.push(messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n'));
+        return JSON.stringify({ action: { type: 'request_block', reason: 'wrap up' } });
+      },
+    ]);
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      subagents: runner,
+      specialists: [
+        { name: 'security-auditor', role: 'Security review, auth' },
+        { name: 'test-runner', role: 'Tests and verification' },
+      ],
+      effort: 'high',
+      onEvent: (e) => events.push(e),
+    });
+
+    const { ledger } = await hermes.run('Fix the session refresh token bug');
+
+    expect(ledger.data.riskPlan?.risk).toBe('security');
+    expect(ledger.data.riskPlan?.requiredReview).toBe('security');
+    const recommended = ledger.data.riskPlan?.recommendedSpecialists.map((r) => r.agent) ?? [];
+    expect(recommended).toContain('security-auditor');
+    expect(events.some((e) => e.includes('risk    security'))).toBe(true);
+    expect(events.some((e) => e.includes('DELEGATION STEERING'))).toBe(false); // used the recommended agent
+  }, 30000);
+
+  it('warns when delegating to an agent outside the recommended risk roster', async () => {
+    const dir = makeProject('risk-steer');
+    const events: string[] = [];
+    const workerLlm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'answer', summary: 'generic work done' } }),
+    ]);
+    const runner = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => workerLlm,
+      agentRole: () => 'generic worker',
+    });
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['work steered'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'wrong specialist', verification: 'n/a' }] } }),
+      () => JSON.stringify({ action: { type: 'delegate', tasks: [{ agent: 'generic-worker', task: 'do generic work' }] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop' } }),
+    ]);
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      subagents: runner,
+      specialists: [
+        { name: 'security-auditor', role: 'Security review, auth' },
+        { name: 'generic-worker', role: 'General coding' },
+      ],
+      effort: 'high',
+      onEvent: (e) => events.push(e),
+    });
+
+    await hermes.run('Fix the session refresh token bug');
+
+    // The recommendation named security-auditor (+ test mate), so delegating to
+    // generic-worker gets a steering note - a prompt, not a hard failure.
+    expect(events.some((e) => e.includes('delegate note:'))).toBe(true);
+  }, 30000);
 });

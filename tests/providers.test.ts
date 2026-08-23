@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, isFreeModel, modelMetadataFor, modelSupportsImages, resolveLlm } from '../src/llm/providers.js';
+import { PROVIDERS, ProviderError, cachedLiveModels, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
 
 const WS_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
 
@@ -34,6 +34,16 @@ describe('provider registry', () => {
     for (const open of ['qwen3.8-max', 'glm-5.2', 'kimi-k3', 'deepseek-v4-flash', 'grok-4.5']) {
       expect(go.models).toContain(open);
     }
+  });
+
+  it('registers openrouter with its endpoint, key vars, and a namespaced default', () => {
+    const or = PROVIDERS['openrouter']!;
+    expect(or.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(or.publicModels).toBe(true);
+    expect(or.keyEnvVars).toContain('OPENROUTER_API_KEY');
+    expect(or.keyEnvVars).toContain('HERMES_OPENROUTER_API_KEY');
+    expect(or.defaultModel).toMatch(/\//);
+    expect(or.models.some((m) => m.endsWith(':free'))).toBe(true);
   });
 });
 
@@ -85,6 +95,15 @@ describe('resolveLlm', () => {
     expect(go.baseUrl).toBe('https://opencode.ai/zen/go/v1');
     expect(go.keyEnvVar).toBe('HERMES_OPENCODE_API_KEY');
     expect(go.model).toBe('qwen3.8-max');
+  });
+
+  it('resolves openrouter and honors its namespaced model ids', () => {
+    const or = resolveLlm({ provider: 'openrouter', env: { OPENROUTER_API_KEY: 'or-x' } });
+    expect(or.providerId).toBe('openrouter');
+    expect(or.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(or.model).toBe('anthropic/claude-sonnet-4.5');
+    const overridden = resolveLlm({ provider: 'openrouter', model: 'deepseek/deepseek-v3.2-exp:free', env: { OPENROUTER_API_KEY: 'or-x' } });
+    expect(overridden.model).toBe('deepseek/deepseek-v3.2-exp:free');
   });
 
   it('prefers generic HERMES_API_KEY as custom provider', () => {
@@ -179,5 +198,220 @@ describe('modelSupportsImages', () => {
     for (const textOnly of ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.3-codex', 'minimax-m3']) {
       expect(modelSupportsImages(textOnly)).toBe(false);
     }
+  });
+
+  it('uses live catalog modality over the name heuristic, for any provider', () => {
+    // A brand-new provider whose model names match no vision pattern: the
+    // catalog must decide, not the hardcoded regex lists.
+    const catalog = new Map([
+      [
+        'future-provider-xyz',
+        new Map([
+          ['nova-vision-13', { contextTokens: 200_000, vision: true, source: 'models.dev' as const }],
+          ['nova-lite-13', { contextTokens: 16_000, vision: false, source: 'models.dev' as const }],
+        ]),
+      ],
+    ]);
+    expect(resolveSupportedImages(catalog, 'future-provider-xyz', 'nova-vision-13')).toBe(true);
+    expect(resolveSupportedImages(catalog, 'future-provider-xyz', 'nova-lite-13')).toBe(false);
+    // Models absent from the catalog fall back to the offline heuristic.
+    expect(resolveSupportedImages(catalog, 'future-provider-xyz', 'claude-sonnet-4-5')).toBe(true);
+    expect(resolveSupportedImages(undefined, 'anything', 'deepseek-v4-flash')).toBe(false);
+  });
+
+  it('parses modality.input and the legacy visual flag from models.dev JSON', () => {
+    const raw = {
+      'future-provider-xyz': {
+        models: {
+          'by-modality': { limit: { context: 128000 }, modality: { input: ['text', 'image'], output: ['text'] } },
+          'by-visual-flag': { limit: { context: 128000 }, visual: true },
+          'text-only': { limit: { context: 32000 }, modality: { input: ['text'], output: ['text'] } },
+          'no-modality': { limit: { context: 32000 } },
+        },
+      },
+    };
+    const catalog = parseModelCatalog(raw);
+    expect(catalog.get('future-provider-xyz')?.get('by-modality')?.vision).toBe(true);
+    expect(catalog.get('future-provider-xyz')?.get('by-visual-flag')?.vision).toBe(true);
+    expect(catalog.get('future-provider-xyz')?.get('text-only')?.vision).toBe(false);
+    expect(catalog.get('future-provider-xyz')?.get('no-modality')?.vision).toBeUndefined();
+  });
+
+  it('keeps vision-only catalog entries that carry no numeric limits or prices', () => {
+    const catalog = parseModelCatalog({ p: { models: { 'vision-only': { visual: true } } } });
+    expect(catalog.get('p')?.get('vision-only')?.vision).toBe(true);
+  });
+
+  it('lets explicit vision markers in a name beat text-only families', () => {
+    for (const vision of ['deepseek-vl2', 'qwen2.5-vl-72b', 'pixtral-vision-1']) {
+      expect(modelSupportsImages(vision)).toBe(true);
+    }
+    // Unchanged: plain coder/codex/deepseek variants stay text-only.
+    expect(modelSupportsImages('gpt-5.3-codex')).toBe(false);
+    expect(modelSupportsImages('qwen3-coder-plus')).toBe(false);
+  });
+
+  it('reads the vision flag from a cached live /models list', () => {
+    const models = [
+      { id: 'm-text', vision: false as const },
+      { id: 'm-vision', vision: true as const },
+      { id: 'm-unknown', ownedBy: 'x' },
+    ];
+    expect(liveModelVision(models, 'm-vision')).toBe(true);
+    expect(liveModelVision(models, 'm-text')).toBe(false);
+    expect(liveModelVision(models, 'm-unknown')).toBeUndefined();
+    expect(liveModelVision(undefined, 'm-vision')).toBeUndefined();
+  });
+});
+
+describe('resolveImageSupport — run-time gate must match what the picker showed', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('delivers images when the provider live /models says vision, even with no heuristic match', async () => {
+    // "ox-alpha" matches neither VISION_PATTERNS nor any catalog entry, yet the
+    // provider's own /models publishes input_modalities including image.
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(
+        JSON.stringify({ data: [{ id: 'ox-alpha', input_modalities: ['text', 'image'] }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    const env = {};
+    expect(await resolveImageSupport({ providerId: 'opencode-go', model: 'ox-alpha', env })).toBe(true);
+    expect(await resolveImageSupport({ providerId: 'opencode-go', model: 'ox-alpha', env })).toBe(true);
+    expect(calls).toBe(1); // second call served from the shared cache
+  });
+
+  it('withholds images when the provider live /models says text-only', async () => {
+    const catalog = new Map([
+      ['openai', new Map([['claude-ish-x9', { contextTokens: 1000, vision: true, source: 'models.dev' as const }]])],
+    ]);
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: 'claude-ish-x9', capabilities: { support_vision: false } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch;
+    // Provider's own modality wins over an optimistic catalog/heuristic guess.
+    expect(await resolveImageSupport({ providerId: 'openai', model: 'claude-ish-x9', catalog, env: {} })).toBe(false);
+  });
+
+  it('falls back to catalog then heuristic when the endpoint publishes nothing', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ data: [{ id: 'ox-alpha' }] }), { status: 200 });
+    }) as typeof fetch;
+    const env = {};
+    // CATALOG_PROVIDER_IDS maps the opencode-zen registry id to models.dev's
+    // "opencode" slug, so the catalog entry must use that key.
+    const catalog = new Map([
+      ['opencode', new Map([['ox-alpha', { contextTokens: 1000, vision: true, source: 'models.dev' as const }]])],
+    ]);
+    expect(await resolveImageSupport({ providerId: 'opencode-zen', model: 'ox-alpha', catalog, env })).toBe(true);
+    expect(calls).toBe(1);
+  });
+
+  it('covers custom HERMES_BASE_URL endpoints via env vars', async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe('https://custom.test/v1/models');
+      return new Response(JSON.stringify({ data: [{ id: 'ox-alpha', architecture: { modality: 'text+image->text' } }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    expect(
+      await resolveImageSupport({
+        providerId: 'custom',
+        model: 'ox-alpha',
+        env: { HERMES_API_KEY: 'sk-x', HERMES_BASE_URL: 'https://custom.test/v1' },
+      }),
+    ).toBe(true);
+  });
+
+  it('caches endpoint misses briefly so chat turns do not re-hit dead endpoints', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      throw new Error('network down');
+    }) as typeof fetch;
+    const env = {};
+    expect(await resolveImageSupport({ providerId: 'alibaba', model: 'qwen3.8-max', timeoutMs: 50, env })).toBe(true); // heuristic
+    expect(await resolveImageSupport({ providerId: 'alibaba', model: 'qwen3.8-max', timeoutMs: 50, env })).toBe(true);
+    expect(calls).toBe(1);
+  });
+});
+
+describe('cachedLiveModels', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('returns undefined on a failed fetch but remembers the miss', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response('nope', { status: 401 });
+    }) as typeof fetch;
+    expect(await cachedLiveModels({ baseUrl: 'https://miss-cache.test/v1', apiKey: 'k' })).toBeUndefined();
+    expect(await cachedLiveModels({ baseUrl: 'https://miss-cache.test/v1', apiKey: 'k' })).toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
+  it('shares one successful listing across callers until the TTL expires', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ data: [{ id: 'shared-a', visual: true }] }), { status: 200 });
+    }) as typeof fetch;
+    const first = await cachedLiveModels({ baseUrl: 'https://hit-cache.test/v1', apiKey: 'k' });
+    const second = await cachedLiveModels({ baseUrl: 'https://hit-cache.test/v1/', apiKey: 'k' });
+    expect(first?.map((m) => m.id)).toEqual(['shared-a']);
+    expect(second).toEqual(first);
+    expect(calls).toBe(1);
+  });
+});
+
+describe('freeModelFallback � no-credits rescue', () => {
+  it('picks the first free model of the same provider for a paid model', () => {
+    const fallback = freeModelFallback('opencode-zen', 'muse-spark-1.2-contrast');
+    expect(fallback).toBeDefined();
+    expect(isFreeModel(fallback!)).toBe(true);
+    expect(PROVIDERS['opencode-zen']!.models).toContain(fallback);
+  });
+
+  it('returns undefined when the model is already free', () => {
+    for (const model of ['hy3-free', 'deepseek-v4-flash-free', 'big-pickle', 'deepseek/deepseek-v3.2-exp:free']) {
+      expect(freeModelFallback('opencode-zen', model)).toBeUndefined();
+    }
+  });
+
+  it('rescues openrouter paid models to a :free variant of the same provider', () => {
+    const fallback = freeModelFallback('openrouter', 'anthropic/claude-opus-4.5');
+    expect(fallback).toBeDefined();
+    expect(isFreeModel(fallback!)).toBe(true);
+    expect(fallback).toMatch(/:free$/);
+  });
+
+  it('returns undefined when the provider has no free models or is unknown', () => {
+    const openai = PROVIDERS['openai']!;
+    const paid = openai.models.find((m) => !isFreeModel(m)) ?? openai.defaultModel;
+    expect(freeModelFallback('openai', paid)).toBeUndefined();
+    expect(freeModelFallback('no-such-provider', 'whatever')).toBeUndefined();
+  });
+
+  it('covers opencode-zen statically; opencode-go relies on its live catalog', () => {
+    // zen ships free promo models in the static registry — fallback is instant.
+    expect((PROVIDERS['opencode-zen']!.models ?? []).some((m) => isFreeModel(m))).toBe(true);
+    expect(freeModelFallback('opencode-zen', 'qwen3.8-max')).toBeDefined();
+    // go is a subscription plan: no static -free models, so the static helper
+    // correctly declines and the server falls back to a LIVE catalog lookup.
+    expect((PROVIDERS['opencode-go']!.models ?? []).some((m) => isFreeModel(m))).toBe(false);
+    expect(freeModelFallback('opencode-go', 'kimi-k3')).toBeUndefined();
   });
 });

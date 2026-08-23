@@ -12,6 +12,9 @@ let boundPort = 0;
 
 let browserWin = null;
 let driving = 0;
+// Console warnings/errors from the driven page (newest last). Cleared on real
+// navigations; screenshots surface the tail to the agent as grounding text.
+let consoleLog = [];
 
 function log(msg) {
   try {
@@ -19,6 +22,31 @@ function log(msg) {
   } catch {
     /* best effort */
   }
+}
+
+// Electron changed the console-message payload across versions: legacy builds
+// pass (event, level:number, message, line, sourceId); newer ones pass a single
+// event object with .level/.message/.lineNumber/.sourceId. Handle both.
+function recordConsoleMessage(...args) {
+  const e = args[0] ?? {};
+  let level, message, line, sourceId;
+  if (typeof args[1] === 'number') {
+    level = args[1];
+    message = args[2];
+    line = args[3];
+    sourceId = args[4];
+  } else {
+    level = e.level;
+    message = e.message;
+    line = e.lineNumber;
+    sourceId = e.sourceId;
+  }
+  const numeric = typeof level === 'number' ? level : { verbose: 0, info: 1, warning: 2, error: 3 }[String(level)] ?? 1;
+  if (numeric < 2) return;
+  const label = numeric >= 3 ? 'error' : 'warn';
+  const src = String(sourceId || '').split('/').pop() || '';
+  consoleLog.push(`${label}: ${String(message).slice(0, 300)}${src ? ` (${src}${line ? ':' + line : ''})` : ''}`);
+  if (consoleLog.length > 100) consoleLog.splice(0, consoleLog.length - 100);
 }
 
 function ensureBrowserWin() {
@@ -30,6 +58,19 @@ function ensureBrowserWin() {
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: { backgroundThrottling: false },
+  });
+  consoleLog = [];
+  browserWin.webContents.on('console-message', (...args) => {
+    try {
+      recordConsoleMessage(...args);
+    } catch {
+      /* never let logging break the page */
+    }
+  });
+  // A fresh document starts with a clean console slate; SPA in-page routes
+  // keep history so errors seen on route clicks still reach the agent.
+  browserWin.webContents.on('did-navigate', () => {
+    consoleLog = [];
   });
   if (mainWindow && !mainWindow.isDestroyed()) {
     const b = mainWindow.getBounds();
@@ -366,7 +407,65 @@ function makeBrowserBridge(normalizeUrl) {
     async screenshot() {
       const win = ensureBrowserWin();
       const image = await win.webContents.capturePage();
-      return { pngBase64: image.toPNG().toString('base64'), state: stateOf(win) };
+      // Ground the screenshot with page facts a text-only model can use:
+      // visible-text digest plus console warnings/errors since last navigate.
+      let textDigest;
+      let readyState;
+      try {
+        const info = await win.webContents.executeJavaScript(
+          `(function(){
+            var t = (document.body && document.body.innerText) || '';
+            t = t.replace(/[ \\t]+/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim().slice(0, 1500);
+            return { text: t, ready: document.readyState };
+          })()`,
+        );
+        if (info && typeof info.text === 'string') {
+          textDigest = info.text;
+          readyState = info.ready;
+        }
+      } catch {
+        /* about:blank or crashed renderer — diagnostics are best-effort */
+      }
+      const consoleErrors = consoleLog.slice(-8);
+      // Vision models bill by image size; downscale to a max edge and encode
+      // JPEG for large captures before the payload enters model context.
+      try {
+        const MAX_DIM = 1280;
+        const JPEG_QUALITY = 60;
+        const COMPRESS_BYTES = 160 * 1024;
+        const size = image.getSize();
+        const longest = Math.max(size.width, size.height);
+        let out = image;
+        if (longest > MAX_DIM) {
+          const scale = MAX_DIM / longest;
+          out = image.resize({
+            width: Math.max(1, Math.round(size.width * scale)),
+            height: Math.max(1, Math.round(size.height * scale)),
+          });
+        }
+        const pngBytes = out.toPNG();
+        const payload =
+          pngBytes.length > COMPRESS_BYTES
+            ? { pngBase64: out.toJPEG(JPEG_QUALITY).toString('base64'), mime: 'image/jpeg' }
+            : { pngBase64: pngBytes.toString('base64'), mime: 'image/png' };
+        return {
+          ...payload,
+          state: stateOf(win),
+          ...(consoleErrors.length ? { consoleErrors } : {}),
+          ...(textDigest ? { textDigest } : {}),
+          ...(readyState && readyState !== 'complete' ? { loadIncomplete: true } : {}),
+        };
+      } catch (err) {
+        log(`screenshot optimization failed, falling back to raw PNG: ${err && err.message}`);
+        return {
+          pngBase64: image.toPNG().toString('base64'),
+          mime: 'image/png',
+          state: stateOf(win),
+          ...(consoleErrors.length ? { consoleErrors } : {}),
+          ...(textDigest ? { textDigest } : {}),
+          ...(readyState && readyState !== 'complete' ? { loadIncomplete: true } : {}),
+        };
+      }
     },
     async focus() {
       const win = ensureBrowserWin();

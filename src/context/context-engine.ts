@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { CodeIndex } from './code-index.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { ContextPack, FileRef, FileRole } from '../types.js';
+import { EMBED_MAX_CHARS, type Embedder } from './embeddings.js';
 
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'fix', 'add',
@@ -17,6 +18,13 @@ export interface ContextBudget {
 
 export const DEFAULT_CONTEXT_BUDGET: ContextBudget = { maxFiles: 12, maxBytes: 40_000 };
 
+/** Hard ceiling for source context injected into the prompt. The pack is a
+ *  grounding sample, not a repo dump — anything beyond ~48K chars (~12K
+ *  tokens) costs more per turn than it informs, and the agent can always
+ *  read_file/search_files for more. */
+export const MAX_CONTEXT_BUDGET_BYTES = 48_000;
+export const MAX_CONTEXT_BUDGET_FILES = 12;
+
 /**
  * Convert a model's context window into a safe source-context budget. More
  * than half of the window remains available for system instructions, user
@@ -28,17 +36,29 @@ export function contextBudgetForWindow(contextWindowTokens?: number): ContextBud
   }
   const sourceTokens = Math.floor(contextWindowTokens * 0.4);
   return {
-    maxFiles: Math.max(8, Math.min(24, Math.floor(sourceTokens / 3_000))),
-    maxBytes: Math.max(30_000, Math.min(160_000, sourceTokens * 4)),
+    maxFiles: Math.max(8, Math.min(MAX_CONTEXT_BUDGET_FILES, Math.floor(sourceTokens / 3_000))),
+    maxBytes: Math.max(24_000, Math.min(MAX_CONTEXT_BUDGET_BYTES, sourceTokens * 4)),
   };
 }
 
 export function tokenize(text: string): string[] {
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9_.]+/)
-    .map((t) => t.replace(/[_-]+/g, ''))
-    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+  // Identifier-aware: a goal saying "user token" must match parseUserToken.
+  // Emits the compound token AND its camelCase parts so both styles retrieve.
+  const out: string[] = [];
+  for (const raw of text.split(/[^a-zA-Z0-9_.]+/)) {
+    const t = raw.replace(/[_-]+/g, '');
+    if (!t) continue;
+    const base = t.toLowerCase();
+    if (base.length >= 3 && !STOPWORDS.has(base)) out.push(base);
+    const parts = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').split(' ');
+    if (parts.length > 1) {
+      for (const p of parts) {
+        const lp = p.toLowerCase().replace(/[_-]+/g, '');
+        if (lp.length >= 3 && !STOPWORDS.has(lp)) out.push(lp);
+      }
+    }
+  }
+  return out;
 }
 
 /** Dotfile configs that are useful to code context and safe to read. */
@@ -77,9 +97,12 @@ export class ContextEngine {
     private readonly index?: CodeIndex,
   ) {}
 
-  buildPack(goal: string, budget: ContextBudget = DEFAULT_CONTEXT_BUDGET): ContextPack {
+  buildPack(goal: string, budget: ContextBudget = DEFAULT_CONTEXT_BUDGET, extraTexts: string[] = []): ContextPack {
     const root = this.guard.lock.repoRoot;
-    const goalTokens = new Set(tokenize(goal));
+    // Acceptance criteria and pinned verification commands carry signal the
+    // one-line goal often lacks ("auth flow" vs "add rate limiting to
+    // /api/login per AC-2") — fold them into retrieval.
+    const goalTokens = new Set(tokenize([goal, ...extraTexts].join('\n')));
     const files: FileRef[] = [];
     const ignores = new Set(this.guard.lock.ignorePaths);
 
@@ -89,12 +112,11 @@ export class ContextEngine {
       // when a new run starts, so take a cheap metadata snapshot here. Only
       // changed files are read and re-tokenized by CodeIndex.refresh().
       this.index.refresh(root, ignores);
-      const contentMatches = this.index.contentMatches(goalTokens);
+      const contentScores = this.index.contentMatchScores(goalTokens);
       for (const f of this.index.fileList()) {
-        files.push({ path: f.path, role: f.role, score: this.score(f.path, f.role, goalTokens, contentMatches.get(f.path)) });
+        files.push({ path: f.path, role: f.role, score: this.score(f.path, f.role, goalTokens, undefined, contentScores.get(f.path)) });
       }
-    } else {
-      const walk = (dir: string, depth: number): void => {
+    } else {      const walk = (dir: string, depth: number): void => {
         if (depth > 8 || files.length > 2000) return;
         let entries: string[];
         try {
@@ -117,6 +139,9 @@ export class ContextEngine {
             if (name.startsWith('.') && name !== '.github') continue;
             walk(full, depth + 1);
           } else if (st.size < 200 * 1024) {
+            // Per-file cap enforcement: one large directory must not blow
+            // past the 2000-file ceiling by its entire contents.
+            if (files.length >= 2000) return;
             const rel = this.guard.toRelative(full);
             const role = classifyRole(rel);
             if (role === 'artifact' || role === 'unknown') continue;
@@ -148,7 +173,43 @@ export class ContextEngine {
     return pack;
   }
 
-  private score(relPath: string, role: FileRole, goalTokens: Set<string>, contentTerms?: Set<string>): number {
+  /**
+   * Hybrid retrieval: the lexical/IDF pack blended with embedding cosine
+   * similarity. Semantic matches catch conceptually-related files that share
+   * no vocabulary with the goal ("rate limiting" → throttle.ts). Degrades
+   * gracefully: any embedder failure simply returns the lexical pack. The
+   * lexical score stays dominant (0.65) because exact identifier overlap is
+   * still the strongest single signal for code tasks.
+   */
+  async buildPackHybrid(
+    goal: string,
+    budget: ContextBudget = DEFAULT_CONTEXT_BUDGET,
+    extraTexts: string[] = [],
+    embedder?: Embedder,
+  ): Promise<{ pack: ContextPack; semantic: boolean }> {
+    const pack = this.buildPack(goal, budget, extraTexts);
+    if (!embedder || !this.index) return { pack, semantic: false };
+    try {
+      await this.index.updateVectors(embedder);
+      const query = [goal, ...extraTexts].join('\n').slice(0, EMBED_MAX_CHARS);
+      const sem = await this.index.semanticSearch(embedder, query);
+      if (sem.size === 0) return { pack, semantic: false };
+      const blend = (refs: FileRef[]): FileRef[] =>
+        refs.map((r) => {
+          const s = sem.get(r.path);
+          if (s === undefined) return r;
+          return { ...r, score: Math.round((r.score * 0.65 + s * 0.35) * 100) / 100 };
+        });
+      for (const key of ['primaryFiles', 'testFiles', 'relatedFiles', 'configFiles'] as const) {
+        pack[key] = blend(pack[key]).sort((a, b) => b.score - a.score);
+      }
+      return { pack, semantic: true };
+    } catch {
+      return { pack, semantic: false };
+    }
+  }
+
+  private score(relPath: string, role: FileRole, goalTokens: Set<string>, contentTerms?: Set<string>, contentScore?: number): number {
     const pathTokens = new Set(tokenize(relPath));
     let overlap = 0;
     for (const t of goalTokens) {
@@ -163,9 +224,14 @@ export class ContextEngine {
       }
     }
     const pathMatch = goalTokens.size > 0 ? overlap / goalTokens.size : 0;
-    // Content recall: fraction of goal terms found in the file's body (from the
-    // persistent index). Boosts files the goal's wording matches semantically.
-    const contentMatch = contentTerms ? contentTerms.size / Math.max(1, goalTokens.size) : 0;
+    // Content recall: prefer the IDF-weighted score from the index when
+    // available; fall back to raw matched-term fraction for legacy callers.
+    const contentMatch =
+      contentScore !== undefined
+        ? contentScore
+        : contentTerms
+          ? contentTerms.size / Math.max(1, goalTokens.size)
+          : 0;
     const roleBonus: Record<FileRole, number> = {
       entrypoint: 0.15,
       implementation: 0.1,
@@ -196,7 +262,7 @@ export class ContextEngine {
   }
 
   renderPackWithContent(pack: ContextPack): string {
-    const maxTotal = Math.min(pack.budget.maxBytes || DEFAULT_CONTEXT_BUDGET.maxBytes, 160_000);
+    const maxTotal = Math.min(pack.budget.maxBytes || DEFAULT_CONTEXT_BUDGET.maxBytes, MAX_CONTEXT_BUDGET_BYTES);
     const perFile = Math.max(4_000, Math.min(8_000, Math.floor(maxTotal / Math.max(1, pack.budget.maxFiles))));
     const parts: string[] = [this.renderPack(pack)];
 

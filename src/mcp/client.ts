@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { resolveSpawn } from '../lsp/server-registry.js';
 
 export interface McpServerConfig {
   name: string;
@@ -36,17 +37,22 @@ export class McpClient {
   private connect(): Promise<void> {
     if (!this.ready) {
       this.ready = new Promise<void>((resolve, reject) => {
+        let settled = false;
         try {
-          this.proc = spawn(this.config.command, this.config.args ?? [], {
+          const resolved = resolveSpawn(this.config.command, this.config.args);
+          this.proc = spawn(resolved.command, resolved.args, {
             cwd: this.cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...this.config.env },
-            shell: process.platform === 'win32',
+            shell: resolved.shell,
           });
         } catch (err) {
           reject(err as Error);
           return;
         }
+        // A dead child's stdin emits EPIPE asynchronously; without a handler
+        // that becomes an uncaught exception crashing the agent process.
+        this.proc.stdin?.on('error', () => {});
         this.proc.stdout?.on('data', (chunk: Buffer) => {
           this.buffer += chunk.toString('utf8');
           let idx: number;
@@ -70,11 +76,17 @@ export class McpClient {
         this.proc.on('error', (err) => {
           for (const w of this.pending.values()) w.reject(err);
           this.pending.clear();
-          reject(err);
+          if (!settled) {
+            settled = true;
+            reject(err);
+          }
         });
         this.proc.on('exit', () => {
           for (const w of this.pending.values()) w.reject(new Error('mcp server exited'));
           this.pending.clear();
+          // Allow a future call to reconnect instead of returning the stale
+          // (resolved) ready promise of a dead server forever.
+          this.ready = undefined;
         });
         this.request('initialize', {
           protocolVersion: '2024-11-05',
@@ -82,17 +94,34 @@ export class McpClient {
           clientInfo: { name: 'hermes', version: '0.1.0' },
         })
           .then(() => {
+            settled = true;
             this.send({ jsonrpc: '2.0', method: 'notifications/initialized' });
             resolve();
           })
-          .catch(reject);
+          .catch((err) => {
+            // Reset the cached handshake AND reap the process: otherwise one
+            // failed init bricks this client permanently and leaks the child.
+            this.ready = undefined;
+            try {
+              this.proc?.kill();
+            } catch {
+              /* already gone */
+            }
+            this.proc = undefined;
+            if (!settled) {
+              settled = true;
+              reject(err as Error);
+            }
+          });
       });
     }
     return this.ready;
   }
 
   private send(msg: unknown): void {
-    this.proc?.stdin?.write(`${JSON.stringify(msg)}\n`);
+    const stdin = this.proc?.stdin;
+    if (!stdin || stdin.destroyed || !stdin.writable) return;
+    stdin.write(`${JSON.stringify(msg)}\n`);
   }
 
   private request(method: string, params: unknown, timeoutMs = 20000): Promise<unknown> {
@@ -152,18 +181,31 @@ export class McpManager {
     return new McpManager(path.join(repoRoot, '.hermes', 'mcp.json'));
   }
 
-  servers(): McpServerConfig[] {
+  /**
+   * Read the config file. Returns undefined when the file EXISTS but cannot be
+   * parsed — callers must treat that as fatal instead of writing an empty
+   * server list over the user's configuration.
+   */
+  private readConfigFile(): McpServerConfig[] | undefined {
     if (!existsSync(this.configFile)) return [];
     try {
       const data = JSON.parse(readFileSync(this.configFile, 'utf8')) as { servers?: McpServerConfig[] };
-      return data.servers ?? [];
+      return Array.isArray(data.servers) ? data.servers : [];
     } catch {
-      return [];
+      return undefined;
     }
   }
 
+  servers(): McpServerConfig[] {
+    return this.readConfigFile() ?? [];
+  }
+
   addServer(config: McpServerConfig): McpServerConfig[] {
-    const servers = this.servers().filter((s) => s.name !== config.name);
+    const current = this.readConfigFile();
+    if (current === undefined) {
+      throw new Error(`Cannot update MCP config: ${this.configFile} contains invalid JSON. Fix or delete it first.`);
+    }
+    const servers = current.filter((s) => s.name !== config.name);
     servers.push(config);
     mkdirSync(path.dirname(this.configFile), { recursive: true });
     writeFileSync(this.configFile, JSON.stringify({ servers }, null, 2));
@@ -176,7 +218,11 @@ export class McpManager {
       client.kill();
       this.clients.delete(name);
     }
-    const servers = this.servers().filter((s) => s.name !== name);
+    const current = this.readConfigFile();
+    if (current === undefined) {
+      throw new Error(`Cannot remove server "${name}": ${this.configFile} contains invalid JSON and rewriting it would wipe every configured server.`);
+    }
+    const servers = current.filter((s) => s.name !== name);
     writeFileSync(this.configFile, JSON.stringify({ servers }, null, 2));
     return servers;
   }

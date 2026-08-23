@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export function nowIso(): string {
@@ -77,7 +77,14 @@ export function excerpt(text: string, max = 1200): string {
 export function readJson<T>(file: string): T | undefined {
   try {
     return JSON.parse(readFileSync(file, 'utf8')) as T;
-  } catch {
+  } catch (err) {
+    // Missing files are a normal "absent" signal for callers. A CORRUPT file
+    // must not masquerade as missing — surface it so silent state loss (e.g.
+    // a ledger read as "task not found") can at least be diagnosed.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== 'ENOENT') {
+      console.error(`[hermes] warning: ${file} exists but could not be parsed (${(err as Error).message})`);
+    }
     return undefined;
   }
 }
@@ -86,7 +93,38 @@ export function writeJson(file: string, data: unknown): void {
   mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${Date.now()}.${Math.floor(Math.random() * 1e6)}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
-  renameSync(tmp, file);
+  // Windows AV / Defender can briefly hold the freshly written temp file,
+  // causing EPERM/EBUSY on the atomic rename. Retry with backoff instead of
+  // crashing the specialist as "EPERM: operation not permitted".
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      renameSync(tmp, file);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      const isLock = code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+      if (!isLock || attempt === 5) {
+        // Final fallback: copy + unlink tolerates AV locks on rename. copy is
+        // NOT atomic, so retry briefly — a reader observing a torn file would
+        // otherwise see "missing"/corrupt state.
+        for (let copyAttempt = 0; copyAttempt < 3; copyAttempt++) {
+          try {
+            copyFileSync(tmp, file);
+            try { unlinkSync(tmp); } catch {}
+            return;
+          } catch {
+            const ms = 20 * (copyAttempt + 1);
+            try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
+          }
+        }
+        try { unlinkSync(tmp); } catch {}
+        throw err;
+      }
+      // Backoff 15ms, 30ms, 60ms, 120ms, 240ms — sync sleep via Atomics.
+      const ms = 15 * Math.pow(2, attempt);
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
+    }
+  }
 }
 
 export function summarizeParams(tool: string, params: Record<string, unknown>): string {

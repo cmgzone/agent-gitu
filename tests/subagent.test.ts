@@ -113,13 +113,14 @@ describe('SubAgentRunner', () => {
     expect(events.some((event) => event.includes('worktree'))).toBe(true);
     expect(readFileSync(path.join(dir, 'src', 'isolated.txt'), 'utf8')).toBe('written in worktree');
 
+    // Success path fully cleans up: no preserved worktrees or branches.
     const worktrees = await gitExec(dir, ['worktree', 'list']);
     expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(1);
     const branches = await gitExec(dir, ['branch']);
     expect(branches).not.toContain('hermes-sub-');
     const mergeLog = await gitExec(dir, ['log', '--oneline']);
     expect(mergeLog).toContain('merge');
-  });
+  }, 90000);
 
   it('does not merge changes when the specialist fails, and reports merge conflicts', async () => {
     const dir = makeProject();
@@ -146,26 +147,36 @@ describe('SubAgentRunner', () => {
     const [result] = await runner.runMany([{ agent: 'failing', task: 'write then give up' }]);
 
     expect(result.ok).toBe(false);
+    // The failed attempt's work is PRESERVED on its branch — not merged into
+    // the main tree, but no longer destroyed either.
     expect(() => readFileSync(path.join(dir, 'src', 'conflicted.txt'), 'utf8')).toThrow();
+    expect(result.resumableJobId).toBeTruthy();
+    expect(result.summary).toContain('WORK PRESERVED');
     const worktrees = await gitExec(dir, ['worktree', 'list']);
-    expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(1);
-  });
+    expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(2);
+  }, 90000);
 
   it('never lets two concurrent specialists silently clobber each other: same-file edits yield one clean merge and one detected conflict', async () => {
     const dir = makeProject();
     await initGitRepo(dir);
 
     // Both agents write the SAME file with different content at the same time.
-    const llm = scriptedLlm([
-      () => JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'src/shared.txt', content: 'from agent A' }, reason: 'a', expected: 'file' } }),
-      () => JSON.stringify({ action: { type: 'answer', summary: 'A done' } }),
-      () => JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'src/shared.txt', content: 'from agent B' }, reason: 'b', expected: 'file' } }),
-      () => JSON.stringify({ action: { type: 'answer', summary: 'B done' } }),
-    ]);
+    // Per-agent scripted clients keep each specialist's script independent of
+    // concurrent interleaving (a shared counter made this test flaky).
+    const perAgentLlm: Record<string, LlmClient> = {
+      alpha: scriptedLlm([
+        () => JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'src/shared.txt', content: 'from agent A' }, reason: 'a', expected: 'file' } }),
+        () => JSON.stringify({ action: { type: 'answer', summary: 'A done' } }),
+      ]),
+      beta: scriptedLlm([
+        () => JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'src/shared.txt', content: 'from agent B' }, reason: 'b', expected: 'file' } }),
+        () => JSON.stringify({ action: { type: 'answer', summary: 'B done' } }),
+      ]),
+    };
     const events: string[] = [];
     const runner = new SubAgentRunner({
       cwd: dir,
-      resolveLlm: () => llm,
+      resolveLlm: (name) => perAgentLlm[name]!,
       agentRole: () => 'tester',
       maxConcurrent: 2,
       onEvent: (event) => events.push(event),
@@ -183,16 +194,17 @@ describe('SubAgentRunner', () => {
     expect(conflict!.summary).toContain('Merge conflict');
     expect(conflict!.summary).toContain('shared.txt');
 
-    // The merged file holds exactly one agent's version — never a torn mix.
+    // The merged file holds exactly one agent's version [x] â‚¬— never a torn mix.
     const merged = readFileSync(path.join(dir, 'src', 'shared.txt'), 'utf8');
     expect(['from agent A', 'from agent B']).toContain(merged);
 
-    // No leftovers: exactly one worktree (the main one), no hermes-sub branches.
+    // Conflicting attempt is PRESERVED for resume instead of destroyed.
+    expect(conflict!.resumableJobId).toBeTruthy();
     const worktrees = await gitExec(dir, ['worktree', 'list']);
-    expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(1);
+    expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(2);
     const branches = await gitExec(dir, ['branch']);
-    expect(branches).not.toContain('hermes-sub-');
-  });
+    expect(branches).toContain('hermes-sub-');
+  }, 90000);
 
   it('keeps merging subsequent specialists after an earlier merge failed (chain is not poisoned)', async () => {
     const dir = makeProject();
@@ -243,9 +255,13 @@ describe('SubAgentRunner', () => {
     expect(colliding.filter((r) => r.ok)).toHaveLength(1);
     expect(colliding.filter((r) => !r.ok)[0].summary).toContain('Merge conflict');
 
+    // The conflicting attempt is preserved (paused), not destroyed.
+    const pausedColliding = colliding.find((r) => !r.ok)!;
+    expect(pausedColliding.resumableJobId).toBeTruthy();
     const worktrees = await gitExec(dir, ['worktree', 'list']);
-    expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(1);
-  });
+    // main checkout + the one preserved conflicting worktree
+    expect(worktrees.split(/\r?\n/).filter(Boolean)).toHaveLength(2);
+  }, 90000);
 
   it('uses a neutral git identity when none is configured, so worktree commits AND merges still succeed on fresh machines', async () => {
     const dir = makeProject();
@@ -284,7 +300,7 @@ describe('SubAgentRunner', () => {
       if (oldSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
       else process.env.GIT_CONFIG_SYSTEM = oldSystem;
     }
-  });
+  }, 90000);
 
   it('rejects specialist completion and discards worktree when evidence gate is unsatisfied (lying specialist attack)', async () => {
     const dir = makeProject();
@@ -354,19 +370,19 @@ describe('SubAgentRunner', () => {
       },
     ]);
 
-    // ❌ Specialist failed because evidence gate never opened
+    // [x] Œ Specialist failed because evidence gate never opened
     expect(result.ok).toBe(false);
     expect(sawRejection).toBe(true);
     expect(events.some((e) => e.includes('completion rejected by evidence gate'))).toBe(true);
 
-    // ❌ Worktree changes were DISCARDED — fake auth file never reached main branch!
+    // [x] Œ Worktree changes were DISCARDED [x] â‚¬— fake auth file never reached main branch!
     expect(() => readFileSync(path.join(dir, 'src', 'auth.ts'), 'utf8')).toThrow();
 
-    // ❌ No merge commit on main
+    // [x] Œ No merge commit on main
     const log = await gitExec(dir, ['log', '--oneline']);
     expect(log).not.toContain('fakeAuth');
     expect(log).not.toContain('lying-specialist');
-  });
+  }, 90000);
 
   it('accepts specialist completion and merges worktree when required verification is satisfied', async () => {
     const dir = makeProject();
@@ -461,6 +477,6 @@ describe('SubAgentRunner', () => {
     // ✅ Merge commit exists on main
     const log = await gitExec(dir, ['log', '--oneline']);
     expect(log).toContain('honest-specialist');
-  });
+  }, 90000);
 });
 

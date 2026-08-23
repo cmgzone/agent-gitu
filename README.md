@@ -53,6 +53,8 @@ Lock project → criteria → context pack → plan →
 | **PolicyEngine** | Unapproved destructive commands (fail-closed tiers) |
 | **CheckpointManager** | Irreversible damage (git branch + snapshot per step) |
 | **Specialist evidence gate** | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract |
+| **Adaptive effort planner** | Runaway cost on open-ended work: per-task budgets cap turns and specialist delegations by task complexity |
+| **Risk-based specialist selection** | Using the wrong specialist (or any specialist) for low-risk work: risk classifier → right-sized roster, with domain review gates for security/payments/data |
 | **Task↔session↔git binding** | Resuming a task in the wrong working tree or on the wrong branch |
 | **LSP intelligence layer** | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies |
 
@@ -147,8 +149,11 @@ tests/        unit + end-to-end (mock LLM) suites
 - [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs
 - [x] Phase 4 — Memory: typed entries, failure/task memory wired into runs
 - [x] Phase 5 — UI: agent-state viewer WebUI (SSE live feed, criteria/plan/evidence panels, approval gates)
+- [x] Phase 6 — Adaptive effort: per-task complexity → turn / specialist / context budgets, enforced in the orchestrator
+- [x] Phase 7 — Risk-based specialists: risk classifier + right-sized roster selection, steering, domain review gates
 - [x] Electron desktop shell (offline, in-app browser for visual verification)
 - [ ] Deeper context: import graphs, semantic search, edit history signals
+- [ ] Quality scoring, cost-per-success telemetry, benchmark vs OpenCode/Codex
 
 ## Web UI
 

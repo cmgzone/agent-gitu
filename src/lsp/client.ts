@@ -20,7 +20,10 @@ interface PendingWaiter {
 
 export class LspClient {
   private proc?: ChildProcess;
-  private buffer = '';
+  /** Raw stdout bytes. Kept as a Buffer because Content-Length counts BYTES
+   *  while JS string indices count UTF-16 units — framing on strings hangs or
+   *  desyncs whenever a message contains multi-byte UTF-8. */
+  private buf: Buffer = Buffer.alloc(0);
   private nextId = 1;
   private pending = new Map<number, PendingWaiter>();
   private ready?: Promise<void>;
@@ -50,7 +53,10 @@ export class LspClient {
           reject(err as Error);
           return;
         }
-        this.proc.stdout?.on('data', (chunk: Buffer) => this.onData(chunk.toString('utf8')));
+        // EPIPE / write-after-end on a dying child's stdin would otherwise be
+        // raised as an uncaught exception and crash the whole agent process.
+        this.proc.stdin?.on('error', () => {});
+        this.proc.stdout?.on('data', (chunk: Buffer) => this.onData(chunk));
         this.proc.stderr?.on('data', (chunk: Buffer) => {
           this.onNotification?.('_stderr', chunk.toString('utf8'));
         });
@@ -95,6 +101,9 @@ export class LspClient {
           })
           .catch((err) => {
             this.ready = undefined;
+            // Kill the orphaned server process; otherwise every retry spawns
+            // another child while the failed one keeps running forever.
+            void this.killTree();
             reject(err as Error);
           });
       });
@@ -108,21 +117,23 @@ export class LspClient {
     return Boolean(provider && typeof provider === 'object' && !Array.isArray(provider));
   }
 
-  private onData(chunk: string): void {
-    this.buffer += chunk;
+  private onData(chunk: Buffer): void {
+    this.buf = this.buf.length === 0 ? Buffer.from(chunk) : Buffer.concat([this.buf, chunk]);
     for (;;) {
-      const headerEnd = this.buffer.indexOf('\r\n\r\n');
+      const headerEnd = this.buf.indexOf('\r\n\r\n');
       if (headerEnd < 0) return;
-      const header = this.buffer.slice(0, headerEnd);
+      const header = this.buf.subarray(0, headerEnd).toString('utf8');
       const m = /Content-Length:\s*(\d+)/i.exec(header);
       if (!m) {
-        this.buffer = this.buffer.slice(headerEnd + 4);
+        this.buf = Buffer.from(this.buf.subarray(headerEnd + 4));
         continue;
       }
       const length = Number(m[1]);
-      if (this.buffer.length < headerEnd + 4 + length) return;
-      const body = this.buffer.slice(headerEnd + 4, headerEnd + 4 + length);
-      this.buffer = this.buffer.slice(headerEnd + 4 + length);
+      const bodyStart = headerEnd + 4;
+      // Compare BYTE counts (Buffer.length), not UTF-16 string lengths.
+      if (this.buf.length < bodyStart + length) return;
+      const body = this.buf.subarray(bodyStart, bodyStart + length).toString('utf8');
+      this.buf = Buffer.from(this.buf.subarray(bodyStart + length));
       try {
         this.handleMessage(JSON.parse(body));
       } catch {
@@ -151,8 +162,10 @@ export class LspClient {
       return;
     }
     if (typeof msg.id === 'number' && msg.method) {
-      // Server-initiated request. Answer null for optional capabilities.
-      const result = msg.method === 'workspace/configuration' ? { items: [] } : null;
+      // Server-initiated request. The spec requires an ARRAY of configuration
+      // results (one per requested item) for workspace/configuration; servers
+      // treat a malformed object as a protocol error.
+      const result = msg.method === 'workspace/configuration' ? [] : null;
       this.send({ jsonrpc: '2.0', id: msg.id, result });
       return;
     }
@@ -162,9 +175,14 @@ export class LspClient {
   }
 
   private send(msg: unknown): void {
+    const stdin = this.proc?.stdin;
+    // A dead child's stdin throws asynchronously even inside try/catch; the
+    // 'error' listener added at spawn swallows it, and this guard avoids the
+    // write in the first place whenever possible.
+    if (!stdin || stdin.destroyed || !stdin.writable) return;
     const body = JSON.stringify(msg);
     const header = `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n`;
-    this.proc?.stdin?.write(header + body);
+    stdin.write(header + body);
   }
 
   request(method: string, params: unknown, timeoutMs = 15000): Promise<unknown> {

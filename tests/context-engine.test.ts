@@ -37,8 +37,10 @@ describe('contextBudgetForWindow', () => {
   });
 
   it('scales source context while reserving room for the rest of the conversation', () => {
-    expect(contextBudgetForWindow(32_000)).toEqual({ maxFiles: 8, maxBytes: 51_200 });
-    expect(contextBudgetForWindow(1_000_000)).toEqual({ maxFiles: 24, maxBytes: 160_000 });
+    expect(contextBudgetForWindow(32_000)).toEqual({ maxFiles: 8, maxBytes: 48_000 });
+    // Very large windows are capped: the pack is a grounding sample, not a
+    // repo dump (~48K chars ≈ 12K tokens is plenty to plan from).
+    expect(contextBudgetForWindow(1_000_000)).toEqual({ maxFiles: 12, maxBytes: 48_000 });
   });
 });
 

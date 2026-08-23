@@ -16,6 +16,12 @@ export class DiagnosticsCache {
     return this.byUri.get(uri);
   }
 
+  /** Drop the cached set for one document (called when the doc is re-synced,
+   *  so a push-model fallback can never return pre-edit diagnostics). */
+  invalidate(uri: string): void {
+    this.byUri.delete(uri);
+  }
+
   clear(): void {
     this.byUri.clear();
   }

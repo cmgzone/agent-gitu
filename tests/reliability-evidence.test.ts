@@ -47,22 +47,37 @@ async function makeGitProject(): Promise<string> {
   return dir;
 }
 
-describe('workspace fingerprint — composite of git state', () => {
-  it('changes when the working tree changes and when commits are made', async () => {
-    const dir = await makeGitProject();
-    const fp1 = await getWorkspaceFingerprint(dir);
-    expect(fp1).not.toBe('non-git-repo');
+  describe('workspace fingerprint — composite of git state', () => {
+    it('changes when content changes, but survives staging/checkpoint commits', async () => {
+      const dir = await makeGitProject();
+      const fp1 = await getWorkspaceFingerprint(dir);
+      expect(fp1).not.toBe('non-git-repo');
 
-    await sleep(15);
-    writeFileSync(path.join(dir, 'src.txt'), 'new untracked content');
-    const fp2 = await getWorkspaceFingerprint(dir);
-    expect(fp2).not.toBe(fp1);
+      await sleep(15);
+      writeFileSync(path.join(dir, 'src.txt'), 'new untracked content');
+      const fp2 = await getWorkspaceFingerprint(dir);
+      expect(fp2).not.toBe(fp1);
 
-    await gitExec(dir, ['add', '-A']);
-    await gitExec(dir, ['-c', 'user.name=revid', '-c', 'user.email=revid@test.local', 'commit', '-m', 'second']);
-    const fp3 = await getWorkspaceFingerprint(dir);
-    expect(fp3).not.toBe(fp2);
-  });
+      // Staging alone must NOT invalidate evidence.
+      await gitExec(dir, ['add', '-A']);
+      const fp2b = await getWorkspaceFingerprint(dir);
+      expect(fp2b).toBe(fp2);
+
+      // Checkpoint commits move git bookkeeping but not worktree CONTENT:
+      // evidence recorded mid-run stays valid across them (documented
+      // contract). The old dirty-file-only hash collapsed to a constant on a
+      // clean tree, falsely staling exactly these runs — and letting
+      // 'clean-tree'-stamped evidence stay fresh across later edit+commit
+      // cycles. Content-based fingerprints close both holes.
+      await gitExec(dir, ['-c', 'user.name=revid', '-c', 'user.email=revid@test.local', 'commit', '-m', 'second']);
+      const fp3 = await getWorkspaceFingerprint(dir);
+      expect(fp3).toBe(fp2);
+
+      // A REAL content change after the commit is still detected.
+      writeFileSync(path.join(dir, 'src.txt'), 'changed again after commit');
+      const fp4 = await getWorkspaceFingerprint(dir);
+      expect(fp4).not.toBe(fp3);
+    });
 
   it('is deterministic for an unchanged workspace', async () => {
     const dir = await makeGitProject();

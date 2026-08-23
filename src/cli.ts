@@ -21,13 +21,20 @@ interface ParsedArgs {
 function parseArgs(argv: string[]): ParsedArgs {
   const positional: string[] = [];
   const flags = new Map<string, string | boolean>();
+  // Flags that take an explicit value. Anything else is boolean — and the
+  // literal tokens false/no/off/0 DISABLE it instead of truthy-enabling it.
+  const VALUE_FLAGS = new Set(['provider', 'model', 'port', 'type', 'criteria']);
+  const FALSEY = new Set(['false', 'no', 'off', '0']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg.startsWith('--')) {
       const key = arg.slice(2);
       const next = argv[i + 1];
-      if (next !== undefined && !next.startsWith('--')) {
+      if (VALUE_FLAGS.has(key) && next !== undefined && !next.startsWith('--')) {
         flags.set(key, next);
+        i += 1;
+      } else if (next !== undefined && !next.startsWith('--') && FALSEY.has(next.trim().toLowerCase())) {
+        flags.set(key, false);
         i += 1;
       } else {
         flags.set(key, true);
@@ -74,6 +81,9 @@ Providers:
 function askApproval(question: string): Promise<boolean> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
+    // stdin EOF (piped script, CI) closes readline without invoking the
+    // question callback — resolve with the safe default instead of hanging.
+    rl.on('close', () => resolve(false));
     rl.question(question, (answer) => {
       rl.close();
       resolve(/^y(es)?$/i.test(answer.trim()));
@@ -84,6 +94,7 @@ function askApproval(question: string): Promise<boolean> {
 function askLine(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
+    rl.on('close', () => resolve(''));
     rl.question(question, (answer) => {
       rl.close();
       resolve(answer.trim());
@@ -261,7 +272,12 @@ async function main(): Promise<void> {
       console.log('Project scope: detected from the current directory at request time.');
       console.log('Press Ctrl+C to stop.');
       const shutdown = (): void => {
-        void server.stop().then(() => process.exit(0));
+        // stop() can reject (server already closed) and previously waited on
+        // long-lived SSE connections; catch and force-exit either way.
+        server
+          .stop()
+          .catch(() => {})
+          .finally(() => process.exit(0));
       };
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
@@ -327,9 +343,13 @@ async function main(): Promise<void> {
         mode: flags.get('fast') ? 'fast' : 'standard',
         contextWindowTokens,
         autoApprove: Boolean(flags.get('yes')),
+        // Safe mode: even with --yes, dangerous-tier commands still require a
+        // human. Opt in with --safe-mode or HERMES_SAFE_MODE=1.
+        safeMode: Boolean(flags.get('safe-mode')) || /^(1|true|yes)$/i.test(process.env['HERMES_SAFE_MODE'] ?? ''),
         criteria,
         subagents,
         agentsSection: agentStore.renderForPrompt() || undefined,
+        specialists: agentStore.list().map((a) => ({ name: a.name, role: a.role })),
         requirePlanReview: Boolean(flags.get('review')),
         planReviewHandler: async ({ criteria: crits, steps }) => {
           console.log('\nPLAN REVIEW');

@@ -1,5 +1,17 @@
 export { Hermes, type HermesConfig, type HermesRunResult } from './agent/hermes.js';
 export { buildStateMessage, buildSystemPrompt } from './agent/prompt.js';
+export { classifyTaskComplexity, planEffort } from './agent/effort-planner.js';
+export { buildPlanNote, classifyRiskDomains, planRisk, selectSpecialists } from './agent/risk-planner.js';
+export {
+  auditArchitecture,
+  decisionConflicts,
+  detectExplicitTechnologies,
+  normalizeDecisionDraft,
+  renderDecisions,
+  technologiesIn,
+  type ArchitectureAudit,
+} from './agent/architecture.js';
+export { classifyCall, estimateTokens, renderTelemetry, RunTelemetry } from './agent/telemetry.js';
 export { CheckpointManager } from './checkpoint/checkpoint.js';
 export { CodeIndex, defaultIndexPath, type IndexedFile, type RefreshStats } from './context/code-index.js';
 export { ContextEngine, classifyRole, tokenize } from './context/context-engine.js';

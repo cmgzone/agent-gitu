@@ -47,7 +47,10 @@ const MODERATE_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
 const SAFE_COMMAND_RE =
   /^(git\s+(status|log|diff|show|branch(\s+-a|\s+--list)?|remote\s+-v|rev-parse|ls-files)|ls|dir|cat|type|echo|pwd|node\s+--version|npm\s+(run\s+(test|lint|typecheck|build)|test|ls)|npx\s+tsc|pytest|cargo\s+test|go\s+test)\b/i;
 
-const COMPOUND_COMMAND_RE = /&&|\|\||[;|`]|\$\(|\r?\n/;
+// Anything that chains or redirects commands must never be auto-approved as
+// "safe": redirection (`cat id_rsa > leak.txt`) and single-`&` background
+// separators otherwise bypass classification entirely.
+const COMPOUND_COMMAND_RE = /&&|\|\||[;|`]|\$\(|\r?\n|>{1,2}|<{1,2}|(?:^|\s)&(?=\s|$)/;
 
 export function classifyCommand(command: string): { tier: RiskTier; why: string } {
   for (const { re, why } of DANGEROUS_COMMAND_PATTERNS) {
@@ -73,6 +76,9 @@ export class PolicyEngine {
   constructor(
     private readonly autoApprove: boolean = false,
     private readonly approvalHandler?: ApprovalHandler,
+    /** Safe mode: dangerous-tier commands are NEVER auto-approved, even with
+     *  autoApprove — the unattended-but-cautious middle ground. */
+    private readonly safeMode: boolean = false,
   ) {}
 
   async evaluate(tool: string, params: Record<string, unknown>): Promise<PolicyDecision> {
@@ -126,7 +132,7 @@ export class PolicyEngine {
       return { tier, allowed: true, requiresApproval: false, reason: `${why} (logged)` };
     }
 
-    if (this.autoApprove) {
+    if (this.autoApprove && !(this.safeMode && tier === 'dangerous')) {
       return { tier, allowed: true, requiresApproval: false, reason: `${why} (auto-approved)` };
     }
     if (this.approvalHandler) {

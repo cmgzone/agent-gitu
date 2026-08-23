@@ -9,8 +9,17 @@ export interface BrowserState {
 }
 
 export interface BrowserScreenshot {
+  /** Base64-encoded image payload (format described by `mime`, default PNG). */
   pngBase64: string;
+  /** Payload encoding; defaults to image/png for bridges that predate it. */
+  mime?: 'image/png' | 'image/jpeg' | 'image/webp';
   state: BrowserState;
+  /** Console warnings/errors captured since the last navigation (newest last). */
+  consoleErrors?: string[];
+  /** Visible page text digest so text-only models can ground on real content. */
+  textDigest?: string;
+  /** True when the document had not finished loading when the capture ran. */
+  loadIncomplete?: boolean;
 }
 
 export interface BrowserBridge {

@@ -1,4 +1,4 @@
-import { rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
@@ -7,6 +7,7 @@ import { getWorkspaceFingerprint, gitExec, isGitRepo } from '../git/git.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { extractJson, parseXmlFunctionCall, type LlmClient, type LlmMessage } from '../llm/llm.js';
+import { resilientLlm } from '../llm/resilient.js';
 import { LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import { PolicyEngine } from '../policy/policy.js';
@@ -18,6 +19,9 @@ export interface SubAgentSpec {
   agent: string;
   task: string;
   criteria?: (string | CriterionSpec)[];
+  /** Continue a previously PAUSED specialist in its preserved worktree,
+   *  picking up where it left off instead of starting over. */
+  resume?: { jobId: string; note?: string };
 }
 
 export type SpecialistStatus = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BLOCKED' | 'FAILED' | 'CANCELLED';
@@ -38,6 +42,9 @@ export interface SubAgentResult {
   evidenceReport?: SpecialistEvidenceReport;
   blockers?: string[];
   recommendation?: string;
+  /** Set when this paused attempt's worktree is preserved and resumable via
+   *  delegate with resume:{jobId}. */
+  resumableJobId?: string;
 }
 
 export type SubAgentJobStatus = 'queued' | 'running' | 'completed' | 'failed';
@@ -71,13 +78,30 @@ export interface SubAgentRunnerDeps {
   onEvent?: (text: string) => void;
 }
 
-const DEFAULT_BASE_TURNS = 20;
-const DEFAULT_HARD_CEILING_TURNS = 100;
+const DEFAULT_BASE_TURNS = 30;
+const DEFAULT_HARD_CEILING_TURNS = 150;
 const MAX_CONCURRENT_SUBAGENTS = 5;
+
+/** Finished jobs stay queryable for this long, then their memory is freed. */
+const JOB_RETENTION_MS = 10 * 60_000;
+/** Paused (failed/partial) specialists whose worktrees stay recoverable. */
+const RETAINED_WORKTREES_MAX = 8;
 
 interface InternalSubAgentJob extends SubAgentJob {
   completion: Promise<SubAgentResult>;
   resolve: (result: SubAgentResult) => void;
+  spec: SubAgentSpec;
+}
+
+/** A paused specialist's preserved worktree, resumable by jobId. */
+interface RetainedWorktree {
+  root: string;
+  branch: string;
+  agent: string;
+  task: string;
+  summary: string;
+  filesChanged: string[];
+  createdAt: number;
 }
 
 interface Worktree {
@@ -88,6 +112,14 @@ interface Worktree {
 // Serializes merges back into the main working tree so two specialists that
 // finish at the same time never race for git's index lock.
 let mergeChain: Promise<unknown> = Promise.resolve();
+
+function emitSafe(onEvent: ((text: string) => void) | undefined, text: string): void {
+  try {
+    (onEvent ?? (() => {}))(text);
+  } catch {
+    /* event listeners must never break the runner */
+  }
+}
 
 function buildSystemPrompt(name: string, role: string, root: string, isolated: boolean, criteria?: AcceptanceCriterion[]): string {
   const criteriaSection = criteria && criteria.length > 0
@@ -127,6 +159,8 @@ export class SubAgentRunner {
   private readonly queue: InternalSubAgentJob[] = [];
   private running = 0;
   private nextJob = 1;
+  /** Paused specialists whose worktrees survive for later resume. */
+  private readonly retained = new Map<string, RetainedWorktree>();
 
   constructor(private readonly deps: SubAgentRunnerDeps) {}
 
@@ -181,6 +215,7 @@ export class SubAgentRunner {
       queuedAt,
       completion,
       resolve,
+      spec,
     };
     this.jobs.set(job.id, job);
     this.queue.push(job);
@@ -217,6 +252,11 @@ export class SubAgentRunner {
           job.finishedAt = new Date().toISOString();
           job.summary = result.summary;
           job.resolve(result);
+          // Prune finished jobs after a grace window: each entry retains its
+          // completion promise, closures and full task text — without this the
+          // map grows unboundedly in the long-lived desktop/server process.
+          const prune = setTimeout(() => this.jobs.delete(job.id), JOB_RETENTION_MS);
+          prune.unref?.();
           (this.deps.onEvent ?? (() => {}))(`subagent ${job.agent} [${job.status}] ${job.id} — ${result.summary.slice(0, 160)}`);
         })
         .finally(() => {
@@ -235,10 +275,31 @@ export class SubAgentRunner {
     const { agent: name, task, criteria: rawCriteria } = job;
     const emit = this.deps.onEvent ?? (() => {});
     const role = this.deps.agentRole(name) ?? 'general-purpose engineer';
-    const llm = this.deps.resolveLlm(name);
+    const llm = resilientLlm(this.deps.resolveLlm(name), {
+      label: `specialist ${name}`,
+      onRetry: ({ attempt, maxRetries, delayMs, error }) =>
+        emit(`subagent ${name} — LLM ${error.message.slice(0, 100)} — retry ${attempt}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`),
+    });
 
     const repoRoot = ProjectGuard.detect(this.deps.cwd).lock.repoRoot;
-    const wt = await this.createWorktree(job, repoRoot);
+    // Resume mode: adopt the paused attempt's preserved worktree instead of
+    // starting from a fresh copy — nothing gets redone.
+    const resumeKey = job.spec.resume?.jobId;
+    let resumedFrom: RetainedWorktree | undefined;
+    if (resumeKey) {
+      const r = this.retained.get(resumeKey) ?? this.loadPausedIndex(repoRoot)[resumeKey];
+      if (r && existsSync(r.root)) {
+        resumedFrom = r;
+        this.retained.delete(resumeKey);
+        this.removeFromPausedIndex(repoRoot, resumeKey);
+        emit(`subagent ${name} resuming ${resumeKey} — reusing preserved worktree on ${r.branch}`);
+      } else {
+        this.retained.delete(resumeKey);
+        this.removeFromPausedIndex(repoRoot, resumeKey);
+        emit(`subagent ${name} resume ${resumeKey} unavailable (worktree gone) — starting fresh`);
+      }
+    }
+    const wt = resumedFrom ? { root: resumedFrom.root, branch: resumedFrom.branch } : await this.createWorktree(job, repoRoot);
     const workRoot = wt ? wt.root : repoRoot;
 
     let summary = '';
@@ -291,6 +352,45 @@ export class SubAgentRunner {
         { role: 'system', content: buildSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt), criteriaList) },
         { role: 'user', content: `TASK: ${task}${criteriaPrompt}` },
       ];
+      if (resumedFrom) {
+        // Wake-where-it-left-off briefing so the specialist does not redo or
+        // clobber the earlier attempt's committed work.
+        const priorFiles = resumedFrom.filesChanged.length
+          ? resumedFrom.filesChanged.map((f) => `  - ${f}`).join('\n')
+          : '  (none recorded)';
+        messages.push({
+          role: 'user',
+          content:
+            `RESUME MODE: a previous attempt of this exact task stopped early. Its work is ALREADY COMMITTED on the current branch.\n` +
+            `Previously changed files:\n${priorFiles}\n` +
+            `Previous attempt's last status:\n${resumedFrom.summary.slice(0, 1200)}\n` +
+            (job.spec.resume?.note ? `Orchestrator note: ${job.spec.resume.note}\n` : '') +
+            `First inspect current state (git log --oneline, read the changed files), then CONTINUE from where it stopped toward completing the task and its criteria. Do not redo finished work.`,
+        });
+      }
+      // Mid-run checkpoints: commit accumulated product changes on the branch
+      // after every turn that touched new files, so even a hard stop leaves a
+      // recoverable trail instead of losing everything.
+      let checkpointedFiles = resumedFrom ? resumedFrom.filesChanged.length : 0;
+      let lastCheckpointAt = Date.now();
+      const checkpoint = async (label: string): Promise<void> => {
+        if (!wt || !isGitRepo(wt.root)) return;
+        try {
+          const dirty = await gitExec(wt.root, ['status', '--porcelain']);
+          if (!dirty.trim()) return;
+          // Same .hermes exclusion as the final merge staging — private agent
+          // state must never leak into committed product branches.
+          await gitExec(wt.root, ['add', '-A', '--', ':(exclude).hermes']);
+          const staged = await gitExec(wt.root, ['diff', '--cached', '--name-only']).catch(() => '');
+          if (!staged.trim()) return;
+          const ident = await this.identityArgs(repoRoot);
+          await gitExec(wt.root, [...ident, 'commit', '-m', `subagent ${name}: checkpoint (${label})`.slice(0, 180), '--no-verify']).catch(() => {});
+          emit(`subagent ${name} checkpoint (${label}) committed`);
+          lastCheckpointAt = Date.now();
+        } catch {
+          /* checkpointing must never break the run */
+        }
+      };
 
       for (let turn = 0; turn < turnBudget; turn++) {
         turnsUsed = turn + 1;
@@ -391,6 +491,12 @@ export class SubAgentRunner {
             }
             if (outcome.result.filesTouched) {
               for (const f of outcome.result.filesTouched) filesChanged.add(f);
+            }
+            // New product files on disk → commit a checkpoint NOW so a later
+            // timeout/stall can never lose this work.
+            if (filesChanged.size > checkpointedFiles) {
+              checkpointedFiles = filesChanged.size;
+              await checkpoint('progress');
             }
           } else {
             consecutiveErrors += 1;
@@ -503,6 +609,9 @@ export class SubAgentRunner {
           .filter(Boolean)
           .join('\n');
       }
+      // Final checkpoint before the outcome decision: capture any uncommitted
+      // product state so the pause/resume flow below always has a clean trail.
+      await checkpoint(ok ? 'pre-merge' : 'final-wip');
       ledger.setStatus(ok ? 'completed' : 'blocked');
     } finally {
       if (wt) {
@@ -511,10 +620,29 @@ export class SubAgentRunner {
           summary = reconciled.summary;
           ok = reconciled.ok;
           if (!ok) status = 'FAILED';
+          if (reconciled.ok) {
+            // Fully delivered → nothing to retain.
+            this.retained.delete(job.id);
+            await this.removeWorktree(wt, repoRoot);
+          } else {
+            // Merge conflict path already preserves the branch — register it
+            // so the orchestrator can resume instead of losing the attempt.
+            this.retainWorktree(job.id, wt, name, task, summary, [...filesChanged]);
+          }
         } else {
-          emit(`subagent ${name} — discarding worktree changes (agent did not finish cleanly)`);
+          // PAUSED, not discarded: the branch holds every checkpoint commit,
+          // so the main agent can wake this specialist where it left off.
+          const hasProduct = filesChanged.size > 0 || filesInspected.size > 0;
+          if (hasProduct) {
+            this.retainWorktree(job.id, wt, name, task, summary || 'stopped early', [...filesChanged]);
+            const hint = `WORK PRESERVED on branch ${wt.branch} (${filesChanged.size} file(s)) — resume with delegate {"tasks":[{"agent":"${name}","task":"…","resume":{"jobId":"${job.id}"}}]}`;
+            emit(`subagent ${name} [paused] ${job.id} — ${hint}`);
+            summary = `${summary}\n\nPAUSED AFTER ${turnsUsed}/${turnBudget} TURNS. ${hint}`;
+          } else {
+            emit(`subagent ${name} — no product changes to keep — discarding worktree`);
+            await this.removeWorktree(wt, repoRoot);
+          }
         }
-        await this.removeWorktree(wt, repoRoot);
       }
     }
     return {
@@ -525,6 +653,7 @@ export class SubAgentRunner {
       summary,
       turnsUsed,
       turnsBudgeted: turnBudget,
+      resumableJobId: this.retained.has(job.id) ? job.id : undefined,
       filesInspected: [...filesInspected],
       filesChanged: [...filesChanged],
       criteriaStatus: (ledger?.data.acceptanceCriteria ?? []).map((c) => ({
@@ -569,20 +698,30 @@ export class SubAgentRunner {
   private async reconcileWorktree(wt: Worktree, repoRoot: string, name: string, task: string): Promise<{ ok: boolean; summary: string }> {
     const emit = this.deps.onEvent ?? (() => {});
     try {
-      const status = await gitExec(wt.root, ['status', '--porcelain']);
-      if (!status.trim()) {
-        emit(`subagent ${name} produced no changes — nothing to merge`);
-        return { ok: true, summary: '(isolated worktree: no changes were produced)' };
-      }
       const commitMsg = `subagent ${name}: ${task.slice(0, 80)}`.replace(/[\r\n]+/g, ' ');
+      // Mid-run checkpoints may have ALREADY committed product changes on the
+      // branch — a clean status does NOT mean "no work". The only genuine
+      // no-change case is: nothing dirty AND branch already merged into HEAD.
+      const isAncestor = await gitExec(repoRoot, ['merge-base', '--is-ancestor', wt.branch, 'HEAD'])
+        .then(() => true)
+        .catch(() => false);
       // Never merge the specialist's private .hermes state (ledgers, locks)
       // back into the main working tree — only its product changes.
       await gitExec(wt.root, ['add', '-A', '--', ':(exclude).hermes']);
+      const staged = await gitExec(wt.root, ['diff', '--cached', '--name-only']).catch(() => '');
+      if (!staged.trim() && isAncestor) {
+        emit(`subagent ${name} produced no product changes — only private agent state changed`);
+        return { ok: true, summary: '(isolated worktree: no product changes were produced)' };
+      }
       // Some machines (fresh CI, new laptops) have no git identity at all:
       // without it both the worktree commit AND the merge commit fail. Detect
       // it upfront and use a neutral author so the work is never lost.
       const ident = await this.identityArgs(repoRoot);
-      await gitExec(wt.root, [...ident, 'commit', '-m', commitMsg]);
+      if (staged.trim()) {
+        await gitExec(wt.root, [...ident, 'commit', '-m', commitMsg]);
+      } else {
+        emit(`subagent ${name} — product work found in checkpoint commits, proceeding to merge`);
+      }
       emit(`subagent ${name} — merging worktree changes back`);
       // The merge and any conflict cleanup run inside the same serialized
       // chain slot: a conflicting merge is aborted before the next merge ever
@@ -591,30 +730,45 @@ export class SubAgentRunner {
       const settle = mergeChain
         .catch(() => {})
         .then(async (): Promise<{ ok: boolean; summary: string }> => {
+          const attemptMerge = (...extra: string[]): Promise<string> =>
+            gitExec(repoRoot, [...ident, 'merge', wt.branch, '--no-ff', '-m', `merge ${commitMsg}`, ...extra]);
           try {
-            await gitExec(repoRoot, [...ident, 'merge', wt.branch, '--no-ff', '-m', `merge ${commitMsg}`]);
-            emit(`subagent ${name} — merged cleanly into the main working tree`);
-            return { ok: true, summary: '(isolated worktree: changes committed and merged back cleanly)' };
-          } catch (err) {
-            const dirty = await gitExec(repoRoot, ['status', '--porcelain']).catch(() => '');
-            const unmerged = dirty
-              .split(/\r?\n/)
-              .filter((l) => /^(UU|AA|DD|AU|UA|UD|DU)\s/.test(l))
-              .map((l) => l.slice(3).trim());
+            await attemptMerge();
+          } catch (errFirst) {
+            // Undo the partial merge state, then retry once with the patient
+            // diff strategy: many "conflicts" are just hunk relocations that
+            // -X patience resolves cleanly.
             await gitExec(repoRoot, ['merge', '--abort']).catch(() => {});
-            if (unmerged.length > 0) {
-              emit(`subagent ${name} — merge conflict, changes NOT merged`);
+            try {
+              await attemptMerge('-X', 'patience');
+            } catch {
+              const dirty = await gitExec(repoRoot, ['status', '--porcelain']).catch(() => '');
+              const unmerged = dirty
+                .split(/\r?\n/)
+                .filter((l) => /^(UU|AA|DD|AU|UA|UD|DU)\s/.test(l))
+                .map((l) => l.slice(3).trim());
+              await gitExec(repoRoot, ['merge', '--abort']).catch(() => {});
+              if (unmerged.length > 0) {
+                emit(`subagent ${name} — merge conflict; work PRESERVED on ${wt.branch} for manual recovery`);
+                return {
+                  ok: false,
+                  summary:
+                    `Merge conflict when reconciling worktree changes. The specialist's work is NOT lost — it is committed on branch ${wt.branch} ` +
+                    `(worktree ${wt.root}). Recover it with: git merge ${wt.branch} — resolve conflicts manually, or re-delegate a narrower task. ` +
+                    `Conflicting paths: ${unmerged.join(', ')}`,
+                };
+              }
+              emit(`subagent ${name} — merge refused by main tree state; work PRESERVED on ${wt.branch}`);
               return {
                 ok: false,
-                summary: `Merge conflict when reconciling worktree changes — they were NOT merged into the main tree. Conflicting paths: ${unmerged.join(', ')}`,
+                summary:
+                  `Worktree changes were NOT merged: ${(errFirst as Error).message} (the main working tree likely has conflicting uncommitted changes). ` +
+                  `The work is committed on branch ${wt.branch}; recover later with: git merge ${wt.branch}`,
               };
             }
-            emit(`subagent ${name} — merge refused, changes NOT merged`);
-            return {
-              ok: false,
-              summary: `Worktree changes were NOT merged: ${(err as Error).message} (the main working tree likely has conflicting uncommitted changes)`,
-            };
           }
+          emit(`subagent ${name} — merged cleanly into the main working tree`);
+          return { ok: true, summary: '(isolated worktree: changes committed and merged back cleanly)' };
         });
       mergeChain = settle;
       return settle;
@@ -643,6 +797,64 @@ export class SubAgentRunner {
     ]);
     if (name.trim() && email.trim()) return [];
     return ['-c', 'user.name=Agent Gitu', '-c', 'user.email=agent@agentgitu.dev'];
+  }
+
+  /**
+   * Durable pause-index in the MAIN repo's .hermes dir: paused specialists
+   * stay resumable even after an app restart (in-memory map alone would lose
+   * them, while their worktree dirs sit orphaned on disk).
+   */
+  private pausedIndexPath(repoRoot: string): string {
+    return path.join(repoRoot, '.hermes', 'paused-specialists.json');
+  }
+
+  private loadPausedIndex(repoRoot: string): Record<string, RetainedWorktree> {
+    try {
+      const raw = JSON.parse(readFileSync(this.pausedIndexPath(repoRoot), 'utf8')) as Record<string, RetainedWorktree>;
+      return raw && typeof raw === 'object' ? raw : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private savePausedIndex(repoRoot: string, index: Record<string, RetainedWorktree>): void {
+    try {
+      mkdirSync(path.dirname(this.pausedIndexPath(repoRoot)), { recursive: true });
+      writeFileSync(this.pausedIndexPath(repoRoot), `${JSON.stringify(index, null, 2)}\n`, 'utf8');
+    } catch {
+      /* best effort */
+    }
+  }
+
+  private removeFromPausedIndex(repoRoot: string, jobId: string): void {
+    const index = this.loadPausedIndex(repoRoot);
+    if (index[jobId]) {
+      delete index[jobId];
+      this.savePausedIndex(repoRoot, index);
+    }
+  }
+
+  /**
+   * Preserve a paused attempt's worktree for later resume, evicting the
+   * oldest retained entry (and its worktree) beyond the cap.
+   */
+  private retainWorktree(jobId: string, wt: Worktree, agent: string, task: string, summary: string, filesChanged: string[]): void {
+    const repoRoot = ProjectGuard.detect(this.deps.cwd).lock.repoRoot;
+    const record: RetainedWorktree = { root: wt.root, branch: wt.branch, agent, task, summary, filesChanged, createdAt: Date.now() };
+    this.retained.set(jobId, record);
+    const index = this.loadPausedIndex(repoRoot);
+    index[jobId] = record;
+    this.savePausedIndex(repoRoot, index);
+    while (this.retained.size > RETAINED_WORKTREES_MAX) {
+      const oldestKey = this.retained.keys().next().value;
+      if (!oldestKey) break;
+      const oldest = this.retained.get(oldestKey)!;
+      this.retained.delete(oldestKey);
+      delete index[oldestKey];
+      void this.removeWorktree({ root: oldest.root, branch: oldest.branch }, repoRoot).catch(() => {});
+      emitSafe(this.deps.onEvent, `subagent ${oldest.agent} retained worktree ${oldestKey} evicted (cap ${RETAINED_WORKTREES_MAX})`);
+    }
+    this.savePausedIndex(repoRoot, index);
   }
 
   private async removeWorktree(wt: Worktree, repoRoot: string): Promise<void> {

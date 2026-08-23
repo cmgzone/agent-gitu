@@ -1,8 +1,6 @@
 import type { AcceptanceCriterion, CriterionEvidenceType, CriterionSpec, Evidence, EvidenceKind, TaskLedgerData } from '../types.js';
 import { excerpt, nowIso, shortId } from '../util.js';
 
-const TRIVIAL_EVIDENCE_RE = /^\s*(echo|pwd|true|:|cd|ls|dir|whoami|hostname|date|type|ver|git\s+status|git\s+log)\b/i;
-
 /**
  * Mapping from structured criterion evidence types to the EvidenceKind
  * that must be produced by the actual command classification.
@@ -20,7 +18,41 @@ export function evidenceKindForType(type: CriterionEvidenceType): EvidenceKind |
 }
 
 export function isTrivialEvidenceCommand(command: string): boolean {
-  return TRIVIAL_EVIDENCE_RE.test(command);
+  // Split on compound operators first: "cd client && npm test" must count as
+  // real verification just because it STARTS with cd, while
+  // "git status && git log" (every segment trivial) stays a no-op. Within a
+  // segment, EVERY token must be trivial — "time npm run build" is real work
+  // even though it starts with the wrapper word "time".
+  const segments = command.split(/&&|\|\||[;|]/);
+  if (segments.every((s) => s.trim() === '')) return true;
+  return segments.every(isTrivialSegment);
+}
+
+const TRIVIAL_WORDS = new Set([
+  'echo', '.', ':', 'true', 'pwd', 'cd', 'ls', 'dir', 'cls', 'whoami', 'hostname',
+  'date', 'ver', 'tree', 'sleep', 'start-sleep',
+  'write-host', 'get-childitem', 'gci', 'set-location', 'sl', 'git',
+]);
+/** Read-only git subcommands that keep a `git ...` segment trivial. */
+const TRIVIAL_GIT_SUBCOMMANDS = new Set(['status', 'log', 'diff', 'show']);
+
+function isTrivialSegment(raw: string): boolean {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  let sawCommand = false;
+  for (const tok of tokens) {
+    if (/^[-/]/.test(tok)) continue; // flags and unix-style paths are inert
+    const t = tok.toLowerCase().replace(/^["']|["']$/g, '');
+    if (TRIVIAL_WORDS.has(t)) {
+      sawCommand = true;
+      continue;
+    }
+    if (t === 'git' || TRIVIAL_GIT_SUBCOMMANDS.has(t)) continue;
+    // Path-ish continuation AFTER a trivial command ("cd client", "echo done").
+    if (sawCommand && /^[\w .~\\/:"'()-]+$/.test(tok)) continue;
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -52,6 +84,16 @@ export function classifyEvidenceKind(command: string): EvidenceKind {
   if (/\b(typecheck|tsc)\b/.test(c)) return 'typecheck';
   if (/\bbuild\b/.test(c)) return 'build';
   return 'command';
+}
+
+/**
+ * True when this link is weakly bound: the criterion pins neither a
+ * verification command nor an evidence type, so ANY passing command would
+ * have satisfied it. The gate still accepts it, but callers should surface
+ * the looseness instead of presenting it as hard proof.
+ */
+export function isWeakEvidenceLink(criterion: AcceptanceCriterion, evidence: Evidence): boolean {
+  return !criterion.verification && (criterion.evidenceType ?? 'any') === 'any' && evidence.kind === 'command';
 }
 
 export interface GateResult {
@@ -105,7 +147,7 @@ export class EvidenceEngine {
     if (!evidence.passed) {
       return { ok: false, reason: `Evidence ${evidenceId} did not pass; it cannot satisfy a criterion.` };
     }
-    if (evidence.kind === 'command' && evidence.command && TRIVIAL_EVIDENCE_RE.test(evidence.command)) {
+    if (evidence.kind === 'command' && evidence.command && isTrivialEvidenceCommand(evidence.command)) {
       return {
         ok: false,
         reason: `Evidence ${evidenceId} is a no-op command ("${evidence.command.trim()}") and cannot verify a criterion. Run a real test/build/lint/typecheck.`,

@@ -75,12 +75,57 @@ export interface Evidence {
 
 export type StepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'blocked';
 
+/** Which surface a plan step touches — drives richer frontend/backend design
+ *  output and lets the state message summarize progress per area. */
+export type PlanArea =
+  | 'frontend'
+  | 'backend'
+  | 'integration'
+  | 'shared'
+  | 'database'
+  | 'infra'
+  | 'tests'
+  | 'docs';
+
+/** A todo-level breakdown item under a plan step (small, verifiable, cheap). */
+export interface PlanSubtask {
+  text: string;
+  done: boolean;
+}
+
 export interface PlanStep {
   id: string;
   description: string;
   verification: string;
   status: StepStatus;
   attempts: number;
+  /** Surface this step belongs to (optional; tagged at plan time). */
+  area?: PlanArea;
+  /** Todo breakdown of this step into smaller tasks. */
+  subtasks?: PlanSubtask[];
+}
+
+/** Compact design notes recorded before/at plan time for feature work.
+ *  Hard-bounded: they ride along in every state message (compact form), so
+ *  verbosity here taxes every model call.
+ *  Caps: frontend ≤1200, backend ≤1200, integration ≤800, total ≤3200. */
+export interface PlanDesign {
+  /** Pages/views, layout & components, interactions, state/data flow,
+   *  responsive + loading/empty/error states, accessibility (≤1200 chars). */
+  frontend?: string;
+  /** API routes & contracts, schema changes, authz, validation, business
+   *  logic, integrations, error handling (≤1200 chars). */
+  backend?: string;
+  /** Frontend↔backend data contracts, shared types, realtime/SSE behavior,
+   *  persistence flow — the integration glue (≤800 chars). */
+  integration?: string;
+}
+
+/** Why a plan step was revised during execution (dynamic replanning audit). */
+export interface PlanRevision {
+  stepId: string;
+  reason: string;
+  createdAt: string;
 }
 
 export type ActionStatus = 'success' | 'error' | 'denied' | 'blocked' | 'skipped';
@@ -149,6 +194,63 @@ export interface ContextPack {
   budget: { maxFiles: number; maxBytes: number };
 }
 
+export type TaskComplexity = 'low' | 'medium' | 'high';
+
+export interface EffortPlan {
+  complexity: TaskComplexity;
+  reason: string;
+  /** Recommended LLM reasoning effort */
+  llmEffort: 'low' | 'medium' | 'high' | 'max';
+  /** Max orchestrator turn budget for this task */
+  maxTurns: number;
+  /** Max specialist agents that may be delegated to for this task */
+  maxSpecialists: number;
+  /** Context pack file & byte budget */
+  contextBudget: { maxFiles: number; maxBytes: number };
+  /** Whether plan review is recommended before executing */
+  requireReview: boolean;
+  /** Verification rigor expected */
+  verificationDepth: 'light' | 'standard' | 'thorough';
+}
+
+/** The dominant risk categories a task can carry. Drives which specialists get
+ *  recommended and whether a domain review pass is required before completion. */
+export type RiskDomain =
+  | 'security'
+  | 'payments'
+  | 'data'
+  | 'performance'
+  | 'frontend'
+  | 'refactor'
+  | 'bug'
+  | 'unknown';
+
+export interface RecommendedSpecialist {
+  /** Exact registered agent name to use in the delegate tool. */
+  agent: string;
+  /** The agent's registered role. */
+  role: string;
+  /** Why this specialist was chosen for this task's risk. */
+  rationale: string;
+  /** Risk domain this specialist covers. */
+  domain: RiskDomain;
+}
+
+export interface RiskPlan {
+  /** Primary (highest-priority) risk domain, or 'unknown'. */
+  risk: RiskDomain;
+  /** Every risk domain detected in the goal. */
+  domains: RiskDomain[];
+  /** Human-readable justification, persisted so continuation knows why. */
+  reason: string;
+  /** Whether any strict (security/data/payments) risk was detected. */
+  strictVerification: boolean;
+  /** Right-sized specialist roster for this task (bounded by the effort budget). Empty when the task is low-risk/trivial. */
+  recommendedSpecialists: RecommendedSpecialist[];
+  /** Domain that must be covered by a review pass before completion (undefined when not required). */
+  requiredReview?: RiskDomain;
+}
+
 export interface CompletionReport {
   taskId: string;
   goal: string;
@@ -161,6 +263,13 @@ export interface CompletionReport {
   verificationDetails?: VerificationReportItem[];
   /** Browser work recorded during the task, when visual verification was used. */
   browserActivity?: BrowserActivity;
+  effortPlan?: EffortPlan;
+  /** Findings discovered during the task, with independent verification status. */
+  findings?: TaskFinding[];
+  /** Architecture/technology decisions recorded during the task. */
+  architectureDecisions?: ArchitectureDecision[];
+  /** Where the run's tokens were spent. */
+  tokenTelemetry?: TokenTelemetrySnapshot;
   evidence: string[];
   remainingRisks: string[];
   followUps: string[];
@@ -183,6 +292,80 @@ export interface BrowserActivity {
   screenshots: number;
 }
 
+/** What kind of authority a requirement or constraint carries. Ordering matters:
+ *  explicit user requirements outrank repository constraints, which outrank
+ *  recommendations, which outrank optional preferences. */
+export type DecisionBasis =
+  | 'explicit-requirement'
+  | 'repository-constraint'
+  | 'recommendation'
+  | 'preference';
+
+/** A compact, persisted architecture/technology decision. Kept small on
+ *  purpose: it is re-emitted in the per-turn state message, so verbosity here
+ *  taxes every model call. */
+export interface ArchitectureDecision {
+  id: string;
+  /** The chosen approach, one line (e.g. "Vanilla JS SPA, no framework"). */
+  decision: string;
+  /** Alternatives that were actually evaluated. */
+  alternatives: string[];
+  /** What in THIS repository supports the choice (files, stack, constraints). */
+  repoEvidence: string;
+  /** Requirements considered (explicit + repository constraints). */
+  requirements: string[];
+  /** Why each rejected alternative lost. */
+  rejected: { alternative: string; reason: string }[];
+  /** Conditions that would justify reconsidering this decision. */
+  reconsiderIf?: string;
+  /** The strongest kind of authority backing the decision. */
+  basis: DecisionBasis;
+  status: 'active' | 'superseded';
+  /** Set when a later decision replaces this one (drift must be explicit). */
+  supersededReason?: string;
+  createdAt: string;
+}
+
+/** Per-run token accounting, persisted so token spend can be attributed to
+ *  its actual sources instead of guessed at. */
+export interface TokenTelemetrySnapshot {
+  /** Model calls made by the orchestrator (excludes specialist sub-agents). */
+  calls: number;
+  /** Provider-reported usage totals (0 when the provider reports nothing). */
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  /** Cumulative char-based estimate (chars/4) of everything sent as input. */
+  estimatedInputTokens: number;
+  /** Estimated input tokens attributed by source, summed across all calls. */
+  estimatedBySource: {
+    system: number;
+    contextPack: number;
+    history: number;
+    state: number;
+    images: number;
+  };
+  /** Planning vs execution cost attribution. */
+  planningCalls: number;
+  executionCalls: number;
+  estimatedPlanningInput: number;
+  estimatedExecutionInput: number;
+  planningOutputTokens: number;
+  executionOutputTokens: number;
+  /** Token cost of planning artifacts at end-of-run (optional, set post-run). */
+  designTokens?: number;
+  planTokens?: number;
+  todoTokens?: number;
+  compactions: number;
+  screenshots: number;
+  /** Total base64 payload size of screenshots attached to model context. */
+  screenshotBytes: number;
+  toolCalls: number;
+  /** Model calls that produced no executable action (wasted spend). */
+  wastedCalls: number;
+  filesInContextPack: number;
+}
+
 export interface TaskLedgerData {
   schemaVersion: 1;
   taskId: string;
@@ -198,6 +381,15 @@ export interface TaskLedgerData {
   constraints: string[];
   nonGoals: string[];
   contextPack?: ContextPack;
+  effortPlan?: EffortPlan;
+  riskPlan?: RiskPlan;
+  findings?: TaskFinding[];
+  architectureDecisions?: ArchitectureDecision[];
+  tokenTelemetry?: TokenTelemetrySnapshot;
+  /** Design notes (frontend/backend/data model) recorded at plan time. */
+  planDesign?: PlanDesign;
+  /** Audit trail of dynamic replanning: why a step was revised mid-run (cap 20). */
+  planRevisions?: PlanRevision[];
   plan: PlanStep[];
   planApproved?: boolean;
   currentHypothesis?: string;
@@ -232,6 +424,33 @@ export interface StructuredSpecialistReport {
 }
 
 export type RiskTier = 'safe' | 'moderate' | 'dangerous';
+
+/** ── Finding Verification Gate ────────────────────────────────────────────
+ *  A finding is a problem the agent claims to have discovered (vulnerability,
+ *  bug, data-integrity issue...). It is NOT reported to the user as fact until
+ *  an independent verifier specialist has reproduced it with real evidence.
+ */
+export type FindingKind = 'security' | 'bug' | 'performance' | 'data' | 'other';
+
+export type FindingStatus =
+  | 'unverified'
+  | 'confirmed'
+  | 'false-positive'
+  | 'unverifiable';
+
+export interface TaskFinding {
+  id: string;
+  claim: string;
+  kind: FindingKind;
+  severity?: 'low' | 'medium' | 'high' | 'critical';
+  location?: string;
+  /** The exact command an independent verifier must run to reproduce the finding. */
+  reproductionCommand?: string;
+  status: FindingStatus;
+  evidenceIds: string[];
+  verifierSummary?: string;
+  createdAt: string;
+}
 
 export interface ToolResult {
   ok: boolean;

@@ -18,6 +18,9 @@ export interface LlmOptions {
   retryDelayMs?: number;
   /** Called once per request with provider-reported token usage, when available. */
   onUsage?: (usage: LlmUsage) => void;
+  /** Called before a mid-stream fallback to complete(): earlier partial deltas
+   *  are void and the caller should reset any streamed-prose state. */
+  onStreamReset?: () => void;
 }
 
 export interface LlmUsage {
@@ -74,11 +77,34 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
   const timeout = AbortSignal.timeout(ms);
   if (!signal) return timeout;
   const agg = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
-  return agg ? agg([signal, timeout]) : signal;
+  if (agg) return agg([signal, timeout]);
+  // Fallback for runtimes without AbortSignal.any (Node < 20.3): forward abort
+  // manually so the hard request timeout ALWAYS applies instead of silently
+  // degrading to socket timeouts.
+  const controller = new AbortController();
+  const forwardCallerAbort = (): void => controller.abort(signal.reason);
+  if (signal.aborted) {
+    controller.abort(signal.reason);
+    return controller.signal;
+  }
+  signal.addEventListener('abort', forwardCallerAbort, { once: true });
+  timeout.addEventListener(
+    'abort',
+    () => {
+      signal.removeEventListener('abort', forwardCallerAbort);
+      controller.abort(timeout.reason);
+    },
+    { once: true },
+  );
+  return controller.signal;
 }
 
 function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('LLM request aborted'));
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     if (signal) {
       signal.addEventListener(
@@ -149,20 +175,52 @@ async function postChatCompletion(opts: {
   const baseDelay = opts.retryDelayMs ?? LLM_RETRY_BASE_MS;
   let res: Response | undefined;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    res = await fetch(`${opts.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${opts.apiKey}`,
-      },
-      body: JSON.stringify(opts.body),
-      signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
-    });
-    if (!LLM_RETRYABLE_STATUS.has(res.status) || attempt === maxRetries) return res;
-    const delay = Math.min(baseDelay * 2 ** attempt, 8000) + Math.random() * 200;
+    let networkError: Error | undefined;
+    try {
+      res = await fetch(`${opts.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${opts.apiKey}`,
+        },
+        body: JSON.stringify(opts.body),
+        signal: withTimeout(opts.signal, LLM_REQUEST_TIMEOUT_MS),
+      });
+    } catch (err) {
+      // Abort is a deliberate cancel — never retried.
+      if (opts.signal?.aborted || /abort/i.test((err as Error)?.message ?? '')) throw err;
+      networkError = err as Error;
+    }
+    if (!networkError) {
+      if (!LLM_RETRYABLE_STATUS.has(res!.status) || attempt === maxRetries) return res!;
+      // Respect server rate-limit hints when provided.
+      const retryAfter = Number(res!.headers.get('retry-after'));
+      const delay = computeBackoffMs(attempt, baseDelay, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined);
+      await sleep(delay, opts.signal);
+      continue;
+    }
+    if (attempt === maxRetries) throw networkError;
+    const delay = computeBackoffMs(attempt, baseDelay);
     await sleep(delay, opts.signal);
   }
   return res!;
+}
+
+/** Network-level failures worth retrying (vs auth/protocol errors). */
+export function isRetryableNetworkError(err: Error | undefined): boolean {
+  if (!err) return false;
+  const code = (err as NodeJS.ErrnoException).code ?? '';
+  return (
+    ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENOTFOUND', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH'].includes(code) ||
+    /fetch failed|network|socket|timeout|timed out|premature close|connection (reset|refused|closed)|econnreset|econnrefused|etimedout|eai_again|enotfound|epipe|ehostunreach|enetunreach/i.test(err.message)
+  );
+}
+
+/** Jittered exponential backoff; Retry-After (ms) wins and is capped at 120s. */
+export function computeBackoffMs(attempt: number, baseDelayMs: number, retryAfterMs?: number): number {
+  const cap = retryAfterMs !== undefined ? Math.min(retryAfterMs, 120_000) : Math.min(baseDelayMs * 2 ** attempt, 30_000);
+  const jittered = cap * (0.75 + Math.random() * 0.5); // ±25%
+  return Math.max(250, Math.round(jittered));
 }
 
 export interface OpenAiCompatConfig {
@@ -288,6 +346,7 @@ export class OpenAiCompatClient implements LlmClient {
     let streamUsage: LlmUsage | undefined;
     let sawEvent = false;
     let streamFailed = false;
+    let forwardedAnyDelta = false;
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -313,6 +372,7 @@ export class OpenAiCompatClient implements LlmClient {
             if (delta) {
               full += delta;
               onDelta(delta);
+              forwardedAnyDelta = true;
             }
             const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
             if (reasonDelta) reasoning += reasonDelta;
@@ -333,6 +393,10 @@ export class OpenAiCompatClient implements LlmClient {
       // Only fall back when the stream itself was broken or unsupported.  A
       // healthy stream that produced reasoning-only or empty content must NOT
       // trigger a second (paid) completion request.
+      // If partial deltas were already delivered, tell the caller so it can
+      // reset its streamed-prose state — otherwise the full text from the
+      // fallback overlaps what the user already saw.
+      if (forwardedAnyDelta) opts.onStreamReset?.();
       return this.complete(messages, opts);
     }
     this.lastReasoning = reasoning || undefined;
@@ -488,20 +552,47 @@ export function parseXmlFunctionCall(text: string): Record<string, unknown> | un
 
 export function extractJson(text: string): unknown {
   const trimmed = text.trim();
-  const candidates: string[] = [trimmed];
+  // Fenced blocks win when present.
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenced?.[1]) candidates.unshift(fenced[1].trim());
-  const firstBrace = trimmed.indexOf('{');
-  const lastBrace = trimmed.lastIndexOf('}');
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    candidates.unshift(trimmed.slice(firstBrace, lastBrace + 1));
-  }
-  for (const c of candidates) {
+  if (fenced?.[1]) {
     try {
-      return JSON.parse(c);
+      return JSON.parse(fenced[1].trim());
     } catch {
-      /* try next */
+      /* fall through */
     }
   }
-  return undefined;
+  // Scan every opening brace and take the EARLIEST balanced, parseable
+  // object. A naive first-{ to last-} slice breaks whenever prose mentions
+  // braces ("config uses {a}: 1") before the real action object.
+  for (let start = trimmed.indexOf('{'); start >= 0; start = trimmed.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return JSON.parse(trimmed.slice(start, i + 1));
+          } catch {
+            break; // this span is not JSON — try the next opening brace
+          }
+        }
+      }
+    }
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
 }

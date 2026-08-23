@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
@@ -6,7 +6,7 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { SkillStore } from '../skills/skills.js';
-import type { ToolResult } from '../types.js';
+import type { CriterionSpec, ToolResult } from '../types.js';
 import { errorSignature, excerpt } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 
@@ -22,8 +22,15 @@ export interface ToolContext {
   backgroundAgentStatus?: BackgroundAgentStatusFn;
 }
 
-export type DelegateFn = (specs: { agent: string; task: string }[]) => Promise<{ agent: string; task: string; ok: boolean; summary: string }[]>;
-export type BackgroundDelegateFn = (specs: { agent: string; task: string }[]) => SubAgentJob[];
+export interface DelegateSpec {
+  agent: string;
+  task: string;
+  criteria?: (string | CriterionSpec)[];
+  /** Wake a paused specialist in its preserved worktree. */
+  resume?: { jobId: string; note?: string };
+}
+export type DelegateFn = (specs: DelegateSpec[]) => Promise<{ agent: string; task: string; ok: boolean; summary: string }[]>;
+export type BackgroundDelegateFn = (specs: DelegateSpec[]) => SubAgentJob[];
 export type BackgroundAgentStatusFn = (ids?: string[]) => SubAgentJob[];
 
 export const KNOWN_TOOL_NAMES = new Set([
@@ -50,6 +57,10 @@ export const KNOWN_TOOL_NAMES = new Set([
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST_ENTRIES = 400;
 const MAX_SEARCH_MATCHES = 60;
+/** Character cap for read_file output sent to the model. Line count alone is
+ *  not a safe bound (wide lines); this is. Overridable per call via the
+ *  `maxChars` param (itself capped at 60K). */
+export const MAX_READ_OUTPUT_CHARS = 30_000;
 
 const STDERR_FAIL_RE =
   /(is not recognized as|not recognized as the name of|CommandNotFoundException|ItemNotFoundException|The term ['"].*['"] is not recognized|No such file or directory|Permission denied|Access is denied|cannot find path)/i;
@@ -125,7 +136,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: pathErr,
-          schema: `apply_edit({ path: string, oldString: string, newString: string })`,
+          schema: `apply_edit({ path: string, oldString: string, newString: string, replaceAll?: boolean })`,
           correction: `Provide a valid file path string relative to the project root.`,
         };
       }
@@ -133,7 +144,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: `Missing or empty "oldString" parameter.`,
-          schema: `apply_edit({ path: string, oldString: string, newString: string })`,
+          schema: `apply_edit({ path: string, oldString: string, newString: string, replaceAll?: boolean })`,
           correction: `Provide the exact existing substring to replace.`,
         };
       }
@@ -141,7 +152,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: `Missing or invalid "newString" parameter (must be a string).`,
-          schema: `apply_edit({ path: string, oldString: string, newString: string })`,
+          schema: `apply_edit({ path: string, oldString: string, newString: string, replaceAll?: boolean })`,
           correction: `Provide the replacement text as a string.`,
         };
       }
@@ -180,7 +191,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: urlErr,
-          schema: `web_fetch({ url: string, maxChars?: number })`,
+          schema: `web_fetch({ url: string, maxChars?: number, render?: boolean })`,
           correction: `Provide a valid http:// or https:// URL.`,
         };
       }
@@ -193,7 +204,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: nameErr ?? instErr,
-          schema: `create_skill({ name: string, description: string, instructions: string })`,
+          schema: `create_skill({ name: string, description: string, instructions: string, global?: boolean })`,
           correction: `Provide a non-empty name, description, and instructions for the skill.`,
         };
       }
@@ -395,15 +406,51 @@ export function toolReadFile(ctx: ToolContext, params: Record<string, unknown>):
     if (st.size > MAX_FILE_BYTES) return fail(`read_file: ${rel} is ${st.size} bytes (limit ${MAX_FILE_BYTES})`);
     const content = readFileSync(abs, 'utf8');
     const lines = content.split('\n');
-    const offset = Math.max(1, Number(params['offset'] ?? 1));
-    const limit = Math.min(2000, Number(params['limit'] ?? 2000));
+    const rawOffset = Number(params['offset'] ?? 1);
+    const rawLimit = Number(params['limit'] ?? 2000);
+    const offset = Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1;
+    const limit = Number.isFinite(rawLimit) ? Math.min(2000, Math.max(1, Math.floor(rawLimit))) : 2000;
     const slice = lines.slice(offset - 1, offset - 1 + limit);
     const numbered = slice.map((l, i) => `${offset + i}: ${l}`).join('\n');
     const note = lines.length > offset - 1 + limit ? `\n[... ${lines.length - (offset - 1) - slice.length} more lines]` : '';
-    return { ok: true, output: numbered + note };
+    // Character cap on top of the line cap: 2000 wide lines could still dump
+    // hundreds of KB into model context. Keep the beginning (most informative)
+    // and tell the model how to continue.
+    const maxChars = Math.min(60_000, Math.max(4_000, Number(params['maxChars'] ?? MAX_READ_OUTPUT_CHARS)));
+    let body = numbered + note;
+    if (body.length > maxChars) {
+      const cut = body.lastIndexOf('\n', maxChars);
+      const kept = body.slice(0, cut > 0 ? cut : maxChars);
+      const keptLines = kept.split('\n').length;
+      body =
+        kept +
+        `\n[... output capped at ${maxChars} chars (file has ${content.length} chars, ${lines.length} lines). ` +
+        `Read the rest with offset=${offset + keptLines - 1} or narrow with search_files.]`;
+    }
+    return { ok: true, output: body };
   } catch (err) {
     return fail(`read_file failed: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Rough bracket-balance scan (string/comment aware enough for a heuristic).
+ * A large imbalance in a freshly written file is the signature of a model
+ * hitting its own output limit mid-file — worth surfacing immediately.
+ */
+function bracketImbalance(content: string): { curly: number; paren: number; bracket: number } {
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/'(?:\\.|[^'\\\n])*'/g, "''")
+    .replace(/"(?:\\.|[^"\\\n])*"/g, '""')
+    .replace(/`(?:\\.|[^`\\])*`/g, '``');
+  const count = (re: RegExp): number => (stripped.match(re) ?? []).length;
+  return {
+    curly: Math.abs(count(/\{/g) - count(/\}/g)),
+    paren: Math.abs(count(/\(/g) - count(/\)/g)),
+    bracket: Math.abs(count(/\[/g) - count(/\]/g)),
+  };
 }
 
 export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -416,9 +463,19 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
   try {
     mkdirSync(path.dirname(abs), { recursive: true });
     writeFileSync(abs, content, 'utf8');
+    let output = `Wrote ${content.length} chars to ${rel}`;
+    // Truncation guard: models with long outputs sometimes stop mid-file.
+    // Surface the suspicion instead of letting broken code look "done".
+    const imbalance = bracketImbalance(content);
+    const total = imbalance.curly + imbalance.paren + imbalance.bracket;
+    if (total >= 3 && content.length > 500) {
+      output +=
+        `\n[WARN] possible TRUNCATED write — unbalanced brackets: {${imbalance.curly}} (${imbalance.paren}) [${imbalance.bracket}]. ` +
+        `Re-read the file tail and rewrite completely if it was cut off.`;
+    }
     return {
       ok: true,
-      output: `Wrote ${content.length} chars to ${rel}`,
+      output,
       filesTouched: [ctx.guard.toRelative(abs)],
       linesAdded: content.split('\n').length,
     };
@@ -431,6 +488,9 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
   const rel = String(params['path'] ?? '');
   const oldStr = params['oldString'];
   const newStr = params['newString'];
+  // Opt-in multi-site edit: without it a repeated pattern costs one turn per
+  // occurrence and invites drift between near-identical hand edits.
+  const replaceAll = params['replaceAll'] === true;
   if (!rel) return fail('apply_edit: missing "path"');
   if (typeof oldStr !== 'string' || typeof newStr !== 'string') {
     return fail('apply_edit: "oldString" and "newString" must be strings');
@@ -441,20 +501,51 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
   try {
     const content = readFileSync(abs, 'utf8');
     const count = content.split(oldStr).length - 1;
-    if (count === 0) return fail(`apply_edit: oldString not found in ${rel}`);
-    if (count > 1) return fail(`apply_edit: oldString matches ${count} locations in ${rel}; provide more context`);
-    const updated = content.replace(oldStr, newStr);
-    writeFileSync(abs, updated, 'utf8');
-    const delta = newStr.split('\n').length - oldStr.split('\n').length;
-    return {
-      ok: true,
-      output: `Edited ${rel}`,
-      filesTouched: [ctx.guard.toRelative(abs)],
-      linesAdded: Math.max(newStr.split('\n').length, delta),
-    };
+    if (!replaceAll && count > 1) return fail(`apply_edit: oldString matches ${count} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
+
+    if (count >= 1) {
+      // split/join instead of String.replace: the latter interprets $&, $`,
+      // $', $$ sequences in newStr as replacement patterns, silently corrupting
+      // files that legitimately contain them (shell scripts, regexes, prices).
+      const updated = content.split(oldStr).join(newStr);
+      writeFileSync(abs, updated, 'utf8');
+      return editSuccess(ctx, abs, rel, newStr, oldStr, replaceAll ? ` (replaced ${count} occurrence${count === 1 ? '' : 's'})` : '');
+    }
+
+    // Exact match failed — retry line-ending-tolerantly. Models emit \n while
+    // Windows files often use \r\n; without this fallback every such edit
+    // fails until the loop detector blocks the whole task.
+    const hadCRLF = /\r\n/.test(content);
+    const normFile = content.replace(/\r\n/g, '\n');
+    const normOld = oldStr.replace(/\r\n/g, '\n');
+    const normNew = newStr.replace(/\r\n/g, '\n');
+    const normCount = normFile.split(normOld).length - 1;
+    if (normCount === 0) return fail(`apply_edit: oldString not found in ${rel}`);
+    if (!replaceAll && normCount > 1) return fail(`apply_edit: oldString matches ${normCount} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
+    const normUpdated = normFile.split(normOld).join(normNew);
+    const finalContent = hadCRLF ? normUpdated.replace(/\n/g, '\r\n') : normUpdated;
+    writeFileSync(abs, finalContent, 'utf8');
+    return editSuccess(ctx, abs, rel, newStr, oldStr, replaceAll ? ` (replaced ${normCount} occurrence${normCount === 1 ? '' : 's'}, normalized line endings)` : ' (matched with normalized line endings)');
   } catch (err) {
     return fail(`apply_edit failed: ${(err as Error).message}`);
   }
+}
+
+function editSuccess(
+  ctx: ToolContext,
+  abs: string,
+  rel: string,
+  newStr: string,
+  oldStr: string,
+  note: string,
+): ToolResult {
+  const delta = newStr.split('\n').length - oldStr.split('\n').length;
+  return {
+    ok: true,
+    output: `Edited ${rel}${note}`,
+    filesTouched: [ctx.guard.toRelative(abs)],
+    linesAdded: Math.max(newStr.split('\n').length, delta),
+  };
 }
 
 export function toolListFiles(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -620,17 +711,43 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
   const command = String(params['command'] ?? '');
   if (!command) return Promise.resolve(fail('run_command: missing "command"'));
   const rawTimeout = Number(params['timeoutMs'] ?? 120_000);
-  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.min(300_000, rawTimeout) : 120_000;
+  // 10-minute ceiling: install-heavy builds and large test suites routinely
+  // exceed the old 5-minute cap and died mid-verification.
+  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.min(600_000, rawTimeout) : 120_000;
 
   return new Promise((resolve) => {
     const isWindows = process.platform === 'win32';
     const shell = isWindows ? 'powershell.exe' : '/bin/sh';
     const args = isWindows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
-    execFile(
-      shell,
-      args,
-      { cwd: ctx.cwd, timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024, windowsHide: true },
-      (err, stdout, stderr) => {
+    // POSIX: own process group so the whole tree can be signalled on timeout.
+    const execOpts: ExecFileOptionsWithStringEncoding = {
+      cwd: ctx.cwd,
+      timeout: timeoutMs,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+      encoding: 'utf8',
+    };
+    if (!isWindows) (execOpts as { detached?: boolean }).detached = true;
+    const child = execFile(shell, args, execOpts, (err, stdout, stderr) => {
+        // Node kills only the DIRECT shell child on timeout. npm/node/etc.
+        // spawn grandchildren that survive it — servers and watchers would
+        // keep running (and holding ports/files) after the evidence was
+        // recorded. Kill the full tree before resolving.
+        if (err?.killed && child.pid) {
+          try {
+            if (isWindows) {
+              execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+            } else {
+              try {
+                process.kill(-child.pid, 'SIGKILL');
+              } catch {
+                child.kill('SIGKILL');
+              }
+            }
+          } catch {
+            /* best effort — the shell itself is already dead */
+          }
+        }
         let exitCode = 0;
         if (err) {
           const code = (err as { code?: unknown }).code;
@@ -639,7 +756,7 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
         const body = [stdout, stderr].filter(Boolean).join('\n--- stderr ---\n');
         const output = excerpt(body || '(no output)', 4000);
         if (err) {
-          const msg = err.killed ? ` (timeout after ${timeoutMs}ms)` : '';
+          const msg = err.killed ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : '';
           resolve({
             ok: false,
             exitCode,
@@ -663,7 +780,6 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
     );
   });
 }
-
 export function toolListSkills(ctx: ToolContext): ToolResult {
   if (!ctx.skills) return fail('skills not available');
   const skills = ctx.skills.list();
@@ -674,13 +790,18 @@ export function toolListSkills(ctx: ToolContext): ToolResult {
 export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   if (!ctx.skills) return fail('skills not available');
   try {
+    const global = params['global'] === true;
     const skill = ctx.skills.create({
       name: String(params['name'] ?? ''),
       description: String(params['description'] ?? ''),
       instructions: String(params['instructions'] ?? ''),
       createdBy: 'agent',
+      scope: global ? 'global' : 'project',
     });
-    return { ok: true, output: `Skill "${skill.name}" saved. It will be available in all future tasks.` };
+    return {
+      ok: true,
+      output: `Skill "${skill.name}" saved ${global ? 'GLOBALLY (available in every project)' : 'in this project'}. It will be available in future tasks.`,
+    };
   } catch (err) {
     return fail(`create_skill failed: ${(err as Error).message}`);
   }
@@ -693,17 +814,61 @@ export function toolUseSkill(ctx: ToolContext, params: Record<string, unknown>):
   return { ok: true, output: `SKILL ${skill.name}: ${skill.description}\n${skill.instructions}` };
 }
 
-export function toolWebFetch(_ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+export async function toolWebFetch(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
   const url = String(params['url'] ?? '');
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    return Promise.resolve(fail('web_fetch: url must start with http(s)://'));
+    return fail('web_fetch: url must start with http(s)://');
   }
-  const maxChars = Math.min(12000, Number(params['maxChars'] ?? 6000));
-  return fetch(url, { headers: { 'user-agent': 'hermes-agent/0.1' }, redirect: 'follow' })
+  const maxChars = Math.min(12000, Number.isFinite(Number(params['maxChars'])) ? Number(params['maxChars']) : 6000);
+  // render:true loads the URL in the in-app browser and returns the RENDERED
+  // DOM text — the only way to see JS-built pages (SPAs) that static fetch
+  // cannot. The session's previous page is restored afterwards.
+  if (params['render'] === true) {
+    const bridge = ctx.browser;
+    if (!bridge || !bridge.available()) {
+      return fail('web_fetch render:true needs the in-app browser (desktop app). Use plain web_fetch or browse instead.');
+    }
+    try {
+      const prevUrl = bridge.state().url;
+      await bridge.navigate(url);
+      const shot = await bridge.screenshot();
+      let text = (shot.textDigest ?? '').replace(/\s+/g, ' ').trim();
+      if (!prevUrl || bridge.state().url !== prevUrl) {
+        await bridge.navigate(prevUrl || 'about:blank').catch(() => {});
+      }
+      if (!text) return fail(`web_fetch render: ${url} produced no readable text`);
+      return { ok: true, output: excerpt(text, maxChars) };
+    } catch (err) {
+      return fail(`web_fetch render failed: ${(err as Error).message}`);
+    }
+  }
+  const timeoutMs = 20_000;
+  const maxBodyBytes = 2_000_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+  return fetch(url, { headers: { 'user-agent': 'hermes-agent/0.1' }, redirect: 'follow', signal: controller.signal })
     .then(async (res) => {
       if (!res.ok) return fail(`web_fetch: HTTP ${res.status} for ${url}`);
       const type = res.headers.get('content-type') ?? '';
-      let text = await res.text();
+      let text = '';
+      // Stream with a byte cap so a huge or lying Content-Length response can
+      // never exhaust memory; only the first maxBodyBytes is ever buffered.
+      const reader = res.body?.getReader();
+      if (reader) {
+        const decoder = new TextDecoder();
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          text += decoder.decode(value, { stream: true });
+          if (received >= maxBodyBytes) {
+            void reader.cancel().catch(() => {});
+            break;
+          }
+        }
+        text += decoder.decode();
+      }
       if (type.includes('html')) {
         text = text
           .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -718,7 +883,29 @@ export function toolWebFetch(_ctx: ToolContext, params: Record<string, unknown>)
       text = text.replace(/\s+/g, ' ').trim();
       return { ok: true, output: excerpt(text || '(empty page)', maxChars) };
     })
-    .catch((err) => fail(`web_fetch failed: ${(err as Error).message}`));
+    .catch((err) => fail(`web_fetch failed: ${(err as Error).message}`))
+    .finally(() => clearTimeout(timer));
+}
+
+/**
+ * Render page facts captured alongside a screenshot into bounded tool output.
+ * Gives text-only models (and lazy vision models) real grounding: whether the
+ * console is clean, what the page actually says, and if loading had finished.
+ */
+export function formatPageDiagnostics(shot: { consoleErrors?: string[]; textDigest?: string; loadIncomplete?: boolean }): string {
+  const parts: string[] = [];
+  if (Array.isArray(shot.consoleErrors)) {
+    const errors = shot.consoleErrors.filter(Boolean).slice(-8);
+    parts.push(
+      errors.length > 0
+        ? `CONSOLE PROBLEMS (${errors.length}):\n${errors.map((e) => `  - ${e.slice(0, 220)}`).join('\n')}`
+        : 'CONSOLE PROBLEMS: none',
+    );
+  }
+  if (shot.loadIncomplete) parts.push('PAGE LOAD: incomplete — the document was still loading; wait and screenshot again before judging the render');
+  const text = (shot.textDigest ?? '').trim();
+  if (text) parts.push(`PAGE TEXT (digest):\n${text.slice(0, 1200)}`);
+  return parts.join('\n');
 }
 
 export async function toolBrowse(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
@@ -787,8 +974,10 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
       }
       case 'wait': {
         if (!ctx.browser.wait) return fail('browse wait is not supported by this browser');
-        const st = await ctx.browser.wait(Number(params['ms'] ?? 1000));
-        return { ok: true, output: `waited ${Math.min(10000, Number(params['ms'] ?? 1000))}ms on ${st.url}` };
+        const rawMs = Number(params['ms'] ?? 1000);
+        const ms = Number.isFinite(rawMs) ? Math.min(10000, Math.max(0, rawMs)) : 1000;
+        const st = await ctx.browser.wait(ms);
+        return { ok: true, output: `waited ${ms}ms on ${st.url}` };
       }
       case 'type': {
         const text = String(params['text'] ?? '');
@@ -799,10 +988,15 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
       case 'screenshot': {
         const shot = await ctx.browser.screenshot();
         if (!shot.pngBase64) return fail('browse: screenshot was empty — the browser surface is not ready yet');
+        const mime = shot.mime ?? 'image/png';
+        const ext = mime === 'image/jpeg' ? 'jpeg' : mime === 'image/webp' ? 'webp' : 'png';
+        const diagnostics = formatPageDiagnostics(shot);
         return {
           ok: true,
-          output: `screenshot of ${shot.state.url} — "${shot.state.title}" (${Math.round((shot.pngBase64.length * 3) / 4 / 1024)} KB png attached)`,
-          image: `data:image/png;base64,${shot.pngBase64}`,
+          output:
+            `screenshot of ${shot.state.url} — "${shot.state.title}" (${Math.round((shot.pngBase64.length * 3) / 4 / 1024)} KB ${ext} attached)` +
+            (diagnostics ? `\n${diagnostics}` : ''),
+          image: `data:${mime};base64,${shot.pngBase64}`,
         };
       }
       default:
@@ -814,23 +1008,31 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
 }
 
 export async function toolDelegate(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
-  let specs: { agent: string; task: string; criteria?: (string | Record<string, unknown>)[] }[] = [];
+  let specs: DelegateSpec[] = [];
+  const parseResume = (raw: unknown): DelegateSpec['resume'] | undefined => {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const jobId = String((raw as Record<string, unknown>)['jobId'] ?? '').trim();
+    if (!jobId) return undefined;
+    return { jobId, note: typeof (raw as Record<string, unknown>)['note'] === 'string' ? String((raw as Record<string, unknown>)['note']) : undefined };
+  };
   if (Array.isArray(params['tasks'])) {
     specs = (params['tasks'] as Record<string, unknown>[])
       .map((t) => ({
         agent: String(t['agent'] ?? ''),
         task: String(t['task'] ?? ''),
-        criteria: Array.isArray(t['criteria']) ? (t['criteria'] as (string | Record<string, unknown>)[]) : undefined,
+        criteria: Array.isArray(t['criteria']) ? (t['criteria'] as DelegateSpec['criteria']) : undefined,
+        resume: parseResume(t['resume']),
       }))
       .filter((t) => t.agent && t.task);
   } else if (params['agent'] && params['task']) {
     specs = [{
       agent: String(params['agent']),
       task: String(params['task']),
-      criteria: Array.isArray(params['criteria']) ? (params['criteria'] as (string | Record<string, unknown>)[]) : undefined,
+      criteria: Array.isArray(params['criteria']) ? (params['criteria'] as DelegateSpec['criteria']) : undefined,
+      resume: parseResume(params['resume']),
     }];
   }
-  if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]}');
+  if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]} — or resume a paused attempt with "resume":{"jobId":"sub-…"}');
   if (specs.length > 4) specs = specs.slice(0, 4);
   if (params['background'] === true) {
     if (!ctx.delegateBackground) return fail('delegate: no specialist agents configured — create them in Settings → Agents');

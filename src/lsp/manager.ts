@@ -134,6 +134,8 @@ export class LspManager {
   private readonly clients = new Map<string, LspClient>();
   private readonly diags = new DiagnosticsCache();
   private readonly versions = new Map<string, number>();
+  /** Per-URI serialization chains for document syncs. */
+  private readonly syncChains = new Map<string, Promise<string>>();
   readonly registry: ServerRegistry;
 
   constructor(
@@ -189,6 +191,9 @@ export class LspManager {
     const uri = pathToFileURL(abs).href;
     const text = existsSync(abs) ? readFileSync(abs, 'utf8') : '';
     const version = (this.versions.get(uri) ?? 0) + 1;
+    // The document is about to change server-side: any cached push-model
+    // diagnostics are for a pre-edit version and must not be served again.
+    this.diags.invalidate(uri);
     if (version === 1) {
       await client.openDocument(uri, languageId, text, version);
     } else {
@@ -198,13 +203,31 @@ export class LspManager {
     return uri;
   }
 
+  /**
+   * Serialize document syncs per URI. Two concurrent queries on one file would
+   * otherwise both compute version N+1 and send duplicate didOpen
+   * notifications (a protocol violation) or out-of-order didChange versions.
+   */
+  private syncDocumentSerialized(client: LspClient, file: string, languageId: string): Promise<string> {
+    const abs = path.join(this.repoRoot, file);
+    const uri = pathToFileURL(abs).href;
+    const prev = this.syncChains.get(uri) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => this.syncDocument(client, file, languageId));
+    this.syncChains.set(uri, next);
+    if (this.syncChains.size > 128) {
+      const oldest = this.syncChains.keys().next().value;
+      if (oldest && oldest !== uri) this.syncChains.delete(oldest);
+    }
+    return next;
+  }
+
   /** Run a query against the right server, restarting a crashed server once. */
   private async withServer<T>(languageId: string, file: string, fn: (client: LspClient, uri: string) => Promise<T>): Promise<T> {
     const config = this.registry.serverForLanguage(languageId);
     if (!config) throw new Error(`No LSP server configured for language "${languageId}"`);
     const client = this.clientFor(languageId)!;
     try {
-      const uri = await this.syncDocument(client, file, languageId);
+      const uri = await this.syncDocumentSerialized(client, file, languageId);
       return await fn(client, uri);
     } catch (err) {
       if (!isConnectionError(err as Error)) throw err;
@@ -347,6 +370,7 @@ export class LspManager {
     this.clients.clear();
     this.diags.clear();
     this.versions.clear();
+    this.syncChains.clear();
     await Promise.allSettled(clients.map((c) => c.shutdown()));
   }
 }

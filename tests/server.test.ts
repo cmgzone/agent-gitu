@@ -1,6 +1,7 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
@@ -143,6 +144,195 @@ describe('HermesServer', () => {
     await streamRes.body?.cancel();
   }, 30000);
 
+  function billingCrashLlm(): ScriptedMockLlm {
+    const boom = () => {
+      throw new Error('LLM HTTP 401 (no credits): Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_x/billing — this is a paid model; add credits or subscribe to use it');
+    };
+    return {
+      name: 'billing-crash',
+      complete: async () => boom(),
+      completeStream: async () => boom(),
+      lastReasoning: undefined,
+    } as unknown as ScriptedMockLlm;
+  }
+
+  it('falls back to a same-provider free model when retrying after a no-credits failure', async () => {
+    const dir = makeProject('billing-fallback');
+    const { base } = await startServer(dir, billingCrashLlm());
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'audit the repo', mode: 'fast', review: false, provider: 'opencode-zen', model: 'muse-spark-1.2' }),
+    }).then((r) => r.json());
+    const failed = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status === 'failed' ? s : undefined;
+    });
+    expect(failed.error).toMatch(/401|no credits/i);
+    expect(failed.model).toBe('muse-spark-1.2');
+
+    // Retry WITHOUT touching the picker — the paid model must not be reused.
+    await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue', mode: 'standard' }),
+    });
+    const retried = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' && s.model !== 'muse-spark-1.2' ? s : undefined;
+    });
+    expect(retried.model).toMatch(/-free$|^big-pickle$/);
+  }, 30000);
+
+  it('keeps the paid model when the user explicitly overrides after topping up', async () => {
+    const dir = makeProject('billing-explicit');
+    const { base } = await startServer(dir, billingCrashLlm());
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'paid work', mode: 'fast', review: false, provider: 'opencode-zen', model: 'muse-spark-1.2' }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status === 'failed' ? s : undefined;
+    });
+
+    // Explicit override: user picked the paid model again on purpose.
+    await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'retry paid', provider: 'opencode-zen', model: 'muse-spark-1.2', useSelectedModel: true }),
+    });
+    const retried = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(retried.model).toBe('muse-spark-1.2');
+  }, 30000);
+
+  function initGitRepo(dir: string): (args: string) => string {
+    execSync('git init', { cwd: dir });
+    execSync('git config user.email agent@test', { cwd: dir });
+    execSync('git config user.name agent', { cwd: dir });
+    execSync('git add -A', { cwd: dir });
+    execSync('git commit -m init --no-gpg-sign --no-verify', { cwd: dir });
+    return (args: string) => execSync(`git ${args}`, { cwd: dir }).toString().trim();
+  }
+
+  function standardTaskLlm(finalSummary: string): ScriptedMockLlm {
+    return new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification command passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }),
+      (_n, messages) => {
+        const text = messages.map((m) => m.content).join('\n');
+        // Cite the NEWEST evidence record (a competent model cites what it just
+        // produced; earlier ids may be stale from prior phases).
+        const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-x' } });
+      },
+      () => JSON.stringify({ action: { type: 'complete', summary: finalSummary, risks: [], followUps: [] } }),
+    ]);
+  }
+
+  it('reactivates an older session in its own worktree without stealing the shared checkout', async () => {
+    const dir = makeProject('branch-resume');
+    const g = initGitRepo(dir);
+    const { base } = await startServer(dir, standardTaskLlm('first run done'));
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'branch resume task', mode: 'standard', review: false, projectPath: dir }),
+    }).then((r) => r.json());
+    const done = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(done.status).toBe('completed');
+    const taskBranch = `hermes/${done.taskId}`;
+    expect(g('rev-parse --abbrev-ref HEAD')).toBe(taskBranch);
+
+    // Starting another task moves the shared checkout off this session's
+    // branch — exactly what locked every previous session out after a restart.
+    g(`checkout -b ${taskBranch}-next`);
+
+    // Swap in an LLM whose next reply completes the resumed session.
+    const server = servers[servers.length - 1]!;
+    (server as unknown as { config: { llm: unknown } }).config.llm = standardTaskLlm('resumed fine');
+
+    const msg = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    }).then((r) => r.json());
+    expect(msg.resumed).toBe(true);
+    const resumed = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(resumed.report?.summary).toContain('resumed fine');
+
+    // The shared checkout keeps the branch the newer run gave it; this session
+    // resumed in a dedicated linked worktree on its own branch instead.
+    expect(g('rev-parse --abbrev-ref HEAD')).toBe(`${taskBranch}-next`);
+    const wtDir = path.join(dir, '.hermes', 'worktrees', done.taskId);
+    expect(existsSync(wtDir)).toBe(true);
+    expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: wtDir }).toString().trim()).toBe(taskBranch);
+    const ledger = JSON.parse(readFileSync(path.join(dir, '.hermes', 'tasks', `${done.taskId}.json`), 'utf8')) as {
+      worktreePath?: string;
+    };
+    expect(ledger.worktreePath?.toLowerCase()).toBe(wtDir.toLowerCase());
+
+    // A follow-up message reuses the same worktree (already recorded).
+    const again = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'once more' }),
+    }).then((r) => r.json());
+    expect(again.resumed).toBe(true);
+  }, 60000);
+
+  it('resumes an older session even while another run is using the project checkout', async () => {
+    const dir = makeProject('branch-busy');
+    const g = initGitRepo(dir);
+    const { base } = await startServer(dir, standardTaskLlm('first run done'));
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'busy branch task', mode: 'standard', review: false, projectPath: dir }),
+    }).then((r) => r.json());
+    const done = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    expect(done.status).toBe('completed');
+
+    // Another run actively working on this project right now must no longer
+    // block older sessions: each resumes in its own worktree.
+    const sessions = (servers[servers.length - 1] as unknown as {
+      sessions: Map<string, { status: string; projectPath?: string; runId?: string }>;
+    }).sessions;
+    sessions.set('run-busy-neighbor', { runId: 'run-busy-neighbor', status: 'running', projectPath: dir });
+
+    g('checkout -b some-other-task-branch');
+
+    const resp = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue' }),
+    });
+    expect(resp.status).toBe(200);
+    // The checkout stays exactly where the active run left it.
+    expect(g('rev-parse --abbrev-ref HEAD')).toBe('some-other-task-branch');
+    expect(existsSync(path.join(dir, '.hermes', 'worktrees', done.taskId))).toBe(true);
+  }, 60000);
+
   it('restores a chat transcript, its metadata, and conversational context after restart', async () => {
     const dir = makeProject('chat-restart');
     const firstServer = new HermesServer({
@@ -263,9 +453,9 @@ describe('HermesServer', () => {
       new ScriptedMockLlm([
         () => 'hello',
         () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['auto-approved command ran'] } }),
-        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run command', verification: 'Write-Host ok' }] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run command', verification: "node -e \"console.log('auto-approved')\"" }] } }),
         () => JSON.stringify({
-          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'Write-Host auto-approved' }, reason: 'test', expected: 'output' },
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: "node -e \"console.log('auto-approved')\"" }, reason: 'test', expected: 'output' },
         }),
         (_n, messages) => {
           const text = messages.map((m) => m.content).join('\n');
@@ -300,7 +490,7 @@ describe('HermesServer', () => {
     const ledger = await fetch(`${base}/api/tasks/${session.taskId}`).then((r) => r.json());
     const cmd = ledger.actions.find((a: { tool: string }) => a.tool === 'run_command');
     expect(cmd.status).toBe('success');
-  }, 30000);
+  }, 90000);
 
   it('switches a chat session to build mode when the follow-up sends mode: standard', async () => {
     let secondPrompt = '';

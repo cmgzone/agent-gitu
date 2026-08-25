@@ -2,6 +2,7 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import type { MemoryStore } from '../memory/memory-store.js';
 import type { PlanArea, PlanDesign, PlanStep, TaskLedgerData } from '../types.js';
+import { builtinSkillByName } from '../skills/builtin.js';
 import { renderDecisions } from './architecture.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
@@ -170,7 +171,13 @@ export function renderFullPlanMessage(ledger: TaskLedger): string {
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; lspSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean; uiTask?: boolean } = {},
+  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; lspSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean;   /** Ranked memory retrieval query (usually the goal) — memories that matter
+   *  for THIS task surface first; everything else stays out of context. */
+  memoryQuery?: string;
+  /** Prebuilt RELEVANT MEMORY section — when provided it replaces the static
+   *  stored-memory block (memory enters context via buildModelContext). */
+  memorySection?: string;
+  uiTask?: boolean; /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string } = {},
 ): string {
   const lock = guard.lock;
   const autoLearn = opts.autoLearn ?? true;
@@ -209,15 +216,12 @@ export function buildSystemPrompt(
     ? '8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Never answer "I don\'t have that skill" without creating it. Also create skills proactively after any repeatable multi-step pattern (deploy flows, design conventions, checklists).'
     : '8. Skills: if the user explicitly asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge), THEN apply it with use_skill. Do NOT create skills proactively — auto-learn is disabled by the user.';
   // Frontend work gets a fixed quality bar so output quality does not depend
-  // on the model's taste that day. Bounded (~700 chars) like every other
+  // on the model's taste that day. The CONTENT is expertise and lives in the
+  // skill layer (frontend-quality-bar builtin, shadowable by user skills);
+  // WHEN it applies stays a core mechanism. Bounded like every other
   // injected section — it taxes every model call.
   const frontendSection = opts.uiTask
-    ? `\nFRONTEND QUALITY BAR (this task builds user-facing UI — non-negotiable):
-- Pick a small design system FIRST and reuse it everywhere: spacing scale (4/8/12/16/24/32px), one type scale, one accent palette incl. hover/focus/disabled states.
-- Every view implements loading, empty, AND error states; forms validate inline and confirm success.
-- Responsive at 375px, 768px, and desktop widths; no horizontal scroll; touch targets ≥40px.
-- Accessibility basics: semantic elements, labels bound to inputs, visible focus styles, text contrast ≥4.5:1.
-- Ship COMPLETE pages (title, favicon, nav/footer) — no lorem ipsum or TODO placeholders unless explicitly requested.\n`
+    ? `\n${opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n`
     : '';
   return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
 ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
@@ -243,8 +247,7 @@ OPERATING RULES:
 7. "I changed something" is not "the task is complete".
 ${learnRule}
 
-STORED MEMORY (from previous work on this project):
-${memory.renderForPrompt(lock.name)}
+${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}\n`}
 
 PROTOCOL — each turn you MUST respond in this exact shape:
 1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
@@ -262,8 +265,9 @@ Architecture decisions (record BEFORE implementing whenever the task involves a 
 {"thought":"...","action":{"type":"record_decision","decision":"the chosen approach, one line","alternatives":["evaluated alternative",...],"repoEvidence":"what in THIS repo supports the choice","requirements":["explicit requirement or repo constraint considered",...],"rejected":[{"alternative":"...","reason":"why it lost"}],"reconsiderIf":"conditions that would justify revisiting","basis":"explicit-requirement|repository-constraint|recommendation|preference","supersedes":"ad-..."}}
 
 Execution:
-{"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}
+{"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId records WHICH step you are working on — it does NOT complete the step)
 {"thought":"...","action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}}  (check off a subtask as you complete it; checking the last one completes the step)
+{"thought":"...","action":{"type":"complete_step","stepId":"step-N","reason":"why it is done"}}  (explicitly finish a step once its work is done; a step also auto-completes when a run_command matching its verification passes)
 {"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","todos":["new subtask",...]}}  (dynamic replanning: update ONLY the affected step when reality diverges — API differs, reuse found, dependency missing)
 {"thought":"...","action":{"type":"show_plan"}}  (prints the FULL plan + design once — use when you need details no longer shown in compact state)
 
@@ -272,7 +276,8 @@ Tools:
 - write_file   {"path":"src/x.ts","content":"full file content"}
 - apply_edit   {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
 - list_files   {"path":"src"}
-- search_files {"pattern":"regex","path":"src"}
+- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2}
+    language-agnostic whole-file search (any language, any text file). Regex mode scans full file content, so patterns match ACROSS lines: use \\n, \\s or [\\s\\S] spans, or flags "s"/"m". Use mode "literal" for plain text with no regex escaping. Every result ends with a capability line (mode/flags/multiline/matches) telling you exactly what ran.
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
 - lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
 - lsp_definition {"path":"src/auth.ts","line":42,"column":17}  (1-based; where the symbol at that position is defined)
@@ -290,13 +295,16 @@ Tools:
   - web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
   - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
 - browse       full human-like browser control:
-                 {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"}
+                 {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"evidence"} | {"action":"back"|"forward"|"reload"}
                  {"action":"click","selector":"#submit"} (preferred) or {"action":"click","x":120,"y":340}
                  {"action":"hover","x":10,"y":20} | {"action":"scroll","x":640,"y":450,"deltaY":400} (positive = down)
                  {"action":"fill","selector":"input[name=email]","text":"value"} (forms; works with React/Vue inputs)
                  {"action":"select","selector":"#country","value":"France"} | {"action":"press","key":"Enter|Tab|Escape|Backspace|Down…"}
                  {"action":"type","text":"..."} (types into the focused element) | {"action":"wait","ms":1000}
-                 Interact like a human: screenshot → act → screenshot to confirm the effect. Prefer selector-based click/fill over raw coordinates.
+                 Interact like a human: act → verify. VERIFY with the CHEAPEST evidence that proves the criterion:
+                 - "evidence" = structured non-visual pass (DOM counts, accessibility, layout overflow, clipped text, invisible/covered controls, console errors) — the DEFAULT look after navigate and after edits; it proves functionality, structure, a11y and layout bugs WITHOUT vision.
+                 - "evidence" + "viewports":["mobile","tablet","desktop"] = responsive verification: the page is re-probed at each size (or explicit "375x812") and every finding is labeled with the viewport that produced it. Use for any responsive/layout criterion.
+                 - "screenshot" = visual escalation, for criteria that genuinely need pixels (visual hierarchy, spacing, color/contrast judgment). Every result ends with a capability line so you know exactly what ran.
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
 - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}
@@ -360,7 +368,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${c.text}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
     .join('\n');
   const evidence = d.evidence
-    .slice(-12)
+    .slice(-25)
     .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${e.label}${e.command ? ` — ${e.command}` : ''}`)
     .join('\n');
   const effortLine = d.effortPlan

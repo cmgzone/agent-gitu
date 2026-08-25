@@ -13,7 +13,8 @@ import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '.
 import { PolicyEngine } from '../policy/policy.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
 import { buildSpecialistEvidenceReport, type SpecialistEvidenceReport } from './specialist-evidence.js';
-import type { AcceptanceCriterion, CriterionSpec } from '../types.js';
+import { MemoryStore } from '../memory/memory-store.js';
+import type { AcceptanceCriterion, CriterionSpec, MemoryType } from '../types.js';
 
 export interface SubAgentSpec {
   agent: string;
@@ -75,6 +76,13 @@ export interface SubAgentRunnerDeps {
   hardCeilingTurns?: number;
   /** When the project is a git repo, run each specialist in its own worktree and merge back on success (default true). */
   isolate?: boolean;
+  /** Shared memory store (review: ONE memory store). Specialists retrieve
+   *  through the ISOLATION FILTER — they see mission/project/global memory
+   *  and their own agent memories, never another specialist's private ones —
+   *  and publish their results as mission-scope candidate findings. */
+  memory?: MemoryStore;
+  /** Mission id for scoped retrieval and finding publication. */
+  missionId?: string;
   onEvent?: (text: string) => void;
 }
 
@@ -150,6 +158,10 @@ Tools:
 - run_command     {"command":"npm test"}
 - claim_criterion {"criterionId":"ac-1","evidenceId":"ev-..."}
 
+IMPORTANT DISCOVERIES: if you find something other specialists on this mission should know (a critical bug, an environment quirk, a root cause), publish it IMMEDIATELY — do not wait until you finish:
+{"action":{"type":"publish_finding","findingType":"observation|fact|failure|lesson","content":"the finding, self-contained","evidence":"what proves it (optional)","confidence":0.8}}
+The finding is shared with the mission as a CANDIDATE (unverified) — publishing never makes it durable, and your conversation stays private.
+
 When the task is finished and all criteria are verified, respond with:
 {"action":{"type":"answer","summary":"what you did, files touched, verification results, open issues"}}`;
 }
@@ -163,6 +175,30 @@ export class SubAgentRunner {
   private readonly retained = new Map<string, RetainedWorktree>();
 
   constructor(private readonly deps: SubAgentRunnerDeps) {}
+
+  /**
+   * Specialist system prompt with SCOPED memory (review Phase 11): the
+   * specialist sees mission/project/global memory and its OWN agent memories
+   * through the isolation filter — never another specialist's private memory,
+   * conversation, or reasoning. Retrieval happens inside the memory store.
+   */
+  private specialistSystemPrompt(name: string, role: string, root: string, isolated: boolean, criteria: AcceptanceCriterion[] | undefined, agentId: string | undefined, projectScope: string): string {
+    const base = buildSystemPrompt(name, role, root, isolated, criteria);
+    const memory = this.deps.memory;
+    if (!memory) return base;
+    const entries = memory.retrieveForContext(`${name} ${role}`, projectScope, {
+      limit: 6,
+      maxChars: 1_200,
+      ctx: { requestingAgentId: agentId, missionId: this.deps.missionId, projectId: projectScope },
+    });
+    if (entries.length === 0) return base;
+    return (
+      base +
+      `\n\nRELEVANT MEMORY for your specialty (verified knowledge first — do not re-derive what is already recorded):\n${entries
+        .map((m) => `- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`)
+        .join('\n')}`
+    );
+  }
 
   /** Queue work immediately and let callers poll status without blocking. */
   startMany(specs: SubAgentSpec[]): SubAgentJob[] {
@@ -317,9 +353,11 @@ export class SubAgentRunner {
     let turnsUsed = 0;
     let recommendation = '';
     let ledger: TaskLedger | undefined;
+    let projectScope = '';
 
     try {
       const guard = ProjectGuard.detect(workRoot);
+      projectScope = guard.lock.name;
       ledger = TaskLedger.create({
         repoRoot: workRoot,
         goal: `[subagent:${name}] ${task.slice(0, 120)}`,
@@ -349,7 +387,7 @@ export class SubAgentRunner {
         : '';
 
       const messages: LlmMessage[] = [
-        { role: 'system', content: buildSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt), criteriaList) },
+        { role: 'system', content: this.specialistSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt), criteriaList, job.spec.agent, guard.lock.name) },
         { role: 'user', content: `TASK: ${task}${criteriaPrompt}` },
       ];
       if (resumedFrom) {
@@ -561,6 +599,43 @@ export class SubAgentRunner {
           });
           continue;
         }
+        if (type === 'publish_finding') {
+          // Mid-run finding publication (review: share knowledge, not
+          // context). The finding enters the pipeline as a MISSION-SCOPE
+          // CANDIDATE — publishing never makes it durable, and the
+          // specialist's conversation stays private.
+          const content = String(action['content'] ?? '').trim();
+          if (!content) {
+            messages.push({ role: 'user', content: 'publish_finding requires non-empty "content".' });
+            continue;
+          }
+          if (!this.deps.memory) {
+            messages.push({ role: 'user', content: 'No memory store is connected — the finding could not be published. Continue working.' });
+            continue;
+          }
+          const findingType = (['fact', 'observation', 'failure', 'lesson'].includes(String(action['findingType'])) ? String(action['findingType']) : 'observation') as MemoryType;
+          try {
+            const finding = this.deps.memory.publishFinding({
+              agentId: name,
+              missionId: this.deps.missionId,
+              projectId: projectScope,
+              scope: projectScope,
+              type: findingType,
+              content: `${name}: ${content.slice(0, 280)}`,
+              evidence: action['evidence'] ? String(action['evidence']).slice(0, 200) : undefined,
+              confidence: Number.isFinite(Number(action['confidence'])) ? Math.min(1, Math.max(0, Number(action['confidence']))) : 0.6,
+            });
+            emit(`subagent ${name} published finding ${finding.id} to the mission (candidate — needs verification)`);
+            messages.push({
+              role: 'user',
+              content: `Finding published to the mission as a CANDIDATE (${finding.id}). Other specialists may see it, but it is not yet verified knowledge — keep working.`,
+            });
+            consecutiveNoProgress = 0;
+          } catch (err) {
+            messages.push({ role: 'user', content: `Finding publication failed: ${(err as Error).message.slice(0, 160)}. Continue working.` });
+          }
+          continue;
+        }
         consecutiveNoProgress += 1;
         if (consecutiveNoProgress >= 6) {
           blockers.push(`Stalled after ${consecutiveNoProgress} consecutive turns without a valid action`);
@@ -643,6 +718,28 @@ export class SubAgentRunner {
             await this.removeWorktree(wt, repoRoot);
           }
         }
+      }
+    }
+
+    // Cross-specialist findings (review Phase 12): a completed specialist's
+    // result summary enters the memory pipeline as a MISSION-SCOPE CANDIDATE
+    // — visible to the mission's specialists, never auto-durable. Verified
+    // specialists publish with browser/test evidence when they have it.
+    if (this.deps.memory && summary && (status === 'SUCCESS' || status === 'PARTIAL_SUCCESS')) {
+      try {
+        this.deps.memory.publishFinding({
+          agentId: name,
+          missionId: this.deps.missionId,
+          projectId: projectScope,
+          scope: projectScope,
+          type: status === 'SUCCESS' ? 'task_result' : 'observation',
+          content: `${name} (${role ?? 'specialist'}): ${summary.slice(0, 300)}`,
+          evidence: filesChanged.size > 0 ? `files: ${[...filesChanged].slice(0, 6).join(', ')}` : undefined,
+          confidence: status === 'SUCCESS' ? 0.7 : 0.55,
+          sourceType: 'task_completion',
+        });
+      } catch {
+        /* finding publication must never break the specialist result */
       }
     }
     return {

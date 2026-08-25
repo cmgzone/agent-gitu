@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROVIDERS, ProviderError, cachedLiveModels, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
+import { PROVIDERS, ProviderError, cachedLiveModels, modelCapabilityTier, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
 
 const WS_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
 
@@ -413,5 +413,22 @@ describe('freeModelFallback � no-credits rescue', () => {
     // correctly declines and the server falls back to a LIVE catalog lookup.
     expect((PROVIDERS['opencode-go']!.models ?? []).some((m) => isFreeModel(m))).toBe(false);
     expect(freeModelFallback('opencode-go', 'kimi-k3')).toBeUndefined();
+  });
+});
+
+describe('modelCapabilityTier', () => {
+  it('treats free/community models as the low tier regardless of metadata', () => {
+    expect(modelCapabilityTier(undefined, 'grok-4-fast-free')).toBe('low');
+    expect(modelCapabilityTier({ source: 'models.dev', outputPricePerMillion: 3 }, 'some-model:free')).toBe('low');
+  });
+
+  it('uses catalog price as the proxy for paid models', () => {
+    expect(modelCapabilityTier({ source: 'models.dev', outputPricePerMillion: 10 }, 'claude-x')).toBe('high');
+    expect(modelCapabilityTier({ source: 'models.dev', outputPricePerMillion: 0.5 }, 'mini-model')).toBe('standard');
+  });
+
+  it('defaults to standard when the catalog has no price info', () => {
+    expect(modelCapabilityTier(undefined, 'unknown-model')).toBe('standard');
+    expect(modelCapabilityTier({ source: 'models.dev' }, 'unknown-model')).toBe('standard');
   });
 });

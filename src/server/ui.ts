@@ -2141,6 +2141,12 @@ export const UI_HTML = String.raw`<!doctype html>
     var tag = text.split(' ')[0];
     var body = text.slice(tag.length).trim();
 
+    // End-of-run status echo from the server ("run finished: failed/blocked/...").
+    // The "run " prefix would otherwise render as a fake tool card with an
+    // empty output disclosure. Status is already shown by the header chip,
+    // the "done" meta row, the error card and the summary card.
+    if (text.indexOf('run finished: ') === 0) return;
+
     if (tag === 'run') {
       var kind = toolKind(body);
       var summary = splitSummary(body);
@@ -2637,7 +2643,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var passed = checks.filter(function (check) { return check.passed; }).length;
     var div = document.createElement('div');
     div.className = 'summary-card';
-    var html = '<div class="summary-head"><h2>' + esc(session.goal) + '</h2>' + chipFor(session.status) +
+    var html = '<div class="summary-head"><h2 title="' + esc(session.goal) + '">' + esc(shortText(session.goal, 160)) + '</h2>' + chipFor(session.status) +
       '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text" style="margin-left:8px">' + icon('copy') + ' Copy report</button></div>';
     html += '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + files.length + ' product files changed</span></div>';
     html += '<div class="sec"><h4>Outcome</h4><p class="summary-copy">' + esc(readableSummary(r.summary)) + '</p></div>';

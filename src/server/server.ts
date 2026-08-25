@@ -33,7 +33,7 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { UsageTrackingClient } from '../llm/llm.js';
-import { PROVIDERS, ProviderError, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
+import { PROVIDERS, ProviderError, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { SessionStore, type SessionUsage } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -1803,7 +1803,10 @@ export class HermesServer {
     }
     const index = this.sharedIndex(root, ignorePaths);
     const catalog = await fetchModelCatalog();
-    const contextWindowTokens = modelMetadataFor(catalog, session.provider ?? '', opts.model ?? session.model ?? '')?.contextTokens;
+    const selectedModel = opts.model ?? session.model ?? '';
+    const modelMeta = modelMetadataFor(catalog, session.provider ?? '', selectedModel);
+    const contextWindowTokens = modelMeta?.contextTokens;
+    const modelCapability = modelCapabilityTier(modelMeta, selectedModel);
     const skills = SkillStore.forProject(root);
     const mcp = McpManager.forProject(root);
     const agentStore = new AgentStore();
@@ -1870,6 +1873,7 @@ export class HermesServer {
         catalog,
       }),
       contextWindowTokens,
+      modelCapability,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };

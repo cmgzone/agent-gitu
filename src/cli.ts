@@ -6,7 +6,7 @@ import { AgentStore } from './agents/registry.js';
 import { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
 import { TaskLedger } from './ledger/task-ledger.js';
 import { LlmError } from './llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, modelMetadataFor, providerKey, resolveLlm, type ProviderSpec } from './llm/providers.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, modelCapabilityTier, modelMetadataFor, providerKey, resolveLlm, type ProviderSpec } from './llm/providers.js';
 import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
@@ -310,8 +310,10 @@ async function main(): Promise<void> {
       console.error(`[hermes] llm: provider=${resolved.providerId} model=${resolved.model} base=${resolved.baseUrl}`);
       const llm = resolved.client;
       const catalog = await fetchModelCatalog();
-      const contextWindowTokens = modelMetadataFor(catalog, resolved.providerId, resolved.model)?.contextTokens;
+      const modelMeta = modelMetadataFor(catalog, resolved.providerId, resolved.model);
+      const contextWindowTokens = modelMeta?.contextTokens;
       if (contextWindowTokens) console.error(`[hermes] context window: ${contextWindowTokens.toLocaleString()} tokens`);
+      const modelCapability = modelCapabilityTier(modelMeta, resolved.model);
 
       const criteriaFlag = flags.get('criteria');
       const criteria = typeof criteriaFlag === 'string' ? criteriaFlag.split('|').map((s) => s.trim()).filter(Boolean) : undefined;
@@ -342,6 +344,7 @@ async function main(): Promise<void> {
         llm,
         mode: flags.get('fast') ? 'fast' : 'standard',
         contextWindowTokens,
+        modelCapability,
         autoApprove: Boolean(flags.get('yes')),
         // Safe mode: even with --yes, dangerous-tier commands still require a
         // human. Opt in with --safe-mode or HERMES_SAFE_MODE=1.

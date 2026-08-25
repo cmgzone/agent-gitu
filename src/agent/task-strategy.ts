@@ -1,13 +1,13 @@
 /**
- * Task-type → investigation strategy.
+ * Task-type → investigation strategy ACTIVATION.
  *
- * Instead of handing the model twenty tools and saying "figure it out", the
- * goal text is classified into a task kind and a proven investigation
- * strategy is injected once at intake. Strategies are LSP-first (definition →
- * references → symbols) because language servers keep the project indexed;
- * every strategy states the fallback to search_files/read_file when LSP is
- * unavailable, and none of them substitute for real verification commands.
+ * The core mechanism lives here: classify the goal into a task kind and
+ * activate the matching strategy. The strategy CONTENT is expertise, so it
+ * lives in the skill layer as built-in skills (src/skills/builtin.ts) —
+ * listable, use_skill-able, and shadowable by user skills of the same name.
  */
+import { builtinSkillByName } from '../skills/builtin.js';
+import type { Skill } from '../skills/skills.js';
 
 export type TaskKind = 'bug-fix' | 'refactor' | 'test-failure' | 'explore' | 'feature';
 
@@ -51,48 +51,30 @@ export function classifyTaskKind(goal: string): TaskKind {
   return 'feature';
 }
 
-const STRATEGIES: Record<TaskKind, string> = {
-  'bug-fix': `TASK STRATEGY — bug fix. Investigate before you edit:
-1. Locate the failure: read the error/stack or the failing test, then lsp_symbols to map the files involved.
-2. lsp_definition at the failure sites -> the actual implementation.
-3. lsp_references to enumerate every caller your fix could affect.
-4. read_file the implementation and the failing test, then edit small.
-5. The automatic post-edit LSP check will report diagnostics for files you changed; fix them BEFORE running the real test/typecheck commands.
-If LSP reports "unavailable", run the same sequence with search_files/read_file instead.`,
+/** The store surface this module needs (satisfied by SkillStore). */
+export interface StrategySkillLookup {
+  get(name: string): Skill | undefined;
+}
 
-  refactor: `TASK STRATEGY — refactor. Map before you move anything:
-1. lsp_definition for each symbol you plan to touch.
-2. lsp_references to enumerate every call site and dependent.
-3. read_file the implementations; note the public API surface.
-4. Edit in small reversible steps; rely on the post-edit LSP diagnostics check.
-5. Run the full test/typecheck/build commands before claiming completion.
-If LSP reports "unavailable", use search_files/read_file to trace callers instead.`,
+/**
+ * The strategy skill for a task kind. A user skill named `strategy-<kind>`
+ * shadows the built-in, so teams can customize HOW Gitu investigates without
+ * touching core.
+ */
+export function strategySkillFor(kind: TaskKind, store?: StrategySkillLookup): Skill {
+  const name = `strategy-${kind}`;
+  const shadowed = store?.get(name);
+  if (shadowed) return shadowed;
+  const builtin = builtinSkillByName(name);
+  if (!builtin) throw new Error(`Missing built-in strategy skill: ${name}`);
+  return builtin;
+}
 
-  'test-failure': `TASK STRATEGY — failing test. Diagnose before repairing:
-1. Run the failing test and read its exact failure message and location.
-2. lsp_definition at the failure location (the assertion line) -> the code under test.
-3. lsp_references to see what the code under test touches.
-4. lsp_diagnostics on both the test file and the implementation.
-5. Repair small, re-run the failing test first, then run the full suite.
-If LSP reports "unavailable", use search_files/read_file to trace the assertion back to its source instead.`,
-
-  explore: `TASK STRATEGY — exploration. Map first, read selectively:
-1. lsp_symbols on the entry points to see the structure.
-2. Use the project lock's entrypoints to pick the files to start from.
-3. Follow the call chain with lsp_definition/lsp_references from the entry point.
-4. read_file only the symbols that matter; do not read whole files by default.
-If LSP reports "unavailable", use search_files/read_file to trace the chain instead.`,
-
-  feature: `TASK STRATEGY — new feature. Ground yourself before building:
-1. Find the integration points: lsp_symbols + read_file on the files you will extend.
-2. lsp_definition/lsp_references to see the existing APIs you must match.
-3. Implement in small steps; rely on the post-edit LSP diagnostics check.
-4. Verify with the real test/typecheck/build commands.
-If LSP reports "unavailable", use search_files/read_file to find the integration points instead.`,
-};
-
-/** Build the strategy section for a goal, or undefined when no LSP server exists. */
-export function buildTaskStrategySection(goal: string, lspAvailable: boolean): string | undefined {
+/**
+ * Build the strategy section for a goal, or undefined when no LSP server
+ * exists (the strategies are LSP-first; the gate stays a core mechanism).
+ */
+export function buildTaskStrategySection(goal: string, lspAvailable: boolean, store?: StrategySkillLookup): string | undefined {
   if (!lspAvailable || !goal.trim()) return undefined;
-  return STRATEGIES[classifyTaskKind(goal)];
+  return strategySkillFor(classifyTaskKind(goal), store).instructions;
 }

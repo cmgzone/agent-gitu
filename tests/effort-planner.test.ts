@@ -65,3 +65,28 @@ describe('planEffort', () => {
     expect(large.contextBudget.maxFiles).toBeGreaterThanOrEqual(small.contextBudget.maxFiles);
   });
 });
+describe('planEffort — model-capability turn scaling', () => {
+  it('scales the turn budget up for lower-capability models, leaving llmEffort untouched', () => {
+    const base = planEffort('Something ordinary');
+    expect(base.maxTurns).toBe(35);
+    expect(base.llmEffort).toBe('medium');
+
+    const lowCap = planEffort('Something ordinary', { modelCapability: 'low' });
+    expect(lowCap.maxTurns).toBe(53); // 35 * 1.5
+    expect(lowCap.llmEffort).toBe('medium'); // provider effort dial unchanged
+    expect(lowCap.reason).toContain('lower-capability model');
+
+    const lowQuick = planEffort('Fix the typo in the README', { modelCapability: 'low' });
+    expect(lowQuick.maxTurns).toBe(30); // 20 * 1.5
+
+    const lowHigh = planEffort('Redesign the auth subsystem', { modelCapability: 'low' });
+    expect(lowHigh.maxTurns).toBe(90); // 60 * 1.5
+  });
+
+  it('leaves standard/high tiers and chat mode untouched', () => {
+    expect(planEffort('Something ordinary', { modelCapability: 'standard' }).maxTurns).toBe(35);
+    expect(planEffort('Something ordinary', { modelCapability: 'high' }).maxTurns).toBe(35);
+    const chat = planEffort('hello', { mode: 'chat', modelCapability: 'low' });
+    expect(chat.maxTurns).toBe(10);
+  });
+});

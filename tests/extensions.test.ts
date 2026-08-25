@@ -19,13 +19,14 @@ describe('SkillStore', () => {
   it('creates, lists, gets and removes skills', () => {
     const dir = makeProject('skills');
     const store = SkillStore.forProject(dir);
+    const userSkills = () => store.list().filter((s) => s.scope !== 'builtin');
     const skill = store.create({ name: 'Deploy Checklist', description: 'how to deploy', instructions: '1. build\n2. test\n3. ship' });
     expect(skill.name).toBe('deploy-checklist');
-    expect(store.list()).toHaveLength(1);
+    expect(userSkills()).toHaveLength(1);
     expect(store.get('deploy-checklist')?.instructions).toContain('ship');
     expect(store.renderForPrompt()).toContain('deploy-checklist');
     expect(store.remove('deploy-checklist')).toBe(true);
-    expect(store.list()).toHaveLength(0);
+    expect(userSkills()).toHaveLength(0);
   });
 
   it('rejects empty instructions', () => {

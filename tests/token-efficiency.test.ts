@@ -113,6 +113,24 @@ describe('token-aware compaction', () => {
     for (let i = 0; i < 10; i++) messages.push({ role: i % 2 ? 'user' : 'assistant', content: `small ${i}` });
     expect(compactHistory(messages)).toBe(false);
   });
+
+  it('carries the previous digest forward instead of re-flattening it', () => {
+    const messages: LlmMessage[] = [{ role: 'system', content: 'SYS' }];
+    messages.push({ role: 'user', content: 'RESULT [error] run_command $ npm run build\nERR! missing dependency' });
+    for (let i = 0; i < 20; i++) messages.push({ role: i % 2 ? 'assistant' : 'user', content: `EARLY_MARKER_${i} ${'a'.repeat(12_000)}` });
+    compactHistory(messages);
+    expect(String(messages[1]!.content)).toContain('EARLY_MARKER_1');
+
+    // Grow past the trigger again and compact a second time.
+    for (let i = 0; i < 20; i++) messages.push({ role: i % 2 ? 'assistant' : 'user', content: `LATE_MARKER_${i} ${'b'.repeat(12_000)}` });
+    compactHistory(messages);
+    const digest = String(messages[1]!.content);
+    // First-batch content survives the second compaction (carried, not
+    // flattened into a 220-char excerpt of itself).
+    expect(digest).toContain('EARLY_MARKER_1');
+    // Failures are cumulative across compaction cycles.
+    expect(digest).toContain('npm run build');
+  });
 });
 
 describe('execution ledger survives compaction', () => {

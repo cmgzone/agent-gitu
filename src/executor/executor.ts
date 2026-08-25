@@ -7,7 +7,13 @@ import type { PolicyEngine } from '../policy/policy.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { ActionRecord, ToolResult } from '../types.js';
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
+
+/** Outputs larger than this are persisted to an artifact; the model gets the
+ *  excerpt plus a read_file pointer instead of the raw bulk. */
+const ARTIFACT_THRESHOLD = 4000;
 import {
   formatToolValidationError,
   toolAgentStatus,
@@ -261,6 +267,17 @@ export class Executor {
       this.emit(`lines    ${file} +${result.linesAdded} lines`);
     }
 
+    // Tool-output discipline: the model receives a bounded digest; the FULL
+    // raw output is persisted as an artifact it can read_file on demand.
+    // Nothing huge ever enters model context just because the tool saw it.
+    let observation = excerpt(result.output, 800);
+    if (result.output.length > ARTIFACT_THRESHOLD) {
+      const artifactPath = this.persistArtifact(req.tool, result.output);
+      if (artifactPath) {
+        observation += `\n[full ${result.output.length}-char output saved to ${artifactPath} — read_file it only if you truly need more detail]`;
+      }
+    }
+
     const record = this.ledger.recordAction({
       stepId,
       tool: req.tool,
@@ -271,12 +288,35 @@ export class Executor {
       exitCode: result.exitCode,
       reason: req.reason,
       expected: req.expected,
-      observation: excerpt(result.output, 800),
+      observation,
       durationMs: Date.now() - started,
     });
 
     this.emit(`${result.ok ? 'ok       ' : 'error    '} ${summary} (${record.durationMs}ms)`);
     if (result.output) this.emit(`out      ${excerpt(result.output, 900).replace(/\n/g, ' ⏎ ')}`);
     return { record, result };
+  }
+
+  /** Persist a large raw tool output under .hermes/artifacts (pruned to 50). */
+  private persistArtifact(tool: string, output: string): string | undefined {
+    try {
+      const dir = path.join(this.guard.lock.repoRoot, '.hermes', 'artifacts');
+      mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = path.join(dir, `${stamp}-${tool.replace(/[^a-z0-9_-]/gi, '_')}.txt`);
+      writeFileSync(file, output);
+      // Prune: keep the newest 50 artifacts so the dir cannot grow unbounded.
+      const files = readdirSync(dir).sort();
+      for (const stale of files.slice(0, Math.max(0, files.length - 50))) {
+        try {
+          unlinkSync(path.join(dir, stale));
+        } catch {
+          /* best effort */
+        }
+      }
+      return path.join('.hermes', 'artifacts', path.basename(file));
+    } catch {
+      return undefined; // artifact persistence must never break a tool result
+    }
   }
 }

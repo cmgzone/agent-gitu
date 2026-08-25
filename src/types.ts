@@ -152,7 +152,58 @@ export type MemoryType =
   | 'decision'
   | 'task'
   | 'failure'
-  | 'preference';
+  | 'preference'
+  | 'fact'
+  | 'constraint'
+  | 'lesson'
+  | 'pattern'
+  | 'task_result'
+  | 'project_convention'
+  | 'evidence'
+  | 'observation';
+
+/** Memory lifecycle: candidates must be EARNED into durable knowledge.
+ *  candidate → verified → durable; superseded/archived are terminal-ish. */
+export type MemoryStatus = 'candidate' | 'verified' | 'durable' | 'superseded' | 'archived';
+
+/** Where a memory came from. model_inference memories are NOT authoritative:
+ *  they stay candidates until verified against source/tests/evidence. */
+export type MemorySourceType =
+  | 'user_statement'
+  | 'source_code'
+  | 'test'
+  | 'browser_evidence'
+  | 'tool_result'
+  | 'model_inference'
+  | 'task_completion'
+  | 'failure_analysis';
+
+/** Visibility scope (review: ONE store, FOUR scopes). Distinct from the
+ *  lexical `scope` string: this controls WHO may retrieve the memory.
+ *  Legacy entries without visibility are migrated to 'project'. */
+export type MemoryVisibility = 'agent' | 'mission' | 'project' | 'global';
+
+/** Retrieval isolation context (review Phase 3): enforced BEFORE ranking. */
+export interface MemoryRetrievalContext {
+  requestingAgentId?: string;
+  missionId?: string;
+  projectId?: string;
+  allowedScopes?: MemoryVisibility[];
+}
+
+/** Structured audit event (review Phase 14) — bounded in-memory ring. */
+export interface MemoryAuditEvent {
+  at: string;
+  event: 'created' | 'verified' | 'rejected' | 'promoted' | 'consolidated' | 'superseded' | 'archived' | 'retrieved' | 'flagged';
+  memoryId?: string;
+  agentId?: string;
+  missionId?: string;
+  projectId?: string;
+  oldVisibility?: MemoryVisibility;
+  newVisibility?: MemoryVisibility;
+  reason?: string;
+  source?: string;
+}
 
 export interface MemoryEntry {
   id: string;
@@ -162,6 +213,30 @@ export interface MemoryEntry {
   scope: string;
   confidence: number;
   createdAt: string;
+  /** Ranking weight (0-1): how much this memory matters, independent of confidence. */
+  importance?: number;
+  /** Retrieval lifecycle: how often this memory proved worth surfacing. */
+  accessCount?: number;
+  lastUsedAt?: string;
+  /** Lifecycle state (default: 'candidate' for new entries). */
+  status?: MemoryStatus;
+  /** Provenance: free-text origin note + structured source classification. */
+  source?: string;
+  sourceType?: MemorySourceType;
+  updatedAt?: string;
+  lastVerifiedAt?: string;
+  /** When superseded: the id of the memory that replaced this one. */
+  supersededBy?: string;
+  /** Visibility scope (default/migrated: 'project'). */
+  visibility?: MemoryVisibility;
+  /** Ownership — required per visibility: agent→agentId, mission→missionId+projectId, project→projectId. */
+  agentId?: string;
+  missionId?: string;
+  projectId?: string;
+  /** Promotion provenance trail (oldest first). */
+  promotedFrom?: { visibility: MemoryVisibility; at: string; reason?: string }[];
+  /** Success-pattern observations: the distinct taskIds that observed this subject. */
+  observations?: string[];
 }
 
 export type FileRole =
@@ -259,6 +334,8 @@ export interface CompletionReport {
   changes: string[];
   filesChanged: string[];
   verification: string[];
+  /** Per-run memory lifecycle stats (review Phase 13). */
+  memoryStats?: MemoryStatsSnapshot;
   /** Structured evidence for the UI. `verification` remains for text/CLI reports. */
   verificationDetails?: VerificationReportItem[];
   /** Browser work recorded during the task, when visual verification was used. */
@@ -337,13 +414,19 @@ export interface TokenTelemetrySnapshot {
   cachedTokens: number;
   /** Cumulative char-based estimate (chars/4) of everything sent as input. */
   estimatedInputTokens: number;
-  /** Estimated input tokens attributed by source, summed across all calls. */
+  /** Estimated input tokens attributed by source, summed across all calls.
+   *  `history` = digest + strategy + conversation (coarse bucket kept for
+   *  reports); the finer keys split it so context spend is diagnosable. */
   estimatedBySource: {
     system: number;
     contextPack: number;
     history: number;
     state: number;
     images: number;
+    digest: number;
+    strategy: number;
+    conversation: number;
+    memory: number;
   };
   /** Planning vs execution cost attribution. */
   planningCalls: number;
@@ -390,6 +473,8 @@ export interface TaskLedgerData {
   planDesign?: PlanDesign;
   /** Audit trail of dynamic replanning: why a step was revised mid-run (cap 20). */
   planRevisions?: PlanRevision[];
+  /** Audit trail of budget extensions: why the run needed more room (cap 10). */
+  budgetExtensions?: BudgetExtensionRecord[];
   plan: PlanStep[];
   planApproved?: boolean;
   currentHypothesis?: string;
@@ -403,6 +488,51 @@ export interface TaskLedgerData {
   startedAt?: string;
   completedAt?: string;
   report?: CompletionReport;
+  /** Per-run memory lifecycle stats for the report/telemetry panel. */
+  memoryStats?: MemoryStatsSnapshot;
+}
+
+/** Memory observability snapshot (review Phase 13/16). */
+export interface MemoryStatsSnapshot {
+  total: number;
+  retrieved: number;
+  injected: number;
+  supersededSkipped: number;
+  byVisibility: Record<string, number>;
+  byStatus: Record<string, number>;
+  promotions: number;
+  auditEvents: number;
+  /** Semantic layer counters (review semantic phase). */
+  semantic?: {
+    semanticCandidates: number;
+    semanticDuplicates: number;
+    semanticRelated: number;
+    semanticContradictions: number;
+    semanticMerged: number;
+    embeddingCacheHits: number;
+    embeddingCacheMisses: number;
+    embeddingFallbacks: number;
+    successObservations: number;
+    successPatternsPromoted: number;
+    possibleContradictions: number;
+  };
+}
+
+/** One granted budget extension, with the evidence that justified it. */
+export interface BudgetExtensionRecord {
+  at: string;
+  /** Turn number when the extension was granted. */
+  turn: number;
+  /** Why: e.g. "wide change surface: 11 files changed". */
+  reason: string;
+  /** Evidence snapshot at grant time. */
+  filesChanged: number;
+  distinctFailures: number;
+  evidenceCount: number;
+  extraTurns: number;
+  extraSpecialists: number;
+  /** Specialist budget after this extension. */
+  specialistBudgetAfter: number;
 }
 
 export type SpecialistStatus = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BLOCKED' | 'FAILED' | 'CANCELLED';

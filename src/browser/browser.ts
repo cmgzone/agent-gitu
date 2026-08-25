@@ -40,6 +40,14 @@ export interface BrowserBridge {
   select?(selector: string, value: string): Promise<BrowserState>;
   press?(key: string): Promise<BrowserState>;
   wait?(ms: number): Promise<BrowserState>;
+  /** Run a JS expression in the page; resolves its JSON-serializable result.
+   *  Powers the non-visual evidence collector (DOM/a11y/layout probes). */
+  evaluate?(expression: string): Promise<unknown>;
+  /** Console warnings/errors captured since the last navigation (no image). */
+  consoleErrors?(): string[];
+  /** Resize the browser content area so responsive layouts can be probed at
+   *  specific viewport sizes (mobile/tablet/desktop). */
+  setViewport?(width: number, height: number): Promise<BrowserState>;
 }
 
 export function normalizeUrl(input: string): string {

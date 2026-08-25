@@ -86,6 +86,48 @@ export function classifyEvidenceKind(command: string): EvidenceKind {
   return 'command';
 }
 
+/** Structural slice of the ledger needed to prove a bug fix causally. */
+export interface RegressionProofInput {
+  evidence: { command?: string; passed: boolean; createdAt: string }[];
+  actions: { tool: string; status: string; createdAt?: string }[];
+}
+
+/**
+ * True when the ledger proves CAUSALITY for a bug fix, not just a green suite:
+ * the same non-trivial command FAILED before the fix, a file edit succeeded
+ * in between, and the SAME command PASSED after. A post-fix-only passing run
+ * proves nothing about the bug — the existing tests may never have covered it.
+ */
+export function hasRegressionProof(input: RegressionProofInput): boolean {
+  const norm = (cmd: string): string => cmd.trim().replace(/\s+/g, ' ').toLowerCase();
+  const real = (cmd: string | undefined): string | undefined => {
+    if (!cmd) return undefined;
+    const c = norm(cmd);
+    return c && !isTrivialEvidenceCommand(c) ? c : undefined;
+  };
+  // Earliest PASS per command — the fix's proof is the first green run.
+  const passAt = new Map<string, string>();
+  for (const ev of input.evidence) {
+    const cmd = real(ev.command);
+    if (!cmd || !ev.passed) continue;
+    const prev = passAt.get(cmd);
+    if (!prev || ev.createdAt < prev) passAt.set(cmd, ev.createdAt);
+  }
+  if (passAt.size === 0) return false;
+  const edits = input.actions.filter(
+    (a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success' && a.createdAt,
+  );
+  if (edits.length === 0) return false;
+  for (const ev of input.evidence) {
+    const cmd = real(ev.command);
+    if (!cmd || ev.passed) continue;
+    const pass = passAt.get(cmd);
+    if (!pass || ev.createdAt >= pass) continue;
+    if (edits.some((a) => a.createdAt! > ev.createdAt && a.createdAt! < pass)) return true;
+  }
+  return false;
+}
+
 /**
  * True when this link is weakly bound: the criterion pins neither a
  * verification command nor an evidence type, so ANY passing command would

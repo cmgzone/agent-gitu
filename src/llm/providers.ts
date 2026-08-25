@@ -349,6 +349,24 @@ export function isFreeModel(model: string): boolean {
   return /-free$/i.test(model) || /:free$/i.test(model) || model === 'big-pickle';
 }
 
+export type ModelCapabilityTier = 'low' | 'standard' | 'high';
+
+/**
+ * Rough capability tier used to size the TURN budget (not the per-call
+ * reasoning effort, which is the provider's own `effort` parameter).
+ * Lower-capability models — free/community tiers are the clearest signal —
+ * get MORE turns, because each of their turns accomplishes less work; a
+ * budget tuned for a frontier model stalls them mid-task. Price is the best
+ * available proxy when the catalog publishes it.
+ */
+export function modelCapabilityTier(metadata: ModelMetadata | undefined, model: string): ModelCapabilityTier {
+  if (isFreeModel(model)) return 'low';
+  const out = metadata?.outputPricePerMillion;
+  if (out === undefined) return 'standard';
+  if (out >= 5) return 'high';
+  return 'standard';
+}
+
 /**
  * Pick a free fallback from the SAME provider when the selected model cannot
  * be billed (HTTP 401 / no credits). Returns undefined when the model is

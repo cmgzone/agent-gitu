@@ -404,6 +404,27 @@ function makeBrowserBridge(normalizeUrl) {
       await sleep(Math.max(0, Math.min(10000, Number(ms) || 0)));
       return stateOf(win);
     },
+    // Non-visual eyes: run a JS expression in the page for the evidence
+    // collector (DOM counts, accessibility, layout geometry). Returns the
+    // JSON-serializable result; throws propagate to the collector.
+    async evaluate(expression) {
+      const win = ensureBrowserWin();
+      return withDriving(win, () => win.webContents.executeJavaScript(String(expression), true));
+    },
+    // Console warnings/errors since the last navigation — no image needed.
+    consoleErrors() {
+      return consoleLog.slice(-8);
+    },
+    // Responsive probing: resize the CONTENT area (chrome excluded) so the
+    // page's innerWidth/innerHeight match the requested viewport.
+    async setViewport(width, height) {
+      const win = ensureBrowserWin();
+      const w = Math.max(200, Math.min(4000, Math.round(Number(width) || 1280)));
+      const h = Math.max(200, Math.min(4000, Math.round(Number(height) || 900)));
+      win.setContentSize(w, h);
+      await settle(win);
+      return stateOf(win);
+    },
     async screenshot() {
       const win = ensureBrowserWin();
       const image = await win.webContents.capturePage();

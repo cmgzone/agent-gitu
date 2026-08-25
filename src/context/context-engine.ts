@@ -287,7 +287,7 @@ export class ContextEngine {
 
     if (included.length > 0) {
       parts.push(
-        '\nCURRENT CODE (the real state of this codebase — ground your plan in it; use read_file/search_files to see more before planning):\n' +
+        '\nCONTEXT SAMPLE (a partial retrieval preview — NOT the whole codebase; files are truncated and important code may be missing. Ground your exploration in it, but read_file/search_files every file you intend to change before planning or editing):\n' +
           included.join('\n\n'),
       );
     }

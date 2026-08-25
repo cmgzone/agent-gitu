@@ -79,6 +79,7 @@ export class Reporter {
       findings: d.findings,
       architectureDecisions: d.architectureDecisions,
       tokenTelemetry: d.tokenTelemetry,
+      memoryStats: d.memoryStats,
       evidence: d.evidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
       remainingRisks: completionInput?.risks ?? (d.blockers.length > 0 ? [`Unresolved blockers: ${d.blockers.join('; ')}`] : []),
       followUps: completionInput?.followUps ?? [],
@@ -118,8 +119,17 @@ export class Reporter {
             '',
             'Token telemetry:',
             `  - ${report.tokenTelemetry.calls} model call(s); provider input=${report.tokenTelemetry.inputTokens} cached=${report.tokenTelemetry.cachedTokens} output=${report.tokenTelemetry.outputTokens}`,
-            `  - ~${report.tokenTelemetry.estimatedInputTokens} estimated input tokens: system/context=${report.tokenTelemetry.estimatedBySource.system + report.tokenTelemetry.estimatedBySource.contextPack}, history=${report.tokenTelemetry.estimatedBySource.history}, state=${report.tokenTelemetry.estimatedBySource.state}, images=${report.tokenTelemetry.estimatedBySource.images}`,
+            `  - ~${report.tokenTelemetry.estimatedInputTokens} estimated input tokens: system=${report.tokenTelemetry.estimatedBySource.system}, contextPack=${report.tokenTelemetry.estimatedBySource.contextPack}, taskState=${report.tokenTelemetry.estimatedBySource.state}, digest=${report.tokenTelemetry.estimatedBySource.digest}, strategy=${report.tokenTelemetry.estimatedBySource.strategy}, memory=${report.tokenTelemetry.estimatedBySource.memory}, conversation=${report.tokenTelemetry.estimatedBySource.conversation}, images=${report.tokenTelemetry.estimatedBySource.images}`,
             `  - ${report.tokenTelemetry.compactions} compaction(s), ${report.tokenTelemetry.toolCalls} tool call(s), ${report.tokenTelemetry.screenshots} screenshot(s), ${report.tokenTelemetry.wastedCalls} wasted call(s)`,
+          ]
+        : []),
+      ...(report.memoryStats
+        ? [
+            '',
+            'Memory telemetry:',
+            `  - store: ${report.memoryStats.total} memor(y); retrieved=${report.memoryStats.retrieved} injected=${report.memoryStats.injected} superseded-skipped=${report.memoryStats.supersededSkipped} promotion(s)=${report.memoryStats.promotions}`,
+            `  - visibility: ${Object.entries(report.memoryStats.byVisibility).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
+            `  - lifecycle: ${Object.entries(report.memoryStats.byStatus).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
           ]
         : []),
       ...(report.browserActivity

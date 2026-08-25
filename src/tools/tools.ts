@@ -9,6 +9,7 @@ import type { SkillStore } from '../skills/skills.js';
 import type { CriterionSpec, ToolResult } from '../types.js';
 import { errorSignature, excerpt } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
+import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
 
 export interface ToolContext {
   guard: ProjectGuard;
@@ -164,9 +165,48 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: patternErr,
-          schema: `search_files({ pattern: string, path?: string })`,
-          correction: `Provide a non-empty search regex or text pattern, e.g. search_files({ "pattern": "export function" }).`,
+          schema: `search_files({ pattern: string, mode?: 'literal'|'regex', flags?: string, path?: string, include?: string[], exclude?: string[], maxResults?: number, contextLines?: number })`,
+          correction: `Provide a non-empty search pattern, e.g. search_files({ "pattern": "export function" }) or search_files({ "pattern": "a.b", "mode": "literal" }).`,
         };
+      }
+      if (p['mode'] !== undefined && p['mode'] !== 'literal' && p['mode'] !== 'regex') {
+        return {
+          valid: false,
+          error: 'mode must be "literal" or "regex"',
+          schema: `search_files({ pattern: string, mode?: 'literal'|'regex', ... })`,
+          correction: `Use mode "literal" for plain text or "regex" for patterns.`,
+        };
+      }
+      if (p['flags'] !== undefined) {
+        const f = String(p['flags']);
+        if (f.replace(/[ims]/g, '') !== '') {
+          return {
+            valid: false,
+            error: 'flags supports only the characters i, m, s',
+            schema: `search_files({ pattern: string, flags?: string /* i, m, s */ })`,
+            correction: `e.g. flags "i" (ignore case), "s" (dot crosses lines), "im".`,
+          };
+        }
+      }
+      for (const key of ['include', 'exclude'] as const) {
+        if (p[key] !== undefined && (!Array.isArray(p[key]) || (p[key] as unknown[]).some((g) => typeof g !== 'string'))) {
+          return {
+            valid: false,
+            error: `${key} must be an array of glob strings`,
+            schema: `search_files({ pattern: string, ${key}?: string[] })`,
+            correction: `e.g. ${key}: ["**/*.py", "*.md"].`,
+          };
+        }
+      }
+      for (const key of ['maxResults', 'contextLines'] as const) {
+        if (p[key] !== undefined && (typeof p[key] !== 'number' || !Number.isFinite(p[key] as number))) {
+          return {
+            valid: false,
+            error: `${key} must be a number`,
+            schema: `search_files({ pattern: string, ${key}?: number })`,
+            correction: `e.g. ${key}: 10.`,
+          };
+        }
       }
       return { valid: true };
     }
@@ -223,7 +263,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
       return { valid: true };
     }
     case 'browse': {
-      const BROWSER_ACTIONS = ['navigate', 'back', 'forward', 'reload', 'screenshot', 'click', 'hover', 'scroll', 'type', 'fill', 'select', 'press', 'wait'] as const;
+      const BROWSER_ACTIONS = ['navigate', 'back', 'forward', 'reload', 'screenshot', 'evidence', 'click', 'hover', 'scroll', 'type', 'fill', 'select', 'press', 'wait'] as const;
       const action = p['action'] === undefined ? (p['url'] !== undefined ? 'navigate' : 'screenshot') : String(p['action']);
       if (!BROWSER_ACTIONS.includes(action as (typeof BROWSER_ACTIONS)[number])) {
         return {
@@ -592,24 +632,129 @@ export function toolListFiles(ctx: ToolContext, params: Record<string, unknown>)
   }
 }
 
+/**
+ * Language-agnostic repository search engine.
+ *
+ * Operates on raw file CONTENT — no per-language code paths. Literal and
+ * regex modes both scan whole-file text, so patterns can match ACROSS lines
+ * (`ActivityKind[\s\S]{0,300}`, dotall, embedded \n) in any language or an
+ * unknown/custom one. Language-aware structural search stays the LSP layer's
+ * job; this engine only reports whether it is in play (languageAware=false).
+ */
+export interface SearchOptions {
+  pattern: string;
+  mode?: 'literal' | 'regex';
+  /** Subset of i, m, s (i = case-insensitive default). */
+  flags?: string;
+  path?: string;
+  include?: string[];
+  exclude?: string[];
+  maxResults?: number;
+  contextLines?: number;
+}
+
+// Glob with star / double-star / question-mark, matched against the
+// repo-relative posix path. A pattern without a slash also matches the
+// basename (so "*.py" hits src/x.py); a leading double-star segment makes
+// the directory prefix optional (star-star-slash-star.py hits both util.py
+// and vendor/x/util.py).
+function globToRegExp(glob: string): RegExp {
+  const esc = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\//g, '\u0000')
+    .replace(/\*\*/g, '\u0001')
+    // Wildcard expansion first; the \u0000 placeholder is expanded LAST so
+    // its own regex characters are never re-mangled by the steps above.
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/\u0000/g, '(?:[^/]+/)*')
+    .replace(/\u0001/g, '.*');
+  const hasSlash = glob.includes('/');
+  return new RegExp(hasSlash ? `^${esc}$` : `(^|/)${esc}$`, 'i');
+}
+
+function matchesAnyGlobs(rel: string, globs: string[]): boolean {
+  const base = path.basename(rel);
+  return globs.some((g) => {
+    const re = globToRegExp(g);
+    return re.test(rel) || (!g.includes('/') && re.test(base));
+  });
+}
+
+/** Offset -> 1-based line number via the file's line-start table. */
+function lineOf(lineStarts: number[], offset: number): number {
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (lineStarts[mid]! <= offset) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo + 1;
+}
+
 export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   const pattern = String(params['pattern'] ?? '');
   if (!pattern) return fail('search_files: missing "pattern"');
+  const mode: 'literal' | 'regex' = params['mode'] === 'literal' ? 'literal' : 'regex';
+  const flags = String(params['flags'] ?? 'i').replace(/[^ims]/g, '');
+  if (String(params['flags'] ?? '').replace(/[ims]/g, '') !== '') {
+    return fail('search_files: unsupported flags — only i (ignore case), m (multiline anchors), s (dotall) are supported');
+  }
   const rel = String(params['path'] ?? '.');
   const abs = ctx.guard.resolve(rel);
   ctx.guard.assertInside(abs);
-  let re: RegExp;
-  try {
-    re = new RegExp(pattern, 'i');
-  } catch (err) {
-    return fail(`search_files: invalid regex: ${(err as Error).message}`);
-  }
-  const ignores = new Set(ctx.guard.lock.ignorePaths);
-  const matches: string[] = [];
+  const include = Array.isArray(params['include']) ? (params['include'] as unknown[]).map(String) : [];
+  const exclude = Array.isArray(params['exclude']) ? (params['exclude'] as unknown[]).map(String) : [];
+  const maxResults = Math.min(500, Math.max(1, Number(params['maxResults']) || MAX_SEARCH_MATCHES));
+  const contextLines = Math.min(5, Math.max(0, Number(params['contextLines']) || 0));
   const maxFileSize = 256 * 1024;
 
+  // Build the matcher once. Literal mode uses indexOf (no escaping traps);
+  // regex mode compiles the user pattern with the requested flags.
+  let find: (content: string) => { start: number; end: number }[];
+  let crossLineCapable: boolean;
+  if (mode === 'literal') {
+    const needle = flags.includes('i') ? pattern.toLowerCase() : pattern;
+    if (!needle) return fail('search_files: pattern is empty after normalization');
+    crossLineCapable = needle.includes('\n');
+    find = (content) => {
+      const hay = flags.includes('i') ? content.toLowerCase() : content;
+      const out: { start: number; end: number }[] = [];
+      let at = hay.indexOf(needle);
+      while (at >= 0 && out.length < maxResults) {
+        out.push({ start: at, end: at + needle.length });
+        at = hay.indexOf(needle, at + Math.max(1, needle.length));
+      }
+      return out;
+    };
+  } else {
+    let re: RegExp;
+    try {
+      re = new RegExp(pattern, flags + 'g');
+    } catch (err) {
+      return fail(`search_files: invalid regex: ${(err as Error).message}`);
+    }
+    crossLineCapable = flags.includes('s') || flags.includes('m') || /\\s|\\n|\[\s\S|\[\^[^\]]*\s/.test(pattern);
+    find = (content) => {
+      const out: { start: number; end: number }[] = [];
+      re.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(content)) !== null && out.length < maxResults) {
+        out.push({ start: m.index, end: m.index + m[0].length });
+        if (m[0].length === 0) re.lastIndex += 1; // zero-width safety
+      }
+      return out;
+    };
+  }
+
+  const ignores = new Set(ctx.guard.lock.ignorePaths);
+  const lines: string[] = [];
+  let filesHit = 0;
+  let truncated = false;
+
   const walk = (dir: string, depth: number): void => {
-    if (depth > 8 || matches.length >= MAX_SEARCH_MATCHES) return;
+    if (lines.length / Math.max(1, 1 + contextLines * 2) >= maxResults) return;
     let entries: string[];
     try {
       entries = readdirSync(dir);
@@ -617,8 +762,6 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
       return;
     }
     for (const name of entries) {
-      if (matches.length >= MAX_SEARCH_MATCHES) return;
-      if (ignores.has(name) || name.startsWith('.')) continue;
       const full = path.join(dir, name);
       let st;
       try {
@@ -627,25 +770,57 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
         continue;
       }
       if (st.isDirectory()) {
+        if (depth > 8 || ignores.has(name) || name.startsWith('.')) continue;
         walk(full, depth + 1);
-      } else if (st.size < maxFileSize) {
-        try {
-          const content = readFileSync(full, 'utf8');
-          const lines = content.split('\n');
-          for (let i = 0; i < lines.length && matches.length < MAX_SEARCH_MATCHES; i++) {
-            if (re.test(lines[i]!)) {
-              matches.push(`${ctx.guard.toRelative(full)}:${i + 1}: ${lines[i]!.trim().slice(0, 160)}`);
-            }
-          }
-        } catch {
-          /* binary or unreadable */
+        continue;
+      }
+      if (st.size >= maxFileSize) continue;
+      const relPath = ctx.guard.toRelative(full).replace(/\\/g, '/');
+      if (include.length > 0 && !matchesAnyGlobs(relPath, include)) continue;
+      if (exclude.length > 0 && matchesAnyGlobs(relPath, exclude)) continue;
+      let content: string;
+      try {
+        content = readFileSync(full, 'utf8');
+      } catch {
+        continue;
+      }
+      if (content.includes('\0')) continue; // binary
+      const found = find(content);
+      if (found.length === 0) continue;
+      filesHit += 1;
+      // Line-start table once per matching file: whole-content search makes
+      // cross-line matches first-class; offsets map back to line numbers.
+      const lineStarts = [0];
+      for (let i = 0; i < content.length; i++) if (content[i] === '\n') lineStarts.push(i + 1);
+      const fileLines = content.split('\n');
+      for (const hit of found) {
+        if (lines.length / Math.max(1, 1 + contextLines * 2) >= maxResults) {
+          truncated = true;
+          break;
+        }
+        const lineNo = lineOf(lineStarts, hit.start);
+        const spanLines = content.slice(hit.start, hit.end).split('\n').length;
+        if (spanLines > 1) {
+          // Multiline match: show the whole matched text with line breaks
+          // made visible, so the agent sees what actually spanned lines.
+          const excerpt = content.slice(hit.start, hit.end).replace(/\n/g, ' ⏎ ').replace(/\s+/g, ' ').trim().slice(0, 200);
+          lines.push(`${relPath}:${lineNo}: ${excerpt}`);
+        } else {
+          lines.push(`${relPath}:${lineNo}: ${(fileLines[lineNo - 1] ?? '').trim().slice(0, 160)}`);
+        }
+        for (let c = Math.max(1, lineNo - contextLines); c <= Math.min(fileLines.length, lineNo + contextLines); c++) {
+          if (c === lineNo) continue;
+          lines.push(`    ${c}: ${(fileLines[c - 1] ?? '').trim().slice(0, 160)}`);
         }
       }
     }
   };
 
   walk(abs, 0);
-  return { ok: true, output: matches.join('\n') || '(no matches)' };
+  const capability =
+    `[search mode=${mode} flags=${flags || 'none'} multiline=${crossLineCapable} files=${filesHit} ` +
+    `matches=${lines.filter((l) => !l.startsWith('    ')).length} truncated=${truncated} languageAware=false]`;
+  return { ok: true, output: lines.length ? `${lines.join('\n')}\n${capability}` : `(no matches)\n${capability}` };
 }
 
 function lspUnavailable(output: string): ToolResult {
@@ -918,7 +1093,27 @@ export async function toolBrowse(ctx: ToolContext, params: Record<string, unknow
       case 'navigate': {
         const url = normalizeUrl(String(params['url'] ?? ''));
         const st = await ctx.browser.navigate(url);
-        return { ok: true, output: `navigated to ${st.url} — "${st.title}"` };
+        // Non-visual evidence rides along with every navigation when the
+        // bridge supports page probes — the default "look", cheaper than vision.
+        const evidence = await collectBrowserEvidence(ctx.browser).catch(() => undefined);
+        return {
+          ok: true,
+          output: `navigated to ${st.url} — "${st.title}"${evidence && evidence.collected ? `\n${formatBrowserEvidence(evidence)}` : ''}`,
+        };
+      }
+      case 'evidence': {
+        // Structured non-visual verification pass: DOM, accessibility,
+        // layout, styles, console — no screenshot. With "viewports", the
+        // page is re-probed at each size (mobile/tablet/desktop or WxH) for
+        // responsive verification. The escalation to a screenshot is for
+        // genuinely visual criteria only.
+        const viewports = resolveViewports(params['viewports']);
+        if (viewports && viewports.length > 1) {
+          const responsive = await collectViewportEvidence(ctx.browser, viewports);
+          return { ok: true, output: formatResponsiveEvidence(responsive) };
+        }
+        const evidence = await collectBrowserEvidence(ctx.browser);
+        return { ok: true, output: formatBrowserEvidence(evidence) };
       }
       case 'back': {
         const st = await ctx.browser.back();

@@ -54,6 +54,25 @@ export interface CallClassification {
   stateTokens: number;
   /** Estimated tokens carried by image parts anywhere in the call. */
   imageTokens: number;
+  /** Content-based section attribution (Phase 12 token accounting): what the
+   *  call's input is actually made of, so context spend is diagnosable and
+   *  context-engine changes are provable. */
+  sections: ContextSections;
+}
+
+export type ContextSection = 'system' | 'taskState' | 'digest' | 'contextPack' | 'strategy' | 'memory' | 'conversation';
+export type ContextSections = Record<ContextSection, number>;
+
+/** Classify one message by WHAT it is, not where it sits in the array. */
+export function sectionOfMessage(m: LlmMessage): ContextSection {
+  if (m.role === 'system') return 'system';
+  const text = typeof m.content === 'string' ? m.content : (m.content.find((p) => p.type === 'text')?.text ?? '');
+  if (text.startsWith('TASK:')) return 'taskState';
+  if (text.startsWith('COMPACTED HISTORY')) return 'digest';
+  if (text.startsWith('CONTEXT PACK') || text.startsWith('CONTEXT SAMPLE')) return 'contextPack';
+  if (text.startsWith('RELEVANT MEMORY')) return 'memory';
+  if (text.startsWith('TASK STRATEGY')) return 'strategy';
+  return 'conversation';
 }
 
 /**
@@ -67,6 +86,7 @@ export function classifyCall(messages: LlmMessage[], prefixEnd: number): CallCla
   let historyTokens = 0;
   let stateTokens = 0;
   let imageTokens = 0;
+  const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, conversation: 0 };
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]!;
     // Keep the buckets disjoint: messageTokens() already includes image cost,
@@ -75,6 +95,7 @@ export function classifyCall(messages: LlmMessage[], prefixEnd: number): CallCla
     // and bySource sums exceed estimatedInputTokens.
     const imageShare = estimateImageTokens(messageImageBytes(m));
     const tokens = messageTokens(m) - imageShare;
+    sections[sectionOfMessage(m)] += tokens;
     if (i < prefixEnd) {
       prefixTokens += tokens;
       imageTokens += imageShare;
@@ -86,7 +107,7 @@ export function classifyCall(messages: LlmMessage[], prefixEnd: number): CallCla
       imageTokens += imageShare;
     }
   }
-  return { prefixTokens, historyTokens, stateTokens, imageTokens };
+  return { prefixTokens, historyTokens, stateTokens, imageTokens, sections };
 }
 
 export class RunTelemetry {
@@ -96,6 +117,10 @@ export class RunTelemetry {
   private cachedTokens = 0;
   private estimatedInputTokens = 0;
   private readonly bySource = { system: 0, contextPack: 0, history: 0, state: 0, images: 0 };
+  // Fine content-based sections (Phase 12): digest/strategy/conversation are
+  // carved out of `history`, taskState out of `state`, so context-engine
+  // changes are provable in before/after token terms.
+  private readonly bySection: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, conversation: 0 };
   // Planning vs execution attribution (spec §9): is richer planning actually
   // costing more, and does it pay for itself in fewer execution turns?
   private planningCalls = 0;
@@ -141,6 +166,9 @@ export class RunTelemetry {
     this.bySource.history += split.historyTokens;
     this.bySource.state += split.stateTokens;
     this.bySource.images += split.imageTokens;
+    for (const section of Object.keys(split.sections) as ContextSection[]) {
+      this.bySection[section] += split.sections[section]!;
+    }
   }
 
   noteCompaction(): void {
@@ -167,7 +195,17 @@ export class RunTelemetry {
       outputTokens: this.outputTokens,
       cachedTokens: this.cachedTokens,
       estimatedInputTokens: this.estimatedInputTokens,
-      estimatedBySource: { ...this.bySource, contextPack: this.bySource.contextPack },
+      estimatedBySource: {
+        system: this.bySection.system,
+        contextPack: this.bySection.contextPack,
+        history: this.bySource.history,
+        state: this.bySection.taskState,
+        images: this.bySource.images,
+        digest: this.bySection.digest,
+        strategy: this.bySection.strategy,
+        memory: this.bySection.memory,
+        conversation: this.bySection.conversation,
+      },
       planningCalls: this.planningCalls,
       executionCalls: this.executionCalls,
       estimatedPlanningInput: this.estimatedPlanningInput,
@@ -189,7 +227,8 @@ export function renderTelemetry(t: TokenTelemetrySnapshot): string {
   const src = t.estimatedBySource;
   return (
     `calls=${t.calls} input=${t.inputTokens} cached=${t.cachedTokens} output=${t.outputTokens} ` +
-    `~estInput=${t.estimatedInputTokens} (system/context=${src.system + src.contextPack} history=${src.history} state=${src.state} images=${src.images}) ` +
+    `~estInput=${t.estimatedInputTokens} (system=${src.system} contextPack=${src.contextPack} taskState=${src.state} ` +
+    `digest=${src.digest} strategy=${src.strategy} conversation=${src.conversation} images=${src.images}) ` +
     `planning=${t.planningCalls}c/~${t.estimatedPlanningInput}t execution=${t.executionCalls}c/~${t.estimatedExecutionInput}t ` +
     `compactions=${t.compactions} toolCalls=${t.toolCalls} screenshots=${t.screenshots} wasted=${t.wastedCalls}`
   );

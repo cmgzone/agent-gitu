@@ -4,6 +4,7 @@ import type {
   AcceptanceCriterion,
   ActionRecord,
   ArchitectureDecision,
+  BudgetExtensionRecord,
   CriterionSpec,
   DecisionBasis,
   PlanArea,
@@ -338,6 +339,14 @@ export class TaskLedger {
     this.save();
   }
 
+  /** Audit a granted budget extension: reason + evidence snapshot (cap 10). */
+  addBudgetExtension(record: Omit<BudgetExtensionRecord, 'at'>): void {
+    this.data.budgetExtensions ??= [];
+    this.data.budgetExtensions.push({ ...record, at: nowIso() });
+    if (this.data.budgetExtensions.length > 10) this.data.budgetExtensions.splice(0, this.data.budgetExtensions.length - 10);
+    this.save();
+  }
+
   setActiveSkills(skills: string[]): void {
     this.data.activeSkills = [...new Set(skills)];
     this.save();
@@ -429,7 +438,7 @@ export class TaskLedger {
   }
 
   /** Distinct recent failures (deduped by error signature) for the compact state. */
-  failureSummary(max = 3): string[] {
+  failureSummary(max = 5): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     for (let i = this.data.actions.length - 1; i >= 0 && out.length < max; i--) {
@@ -444,9 +453,12 @@ export class TaskLedger {
     return out;
   }
 
-  /** The next plan step the agent should work on, for the compact state. */
+  /** The next plan step the agent should work on, for the compact state.
+   *  Prefers the step already in progress: pointing at the first pending
+   *  step while another step is mid-flight made the state message nag the
+   *  agent back to work it had deliberately set aside. */
   nextStep(): PlanStep | undefined {
-    return this.data.plan.find((s) => s.status === 'pending' || s.status === 'in_progress');
+    return this.data.plan.find((s) => s.status === 'in_progress') ?? this.data.plan.find((s) => s.status === 'pending');
   }
 
   async validateEnvironment(cwd: string): Promise<{ ok: boolean; reason?: string }> {
@@ -471,7 +483,7 @@ export class TaskLedger {
     return { ok: true };
   }
 
-  transcriptTail(maxActions = 8): string {
+  transcriptTail(maxActions = 16): string {
     const tail = this.data.actions.slice(-maxActions);
     if (tail.length === 0) return '(no actions yet)';
     return tail

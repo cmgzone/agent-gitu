@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { builtinSkills } from './builtin.js';
 import { ensureHermesHome } from '../workspace/home.js';
 
 export interface Skill {
@@ -11,7 +12,7 @@ export interface Skill {
   aliases?: string[];
   keywords?: string[];
   /** Which layer this entry lives in (set on read; persisted value ignored). */
-  scope?: 'global' | 'project';
+  scope?: 'global' | 'project' | 'builtin';
 }
 
 export interface SkillMatch {
@@ -155,6 +156,8 @@ export class SkillStore {
     private readonly dir: string,
     /** Optional workspace-level layer merged into this store (project wins). */
     private readonly globalDir?: string,
+    /** Shipped expertise (lowest layer — user skills shadow same-name builtins). */
+    private readonly builtinSkills: Skill[] = [],
   ) {}
 
   static projectSkillsDir(repoRoot: string): string {
@@ -162,7 +165,9 @@ export class SkillStore {
   }
 
   static forProject(repoRoot: string): SkillStore {
-    return new SkillStore(SkillStore.projectSkillsDir(repoRoot), SkillStore.globalSkillsDir());
+    // Late import would be cleaner, but builtin.ts only imports types from
+    // this module, so the static import is cycle-free.
+    return new SkillStore(SkillStore.projectSkillsDir(repoRoot), SkillStore.globalSkillsDir(), builtinSkills());
   }
 
   /** Workspace-wide skill layer shared by every project. */
@@ -189,10 +194,13 @@ export class SkillStore {
   }
 
   list(): Skill[] {
+    // Three layers, lowest precedence first: shipped builtins < workspace
+    // globals < project skills. Same-name user skills shadow builtins.
+    const builtins = this.builtinSkills.map((s) => ({ ...s, scope: 'builtin' as const }));
     const globals = this.readDir(this.globalDir);
     const project = this.readDir(this.dir);
-    // Project skills override same-name global ones; both remain visible.
     const byName = new Map<string, Skill>();
+    for (const s of builtins) byName.set(normalizeToken(s.name), s);
     for (const s of globals) byName.set(normalizeToken(s.name), s);
     for (const s of project) byName.set(normalizeToken(s.name), { ...s, scope: 'project' });
     return [...byName.values()];

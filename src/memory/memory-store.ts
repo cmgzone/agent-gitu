@@ -988,7 +988,12 @@ export class MemoryStore {
     if (ctx?.allowedScopes && !ctx.allowedScopes.includes(v)) return false;
     if (v === 'global') return true;
     if (v === 'project') return !ctx?.projectId || !e.projectId || e.projectId === ctx.projectId;
-    if (v === 'mission') return !!ctx?.missionId && e.missionId === ctx.missionId;
+    // Mission visibility: shared within a mission. A published finding WITHOUT
+    // a missionId is a deliberate project-wide share — visible to any member.
+    if (v === 'mission') {
+      if (e.missionId) return !!ctx?.missionId && e.missionId === ctx.missionId;
+      return !ctx?.projectId || !e.projectId || e.projectId === ctx.projectId;
+    }
     return !!ctx?.requestingAgentId && e.agentId === ctx.requestingAgentId;
   }
 }

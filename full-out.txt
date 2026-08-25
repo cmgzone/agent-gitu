@@ -1,0 +1,284 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mC:/Users/Admin/Documents/monez/agentgitu[39m
+
+(node:6928) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+Switched to a new branch 'hermes/hermes-task-20260825-efbf95-next'
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+Switched to a new branch 'some-other-task-branch'
+ [32m✓[39m tests/server.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 73253[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mserves the UI and project info [33m 837[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mexposes live token limits and prices with the model catalog [33m 838[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mruns a task end-to-end over HTTP with live state [33m 2450[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mfalls back to a same-provider free model when retrying after a no-credits failure [33m 2250[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mkeeps the paid model when the user explicitly overrides after topping up [33m 2373[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mreactivates an older session in its own worktree without stealing the shared checkout [33m 10111[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mresumes an older session even while another run is using the project checkout [33m 6813[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mrestores a chat transcript, its metadata, and conversational context after restart [33m 3807[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mretry and edited resends supersede the original message instead of cloning it [33m 3848[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mauto-approve applies to continuations when the client sends it [33m 9952[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mswitches a chat session to build mode when the follow-up sends mode: standard [33m 3642[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mswitches a build session to chat mode when the follow-up sends mode: chat [33m 3603[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mresumes a standard session as a task and adopts the picker model for legacy sessions [33m 4007[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mgates dangerous actions behind the approval API [33m 3517[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mpauses for plan review over HTTP and builds after approval [33m 4596[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mqueues user messages and stops a running task over HTTP [33m 3826[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mrejects runs without a goal [33m 2129[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mexposes the in-app browser API when a bridge is configured [33m 2403[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer[2m > [22mreports 503 for browser endpoints without a bridge [33m 2203[2mms[22m[39m
+(node:15520) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/hermes.test.ts [2m([22m[2m32 tests[22m[2m)[22m[33m 50135[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mcompletes a task only when the evidence gate opens [33m 1883[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mrecovers the action from the reasoning trace when the visible reply is prose-only [33m 1287[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mdoes not leak <json> fence tags into the streamed prose [33m 1574[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22maccepts JSON actions that use the tool name as the action type [33m 1499[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mrejects premature completion until criteria have evidence [33m 1396[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mhonors request_block and records failure memory [33m 617[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mblocks repeated failing actions via loop prevention [33m 6958[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mstreams natural-language updates and records them [33m 590[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mpauses for plan review, applies edits, and only then builds [33m 632[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mchat mode answers directly without tools [33m 522[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mswitches a chat ledger to build mode when resuming with a different mode [33m 1287[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22masks the user clarifying questions and uses the answers [33m 648[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mexecutes parallel tool calls concurrently and records evidence [33m 6424[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22memits live line counts when writing files [33m 781[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mstop() aborts a running task and queued messages reach the agent [33m 1188[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22manswers follow-up comments conversationally without forcing task work [33m 1103[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mcreates skills by itself when asked [33m 902[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mauto-learns a reusable skill after completing a task [33m 1737[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mdoes not auto-learn or create skills when the user disables it [33m 1343[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mdelegates parallel sub-tasks to named sub-agents [33m 1298[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mstarts independent specialist work in the background and exposes its status [33m 1020[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mparses dots-style XML function calls instead of leaking raw XML [33m 1741[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mdenies dangerous commands that are not approved [33m 904[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mrejects completion when evidence does not match orchestrator-specified structured criteria [33m 1331[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22maccepts completion when evidence matches orchestrator-specified structured criteria [33m 1399[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mhalts a runaway task when the effort turn budget is exhausted [33m 2556[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mextends the turn budget while the run keeps producing verified progress [33m 3142[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mcoaches through unparseable replies instead of stopping after three warnings [33m 1403[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mclamps delegate calls to the task specialist budget [33m 1040[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mrecords the risk plan and steers delegations toward the recommended specialists [33m 953[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes end-to-end (mock LLM)[2m > [22mwarns when delegating to an agent outside the recommended risk roster [33m 963[2mms[22m[39m
+ [32m✓[39m tests/subagent.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 39082[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22mqueues background agents, limits concurrent workers, and retains their results [33m 1295[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22mruns specialists in isolated git worktrees and merges product changes back [33m 4204[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22mdoes not merge changes when the specialist fails, and reports merge conflicts [33m 2511[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22mnever lets two concurrent specialists silently clobber each other: same-file edits yield one clean merge and one detected conflict [33m 6005[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22mkeeps merging subsequent specialists after an earlier merge failed (chain is not poisoned) [33m 8092[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22muses a neutral git identity when none is configured, so worktree commits AND merges still succeed on fresh machines [33m 3534[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22mrejects specialist completion and discards worktree when evidence gate is unsatisfied (lying specialist attack) [33m 4106[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner[2m > [22maccepts specialist completion and merges worktree when required verification is satisfied [33m 9329[2mms[22m[39m
+(node:9436) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+hidden: clamp(10,1,10) !== 10
+ [32m✓[39m tests/agent-evals/traps.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 47853[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: false green (bug "fixed" without reproduction)[2m > [22mrigor gate rejects twice, then completion carries the gap as a risk [33m 1981[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: context loss over a long run[2m > [22mthe goal survives 25+ turns of state rebuilds [33m 1852[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: compaction trap (huge outputs push history out)[2m > [22mcompacts without losing the goal, and the run still completes [33m 2001[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: wide refactor (scope discovered mid-run)[2m > [22mescalates complexity and records an auditable extension [33m 2508[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: failure storm (repeated distinct failures)[2m > [22mescalates on distinct failure signatures and records the extension [33m 35714[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: open-plan reconciliation at completion[2m > [22mrejects completion with an abandoned step, accepts after explicit reconcile [33m 2183[2mms[22m[39m
+   [33m[2m✓[22m[39m agent-eval: hidden edge case (main test green, hidden test red)[2m > [22mrecords the hidden-check failure the agent never saw [33m 1603[2mms[22m[39m
+(node:16932) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-session.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 13732[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer — session ↔ task ↔ git attachment (P0.1)[2m > [22mbinds session → taskId → ledger → branch and continues on the same task after restart [33m 8377[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer — session ↔ task ↔ git attachment (P0.1)[2m > [22mrestores branch and worktree from the ledger after restart [33m 659[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer — session ↔ task ↔ git attachment (P0.1)[2m > [22mrejects continuation when the task points at a missing worktree (409, no orphan) [33m 1084[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer — session ↔ task ↔ git attachment (P0.1)[2m > [22mrejects continuation on git branch mismatch (409, no orphan) [33m 1738[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer — session ↔ task ↔ git attachment (P0.1)[2m > [22mrejects continuation with no task binding at all (409, no orphan) [33m 731[2mms[22m[39m
+   [33m[2m✓[22m[39m HermesServer — session ↔ task ↔ git attachment (P0.1)[2m > [22mrejects continuation when the task ledger is gone (404, no silent new task) [33m 1133[2mms[22m[39m
+(node:804) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-plan-steps.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 14963[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — plan steps are marked done when their verification passes[2m > [22mauto-completes the matching step even when the model omits stepId [33m 1560[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — plan steps are marked done when their verification passes[2m > [22mstill marks the step done when the model provides an explicit stepId [33m 1431[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — plan steps are marked done when their verification passes[2m > [22mdoes NOT auto-complete steps whose verification does not match the command [33m 1431[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — plan steps are marked done when their verification passes[2m > [22mdoes NOT complete a step when a non-verification tool succeeds with its stepId [33m 1566[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — plan steps are marked done when their verification passes[2m > [22mcompletes a step explicitly via complete_step [33m 1447[2mms[22m[39m
+   [33m[2m✓[22m[39m run_command — timeout kills the process tree before evidence resolves[2m > [22mresolves ok:false with a timeout note and does not hang past the deadline [33m 6923[2mms[22m[39m
+   [33m[2m✓[22m[39m run_command — timeout kills the process tree before evidence resolves[2m > [22mstill resolves normally for fast commands [33m 596[2mms[22m[39m
+(node:13364) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-findings.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 11527[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — Finding Verification Gate end-to-end[2m > [22mreports a finding as CONFIRMED only after an independent specialist reproduces it [33m 2489[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — Finding Verification Gate end-to-end[2m > [22mdowngrades a finding to FALSE-POSITIVE when the verifier cannot reproduce it [33m 7464[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — Finding Verification Gate end-to-end[2m > [22mleaves findings UNVERIFIABLE when no specialists are configured [33m 1542[2mms[22m[39m
+(node:15352) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-bug-rigor.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 4182[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — bug-fix rigor gate[2m > [22maccepts a bug fix that reproduces (FAIL), edits, and re-verifies (PASS), but rejects completion once for the missing root cause [33m 2509[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — bug-fix rigor gate[2m > [22mrejects a fix without reproduction twice, then completes with the gap recorded as a risk [33m 1661[2mms[22m[39m
+ [32m✓[39m tests/subagent-resume.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 5967[2mms[22m[39m
+   [33m[2m✓[22m[39m specialist pause / preserve / resume lifecycle[2m > [22mkeeps the worktree + checkpoints when a specialist stops early, and resumes where it left off [33m 5965[2mms[22m[39m
+(node:13300) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/token-efficiency.test.ts [2m([22m[2m25 tests[22m[2m)[22m[33m 7536[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes e2e — decisions, telemetry, context efficiency[2m > [22mrejects a decision that drops an explicitly required technology [33m 788[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes e2e — decisions, telemetry, context efficiency[2m > [22mallows choosing vanilla JS when nothing requires a framework [33m 809[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes e2e — decisions, telemetry, context efficiency[2m > [22mrecords telemetry on the ledger and report for a completed run [33m 1504[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes e2e — decisions, telemetry, context efficiency[2m > [22mkeeps the stable prefix byte-identical across turns (prefix-cache friendly) [33m 1423[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes e2e — decisions, telemetry, context efficiency[2m > [22mattaches targeted recovery context after a failed tool call [33m 1928[2mms[22m[39m
+(node:12256) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-skills.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 7349[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — skill usage runtime tracking[2m > [22mrecords used skills into the ledger when the model loads one with use_skill [33m 1693[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — skill usage runtime tracking[2m > [22mdoes not record a used skill when use_skill fails or the skill does not exist [33m 1633[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — automatic skill activation and continuation continuity[2m > [22mauto-activates a high-confidence skill for the task goal [33m 1478[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — automatic skill activation and continuation continuity[2m > [22mrestores previously active skills in a continuation [33m 2116[2mms[22m[39m
+(node:1944) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-antiloop.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 5058[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — malformed-call spiral protection[2m > [22mhalts a schema-error spiral instead of burning turns forever [33m 1226[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — malformed-call spiral protection[2m > [22mrecovers when the model corrects itself after a short streak [33m 1583[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — malformed-call spiral protection[2m > [22mcatches a mixed meltdown of unparseable replies and malformed calls [33m 987[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — malformed-call protection[2m > [22mstops a specialist that spirals into malformed calls, with a malformed-aware blocker [33m 347[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — malformed-call protection[2m > [22mrecovers after a short malformed streak and completes the task [33m 901[2mms[22m[39m
+(node:1396) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[90mstderr[2m | tests/lsp.test.ts[2m > [22m[2mserver registry[2m > [22m[2mignores a malformed config file
+[22m[39m[hermes] warning: C:\Users\Admin\AppData\Local\Temp\gitu-lsp-v22brm\.hermes\lsp.json exists but could not be parsed (Expected property name or '}' in JSON at position 2 (line 1 column 3))
+
+ [32m✓[39m tests/lsp.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 5387[2mms[22m[39m
+   [33m[2m✓[22m[39m LSP manager lifecycle (fake server)[2m > [22mspawns lazily, reuses the server across requests, and shuts down cleanly [33m 455[2mms[22m[39m
+   [33m[2m✓[22m[39m LSP manager lifecycle (fake server)[2m > [22mrecovers when the server process is killed: next request re-spawns and succeeds [33m 729[2mms[22m[39m
+   [33m[2m✓[22m[39m LSP manager lifecycle (fake server)[2m > [22mrestarts once on a crash mid-request, then fails cleanly instead of looping forever [33m 361[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes LSP post-edit diagnostics gate[2m > [22msurfaces diagnostics for the edited file when a language server is available [33m 2029[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes LSP post-edit diagnostics gate[2m > [22mstays silent for files with no language server (LSP remains optional) [33m 1625[2mms[22m[39m
+(node:8812) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/memory-scoping.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 5480[2mms[22m[39m
+   [33m[2m✓[22m[39m audit persistence (review hardening #1)[2m > [22mretention caps the audit ring at 500 events [33m 4266[2mms[22m[39m
+   [33m[2m✓[22m[39m mid-run publish_finding (review hardening #2)[2m > [22ma specialist can publish a finding MID-RUN, and it survives even if the specialist later fails [33m 940[2mms[22m[39m
+(node:6644) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/dynamic-planning.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 4198[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes e2e - dynamic planning[2m > [22mplans richly, executes on compact state, and attributes telemetry by phase [33m 1473[2mms[22m[39m
+(node:17072) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/usage-tracking.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 4865[2mms[22m[39m
+   [33m[2m✓[22m[39m session usage over HTTP[2m > [22maccumulates tokens and messages per session and keeps them after restart [33m 4842[2mms[22m[39m
+(node:4976) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-effort-planner.test.ts [2m([22m[2m37 tests[22m[2m)[22m[33m 4856[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — adaptive effort & risk integration[2m > [22mpersists effort and risk plans on the ledger and emits them [33m 908[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — adaptive effort & risk integration[2m > [22mcaps specialist delegations at the effort budget [33m 1115[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — adaptive effort & risk integration[2m > [22msurfaces risk-recommended specialists as guidance [33m 620[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — adaptive effort & risk integration[2m > [22mextends the budget for visual-verification progress without file changes [33m 2149[2mms[22m[39m
+(node:13728) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/bugfix-regressions.test.ts [2m([22m[2m20 tests[22m[2m)[22m[33m 4941[2mms[22m[39m
+   [33m[2m✓[22m[39m checkpoint resilience (M3)[2m > [22mreports ok:false instead of throwing when git add fails on a stale lock [33m 961[2mms[22m[39m
+   [33m[2m✓[22m[39m workspace fingerprint survives commits (M5)[2m > [22mis stable across staging+commit but reacts to later content edits [33m 1393[2mms[22m[39m
+   [33m[2m✓[22m[39m gitDiscard also undoes staged changes (M6)[2m > [22mreverts worktree AND index for a staged modification [33m 1730[2mms[22m[39m
+(node:6708) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/usage-probe.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 4138[2mms[22m[39m
+   [33m[2m✓[22m[39m usage across continuations[2m > [22mkeeps accumulating tokens and messages when the same session is continued [33m 4129[2mms[22m[39m
+ [32m✓[39m tests/git.test.ts [2m([22m[2m2 tests[22m[2m)[22m[33m 4909[2mms[22m[39m
+   [33m[2m✓[22m[39m git integration[2m > [22mreports unavailable outside a repo, then initializes [33m 587[2mms[22m[39m
+   [33m[2m✓[22m[39m git integration[2m > [22mshows working tree, commits, and discards [33m 4318[2mms[22m[39m
+(node:14444) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/task-strategy.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 3252[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes task-strategy injection[2m > [22minjects the bug-fix strategy at intake when LSP servers exist [33m 1409[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes task-strategy injection[2m > [22mdoes not inject a strategy when no LSP servers are available [33m 1399[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes task-strategy injection[2m > [22mskips the strategy in chat mode [33m 431[2mms[22m[39m
+(node:3532) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/extensions.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 3526[2mms[22m[39m
+   [33m[2m✓[22m[39m resume (same-session continuation)[2m > [22madds a new work phase after completed criteria instead of blocking or replacing history [33m 3449[2mms[22m[39m
+(node:14304) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/reliability-specialist-evidence.test.ts [2m([22m[2m17 tests[22m[2m)[22m[33m 3878[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — specialist evidence inheritance end-to-end[2m > [22maccepts a specialist report that matches the delegated contract and the gate opens [33m 1940[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes — specialist evidence inheritance end-to-end[2m > [22mrejects a specialist that ran an unrelated command and never satisfies the criterion [33m 1909[2mms[22m[39m
+ [32m✓[39m tests/reliability-evidence.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 3800[2mms[22m[39m
+   [33m[2m✓[22m[39m workspace fingerprint — composite of git state[2m > [22mchanges when content changes, but survives staging/checkpoint commits [33m 2218[2mms[22m[39m
+   [33m[2m✓[22m[39m workspace fingerprint — composite of git state[2m > [22mis deterministic for an unchanged workspace [33m 750[2mms[22m[39m
+   [33m[2m✓[22m[39m EvidenceEngine — fingerprint-based staleness[2m > [22mproves the mechanism is the fingerprint, not a trivial-command blacklist [33m 820[2mms[22m[39m
+ [32m✓[39m tests/reliability-specialist.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 7646[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — dynamic turn budgeting[2m > [22mstarts at the base budget of 30 turns [33m 620[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — dynamic turn budgeting[2m > [22mextends the budget when productive work continues past the limit [33m 504[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — dynamic turn budgeting[2m > [22mnever exceeds the hard ceiling [33m 587[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — stagnation early termination[2m > [22mterminates early on repeated failing turns [33m 428[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — stagnation early termination[2m > [22mterminates early when the specialist stops producing valid actions [33m 3899[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — structured result guarantee[2m > [22mreturns a complete structured result even when the specialist crashes (drain fallback) [33m 1166[2mms[22m[39m
+   [33m[2m✓[22m[39m SubAgentRunner — structured result guarantee[2m > [22malways reports structured fields on every termination path [33m 434[2mms[22m[39m
+ [32m✓[39m tests/reliability-tools.test.ts [2m([22m[2m28 tests[22m[2m)[22m[33m 2977[2mms[22m[39m
+   [33m[2m✓[22m[39m toolSearchFiles — language-agnostic search engine[2m > [22mdotall flag (s) lets the dot cross lines [33m 316[2mms[22m[39m
+   [33m[2m✓[22m[39m toolSearchFiles — language-agnostic search engine[2m > [22minclude filters by glob, exclude removes subtrees [33m 537[2mms[22m[39m
+(node:16624) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/robustness-fixes.test.ts [2m([22m[2m16 tests[22m[2m)[22m[33m 2415[2mms[22m[39m
+   [33m[2m✓[22m[39m prose stream survives braces in commentary[2m > [22mdoes not cut user-facing text at a literal brace before the JSON action [33m 1628[2mms[22m[39m
+ [32m✓[39m tests/llm-client.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 2294[2mms[22m[39m
+   [33m[2m✓[22m[39m OpenAiCompatClient retry behavior[2m > [22mgives up after retries and surfaces a friendly rate-limit message [33m 517[2mms[22m[39m
+   [33m[2m✓[22m[39m OpenAiCompatClient retry behavior[2m > [22mretries by default (no opts) on transient errors [33m 1204[2mms[22m[39m
+(node:10924) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/browser.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 1913[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes with in-app browser[2m > [22mdelivers screenshots to vision models as image parts [33m 1123[2mms[22m[39m
+   [33m[2m✓[22m[39m Hermes with in-app browser[2m > [22mnotes screenshots as undeliverable for text-only models [33m 762[2mms[22m[39m
+(node:12512) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/code-index.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1309[2mms[22m[39m
+   [33m[2m✓[22m[39m CodeIndex[2m > [22mwatches the repo and updates the index in the background [33m 960[2mms[22m[39m
+(node:15604) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/hybrid-retrieval.test.ts [2m([22m[2m9 tests[22m[2m)[22m[33m 538[2mms[22m[39m
+(node:17148) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/context-memory.test.ts [2m([22m[2m12 tests[22m[2m)[22m[33m 1576[2mms[22m[39m
+   [33m[2m✓[22m[39m ContextSnapshot — canonical compressed task state[2m > [22mcaptures objective, progress, decisions, failures, evidence, files and next move [33m 362[2mms[22m[39m
+   [33m[2m✓[22m[39m executor artifact persistence — digest in context, raw on disk[2m > [22mkeeps small outputs inline without artifacts [33m 695[2mms[22m[39m
+ [32m✓[39m tests/project-guard.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 695[2mms[22m[39m
+(node:12440) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/context-engine.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 679[2mms[22m[39m
+(node:14756) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/workspace-home.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 744[2mms[22m[39m
+(node:17348) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/quality-upgrades.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 541[2mms[22m[39m
+(node:9800) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/ui-specialist-cards.test.ts [2m([22m[2m11 tests[22m[2m)[22m[33m 518[2mms[22m[39m
+   [33m[2m✓[22m[39m UI — bundled fonts (Inter + JetBrains Mono)[2m > [22mserves woff2 files locally with immutable caching and blocks traversal [33m 495[2mms[22m[39m
+ [32m✓[39m tests/task-ledger.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 585[2mms[22m[39m
+(node:16492) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/skills-builtin.test.ts [2m([22m[2m7 tests[22m[2m)[22m[33m 470[2mms[22m[39m
+ [32m✓[39m tests/memory-semantic.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 372[2mms[22m[39m
+ [32m✓[39m tests/memory-lifecycle.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 338[2mms[22m[39m
+ [32m✓[39m tests/reporter.test.ts [2m([22m[2m1 test[22m[2m)[22m[32m 259[2mms[22m[39m
+ [32m✓[39m tests/architecture.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 98[2mms[22m[39m
+(node:13032) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/providers.test.ts [2m([22m[2m38 tests[22m[2m)[22m[32m 83[2mms[22m[39m
+(node:432) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/skills-global.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 92[2mms[22m[39m
+ [32m✓[39m tests/risk-planner.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m tests/model-context.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 49[2mms[22m[39m
+ [32m✓[39m tests/browser-evidence.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32m✓[39m tests/evidence.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m tests/effort-planner.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m tests/llm-resilience.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m tests/policy.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m tests/ui-gate.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m tests/impact-escalation.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m tests/loop-detector.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 15[2mms[22m[39m
+ [32m✓[39m tests/util.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m56 passed[39m[22m[90m (56)[39m
+[2m      Tests [22m [1m[32m683 passed[39m[22m[90m (683)[39m
+[2m   Start at [22m 22:48:46
+[2m   Duration [22m 418.59s[2m (transform 3.57s, setup 662ms, collect 14.60s, tests 360.24s, environment 30ms, prepare 18.02s)[22m
+
+ M src/memory/memory-store.ts
+ M tests/agent-evals/results/memory-eval-results.json
+?? full-out.txt

@@ -109,6 +109,12 @@ const GLUE_WORDS = new Set([
   'before', 'when', 'only', 'also', 'into', 'onto', 'over', 'under', 'based', 'uses0',
 ]);
 
+const NEGATORS = new Set([
+  'not', 'never', 'no', 'dont', 'cannot', 'cant', 'wont', 'shouldnt', 'avoid', 'without',
+  'forbid', 'forbidden', 'prohibited', 'disallow', 'disallowed', 'nor', 'doesnt', 'isnt',
+  'arent', 'none',
+]);
+
 export function classifyPair(hybrid: number, lexical: number, contradictionSignals: number): PairRelationship {
   // Contradiction check runs FIRST: a subject swap with unique technical
   // terms on both sides must never be consolidated as a duplicate.
@@ -140,8 +146,15 @@ export function isCorroborationType(type: string): boolean {
 export function contradictionSignals(a: string, b: string): number {
   const tokensOf = (t: string): Map<string, number> => {
     const map = new Map<string, number>();
-    for (const tok of t.toLowerCase().split(/[^a-z0-9]+/)) {
-      if (tok.length >= 4 && !GLUE_WORDS.has(tok)) map.set(tok, (map.get(tok) ?? 0) + 1);
+    const words = t.toLowerCase().split(/[^a-z0-9]+/);
+    for (let i = 0; i < words.length; i++) {
+      const tok = words[i]!;
+      if (tok.length < 4 || GLUE_WORDS.has(tok)) continue;
+      // Negation look-back: a negator within the 3 preceding words marks this
+      // mention as a CONSTRAINT ("do not introduce Redux"), not an assertion.
+      const prev = words.slice(Math.max(0, i - 3), i);
+      if (prev.some((p) => NEGATORS.has(p))) continue;
+      map.set(tok, (map.get(tok) ?? 0) + 1);
     }
     return map;
   };
@@ -155,9 +168,9 @@ export function contradictionSignals(a: string, b: string): number {
   for (const [tok, n] of tb) {
     if (n === 1 && !ta.has(tok)) uniqueB += 1;
   }
-  // Each side contributing at least one unique substantive term is one
-  // signal; two+ on a side is a stronger one.
-  return (uniqueA >= 1 ? 1 : 0) + (uniqueB >= 1 ? 1 : 0) + (uniqueA >= 2 || uniqueB >= 2 ? 1 : 0);
+  // A CONTRADICTION needs unique substantive terms on BOTH sides — one side
+  // merely adding detail is elaboration; both sides having 2+ is stronger.
+  return (uniqueA >= 1 ? 1 : 0) + (uniqueB >= 1 ? 1 : 0) + (uniqueA >= 2 && uniqueB >= 2 ? 1 : 0);
 }
 
 /** Deterministic test-friendly embedder: token-hash bag-of-words vector. */

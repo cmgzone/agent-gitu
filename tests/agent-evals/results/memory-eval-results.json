@@ -1,4 +1,42 @@
 {
+  "t4-contradiction": {
+    "id": "t4-contradiction",
+    "name": "Contradiction is flagged advisory, never auto-merged/superseded",
+    "passed": true,
+    "assertions": [
+      {
+        "assertion": "no automatic merge of contradictory claims",
+        "passed": true,
+        "detail": "[]"
+      },
+      {
+        "assertion": "no automatic supersession",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "assertion": "both memories remain individually retrievable",
+        "passed": true,
+        "detail": ""
+      }
+    ],
+    "evidence": {
+      "a": {
+        "id": "mem-20260825-423f8e",
+        "claim": "Checkout state uses Zustand",
+        "status": "verified"
+      },
+      "b": {
+        "id": "mem-20260825-c2d4cb",
+        "claim": "Checkout state uses Redux",
+        "status": "verified"
+      },
+      "mergedCount": 0,
+      "supersededCount": 0,
+      "mergedClaims": []
+    },
+    "failures": []
+  },
   "t8-success-pattern": {
     "id": "t8-success-pattern",
     "name": "3 independent verified successes promote; same-task repeats do not",
@@ -962,46 +1000,6 @@
     },
     "failures": []
   },
-  "t4-contradiction": {
-    "id": "t4-contradiction",
-    "name": "Contradiction is flagged advisory, never auto-merged/superseded",
-    "passed": false,
-    "assertions": [
-      {
-        "assertion": "no automatic merge of contradictory claims",
-        "passed": false,
-        "detail": "[\"Checkout state uses Zustand; Checkout state uses Redux\"]"
-      },
-      {
-        "assertion": "no automatic supersession",
-        "passed": false,
-        "detail": ""
-      },
-      {
-        "assertion": "both memories remain individually retrievable",
-        "passed": true,
-        "detail": ""
-      }
-    ],
-    "evidence": {
-      "a": {
-        "id": "mem-20260825-f5fc26",
-        "claim": "Checkout state uses Zustand",
-        "status": "superseded"
-      },
-      "b": {
-        "id": "mem-20260825-12c630",
-        "claim": "Checkout state uses Redux",
-        "status": "superseded"
-      },
-      "mergedCount": 1,
-      "supersededCount": 2,
-      "mergedClaims": [
-        "Checkout state uses Zustand; Checkout state uses Redux"
-      ]
-    },
-    "failures": []
-  },
   "t5-paraphrase": {
     "id": "t5-paraphrase",
     "name": "Paraphrase duplicates consolidate with provenance",
@@ -1059,13 +1057,13 @@
       },
       {
         "assertion": "published finding is a candidate (not durable)",
-        "passed": false,
-        "detail": "verified"
+        "passed": true,
+        "detail": "candidate"
       },
       {
         "assertion": "published finding is mission scope",
-        "passed": false,
-        "detail": "agent"
+        "passed": true,
+        "detail": "mission"
       },
       {
         "assertion": "agentId provenance preserved",
@@ -1075,7 +1073,7 @@
     ],
     "evidence": {
       "privateMemory": {
-        "id": "mem-20260825-0c8915",
+        "id": "mem-20260825-c7b0cd",
         "visibility": "agent",
         "agentId": "specialist-a"
       },
@@ -1084,9 +1082,9 @@
         "leaked": false
       },
       "publication": {
-        "id": "mem-20260825-0c8915",
-        "status": "verified",
-        "visibility": "agent",
+        "id": "mem-20260825-beec20",
+        "status": "candidate",
+        "visibility": "mission",
         "agentId": "specialist-a"
       },
       "retrievalAfter": {

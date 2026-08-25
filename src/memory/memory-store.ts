@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { STOPWORDS } from '../context/context-engine.js';
 import type { MemoryAuditEvent, MemoryEntry, MemoryRetrievalContext, MemorySourceType, MemoryStatus, MemoryType, MemoryVisibility } from '../types.js';
 import { nowIso, readJson, shortId, writeJson } from '../util.js';
 import type { Embedder } from '../context/embeddings.js';
@@ -167,7 +168,7 @@ export class MemoryStore {
       text
         .toLowerCase()
         .split(/[^a-z0-9]+/)
-        .filter((t) => t.length > 2),
+        .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
     );
     const now = Date.now();
     // Isolation BEFORE ranking (review Phase 3): invisible memories never
@@ -178,7 +179,7 @@ export class MemoryStore {
         .toLowerCase()
         .split(/[^a-z0-9]+/)
         .filter((t) => t.length > 2);
-      const overlap = claimTokens.filter((t) => queryTokens.has(t)).length;
+      const overlap = claimTokens.filter((t) => queryTokens.has(t) && !STOPWORDS.has(t)).length;
       const relevance = claimTokens.length > 0 ? Math.min(1, overlap / Math.min(6, Math.max(2, claimTokens.length))) : 0;
       const scopeMatch = e.scope === scope ? 1 : 0.4;
       const ageDays = (now - Date.parse(e.createdAt)) / 86_400_000;

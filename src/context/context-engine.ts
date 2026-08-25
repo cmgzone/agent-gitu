@@ -5,7 +5,7 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { ContextPack, FileRef, FileRole } from '../types.js';
 import { EMBED_MAX_CHARS, type Embedder } from './embeddings.js';
 
-const STOPWORDS = new Set([
+export const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'fix', 'add',
   'make', 'so', 'that', 'this', 'it', 'is', 'are', 'be', 'as', 'at', 'by', 'from',
 ]);

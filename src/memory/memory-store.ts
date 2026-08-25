@@ -853,7 +853,7 @@ export class MemoryStore {
       claim: parts.join(' | '),
       scope: input.scope,
       confidence: input.confidence ?? 0.8,
-      importance: 0.7,
+      importance: input.importance ?? 0.7,
       sourceType: 'failure_analysis',
       status: 'verified',
       ...(input.pinned ? { pinned: true } : {}),

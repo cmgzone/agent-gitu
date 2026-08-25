@@ -177,6 +177,9 @@ export function buildSystemPrompt(
   /** Prebuilt RELEVANT MEMORY section — when provided it replaces the static
    *  stored-memory block (memory enters context via buildModelContext). */
   memorySection?: string;
+  /** Tier 1 PROTECTED memory (ACTIVE CONSTRAINTS & DECISIONS) — durable
+   *  guidance that survives compaction regardless of lexical relevance. */
+  protectedSection?: string;
   uiTask?: boolean; /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string } = {},
 ): string {
   const lock = guard.lock;
@@ -248,6 +251,7 @@ OPERATING RULES:
 ${learnRule}
 
 ${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}\n`}
+${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
 
 PROTOCOL — each turn you MUST respond in this exact shape:
 1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.

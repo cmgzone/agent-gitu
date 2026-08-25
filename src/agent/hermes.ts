@@ -1055,6 +1055,11 @@ export class Hermes {
           .map((m) => `- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`)
           .join('\n')}`
       : undefined;
+    // Tier 1 protected/active memory (review two-tier model): durable guidance
+    // — decisions, constraints, conventions, pinned + critical failure lessons
+    // — surfaced regardless of lexical relevance to the goal, and re-injected
+    // after every compaction so it never silently disappears under pressure.
+    const protectedSection = memory.renderProtected(guard.lock.name, 12, this.config.memoryRetrieval);
 
     const systemPrompt = buildSystemPrompt(guard, memory, {
           scopeFiles: this.config.scopeFiles,
@@ -1062,6 +1067,7 @@ export class Hermes {
         // Ranked memory retrieval: memories relevant to THIS goal surface
         // first (relevance + scope + confidence + recency + usage).
         memorySection,
+        protectedSection,
           skillsSection: skills.renderForPrompt(ledger.data.activeSkills),
           agentsSection: this.config.agentsSection,
           mcpSection: this.config.mcp
@@ -1099,6 +1105,7 @@ export class Hermes {
         system: systemPrompt,
         strategy: strategySection,
         memory: memorySection,
+        protectedMemory: protectedSection,
         contextPack: contextNote || undefined,
         conversationHistory: this.config.conversationHistory,
         images: this.config.images,
@@ -1357,14 +1364,17 @@ export class Hermes {
       };
       if (compactHistory(messages, (t) => this.emit(t), compactionOpts)) {
         telemetry.noteCompaction();
-        // Protected-state reconstruction (review fix #3): compaction digests
-        // the intake-era RELEVANT MEMORY message along with the rest of the
-        // old history. Long missions must not lose durable memory guidance
-        // exactly when compaction makes it most needed — re-inject the
-        // memory section right after the fresh digest so it survives every
-        // compaction generation.
+        // Protected-state reconstruction (review two-tier model): compaction
+        // digests the intake-era memory messages along with the old history.
+        // Long missions must not lose durable guidance exactly when compaction
+        // makes it most needed — re-inject BOTH the Tier 1 protected section
+        // and the Tier 2 relevant-memory section right after the fresh digest
+        // so they survive every compaction generation.
+        if (protectedSection) {
+          messages.splice(2, 0, { role: 'user', content: protectedSection });
+        }
         if (memorySection) {
-          messages.splice(2, 0, { role: 'user', content: memorySection });
+          messages.splice(protectedSection ? 3 : 2, 0, { role: 'user', content: memorySection });
         }
         // Compaction removes messages[1..keepFrom) and inserts the digest at
         // index 1, shifting every retained message. The prefix boundary must

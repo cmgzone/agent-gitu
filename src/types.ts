@@ -237,6 +237,9 @@ export interface MemoryEntry {
   promotedFrom?: { visibility: MemoryVisibility; at: string; reason?: string }[];
   /** Success-pattern observations: the distinct taskIds that observed this subject. */
   observations?: string[];
+  /** Tier 1 pin: explicitly promotes any memory into the protected/active tier
+   *  (durable guidance that survives compaction regardless of lexical relevance). */
+  pinned?: boolean;
 }
 
 export type FileRole =

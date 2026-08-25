@@ -60,7 +60,7 @@ export interface CallClassification {
   sections: ContextSections;
 }
 
-export type ContextSection = 'system' | 'taskState' | 'digest' | 'contextPack' | 'strategy' | 'memory' | 'conversation';
+export type ContextSection = 'system' | 'taskState' | 'digest' | 'contextPack' | 'strategy' | 'memory' | 'protected' | 'conversation';
 export type ContextSections = Record<ContextSection, number>;
 
 /** Classify one message by WHAT it is, not where it sits in the array. */
@@ -71,6 +71,7 @@ export function sectionOfMessage(m: LlmMessage): ContextSection {
   if (text.startsWith('COMPACTED HISTORY')) return 'digest';
   if (text.startsWith('CONTEXT PACK') || text.startsWith('CONTEXT SAMPLE')) return 'contextPack';
   if (text.startsWith('RELEVANT MEMORY')) return 'memory';
+  if (text.startsWith('ACTIVE CONSTRAINTS')) return 'protected';
   if (text.startsWith('TASK STRATEGY')) return 'strategy';
   return 'conversation';
 }
@@ -86,7 +87,7 @@ export function classifyCall(messages: LlmMessage[], prefixEnd: number): CallCla
   let historyTokens = 0;
   let stateTokens = 0;
   let imageTokens = 0;
-  const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, conversation: 0 };
+  const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, protected: 0, conversation: 0 };
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]!;
     // Keep the buckets disjoint: messageTokens() already includes image cost,
@@ -120,7 +121,7 @@ export class RunTelemetry {
   // Fine content-based sections (Phase 12): digest/strategy/conversation are
   // carved out of `history`, taskState out of `state`, so context-engine
   // changes are provable in before/after token terms.
-  private readonly bySection: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, conversation: 0 };
+  private readonly bySection: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, protected: 0, conversation: 0 };
   // Planning vs execution attribution (spec §9): is richer planning actually
   // costing more, and does it pay for itself in fewer execution turns?
   private planningCalls = 0;

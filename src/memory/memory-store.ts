@@ -85,6 +85,8 @@ export class MemoryStore {
     agentId?: string;
     missionId?: string;
     projectId?: string;
+    /** Tier 1 pin: promotes this memory into the protected/active tier. */
+    pinned?: boolean;
   }): { entry: MemoryEntry; created: boolean } {
     const claim = input.claim.trim().replace(/\s+/g, ' ');
     // Visibility-aware dedupe identity (review fix #2): a specialist's
@@ -136,6 +138,7 @@ export class MemoryStore {
       ...(input.agentId ? { agentId: input.agentId } : {}),
       ...(visibility === 'mission' ? { missionId: input.missionId, projectId: input.projectId ?? input.scope } : {}),
       ...(visibility === 'project' ? { projectId: input.projectId ?? input.scope } : {}),
+      ...(input.pinned ? { pinned: true } : {}),
     };
     if (status === 'verified' || status === 'durable') entry.lastVerifiedAt = nowIso();
     this.entries.push(entry);
@@ -270,6 +273,85 @@ export class MemoryStore {
     }
     if (all.length === 0) return '(no stored memory for this project yet)';
     return all.map((e) => `[${e.type}] ${e.claim}${e.evidence ? ` (evidence: ${e.evidence})` : ''}`).join('\n');
+  }
+
+  // ── Two-tier retrieval ──────────────────────────────────────────────────
+  //
+  // Tier 1 — PROTECTED / ACTIVE memory: durable guidance that survives
+  // compaction and remains available even when lexical relevance to the active
+  // goal is weak. Covers explicit user decisions, hard constraints, active
+  // conventions, critical (unresolved/high-importance) failure lessons, safety
+  // constraints, and any explicitly pinned memory. These are few and stable, so
+  // injecting them is bounded, labeled guidance — not context pollution.
+  //
+  // Tier 2 — RETRIEVED memory: normal facts/observations/findings/patterns/
+  // ordinary lessons use the existing relevance-based lexical/semantic/hybrid
+  // retrieval (retrieveForContext). Searchable knowledge, surfaced on relevance.
+
+  /** Memory types that form the protected/active tier by virtue of their kind. */
+  private static readonly TIER1_TYPES = new Set<MemoryType>([
+    'decision',
+    'constraint',
+    'project_convention',
+  ]);
+
+  /** An entry belongs to Tier 1 (protected) when pinned, of a Tier-1 type, or
+   *  a critical/unresolved failure lesson (high importance). */
+  private isTier1(entry: MemoryEntry): boolean {
+    if (entry.status === 'superseded' || entry.status === 'archived') return false;
+    if (entry.pinned) return true;
+    if (MemoryStore.TIER1_TYPES.has(entry.type)) return true;
+    // Critical failure lessons earn protection: a production-breaking failure
+    // (high importance) must not be buried by relevance filtering even after
+    // it is resolved — it guards against repeating the mistake.
+    if (entry.type === 'failure' && (entry.importance ?? 0) >= 0.9) return true;
+    return false;
+  }
+
+  /**
+   * Tier 1 retrieval: protected/active memories visible to `ctx`, ranked by
+   * importance then recency, budgeted. Independent of the goal's lexical
+   * relevance — these are durable guidance, not search results.
+   */
+  retrieveProtected(
+    scope: string,
+    opts: { limit?: number; maxChars?: number; ctx?: MemoryRetrievalContext } = {},
+  ): MemoryEntry[] {
+    const maxChars = opts.maxChars ?? 2_000;
+    const candidates = this.entries
+      .filter(
+        (e) =>
+          e.scope === scope &&
+          this.visibleTo(e, opts.ctx) &&
+          this.isTier1(e) &&
+          e.status !== 'superseded' &&
+          e.status !== 'archived',
+      )
+      .sort(
+        (a, b) =>
+          (b.importance ?? 0.5) - (a.importance ?? 0.5) ||
+          Date.parse(b.createdAt) - Date.parse(a.createdAt),
+      );
+    const out: MemoryEntry[] = [];
+    let used = 0;
+    for (const e of candidates) {
+      const cost = e.claim.length + e.type.length + 12;
+      if (used + cost > maxChars) continue;
+      out.push(e);
+      used += cost;
+      if (out.length >= (opts.limit ?? 12)) break;
+    }
+    if (out.length > 0) this.injectedCount += out.length;
+    return out;
+  }
+
+  /** Formatted Tier 1 section for the prompt, or undefined when none. */
+  renderProtected(scope: string, max = 12, ctx?: MemoryRetrievalContext): string | undefined {
+    const entries = this.retrieveProtected(scope, { limit: max, maxChars: 2_000, ctx });
+    if (entries.length === 0) return undefined;
+    return `ACTIVE CONSTRAINTS & DECISIONS (protected — always available):\n${entries
+      .map((e) => `- [${e.type}] ${e.claim}`)
+      .join('\n')}`;
   }
 
   // ── Lifecycle: candidate → verified → durable; superseded/archived ──────
@@ -760,6 +842,8 @@ export class MemoryStore {
     verification?: string;
     scope: string;
     confidence?: number;
+    /** Pin into Tier 1 when this is a critical failure worth protecting. */
+    pinned?: boolean;
   }): { entry: MemoryEntry; created: boolean } {
     const parts = [`FAILURE: ${input.action}`, `CAUSE: ${input.cause}`];
     if (input.fix) parts.push(`FIX: ${input.fix}`);
@@ -772,6 +856,7 @@ export class MemoryStore {
       importance: 0.7,
       sourceType: 'failure_analysis',
       status: 'verified',
+      ...(input.pinned ? { pinned: true } : {}),
     });
   }
 

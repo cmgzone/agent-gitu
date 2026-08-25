@@ -40,6 +40,10 @@ export interface ModelContextInput {
   /** Ranked, budgeted long-term memory (RELEVANT MEMORY ...). Trimmable
    *  after the context pack; provided by retrieval, injected only here. */
   memory?: string;
+  /** Tier 1 protected/active memory (ACTIVE CONSTRAINTS & DECISIONS ...).
+   *  Non-trimmable: durable guidance that must survive compaction. Provided
+   *  by retrieval, injected only here. */
+  protectedMemory?: string;
   contextPack?: string;
   conversationHistory?: LlmMessage[];
   images?: ModelContextImage[];
@@ -72,7 +76,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   let digestContent: string | undefined;
 
   const charsOf = (): number => {
-    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (digestContent?.length ?? 0);
+    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (digestContent?.length ?? 0);
     for (const m of history) total += messageTextChars(m);
     if (input.images?.length && input.supportsImages) {
       for (const img of input.images) total += Math.floor(img.dataUrl.length / 4);
@@ -125,6 +129,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
 
   const messages: LlmMessage[] = [{ role: 'system', content: input.system }];
   if (input.strategy) messages.push({ role: 'user', content: input.strategy });
+  if (input.protectedMemory) messages.push({ role: 'user', content: input.protectedMemory });
   if (input.memory) messages.push({ role: 'user', content: input.memory });
   if (contextPack) messages.push({ role: 'user', content: contextPack });
   if (digestContent) messages.push({ role: 'user', content: digestContent });
@@ -150,7 +155,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   }
   if (input.followUp) messages.push({ role: 'user', content: input.followUp });
 
-  const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, conversation: 0 };
+  const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, protected: 0, conversation: 0 };
   let totalChars = 0;
   for (const m of messages) {
     sections[sectionOfMessage(m)] += messageTextChars(m);

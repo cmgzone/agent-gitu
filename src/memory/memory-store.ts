@@ -21,7 +21,48 @@ export interface MemoryQuery {
   limit?: number;
 }
 
-  /** Normalized dedupe identity: same type + scope + claim text = same memory. */
+/** Options for explicit MemoryStore.search() (Memory Search milestone).
+ *  Reuses the retrieval pipeline: same tokenizer, same STOPWORDS, same score
+ *  weights, authorization via visibleTo() BEFORE any scoring. */
+export interface MemorySearchOptions {
+  /** Maximum number of ranked results (default 10). */
+  limit?: number;
+  /** Isolation context — enforced BEFORE selection/scoring, same as retrieve(). */
+  ctx?: MemoryRetrievalContext;
+  /** Structured filters (ac-14). */
+  scope?: string;
+  visibility?: MemoryVisibility;
+  agentId?: string;
+  projectId?: string;
+  type?: MemoryType;
+  status?: MemoryStatus;
+}
+
+/** Ranked structured search result. Read-only: search NEVER mutates the
+ *  entry's access lifecycle (unlike retrieve(), which feeds auto-injection). */
+export interface MemorySearchResult {
+  id: string;
+  claim: string;
+  type: MemoryType;
+  scope: string;
+  visibility: MemoryVisibility;
+  agentId?: string;
+  confidence: number;
+  importance: number;
+  status: MemoryStatus;
+  sourceType?: MemorySourceType;
+  /** Provenance origin note (entry.source). */
+  provenance?: string;
+  createdAt: string;
+  updatedAt?: string;
+  /** Blended rank score — identical weight formula as retrieve(). */
+  score: number;
+  lexicalScore: number;
+  /** Present only when an embedder produced a usable query vector. */
+  semanticScore?: number;
+  matchReason: 'exact' | 'lexical' | 'semantic';
+}
+
 function dedupeKey(type: MemoryType, scope: string, claim: string, visibility: MemoryVisibility = 'project'): string {
   return `${type}|${scope}|${visibility}|${claim.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
 }
@@ -583,6 +624,114 @@ export class MemoryStore {
   private successObservations = 0;
   private successPatternsPromoted = 0;
   private possibleContradictions = 0;
+
+  /**
+   * Explicit structured search (Memory Search milestone). Mirrors retrieve()'s
+   * scoring EXACTLY — same tokenizer, canonical STOPWORDS, same weight formula
+   * (0.4 relevance + 0.2 scope + 0.15 confidence + 0.15 importance + 0.08
+   * recency + 0.02 usage) — but is READ-ONLY (never mutates accessCount/
+   * lastUsedAt, unlike retrieve() which feeds automatic context injection),
+   * applies structured filters, and returns a per-result score breakdown.
+   * Authorization runs BEFORE selection/scoring via visibleTo(), so invisible
+   * memories can never leak through filters or rank order. When an embedder is
+   * configured, a semantic component (cosine similarity against cached claim
+   * vectors) blends into the SAME relevance term via max(); failures degrade
+   * to the pure lexical path. Entries are returned with status/provenance
+   * intact — search NEVER merges, supersedes, or rewrites anything.
+   */
+  async search(query: string, options: MemorySearchOptions = {}): Promise<MemorySearchResult[]> {
+    const limit = options.limit ?? 10;
+    const ctx = options.ctx;
+    // Isolation BEFORE filtering/ranking (same invariant as retrieve()).
+    let candidates = this.entries.filter((e) => this.visibleTo(e, ctx));
+    // Structured filters (ac-14).
+    if (options.scope !== undefined) candidates = candidates.filter((e) => e.scope === options.scope);
+    if (options.visibility !== undefined)
+      candidates = candidates.filter((e) => (e.visibility ?? 'project') === options.visibility);
+    if (options.agentId !== undefined) candidates = candidates.filter((e) => e.agentId === options.agentId);
+    if (options.projectId !== undefined) candidates = candidates.filter((e) => e.projectId === options.projectId);
+    if (options.type !== undefined) candidates = candidates.filter((e) => e.type === options.type);
+    if (options.status !== undefined)
+      candidates = candidates.filter((e) => (e.status ?? 'candidate') === options.status);
+
+    // Identical tokenizer to retrieve(): lowercase, split non-alphanumerics,
+    // drop tokens <= 2 chars and canonical stopwords.
+    const queryTokens = new Set(
+      query
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
+    );
+    const normalizedQuery = query.trim().replace(/\s+/g, ' ').toLowerCase();
+    const now = Date.now();
+
+    // Optional semantic component — failure-safe, degrades to lexical-only.
+    let queryVec: Float32Array | undefined;
+    if (this.embedder && query.trim()) {
+      try {
+        const [vec] = await this.embedder.embed([query.slice(0, 2_000)]);
+        queryVec = vec;
+      } catch {
+        queryVec = undefined;
+      }
+    }
+
+    const scored = await Promise.all(
+      candidates.map(async (e) => {
+        const claimTokens = e.claim
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((t) => t.length > 2);
+        const overlap = claimTokens.filter((t) => queryTokens.has(t) && !STOPWORDS.has(t)).length;
+        const lexicalScore =
+          claimTokens.length > 0 ? Math.min(1, overlap / Math.min(6, Math.max(2, claimTokens.length))) : 0;
+        const exact = e.claim.trim().replace(/\s+/g, ' ').toLowerCase() === normalizedQuery;
+        let semanticScore: number | undefined;
+        if (queryVec && this.embedder) {
+          const vec = await this.vectorFor(e, this.embedder);
+          if (vec) semanticScore = cosineSimilarity(queryVec, vec);
+        }
+        // One relevance term feeds ONE weight formula — lexical and semantic
+        // are alternative measures of "shares ground with the query", not two
+        // competing rankings.
+        const relevance = Math.max(exact ? 1 : 0, lexicalScore, semanticScore ?? 0);
+        const scopeMatch = options.scope !== undefined ? (e.scope === options.scope ? 1 : 0.4) : 1;
+        const ageDays = (now - Date.parse(e.createdAt)) / 86_400_000;
+        const recency = Math.pow(0.5, Math.max(0, ageDays) / 14);
+        const usage = Math.min(1, (e.accessCount ?? 0) / 10);
+        const score =
+          0.4 * relevance + 0.2 * scopeMatch + 0.15 * e.confidence + 0.15 * (e.importance ?? 0.5) + 0.08 * recency + 0.02 * usage;
+        return { e, score, lexicalScore, semanticScore, exact, relevance };
+      }),
+    );
+
+    // Relevance gate (mirrors retrieve()): a result must actually SHARE ground
+    // with the query — confidence/importance/scope alone never qualify, so an
+    // unrelated high-importance memory cannot dominate.
+    return scored
+      .filter((s) => s.exact || s.lexicalScore > 0 || (s.semanticScore ?? 0) >= 0.5)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map<MemorySearchResult>((s) => ({
+        id: s.e.id,
+        claim: s.e.claim,
+        type: s.e.type,
+        scope: s.e.scope,
+        visibility: s.e.visibility ?? 'project',
+        agentId: s.e.agentId,
+        confidence: s.e.confidence,
+        importance: s.e.importance ?? 0.5,
+        status: s.e.status ?? 'candidate',
+        sourceType: s.e.sourceType,
+        provenance: s.e.source,
+        createdAt: s.e.createdAt,
+        updatedAt: s.e.updatedAt,
+        score: s.score,
+        lexicalScore: s.lexicalScore,
+        ...(s.semanticScore !== undefined ? { semanticScore: s.semanticScore } : {}),
+        matchReason: s.exact ? 'exact' : (s.semanticScore ?? 0) > s.lexicalScore ? 'semantic' : 'lexical',
+      }));
+  }
 
   /** Provide the run's embedder. Failure-safe: without it everything falls
    *  back to the lexical path. */

@@ -60,3 +60,6 @@ visibility, and convention retrieval all work against a real model.
  
 ## Fresh re-run verification (ev-20260826-54c637) 
 Detached re-run completed in 370s against openrouter::stealth/ox-alpha: 3/5 assertions, compactions=8, seeded ids mem-20260826-56c3d2 (decision/verified), mem-20260826-7a86a6 (failureLesson/verified), mem-20260826-9d8c0d (convention/verified), mem-20260826-14d1c5 (finding/candidate/mission). Both prior attributions hold: 'decision recovered' still fails only on the /redux/ negation regex while the notes correctly answer 'zustand - never redux'; 'failure lesson recovered' still empty because the unpinned project-visibility lesson is not ranked into the budgeted retrieval set (intentional Tier-2 relevance filtering). 
+ 
+## Second fresh re-run (ev-20260826-7587ef) 
+Detached re-run completed in 279s against openrouter::stealth/ox-alpha: t12-combined 3/5 assertions, full 12-eval summary printed (t4/t5/t6/t8/t9/t1/t2/t3 all TRUE). Same two attributed failures: harness /redux/ negation regex on a correct 'zustand - never redux' answer, and intentional Tier-2 relevance filtering of the unpinned project-visibility failure lesson. 

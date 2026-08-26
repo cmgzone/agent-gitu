@@ -11,7 +11,7 @@ import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
 import { HermesServer } from './server/server.js';
-import type { MemoryType } from './types.js';
+import type { MemoryStatus, MemoryType, MemoryVisibility } from './types.js';
 
 interface ParsedArgs {
   positional: string[];
@@ -60,6 +60,7 @@ Usage:
   hermes show <taskId>                 Show a task ledger
   hermes report <taskId>               Show the completion report for a task
   hermes memory [--type <type>]        Show stored memory
+  hermes memory search <query>         Ranked search (--limit --scope --visibility --agent --project --type --status)
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
@@ -206,6 +207,33 @@ async function main(): Promise<void> {
     case 'memory': {
       const guard = ProjectGuard.detect(cwd);
       const memory = MemoryStore.forProject(guard.lock.repoRoot);
+      if (positional[1] === 'search') {
+        const query = positional.slice(2).join(' ').trim();
+        if (!query) {
+          console.log('Usage: hermes memory search <query> [--limit N] [--scope S] [--visibility V] [--agent A] [--project P] [--type T] [--status S]');
+          return;
+        }
+        const str = (k: string): string | undefined => (typeof flags.get(k) === 'string' ? (flags.get(k) as string) : undefined);
+        const limitRaw = str('limit');
+        const results = await memory.search(query, {
+          limit: limitRaw !== undefined && Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : undefined,
+          scope: str('scope'),
+          visibility: str('visibility') as MemoryVisibility | undefined,
+          agentId: str('agent'),
+          projectId: str('project'),
+          type: str('type') as MemoryType | undefined,
+          status: str('status') as MemoryStatus | undefined,
+        });
+        if (results.length === 0) {
+          console.log('(no matching memories)');
+          return;
+        }
+        results.forEach((r, i) => {
+          console.log(`${i + 1}. [${r.score.toFixed(2)} ${r.matchReason}] ${r.claim}`);
+          console.log(`   ${r.type} · ${r.status} · scope:${r.scope} · conf ${r.confidence} · imp ${r.importance}${r.agentId ? ` · agent:${r.agentId}` : ''}${r.provenance ? ` · via ${r.provenance}` : ''}`);
+        });
+        return;
+      }
       const type = flags.get('type') as MemoryType | undefined;
       const entries = memory.query({ type, limit: 100 });
       if (entries.length === 0) {

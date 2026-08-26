@@ -725,7 +725,7 @@ export class MemoryStore {
         sourceType: s.e.sourceType,
         provenance: s.e.source,
         createdAt: s.e.createdAt,
-        updatedAt: s.e.updatedAt,
+        updatedAt: s.e.updatedAt ?? s.e.createdAt,
         score: s.score,
         lexicalScore: s.lexicalScore,
         ...(s.semanticScore !== undefined ? { semanticScore: s.semanticScore } : {}),

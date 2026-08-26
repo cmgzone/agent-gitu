@@ -1,0 +1,20 @@
+
+[1m[46m RUN [49m[22m [36mv3.2.7 [39m[90mC:/Users/Admin/Documents/monez/agentgitu[39m
+
+(node:2456) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/memory-scoping.test.ts [2m([22m[2m21 tests[22m[2m)[22m[33m 5245[2mms[22m[39m
+   [33m[2m✓[22m[39m audit persistence (review hardening #1)[2m > [22mretention caps the audit ring at 500 events [33m 4104[2mms[22m[39m
+   [33m[2m✓[22m[39m mid-run publish_finding (review hardening #2)[2m > [22ma specialist can publish a finding MID-RUN, and it survives even if the specialist later fails [33m 880[2mms[22m[39m
+ [32m✓[39m tests/memory-semantic.test.ts [2m([22m[2m18 tests[22m[2m)[22m[33m 408[2mms[22m[39m
+ [32m✓[39m tests/memory-lifecycle.test.ts [2m([22m[2m13 tests[22m[2m)[22m[33m 306[2mms[22m[39m
+ [32m✓[39m tests/memory-search.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 234[2mms[22m[39m
+(node:7500) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ [32m✓[39m tests/memory-tiers.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 129[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m5 passed[39m[22m[90m (5)[39m
+[2m      Tests [22m [1m[32m73 passed[39m[22m[90m (73)[39m
+[2m   Start at [22m 08:25:30
+[2m   Duration [22m 12.53s[2m (transform 1.39s, setup 130ms, collect 2.38s, tests 6.32s, environment 2ms, prepare 1.57s)[22m
+

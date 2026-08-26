@@ -357,6 +357,34 @@ export const UI_HTML = String.raw`<!doctype html>
   .summary-card .verify-row details { width: 100%; color: var(--muted); font-size: 11px; }
   .summary-card .verify-row summary { cursor: pointer; width: fit-content; }
   .summary-card .verify-row pre { margin: 6px 0 0; padding: 7px; max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; background: var(--card2); font: 10.5px var(--mono); color: var(--muted); }
+  /* ── Flat completion report ──────────────────────────────────────────────
+     The end-of-run report is a document, not a dashboard: no bordered card,
+     just typography, spacing and hairline separators. Outcome first, then
+     findings/changes/status, technical evidence collapsed by default. */
+  .report-flat { padding: 14px 0 6px; margin: 16px 0 4px; border-top: 1px solid var(--border); }
+  .report-flat .r-headline { display: flex; align-items: center; gap: 10px; }
+  .report-flat h2 { margin: 0; font-size: 17px; }
+  .report-flat .r-headline .tool-btn-copy { margin-left: auto; }
+  .report-flat .r-lede { margin: 8px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--text); }
+  .report-flat .r-status { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+  .report-flat .r-status b { color: var(--text); font-weight: 600; }
+  .report-flat .r-sec { margin-top: 16px; }
+  .report-flat .r-sec h4 { margin: 0 0 6px; font-size: 12.5px; font-weight: 650; color: var(--text); }
+  .report-flat .r-sec ul { margin: 0; padding: 0; list-style: none; font-size: 12.5px; line-height: 1.55; }
+  .report-flat .r-sec li { position: relative; padding-left: 16px; margin: 3px 0; }
+  .report-flat .r-sec li::before { content: '\2022'; position: absolute; left: 4px; color: var(--faint); }
+  .report-flat .r-note { margin-top: 7px; font-size: 12px; color: var(--muted); }
+  .report-flat .sec { margin-top: 14px; }
+  .report-flat .sec h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+  .report-flat ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
+  .report-flat li { margin: 2px 0; }
+  .report-flat .verify-list { display: grid; gap: 6px; }
+  .report-flat .verify-row { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font-size: 12px; display: flex; gap: 7px; align-items: flex-start; flex-wrap: wrap; }
+  .report-flat .verify-kind { color: var(--muted); font: 10.5px var(--mono); padding-top: 3px; }
+  .report-flat .verify-label { flex: 1; min-width: 150px; line-height: 1.4; }
+  .report-flat .verify-row details { width: 100%; color: var(--muted); font-size: 11px; }
+  .report-flat .verify-row summary { cursor: pointer; width: fit-content; }
+  .report-flat .verify-row pre { margin: 6px 0 0; padding: 7px; max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; background: var(--card2); font: 10.5px var(--mono); color: var(--muted); }
 
   @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -2383,6 +2411,13 @@ export const UI_HTML = String.raw`<!doctype html>
     } else if (tag === 'subagent') {
       meta.className = 'tl-row tl-meta subagent-note';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>specialist</b> ' + esc(body) + '</div>';
+    } else if (tag === 'done') {
+      // End-of-run echo: show the conversational outcome, not the raw
+      // CHANGES dump (the full report card below carries the detail).
+      var dDash = body.indexOf(' — ');
+      var dParsed = parseOutcome(dDash >= 0 ? body.slice(dDash + 3) : body);
+      meta.className = 'tl-row tl-meta';
+      meta.innerHTML = '<span class="tl-dot dot-ok"></span><div class="tl-body"><b>🎉 ' + esc(dDash >= 0 ? body.slice(0, dDash) : 'done') + '</b> — ' + esc(shortText(dParsed.lede, 220)) + '</div>';
     } else {
       meta.className = 'tl-row tl-meta';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>' + esc(tag) + '</b> ' + esc(body) + '</div>';
@@ -2401,7 +2436,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var total = L.plan.length;
     p.style.display = 'flex';
     $('progText').textContent = total ? 'Step ' + done + '/' + total : 'Planning…';
-    $('progMeta').textContent = L.actions.length + ' actions · ' + L.evidence.length + ' evidence';
+    $('progMeta').textContent = L.actions.length + ' steps · ' + L.evidence.length + ' checks';
     var width = Math.min(100, Math.round((done / Math.max(1, total)) * 100));
     $('progFill').style.width = width + '%';
   }
@@ -2692,6 +2727,56 @@ export const UI_HTML = String.raw`<!doctype html>
       .trim();
   }
 
+  // ── Outcome parsing ─────────────────────────────────────────────────────
+  // The model's summary often embeds a machine-style change dump
+  // ("CHANGES (all inside repo_root): - NEW path (4490 chars) …"). Split it:
+  // the prose before the dump is the outcome the user reads; the dump
+  // becomes a human-phrased change list ("Added x", not "NEW x (4490 chars)").
+  var CHANGE_VERBS = { NEW: 'Added', CREATED: 'Added', UPDATED: 'Updated', MODIFIED: 'Updated', REWROTE: 'Rewrote', DELETED: 'Removed', REMOVED: 'Removed' };
+  function parseOutcome(summary) {
+    var text = String(summary || '').replace(/\s+/g, ' ').trim();
+    var out = { lede: text, changes: [], criteriaNote: '', sourceNote: '' };
+    var crit = text.match(/(all \d+ acceptance criteria[^.]*\.)/i);
+    if (crit) out.criteriaNote = crit[1];
+    var src = text.match(/(no (?:production\/)?source code was (?:modified|changed)\.)/i);
+    if (src) out.sourceNote = src[1];
+    var cut = text.search(/\bCHANGES?\s*\(/i);
+    var head = cut >= 0 ? text.slice(0, cut).trim() : text;
+    var sents = sentencesOf(head);
+    out.lede = sents.length > 2 ? sents.slice(0, 2).join(' ') : head;
+    var rest = cut >= 0 ? text.slice(cut) : '';
+    var cre = /[-\u2022]\s*(NEW|CREATED|UPDATED|MODIFIED|REWROTE|DELETED|REMOVED)\s+([^\s(,;:]+)/g;
+    var m;
+    while ((m = cre.exec(rest))) {
+      out.changes.push({ action: m[1].toUpperCase(), path: m[2].replace(/[).,]+$/, '') });
+    }
+    return out;
+  }
+  // One status strip answering: did it work, was it verified, what moved.
+  function reportStatusLine(status, checks, passed, changeCount) {
+    var bits = [];
+    bits.push(status === 'complete' ? '<span>🟢 <b>Completed</b></span>'
+      : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>' : '<span>❌ <b>Failed</b></span>');
+    if (checks.length) {
+      bits.push(passed === checks.length
+        ? '<span>✅ All ' + checks.length + ' criteria satisfied</span>'
+        : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + '/' + checks.length + ' criteria satisfied</span>');
+    }
+    bits.push(changeCount
+      ? '<span>🛠️ ' + changeCount + ' file' + (changeCount === 1 ? '' : 's') + ' changed</span>'
+      : '<span>🔒 No source code was modified</span>');
+    return '<div class="r-status">' + bits.join('') + '</div>';
+  }
+  function telemetryGridHtml(t) {
+    var rows = [['Calls', t.calls], ['Tool calls', t.toolCalls], ['Compactions', t.compactions],
+      ['Planning calls', t.planningCalls], ['Execution calls', t.executionCalls], ['Screenshots', t.screenshots],
+      ['Wasted calls', t.wastedCalls], ['Input tokens', t.inputTokens], ['Cached tokens', t.cachedTokens],
+      ['Output tokens', t.outputTokens]];
+    var html = '<div class="sec"><h4>Token telemetry</h4><div class="exec-grid">';
+    rows.forEach(function (p) { html += '<span class="k">' + p[0] + '</span><span class="v">' + esc(String(p[1])) + '</span>'; });
+    return html + '</div></div>';
+  }
+
   function shortText(text, limit) {
     text = String(text || '').replace(/\s+/g, ' ').trim();
     return text.length > limit ? text.slice(0, Math.max(1, limit - 1)).trim() + '…' : text;
@@ -2758,10 +2843,19 @@ export const UI_HTML = String.raw`<!doctype html>
   function reportSideCard(report) {
     var checks = reportChecks(report);
     var passed = checks.filter(function (check) { return check.passed; }).length;
-    return '<div class="summary-card" style="margin:12px 0 0"><div class="summary-head"><h3 style="margin:0;font-size:12px;letter-spacing:1px;text-transform:uppercase;color:var(--muted)">Completion report</h3><span class="chip ' + (report.status === 'complete' ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
-      '<p class="summary-copy" style="margin-top:9px">' + esc(shortText(readableSummary(report.summary), 360)) + '</p>' +
+    var files = reportFiles(report);
+    var parsed = parseOutcome(report.summary);
+    var ok = report.status === 'complete';
+    var icon = ok ? '🎉' : (report.status === 'blocked' ? '⚠️' : '❌');
+    var html = '<div class="report-flat" style="margin:12px 0 0;border-top:0;padding-top:0">' +
+      '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + (ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : 'Failed')) + '</h2>' +
+      '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
+      '<p class="r-lede">' + esc(shortText(parsed.lede || readableSummary(report.summary), 360)) + '</p>' +
+      reportStatusLine(report.status, checks, passed, files.length || parsed.changes.length) +
       browserHighlight(report.browserActivity) +
-      '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + reportFiles(report).length + ' product files</span></div></div>';
+      (checks.length ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + '</details>' : '') +
+      '</div>';
+    return html;
   }
 
   function appendSummary(runId, session) {
@@ -2770,32 +2864,55 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     if (sess && sess.chatish) return;
     var r = session.report;
-    var lineCounts = {};
-    (sess.events || []).forEach(function (ev) {
-      var t = String(ev.text);
-      if (t.indexOf('lines ') === 0) {
-        var parts = t.slice(6).split(' +');
-        lineCounts[parts[0]] = (lineCounts[parts[0]] || 0) + (parseInt(parts[1], 10) || 0);
-      }
-    });
     var files = reportFiles(r);
     var checks = reportChecks(r);
     var passed = checks.filter(function (check) { return check.passed; }).length;
+    var parsed = parseOutcome(r.summary);
     var div = document.createElement('div');
-    div.className = 'summary-card';
-    var html = '<div class="summary-head"><h2 title="' + esc(session.goal) + '">' + esc(shortText(session.goal, 160)) + '</h2>' + chipFor(session.status) +
-      '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text" style="margin-left:8px">' + icon('copy') + ' Copy report</button></div>';
-    html += '<div class="summary-stats"><span class="summary-stat">' + passed + '/' + checks.length + ' checks passed</span><span class="summary-stat">' + files.length + ' product files changed</span></div>';
-    html += '<div class="sec"><h4>Outcome</h4><p class="summary-copy">' + esc(readableSummary(r.summary)) + '</p></div>';
-    html += browserHighlight(r.browserActivity);
-    if (files.length) {
-      html += '<div class="sec"><h4>Product files changed</h4><ul>' + files.map(function (f) {
-        return '<li><span class="file-chip">' + esc(f) + '</span>' + (lineCounts[f] ? ' <span style="color:var(--green);font-family:var(--mono);font-size:11px">+' + lineCounts[f] + ' lines</span>' : '') + '</li>';
+    div.className = 'report-flat';
+    var ok = r.status === 'complete';
+    var doneIcon = ok ? '🎉' : (r.status === 'blocked' ? '⚠️' : '❌');
+    var doneWord = ok ? 'Done' : (r.status === 'blocked' ? 'Blocked' : 'Failed');
+    var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
+      '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
+    html += '<p class="r-lede">' + esc(shortText(parsed.lede || readableSummary(r.summary), 400)) + '</p>';
+    html += reportStatusLine(r.status, checks, passed, files.length || parsed.changes.length);
+    var findings = (r.findings || []).slice(0, 5);
+    if (findings.length) {
+      html += '<div class="r-sec"><h4>🔍 What Gitu found</h4><ul>' + findings.map(function (f) {
+        return '<li>' + esc(shortText(f.claim, 220)) + '</li>';
       }).join('') + '</ul></div>';
     }
-    html += verificationSection(checks);
-    if (r.remainingRisks.length) html += '<div class="sec"><h4>Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
-    if (r.followUps.length) html += '<div class="sec"><h4>Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    // Change list: human-phrased entries parsed out of the summary dump first,
+    // then reportable files the dump did not already mention.
+    var changeItems = parsed.changes.slice(0, 8);
+    var listed = {};
+    changeItems.forEach(function (c) { listed[c.path.toLowerCase()] = 1; });
+    files.forEach(function (f) {
+      var base = f.split('/').pop().toLowerCase();
+      if (listed[f.toLowerCase()] || listed[base]) return;
+      changeItems.push({ action: 'NEW', path: f });
+      listed[f.toLowerCase()] = 1;
+    });
+    if (changeItems.length) {
+      html += '<div class="r-sec"><h4>🛠️ Changes</h4><ul>' + changeItems.map(function (c) {
+        return '<li>' + (CHANGE_VERBS[c.action] || 'Changed') + ' <span class="file-chip">' + esc(c.path) + '</span></li>';
+      }).join('') + '</ul>' + (files.length ? '' : '<div class="r-note">🔒 No source code was modified.</div>') + '</div>';
+    } else if (!files.length) {
+      html += '<div class="r-note">🔒 No source code was modified.</div>';
+    }
+    html += browserHighlight(r.browserActivity);
+    if (r.remainingRisks.length) html += '<div class="r-sec"><h4>⚠️ Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    if (r.followUps.length) html += '<div class="r-sec"><h4>→ Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
+    // Technical evidence — verification rows, the raw model summary and the
+    // token telemetry all live behind ONE collapsed disclosure. Available,
+    // not in the way.
+    var evHtml = verificationSection(checks);
+    var rawHtml = '<div class="sec"><h4>Raw summary</h4><pre class="exec-pre" style="max-height:240px">' + esc(readableSummary(r.summary)) + '</pre></div>';
+    var teleHtml = r.tokenTelemetry ? telemetryGridHtml(r.tokenTelemetry) : '';
+    if (evHtml || rawHtml || teleHtml) {
+      html += '<details class="exec-details" style="margin-top:16px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + evHtml + rawHtml + teleHtml + '</details>';
+    }
     div.innerHTML = html;
     // The full-report text exporter finally gets a consumer.
     setupCopyButton(div.querySelector('[data-sumcopy]'), function () { return reportText(r); });

@@ -34,4 +34,32 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain('Raw model output');
     expect(UI_HTML).toContain('JSON_LEAK_MARKERS');
   });
+
+  it('renders the completion report as flat sections, not a bordered card', () => {
+    // Main report uses the flat document layout; the old bordered summary
+    // card is gone from the report path.
+    expect(UI_HTML).toContain("div.className = 'report-flat'");
+    expect(UI_HTML).not.toContain("div.className = 'summary-card'");
+    expect(UI_HTML).toContain('reportStatusLine(');
+    // Conversational outcome first — not "1/3 checks passed" stats chips.
+    expect(UI_HTML).toContain("doneIcon + ' ' + doneWord");
+    expect(UI_HTML).toContain('criteria satisfied');
+    expect(UI_HTML).not.toContain("checks passed</span>");
+  });
+
+  it('parses the machine change dump into human-phrased changes', () => {
+    expect(UI_HTML).toContain('function parseOutcome(summary)');
+    expect(UI_HTML).toContain('CHANGE_VERBS');
+    expect(UI_HTML).toContain('What Gitu found');
+  });
+
+  it('hides all technical evidence behind one collapsed disclosure', () => {
+    expect(UI_HTML).toContain('<b>Technical evidence</b>');
+    expect(UI_HTML).toContain('telemetryGridHtml(');
+  });
+
+  it('rephrases machine counters in the progress header', () => {
+    expect(UI_HTML).toContain("' steps · ' + L.evidence.length + ' checks'");
+    expect(UI_HTML).not.toContain("actions · ' + L.evidence.length + ' evidence'");
+  });
 });

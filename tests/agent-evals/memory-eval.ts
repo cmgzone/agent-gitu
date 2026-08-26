@@ -1,7 +1,8 @@
 /**
  * REAL-MODEL MEMORY EVALUATION for Gitu (frozen architecture).
- * Model: openrouter :: stealth/ox-alpha (free tier).
- * Run: OPENROUTER_API_KEY=<key> npx tsx tests/agent-evals/memory-eval.ts [t1,t2,...]
+ * Model: overridable via EVAL_MODEL_PROVIDER / EVAL_MODEL_ID env vars.
+ * Default: opencode-zen :: hy3-free (free tier, avoids openrouter blocking).
+ * Run: OPENCODE_API_KEY=<key> npx tsx tests/agent-evals/memory-eval.ts [t1,t2,...]
  * Results: tests/agent-evals/results/memory-eval-results.json (incremental).
  */
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, writeFileSync as wf } from 'node:fs';
@@ -10,12 +11,13 @@ import path from 'node:path';
 import { Hermes } from '../../src/agent/hermes.js';
 import { SubAgentRunner } from '../../src/agent/subagent.js';
 import { MemoryStore } from '../../src/memory/memory-store.js';
-import { resolveLlm } from '../../src/llm/providers.js';
+import { resolveLlm, PROVIDERS } from '../../src/llm/providers.js';
+import { mergedEnv } from '../../src/llm/keys.js';
 import type { LlmClient, LlmMessage } from '../../src/llm/llm.js';
 import type { MemoryEntry, MemoryRetrievalContext } from '../../src/types.js';
 
-const MODEL_PROVIDER = 'openrouter';
-const MODEL_ID = 'stealth/ox-alpha';
+const MODEL_PROVIDER = process.env['EVAL_MODEL_PROVIDER'] ?? 'opencode-zen';
+const MODEL_ID = process.env['EVAL_MODEL_ID'] ?? 'hy3-free';
 const RESULTS_DIR = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'results');
 
 export interface RunEvidence {
@@ -683,8 +685,10 @@ const ALL_TESTS: Record<string, () => Promise<void>> = {
 };
 
 async function main(): Promise<void> {
-  if (!process.env['OPENROUTER_API_KEY']) {
-    console.error('OPENROUTER_API_KEY is required');
+  const keyEnvVars = PROVIDERS[MODEL_PROVIDER]?.keyEnvVars ?? ['OPENROUTER_API_KEY'];
+  const hasKey = keyEnvVars.some((v) => mergedEnv()[v]);
+  if (!hasKey) {
+    console.error(`API key required for provider "${MODEL_PROVIDER}" — set one of: ${keyEnvVars.join(', ')}`);
     process.exit(1);
   }
   const filter = process.argv[2]?.split(',').map((s) => s.trim()).filter(Boolean) ?? Object.keys(ALL_TESTS);

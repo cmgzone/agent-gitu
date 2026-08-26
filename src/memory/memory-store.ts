@@ -842,6 +842,7 @@ export class MemoryStore {
     verification?: string;
     scope: string;
     confidence?: number;
+    importance?: number;
     /** Pin into Tier 1 when this is a critical failure worth protecting. */
     pinned?: boolean;
   }): { entry: MemoryEntry; created: boolean } {

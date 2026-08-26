@@ -199,6 +199,31 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-note-row .tl-body { font-size: 13.5px; font-weight: 500; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-word; }
   .thought { padding: 9px 0 9px 20px; color: var(--text); white-space: pre-wrap; font-weight: 500; }
   .thought .caret, .tl-note-row .caret { display: inline-block; width: 7px; height: 14px; background: var(--run); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
+  /* ── Collapsible technical sections ─────────────────────────────────────
+     Telemetry and raw-model JSON are machine output, not conversation:
+     collapsed by default so the feed answers what/why/proof/next first,
+     implementation detail one click away. */
+  .exec-details { margin: 3px 0; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.02); overflow: hidden; }
+  .exec-details summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 7px; padding: 5px 10px; font-size: 11.5px; color: var(--muted); user-select: none; }
+  .exec-details summary::-webkit-details-marker { display: none; }
+  .exec-details summary:hover { background: var(--hover); }
+  .exec-details summary b { color: var(--text); font-weight: 600; }
+  .exec-details .chev { display: inline-block; transition: transform .14s ease; color: var(--faint); font-size: 10px; }
+  .exec-details[open] .chev { transform: rotate(90deg); }
+  .exec-details .exec-sum { color: var(--faint); font-family: var(--mono); font-size: 10.5px; }
+  .exec-grid { display: grid; grid-template-columns: minmax(96px, max-content) 1fr; gap: 1px 14px; padding: 6px 12px 9px; font-family: var(--mono); font-size: 10.5px; }
+  .exec-grid .k { color: var(--faint); }
+  .exec-grid .v { color: var(--text); font-feature-settings: 'tnum' 1; }
+  .exec-pre { margin: 0; padding: 6px 12px 9px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; }
+  /* Dense narration: long verification reports become headline + checklist +
+     footer instead of one wall of pre-wrapped text. Same words, structure. */
+  .tl-body .dense-note, .abubble .dense-note { white-space: normal; display: block; }
+  .dense-headline { display: block; font-weight: 650; }
+  .dense-items { list-style: none; margin: 3px 0 2px; padding: 0; }
+  .dense-items li { position: relative; padding-left: 15px; margin: 2px 0; }
+  .dense-items li::before { position: absolute; left: 1px; top: 0; color: var(--faint); content: '\00B7'; font-weight: 700; }
+  .dense-items li.ev::before { content: '\2713'; color: var(--ok); }
+  .dense-foot { display: block; margin-top: 3px; color: var(--run); font-weight: 600; }
   /* Generic quiet metadata rows (plan/criteria/queued/parallel/…) */
   .meta-line { color: var(--muted); font-size: 12px; padding: 3px 2px; }
   .meta-line b { color: var(--text); font-weight: 600; }
@@ -1626,8 +1651,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream || !sess) return;
     if (!sess.pendingUserMessages) sess.pendingUserMessages = [];
     sess.pendingUserMessages.push(text);
-    sess.nodes.abubble = null;
-    sess.nodes.thought = null;
+    retireAbubble(sess);
+    closeThought(runId);
     appendLive(stream, userBubble(text, runId));
     stickScroll(stream, true);
   }
@@ -1673,7 +1698,87 @@ export const UI_HTML = String.raw`<!doctype html>
   function closeThought(runId) {
     var sess = S.sessions[runId];
     var node = sess.nodes.thought;
-    if (node) { var c = node.querySelector('.caret'); if (c) c.remove(); sess.nodes.thought = null; }
+    if (node) { var c = node.querySelector('.caret'); if (c) c.remove(); finalizeNarration(node); sess.nodes.thought = null; }
+  }
+  // ── Narration finalization ─────────────────────────────────────────────
+  // While a thought streams it is raw text; when it closes we decide how it
+  // should be read: plain sentence(s), structured headline+checklist for
+  // dense verification reports, or a collapsed disclosure if the model
+  // leaked its raw JSON action object into prose (truncated-output retry).
+  var DENSE_MIN_CHARS = 320;
+  var JSON_LEAK_MARKERS = ['{"thought"', '{\\"thought\\"'];
+  function stripJsonLeak(t) {
+    var cut = -1;
+    for (var i = 0; i < JSON_LEAK_MARKERS.length; i++) {
+      var at = t.indexOf(JSON_LEAK_MARKERS[i]);
+      if (at >= 0 && (cut < 0 || at < cut)) cut = at;
+    }
+    if (cut < 0) return t;
+    return t.slice(0, cut).replace(/[\s,;·—-]+$/, '');
+  }
+  function sentencesOf(text) {
+    var out = [], cur = '';
+    for (var i = 0; i < text.length; i++) {
+      var ch = text.charAt(i);
+      cur += ch;
+      if ((ch === '.' || ch === '!' || ch === '?') && (i + 1 >= text.length || text.charAt(i + 1) === ' ')) {
+        out.push(cur.trim()); cur = '';
+      }
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+  var EVIDENCE_RE = /(\u2713|confirm|commit|evidence|manifest|untracked|absent|verified|manifest\.txt)/i;
+  var FOOT_RE = /^(?:and\s+)?(next|then|now)\b[:,]?\s*/i;
+  function denseNoteHtml(sents) {
+    var head = sents[0];
+    var rest = sents.slice(1);
+    var foot = null;
+    if (rest.length && FOOT_RE.test(rest[rest.length - 1])) foot = rest.pop();
+    var h = '<span class="dense-headline">' + esc(head) + '</span>';
+    if (rest.length) {
+      h += '<ul class="dense-items">';
+      for (var i = 0; i < rest.length; i++) {
+        h += '<li' + (EVIDENCE_RE.test(rest[i]) ? ' class="ev"' : '') + '>' + esc(rest[i]) + '</li>';
+      }
+      h += '</ul>';
+    }
+    if (foot) h += '<span class="dense-foot">\u25B8 ' + esc(foot) + '</span>';
+    return h;
+  }
+  // Called once per narration node when its stream ends. Idempotent via
+  // data-final so replays/retries never restructure twice.
+  function finalizeNarration(el) {
+    var txt = el.querySelector('.txt');
+    if (!txt || txt.getAttribute('data-final')) return;
+    txt.setAttribute('data-final', '1');
+    var raw = txt.textContent || '';
+    var clean = stripJsonLeak(raw);
+    var trimmed = clean.trim();
+    // The WHOLE node is a leaked action object: never show schema noise as
+    // conversation — collapse behind an "Execution details" disclosure.
+    if (trimmed.indexOf('{') === 0 && trimmed.indexOf('"thought"') >= 0) {
+      txt.textContent = '';
+      var d = document.createElement('details');
+      d.className = 'exec-details';
+      d.innerHTML = '<summary><b>Raw model output</b><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre>';
+      d.querySelector('.exec-pre').textContent = trimmed;
+      txt.appendChild(d);
+      return;
+    }
+    if (clean !== raw) txt.textContent = clean;
+    var sents = sentencesOf(clean);
+    if (clean.length < DENSE_MIN_CHARS || sents.length < 3) return;
+    txt.classList.add('dense-note');
+    txt.innerHTML = denseNoteHtml(sents);
+  }
+  // An agent bubble ends whenever the next turn starts; sanitize + structure
+  // it at exactly that moment instead of leaving streaming text frozen.
+  function retireAbubble(sess) {
+    var b = sess.nodes.abubble;
+    if (!b) return;
+    sess.nodes.abubble = null;
+    finalizeNarration(b);
   }
   function toolKind(summary) {
     if (summary.indexOf('write ') === 0) return 'edit';
@@ -2057,12 +2162,13 @@ export const UI_HTML = String.raw`<!doctype html>
       if (!prose.trim()) { closeThought(runId); return; }
       if (sess && sess.chatish) {
         if (sess.nodes.abubble) {
-          sess.nodes.abubble = null;
+          retireAbubble(sess);
         } else {
           var ab2 = document.createElement('div');
           ab2.className = 'abubble';
           ab2.innerHTML = '<span class="who">Agent Gitu</span><span class="txt"></span>';
           ab2.querySelector('.txt').textContent = prose;
+          finalizeNarration(ab2);
           appendLive(stream, ab2);
           stickScroll(stream);
         }
@@ -2074,6 +2180,7 @@ export const UI_HTML = String.raw`<!doctype html>
         var pp = document.createElement('div');
         pp.className = 'tl-row tl-note-row';
         pp.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><span class="txt">' + esc(prose) + '</span></div>';
+        finalizeNarration(pp);
         insert(pp);
       }
       closeThought(runId);
@@ -2087,7 +2194,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var pending = sess && sess.pendingUserMessages;
       var pendingAt = pending ? pending.indexOf(userText) : -1;
       if (pendingAt >= 0) { pending.splice(pendingAt, 1); return; }
-      sess.nodes.abubble = null; sess.nodes.thought = null; appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
+      retireAbubble(sess); closeThought(runId); appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
     }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
       var qm = document.createElement('div');
@@ -2124,6 +2231,39 @@ export const UI_HTML = String.raw`<!doctype html>
           if (pr >= 1) clearInterval(anim);
         }, 40);
       }
+      return;
+    }
+
+    // Token telemetry arrives once per run as "telemetry <renderTelemetry()>".
+    // It is machine output, not conversation: render as a collapsed
+    // "Execution details" disclosure with the counters in a parsed grid.
+    if (text.indexOf('telemetry ') === 0) {
+      closeThought(runId);
+      var LABELS = { calls: 'Calls', toolCalls: 'Tool calls', compactions: 'Compactions',
+        planning: 'Planning calls', execution: 'Execution calls', screenshots: 'Screenshots',
+        wasted: 'Wasted calls', input: 'Input tokens', cached: 'Cached tokens', output: 'Output tokens' };
+      var pairs = [];
+      var kre = /([~\w.]+)=([^\s()]+)/g, km;
+      while ((km = kre.exec(text))) {
+        if (km[1] === 'telemetry') continue;
+        pairs.push([km[1], km[2]]);
+      }
+      var sum = '';
+      var mcalls = /calls=(\d+)/.exec(text);
+      if (mcalls) sum = mcalls[1] + ' model calls';
+      var trow = document.createElement('div');
+      trow.className = 'tl-row tl-meta';
+      var thtml = '<details class="exec-details"><summary><b>Execution details</b>' +
+        (sum ? ' <span class="exec-sum">' + esc(sum) + '</span>' : '') +
+        '<span class="chev">\u25B8</span></summary><div class="exec-grid">';
+      for (var pi = 0; pi < pairs.length; pi++) {
+        thtml += '<span class="k">' + esc(LABELS[pairs[pi][0]] || pairs[pi][0]) + '</span>' +
+                 '<span class="v">' + esc(pairs[pi][1]) + '</span>';
+      }
+      thtml += '</div></details>';
+      trow.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body">' + thtml + '</div>';
+      appendLive(stream, trow);
+      stickScroll(stream);
       return;
     }
 

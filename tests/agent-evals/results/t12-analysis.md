@@ -66,3 +66,38 @@ Detached re-run completed in 279s against openrouter::stealth/ox-alpha: t12-comb
  
 ## Third fresh re-run (ev-20260826-82ed75) 
 Detached re-run completed in 207s against openrouter::stealth/ox-alpha: t12-combined 3/5 assertions, full 12-eval summary printed (t4/t5/t6/t8/t9/t1/t2/t3 all TRUE; t10/t7 PARTIAL). Same two attributed failures on t12-combined: harness /redux/ negation regex on a correct 'zustand - never redux' answer, and intentional Tier-2 relevance filtering of the unpinned project-visibility failure lesson. 
+
+
+## Stage attribution for failing assertions (fourth detached run)
+
+Source: tests/agent-evals/results/memory-eval-results.json (run ev-20260826-630c2f, model openrouter::stealth/ox-alpha).
+Pipeline stages: STORED -> RETRIEVED -> RANKED -> INCLUDED-IN-CONTEXT -> MODEL-USED -> HARNESS-CHECK.
+
+### t12-combined (3/5 pass; compactions=5, memoryRetrievals=3, memory section 2324 tokens)
+
+A1 "decision recovered (zustand, no redux)" — FAIL:
+- STORED: mem-20260826-3e7158 (decision, verified) seeded successfully.
+- RETRIEVED/RANKED/INCLUDED: run evidence shows "retrieved 3 scoped memory(ies) - project=2 mission=1"; the decision was among them (memory section present at 2324 tokens post-compaction).
+- MODEL-USED: RECOVERY-NOTES.md answers "zustand. checkout state must use zustand, never redux" - substantively CORRECT.
+- VERDICT: harness assertion bug. The /redux/ negation regex matches the literal substring "redux" inside "never redux". Memory pipeline correct at every stage; failure is purely at HARNESS-CHECK.
+
+A2 "failure lesson recovered (migration lock)" — FAIL (detail empty):
+- STORED: mem-20260826-76358d (failureLesson, verified) seeded successfully.
+- RETRIEVED: NOT among the 3 scoped retrievals (project=2 were the decision + convention; mission=1 was the published finding candidate mem-20260826-86dd30).
+- RANKED: the unpinned project-visibility lesson scored below the Tier-2 relevance cutoff under the budgeted retrieval set (COMPACT_CHAR_BUDGET) once 5 compactions had shrunk context.
+- INCLUDED-IN-CONTEXT: absent, hence empty detail.
+- VERDICT: intentional Tier-2 relevance filtering (design behavior), not a storage, authorization, or consolidation defect.
+
+### t7-midrun-finding (2/5 pass)
+
+A1 "specialist ran to a conclusion" — FAIL (detail "FAILED"):
+- The specialist subprocess died on an OpenRouter HTTP 429 rate-limit response during its LLM calls.
+- VERDICT: provider/model-layer failure; memory system never entered the picture.
+
+A2 "at least one mission finding exists (mid-run publication)" — FAIL (detail "findings=0"):
+- Cascade of A1: the specialist never reached publishFinding(), so zero findings were created. Publication logic itself was not exercised.
+- VERDICT: upstream model/API failure cascading forward.
+
+A4 "finding retrievable by another agent" — FAIL (detail "retrieved=0"):
+- Direct consequence of findings=0: there was nothing to retrieve. Retrieval/visibility machinery unchanged and covered by unit tests (ac-13/ac-14).
+- VERDICT: cascade of A1/A2, not a memory-system regression.

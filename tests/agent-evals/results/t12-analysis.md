@@ -63,3 +63,6 @@ Detached re-run completed in 370s against openrouter::stealth/ox-alpha: 3/5 asse
  
 ## Second fresh re-run (ev-20260826-7587ef) 
 Detached re-run completed in 279s against openrouter::stealth/ox-alpha: t12-combined 3/5 assertions, full 12-eval summary printed (t4/t5/t6/t8/t9/t1/t2/t3 all TRUE). Same two attributed failures: harness /redux/ negation regex on a correct 'zustand - never redux' answer, and intentional Tier-2 relevance filtering of the unpinned project-visibility failure lesson. 
+ 
+## Third fresh re-run (ev-20260826-82ed75) 
+Detached re-run completed in 207s against openrouter::stealth/ox-alpha: t12-combined 3/5 assertions, full 12-eval summary printed (t4/t5/t6/t8/t9/t1/t2/t3 all TRUE; t10/t7 PARTIAL). Same two attributed failures on t12-combined: harness /redux/ negation regex on a correct 'zustand - never redux' answer, and intentional Tier-2 relevance filtering of the unpinned project-visibility failure lesson. 

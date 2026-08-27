@@ -959,7 +959,7 @@ export function toolListSkills(ctx: ToolContext): ToolResult {
   if (!ctx.skills) return fail('skills not available');
   const skills = ctx.skills.list();
   if (skills.length === 0) return { ok: true, output: '(no skills yet)' };
-  return { ok: true, output: skills.map((s) => `${s.name} — ${s.description} (${s.createdBy})`).join('\n') };
+  return { ok: true, output: skills.map((s) => `${s.name} — ${s.description} (${s.createdBy}${s.scope ? `, ${s.scope}` : ''})`).join('\n') };
 }
 
 export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {

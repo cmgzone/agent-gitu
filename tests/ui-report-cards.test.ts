@@ -29,10 +29,26 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain("txt.setAttribute('data-final'");
   });
 
+  it('collapses narration rows duplicated by LLM retries', () => {
+    // A retried stream re-sends the same thought; without dedupe each attempt
+    // rendered as an identical row (dozens of copies in long runs).
+    expect(UI_HTML).toContain('dedupeNarration(sess, node');
+    expect(UI_HTML).toContain('dedupeNarration(sess, b,');
+    expect(UI_HTML).toContain("sess[memoKey] = raw;");
+  });
+
   it('collapses leaked raw JSON action objects behind a disclosure', () => {
     expect(UI_HTML).toContain('stripJsonLeak');
     expect(UI_HTML).toContain('Raw model output');
     expect(UI_HTML).toContain('JSON_LEAK_MARKERS');
+    // The detector must match TRUNCATED leaks too — the stream can cut off
+    // at exactly `{"thought` with no closing quote (regression: only the
+    // full `{"thought"` marker was matched, so the fragment rendered).
+    expect(UI_HTML).toContain("var JSON_LEAK_RE = /^\\{\\s*\\\\?\"thought/;");
+    expect(UI_HTML).toContain("'{\"thought', '{\\\\\"thought'");
+    // A thought stream that STARTS with the leak opens the technical row
+    // directly instead of a narration row.
+    expect(UI_HTML).toContain('JSON_LEAK_RE.test(chunk)');
   });
 
   it('renders the completion report as flat sections, not a bordered card', () => {

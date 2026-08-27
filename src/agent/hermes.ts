@@ -5,6 +5,8 @@ import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine, contextBudgetForWindow } from '../context/context-engine.js';
 import { EvidenceEngine, classifyEvidenceKind, commandsMatch, hasRegressionProof, isWeakEvidenceLink } from '../evidence/evidence.js';
+import { parentReverifyCriterion, type OracleRunner } from '../evidence/reverify.js';
+import { MissionGraph } from '../execution/mission.js';
 import { Executor } from '../executor/executor.js';
 import { getWorkspaceFingerprint, gitExec } from '../git/git.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
@@ -35,7 +37,7 @@ import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
 import { validateSpecialistEvidence } from './specialist-evidence.js';
 import { VERIFIER_AGENT, buildVerifierContract, verdictForFinding } from './findings.js';
-import type { CompletionReport, CriterionSpec, DecisionBasis, EvidenceKind, MemoryRetrievalContext, PlanArea, TaskFinding } from '../types.js';
+import type { CompletionReport, CriterionEvidenceType, CriterionSpec, DecisionBasis, EvidenceKind, MemoryRetrievalContext, PlanArea, TaskFinding } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -1050,11 +1052,25 @@ export class Hermes {
       }
       this.emit(`memory   retrieved ${memoryEntries.length} scoped memory(ies) — ${Object.entries(byScope).map(([k, n]) => `${k}=${n}`).join(' ')}`);
     }
-    const memorySection = memoryEntries.length
-      ? `RELEVANT MEMORY (ranked; verified knowledge first — superseded entries excluded):\n${memoryEntries
-          .map((m) => `- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`)
-          .join('\n')}`
-      : undefined;
+    const memorySection = (() => {
+      if (memoryEntries.length === 0) return undefined;
+      const isFailureLesson = (m: typeof memoryEntries[number]) => m.type === 'failure' || (m.type === 'pattern' && /repeated failure/i.test(m.claim));
+      const background = memoryEntries.filter((m) => !isFailureLesson(m));
+      const lessons = memoryEntries.filter(isFailureLesson);
+      const lines: string[] = [];
+      if (background.length) {
+        lines.push('RELEVANT MEMORY (ranked; verified knowledge first — superseded entries excluded):');
+        lines.push(...background.map((m) => `- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`));
+      }
+      if (lessons.length) {
+        lines.push('PRE-FLIGHT FAILURE LESSONS (before repeating any action listed below, verify the known failure cause has been resolved; if resolved you may safely retry):');
+        for (const m of lessons) {
+          lines.push(`- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`);
+          lines.push('  → Confirm the failure condition above is fixed BEFORE repeating the action; otherwise choose a different verification path.');
+        }
+      }
+      return lines.join('\n');
+    })();
     // Tier 1 protected/active memory (review two-tier model): durable guidance
     // — decisions, constraints, conventions, pinned + critical failure lessons
     // — surfaced regardless of lexical relevance to the goal, and re-injected
@@ -1506,7 +1522,10 @@ export class Hermes {
           if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
             const completedScope = ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied);
             if (resumeNote && completedScope) {
-              const added = ledger.appendCriteria(action.criteria);
+              const adds = EvidenceEngine.normalizeCriteria(action.criteria);
+              const added = adds.some((s) => s.verification || (s.evidenceType && s.evidenceType !== 'any'))
+                ? ledger.appendCriteriaFromSpecs(adds)
+                : ledger.appendCriteria(adds.map((s) => s.text));
               if (added.length > 0) {
                 followUpCriteriaAdded = true;
                 this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
@@ -1536,7 +1555,10 @@ export class Hermes {
             observe('add_criteria is for a new scope in a resumed task. Use set_criteria for a new task.');
             break;
           }
-          const added = ledger.appendCriteria(action.criteria);
+          const adds = EvidenceEngine.normalizeCriteria(action.criteria);
+          const added = adds.some((s) => s.verification || (s.evidenceType && s.evidenceType !== 'any'))
+            ? ledger.appendCriteriaFromSpecs(adds)
+            : ledger.appendCriteria(adds.map((s) => s.text));
           if (added.length === 0) {
             observe('Those criteria are already recorded. Use append_plan for the remaining work.');
             break;
@@ -2231,6 +2253,21 @@ export class Hermes {
           // EvidenceEngine so the acceptance gate keeps its authority.
           const validationLines: string[] = [];
           if (results.length > 0) {
+            // P — formal parent re-verification. A specialist's self-report is
+            // NEVER sufficient. Runnable criteria are re-executed through the
+            // orchestrator's OWN command executor (fresh, fingerprint-bound
+            // evidence generated by actually running the oracle). Manual /
+            // judgment criteria (no verification command) fall back to the
+            // structural mirror, since they cannot be automated.
+            const reverifyRunner: OracleRunner = async (req) => {
+              const out = await executor.execute({
+                tool: 'run_command',
+                params: { command: req.command },
+                reason: req.reason,
+                expected: req.expected ?? 'verification passes',
+              });
+              return { passed: out.result.ok, output: out.result.output, exitCode: out.result.exitCode };
+            };
             for (let j = 0; j < results.length; j++) {
               const r = results[j]!;
               const specs = runTasks[j]?.criteria ?? [];
@@ -2248,24 +2285,64 @@ export class Hermes {
                   continue;
                 }
                 const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
-                const ev = evidence.record(ledger.data, {
-                  kind: a.evidence.kind,
-                  label: `delegated: ${r.agent} — ${a.evidence.command ?? a.evidence.id}`,
-                  command: a.evidence.command,
-                  passed: true,
-                  output: a.evidence.outputExcerpt,
-                  workspaceFingerprint: currentFp,
-                });
-                ledger.save();
-                const link = evidence.link(ledger.data, a.criterionId, ev.id, currentFp);
-                ledger.save();
-                if (link.ok) {
-                  validationLines.push(`  ✓ ${a.criterionId} backed by ${a.evidenceId} (${a.evidence.command ?? a.evidence.id}) via ${r.agent}`);
-                  this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${a.evidenceId}: accepted — ${a.evidence.command ?? 'evidence'}`);
-                  this.emit(`evidence ${ev.id} PASS (delegated)`);
+                // The verification oracle comes from the DELEGATED contract (the
+                // CriterionSpec we sent the specialist), which carries it even when
+                // the flat set_criteria text-path flattened the main criterion.
+                const expectedIndex = expected.findIndex((e) => e.id === a.criterionId);
+                const expectedCrit = expectedIndex >= 0 ? expected[expectedIndex] : undefined;
+                const oracle = expectedCrit?.verification;
+                if (oracle) {
+                  // Runnable criterion: parent independently re-executes the oracle
+                  // rather than trusting the specialist's status read. Adopt the
+                  // delegated spec (real text + oracle) onto the main criterion so
+                  // the evidence gate later attributes fresh re-verified evidence
+                  // to it and the oracle-quality check sees the real artifact.
+                  const rawSpec = specs[expectedIndex];
+                  if (rawSpec && typeof rawSpec === 'object') {
+                    mainCriterion.text = rawSpec.text;
+                    mainCriterion.verification = oracle;
+                  } else if (!mainCriterion.verification) {
+                    mainCriterion.verification = oracle;
+                  }
+                  const rv = await parentReverifyCriterion({
+                    ledger: ledger.data,
+                    criterionId: mainCriterion.id,
+                    currentFingerprint: currentFp,
+                    runOracle: reverifyRunner,
+                    workdir: guard.lock.repoRoot,
+                  });
+                  ledger.save();
+                  if (rv.verified) {
+                    validationLines.push(`  ✓ ${a.criterionId} parent-reverified via ${r.agent} — re-executed "${oracle}" (fresh ${rv.freshEvidenceId ?? 'evidence'})`);
+                    this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${rv.freshEvidenceId ?? rv.criterionId}: parent-reverified — ${oracle}`);
+                    this.emit(`evidence ${rv.freshEvidenceId ?? '?'} PASS (parent-reverified)`);
+                  } else {
+                    validationLines.push(`  ✗ ${a.criterionId}: parent re-verification not confirmed — ${rv.reason}`);
+                    this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — ${rv.reason}`);
+                  }
                 } else {
-                  validationLines.push(`  ✗ ${a.criterionId}: main ledger rejected the mirror evidence — ${link.reason}`);
-                  this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED by main ledger — ${link.reason}`);
+                  // Manual/judgment criterion (no oracle to re-run): preserve the
+                  // specialist's structurally-validated evidence — a manual
+                  // criterion is not an automation defect.
+                  const ev = evidence.record(ledger.data, {
+                    kind: a.evidence.kind,
+                    label: `delegated: ${r.agent} — ${a.evidence.command ?? a.evidence.id}`,
+                    command: a.evidence.command,
+                    passed: true,
+                    output: a.evidence.outputExcerpt,
+                    workspaceFingerprint: currentFp,
+                  });
+                  ledger.save();
+                  const link = evidence.link(ledger.data, a.criterionId, ev.id, currentFp);
+                  ledger.save();
+                  if (link.ok) {
+                    validationLines.push(`  ✓ ${a.criterionId} backed by ${a.evidenceId} (${a.evidence.command ?? a.evidence.id}) via ${r.agent}`);
+                    this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${a.evidenceId}: accepted — ${a.evidence.command ?? 'evidence'}`);
+                    this.emit(`evidence ${ev.id} PASS (delegated)`);
+                  } else {
+                    validationLines.push(`  ✗ ${a.criterionId}: main ledger rejected the mirror evidence — ${link.reason}`);
+                    this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED by main ledger — ${link.reason}`);
+                  }
                 }
               }
               for (const rej of verdict.rejected) {
@@ -2415,7 +2492,8 @@ export class Hermes {
         `Goal: ${d.goal}\nSummary: ${d.report?.summary ?? ''}\nFiles changed: ${d.filesChanged.join(', ') || '(none)'}\n` +
         `Existing skills: ${existing}\n` +
         `If this task revealed a genuinely repeatable multi-step pattern (deploy flow, design convention, checklist, project-specific process), save it as a skill:\n` +
-        `{"thought":"...","action":{"type":"tool_call","stepId":"step-1","tool":"create_skill","params":{"name":"kebab-case-name","description":"when to use it","instructions":"step-by-step reusable knowledge"},"reason":"auto-learned from completed task","expected":"skill saved"}}\n` +
+        `{"thought":"...","action":{"type":"tool_call","stepId":"step-1","tool":"create_skill","params":{"name":"kebab-case-name","description":"when to use it","instructions":"step-by-step reusable knowledge","global":true},"reason":"auto-learned from completed task","expected":"skill saved"}}\n` +
+        `Use global:true unless the pattern is specific to THIS project's internals (global skills are visible from every project).\n` +
         `Otherwise respond with: {"thought":"nothing reusable","action":{"type":"complete","summary":"nothing to learn","chat":true}}`,
     });
     const reply = await this.config.llm.completeStream(

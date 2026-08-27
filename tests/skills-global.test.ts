@@ -61,4 +61,26 @@ describe('layered skill store (project + global)', () => {
     expect(existsSync(path.join(globalDir, 'only-global.json'))).toBe(false);
     expect(scoped.get('only-global')).toBeUndefined();
   });
+
+  it('updates a global skill in the GLOBAL layer, not as a project shadow copy', () => {
+    // Regression: update() always wrote into the project dir, so editing a
+    // global skill forked a same-name project copy that shadowed the global
+    // one — the "shared" skill silently stopped being shared.
+    const proj = mkdtempSync(path.join(tmpdir(), 'hermes-skill-upd-'));
+    const scoped = new SkillStore(SkillStore.projectSkillsDir(proj), globalDir);
+    scoped.create({ name: 'shared-skill', description: 'v1', instructions: 'v1 steps', scope: 'global' });
+
+    const updated = scoped.update('shared-skill', { description: 'v2', instructions: 'v2 steps' });
+    expect(updated.scope).toBe('global');
+    // The edit landed in the global file; NO project copy was created.
+    expect(existsSync(path.join(globalDir, 'shared-skill.json'))).toBe(true);
+    expect(existsSync(path.join(proj, '.hermes', 'skills', 'shared-skill.json'))).toBe(false);
+    const raw = JSON.parse(readFileSync(path.join(globalDir, 'shared-skill.json'), 'utf8')) as { description: string };
+    expect(raw.description).toBe('v2');
+
+    // And from ANOTHER project the update is visible.
+    const other = mkdtempSync(path.join(tmpdir(), 'hermes-skill-other-'));
+    const otherStore = new SkillStore(SkillStore.projectSkillsDir(other), globalDir);
+    expect(otherStore.get('shared-skill')!.description).toBe('v2');
+  });
 });

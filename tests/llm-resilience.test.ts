@@ -125,4 +125,44 @@ describe('resilientLlm wrapper', () => {
     expect(deltas.join('')).toBe('hello');
     expect(calls).toBe(2);
   });
+
+  it('completeStream signals onStreamReset before EVERY retry so partial prose is not duplicated', async () => {
+    // Regression: the outer retry loop re-called completeStream without
+    // resetting the caller's streamed-prose state, so after a transient
+    // failure mid-stream the retry re-emitted the SAME text — the UI showed
+    // one duplicated narration row per retry attempt.
+    let calls = 0;
+    const resets: number[] = [];
+    const deltasPerCall: string[] = [];
+    let sent = 0;
+    const client: LlmClient = {
+      name: 'flaky-stream',
+      async complete() {
+        throw new Error('unused');
+      },
+      async completeStream(_messages: LlmMessage[], _o, onDelta) {
+        calls += 1;
+        sent = 0;
+        // Stream a partial prose chunk, then fail on the first two attempts.
+        onDelta('Let me search the repo. ');
+        sent += 1;
+        deltasPerCall.push(String(sent));
+        if (calls <= 2) throw new Error('HTTP 429 rate limited');
+        onDelta('Found nothing.');
+        return 'Let me search the repo. Found nothing.';
+      },
+    };
+    const wrapped = resilientLlm(client, {
+      maxRetries: 3,
+      baseDelayMs: 10,
+      sleep: async () => {},
+      onRetry: () => resets.push(calls),
+    });
+    const seenDeltas: string[] = [];
+    const out = await wrapped.completeStream(msg('x'), { onStreamReset: () => resets.push(-1) }, (d) => seenDeltas.push(d));
+    expect(out).toContain('Found nothing.');
+    // One reset per failed attempt, each BEFORE its retry is announced:
+    // sequence is [reset, retry1, reset, retry2].
+    expect(resets).toEqual([-1, 1, -1, 2]);
+  });
 });

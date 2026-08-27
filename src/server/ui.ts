@@ -160,7 +160,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .model-item .mi-meta { margin-left: auto; color: var(--faint); font-size: 10px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58%; flex: none; }
   .model-item .mi-name { font-weight: 600; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-item .mi-name .vmark { color: var(--blue); font-style: normal; }
-  .model-empty { color: var(--faint); font-size: 12px; padding: 10px 9px; text-align: center; }
+  .model-empty { color: var(--faint); font-size: 12px; padding: 10px 9px; text-align: center; line-height: 1.5; }
+  .model-list mark { background: rgba(143,128,255,.28); color: inherit; border-radius: 3px; }
+  .model-count { padding: 5px 10px 2px; margin-top: 4px; border-top: 1px solid var(--border); color: var(--faint); font-size: 10.5px; text-align: right; }
   .send { margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--dark); color: #10141d; font-size: 14px; }
   /* Send ⇄ Stop: while the agent runs the same button stops it. */
   .send.stop { background: var(--err); color: #fff; font-size: 11px; animation: stopPulse 1.6s ease-in-out infinite; }
@@ -1156,14 +1158,32 @@ export const UI_HTML = String.raw`<!doctype html>
     var pick = $('modelPick');
     if (pick) pick.title = 'model: ' + (model ? model.value : '');
   }
+  // What the model search box matches against: provider, ids, human name,
+  // context size and capability flags — deliberately NOT prices, so the filter
+  // input never references or depends on cost.
+  function modelSearchText(p, m) {
+    var meta = m.metadata || {};
+    var parts = [p.id, m.id, titleCase(m.id)];
+    if (meta.contextTokens) parts.push(formatTokens(meta.contextTokens) + ' context');
+    if (m.free) parts.push('free');
+    if (m.vision) parts.push('vision images');
+    return parts.join(' ').toLowerCase();
+  }
+  // Highlight the first occurrence of the (already lower-cased) query inside
+  // text, keeping the original casing of the rendered string.
+  function markMatch(text, q) {
+    if (!q) return esc(text);
+    var idx = String(text).toLowerCase().indexOf(q);
+    if (idx < 0) return esc(text);
+    return esc(text.slice(0, idx)) + '<mark>' + esc(text.slice(idx, idx + q.length)) + '</mark>' + esc(text.slice(idx + q.length));
+  }
   function modelMenuGroups(query) {
     var q = String(query || '').toLowerCase().trim();
     var out = [];
     S.models.forEach(function (p) {
       var matched = [];
       p.models.forEach(function (m) {
-        var hay = (p.id + ' ' + m.id + ' ' + titleCase(m.id) + ' ' + modelMetaText(m)).toLowerCase();
-        if (q && hay.indexOf(q) < 0) return;
+        if (q && modelSearchText(p, m).indexOf(q) < 0) return;
         matched.push(m);
       });
       if (matched.length) out.push({ p: p, models: matched });
@@ -1173,10 +1193,14 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderModelMenu(query) {
     var list = $('modelList');
     if (!list) return;
+    var q = String(query || '').toLowerCase().trim();
     var groups = modelMenuGroups(query);
     var cur = $('model') ? $('model').value : '';
+    var total = groups.reduce(function (n, g) { return n + g.models.length; }, 0);
+    var count = $('modelCount');
+    if (count) count.textContent = total + (total === 1 ? ' model' : ' models') + (q ? (total === 1 ? ' matches' : ' match') : '');
     if (!groups.length) {
-      list.innerHTML = '<div class="model-empty">No models match “' + esc(query || '') + '”</div>';
+      list.innerHTML = '<div class="model-empty">No models match &ldquo;' + esc(query || '') + '&rdquo;<br><span style="font-size:11px">Try a provider or model name</span></div>';
       return;
     }
     var html = '';
@@ -1185,9 +1209,9 @@ export const UI_HTML = String.raw`<!doctype html>
       g.models.forEach(function (m) {
         var val = g.p.id + '::' + m.id;
         html += '<div class="model-item' + (val === cur ? ' cur' : '') + '" data-val="' + esc(val) + '">' +
-          '<div class="mi-top"><span class="mi-prov">' + esc(g.p.id) + '</span>' +
+          '<div class="mi-top"><span class="mi-prov">' + markMatch(g.p.id, q) + '</span>' +
           '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span></div>' +
-          '<div class="mi-name">' + esc(titleCase(m.id)) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+          '<div class="mi-name">' + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
           '</div>';
       });
     });
@@ -1282,7 +1306,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function controlsHtml() {
     return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill model-pick" id="modelPick" title="choose model"><select id="model" hidden>' + modelOptionsHtml() + '</select><span class="mp-label" id="modelLabel"></span><span class="caret">&#9662;</span>' +
-      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models — provider, name, pricing…" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
+      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
       '<span class="pill" id="attachBtn" title="attach images (vision models only)" style="cursor:pointer">' + icon('image') + '</span>' +
       '<input type="file" id="attachInput" accept="image/*" multiple hidden>';
@@ -1726,7 +1750,12 @@ export const UI_HTML = String.raw`<!doctype html>
   function closeThought(runId) {
     var sess = S.sessions[runId];
     var node = sess.nodes.thought;
-    if (node) { var c = node.querySelector('.caret'); if (c) c.remove(); finalizeNarration(node); sess.nodes.thought = null; }
+    if (node) {
+      var c = node.querySelector('.caret'); if (c) c.remove();
+      dedupeNarration(sess, node, 'lastThoughtText');
+      finalizeNarration(node);
+      sess.nodes.thought = null;
+    }
   }
   // ── Narration finalization ─────────────────────────────────────────────
   // While a thought streams it is raw text; when it closes we decide how it
@@ -1734,7 +1763,11 @@ export const UI_HTML = String.raw`<!doctype html>
   // dense verification reports, or a collapsed disclosure if the model
   // leaked its raw JSON action object into prose (truncated-output retry).
   var DENSE_MIN_CHARS = 320;
-  var JSON_LEAK_MARKERS = ['{"thought"', '{\\"thought\\"'];
+  // Matches a raw JSON action object prefix whether or not the stream cut
+  // off before the closing quote: '{"thought"…', '{"thought' (truncated),
+  // and the escaped '{\"thought\"' variants.
+  var JSON_LEAK_RE = /^\{\s*\\?"thought/;
+  var JSON_LEAK_MARKERS = ['{"thought', '{\\"thought'];
   function stripJsonLeak(t) {
     var cut = -1;
     for (var i = 0; i < JSON_LEAK_MARKERS.length; i++) {
@@ -1785,7 +1818,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var trimmed = clean.trim();
     // The WHOLE node is a leaked action object: never show schema noise as
     // conversation — collapse behind an "Execution details" disclosure.
-    if (trimmed.indexOf('{') === 0 && trimmed.indexOf('"thought"') >= 0) {
+    if (JSON_LEAK_RE.test(trimmed)) {
       txt.textContent = '';
       var d = document.createElement('details');
       d.className = 'exec-details';
@@ -1800,12 +1833,33 @@ export const UI_HTML = String.raw`<!doctype html>
     txt.classList.add('dense-note');
     txt.innerHTML = denseNoteHtml(sents);
   }
+  // ── Retry-duplicate collapsing ──────────────────────────────────────────
+  // After a transient LLM failure the retry re-streams the SAME thought, and
+  // the interleaved "recover …" events close the previous row — so every
+  // attempt rendered as an identical narration row. Collapse exact repeats
+  // entirely; if the retry continues FURTHER than the failed attempt, keep
+  // only the new tail.
+  function dedupeNarration(sess, el, memoKey) {
+    var txt = el.querySelector('.txt');
+    if (!txt) return;
+    var raw = (txt.textContent || '').trim();
+    if (!raw) return;
+    var prev = sess[memoKey] || '';
+    if (prev) {
+      if (raw === prev) { el.remove(); return; }
+      if (raw.length > prev.length && raw.indexOf(prev) === 0) {
+        txt.textContent = raw.slice(prev.length).replace(/^[\s.,;—-]+/, '');
+      }
+    }
+    sess[memoKey] = raw;
+  }
   // An agent bubble ends whenever the next turn starts; sanitize + structure
   // it at exactly that moment instead of leaving streaming text frozen.
   function retireAbubble(sess) {
     var b = sess.nodes.abubble;
     if (!b) return;
     sess.nodes.abubble = null;
+    dedupeNarration(sess, b, 'lastBubbleText');
     finalizeNarration(b);
   }
   function toolKind(summary) {
@@ -2162,12 +2216,22 @@ export const UI_HTML = String.raw`<!doctype html>
       }
       if (!sess.nodes.thought) {
         var t = document.createElement('div');
-        t.className = 'tl-row tl-note-row';
-        t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><span class="txt"></span><span class="caret"></span></div>';
+        // The model sometimes leaks its raw JSON action object into the
+        // prose stream (truncated output retried mid-JSON). If the VERY
+        // FIRST chunk is that leak, open a collapsed technical row instead
+        // of a normal narration row so schema noise never shows as prose.
+        if (JSON_LEAK_RE.test(chunk)) {
+          t.className = 'tl-row tl-meta';
+          t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><details class="exec-details"><summary><b>Raw model output</b><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre></details></div>';
+        } else {
+          t.className = 'tl-row tl-note-row';
+          t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><span class="txt"></span><span class="caret"></span></div>';
+        }
         insert(t);
         sess.nodes.thought = t;
       }
-      sess.nodes.thought.querySelector('.txt').appendChild(document.createTextNode(chunk));
+      var sink = sess.nodes.thought.querySelector('.exec-pre') || sess.nodes.thought.querySelector('.txt');
+      sink.appendChild(document.createTextNode(chunk));
       stickScroll(stream);
       return;
     }
@@ -3394,7 +3458,7 @@ export const UI_HTML = String.raw`<!doctype html>
                   '<span class="pm-name">' + esc(btnModel) + '</span>' +
                   '<span class="caret">&#9660;</span>' +
                 '</button>' +
-                '<div class="model-menu pm-menu" hidden><input type="text" placeholder="Search models…"><div class="model-list"></div></div>' +
+                '<div class="model-menu pm-menu" hidden><input type="text" placeholder="Search models…"><div class="model-list"></div><div class="model-count"></div></div>' +
               '</div>' +
             '</div>' +
             '<div class="keysec">' +
@@ -3422,17 +3486,19 @@ export const UI_HTML = String.raw`<!doctype html>
           var curVal = S.sel.model || '';
           var matched = (p.models || []).filter(function (m) {
             if (!q) return true;
-            return ((p.id + ' ' + m.id + ' ' + titleCase(m.id) + ' ' + modelMetaText(m)).toLowerCase().indexOf(q) >= 0);
+            return modelSearchText(p, m).indexOf(q) >= 0;
           });
+          var count = wrap.querySelector('.model-count');
+          if (count) count.textContent = matched.length + (matched.length === 1 ? ' model' : ' models') + (q ? (matched.length === 1 ? ' matches' : ' match') : '');
           list.innerHTML = matched.map(function (m) {
             var val = p.id + '::' + m.id;
             return '<div class="model-item' + (val === curVal ? ' cur' : '') + '" data-val="' + esc(val) + '">' +
               '<div class="mi-top"><span class="mi-prov">' + (m.free ? 'free · no credits needed' : '') + '</span>' +
               '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span>' +
               (val === curVal ? '<span class="mi-cur" title="current default">&#10003;</span>' : '') + '</div>' +
-              '<div class="mi-name">' + esc(titleCase(m.id)) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+              '<div class="mi-name">' + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
               '</div>';
-          }).join('') || '<div class="model-empty">No models match &ldquo;' + esc(q) + '&rdquo;</div>';
+          }).join('') || '<div class="model-empty">No models match &ldquo;' + esc(q) + '&rdquo;<br><span style="font-size:11px">Try a model name</span></div>';
           var hl = list.querySelector('.model-item');
           if (hl) hl.classList.add('hl');
         }
@@ -3728,11 +3794,13 @@ export const UI_HTML = String.raw`<!doctype html>
           '<input id="skName" placeholder="skill name (e.g. deploy-checklist)">' +
           '<input id="skDesc" placeholder="short description (shown to the agent)">' +
           '<textarea id="skInstr" rows="6" placeholder="step-by-step instructions"></textarea>' +
+          '<label style="display:flex;gap:7px;align-items:center;font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="skGlobal"> Available in every project (global)</label>' +
           '<div class="row"><button class="btn dark" id="skSave">Save skill</button><button class="btn ghost" id="skCancel">Cancel</button><span class="meta" id="skEditMeta"></span></div></div></div>' +
           '<div class="setcard">' +
           (skills.length ? skills.map(function (sk) {
             return '<div class="skcard">' +
               '<div class="skhead"><b>' + esc(sk.name) + '</b>' +
+              (sk.scope === 'global' ? '<span class="chip ok" title="available in every project">global</span>' : '<span class="chip" title="only in this project">project</span>') +
               '<span class="chip ' + (sk.createdBy === 'agent' ? 'info' : '') + '">' + esc(sk.createdBy || 'agent') + '</span>' +
               '<span class="meta">' + esc((sk.createdAt || '').slice(0, 10)) + '</span>' +
               '<span style="flex:1"></span>' +
@@ -3764,6 +3832,8 @@ export const UI_HTML = String.raw`<!doctype html>
         $('skCancel').onclick = function () { form.hidden = true; S.skEditing = null; };
         $('skSave').onclick = function () {
           var payload = { name: $('skName').value, description: $('skDesc').value, instructions: $('skInstr').value };
+          var g = $('skGlobal');
+          if (!S.skEditing && g && g.checked) payload['global'] = true;
           var url = S.skEditing ? '/api/skills/' + encodeURIComponent(S.skEditing) : '/api/skills';
           api(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
             .then(function () { S.skEditing = null; toast('Skill saved'); renderSettings(); })
@@ -3794,16 +3864,20 @@ export const UI_HTML = String.raw`<!doctype html>
         b.innerHTML = '<h1>MCP servers</h1><p style="color:var(--muted);font-size:12.5px">External tool servers (filesystem, browser, databases…). Their tools require approval before running.</p>' +
           '<div class="setcard"><div class="setlist">' +
           (d.servers.length ? d.servers.map(function (sv) {
-            return '<div class="row"><span class="grow"><b>' + esc(sv.name) + '</b> <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><button class="x" data-x="' + esc(sv.name) + '" title="remove server">' + icon('x') + '</button></div>';
+            var scope = d.scopes && d.scopes[sv.name];
+            return '<div class="row"><span class="grow"><b>' + esc(sv.name) + '</b>' +
+              (scope === 'global' ? ' <span class="chip ok" title="available in every project">global</span>' : ' <span class="chip" title="only in this project">project</span>') +
+              ' <span class="meta">' + esc(sv.command) + ' ' + esc((sv.args || []).join(' ')) + '</span></span><button class="x" data-x="' + esc(sv.name) + '" title="remove server">' + icon('x') + '</button></div>';
           }).join('') : '<div class="meta">no servers yet</div>') +
           (d.tools.length ? '<div class="meta" style="margin-top:6px">tools: ' + esc(d.tools.map(function (t) { return 'mcp:' + t.server + ':' + t.name; }).join(', ')) + '</div>' : '') +
           '<div style="height:8px"></div><div class="row"><input id="mcName" placeholder="name (e.g. fs)" style="margin:0"><input id="mcCmd" placeholder="command (e.g. npx)" style="margin:0"></div><input id="mcArgs" placeholder="args separated by spaces">' +
+          '<label style="display:flex;gap:7px;align-items:center;font-size:12px;color:var(--muted);cursor:pointer"><input type="checkbox" id="mcGlobal" checked> Available in every project (global)</label>' +
           '<div class="row"><button class="btn dark" id="mcAdd">Add MCP server</button><button class="btn ghost" id="mcFs">+ filesystem MCP (official)</button></div></div></div>';
         b.querySelectorAll('[data-x]').forEach(function (el) {
           el.onclick = function () { api('/api/mcp/' + el.getAttribute('data-x'), { method: 'DELETE' }).then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); }); };
         });
         $('mcAdd').onclick = function () {
-          api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('mcName').value, command: $('mcCmd').value, args: $('mcArgs').value.split(/\s+/).filter(Boolean) }) })
+          api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('mcName').value, command: $('mcCmd').value, args: $('mcArgs').value.split(/\s+/).filter(Boolean), global: $('mcGlobal').checked }) })
             .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
         };
         $('mcFs').onclick = function () {

@@ -71,6 +71,9 @@ export interface Evidence {
   createdAt: string;
   workspaceFingerprint?: string;
   stale?: boolean;
+  /** Identity hash of the evidence itself (command + outcome + workspace +
+   *  time + output). Lets a parent detect replayed / recycled evidence. */
+  fingerprint?: string;
 }
 
 export type StepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'blocked';

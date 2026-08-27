@@ -1118,6 +1118,7 @@ export class HermesServer {
               description: String(body['description'] ?? ''),
               instructions: String(body['instructions'] ?? ''),
               createdBy: 'user',
+              scope: body['global'] === true ? 'global' : 'project',
             });
             this.sendJson(res, 200, { ok: true, skill });
           }
@@ -1142,7 +1143,7 @@ export class HermesServer {
       const manager = McpManager.forProject(root);
       if (method === 'GET') {
         const tools = await manager.listAllTools();
-        this.sendJson(res, 200, { servers: manager.servers(), tools });
+        this.sendJson(res, 200, { servers: manager.servers(), scopes: manager.serverScopes(), tools });
         return;
       }
       if (method === 'POST') {
@@ -1154,8 +1155,8 @@ export class HermesServer {
           return;
         }
         const args = Array.isArray(body['args']) ? (body['args'] as unknown[]).map(String) : [];
-        manager.addServer({ name, command, args });
-        this.sendJson(res, 200, { ok: true, servers: manager.servers() });
+        manager.addServer({ name, command, args }, body['global'] === true ? 'global' : 'project');
+        this.sendJson(res, 200, { ok: true, servers: manager.servers(), scopes: manager.serverScopes() });
         return;
       }
       if (method === 'DELETE' && mcpMatch[1]) {

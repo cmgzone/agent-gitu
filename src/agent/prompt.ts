@@ -311,7 +311,9 @@ Tools:
                  - "screenshot" = visual escalation, for criteria that genuinely need pixels (visual hierarchy, spacing, color/contrast judgment). Every result ends with a capability line so you know exactly what ran.
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
-- create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}
+- create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge","global":true}
+                 global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
+                 Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
 
 Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}

@@ -258,7 +258,10 @@ export class SkillStore {
       aliases: patch.aliases !== undefined ? patch.aliases.map((a) => a.trim().toLowerCase()).filter(Boolean) : existing.aliases,
       keywords: patch.keywords !== undefined ? patch.keywords.map((k) => k.trim().toLowerCase()).filter(Boolean) : existing.keywords,
     };
-    writeFileSync(path.join(this.dir, `${existing.name}.json`), JSON.stringify(skill, null, 2));
+    // Write the edit back to the layer the skill lives in — updating a
+    // global skill must not silently fork a project-scoped shadow copy.
+    const targetDir = existing.scope === 'global' ? (this.globalDir ?? this.dir) : this.dir;
+    writeFileSync(path.join(targetDir, `${existing.name}.json`), JSON.stringify(skill, null, 2));
     return skill;
   }
 

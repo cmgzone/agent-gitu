@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveSpawn } from '../lsp/server-registry.js';
+import { ensureHermesHome } from '../workspace/home.js';
 
 export interface McpServerConfig {
   name: string;
@@ -175,41 +176,78 @@ export class McpClient {
 export class McpManager {
   private clients = new Map<string, McpClient>();
 
-  constructor(private readonly configFile: string) {}
+  constructor(
+    private readonly configFile: string,
+    /** Optional workspace-level layer merged under the project config (project wins on name clashes). */
+    private readonly globalFile?: string,
+  ) {}
 
   static forProject(repoRoot: string): McpManager {
-    return new McpManager(path.join(repoRoot, '.hermes', 'mcp.json'));
+    return new McpManager(path.join(repoRoot, '.hermes', 'mcp.json'), McpManager.globalConfigFile());
+  }
+
+  /** Workspace-wide MCP layer shared by every project. */
+  static globalConfigFile(): string {
+    return path.join(ensureHermesHome().root, 'Mcp', 'mcp.json');
+  }
+
+  private readLayered(): { config: McpServerConfig; global: boolean }[] | undefined {
+    const layered: { config: McpServerConfig; global: boolean }[] = [];
+    const push = (file: string | undefined, isGlobal: boolean): boolean => {
+      if (!file || !existsSync(file)) return true;
+      try {
+        const data = JSON.parse(readFileSync(file, 'utf8')) as { servers?: McpServerConfig[] };
+        if (Array.isArray(data.servers)) {
+          for (const s of data.servers) layered.push({ config: s, global: isGlobal });
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // Global layer first so the project file (read second) wins on clashes.
+    if (!push(this.globalFile, true)) return undefined;
+    if (!push(this.configFile, false)) return undefined;
+    return layered;
+  }
+
+  /** Which layer holds each server, for the UI/agent to display. */
+  serverScopes(): Record<string, 'global' | 'project'> {
+    const scopes: Record<string, 'global' | 'project'> = {};
+    for (const l of this.readLayered() ?? []) scopes[l.config.name] = l.global ? 'global' : 'project';
+    return scopes;
   }
 
   /**
-   * Read the config file. Returns undefined when the file EXISTS but cannot be
-   * parsed — callers must treat that as fatal instead of writing an empty
-   * server list over the user's configuration.
+   * Read the config files (merged). Returns undefined when EITHER file EXISTS
+   * but cannot be parsed — callers must treat that as fatal instead of writing
+   * an empty server list over the user's configuration.
    */
   private readConfigFile(): McpServerConfig[] | undefined {
-    if (!existsSync(this.configFile)) return [];
-    try {
-      const data = JSON.parse(readFileSync(this.configFile, 'utf8')) as { servers?: McpServerConfig[] };
-      return Array.isArray(data.servers) ? data.servers : [];
-    } catch {
-      return undefined;
-    }
+    const layered = this.readLayered();
+    if (layered === undefined) return undefined;
+    const byName = new Map<string, McpServerConfig>();
+    for (const l of layered) byName.set(l.config.name, l.config);
+    return [...byName.values()];
   }
 
   servers(): McpServerConfig[] {
     return this.readConfigFile() ?? [];
   }
 
-  addServer(config: McpServerConfig): McpServerConfig[] {
-    const current = this.readConfigFile();
-    if (current === undefined) {
-      throw new Error(`Cannot update MCP config: ${this.configFile} contains invalid JSON. Fix or delete it first.`);
+  addServer(config: McpServerConfig, scope: 'global' | 'project' = 'project'): McpServerConfig[] {
+    const layered = this.readLayered();
+    const targetFile = scope === 'global' ? (this.globalFile ?? this.configFile) : this.configFile;
+    if (layered === undefined) {
+      throw new Error(`Cannot update MCP config: ${targetFile} contains invalid JSON. Fix or delete it first.`);
     }
-    const servers = current.filter((s) => s.name !== config.name);
+    const servers = layered
+      .filter((l) => l.global === (scope === 'global') && l.config.name !== config.name)
+      .map((l) => l.config);
     servers.push(config);
-    mkdirSync(path.dirname(this.configFile), { recursive: true });
-    writeFileSync(this.configFile, JSON.stringify({ servers }, null, 2));
-    return servers;
+    mkdirSync(path.dirname(targetFile), { recursive: true });
+    writeFileSync(targetFile, JSON.stringify({ servers }, null, 2));
+    return this.servers();
   }
 
   removeServer(name: string): McpServerConfig[] {
@@ -218,21 +256,32 @@ export class McpManager {
       client.kill();
       this.clients.delete(name);
     }
-    const current = this.readConfigFile();
-    if (current === undefined) {
-      throw new Error(`Cannot remove server "${name}": ${this.configFile} contains invalid JSON and rewriting it would wipe every configured server.`);
+    const layered = this.readLayered();
+    if (layered === undefined) {
+      throw new Error(`Cannot remove server "${name}": an MCP config contains invalid JSON and rewriting it would wipe every configured server.`);
     }
-    const servers = current.filter((s) => s.name !== name);
-    writeFileSync(this.configFile, JSON.stringify({ servers }, null, 2));
-    return servers;
+    // Prefer the PROJECT copy: layered is global-first, so a same-name
+    // project shadow must be removed before the global entry is touched.
+    const entry = [...layered].reverse().find((l) => l.config.name === name);
+    if (!entry) return this.servers();
+    const file = entry.global ? (this.globalFile ?? this.configFile) : this.configFile;
+    const servers = layered
+      .filter((l) => l.global === entry.global && l.config.name !== name)
+      .map((l) => l.config);
+    writeFileSync(file, JSON.stringify({ servers }, null, 2));
+    return this.servers();
   }
 
   private client(name: string): McpClient | undefined {
     let client = this.clients.get(name);
     if (!client) {
-      const config = this.servers().find((s) => s.name === name);
-      if (!config) return undefined;
-      client = new McpClient(config, path.dirname(path.dirname(this.configFile)));
+      const layered = this.readLayered();
+      const entry = layered?.find((l) => l.config.name === name);
+      if (!entry) return undefined;
+      // Project servers run with the project as cwd; global servers run from
+      // the workspace home so relative paths stay stable across projects.
+      const baseFile = entry.global && this.globalFile ? this.globalFile : this.configFile;
+      client = new McpClient(entry.config, path.dirname(path.dirname(baseFile)));
       this.clients.set(name, client);
     }
     return client;

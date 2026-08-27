@@ -91,10 +91,27 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
       return guard(o?.signal, () => client.complete(messages, o));
     },
     async completeStream(messages: LlmMessage[], o: LlmOptions, onDelta: LlmDeltaHandler): Promise<string> {
-      // A stream that dies MID-flight must not leave partial deltas counted as
-      // a delivered answer: reset handled by caller via onStreamReset contract
-      // (the underlying client invokes it before falling back).
-      return guard(o.signal, () => client.completeStream(messages, o, onDelta));
+      // Streaming cannot reuse `guard`: a failed attempt may already have
+      // pushed partial deltas to the caller, and a plain re-call would stream
+      // the SAME prose again on top of it (duplicated narration rows in the
+      // UI). Signal onStreamReset before every retry so the caller discards
+      // streamed state first.
+      let lastError: Error | undefined;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (o.signal?.aborted) throw new Error('LLM request aborted');
+        try {
+          return await client.completeStream(messages, o, onDelta);
+        } catch (err) {
+          lastError = err as Error;
+          if (attempt === maxRetries || isFatalLlmError(lastError) || !isTransientLlmError(lastError)) throw lastError;
+          o.onStreamReset?.();
+          const delayMs = computeResilientDelay(attempt, base, cap);
+          opts.onRetry?.({ attempt: attempt + 1, maxRetries, delayMs, error: lastError, label });
+          if (o.signal?.aborted) throw new Error('LLM request aborted');
+          await doSleep(delayMs);
+        }
+      }
+      throw lastError!;
     },
   } as LlmClient;
 }

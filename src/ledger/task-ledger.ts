@@ -178,6 +178,39 @@ export class TaskLedger {
     return added;
   }
 
+  /**
+   * Spec-aware append for follow-up scopes: preserves each appendix's pinned
+   * verification command + evidence type so delegated / parent re-verification
+   * can run the real oracle later.
+   */
+  appendCriteriaFromSpecs(specs: CriterionSpec[]): AcceptanceCriterion[] {
+    const known = new Set(this.data.acceptanceCriteria.map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
+    const next = this.data.acceptanceCriteria.reduce((max, c) => {
+      const match = /^ac-(\d+)$/.exec(c.id);
+      return Math.max(max, match ? Number(match[1]) : 0);
+    }, 0);
+    const added: AcceptanceCriterion[] = [];
+    for (const spec of specs) {
+      const text = (spec.text ?? '').trim().replace(/\s+/g, ' ');
+      const key = text.toLowerCase();
+      if (!text || known.has(key)) continue;
+      known.add(key);
+      added.push({
+        id: 'ac-' + (next + added.length + 1),
+        text,
+        verification: spec.verification,
+        evidenceType: spec.evidenceType,
+        evidenceIds: [],
+        satisfied: false,
+      });
+    }
+    if (added.length > 0) {
+      this.data.acceptanceCriteria.push(...added);
+      this.save();
+    }
+    return added;
+  }
+
   setPlan(steps: PlanStepInput[]): void {
     const normalized = normalizeStepInput(steps).slice(0, STEP_LIMITS.count);
     this.data.plan = normalized.map((s, i) => ({

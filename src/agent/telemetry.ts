@@ -70,7 +70,7 @@ export function sectionOfMessage(m: LlmMessage): ContextSection {
   if (text.startsWith('TASK:')) return 'taskState';
   if (text.startsWith('COMPACTED HISTORY')) return 'digest';
   if (text.startsWith('CONTEXT PACK') || text.startsWith('CONTEXT SAMPLE')) return 'contextPack';
-  if (text.startsWith('RELEVANT MEMORY')) return 'memory';
+  if (text.startsWith('RELEVANT MEMORY') || text.startsWith('PRE-FLIGHT FAILURE LESSONS')) return 'memory';
   if (text.startsWith('ACTIVE CONSTRAINTS')) return 'protected';
   if (text.startsWith('TASK STRATEGY')) return 'strategy';
   return 'conversation';

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';

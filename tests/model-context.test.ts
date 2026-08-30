@@ -50,6 +50,27 @@ describe('buildModelContext — unified context authority', () => {
     expect(String(result.messages[1]!.content)).toContain('does not support images');
   });
 
+  it('keeps attached-file metadata and bounded text in protected context', () => {
+    const result = buildModelContext({
+      system: SYSTEM,
+      contextPack: PACK,
+      conversationHistory: HISTORY,
+      attachments: [{
+        name: 'requirements.md',
+        path: '.hermes/session-files/run-1/file-requirements.md',
+        mime: 'text/markdown; charset=utf-8',
+        size: 82,
+        textExcerpt: 'Critical requirement: downloads must remain available after compaction.',
+      }],
+      budget: { maxChars: 1500 },
+    });
+    const attachment = result.messages.find((message) => String(message.content).startsWith('USER ATTACHED FILES'));
+    expect(attachment).toBeTruthy();
+    expect(String(attachment!.content)).toContain('requirements.md');
+    expect(String(attachment!.content)).toContain('Critical requirement: downloads must remain available');
+    expect(result.trims.some((trim) => trim.section === 'contextPack')).toBe(true);
+  });
+
   it('trims the context pack FIRST when over budget — it is only a sample', () => {
     const result = buildModelContext({
       system: SYSTEM,
@@ -92,7 +113,7 @@ describe('buildModelContext — unified context authority', () => {
   });
 
   it('defaults to the documented budget constant', () => {
-    expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(60_000);
+    expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(48_000);
   });
 });
 

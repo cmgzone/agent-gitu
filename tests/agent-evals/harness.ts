@@ -10,7 +10,7 @@
 import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Hermes } from '../../src/agent/hermes.js';
+import { Hermes } from '../../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../../src/llm/llm.js';
 
 export interface EvalRecord {

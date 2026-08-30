@@ -9,7 +9,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, writeF
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { Hermes } from '../../src/agent/hermes.js';
+import { Hermes } from '../../src/agent/gitu.js';
 import { SubAgentRunner } from '../../src/agent/subagent.js';
 import { MemoryStore } from '../../src/memory/memory-store.js';
 import { resolveLlm, PROVIDERS } from '../../src/llm/providers.js';

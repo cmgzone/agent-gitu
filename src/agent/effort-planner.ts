@@ -54,6 +54,9 @@ const FRONTEND_PATTERNS = [
   /\b(responsive|design system|mockup|wireframe)\b/i,
   /\b(dark mode|light mode)\b/i,
   /\bhero section\b/i,
+  // Focused interface changes still need the frontend skill even when the
+  // request never says "UI" (for example, "move the save button").
+  /\b(button|form|modal|dialog|navbar|navigation|sidebar|menu|tabs?|dropdown|tooltip|toast)\b/i,
 ];
 
 /**

@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../src/context/snapshot.js';
-import { compactHistory } from '../src/agent/hermes.js';
+import { compactHistory } from '../src/agent/gitu.js';
 import { classifyCall, renderTelemetry, RunTelemetry, sectionOfMessage } from '../src/agent/telemetry.js';
 import { MemoryStore } from '../src/memory/memory-store.js';
 import { Executor } from '../src/executor/executor.js';

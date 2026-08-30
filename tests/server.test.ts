@@ -55,11 +55,11 @@ describe('HermesServer', () => {
     for (const s of servers) await s.stop();
   });
 
-  async function startServer(dir: string, llm: ScriptedMockLlm): Promise<{ base: string }> {
+  async function startServer(dir: string, llm: ScriptedMockLlm): Promise<{ base: string; server: HermesServer }> {
     const server = new HermesServer({ cwd: dir, port: 0, llm });
     servers.push(server);
     const port = await server.start();
-    return { base: `http://127.0.0.1:${port}` };
+    return { base: `http://127.0.0.1:${port}`, server };
   }
 
   it('serves the UI and project info', async () => {
@@ -69,6 +69,14 @@ describe('HermesServer', () => {
     expect(html).toContain('AGENT GITU');
     const project = await fetch(`${base}/api/project`).then((r) => r.json());
     expect(project.name).toBe('web-ui');
+  });
+
+  it('serves the Agent Gitu SVG mark as a bundled brand asset', async () => {
+    const { base } = await startServer(makeProject('brand-asset'), new ScriptedMockLlm([]));
+    const res = await fetch(`${base}/brand/agent-gitu-mark.svg`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('image/svg+xml');
+    await expect(res.text()).resolves.toContain('Agent Gitu mark');
   });
 
   it('exposes live token limits and prices with the model catalog', async () => {
@@ -95,11 +103,49 @@ describe('HermesServer', () => {
       const { base } = await startServer(dir, new ScriptedMockLlm([]));
       const data = await fetch(`${base}/api/models`).then((r) => r.json());
       const openai = data.providers.find((p: { id: string }) => p.id === 'openai');
+      const publicProvider = data.providers.find((p: { publicModels?: boolean }) => p.publicModels === true);
       const model = openai.models.find((m: { id: string }) => m.id === 'gpt-4.1-mini');
       expect(model.metadata).toMatchObject({ contextTokens: 1_047_576, outputTokens: 32_768, inputPricePerMillion: 0.4, outputPricePerMillion: 1.6 });
+      expect(publicProvider).toBeTruthy();
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('exposes the local Codex ChatGPT subscription without exposing credentials', async () => {
+    const server = new HermesServer({
+      cwd: makeProject('chatgpt-subscription'),
+      port: 0,
+      llm: new ScriptedMockLlm([]),
+      codexSubscriptionInfo: async () => ({
+        available: true,
+        signedIn: true,
+        planType: 'plus',
+        models: [{ id: 'gpt-5.6-terra', displayName: 'Terra', vision: true, effortLevels: ['low', 'medium', 'high'], isDefault: true }],
+      }),
+      startCodexSubscriptionLogin: async () => ({
+        alreadySignedIn: false,
+        authUrl: 'https://chatgpt.com/auth/example',
+        loginId: 'login-test',
+      }),
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${await server.start()}`;
+
+    const models = await fetch(`${base}/api/models`).then((r) => r.json());
+    const chatgpt = models.providers.find((p: { id: string }) => p.id === 'chatgpt');
+    expect(chatgpt).toMatchObject({
+      auth: 'chatgpt-subscription',
+      signedIn: true,
+      usable: true,
+      planType: 'plus',
+      hasKey: false,
+    });
+    expect(chatgpt.models).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'gpt-5.6-terra', vision: true })]));
+
+    const login = await fetch(`${base}/api/chatgpt/login`, { method: 'POST' });
+    expect(login.status).toBe(202);
+    await expect(login.json()).resolves.toMatchObject({ url: 'https://chatgpt.com/auth/example', loginId: 'login-test' });
   });
 
   it('runs a task end-to-end over HTTP with live state', async () => {
@@ -731,14 +777,130 @@ describe('HermesServer', () => {
     const stop = await fetch(`${base}/api/runs/${created.runId}/stop`, { method: 'POST' }).then((r) => r.json());
     expect(stop.ok).toBe(true);
 
+    // Stop is reflected synchronously so the UI drops its running spinner and
+    // a later message starts a continuation rather than being silently queued.
+    const stoppedImmediately = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(stoppedImmediately.status).toBe('blocked');
+    expect(stoppedImmediately.error).toBe('Stopped by user.');
+    expect(stoppedImmediately.finishedAt).toBeTruthy();
+
+    const stoppedLedger = await waitFor(async () => {
+      const ledger = await fetch(`${base}/api/tasks/${running.taskId}`).then((r) => r.json());
+      return ledger.blockers.join(' ').includes('Stopped by user') ? ledger : undefined;
+    });
+    expect(stoppedLedger.blockers.join(' ')).toContain('Stopped by user');
+
+    const resumed = await fetch(`${base}/api/runs/${created.runId}/message`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'continue after stopping' }),
+    }).then((r) => r.json());
+    expect(resumed).toMatchObject({ ok: true, resumed: true });
+
+    // Stop the short resumed attempt too, then verify a stale completion from
+    // the original run cannot put the session back into "running".
+    await fetch(`${base}/api/runs/${created.runId}/stop`, { method: 'POST' });
+
     const finished = await waitFor(async () => {
       const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
       return s.status !== 'running' ? s : undefined;
     });
     expect(finished.status).toBe('blocked');
-    const ledger = await fetch(`${base}/api/tasks/${running.taskId}`).then((r) => r.json());
-    expect(ledger.blockers.join(' ')).toContain('Stopped by user');
   }, 60000);
+
+  it('stores attached documents, includes text in model context, and serves guarded downloads', async () => {
+    const dir = makeProject('attachments');
+    let modelContext = '';
+    const llm = new ScriptedMockLlm([
+      (_call, messages) => {
+        modelContext = messages.map((m) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n');
+        return 'I reviewed the attached notes.';
+      },
+    ]);
+    const { base, server } = await startServer(dir, llm);
+    const documentText = 'Decision: keep the navigation compact and preserve downloads.';
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        goal: 'Review this document',
+        mode: 'chat',
+        files: [{ name: 'notes.txt', type: 'text/plain', dataUrl: `data:text/plain;base64,${Buffer.from(documentText).toString('base64')}` }],
+      }),
+    }).then((r) => r.json());
+
+    const finished = await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(finished.files).toHaveLength(1);
+    expect(finished.files[0]).toMatchObject({ name: 'notes.txt', mime: 'text/plain; charset=utf-8', kind: 'user', previewable: true });
+    expect(modelContext).toContain('USER ATTACHED FILES (1)');
+    expect(modelContext).toContain(documentText);
+    expect(modelContext).toContain(`.hermes/session-files/${created.runId}`);
+    const events = (server as unknown as { sessions: Map<string, { events: { text: string }[] }> }).sessions.get(created.runId)!.events;
+    expect(events.map((event) => event.text)).toContainEqual(expect.stringContaining('notes.txt'));
+
+    const download = await fetch(`${base}${finished.files[0].downloadUrl}`);
+    expect(download.status).toBe(200);
+    expect(download.headers.get('content-disposition')).toContain('attachment;');
+    expect(download.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(await download.text()).toBe(documentText);
+
+    const preview = await fetch(`${base}${finished.files[0].previewUrl}`);
+    expect(preview.headers.get('content-disposition')).toContain('inline;');
+    expect(await preview.text()).toBe(documentText);
+
+    // Files created by the task use a separate allow-list: only paths recorded
+    // by this run can be fetched, never arbitrary project files.
+    const generatedPath = path.join(dir, 'generated-result.txt');
+    writeFileSync(generatedPath, 'generated by this run');
+    const liveSession = (server as unknown as { sessions: Map<string, { report?: Record<string, unknown> }> }).sessions.get(created.runId)!;
+    liveSession.report = { ...(finished.report || {}), filesChanged: ['generated-result.txt'] };
+    const generated = await fetch(`${base}/api/runs/${created.runId}/project-file?path=generated-result.txt`);
+    expect(await generated.text()).toBe('generated by this run');
+    const unrelated = await fetch(`${base}/api/runs/${created.runId}/project-file?path=package.json`);
+    expect(unrelated.status).toBe(403);
+
+    await server.stop();
+    const { base: restoredBase } = await startServer(dir, new ScriptedMockLlm([]));
+    const restored = await fetch(`${restoredBase}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(restored.files).toHaveLength(1);
+    expect(await fetch(`${restoredBase}${restored.files[0].downloadUrl}`).then((r) => r.text())).toBe(documentText);
+
+    const removed = await fetch(`${restoredBase}/api/runs/${created.runId}`, { method: 'DELETE' }).then((r) => r.json());
+    expect(removed.ok).toBe(true);
+    expect(existsSync(path.join(dir, '.hermes', 'session-files', created.runId))).toBe(false);
+  }, 30000);
+
+  it('turns oversized agent prose into a downloadable Markdown document', async () => {
+    const dir = makeProject('long-document');
+    const longReply = `Detailed response\n\n${'A verified implementation detail. '.repeat(240)}`;
+    expect(longReply.length).toBeGreaterThan(6000);
+    const { base, server } = await startServer(dir, new ScriptedMockLlm([() => longReply]));
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Give me the complete detailed explanation', mode: 'chat' }),
+    }).then((r) => r.json());
+
+    const finished = await waitFor(async () => {
+      const session = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    expect(finished.files).toHaveLength(1);
+    expect(finished.files[0]).toMatchObject({ kind: 'assistant', mime: 'text/markdown; charset=utf-8', previewable: true });
+    const events = (server as unknown as { sessions: Map<string, { events: { text: string }[] }> }).sessions.get(created.runId)!.events;
+    expect(events.some((event) => event.text.startsWith('file ') && event.text.includes('replacesLongText'))).toBe(true);
+    expect(events.some((event) => event.text === `say ${longReply}`)).toBe(false);
+    expect(events.some((event) => event.text.includes('so you can preview or download it'))).toBe(true);
+
+    const response = await fetch(`${base}${finished.files[0].downloadUrl}`);
+    const markdown = await response.text();
+    expect(markdown).toContain('# Agent Gitu response');
+    expect(markdown).toContain(longReply.slice(0, 200));
+    expect(markdown.length).toBeGreaterThan(6000);
+  }, 30000);
 
   it('rejects runs without a goal', async () => {
     const dir = makeProject('badreq');

@@ -25,7 +25,9 @@ export interface ResilienceOptions {
   maxRetries?: number;
   baseDelayMs?: number;
   maxDelayMs?: number;
-  sleep?: (ms: number) => Promise<void>;
+  /** Injectable retry delay. Receives the caller signal so cancellation can
+   * interrupt backoff instead of making Stop wait for a 45-second timer. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   onRetry?: (info: { attempt: number; maxRetries: number; delayMs: number; error: Error; label: string }) => void;
 }
 
@@ -56,7 +58,21 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
   const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
   const base = opts.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const cap = opts.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
-  const doSleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const doSleep = opts.sleep ?? ((ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('LLM request aborted'));
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer);
+        reject(new Error('LLM request aborted'));
+      },
+      { once: true },
+    );
+  }));
   const label = opts.label ?? client.name;
 
   async function guard<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
@@ -71,7 +87,7 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
         const delayMs = computeResilientDelay(attempt, base, cap);
         opts.onRetry?.({ attempt: attempt + 1, maxRetries, delayMs, error: lastError, label });
         if (signal?.aborted) throw new Error('LLM request aborted');
-        await doSleep(delayMs);
+        await doSleep(delayMs, signal);
       }
     }
     throw lastError!;
@@ -108,7 +124,7 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
           const delayMs = computeResilientDelay(attempt, base, cap);
           opts.onRetry?.({ attempt: attempt + 1, maxRetries, delayMs, error: lastError, label });
           if (o.signal?.aborted) throw new Error('LLM request aborted');
-          await doSleep(delayMs);
+          await doSleep(delayMs, o.signal);
         }
       }
       throw lastError!;

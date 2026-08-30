@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { SubAgentRunner, type SubAgentResult } from '../src/agent/subagent.js';
 import { VERIFIER_AGENT, buildVerifierContract, verdictForFinding } from '../src/agent/findings.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';

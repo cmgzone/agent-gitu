@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MemoryStore } from '../src/memory/memory-store.js';
-import { compactHistory } from '../src/agent/hermes.js';
+import { compactHistory } from '../src/agent/gitu.js';
 import type { LlmMessage } from '../src/llm/llm.js';
 
 function freshStore(name: string): MemoryStore {

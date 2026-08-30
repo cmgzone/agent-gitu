@@ -1,6 +1,6 @@
 import http from 'node:http';
 import os from 'node:os';
-import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +20,7 @@ const FONT_FILES: Record<string, string> = {
   'jetbrains-mono-latin-400-normal.woff2': 'font/woff2',
   'jetbrains-mono-latin-700-normal.woff2': 'font/woff2',
 };
-import { Hermes } from '../agent/hermes.js';
+import { Hermes } from '../agent/gitu.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -33,12 +33,14 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { UsageTrackingClient } from '../llm/llm.js';
+import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
 import { PROVIDERS, ProviderError, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { SessionStore, type SessionUsage } from './session-store.js';
+import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
+import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, shortId } from '../util.js';
 import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, saveWorkspaceSettings, updateWorkspaceSettings } from '../workspace/home.js';
@@ -63,6 +65,18 @@ export interface PendingQuestions {
   id: string;
   questions: { question: string; header?: string; options: string[] }[];
   requestedAt: string;
+}
+
+export interface SessionFileView {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: 'user' | 'assistant';
+  createdAt: string;
+  previewable: boolean;
+  downloadUrl: string;
+  previewUrl?: string;
 }
 
 interface QuestionsWaiter extends PendingQuestions {
@@ -97,6 +111,7 @@ export interface RunSessionView {
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage & { costUsd?: number };
+  files: SessionFileView[];
 }
 
 interface RunSession {
@@ -125,6 +140,7 @@ interface RunSession {
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage;
+  files: StoredSessionFile[];
 }
 
 export interface HermesServerConfig {
@@ -133,10 +149,88 @@ export interface HermesServerConfig {
   host?: string;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
+  /** Automatically bootstrap missing built-in language servers (enabled by default). */
+  autoInstallLsp?: boolean;
   browser?: BrowserBridge;
+  /** Injectable for tests; production queries the local Codex runtime. */
+  codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
+  startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_SESSION_FILES_PER_MESSAGE = 8;
+const MAX_SESSION_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_SESSION_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT_EXCERPT = 12_000;
+const LONG_RESPONSE_DOCUMENT_CHARS = 6_000;
+
+/**
+ * Memory promotion notices are informational transcript events.  A resumed
+ * run can replay the same compaction history, so treat a notice as an
+ * idempotent event keyed by its normalized claim.
+ */
+function memoryPatternNoticeKey(text: string): string | undefined {
+  const match = /^memory\s+pattern promoted from repeated failures \((.*)\)\s*$/i.exec(text.trim());
+  if (!match) return undefined;
+  const claim = match[1]!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return claim || match[1]!.toLowerCase().trim();
+}
+
+function dedupeMemoryPatternEvents<T extends { text: string }>(events: T[]): T[] {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    const key = memoryPatternNoticeKey(event.text);
+    if (!key || seen.has(key)) return !key;
+    seen.add(key);
+    return true;
+  });
+}
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip',
+};
+const BRAND_DIR = nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '../../assets');
+const BRAND_FILES: Record<string, string> = {
+  'agent-gitu-mark.svg': 'image/svg+xml',
+  'agent-gitu-logo.svg': 'image/svg+xml',
+};
+
+function safeFileName(input: string, fallback = 'file'): string {
+  const base = nodePath.basename(input || fallback).replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '-').trim();
+  return (base || fallback).slice(0, 180);
+}
+
+function mimeForFile(name: string, supplied?: string): string {
+  const known = MIME_BY_EXTENSION[nodePath.extname(name).toLowerCase()];
+  if (known) return known;
+  const clean = String(supplied ?? '').split(';')[0]!.trim().toLowerCase();
+  if (/^(text\/[a-z0-9.+-]+|image\/(png|jpeg|gif|webp)|application\/(pdf|json|zip))$/.test(clean)) return clean;
+  return 'application/octet-stream';
+}
+
+function isPreviewableMime(mime: string): boolean {
+  return /^(text\/plain|text\/markdown|text\/csv|application\/json|application\/pdf|image\/(png|jpeg|gif|webp))(;|$)/i.test(mime);
+}
+
+function isTextLikeFile(name: string, mime: string): boolean {
+  return /^text\//i.test(mime) || /application\/json/i.test(mime) || /\.(md|txt|csv|json|ya?ml|xml|log|js|jsx|ts|tsx|css|scss|html?|py|rb|go|rs|java|kt|sql)$/i.test(name);
+}
 
 export class HermesServer {
   private readonly indexWatchers = new Map<string, CodeIndex>();
@@ -205,6 +299,136 @@ export class HermesServer {
   private db(): SessionStore {
     if (!this.store) this.store = new SessionStore();
     return this.store;
+  }
+
+  private fileView(file: StoredSessionFile): SessionFileView {
+    const base = `/api/runs/${encodeURIComponent(file.runId)}/files/${encodeURIComponent(file.id)}`;
+    return {
+      id: file.id,
+      name: file.name,
+      mime: file.mime,
+      size: file.size,
+      kind: file.kind,
+      createdAt: file.createdAt,
+      previewable: isPreviewableMime(file.mime),
+      downloadUrl: base,
+      ...(isPreviewableMime(file.mime) ? { previewUrl: `${base}?inline=1` } : {}),
+    };
+  }
+
+  private sessionFileRoot(session: RunSession, preferredRoot?: string): { root: string; dir: string } {
+    const root = nodePath.resolve(preferredRoot ?? session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd);
+    return { root, dir: nodePath.join(root, '.hermes', 'session-files', session.runId) };
+  }
+
+  private persistSessionFile(session: RunSession, file: StoredSessionFile): void {
+    session.files.push(file);
+    this.db().addSessionFile(file);
+  }
+
+  private storeUserFiles(
+    session: RunSession,
+    rawFiles: unknown,
+    preferredRoot?: string,
+  ): { files: StoredSessionFile[]; attachments: ModelContextAttachment[]; images: { name: string; dataUrl: string }[] } {
+    if (!Array.isArray(rawFiles) || rawFiles.length === 0) return { files: [], attachments: [], images: [] };
+    const incoming = (rawFiles as Record<string, unknown>[]).slice(0, MAX_SESSION_FILES_PER_MESSAGE);
+    const decoded = incoming.map((raw, index) => {
+      const name = safeFileName(String(raw['name'] ?? `file-${index + 1}`));
+      const dataUrl = String(raw['dataUrl'] ?? '');
+      const match = /^data:([^;,]*)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(dataUrl);
+      if (!match?.[2]) throw new Error(`Invalid attachment: ${name}`);
+      const bytes = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+      if (bytes.length === 0) throw new Error(`Invalid attachment: ${name} is empty`);
+      if (bytes.length > MAX_SESSION_FILE_BYTES) throw new Error(`Attachment too large: ${name} exceeds 8 MB`);
+      const mime = mimeForFile(name, String(raw['type'] ?? match[1] ?? ''));
+      return { name, mime, bytes, dataUrl };
+    });
+    const total = decoded.reduce((sum, file) => sum + file.bytes.length, 0);
+    if (total > MAX_SESSION_FILES_TOTAL_BYTES) throw new Error('Attachments too large: combined size exceeds 20 MB');
+
+    const { root, dir } = this.sessionFileRoot(session, preferredRoot);
+    mkdirSync(dir, { recursive: true });
+    const files: StoredSessionFile[] = [];
+    const attachments: ModelContextAttachment[] = [];
+    const images: { name: string; dataUrl: string }[] = [];
+    for (const entry of decoded) {
+      const id = shortId('file');
+      const target = nodePath.join(dir, `${id}-${entry.name}`);
+      writeFileSync(target, entry.bytes);
+      const file: StoredSessionFile = {
+        runId: session.runId,
+        id,
+        name: entry.name,
+        mime: entry.mime,
+        size: entry.bytes.length,
+        kind: 'user',
+        path: target,
+        createdAt: nowIso(),
+      };
+      this.persistSessionFile(session, file);
+      files.push(file);
+      const relative = nodePath.relative(root, target).replace(/\\/g, '/');
+      attachments.push({
+        name: file.name,
+        path: relative,
+        mime: file.mime,
+        size: file.size,
+        ...(isTextLikeFile(file.name, file.mime)
+          ? { textExcerpt: entry.bytes.toString('utf8', 0, Math.min(entry.bytes.length, MAX_ATTACHMENT_TEXT_EXCERPT)).replace(/\u0000/g, '') }
+          : {}),
+      });
+      if (/^image\/(png|jpeg|gif|webp)(;|$)/i.test(file.mime)) images.push({ name: file.name, dataUrl: entry.dataUrl });
+    }
+    return { files, attachments, images };
+  }
+
+  private attachmentContext(files: ModelContextAttachment[]): string | undefined {
+    if (files.length === 0) return undefined;
+    return [
+      `USER ATTACHED FILES (${files.length}) — use these as part of the request:`,
+      ...files.map((file) =>
+        `- ${file.name} (${file.mime}, ${file.size} bytes) at ${file.path}` +
+        (file.textExcerpt ? `\n  TEXT EXCERPT:\n${file.textExcerpt}` : ''),
+      ),
+    ].join('\n');
+  }
+
+  private createAssistantDocument(session: RunSession, prose: string): StoredSessionFile {
+    const { dir } = this.sessionFileRoot(session);
+    mkdirSync(dir, { recursive: true });
+    const id = shortId('file');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `agent-response-${stamp}.md`;
+    const target = nodePath.join(dir, `${id}-${name}`);
+    const content = `# Agent Gitu response\n\n${prose.trim()}\n`;
+    writeFileSync(target, content, 'utf8');
+    const file: StoredSessionFile = {
+      runId: session.runId,
+      id,
+      name,
+      mime: 'text/markdown; charset=utf-8',
+      size: Buffer.byteLength(content),
+      kind: 'assistant',
+      path: target,
+      createdAt: nowIso(),
+    };
+    this.persistSessionFile(session, file);
+    return file;
+  }
+
+  private removeSessionFileStorage(session: RunSession): void {
+    const dirs = new Set(session.files.map((file) => nodePath.dirname(file.path)));
+    for (const dir of dirs) {
+      const resolved = nodePath.resolve(dir);
+      const expectedSuffix = nodePath.join('.hermes', 'session-files', session.runId);
+      if (!resolved.endsWith(expectedSuffix)) continue;
+      try {
+        rmSync(resolved, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup; database deletion still proceeds */
+      }
+    }
   }
 
   constructor(config: HermesServerConfig) {
@@ -322,7 +546,13 @@ export class HermesServer {
   private loadRegistry() {
     return this.db()
       .listSessions()
-      .map((s) => ({ ...s, events: this.db().eventsFor(s.runId) }));
+      .map((s) => ({
+        ...s,
+        // Hide legacy duplicates already persisted by older compaction runs;
+        // the source rows remain recoverable in the session database.
+        events: dedupeMemoryPatternEvents(this.db().eventsFor(s.runId)),
+        files: this.db().filesFor(s.runId),
+      }));
   }
 
   private saveRegistry(): void {
@@ -425,6 +655,7 @@ export class HermesServer {
         report,
         error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : entry.error,
         usage: entry.usage,
+        files: entry.files,
         events: Array.isArray(entry.events) ? entry.events : [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -476,7 +707,7 @@ export class HermesServer {
   private async startCronRun(root: string, job: CronJob): Promise<string | undefined> {
     let llm: LlmClient;
     try {
-      llm = this.config.llm ?? resolveLlm({}).client;
+      llm = this.config.llm ?? resolveLlm({ workingDirectory: root }).client;
     } catch {
       return undefined;
     }
@@ -490,6 +721,7 @@ export class HermesServer {
       events: [],
       subscribers: new Set(),
       approvals: new Map(),
+      files: [],
     };
     this.sessions.set(session.runId, session);
     this.saveRegistry();
@@ -502,6 +734,36 @@ export class HermesServer {
     const data = JSON.stringify(body);
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(data);
+  }
+
+  private sendLocalFile(
+    res: http.ServerResponse,
+    filePath: string,
+    name: string,
+    mime: string,
+    inline = false,
+    headOnly = false,
+  ): void {
+    if (!existsSync(filePath)) {
+      this.sendJson(res, 404, { error: 'file not found' });
+      return;
+    }
+    const info = statSync(filePath);
+    if (!info.isFile()) {
+      this.sendJson(res, 404, { error: 'file not found' });
+      return;
+    }
+    const safe = safeFileName(name).replace(/["\\]/g, '-');
+    const disposition = inline && isPreviewableMime(mime) ? 'inline' : 'attachment';
+    res.writeHead(200, {
+      'content-type': mime || 'application/octet-stream',
+      'content-length': info.size,
+      'content-disposition': `${disposition}; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    if (headOnly) res.end();
+    else createReadStream(filePath).pipe(res);
   }
 
   private async readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
@@ -590,10 +852,13 @@ export class HermesServer {
             costUsd: usageCostUsd(modelMetadataFor(peekModelCatalog(), s.provider ?? '', s.model ?? ''), s.usage),
           }
         : undefined,
+      files: s.files.map((file) => this.fileView(file)),
     };
   }
 
-  private pushEvent(s: RunSession, text: string, persistDb = true): void {
+  private recordEvent(s: RunSession, text: string, persistDb = true): void {
+    const memoryKey = memoryPatternNoticeKey(text);
+    if (memoryKey && s.events.some((event) => memoryPatternNoticeKey(event.text) === memoryKey)) return;
     // Streaming deltas are intentionally not persisted.  After a restart the
     // in-memory array is therefore sparse, so its length is not a safe event
     // cursor: reusing it can overwrite an old persisted event (including a
@@ -610,6 +875,25 @@ export class HermesServer {
       }
     }
     for (const send of s.subscribers) send(ev);
+  }
+
+  private pushEvent(s: RunSession, text: string, persistDb = true): void {
+    const prose = text.startsWith('say ') ? text.slice(4) : '';
+    if (persistDb && prose.length >= LONG_RESPONSE_DOCUMENT_CHARS) {
+      try {
+        const file = this.createAssistantDocument(s, prose);
+        this.recordEvent(
+          s,
+          `file ${JSON.stringify({ ...this.fileView(file), replacesLongText: true })}`,
+          true,
+        );
+        this.recordEvent(s, `say I put the detailed response in ${file.name} so you can preview or download it.`, true);
+        return;
+      } catch {
+        // If document persistence fails, preserve the original response.
+      }
+    }
+    this.recordEvent(s, text, persistDb);
   }
 
   /**
@@ -653,8 +937,24 @@ export class HermesServer {
       const text = event.text;
       const user = text.startsWith('user-msg ') ? text.slice('user-msg '.length).trim() : '';
       const assistant = text.startsWith('say ') ? text.slice('say '.length).trim() : '';
-      if (!user && !assistant) continue;
-      const turn: LlmMessage = user ? { role: 'user', content: user } : { role: 'assistant', content: assistant };
+      let fileTurn: LlmMessage | undefined;
+      if (text.startsWith('file ')) {
+        try {
+          const metadata = JSON.parse(text.slice(5)) as { id?: string; kind?: string; name?: string };
+          const file = s.files.find((item) => item.id === metadata.id);
+          if (file) {
+            const intro = `${file.kind === 'assistant' ? 'I provided' : 'The user attached'} file ${file.name} (${file.mime}, ${file.size} bytes).`;
+            const body = file.kind === 'assistant' && isTextLikeFile(file.name, file.mime) && existsSync(file.path)
+              ? `\n${readFileSync(file.path, 'utf8').slice(0, 12_000)}`
+              : ` Stored at ${file.path}.`;
+            fileTurn = { role: file.kind === 'assistant' ? 'assistant' : 'user', content: intro + body };
+          }
+        } catch {
+          /* malformed historical metadata is ignored */
+        }
+      }
+      if (!user && !assistant && !fileTurn) continue;
+      const turn: LlmMessage = fileTurn ?? (user ? { role: 'user', content: user } : { role: 'assistant', content: assistant });
       const previous = turns[turns.length - 1];
       if (previous?.role === turn.role && previous.content === turn.content) continue;
       turns.push(turn);
@@ -806,6 +1106,7 @@ export class HermesServer {
           // the session row via its periodic persist calls.
           s.hermes?.stop();
           void s.lsp?.shutdown().catch(() => {});
+          this.removeSessionFileStorage(s);
           this.sessions.delete(runId);
         }
       }
@@ -825,8 +1126,16 @@ export class HermesServer {
 
     if (method === 'GET' && path === '/api/models') {
       const catalogPromise = fetchModelCatalog();
+      const subscriptionPromise = (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
       const providerRows = await Promise.all(
         Object.values(PROVIDERS).map(async (spec) => {
+          if (spec.auth === 'chatgpt-subscription') {
+            const subscription = await subscriptionPromise;
+            const models: { id: string; vision?: boolean }[] = subscription.models.length > 0
+              ? subscription.models.map((model) => ({ id: model.id, vision: model.vision }))
+              : spec.models.map((id) => ({ id }));
+            return { spec, keyInfo: undefined, models, live: subscription.models.length > 0, subscription };
+          }
           const keyInfo = providerKey(spec);
           const staticInfo = spec.models.map((id) => ({ id }));
           let models: { id: string; vision?: boolean }[] = staticInfo;
@@ -844,16 +1153,22 @@ export class HermesServer {
               live = true;
             }
           }
-          return { spec, keyInfo, models, live };
+          return { spec, keyInfo, models, live, subscription: undefined };
         }),
       );
       const catalog = await catalogPromise;
-      const providers = providerRows.map(({ spec, keyInfo, models, live }) => {
+      const providers = providerRows.map(({ spec, keyInfo, models, live, subscription }) => {
         return {
           id: spec.id,
           label: spec.label,
           defaultModel: spec.defaultModel,
           hasKey: Boolean(keyInfo),
+          auth: spec.auth ?? 'api-key',
+          signedIn: subscription?.signedIn ?? false,
+          planType: subscription?.planType,
+          available: subscription?.available ?? true,
+          usable: Boolean(keyInfo) || Boolean(subscription?.signedIn),
+          publicModels: Boolean(spec.publicModels),
           live,
           models: models.map((mi) => ({
             id: mi.id,
@@ -866,13 +1181,27 @@ export class HermesServer {
             metadata: modelMetadataFor(catalog, spec.id, mi.id),
           })),
           effortLevels: spec.effortLevels,
+          effortLabels: spec.effortLabels,
           maxEffort: spec.maxEffort ?? 'collapses-to-high',
           keyEnvVars: spec.keyEnvVars,
           baseUrl: spec.baseUrl,
         };
       });
-      const withKey = providers.find((p) => p.hasKey);
-      this.sendJson(res, 200, { providers, defaultProvider: withKey?.id ?? 'alibaba' });
+      const usableProvider = providers.find((p) => p.usable);
+      this.sendJson(res, 200, { providers, defaultProvider: usableProvider?.id ?? 'alibaba' });
+      return;
+    }
+
+    if (method === 'GET' && path.startsWith('/brand/')) {
+      const assetName = path.slice('/brand/'.length);
+      const contentType = BRAND_FILES[assetName];
+      const assetPath = contentType ? nodePath.join(BRAND_DIR, assetName) : undefined;
+      if (!contentType || !assetPath || !existsSync(assetPath)) {
+        this.sendJson(res, 404, { error: 'brand asset not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
+      createReadStream(assetPath).pipe(res);
       return;
     }
 
@@ -1233,6 +1562,27 @@ export class HermesServer {
       return;
     }
 
+    if (method === 'GET' && path === '/api/chatgpt/auth') {
+      const subscription = await (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
+      this.sendJson(res, 200, { ...subscription, loggedIn: subscription.signedIn, loginPending: false });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/chatgpt/login') {
+      try {
+        const login = await (this.config.startCodexSubscriptionLogin ?? startCodexSubscriptionLogin)();
+        this.sendJson(res, 202, { ...login, url: login.authUrl });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'DELETE' && path === '/api/chatgpt/auth') {
+      this.sendJson(res, 405, { error: 'Sign out in Codex. Agent Gitu never stores your ChatGPT credentials.' });
+      return;
+    }
+
     if (method === 'GET' && path === '/api/browse') {
       const requestedRaw = (url.searchParams.get('path') ?? '').trim();
       try {
@@ -1353,8 +1703,10 @@ export class HermesServer {
     }
 
     if (method === 'POST' && path === '/api/runs') {
-      const body = await this.readBody(req, 12_000_000);
-      const goal = typeof body['goal'] === 'string' ? body['goal'].trim() : '';
+      const body = await this.readBody(req, 30_000_000);
+      const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
+      const typedGoal = typeof body['goal'] === 'string' ? body['goal'].trim() : '';
+      const goal = typedGoal || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!goal) {
         this.sendJson(res, 400, { error: 'goal is required' });
         return;
@@ -1381,7 +1733,7 @@ export class HermesServer {
       let resolvedInfo: { providerId: string; model: string } | undefined;
       if (!llm) {
         try {
-          const resolved = resolveLlm({ provider, model });
+          const resolved = resolveLlm({ provider, model, workingDirectory: projectPath ?? this.projectRoot() ?? this.config.cwd });
           llm = resolved.client;
           resolvedInfo = { providerId: resolved.providerId, model: resolved.model };
         } catch (err) {
@@ -1407,12 +1759,76 @@ export class HermesServer {
         events: [],
         subscribers: new Set(),
         approvals: new Map(),
+        files: [],
       };
-    this.sessions.set(session.runId, session);
-    this.saveRegistry();
-    this.pushEvent(session, `user-msg ${goal}`);
-    this.sendJson(res, 202, { runId: session.runId, mode });
-      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, autoLearn, images, model: resolvedInfo?.model ?? model });
+      this.sessions.set(session.runId, session);
+      let stored: ReturnType<HermesServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
+      try {
+        stored = this.storeUserFiles(session, rawFiles, projectPath ?? this.projectRoot() ?? this.config.cwd);
+      } catch (err) {
+        this.removeSessionFileStorage(session);
+        this.sessions.delete(session.runId);
+        this.db().deleteSession(session.runId);
+        this.sendJson(res, 400, { error: (err as Error).message });
+        return;
+      }
+      const modelImages = [...stored.images, ...(images ?? [])].slice(0, 4);
+      this.saveRegistry();
+      this.pushEvent(session, `user-msg ${goal}`);
+      for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
+      this.sendJson(res, 202, { runId: session.runId, mode });
+      void this.executeRun(session, llm!, {
+        goal,
+        criteria,
+        mode,
+        review,
+        scope,
+        constraints,
+        effort,
+        projectPath,
+        autoApprove,
+        autoLearn,
+        images: modelImages.length ? modelImages : undefined,
+        attachments: stored.attachments,
+        model: resolvedInfo?.model ?? model,
+      });
+      return;
+    }
+
+    const sessionFileMatch = path.match(/^\/api\/runs\/([\w-]+)\/files\/([\w-]+)$/);
+    if ((method === 'GET' || method === 'HEAD') && sessionFileMatch) {
+      const session = this.sessions.get(sessionFileMatch[1]!);
+      const file = session?.files.find((item) => item.id === sessionFileMatch[2]);
+      if (!session || !file) {
+        this.sendJson(res, 404, { error: 'file not found' });
+        return;
+      }
+      this.sendLocalFile(res, file.path, file.name, file.mime, url.searchParams.get('inline') === '1', method === 'HEAD');
+      return;
+    }
+
+    const projectFileMatch = path.match(/^\/api\/runs\/([\w-]+)\/project-file$/);
+    if ((method === 'GET' || method === 'HEAD') && projectFileMatch) {
+      const session = this.sessions.get(projectFileMatch[1]!);
+      const requested = String(url.searchParams.get('path') ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+      if (!session || !requested || nodePath.isAbsolute(requested) || requested === '..' || requested.startsWith('../')) {
+        this.sendJson(res, 404, { error: 'file not found' });
+        return;
+      }
+      const root = nodePath.resolve(session.worktreePath ?? this.resolveTaskRoot(session.taskId ?? '', session.projectPath) ?? session.projectPath ?? this.config.cwd);
+      const ledger = session.taskId ? TaskLedger.load(root, session.taskId) : undefined;
+      const allowed = new Set([...(session.report?.filesChanged ?? []), ...(ledger?.data.filesChanged ?? [])].map((item) => String(item).replace(/\\/g, '/').replace(/^\.\//, '')));
+      if (!allowed.has(requested)) {
+        this.sendJson(res, 403, { error: 'only files produced or changed by this run can be downloaded' });
+        return;
+      }
+      const target = nodePath.resolve(root, requested);
+      if (target !== root && !target.startsWith(root + nodePath.sep)) {
+        this.sendJson(res, 403, { error: 'file is outside the task workspace' });
+        return;
+      }
+      const mime = mimeForFile(requested);
+      this.sendLocalFile(res, target, nodePath.basename(requested), mime, url.searchParams.get('inline') === '1', method === 'HEAD');
       return;
     }
 
@@ -1492,6 +1908,7 @@ export class HermesServer {
         if (s) {
           s.hermes?.stop();
           void s.lsp?.shutdown().catch(() => {});
+          this.removeSessionFileStorage(s);
         }
         this.sessions.delete(id);
         if (this.db().deleteSession(id)) removed += 1;
@@ -1507,6 +1924,7 @@ export class HermesServer {
       if (s) {
         s.hermes?.stop();
         void s.lsp?.shutdown().catch(() => {});
+        this.removeSessionFileStorage(s);
       }
       this.sessions.delete(id);
       const removed = this.db().deleteSession(id);
@@ -1521,8 +1939,40 @@ export class HermesServer {
         this.sendJson(res, 404, { error: 'run not found' });
         return;
       }
-      session.hermes?.stop();
-      session.lsp?.shutdown().catch(() => {});
+      if (session.status !== 'running') {
+        this.sendJson(res, 200, { ok: true, alreadyStopped: true });
+        return;
+      }
+
+      // Detach the active execution before aborting it.  A provider can take
+      // a moment to honour cancellation; without this, its late completion
+      // can overwrite the user-visible stopped state or keep emitting output.
+      const hermes = session.hermes;
+      const lsp = session.lsp;
+      session.hermes = undefined;
+      session.lsp = undefined;
+      hermes?.stop();
+      lsp?.shutdown().catch(() => {});
+
+      // Stop must be terminal immediately.  Previously this route only wrote
+      // an event, leaving status="running" and causing the UI spinner and
+      // subsequent messages to be treated as queued work.
+      session.status = 'blocked';
+      session.error = 'Stopped by user.';
+      session.finishedAt = nowIso();
+
+      // A run paused for a question, plan review, or approval is not waiting
+      // on the LLM abort signal.  Resolve those waiters so the cancelled run
+      // can unwind instead of remaining alive until their timeout.
+      const question = session.questions;
+      session.questions = undefined;
+      question?.resolve('(stopped by user)');
+      const planReview = session.planReview;
+      session.planReview = undefined;
+      planReview?.resolve({ approved: false, note: 'Stopped by user.' });
+      for (const approval of session.approvals.values()) approval.resolve(false);
+      session.approvals.clear();
+
       this.pushEvent(session, 'stopped by user');
       this.sendJson(res, 200, { ok: true });
       return;
@@ -1544,8 +1994,10 @@ export class HermesServer {
       const wasRunning = prevStatus === 'running';
       session.status = 'running';
       try {
-      const body = await this.readBody(req, 12_000_000);
-      const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
+      const body = await this.readBody(req, 30_000_000);
+      const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
+      const typedText = typeof body['text'] === 'string' ? body['text'].trim() : '';
+      const text = typedText || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!text) {
         if (!wasRunning) session.status = prevStatus;
         this.sendJson(res, 400, { error: 'text is required' });
@@ -1557,6 +2009,19 @@ export class HermesServer {
             .filter((im) => im.dataUrl.startsWith('data:image/'))
             .slice(0, 4)
         : undefined;
+      let stored: ReturnType<HermesServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
+      try {
+        stored = this.storeUserFiles(
+          session,
+          rawFiles,
+          session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd,
+        );
+      } catch (err) {
+        if (!wasRunning) session.status = prevStatus;
+        this.sendJson(res, 400, { error: (err as Error).message });
+        return;
+      }
+      const modelImages = [...stored.images, ...(images ?? [])].slice(0, 4);
       // Older sessions created before provider/model persistence have no
       // model identity. Let the current picker supply it once so they can be
       // resumed after an app upgrade instead of falling back to an unrelated
@@ -1574,8 +2039,9 @@ export class HermesServer {
       else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
       if (wasRunning) {
-        session.hermes?.queueMessage(text);
+        session.hermes?.queueMessage(text, this.attachmentContext(stored.attachments));
         this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
+        for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
         this.sendJson(res, 200, { ok: true, queued: true });
         return;
       }
@@ -1679,7 +2145,7 @@ export class HermesServer {
           // Keep a continuation on the model the user selected for the
           // original session instead of silently falling back to the current
           // global default after an app restart.
-          llm = resolveLlm({ provider, model }).client;
+          llm = resolveLlm({ provider, model, workingDirectory: execRoot }).client;
         } catch (err) {
           if (err instanceof ProviderError) {
             session.status = prevStatus;
@@ -1696,6 +2162,7 @@ export class HermesServer {
       session.error = undefined;
       if (supersede) this.supersedeUserMessage(session, supersede, text);
       this.pushEvent(session, `user-msg ${text}`);
+      for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
       this.pushEvent(session, `continue — resuming this session`);
       void this.executeRun(session, llm, {
         goal: session.goal,
@@ -1704,7 +2171,8 @@ export class HermesServer {
         projectPath: execRoot,
         resume: { taskId: session.taskId, message: text },
         conversationHistory,
-        images,
+        images: modelImages.length ? modelImages : undefined,
+        attachments: stored.attachments,
         model,
         autoApprove: session.autoApprove,
       });
@@ -1786,10 +2254,16 @@ export class HermesServer {
       autoApprove?: boolean;
       autoLearn?: boolean;
       images?: { name: string; dataUrl: string }[];
+      attachments?: ModelContextAttachment[];
       model?: string;
       conversationHistory?: LlmMessage[];
     },
   ): Promise<void> {
+    // Only the Hermes instance currently attached to the session may change
+    // its state.  This protects a fresh continuation from a late completion
+    // of an earlier run that was stopped or superseded.
+    let activeHermes: InstanceType<typeof Hermes> | undefined;
+    const isCurrentExecution = (): boolean => session.hermes === activeHermes;
     let root: string;
     let ignorePaths: string[] | undefined;
     // Catalog modality is the source of truth for image support; warm the
@@ -1834,16 +2308,21 @@ export class HermesServer {
                   `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name (e.g. ${agentStore.list()[0]?.name ? `"${agentStore.list()[0]?.name}"` : '"explore"'}), NOT a model/provider identifier.`,
                 );
               }
-              return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model }).client, trackUsage);
+              return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root }).client, trackUsage);
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
-            onEvent: (t) => this.pushEvent(session, t),
+            onEvent: (t) => {
+              if (isCurrentExecution()) this.pushEvent(session, t);
+            },
           })
         : undefined;
     session.project = root.split(/[\\/]/).filter(Boolean).pop();
     session.mode ??= opts.mode;
-    const lsp = (session.lsp ??= new LspManager(root));
+    const lsp = (session.lsp ??= new LspManager(root, undefined, {
+      autoInstall: this.config.autoInstallLsp !== false,
+      onEvent: (text) => this.pushEvent(session, text),
+    }));
     const hermes = new Hermes({
       cwd: opts.projectPath ?? this.config.cwd,
       index,
@@ -1865,6 +2344,7 @@ export class HermesServer {
       conversationHistory: opts.conversationHistory,
       browser: this.browserImpl(),
       images: opts.images,
+      attachments: opts.attachments,
       // Full-precedence resolution (provider live /models → catalog → name
       // heuristic) so any vision-capable model actually receives the attached
       // images instead of having them silently skipped at run time.
@@ -1929,6 +2409,7 @@ export class HermesServer {
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
       onEvent: (text) => {
+        if (!isCurrentExecution()) return;
         const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
         if (ledgerMatch) {
           session.taskId = ledgerMatch[1];
@@ -1942,10 +2423,12 @@ export class HermesServer {
         this.pushEvent(session, text, !text.startsWith('browseshot '));
       },
     });
+    activeHermes = hermes;
     session.hermes = hermes;
 
     try {
       const { ledger, report } = await hermes.run(opts.goal);
+      if (!isCurrentExecution()) return;
       session.status = report.status === 'complete' ? 'completed' : report.status === 'blocked' ? 'blocked' : 'failed';
       session.report = report;
       // Stalled/blocked runs previously left session.error null, so the UI
@@ -1958,10 +2441,12 @@ export class HermesServer {
           (session.status === 'failed' ? 'Task ended without completion (stalled): the effort budget ran out without verified progress.' : undefined);
       }
     } catch (err) {
+      if (!isCurrentExecution()) return;
       session.status = 'failed';
       session.error = (err as Error).message;
       this.pushEvent(session, `fatal: ${session.error}`);
     } finally {
+      if (!isCurrentExecution()) return;
       session.finishedAt = nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       this.saveRegistry();

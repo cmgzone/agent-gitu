@@ -159,6 +159,7 @@ describe('OpenAiCompatClient retry behavior', () => {
 describe('effort semantics', () => {
   it('detects the DashScope effort style from the base URL', () => {
     expect(effortStyleFor('https://dashscope-intl.aliyuncs.com/compatible-mode/v1')).toBe('dashscope');
+    expect(effortStyleFor('https://api.deepseek.com')).toBe('deepseek');
     expect(effortStyleFor('https://api.openai.com/v1')).toBe('openai');
   });
 
@@ -173,6 +174,31 @@ describe('effort semantics', () => {
     expect(effortWireValue('max', 'openai')).toBe('high');
     expect(effortWireValue('low', 'openai')).toBe('low');
     expect(effortWireValue('high', 'openai')).toBe('high');
+  });
+
+  it('preserves DeepSeek max effort and maps its compatibility medium level', () => {
+    expect(effortWireValue('low', 'deepseek')).toBe('low');
+    expect(effortWireValue('medium', 'deepseek')).toBe('high');
+    expect(effortWireValue('max', 'deepseek')).toBe('max');
+  });
+
+  it('sends DeepSeek thinking controls with its native effort value', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch;
+      const deepseek = new OpenAiCompatClient({ apiKey: 'ds-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' });
+      await expect(deepseek.complete([{ role: 'user', content: 'hi' }], { effort: 'max', retries: 0 })).resolves.toBe('ok');
+      expect(requestBody).toMatchObject({ reasoning_effort: 'max', thinking: { type: 'enabled' } });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

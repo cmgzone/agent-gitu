@@ -5,6 +5,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 
 const DESIRED_PORT = Number(process.env.HERMES_UI_PORT || 8321);
+const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png');
 
 let mainWindow = null;
 let server = null;
@@ -55,6 +56,7 @@ function ensureBrowserWin() {
     width: 1280,
     height: 900,
     title: 'Agent Gitu Browser',
+    icon: APP_ICON_PATH,
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: { backgroundThrottling: false },
@@ -505,6 +507,7 @@ function createMainWindow() {
     minWidth: 900,
     minHeight: 600,
     title: 'Agent Gitu',
+    icon: APP_ICON_PATH,
     autoHideMenuBar: true,
     backgroundColor: '#f7f7f5',
     webPreferences: { contextIsolation: true, nodeIntegration: false },

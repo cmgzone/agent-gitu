@@ -10,7 +10,7 @@ import {
   extractFailureDigest,
   findLastScreenshotUrl,
   parseReviewVerdict,
-} from '../src/agent/hermes.js';
+} from '../src/agent/gitu.js';
 import { tokenize } from '../src/context/context-engine.js';
 import { CodeIndex } from '../src/context/code-index.js';
 import type { LlmMessage } from '../src/llm/llm.js';
@@ -111,14 +111,38 @@ describe('buildQualityReviewMessages', () => {
       filesChanged: ['login.html'],
       diffStat: ' login.html | 10 ++',
       summary: 'done',
+      uiTask: true,
+      frontendDesign: 'Primary action: Sign in button below the credentials form.',
+      browserEvidence: 'BROWSER EVIDENCE: button "Sign in" in main > form',
       screenshotUrl: 'data:image/png;base64,XYZ',
     });
     expect(Array.isArray(msgs[1]!.content)).toBe(true);
     const parts = msgs[1]!.content as { type: string; text?: string; image_url?: { url: string } }[];
     const text = parts.map((p) => p.text ?? '').join('');
     expect(text).toContain('JUDGE IT');
+    expect(text).toContain('UI LOGIC REVIEW');
+    expect(text).toContain('unrequested, misplaced, duplicated, misleading, dead, or contradictory controls');
+    expect(text).toContain('FRONTEND DESIGN INTENT');
+    expect(text).toContain('FINAL STRUCTURED BROWSER EVIDENCE');
     expect(text).toContain('VERDICT:');
     expect(parts.some((p) => p.type === 'image_url' && p.image_url?.url === 'data:image/png;base64,XYZ')).toBe(true);
+  });
+
+  it('enforces UI interaction-logic review even without screenshot vision', () => {
+    const msgs = buildQualityReviewMessages({
+      goal: 'move the save button beside the edited record',
+      criteria: ['save affects only the selected record'],
+      filesChanged: ['RecordRow.tsx'],
+      diffStat: ' RecordRow.tsx | 8 +++++',
+      diffBody: '<button onClick={saveAll}>Save</button>',
+      summary: 'added save button',
+      uiTask: true,
+    });
+    const parts = msgs[1]!.content as { type: string; text?: string }[];
+    const text = parts.map((p) => p.text ?? '').join('');
+    expect(text).toContain('UI LOGIC REVIEW');
+    expect(text).toContain('located near the content or object it affects');
+    expect(parts.every((p) => p.type !== 'image_url')).toBe(true);
   });
 });
 

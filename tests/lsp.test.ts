@@ -1,14 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { LspManager } from '../src/lsp/manager.js';
 import { formatDiagnostics, flattenDiagnostics } from '../src/lsp/diagnostics.js';
 import { detectLanguages, languageIdForPath } from '../src/lsp/language-detector.js';
-import { ServerRegistry, resolveSpawnCommand } from '../src/lsp/server-registry.js';
+import { DEFAULT_SERVERS, installSpecFor, ServerRegistry, resolveSpawnCommand } from '../src/lsp/server-registry.js';
 import { PolicyEngine } from '../src/policy/policy.js';
 
 const FAKE_SERVER = fileURLToPath(new URL('./helpers/fake-lsp-server.mjs', import.meta.url));
@@ -151,6 +151,12 @@ describe('server registry', () => {
     const missing = resolveSpawnCommand({ name: 'x', languageIds: ['x'], command: 'definitely-not-a-real-binary-xyz' });
     expect(missing.shell).toBe(false);
   });
+
+  it('exposes installers only for unchanged built-in server definitions', () => {
+    const typescript = DEFAULT_SERVERS.find((server) => server.name === 'typescript')!;
+    expect(installSpecFor(typescript)?.label).toContain('typescript-language-server');
+    expect(installSpecFor({ ...typescript, command: 'my-project-server' })).toBeUndefined();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -242,6 +248,65 @@ function fakeSetup(opts: { crashOnFirstTd?: boolean; command?: string } = {}): F
 }
 
 describe('LSP manager lifecycle (fake server)', () => {
+  it('auto-installs a missing built-in server once for concurrent lookups', async () => {
+    const repoRoot = tmpRepo();
+    writeFileSync(path.join(repoRoot, 'src', 'main.ts'), 'export const answer = 42;\n');
+    const bin = path.join(repoRoot, '.hermes', 'bin');
+    mkdirSync(bin, { recursive: true });
+    const commandPath = process.platform === 'win32' ? path.join(bin, 'typescript-language-server.cmd') : path.join(bin, 'typescript-language-server');
+    const originalPath = process.env.PATH;
+    const events: string[] = [];
+    let installs = 0;
+    const manager = new LspManager(repoRoot, undefined, {
+      autoInstall: true,
+      onEvent: (event) => events.push(event),
+      runInstaller: async () => {
+        installs += 1;
+        if (process.platform === 'win32') writeFileSync(commandPath, '@echo off\r\nexit /b 0\r\n');
+        else {
+          writeFileSync(commandPath, '#!/bin/sh\nexit 0\n');
+          chmodSync(commandPath, 0o755);
+        }
+        return { ok: true, pathEntries: [bin] };
+      },
+    });
+    managers.push(manager);
+    try {
+      const ready = (manager as unknown as { serverReadyFor(file: string): Promise<unknown> }).serverReadyFor.bind(manager);
+      const [first, second] = await Promise.all([ready('src/main.ts'), ready('src/main.ts')]);
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      expect(installs).toBe(1);
+      expect(events.some((event) => event.includes('lsp installing typescript'))).toBe(true);
+      expect(events.some((event) => event.includes('lsp ready'))).toBe(true);
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+  });
+
+  it('does not execute an automatic installer for custom registry commands', async () => {
+    const repoRoot = tmpRepo();
+    writeFileSync(path.join(repoRoot, 'src', 'main.rs'), 'fn main() {}\n');
+    writeFileSync(
+      path.join(repoRoot, '.hermes', 'lsp.json'),
+      JSON.stringify({ servers: [{ name: 'rust', languageIds: ['rust'], command: 'custom-rust-lsp', args: ['--stdio'] }] }),
+    );
+    let installs = 0;
+    const manager = new LspManager(repoRoot, undefined, {
+      autoInstall: true,
+      runInstaller: async () => {
+        installs += 1;
+        return { ok: true };
+      },
+    });
+    managers.push(manager);
+    const result = await manager.diagnostics('src/main.rs');
+    expect(result.ok).toBe(false);
+    expect(installs).toBe(0);
+    expect(result.output).toContain('LSP unavailable');
+  });
+
   it('spawns lazily, reuses the server across requests, and shuts down cleanly', async () => {
     const { repoRoot, logFile, manager } = fakeSetup();
     const file = 'src/main.rs';

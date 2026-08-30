@@ -54,6 +54,11 @@ export const UI_HTML = String.raw`<!doctype html>
   /* Counters never jitter as numbers change (Inter tnum). */
   #progText, .spec-turns, .stat .v { font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
   button { font: inherit; cursor: pointer; }
+  button:focus-visible, [role=button]:focus-visible, [tabindex]:focus-visible,
+  select:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   select, textarea, input { font: inherit; }
   /* Dark-theme fallbacks for form controls that have no styling of their own
      (e.g. the agent-modal Model/Effort selects and Name/Role fields) — they
@@ -66,10 +71,12 @@ export const UI_HTML = String.raw`<!doctype html>
   select option { background: var(--card); color: var(--text); }
   [hidden] { display: none !important; }
 
-  .shell { display: flex; height: 100%; }
+  .shell { display: flex; height: 100%; min-width: 0; }
+  .mobile-nav-btn, .mobile-backdrop { display: none; }
   .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
   .sb .head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px; }
-  .sb .head .name { font-weight: 700; letter-spacing: 2px; font-size: 14px; }
+  .sb .head .name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 2px; font-size: 14px; }
+  .brand-mark { width: 22px; height: 22px; flex: none; border-radius: 6px; }
   .sb .head .spacer { flex: 1; }
   .sb .iconbtn { background: none; border: 0; color: var(--muted); width: 28px; height: 28px; border-radius: 7px; font-size: 15px; }
   .sb .iconbtn:hover { background: var(--hover); color: var(--text); }
@@ -109,9 +116,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .chat .dot.completed { background: var(--green); }
   .sb .chat .dot.blocked, .sb .chat .dot.failed { background: var(--red); }
   /* Inline end-of-stream failure card (mirrors the State-panel banner into the main column). */
-  .runcard-error { border: 1px solid rgba(255,100,101,.4); background: rgba(255,100,101,.1); color: #ffb3b4; border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 12.5px; line-height: 1.5; }
-  .runcard-error h3 { margin: 0 0 4px; font-size: 11px; letter-spacing: .7px; text-transform: uppercase; color: #ffb3b4; }
-  .runcard-error .meta-line { color: #ffd6d6; }
+  .run-stop-note { margin: 7px 0; color: rgba(151,164,194,.58); font-size: 10px; line-height: 1.35; letter-spacing: .01em; }
   /* A user message whose send FAILED — kept visible with retry, no longer "pending". */
   .usermsg.failed > div { border-color: rgba(255,100,101,.55) !important; opacity: .85; }
   .sb .foot { border-top: 1px solid var(--border); padding: 10px 12px; display: flex; gap: 8px; align-items: center; }
@@ -119,6 +124,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .bulkbar #bulkCount { flex: 1; font-size: 12px; color: var(--muted); }
   .sb .chk { margin: 0; width: auto; accent-color: var(--accent); }
   .sb .foot .chip { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+  .project-chip { width: 100%; text-align: left; background: transparent; border: 1px solid var(--border); }
   @keyframes pulse { 50% { opacity: .35; } }
 
   .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -134,16 +140,23 @@ export const UI_HTML = String.raw`<!doctype html>
   @media (max-width: 900px) { .sugs { grid-template-columns: repeat(2, 170px); } }  .sug { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--text); }
   .sug:hover { border-color: var(--border2); box-shadow: 0 2px 10px rgba(0,0,0,.05); }
   .sug .ico { font-size: 15px; display: block; margin-bottom: 10px; }
+  .setup-card { border: 1px solid rgba(91,168,255,.34); background: var(--run-dim); color: var(--text); border-radius: 12px; padding: 12px 14px; }
+  .setup-card:hover { border-color: var(--run); background: rgba(91,168,255,.16); }
+  .setup-card h3 { color: #cfe6ff; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; }
+  .setup-card .setup-action { display: inline-block; margin-top: 6px; color: var(--run); font-size: 12px; font-weight: 650; }
   .composer { width: min(760px, 94vw); background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); padding: 6px 8px 8px; }
   .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
   .composer textarea::placeholder { color: var(--faint); }
-  .composer-bar { display: flex; align-items: center; gap: 4px; padding: 2px 6px; flex-wrap: wrap; }
+  .composer-bar { display: flex; align-items: center; gap: 5px; padding: 2px 6px; flex-wrap: wrap; }
   .pill { background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
   .pill:hover { background: var(--hover); color: var(--text); }
+  .control-pill { border: 1px solid transparent; }
+  .control-prefix { color: var(--faint); font-size: 10px; font-weight: 650; letter-spacing: .55px; text-transform: uppercase; }
   .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; max-width: 220px; }
-  .model-meta { color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
+  .model-meta { color: var(--faint); font: 10.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+  .model-control { position: relative; display: inline-flex; min-width: 0; }
   .pill .caret { color: var(--faint); font-size: 10px; }
-  .model-pick { position: relative; cursor: pointer; }
+  .model-pick { cursor: pointer; min-width: 0; }
   .model-pick.open, .model-pick.open:hover { background: var(--hover); color: var(--text); }
   .model-pick .mp-label { max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; width: 370px; max-width: calc(100vw - 48px); background: var(--card); border: 1px solid var(--border2); border-radius: 10px; box-shadow: 0 12px 32px rgba(0,0,0,.15); padding: 6px; }
@@ -152,7 +165,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .model-list { max-height: 300px; overflow-y: auto; margin-top: 6px; }
   .model-sec { position: sticky; top: 0; z-index: 1; background: var(--card); padding: 6px 10px 3px; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .model-sec:first-child { padding-top: 2px; }
-  .model-item { display: block; padding: 6px 10px 7px; border-radius: 7px; cursor: pointer; font-size: 12.5px; line-height: 1.35; }
+  .model-item { display: block; width: 100%; padding: 6px 10px 7px; border: 0; background: none; color: inherit; text-align: left; border-radius: 7px; cursor: pointer; font-size: 12.5px; line-height: 1.35; }
   .model-item:hover, .model-item.hl { background: var(--hover); }
   .model-item.cur { box-shadow: inset 2px 0 0 var(--accent); }
   .model-item .mi-top { display: flex; align-items: center; gap: 8px; }
@@ -181,6 +194,18 @@ export const UI_HTML = String.raw`<!doctype html>
   .progress .pbar { flex: 1; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
   .progress .pbar span { display: block; height: 100%; width: 0; background: var(--run); transition: width .5s ease; }
   .stream { position: relative; flex: 1; overflow-y: auto; padding: 10px 24px 18px 20px; }
+  .run-overview { display: flex; align-items: center; gap: 12px; padding: 12px 24px 10px; border-bottom: 1px solid var(--border); background: var(--bg); flex: none; min-width: 0; }
+  .run-overview-main { display: flex; align-items: flex-start; gap: 9px; min-width: 0; flex: 1; }
+  .run-overview-dot { width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: var(--faint); flex: none; }
+  .run-overview-dot.running { background: var(--run); box-shadow: 0 0 0 4px var(--run-dim); }
+  .run-overview-dot.completed { background: var(--ok); }
+  .run-overview-dot.failed, .run-overview-dot.blocked { background: var(--err); }
+  .run-overview-dot.waiting { background: var(--evidence); }
+  .run-overview-goal { color: var(--text); font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-overview-next { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-overview-stats { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
+  .run-overview .details-btn { border: 1px solid var(--border2); background: var(--card2); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; }
+  .timeline-trim-note { margin: 4px 0 10px 20px; color: var(--faint); font-size: 11.5px; }
   .stream::before { content: ''; position: absolute; left: 24px; top: 0; bottom: 0; width: 1px; background: var(--line); }
   .tl-row { position: relative; display: flex; align-items: flex-start; gap: 11px; padding: 5px 0; min-width: 0; animation: toolIn .22s ease-out both; }
   .tl-dot { position: relative; z-index: 1; flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--faint); transition: box-shadow .25s ease, background .25s ease; }
@@ -351,7 +376,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .summary-card .summary-copy { margin: 0; font-size: 12.5px; line-height: 1.55; white-space: pre-line; }
   .summary-card ul { margin: 0; padding-left: 18px; font-size: 12.5px; }
   .summary-card li { margin: 2px 0; }
-  .file-chip { display: inline-block; font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; margin: 2px 4px 2px 0; background: var(--card2); }
+  .file-chip { display: inline-block; font-family: var(--mono); font-size: 11px; border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px; margin: 2px 4px 2px 0; background: var(--card2); color: inherit; text-decoration: none; }
+  a.file-chip:hover { border-color: var(--border2); color: var(--text); background: var(--hover); }
   .summary-card .verify-list { display: grid; gap: 6px; }
   .summary-card .verify-row { border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; font-size: 12px; display: flex; gap: 7px; align-items: flex-start; flex-wrap: wrap; }
   .summary-card .verify-kind { color: var(--muted); font: 10.5px var(--mono); padding-top: 3px; }
@@ -400,6 +426,11 @@ export const UI_HTML = String.raw`<!doctype html>
   .side-tab { border: 1px solid transparent; background: none; color: var(--muted); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12.5px; }
   .side-tab.active { background: var(--card); border-color: var(--border); border-bottom-color: var(--card); color: var(--text); }
   .side-body { flex: 1; overflow-y: auto; background: var(--card); border-top: 1px solid var(--border); padding: 16px 18px; }
+  .side-summary { border: 1px solid var(--border); background: var(--card2); border-radius: 10px; padding: 10px 11px; margin-bottom: 12px; }
+  .side-summary .t { font-weight: 650; font-size: 12.5px; }
+  .side-summary .d { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .side-more { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
+  .side-more > summary { cursor: pointer; padding: 4px 0; }
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
   .stat .k { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
   .stat .v { font-size: 12.5px; font-weight: 600; word-break: break-word; }
@@ -455,6 +486,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .pm-wrap.open .pm-btn { border-color: var(--accent); }
   .pm-wrap.open .caret { transform: rotate(180deg); }
   .pm-menu { width: 340px; left: 0; }
+  .provider-toolbar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; }
+  .provider-toolbar input { flex: 1; min-width: 160px; }
+  .provider-toolbar .meta { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
   .keysec { display: none; margin-top: 10px; align-items: center; gap: 6px; flex-wrap: wrap; }
   .keysec.show { display: flex; }
   .keysec .hint { width: 100%; color: var(--faint); font-size: 11px; }
@@ -491,6 +525,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .modal .frow .ico { color: var(--muted); display: inline-flex; }
   .modal .foot { padding: 10px 14px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
   .sb .navitem .ico, .sb .proj .ico, .setnav .item .ico, .sug .ico { display: inline-flex; align-items: center; color: var(--muted); }
+  .sugs .sug .ico { display: flex; margin-bottom: 10px; }
   .setlist .x svg { width: 12px; height: 12px; }
   .ubtns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; opacity: 0; transition: opacity .12s; }
   div:hover > .ubtns, div:hover .ubtns { opacity: 1; }
@@ -518,6 +553,17 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .abubble { max-width: 80%; background: var(--card); border: 1px solid var(--border2); border-radius: 12px; padding: 8px 12px; margin: 10px 0 10px 20px; font-size: 13px; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
   .abubble .who { display: block; color: var(--accent); font-size: 10.5px; font-weight: 600; margin-bottom: 2px; }
+  .session-file { position: relative; max-width: 520px; margin: 9px 0 9px 20px; border: 1px solid var(--border2); border-radius: 12px; background: var(--card); padding: 10px 11px; display: flex; gap: 10px; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+  .session-file.user { margin-left: auto; border-color: rgba(91,168,255,.34); background: rgba(91,168,255,.08); }
+  .session-file .file-ico { width: 34px; height: 34px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--run); border: 1px solid var(--border); border-radius: 9px; background: var(--card2); }
+  .session-file.user .file-ico { color: var(--blue); }
+  .session-file .file-main { flex: 1; min-width: 0; }
+  .session-file .file-name { color: var(--text); font-size: 12.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-file .file-meta { margin-top: 2px; color: var(--faint); font: 10.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .session-file .file-actions { display: flex; gap: 5px; align-items: center; flex: none; }
+  .session-file .file-actions a { color: var(--muted); border: 1px solid var(--border); border-radius: 7px; padding: 4px 7px; font-size: 11px; text-decoration: none; }
+  .session-file .file-actions a:hover { color: var(--text); border-color: var(--border2); background: var(--hover); }
+  .session-file .file-preview { width: 48px; height: 48px; flex: none; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); background: var(--card2); }
 
   .shotmsg { margin: 10px 0 10px 20px; }
   .shotmsg img { display: block; max-width: 340px; width: 100%; border: 1px solid var(--border2); border-radius: 10px; background: var(--card2); box-shadow: 0 2px 10px rgba(0,0,0,.3); margin-top: 4px; }
@@ -539,6 +585,11 @@ export const UI_HTML = String.raw`<!doctype html>
   .thumbs { display: flex; gap: 6px; padding: 8px 8px 0; flex-wrap: wrap; }
   .thumbs .th { position: relative; }
   .thumbs img { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); display: block; }
+  .thumbs .th-file { width: min(230px, 100%); height: 52px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 26px 6px 8px; background: var(--card2); }
+  .thumbs .th-file .th-ico { color: var(--run); flex: none; display: inline-flex; }
+  .thumbs .th-file .th-info { min-width: 0; }
+  .thumbs .th-file .th-name { display: block; color: var(--text); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .thumbs .th-file .th-size { display: block; color: var(--faint); font: 10px var(--mono); margin-top: 2px; }
   .thumbs .rm { position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border2); background: var(--card2); color: var(--muted); font-size: 11px; display: flex; align-items: center; justify-content: center; padding: 0; }
   /* Invisible hit-area expansion so the small round button meets ~28px touch targets. */
   .thumbs .rm::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
@@ -564,16 +615,70 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   .side-fab { display: none; position: fixed; right: 16px; bottom: 18px; z-index: 71; border-radius: 999px; padding: 10px 15px; background: var(--accent); color: #fff; border: 0; font-weight: 600; font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.4); align-items: center; gap: 7px; cursor: pointer; }
   .side-fab svg { width: 14px; height: 14px; }
+  @media (max-width: 1080px) { .side-fab { display: inline-flex; } }
+  @media (max-width: 720px) {
+    .shell { width: 100%; }
+    .mobile-nav-btn { display: flex; align-items: center; gap: 9px; min-height: 46px; padding: 0 14px; border: 0; border-bottom: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 700; letter-spacing: .8px; flex: none; }
+    .mobile-nav-btn .hamb { color: var(--muted); font-size: 18px; }
+    .mobile-backdrop { position: fixed; inset: 0; z-index: 79; border: 0; padding: 0; background: rgba(4,6,10,.66); }
+    .shell.mobile-nav-open .mobile-backdrop { display: block; }
+    .sb { position: fixed; inset: 0 auto 0 0; z-index: 80; width: min(320px, 88vw) !important; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); }
+    .shell.mobile-nav-open .sb { transform: none; }
+    .shell.left-collapsed .sb { width: min(320px, 88vw) !important; }
+    .shell.left-collapsed .sb .scroll, .shell.left-collapsed .sb .foot,
+    .shell.left-collapsed .sb .name, .shell.left-collapsed .sb .spacer,
+    .shell.left-collapsed .sb #gearBtn { display: flex; }
+    .shell.left-collapsed .sb .head { padding: 14px 14px 8px; justify-content: flex-start; }
+    #sbResize, #sbCollapse { display: none !important; }
+    .main { width: 100%; min-width: 0; }
+    .home { justify-content: flex-start; gap: 14px; padding: 26px 14px 20px; }
+    .home h1 { width: 100%; text-align: left; font-size: 21px; line-height: 1.35; }
+    .sugs { width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .sug { min-width: 0; min-height: 92px; padding: 12px; }
+    .composer { width: 100%; }
+    .composer-bar { gap: 4px; padding-inline: 2px; }
+    .composer-bar .pill, .composer-bar .send { min-height: 40px; }
+    .control-prefix { display: none; }
+    .model-control { max-width: calc(100% - 78px); }
+    .model-pick .mp-label { max-width: 150px; }
+    .model-menu { position: fixed; left: 12px; right: 12px; bottom: 72px; top: auto; width: auto; max-width: none; }
+    .model-meta { display: none; }
+    .bottom-composer { padding: 8px 10px 10px; }
+    .stream { padding: 8px 12px 16px 10px; }
+    .stream::before { left: 14px; }
+    .progress { padding: 7px 12px 2px; }
+    .progress #progMeta { display: none; }
+    .run-overview { align-items: flex-start; padding: 10px 12px; flex-wrap: wrap; }
+    .run-overview-main { flex-basis: calc(100% - 72px); }
+    .run-overview-stats { order: 3; width: 100%; padding-left: 18px; }
+    .run-overview .details-btn { margin-left: auto; }
+    .run-side { width: min(430px, 100vw); }
+    .side-fab { bottom: 116px; right: 10px; padding: 9px 12px; }
+    .side-fab { display: none !important; }
+    .settings { flex-direction: column; }
+    .setnav { width: 100%; flex: none; display: flex; gap: 4px; align-items: center; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
+    .setnav .back { margin: 0 4px 0 0; flex: none; }
+    .setnav .sect { display: none; }
+    .setnav .item { width: auto; white-space: nowrap; flex: none; }
+    .setbody { padding: 22px 14px 32px; }
+    .setrow { align-items: flex-start; flex-direction: column; gap: 9px; }
+    .setrow select, .setrow input[type=text] { width: 100%; }
+    .provider-toolbar { align-items: stretch; flex-direction: column; }
+    .modal .box { max-height: 88vh; }
+    .toasts { left: 10px; right: 10px; top: 10px; }
+    .toast { max-width: none; }
+    #mascotWrap { display: none !important; }
+  }
 </style>
 </head>
 <body>
 <div class="shell">
   <aside class="sb">
     <div class="head">
-      <span class="name">AGENT GITU</span>
+      <span class="name"><img class="brand-mark" src="/brand/agent-gitu-mark.svg" alt=""><span>AGENT GITU</span></span>
       <span class="spacer"></span>
-      <button class="iconbtn" id="gearBtn" title="settings">&#9881;</button>
-      <button class="iconbtn" id="sbCollapse" title="collapse sidebar">&#171;</button>
+      <button class="iconbtn" id="gearBtn" title="settings" aria-label="Open settings">&#9881;</button>
+      <button class="iconbtn" id="sbCollapse" title="collapse sidebar" aria-label="Collapse sidebar">&#171;</button>
     </div>
     <div class="scroll" id="sbScroll"></div>
     <div class="bulkbar" id="bulkBar" hidden>
@@ -582,11 +687,13 @@ export const UI_HTML = String.raw`<!doctype html>
       <button class="btn ghost" id="bulkDone">Done</button>
     </div>
     <div class="foot">
-      <span class="chip" id="projChip">…</span>
+      <button type="button" class="chip project-chip" id="projChip">…</button>
     </div>
   </aside>
+  <button type="button" class="mobile-backdrop" id="mobileBackdrop" aria-label="Close navigation"></button>
   <div class="vresize" id="sbResize"></div>
   <div class="main">
+    <button type="button" class="mobile-nav-btn" id="mobileNav" aria-label="Open navigation" aria-expanded="false"><span class="hamb">&#9776;</span><span>AGENT GITU</span></button>
     <div class="topbar" id="topbar" style="display:none"></div>
     <div class="view" id="view"></div>
   </div>
@@ -607,11 +714,12 @@ export const UI_HTML = String.raw`<!doctype html>
 (function () {
   var S = {
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
+    modelsLoaded: false,
     draft: '',
     sel: { wf: 'review', model: '', effort: 'high' },
     settings: { review: true, autoApprove: false, autoLearn: true, projectPath: '' },
     setSection: 'general',
-    pendingImages: []
+    pendingFiles: []
   };
   try {
     var saved = JSON.parse(localStorage.getItem('hermes.settings') || 'null');
@@ -708,6 +816,14 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
   function basename(p) { var parts = String(p).replace(/\\/g, '/').split('/'); return parts[parts.length - 1] || p; }
+  function effectiveProjectPath() {
+    return S.settings.projectPath || S.lastProjectPath || (S.project && S.project.repoRoot) || '';
+  }
+  function effectiveProjectName() {
+    var path = effectiveProjectPath();
+    return path ? basename(path) : 'no project selected';
+  }
+  function providerIsUsable(p) { return Boolean(p && (p.usable || p.hasKey || p.signedIn)); }
   function chipFor(status) {
     if (status === 'completed') return '<span class="chip ok">complete</span>';
     if (status === 'blocked') return '<span class="chip bad">blocked</span>';
@@ -727,7 +843,21 @@ export const UI_HTML = String.raw`<!doctype html>
     return null;
   }
   function hasAnyProviderKey() {
-    return (S.models || []).some(function (p) { return p.hasKey || (p.publicModels && p.models && p.models.length > 0); });
+    return (S.models || []).some(providerIsUsable);
+  }
+  function ensureUsableModelSelection() {
+    var current = String(S.sel.model || '');
+    var found = false;
+    (S.models || []).forEach(function (p) {
+      if (!providerIsUsable(p)) return;
+      (p.models || []).forEach(function (m) { if (current === p.id + '::' + m.id) found = true; });
+    });
+    if (found) return;
+    var firstProvider = (S.models || []).filter(providerIsUsable)[0];
+    if (!firstProvider) { S.sel.model = ''; return; }
+    var firstModel = (firstProvider.models || []).filter(function (m) { return m.id === firstProvider.defaultModel; })[0] || firstProvider.models[0];
+    S.sel.model = firstModel ? firstProvider.id + '::' + firstModel.id : '';
+    persist();
   }
   var TITLE_BASE = 'Agent Gitu';
   function updateTitle() {
@@ -743,11 +873,12 @@ export const UI_HTML = String.raw`<!doctype html>
       var byProj = {};
       var projPath = {};
       sessions.forEach(function (s) {
-        var p = s.project || basename(S.settings.projectPath || '') || 'project';
+        var p = s.project || effectiveProjectName();
         (byProj[p] = byProj[p] || []).push(s);
         if (s.projectPath && !projPath[p]) projPath[p] = s.projectPath;
       });
-      var html = '<button class="newbtn" id="sbNew" title="starts in: ' + esc(S.settings.projectPath || 'no project selected yet — click a project below') + '">' + icon('pencil') + ' New session <span style="opacity:.6;font-weight:500;font-size:11.5px">· ' + esc(basename(S.settings.projectPath || '') || 'no project') + '</span></button>' +
+      var activePath = effectiveProjectPath();
+      var html = '<button class="newbtn" id="sbNew" title="starts in: ' + esc(activePath || 'choose a project first') + '">' + icon('pencil') + ' New session <span style="opacity:.6;font-weight:500;font-size:11.5px">· ' + esc(effectiveProjectName()) + '</span></button>' +
         '<button class="newbtn" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
         '<button class="navitem" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
         '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
@@ -765,8 +896,8 @@ export const UI_HTML = String.raw`<!doctype html>
           html += '<label class="proj"><input type="checkbox" class="chk" data-selproj="' + esc(p) + '"' + (S.selProj && S.selProj[p] ? ' checked' : '') + '><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span></label>';
         } else {
           // Visually mark WHICH project new sessions will land in.
-          var isActive = projPath[p] && projPath[p] === S.settings.projectPath;
-          html += '<div class="proj' + (isActive ? ' activeproj' : '') + '" data-proj="' + esc(p) + '" title="' + (isActive ? 'active project for new sessions' : 'set as active project for new sessions') + '">' +
+          var isActive = projPath[p] && projPath[p] === activePath;
+          html += '<div class="proj' + (isActive ? ' activeproj' : '') + '" data-proj="' + esc(p) + '" role="button" tabindex="0" aria-current="' + (isActive ? 'true' : 'false') + '" title="' + (isActive ? 'active project for new sessions' : 'set as active project for new sessions') + '">' +
             '<button class="ubtn" data-collapse="' + esc(p) + '" title="' + (isCol ? 'expand sessions' : 'collapse sessions') + '" style="display:inline-flex;padding:2px;margin-right:2px">' + icon(isCol ? 'chevRight' : 'chevDown') + '</button>' +
             '<span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span>' +
             (isActive ? '<span class="chip" style="margin-right:6px;background:rgba(143,128,255,.14);color:#cfc6ff">active</span>' : '') +
@@ -784,7 +915,7 @@ export const UI_HTML = String.raw`<!doctype html>
             } else {
               html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '" title="' + esc(s.goal) + (wf ? '\n⏸ waiting for you — ' + wf : '') + '">' +
                 '<span class="dot ' + (wf ? 'waiting' : esc(s.status)) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span>' +
-                '<span class="rowdel" data-delrun="' + esc(s.runId) + '" title="delete this session">' + icon('x') + '</span></button>';
+                '<span class="rowdel" data-delrun="' + esc(s.runId) + '" title="delete this session" role="button" tabindex="0" aria-label="Delete session">' + icon('x') + '</span></button>';
             }
           });
           // Silent truncation used to hide older sessions forever.
@@ -807,6 +938,7 @@ export const UI_HTML = String.raw`<!doctype html>
           var s = byId[el.getAttribute('data-run')];
           if (s && s.projectPath) S.lastProjectPath = s.projectPath;
           openRun(el.getAttribute('data-run'), { chatish: s && s.mode === 'chat', mode: s && s.mode });
+          toggleMobileNav(false);
         };
       });
       // Two-click arm/confirm session delete: first click arms (red "sure?"),
@@ -825,6 +957,7 @@ export const UI_HTML = String.raw`<!doctype html>
             .then(function () { renderSidebar(); if (S.active === id) openHome(); })
             .catch(function (er) { renderSidebar(); toast(er.message, true); });
         };
+        el.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); el.click(); } };
       });
       $('sbScroll').querySelectorAll('[data-more],[data-less]').forEach(function (el) {
         el.onclick = function () {
@@ -842,11 +975,14 @@ export const UI_HTML = String.raw`<!doctype html>
             persist();
             updateProjChip();
             toast('Active project: ' + n);
+            toggleMobileNav(false);
+            if (S.active === 'home') openHome();
           }
         };
+        el.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); el.click(); } };
       });
       $('sbScroll').querySelectorAll('[data-set]').forEach(function (el) {
-        el.onclick = function () { openSettings(el.getAttribute('data-set')); };
+        el.onclick = function () { toggleMobileNav(false); openSettings(el.getAttribute('data-set')); };
       });
       $('sbScroll').querySelectorAll('[data-delproj]').forEach(function (el) {
         el.onclick = function (e) {
@@ -876,8 +1012,9 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function updateProjChip() {
-    var name = S.settings.projectPath ? basename(S.settings.projectPath) : (S.project ? S.project.name : 'no project');
+    var name = effectiveProjectName();
     $('projChip').textContent = ' ' + name;
+    $('projChip').title = effectiveProjectPath() ? 'Active project: ' + effectiveProjectPath() + ' — click to change' : 'Choose a project folder';
   }
 
   function newProject() {
@@ -1009,10 +1146,11 @@ export const UI_HTML = String.raw`<!doctype html>
     var waiting = waitingFor(s);
     // Typing yields the button back to Send so you can queue a follow-up.
     var f = $('follow');
-    var typing = Boolean(f && f.value.trim());
+    var typing = Boolean((f && f.value.trim()) || S.pendingFiles.length);
     var stopMode = running && !typing;
     b.classList.toggle('stop', stopMode);
     b.title = stopMode ? 'Stop the agent' : 'send (Enter)';
+    b.setAttribute('aria-label', stopMode ? 'Stop the agent' : 'Send message');
     b.innerHTML = stopMode ? '&#9632;' : '&#8593;';
     // Surface interrupts right above the composer where action happens.
     var bar = b.parentElement;
@@ -1036,20 +1174,25 @@ export const UI_HTML = String.raw`<!doctype html>
   function openHome() {
     S.active = 'home';
     S.supersedeNext = null;
+    toggleMobileNav(false);
+    if ($('sideFab')) $('sideFab').hidden = true;
     stopStreams();
     stopBrowserPoll();
     renderSidebar();
     renderTopbar();
-    var effProj = S.settings.projectPath || S.lastProjectPath;
-    var name = effProj ? basename(effProj) : (S.project ? S.project.name : 'this project');
-    var keyless = !hasAnyProviderKey();
+    var effProj = effectiveProjectPath();
+    var name = effectiveProjectName();
+    var keyless = S.modelsLoaded && !hasAnyProviderKey();
+    var heading = effProj
+      ? 'What should we work on in <span class="u">' + esc(name) + '</span>?'
+      : 'What should we work on?';
     $('view').innerHTML =
       '<div class="home">' +
-      '<h1>What should we work on in <span class="u">' + esc(name) + '</span>?</h1>' +
+      '<h1>' + heading + '</h1>' +
       (keyless
-        ? '<button class="runcard-error" id="keylessCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto 14px;max-width:760px">' +
-          '<h3 style="margin:0 0 4px">no provider key yet</h3>' +
-          '<div class="meta-line">Agent Gitu needs one API key to run. Click here to add a provider — it takes about 30 seconds.</div></button>'
+        ? '<button class="setup-card" id="keylessCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto 8px;max-width:760px">' +
+          '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
+          '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
         : '') +
       '<div class="sugs">' +
       '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:var(--run)">' + icon('search') + '</span>Explore and understand code</button>' +
@@ -1059,7 +1202,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar"><span class="pill" id="homeProj" title="active project for this session — click to change" style="max-width:180px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></span>' + controlsHtml() + '<button class="send" id="send" title="start">&#8593;</button></div></div>' +
+      '<div class="composer-bar"><button type="button" class="pill control-pill" id="homeProj" title="active project for this session — click to change" style="max-width:190px"><span class="control-prefix">Project</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></button>' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div>' +
       '</div>';
     var ta = $('goal');
     ta.value = S.draft;
@@ -1119,13 +1262,15 @@ export const UI_HTML = String.raw`<!doctype html>
     var el = $('modelMeta');
     if (!el) return;
     var m = modelInfo(S.sel.model);
-    el.textContent = modelMetaText(m);
-    el.title = m && m.metadata ? 'Live provider pricing and token limits via Models.dev' : 'Provider did not publish live pricing/limits for this model';
+    el.textContent = m ? 'ⓘ' : '';
+    el.title = modelMetaText(m);
+    el.setAttribute('aria-label', m ? 'Model details: ' + modelMetaText(m) : 'Model details unavailable');
   }
 
   function modelOptionsHtml() {
     var out = '';
     S.models.forEach(function (p) {
+      if (!providerIsUsable(p)) return;
       var defaultInfo = null;
       for (var d = 0; d < p.models.length; d++) if (p.models[d].id === p.defaultModel) defaultInfo = p.models[d];
       out += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(p.id + ' / ' + titleCase(p.defaultModel)) + (isFreeModelId(p.defaultModel) ? ' (free)' : '') + (defaultInfo ? ' — ' + esc(modelMetaText(defaultInfo)) : '') + '</option>';
@@ -1154,9 +1299,12 @@ export const UI_HTML = String.raw`<!doctype html>
     var lab = $('modelLabel');
     var model = $('model');
     var text = model ? modelLabelText(model.value) : '';
-    if (lab) lab.textContent = text;
+    if (lab) lab.textContent = text || (S.modelsLoaded ? 'Choose model' : 'Loading models…');
     var pick = $('modelPick');
-    if (pick) pick.title = 'model: ' + (model ? model.value : '');
+    if (pick) {
+      pick.title = text ? 'Model: ' + text : 'Choose model';
+      pick.setAttribute('aria-label', pick.title);
+    }
   }
   // What the model search box matches against: provider, ids, human name,
   // context size and capability flags — deliberately NOT prices, so the filter
@@ -1181,6 +1329,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var q = String(query || '').toLowerCase().trim();
     var out = [];
     S.models.forEach(function (p) {
+      if (!providerIsUsable(p)) return;
       var matched = [];
       p.models.forEach(function (m) {
         if (q && modelSearchText(p, m).indexOf(q) < 0) return;
@@ -1208,11 +1357,11 @@ export const UI_HTML = String.raw`<!doctype html>
       html += '<div class="model-sec" title="' + esc(g.p.label || g.p.id) + '">' + esc(g.p.label || g.p.id) + '</div>';
       g.models.forEach(function (m) {
         var val = g.p.id + '::' + m.id;
-        html += '<div class="model-item' + (val === cur ? ' cur' : '') + '" data-val="' + esc(val) + '">' +
+        html += '<button type="button" class="model-item' + (val === cur ? ' cur' : '') + '" data-val="' + esc(val) + '" role="option" aria-selected="' + (val === cur ? 'true' : 'false') + '">' +
           '<div class="mi-top"><span class="mi-prov">' + markMatch(g.p.id, q) + '</span>' +
           '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span></div>' +
           '<div class="mi-name">' + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
-          '</div>';
+          '</button>';
       });
     });
     list.innerHTML = html;
@@ -1242,6 +1391,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!menu || !pick) return;
     menu.hidden = false;
     pick.classList.add('open');
+    pick.setAttribute('aria-expanded', 'true');
     if (filter) {
       filter.value = '';
       renderModelMenu('');
@@ -1252,12 +1402,12 @@ export const UI_HTML = String.raw`<!doctype html>
     var menu = $('modelMenu'), pick = $('modelPick');
     if (menu) menu.hidden = true;
     if (pick) pick.classList.remove('open');
+    if (pick) pick.setAttribute('aria-expanded', 'false');
   }
   function bindModelMenu() {
     var pick = $('modelPick'), filter = $('modelFilter'), menu = $('modelMenu');
     if (!pick || !menu) return;
-    pick.onclick = function (e) {
-      if (e.target.closest('.model-menu')) return;
+    pick.onclick = function () {
       if (menu.hidden) openModelMenu(); else closeModelMenu();
     };
     if (filter) {
@@ -1281,7 +1431,7 @@ export const UI_HTML = String.raw`<!doctype html>
       S.modelMenuDocBound = true;
       document.addEventListener('click', function (e) {
         var p = $('modelPick');
-        if (p && !e.target.closest('#modelPick')) closeModelMenu();
+        if (p && !e.target.closest('.model-control')) closeModelMenu();
       });
     }
   }
@@ -1294,22 +1444,29 @@ export const UI_HTML = String.raw`<!doctype html>
     for (var i = 0; i < S.models.length; i++) if (S.models[i].id === pid) return S.models[i].maxEffort || 'collapses-to-high';
     return 'collapses-to-high';
   }
+  function effortLabel(pid, level) {
+    for (var i = 0; i < S.models.length; i++) {
+      if (S.models[i].id !== pid) continue;
+      return (S.models[i].effortLabels && S.models[i].effortLabels[level]) || level;
+    }
+    return level;
+  }
   function fillEffort(id, pid) {
     var el = $(id);
     if (!el) return;
     var collapses = effortMaxHint(pid) === 'collapses-to-high';
     el.innerHTML = effortLevelsFor(pid).map(function (l) {
-      var label = l === 'max' && collapses ? 'max (= high)' : l;
-      return '<option value="' + l + '">' + label + '</option>';
+      var label = l === 'max' && collapses ? 'max (= high)' : effortLabel(pid, l);
+      return '<option value="' + l + '">' + esc(label) + '</option>';
     }).join('');
   }
   function controlsHtml() {
-    return '<span class="pill"><select id="wf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill model-pick" id="modelPick" title="choose model"><select id="model" hidden>' + modelOptionsHtml() + '</select><span class="mp-label" id="modelLabel"></span><span class="caret">&#9662;</span>' +
-      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
-      '<span class="pill" title="intelligence level"><select id="effort"></select><span class="caret">&#9662;</span></span>' +
-      '<span class="pill" id="attachBtn" title="attach images (vision models only)" style="cursor:pointer">' + icon('image') + '</span>' +
-      '<input type="file" id="attachInput" accept="image/*" multiple hidden>';
+    return '<label class="pill control-pill"><span class="control-prefix">Mode</span><select id="wf" aria-label="Workflow mode"><option value="review">Plan</option><option value="auto">Build</option><option value="chat">Chat</option></select><span class="caret">&#9662;</span></label>' +
+      '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="control-prefix">Model</span><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
+      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
+      '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
+      '<button type="button" class="pill" id="attachBtn" title="Attach files or documents" aria-label="Attach files or documents">' + icon('file') + '</button>' +
+      '<input type="file" id="attachInput" multiple hidden>';
   }
   function currentVision() {
     var parts = String(S.sel.model || '').split('::');
@@ -1326,14 +1483,44 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderThumbs() {
     var wrap = $('thumbs');
     if (!wrap) return;
-    if (!S.pendingImages.length) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+    if (!S.pendingFiles.length) { wrap.hidden = true; wrap.innerHTML = ''; updateSendState(); return; }
     wrap.hidden = false;
-    wrap.innerHTML = S.pendingImages.map(function (im, i) {
-      return '<span class="th"><img src="' + im.dataUrl + '" alt="' + esc(im.name) + '" title="' + esc(im.name) + '"><button class="rm" data-rm="' + i + '" title="remove">&#10005;</button></span>';
+    wrap.innerHTML = S.pendingFiles.map(function (file, i) {
+      var isImage = String(file.type || '').indexOf('image/') === 0;
+      var content = isImage
+        ? '<img src="' + file.dataUrl + '" alt="' + esc(file.name) + '" title="' + esc(file.name) + '">'
+        : '<span class="th-ico">' + icon('file') + '</span><span class="th-info"><span class="th-name" title="' + esc(file.name) + '">' + esc(file.name) + '</span><span class="th-size">' + humanBytes(file.size) + '</span></span>';
+      return '<span class="th' + (isImage ? '' : ' th-file') + '">' + content + '<button class="rm" data-rm="' + i + '" title="Remove attachment" aria-label="Remove ' + esc(file.name) + '">&#10005;</button></span>';
     }).join('');
     wrap.querySelectorAll('[data-rm]').forEach(function (el) {
-      el.onclick = function () { S.pendingImages.splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
+      el.onclick = function () { S.pendingFiles.splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
     });
+    updateSendState();
+  }
+  var MAX_PENDING_FILES = 8;
+  var MAX_PENDING_FILE_BYTES = 8 * 1024 * 1024;
+  var MAX_PENDING_TOTAL_BYTES = 20 * 1024 * 1024;
+  function humanBytes(value) {
+    var n = Math.max(0, Number(value) || 0);
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(n < 10 * 1024 ? 1 : 0) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+  function dataUrlBytes(dataUrl) {
+    var comma = String(dataUrl || '').indexOf(',');
+    if (comma < 0) return 0;
+    return Math.max(0, Math.floor((dataUrl.length - comma - 1) * 3 / 4));
+  }
+  function pendingFileBytes() {
+    return S.pendingFiles.reduce(function (sum, file) { return sum + (Number(file.size) || dataUrlBytes(file.dataUrl)); }, 0);
+  }
+  function addPendingFile(file, dataUrl) {
+    if (S.pendingFiles.length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
+    var size = Number(file.size) || dataUrlBytes(dataUrl);
+    if (size > MAX_PENDING_FILE_BYTES) { toast(file.name + ' is larger than 8 MB', true); return; }
+    if (pendingFileBytes() + size > MAX_PENDING_TOTAL_BYTES) { toast('Attachments exceed the 20 MB combined limit', true); return; }
+    S.pendingFiles.push({ name: file.name || 'attachment', type: file.type || 'application/octet-stream', size: size, dataUrl: dataUrl });
+    renderThumbs();
   }
   function downscaleImage(dataUrl, cb) {
     var img = new Image();
@@ -1365,10 +1552,8 @@ export const UI_HTML = String.raw`<!doctype html>
           e.preventDefault();
           var reader = new FileReader();
           reader.onload = function () {
-            if (S.pendingImages.length >= 4) { toast('Maximum 4 images per message', true); return; }
             downscaleImage(String(reader.result), function (final) {
-              S.pendingImages.push({ name: 'pasted-image', dataUrl: final });
-              renderThumbs();
+              addPendingFile({ name: file.name || 'pasted-image.png', type: file.type || 'image/png', size: dataUrlBytes(final) }, final);
               toast('Image pasted — it will be sent with your next message');
             });
           };
@@ -1380,14 +1565,15 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function onAttachFiles(files) {
     Array.prototype.slice.call(files).forEach(function (f) {
-      if (!f.type || f.type.indexOf('image/') !== 0) { toast('Only image files can be attached', true); return; }
-      if (S.pendingImages.length >= 4) { toast('Maximum 4 images per message', true); return; }
+      if (S.pendingFiles.length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
+      if (f.size > MAX_PENDING_FILE_BYTES) { toast(f.name + ' is larger than 8 MB', true); return; }
+      if (pendingFileBytes() + f.size > MAX_PENDING_TOTAL_BYTES) { toast('Attachments exceed the 20 MB combined limit', true); return; }
       var reader = new FileReader();
       reader.onload = function () {
-        downscaleImage(String(reader.result), function (final) {
-          S.pendingImages.push({ name: f.name, dataUrl: final });
-          renderThumbs();
-        });
+        var original = String(reader.result);
+        if (f.type && f.type.indexOf('image/') === 0) {
+          downscaleImage(original, function (final) { addPendingFile(f, final); });
+        } else addPendingFile(f, original);
       };
       reader.readAsDataURL(f);
     });
@@ -1419,18 +1605,20 @@ export const UI_HTML = String.raw`<!doctype html>
     var attach = $('attachBtn');
     if (!attach) return;
     var vision = currentVision();
-    if (vision) { attach.removeAttribute('disabled'); attach.title = 'attach images'; }
-    else { attach.setAttribute('disabled', '1'); attach.title = 'current model does not support images'; }
+    attach.removeAttribute('disabled');
+    attach.title = vision ? 'Attach files, documents, or images' : 'Attach files or documents (this model cannot inspect image pixels)';
   }
 
   function startRun() {
     if (S.starting) return;
     var goal = $('goal') ? $('goal').value.trim() : '';
+    if (!goal && S.pendingFiles.length) goal = 'Please review the attached file or document.';
     if (!goal) { if ($('goal')) $('goal').focus(); return; }
+    if (!S.modelsLoaded) { toast('Models are still loading — try again in a moment'); return; }
     // First-run funnel: a keyless install can only produce a failing run.
     // Gate it behind provider setup with a one-click path instead.
-    if (!hasAnyProviderKey()) {
-      toast('Add an API key first — opening Providers', true);
+    if (!hasAnyProviderKey() || !S.sel.model) {
+      toast('Connect a model provider first — opening Providers', true);
       openSettings('providers');
       return;
     }
@@ -1454,15 +1642,15 @@ export const UI_HTML = String.raw`<!doctype html>
         autoApprove: S.settings.autoApprove,
         autoLearn: S.settings.autoLearn,
         effort: S.sel.effort,
-        projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
+        projectPath: effectiveProjectPath() || undefined,
         scope: S.settings.scope || [],
         constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
-        images: S.pendingImages.length ? S.pendingImages : undefined
+        files: S.pendingFiles.length ? S.pendingFiles : undefined
       })
     }).then(function (r) {
       unlock();
       S.draft = ''; persist();
-      S.pendingImages = [];
+      S.pendingFiles = [];
       openRun(r.runId, { chatish: chatish, goal: goal });
       renderSidebar();
     }, function (e) {
@@ -1474,9 +1662,12 @@ export const UI_HTML = String.raw`<!doctype html>
   function openRun(runId, opts) {
     S.active = runId;
     S.supersedeNext = null;
+    toggleMobileNav(false);
+    if ($('sideFab')) $('sideFab').hidden = false;
     stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
     sess.nodes = {};
+    sess.justOpened = true;
     if (opts && opts.chatish !== undefined) sess.chatish = opts.chatish;
     // Reflect the session's real mode in the workflow dropdown so changing it
     // and sending is an explicit switch (chat -> plan/build, or the reverse).
@@ -1485,16 +1676,18 @@ export const UI_HTML = String.raw`<!doctype html>
     renderTopbar();
     $('view').innerHTML =
       '<div class="run"><div class="run-main">' +
+      '<div class="run-overview" id="runOverview"><div class="run-overview-main"><span class="run-overview-dot" id="runOverviewDot"></span><div style="min-width:0"><div class="run-overview-next" id="runOverviewNext">Connecting to task state</div></div></div><div class="run-overview-stats" id="runOverviewStats"></div><button type="button" class="details-btn" id="overviewPanel">Details</button></div>' +
       '<div class="progress" id="progress" style="display:none"><span class="plabel" id="progText"></span><div class="pbar"><span id="progFill"></span></div><span class="plabel" id="progMeta"></span></div>' +
       '<div class="stream" id="stream"></div>' +
       '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu… Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2">&#8593;</button></div></div></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div></div></div>' +
       '</div>' +
       '<div class="vresize" id="rsResize"></div>' +
       '<aside class="run-side"><div class="side-tabs" id="sideTabs"></div><div class="side-body" id="sideBody"></div>' +
       '<div class="rail"><button id="rsExpand" title="expand panel">PANEL &#171;</button></div></aside></div>';
     renderSideTabs(sess, runId);
+    $('overviewPanel').onclick = showRunPanel;
     $('rsExpand').onclick = function () { S.settings.rightCollapsed = false; persist(); applyLayout(); };
     bindResize('rsResize', 'right');
     applyLayout();
@@ -1504,6 +1697,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (e.key !== 'Enter' || e.shiftKey) return;
       e.preventDefault();
       var g = $('follow').value.trim();
+      if (!g && S.pendingFiles.length) g = 'Please review the attached file or document.';
       if (!g) return;
       sendFollow(g);
     });
@@ -1525,7 +1719,16 @@ export const UI_HTML = String.raw`<!doctype html>
     updateSendState();
     bindControls();
     bindPaste('follow');
-    sess.events.forEach(function (ev) { appendEvent(runId, ev); });
+    var replayEvents = sess.events;
+    if (replayEvents.length > MAX_REPLAY_EVENTS) {
+      var hiddenCount = replayEvents.length - MAX_REPLAY_EVENTS;
+      var historyNote = document.createElement('div');
+      historyNote.className = 'timeline-trim-note';
+      historyNote.textContent = hiddenCount + ' earlier event' + (hiddenCount === 1 ? '' : 's') + ' are preserved in session history. Showing the latest activity.';
+      $('stream').appendChild(historyNote);
+      replayEvents = replayEvents.slice(-MAX_REPLAY_EVENTS);
+    }
+    replayEvents.forEach(function (ev) { appendEvent(runId, ev); });
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
     w.className = 'working'; w.id = 'working';
@@ -1555,7 +1758,12 @@ export const UI_HTML = String.raw`<!doctype html>
         setWorking(sess.session && sess.session.status === 'running' ? 'Thinking…' : null);
       }
       if (sess.lastIndex == null) sess.lastIndex = -1;
-      if (ev.i > sess.lastIndex) { sess.lastIndex = ev.i; sess.events.push(ev); appendEvent(runId, ev); }
+      if (ev.i > sess.lastIndex) {
+        sess.lastIndex = ev.i;
+        sess.events.push(ev);
+        appendEvent(runId, ev);
+        if (sess.session && sess.session.status !== 'running') setWorking(null);
+      }
     };
     // A dead socket previously left "Thinking…" on screen forever. Back off
     // and reconnect; the poller keeps backfilling events meanwhile.
@@ -1602,6 +1810,75 @@ export const UI_HTML = String.raw`<!doctype html>
     return div;
   }
 
+  function safeRunFileUrl(value) {
+    var url = String(value || '');
+    return url.indexOf('/api/runs/') === 0 ? url : '';
+  }
+
+  function sessionFileCard(meta) {
+    var card = document.createElement('div');
+    var kind = meta && meta.kind === 'user' ? 'user' : 'assistant';
+    card.className = 'session-file ' + kind;
+    card.setAttribute('data-file-id', String((meta && meta.id) || ''));
+
+    var previewUrl = safeRunFileUrl(meta && meta.previewUrl);
+    var downloadUrl = safeRunFileUrl(meta && meta.downloadUrl);
+    var mime = String((meta && meta.mime) || 'application/octet-stream');
+    if (previewUrl && mime.indexOf('image/') === 0) {
+      var preview = document.createElement('img');
+      preview.className = 'file-preview';
+      preview.alt = '';
+      preview.src = previewUrl;
+      card.appendChild(preview);
+    } else {
+      var fileIcon = document.createElement('span');
+      fileIcon.className = 'file-ico';
+      fileIcon.innerHTML = icon('file');
+      card.appendChild(fileIcon);
+    }
+
+    var main = document.createElement('span');
+    main.className = 'file-main';
+    var name = document.createElement('span');
+    name.className = 'file-name';
+    name.textContent = String((meta && meta.name) || 'attachment');
+    name.title = name.textContent;
+    var detail = document.createElement('span');
+    detail.className = 'file-meta';
+    detail.textContent = (kind === 'user' ? 'you attached' : 'Agent Gitu created') + ' · ' + mime + ' · ' + humanBytes(meta && meta.size);
+    main.appendChild(name);
+    main.appendChild(detail);
+    card.appendChild(main);
+
+    var actions = document.createElement('span');
+    actions.className = 'file-actions';
+    if (previewUrl) {
+      var open = document.createElement('a');
+      open.href = previewUrl;
+      open.target = '_blank';
+      open.rel = 'noopener';
+      open.textContent = 'Open';
+      actions.appendChild(open);
+    }
+    if (downloadUrl) {
+      var download = document.createElement('a');
+      download.href = downloadUrl;
+      download.download = name.textContent;
+      download.textContent = 'Download';
+      actions.appendChild(download);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  function removeNarrationReplacedByFile(sess) {
+    if (!sess || !sess.nodes) return;
+    var live = sess.nodes.abubble || sess.nodes.thought;
+    if (live && live.parentNode) live.parentNode.removeChild(live);
+    sess.nodes.abubble = null;
+    sess.nodes.thought = null;
+  }
+
   function removeUserBubble(runId, text) {
     var stream = $('stream');
     if (!stream) return;
@@ -1622,10 +1899,31 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     if (force || nearBottom(stream)) stream.scrollTop = stream.scrollHeight;
   }
+  var MAX_REPLAY_EVENTS = 240;
+  var MAX_TIMELINE_NODES = 220;
+  function trimTimeline(stream) {
+    if (!stream) return;
+    var nodes = Array.prototype.slice.call(stream.children).filter(function (el) {
+      return el.classList.contains('tl-row') || el.classList.contains('shotmsg') || el.classList.contains('abubble') || el.classList.contains('session-file') || el.classList.contains('intake-line');
+    });
+    if (nodes.length <= MAX_TIMELINE_NODES) return;
+    var removeCount = nodes.length - MAX_TIMELINE_NODES;
+    for (var i = 0; i < removeCount; i++) nodes[i].remove();
+    var total = Number(stream.dataset.trimmed || '0') + removeCount;
+    stream.dataset.trimmed = String(total);
+    var note = stream.querySelector('.timeline-trim-note');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'timeline-trim-note';
+      stream.insertBefore(note, stream.firstChild);
+    }
+    note.textContent = total + ' older activity item' + (total === 1 ? '' : 's') + ' hidden for performance. Full history remains stored.';
+  }
   function appendLive(stream, el) {
     var w = $('working');
     var stick = nearBottom(stream);
     if (w) stream.insertBefore(el, w); else stream.appendChild(el);
+    trimTimeline(stream);
     if (stick) stream.scrollTop = stream.scrollHeight;
   }
 
@@ -1644,7 +1942,7 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.chatish = sess.session.mode === 'chat';
       renderRunSide(runId);
     }
-    var imgs = S.pendingImages.length ? S.pendingImages : undefined;
+    var attached = S.pendingFiles.length ? S.pendingFiles : undefined;
     var mc = (S.sel.model || '').split('::');
     var useSelectedModel = Boolean(sess && (sess.modelOverride || !sess.session || !sess.session.provider || !sess.session.model));
     // Show the outgoing message immediately. The server will replace this
@@ -1657,7 +1955,7 @@ export const UI_HTML = String.raw`<!doctype html>
     // Textarea cleared: if the agent is still running the button reverts to Stop.
     updateSendState();
     api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-      text: text, images: imgs,
+      text: text, files: attached,
       provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
       // The workflow dropdown drives continuations too: an explicit selection
       // switches an existing session's mode (chat <-> plan/build).
@@ -1667,9 +1965,13 @@ export const UI_HTML = String.raw`<!doctype html>
       autoApprove: S.settings.autoApprove
     }) })
       .then(function () {
-        S.pendingImages = [];
+        S.pendingFiles = [];
         renderThumbs();
         setWorking('Thinking…');
+        // Terminal sessions intentionally close their SSE stream. A follow-up
+        // starts the same session again, so reopen it here; polling only
+        // refreshes status/ledger and cannot carry live tdelta prose events.
+        if (!S.es) connect(runId);
         if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
       })
       .catch(function (er) {
@@ -1685,8 +1987,8 @@ export const UI_HTML = String.raw`<!doctype html>
               autoApprove: S.settings.autoApprove,
               autoLearn: S.settings.autoLearn,
               effort: S.sel.effort,
-              projectPath: S.settings.projectPath || S.lastProjectPath || undefined,
-              images: imgs
+              projectPath: effectiveProjectPath() || undefined,
+              files: attached
             })
           }).then(function (r) { openRun(r.runId, { chatish: r.mode === 'chat' }); }).catch(function (e2) { failUserBubble(runId, text, e2.message); toast(e2.message, true); });
         } else {
@@ -2198,7 +2500,19 @@ export const UI_HTML = String.raw`<!doctype html>
     )) return;
 
     var working = $('working');
-    function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); }
+    function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream); }
+
+    if (text.indexOf('file ') === 0) {
+      try {
+        var fileMeta = JSON.parse(text.slice(5));
+        if (fileMeta && fileMeta.replacesLongText) removeNarrationReplacedByFile(sess);
+        insert(sessionFileCard(fileMeta || {}));
+        stickScroll(stream);
+      } catch (e) {
+        // Ignore malformed metadata rather than rendering unsafe raw JSON.
+      }
+      return;
+    }
 
     if (text.indexOf('tdelta ') === 0 || text.indexOf('thought ') === 0) {
       var chunk = text.indexOf('tdelta ') === 0 ? text.slice(7) : text.slice(8);
@@ -2304,11 +2618,20 @@ export const UI_HTML = String.raw`<!doctype html>
       pm.className = 'tl-row tl-meta';
       pm.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>parallel</b> ' + esc(text.slice(9)) + ' — running concurrently</div>';
       insert(pm);
+      // Parallel executors emit all run events up front, then interleave
+      // each call's ok/error and out events as the promises settle.  A
+      // single lastTool pointer cannot represent that lifecycle: the last
+      // card stays in sync while earlier cards spin forever.  Keep the batch
+      // marker so terminal events can use the active-row queue as a safe
+      // fallback when an older server event has no matching command key.
+      sess.nodes.parallelPending = true;
+      sess.nodes.toolRows = sess.nodes.toolRows || [];
       setWorking('Running parallel tools…');
       return;
     }
     if (text.indexOf('lines ') === 0) {
-      var toolCard = sess.nodes.lastTool;
+      var lineHint = text.slice(6).replace(/\s+\+\d+\s+lines.*$/i, '').trim();
+      var toolCard = findToolRow(sess, lineHint, true);
       if (toolCard && !toolCard.querySelector('.lines')) {
         var badge = document.createElement('span');
         badge.className = 'lines';
@@ -2373,6 +2696,76 @@ export const UI_HTML = String.raw`<!doctype html>
     var tag = text.split(' ')[0];
     var body = text.slice(tag.length).trim();
 
+    // Tool lifecycle events carry the same parameter summary as their run
+    // event.  Matching on that stable key keeps parallel rows independent and
+    // also handles completions that arrive out of order.  The duration suffix
+    // is only present on post-execution events; preflight errors/denials do not
+    // own a running card and must not accidentally close the previous one.
+    function terminalToolSummary(value) {
+      var m = /^(.*?)(?:\s+\(\d+ms\))$/.exec(String(value || '').trim());
+      return m ? m[1].trim() : '';
+    }
+    function normalizeToolKey(value) {
+      return String(value || '').replace(/^\$\s*/, '').replace(/\s+/g, ' ').trim();
+    }
+    function activeToolRows(state) {
+      var rows = state && state.nodes && state.nodes.toolRows;
+      if (!rows) return [];
+      // The timeline is bounded; drop cards evicted by trimTimeline so the
+      // lifecycle queue cannot retain detached DOM nodes forever.
+      state.nodes.toolRows = rows.filter(function (row) { return row && row.isConnected && row.dataset.toolState === 'working'; });
+      return state.nodes.toolRows;
+    }
+    function findToolRow(state, hint, allowFallback) {
+      if (!state || !state.nodes) return null;
+      var rows = activeToolRows(state);
+      var raw = String(hint || '').trim();
+      var key = normalizeToolKey(raw);
+      var exact = null;
+      for (var ri = rows.length - 1; ri >= 0; ri--) {
+        var rowKey = String(rows[ri].dataset.toolKey || '');
+        if (raw && (rowKey === raw || normalizeToolKey(rowKey) === key)) { exact = rows[ri]; break; }
+        // lines <path> +N lines has only a path hint, so allow it to bind to
+        // the corresponding write/edit summary without relying on event order.
+        if (key && (normalizeToolKey(rowKey).indexOf(key) >= 0 || key.indexOf(normalizeToolKey(rowKey)) >= 0)) { exact = rows[ri]; break; }
+      }
+      if (exact) return exact;
+      // A single active row is unambiguous even for older/replayed events.
+      if (rows.length === 1) return rows[0];
+      // Old persisted parallel events did not carry a correlation id. FIFO is
+      // the least surprising recovery for those rows; new events match above.
+      return allowFallback && state.nodes.parallelPending && rows.length ? rows[0] : null;
+    }
+    function finishToolRow(state, status, eventBody) {
+      var key = terminalToolSummary(eventBody);
+      if (!key) return null;
+      var row = findToolRow(state, key, true);
+      if (!row) return null;
+      var dotEl = row.querySelector('.tl-dot');
+      var stEl = row.querySelector('.st');
+      if (status === 'ok') {
+        if (dotEl) dotEl.className = 'tl-dot dot-ok';
+        if (stEl) { stEl.className = 'st st-ok'; stEl.innerHTML = '&#10003; ok'; }
+      } else if (status === 'error') {
+        if (dotEl) dotEl.className = 'tl-dot dot-bad';
+        if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; error'; }
+        row.classList.add('done-bad');
+      } else if (status === 'denied') {
+        if (dotEl) dotEl.className = 'tl-dot dot-bad';
+        if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; denied'; }
+        row.classList.add('done-bad');
+      } else {
+        if (dotEl) dotEl.className = 'tl-dot dot-blocked';
+        if (stEl) { stEl.className = 'st st-warn'; stEl.innerHTML = '&#10005; blocked'; }
+      }
+      row.dataset.toolState = 'done';
+      row.dataset.toolStatus = status;
+      state.nodes.lastTool = row;
+      state.nodes.lastOutputTool = row;
+      if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
+      return row;
+    }
+
     // End-of-run status echo from the server ("run finished: failed/blocked/...").
     // The "run " prefix would otherwise render as a fake tool card with an
     // empty output disclosure. Status is already shown by the header chip,
@@ -2404,41 +2797,27 @@ export const UI_HTML = String.raw`<!doctype html>
 
       insert(row);
       sess.nodes.lastTool = row;
+      sess.nodes.toolRows = sess.nodes.toolRows || [];
+      row.dataset.toolKey = summary;
+      row.dataset.toolState = 'working';
+      sess.nodes.toolRows.push(row);
       var wt = workingTextFor(text);
       if (wt) setWorking(wt);
       stickScroll(stream);
       return;
     }
     if (tag === 'ok' || tag === 'error' || tag === 'denied' || tag === 'blocked') {
-      var tool = sess.nodes.lastTool;
-      if (tool) {
-        var dotEl = tool.querySelector('.tl-dot');
-        var stEl = tool.querySelector('.st');
-        if (tag === 'ok') {
-          if (dotEl) dotEl.className = 'tl-dot dot-ok';
-          stEl.className = 'st st-ok';
-          stEl.innerHTML = '&#10003; ok';
-        } else if (tag === 'error') {
-          if (dotEl) dotEl.className = 'tl-dot dot-bad';
-          stEl.className = 'st st-err';
-          stEl.innerHTML = '&#10005; error';
-          tool.classList.add('done-bad');
-        } else if (tag === 'denied') {
-          if (dotEl) dotEl.className = 'tl-dot dot-bad';
-          stEl.className = 'st st-err';
-          stEl.innerHTML = '&#10005; denied';
-          tool.classList.add('done-bad');
-        } else {
-          if (dotEl) dotEl.className = 'tl-dot dot-blocked';
-          stEl.className = 'st st-warn';
-          stEl.innerHTML = '&#10005; blocked';
-        }
-      }
-      setWorking('Thinking…');
+      var tool = finishToolRow(sess, tag, body);
+      // No duration means this was a preflight denial/schema error, for which
+      // no run card exists.  Do not mutate an unrelated active card.
+      if (!tool) return;
+      setWorking(activeToolRows(sess).length ? 'Running parallel tools…' : 'Thinking…');
       return;
     }
     if (tag === 'out') {
-      var t2 = sess.nodes.lastTool;
+      // out follows its own terminal event, so prefer that correlated row;
+      // lastTool remains a compatibility fallback for old event streams.
+      var t2 = sess.nodes.lastOutputTool || sess.nodes.lastTool || findToolRow(sess, '', true);
       if (t2) {
         var detailsEl = t2.querySelector('details');
         var preEl = t2.querySelector('pre');
@@ -2481,8 +2860,22 @@ export const UI_HTML = String.raw`<!doctype html>
       var dDash = body.indexOf(' — ');
       var dParsed = parseOutcome(dDash >= 0 ? body.slice(dDash + 3) : body);
       meta.className = 'tl-row tl-meta';
-      meta.innerHTML = '<span class="tl-dot dot-ok"></span><div class="tl-body"><b>🎉 ' + esc(dDash >= 0 ? body.slice(0, dDash) : 'done') + '</b> — ' + esc(shortText(dParsed.lede, 220)) + '</div>';
+      meta.innerHTML = '<span class="tl-dot dot-ok"></span><div class="tl-body"><b>🎉 ' + esc(dDash >= 0 ? body.slice(0, dDash) : 'done') + '</b> — ' + esc(shortText(reportLede(dParsed.lede), 220)) + '</div>';
+    } else if (tag === 'warn') {
+      var warnKey = body.replace(/\s*\(streak \d+\)/i, '').replace(/^\d+ replies in a row /i, 'replies in a row ').trim();
+      var previousWarn = sess.nodes.lastWarn;
+      if (previousWarn && previousWarn.el && previousWarn.el.isConnected && previousWarn.key === warnKey) {
+        previousWarn.count++;
+        var repeat = previousWarn.el.querySelector('.repeat-count');
+        if (repeat) repeat.textContent = '×' + previousWarn.count;
+        stickScroll(stream);
+        return;
+      }
+      meta.className = 'tl-row tl-meta';
+      meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>warn</b> ' + esc(warnKey) + ' <span class="chip warn repeat-count">×1</span></div>';
+      sess.nodes.lastWarn = { key: warnKey, count: 1, el: meta };
     } else {
+      sess.nodes.lastWarn = null;
       meta.className = 'tl-row tl-meta';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>' + esc(tag) + '</b> ' + esc(body) + '</div>';
     }
@@ -2505,6 +2898,31 @@ export const UI_HTML = String.raw`<!doctype html>
     $('progFill').style.width = width + '%';
   }
 
+  function renderRunOverview(session, ledger) {
+    var next = $('runOverviewNext'), stats = $('runOverviewStats'), dot = $('runOverviewDot');
+    if (!next || !session) return;
+    var waiting = waitingFor(session);
+    var status = waiting ? 'waiting' : (session.status || 'idle');
+    dot.className = 'run-overview-dot ' + status;
+    var current = '';
+    if (ledger && ledger.blockers && ledger.blockers.length) current = 'Blocked: ' + ledger.blockers[ledger.blockers.length - 1];
+    if (!current && waiting) current = 'Needs your ' + waiting + ' before work can continue';
+    if (!current && ledger && ledger.plan) {
+      var step = ledger.plan.filter(function (s) { return s.status === 'in_progress'; })[0] || ledger.plan.filter(function (s) { return s.status === 'pending'; })[0];
+      if (step) current = (step.status === 'in_progress' ? 'Working on: ' : 'Next: ') + step.description;
+    }
+    if (!current) current = status === 'completed' ? 'Completed — review the result and evidence' : status === 'failed' ? 'Failed — review the blocker and retry options' : status === 'blocked' ? 'Blocked — review the required action' : status === 'running' ? 'Preparing the next action' : 'Task state ready';
+    next.textContent = current;
+    next.title = current;
+    var statBits = [status === 'waiting' ? 'needs input' : status];
+    if (ledger && ledger.acceptanceCriteria) {
+      var satisfied = ledger.acceptanceCriteria.filter(function (c) { return c.satisfied; }).length;
+      statBits.push(satisfied + '/' + ledger.acceptanceCriteria.length + ' criteria');
+    }
+    if (ledger && ledger.filesChanged && ledger.filesChanged.length) statBits.push(ledger.filesChanged.length + ' files');
+    stats.textContent = statBits.join(' · ');
+  }
+
   function pollRun(runId) {
     if (S.active !== runId) return;
     api('/api/runs/' + runId).then(function (session) {
@@ -2512,6 +2930,7 @@ export const UI_HTML = String.raw`<!doctype html>
       if (!sess) return;
       S.pollFailures = 0;
       sess.session = session;
+      renderRunOverview(session, sess.ledger);
       // On opening a persisted task, place its model in the composer. That
       // makes continuing it stable; a later picker change is deliberate and
       // is sent as a one-session model override.
@@ -2543,18 +2962,22 @@ export const UI_HTML = String.raw`<!doctype html>
         sess.summaryShown = true;
         appendSummary(runId, session);
       }
+      if (session.status === 'running') sess.justOpened = false;
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
           if (s2) {
             s2.ledger = ledger;
             renderRunSide(runId);
+            renderRunOverview(session, ledger);
             if (s2.chatish) { var pp = $('progress'); if (pp) pp.style.display = 'none'; } else updateProgress(ledger);
           }
         }).catch(function () {});
       } else renderRunSide(runId);
       if (session.status !== 'running') {
         setWorking(null);
+        if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; }
+        S.reconnecting = false;
         if (S.poll) { clearInterval(S.poll); S.poll = null; }
         renderSidebar();
       }
@@ -2566,15 +2989,15 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
 
-  // Mirror the State-panel failure banner into the MAIN stream: a dead run
-  // must be visible where the user is looking, not only in a collapsible side
-  // tab (which is hidden entirely below 1080px).
+  // Keep a stopped run discoverable without echoing the full provider error
+  // into the conversation. Details contains the actionable error and retry
+  // guidance; the stream only needs a quiet state marker.
   function renderErrorCard(runId, session) {
     var stream = $('stream');
     var sess = S.sessions[runId];
     if (!stream || !sess) return;
     var key = session && session.error ? String(session.error) : '';
-    var existing = stream.querySelector('.runcard-error');
+    var existing = stream.querySelector('.run-stop-note');
     if (!key || session.status === 'running') {
       if (existing) existing.remove();
       sess.errShownKey = '';
@@ -2584,11 +3007,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (existing) existing.remove();
     sess.errShownKey = key;
     var div = document.createElement('div');
-    div.className = 'runcard-error';
-    div.innerHTML =
-      '<h3>run failed</h3>' +
-      '<div class="meta-line">' + esc(key.slice(0, 400)) + '</div>' +
-      '<div class="meta-line" style="margin-top:6px;color:#ffd6d6">Pick an available model in the composer, then send a message to retry — your task and history are preserved.</div>';
+    div.className = 'run-stop-note';
+    div.textContent = 'Run stopped — see Details to review and retry.';
     var w = $('working');
     if (w) stream.insertBefore(div, w); else stream.appendChild(div);
     stickScroll(stream, true);
@@ -2791,6 +3211,15 @@ export const UI_HTML = String.raw`<!doctype html>
       .trim();
   }
 
+  // Keep generated completion cards focused on the result. Some exploration
+  // summaries append a generic stack description that reads like stray chat
+  // narration; it is still available in the collapsed raw-summary disclosure.
+  function reportLede(summary) {
+    return readableSummary(summary)
+      .replace(/\s*This is a dependency-free static website using vanilla HTML, CSS, and JavaScript\.?/i, '')
+      .trim();
+  }
+
   // ── Outcome parsing ─────────────────────────────────────────────────────
   // The model's summary often embeds a machine-style change dump
   // ("CHANGES (all inside repo_root): - NEW path (4490 chars) …"). Split it:
@@ -2823,8 +3252,8 @@ export const UI_HTML = String.raw`<!doctype html>
       : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>' : '<span>❌ <b>Failed</b></span>');
     if (checks.length) {
       bits.push(passed === checks.length
-        ? '<span>✅ All ' + checks.length + ' criteria satisfied</span>'
-        : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + '/' + checks.length + ' criteria satisfied</span>');
+        ? '<span>✅ All ' + checks.length + ' verification checks passed</span>'
+        : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + '/' + checks.length + ' verification checks passed</span>');
     }
     bits.push(changeCount
       ? '<span>🛠️ ' + changeCount + ' file' + (changeCount === 1 ? '' : 's') + ' changed</span>'
@@ -2914,7 +3343,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var html = '<div class="report-flat" style="margin:12px 0 0;border-top:0;padding-top:0">' +
       '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + (ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : 'Failed')) + '</h2>' +
       '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
-      '<p class="r-lede">' + esc(shortText(parsed.lede || readableSummary(report.summary), 360)) + '</p>' +
+      '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || report.summary), 360)) + '</p>' +
       reportStatusLine(report.status, checks, passed, files.length || parsed.changes.length) +
       browserHighlight(report.browserActivity) +
       (checks.length ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + '</details>' : '') +
@@ -2939,7 +3368,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var doneWord = ok ? 'Done' : (r.status === 'blocked' ? 'Blocked' : 'Failed');
     var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
       '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
-    html += '<p class="r-lede">' + esc(shortText(parsed.lede || readableSummary(r.summary), 400)) + '</p>';
+    html += '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || r.summary), 400)) + '</p>';
     html += reportStatusLine(r.status, checks, passed, files.length || parsed.changes.length);
     var findings = (r.findings || []).slice(0, 5);
     if (findings.length) {
@@ -2960,7 +3389,9 @@ export const UI_HTML = String.raw`<!doctype html>
     });
     if (changeItems.length) {
       html += '<div class="r-sec"><h4>🛠️ Changes</h4><ul>' + changeItems.map(function (c) {
-        return '<li>' + (CHANGE_VERBS[c.action] || 'Changed') + ' <span class="file-chip">' + esc(c.path) + '</span></li>';
+        var cLower = String(c.path).toLowerCase();
+        var actual = files.find(function (f) { return f.toLowerCase() === cLower || f.split('/').pop().toLowerCase() === cLower; });
+        return '<li>' + (CHANGE_VERBS[c.action] || 'Changed') + ' ' + projectFileChipHtml(runId, c.path, actual) + '</li>';
       }).join('') + '</ul>' + (files.length ? '' : '<div class="r-note">🔒 No source code was modified.</div>') + '</div>';
     } else if (!files.length) {
       html += '<div class="r-note">🔒 No source code was modified.</div>';
@@ -2982,7 +3413,15 @@ export const UI_HTML = String.raw`<!doctype html>
     setupCopyButton(div.querySelector('[data-sumcopy]'), function () { return reportText(r); });
     var working = $('working');
     if (working) stream.insertBefore(div, working); else stream.appendChild(div);
-    stickScroll(stream, true);
+    if (sess && sess.justOpened) stream.scrollTop = 0;
+    else stickScroll(stream, true);
+    if (sess) sess.justOpened = false;
+  }
+
+  function projectFileChipHtml(runId, path, downloadPath) {
+    if (!downloadPath) return '<span class="file-chip">' + esc(path) + '</span>';
+    var url = '/api/runs/' + encodeURIComponent(runId) + '/project-file?path=' + encodeURIComponent(downloadPath);
+    return '<a class="file-chip" href="' + esc(url) + '" download title="Download ' + esc(path) + '">' + esc(path) + '</a>';
   }
 
   function renderRunSide(runId) {
@@ -2997,37 +3436,47 @@ export const UI_HTML = String.raw`<!doctype html>
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var failure = sess.session && sess.session.error;
+    var satisfied = L.acceptanceCriteria.filter(function (c) { return c.satisfied; }).length;
+    var planDone = L.plan.filter(function (s) { return s.status === 'done'; }).length;
     var html = failure
       ? '<div style="margin:0 0 14px;padding:10px;border:1px solid rgba(255,100,101,.4);border-radius:9px;background:rgba(255,100,101,.1);color:#ffb3b4;font-size:12px;line-height:1.45"><b>Last attempt failed.</b> ' + esc(failure) + '<br>Choose an available model in the composer, then send a message to retry. Your task and history are preserved.</div>'
       : '';
+    html += '<div class="side-summary"><div class="t">Task state</div><div class="d">' +
+      satisfied + '/' + L.acceptanceCriteria.length + ' criteria · ' + planDone + '/' + L.plan.length + ' plan steps · ' + L.evidence.length + ' checks</div></div>';
+    if (L.blockers.length) {
+      html += '<div class="section-h" style="margin-top:0">Blockers</div>';
+      L.blockers.slice(-3).forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
+    }
     html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
     if (!L.acceptanceCriteria.length) html += '<div class="empty">none set yet</div>';
-    L.acceptanceCriteria.forEach(function (c) {
+    var orderedCriteria = L.acceptanceCriteria.filter(function (c) { return !c.satisfied; }).concat(L.acceptanceCriteria.filter(function (c) { return c.satisfied; }));
+    function criterionHtml(c) {
       var reqHtml = c.verification
         ? '<div class="crit-req">Required: <code>' + esc(c.verification) + '</code>' +
           (c.evidenceType && c.evidenceType !== 'any' ? ' <span class="chip" style="font-size:10px;padding:0 5px">' + esc(c.evidenceType) + '</span>' : '') + '</div>'
         : '';
-      html += '<div class="crit ' + (c.satisfied ? 'done' : '') + '"><span class="dot"></span><div style="flex:1">' + esc(c.text) +
+      return '<div class="crit ' + (c.satisfied ? 'done' : '') + '"><span class="dot"></span><div style="flex:1">' + esc(c.text) +
         reqHtml +
         (c.evidenceIds && c.evidenceIds.length ? '<div class="ev-ids">' + esc(c.evidenceIds.join(', ')) + ' ✓</div>' : '') + '</div></div>';
-    });
+    }
+    html += orderedCriteria.slice(0, 6).map(criterionHtml).join('');
+    if (orderedCriteria.length > 6) html += '<details class="side-more"><summary>Show ' + (orderedCriteria.length - 6) + ' more criteria</summary>' + orderedCriteria.slice(6).map(criterionHtml).join('') + '</details>';
     html += '<div class="section-h">Plan' + (L.planApproved ? ' <span class="chip ok" style="margin-left:6px">approved</span>' : '') + '</div>';
     if (!L.plan.length) html += '<div class="empty">no plan yet</div>';
-    L.plan.forEach(function (s) {
-      html += '<div class="step"><span class="st ' + s.status + '">' + esc(s.status) + '</span><div>' + esc(s.description) + ' <span style="color:var(--faint)">· ' + esc(s.verification) + '</span></div></div>';
-    });
+    var orderedPlan = L.plan.filter(function (s) { return s.status === 'in_progress'; }).concat(L.plan.filter(function (s) { return s.status === 'pending'; }), L.plan.filter(function (s) { return s.status !== 'in_progress' && s.status !== 'pending'; }));
+    function planHtml(s) { return '<div class="step"><span class="st ' + s.status + '">' + esc(s.status) + '</span><div>' + esc(s.description) + ' <span style="color:var(--faint)">· ' + esc(s.verification) + '</span></div></div>'; }
+    html += orderedPlan.slice(0, 6).map(planHtml).join('');
+    if (orderedPlan.length > 6) html += '<details class="side-more"><summary>Show ' + (orderedPlan.length - 6) + ' more plan steps</summary>' + orderedPlan.slice(6).map(planHtml).join('') + '</details>';
     html += '<div class="section-h">Evidence</div>';
     if (!L.evidence.length) html += '<div class="empty">none yet</div>';
-    L.evidence.forEach(function (e) {
-      html += '<div class="step"><span class="st ' + (e.passed ? 'done' : 'failed') + '">' + (e.passed ? 'PASS' : 'FAIL') + '</span><div>' + esc(e.label) + '</div></div>';
-    });
+    function evidenceHtml(e) { return '<div class="step"><span class="st ' + (e.passed ? 'done' : 'failed') + '">' + (e.passed ? 'PASS' : 'FAIL') + '</span><div>' + esc(e.label) + '</div></div>'; }
+    var recentEvidence = L.evidence.slice(-8);
+    html += recentEvidence.map(evidenceHtml).join('');
+    if (L.evidence.length > 8) html += '<details class="side-more"><summary>Show ' + (L.evidence.length - 8) + ' older checks</summary>' + L.evidence.slice(0, -8).map(evidenceHtml).join('') + '</details>';
     html += '<div class="section-h">Files changed</div>';
     var visibleFiles = L.filesChanged.filter(reportableFile);
-    html += visibleFiles.length ? visibleFiles.map(function (f) { return '<span class="file-chip">' + esc(f) + '</span>'; }).join('') : '<div class="empty">none</div>';
-    if (L.blockers.length) {
-      html += '<div class="section-h">Blockers</div>';
-      L.blockers.forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
-    }
+    html += visibleFiles.length ? visibleFiles.slice(0, 12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') : '<div class="empty">none</div>';
+    if (visibleFiles.length > 12) html += '<details class="side-more"><summary>Show ' + (visibleFiles.length - 12) + ' more files</summary>' + visibleFiles.slice(12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') + '</details>';
     if (L.report) html += reportSideCard(L.report);
     body.innerHTML = html;
   }
@@ -3040,6 +3489,28 @@ export const UI_HTML = String.raw`<!doctype html>
     if (run) run.classList.toggle('collapsed-side', !!S.settings.rightCollapsed);
     var btn = $('sbCollapse');
     if (btn) btn.innerHTML = S.settings.leftCollapsed ? '&#187;' : '&#171;';
+  }
+
+  function toggleMobileNav(open) {
+    var shell = document.querySelector('.shell');
+    var btn = $('mobileNav');
+    if (!shell) return;
+    shell.classList.toggle('mobile-nav-open', Boolean(open));
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function showRunPanel() {
+    var rs = document.querySelector('.run-side');
+    if (!rs) return;
+    if (window.innerWidth <= 1080) {
+      rs.classList.add('narrow-open');
+      var fab = $('sideFab');
+      if (fab) fab.querySelector('span').textContent = 'Close';
+    } else {
+      S.settings.rightCollapsed = false;
+      persist();
+      applyLayout();
+    }
   }
 
   function applyWidths() {
@@ -3093,13 +3564,24 @@ export const UI_HTML = String.raw`<!doctype html>
     if (tabs.browser !== false) html += '<button class="side-tab ' + (sess.side === 'browser' ? 'active' : '') + '" data-side="browser">' + icon('globe') + ' Browser</button>';
     if (tabs.git !== false) html += '<button class="side-tab ' + (sess.side === 'git' ? 'active' : '') + '" data-side="git">' + icon('branch') + ' Git</button>';
     html += '<button class="collapse-tab" id="tabMgr" title="add / remove tabs" style="font-size:14px">+</button>';
-    html += '<button class="collapse-tab" id="rsCollapse" title="collapse panel">&#187;</button>';
+    html += '<button class="collapse-tab" id="rsCollapse" title="close details panel" aria-label="Close details panel">&#187;</button>';
     el.innerHTML = html;
     el.querySelectorAll('.side-tab').forEach(function (t) {
       t.onclick = function () { sess.side = t.getAttribute('data-side'); renderSideTabs(sess, runId); renderRunSide(runId); };
     });
     $('tabMgr').onclick = function () { openTabMgr($('tabMgr'), sess, runId); };
-    $('rsCollapse').onclick = function () { S.settings.rightCollapsed = true; persist(); applyLayout(); };
+    $('rsCollapse').onclick = function () {
+      var panel = document.querySelector('.run-side');
+      if (window.innerWidth <= 1080 && panel) {
+        panel.classList.remove('narrow-open');
+        var fab = $('sideFab');
+        if (fab) fab.querySelector('span').textContent = 'Panel';
+        return;
+      }
+      S.settings.rightCollapsed = true;
+      persist();
+      applyLayout();
+    };
   }
 
   function closeTabMgr() { var m = $('tabMgrMenu'); if (m) m.remove(); }
@@ -3146,7 +3628,7 @@ export const UI_HTML = String.raw`<!doctype html>
     return url;
   }
 
-  function gitQueryPath() { return S.settings.projectPath || S.lastProjectPath || ''; }
+  function gitQueryPath() { return effectiveProjectPath(); }
 
   function renderGitPanel(runId) {
     var body = $('sideBody');
@@ -3377,13 +3859,17 @@ export const UI_HTML = String.raw`<!doctype html>
   function openSettings(section) {
     S.setSection = section || 'general';
     $('settings').hidden = false;
+    if ($('sideFab')) $('sideFab').hidden = true;
     renderSettings();
   }
-  function closeSettings() { $('settings').hidden = true; }
+  function closeSettings() {
+    $('settings').hidden = true;
+    if ($('sideFab')) $('sideFab').hidden = S.active === 'home';
+  }
 
   function refreshModels() {
     api('/api/models')
-      .then(function (data) { S.models = data.providers; renderSettings(); })
+      .then(function (data) { S.models = data.providers; S.modelsLoaded = true; ensureUsableModelSelection(); renderSettings(); })
       .catch(function () { renderSettings(); });
   }
 
@@ -3428,7 +3914,8 @@ export const UI_HTML = String.raw`<!doctype html>
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
     } else if (S.setSection === 'providers') {
       b.innerHTML = '<h1>Providers</h1>' +
-        '<p style="color:var(--muted);font-size:12.5px">Tap a provider to add its API key. Use a provider&#39;s dropdown to search its models and set the default for new runs.</p>' +
+        '<p style="color:var(--muted);font-size:12.5px">Connect a provider, then choose the default model used for new tasks.</p>' +
+        '<div class="provider-toolbar"><input type="text" id="providerFilter" placeholder="Filter providers…" aria-label="Filter providers"><span class="meta" id="providerSummary"></span></div>' +
         '<div class="setcard" id="provBody"><div class="meta">loading providers…</div></div>';
       Promise.all([api('/api/models'), api('/api/keys').catch(function () { return { stored: [] }; })]).then(function (res) {
         var d = res[0];
@@ -3436,40 +3923,91 @@ export const UI_HTML = String.raw`<!doctype html>
         var body = $('provBody');
         if (!body || S.setSection !== 'providers') return;
         var cur = S.sel.model || '';
-        var prov = d.providers || [];
+        var prov = (d.providers || []).slice().sort(function (a, b) { return Number(providerIsUsable(b)) - Number(providerIsUsable(a)); });
+        var readyCount = prov.filter(providerIsUsable).length;
+        if ($('providerSummary')) $('providerSummary').textContent = readyCount + ' ready · ' + (prov.length - readyCount) + ' need setup';
         body.innerHTML = prov.map(function (p, i) {
           var storedVar = (p.keyEnvVars || []).filter(function (v) { return stored.indexOf(v) >= 0; })[0];
-          var keyChip = p.hasKey ? '<span class="chip ok">key ready</span>' : '<span class="chip bad">no key</span>';
+          var usable = providerIsUsable(p);
+          var keyChip = p.hasKey ? '<span class="chip ok">key ready</span>' : '<span class="chip bad">needs key</span>';
           var storedChip = storedVar ? '<span class="chip">stored</span>' : '';
           var liveChip = p.live ? '<span class="chip">live</span>' : '';
           var models = p.models || [];
           var selInProv = cur.indexOf(p.id + '::') === 0 ? cur.split('::')[1] : '';
           var activeChip = selInProv ? '<span class="chip ok">active</span>' : '';
           var btnModel = titleCase(selInProv || p.defaultModel);
-          return '<div class="setrow" style="align-items:flex-start"><div class="grow">' +
-            '<div class="prov-head" data-provhead="' + i + '" title="Tap to ' + (storedVar || p.hasKey ? 'manage' : 'add') + ' the API key">' +
+          if (p.auth === 'chatgpt-subscription') {
+            // Codex owns this credential; Agent Gitu only receives safe
+            // signed-in / plan state and never sees a token or email address.
+            keyChip = usable
+              ? '<span class="chip ok">signed in' + (p.planType ? ' · ' + esc(p.planType) : '') + '</span>'
+              : '<span class="chip bad">' + (p.available === false ? 'Codex unavailable' : 'not signed in') + '</span>';
+          }
+          var setupLabel = p.auth === 'chatgpt-subscription' ? 'Sign in first' : 'Add key first';
+          var modelTitle = usable ? 'Search ' + esc(p.label) + ' models' : setupLabel;
+          var manageTitle = p.auth === 'chatgpt-subscription' ? 'manage ChatGPT sign-in' : (storedVar || p.hasKey ? 'manage' : 'add') + ' the API key';
+          return '<div class="setrow" data-provider-row="' + esc((p.label + ' ' + p.id).toLowerCase()) + '" style="align-items:flex-start"><div class="grow">' +
+            '<div class="prov-head" data-provhead="' + i + '" role="button" tabindex="0" aria-expanded="false" title="Tap to ' + manageTitle + '">' +
               '<span class="prov-chev">&#9654;</span>' +
               '<div><div class="t">' + esc(p.label) + ' <span class="meta">(' + esc(p.id) + ')</span> ' + keyChip + storedChip + ' ' + liveChip + activeChip + '</div>' +
               '<div class="d">' + models.length + ' models' + (p.keyEnvVars && !p.hasKey ? ' · env: ' + esc(p.keyEnvVars.join(' | ')) : '') + '</div></div>' +
             '</div>' +
             '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:4px">' +
               '<div class="pm-wrap" data-pmwrap="' + i + '">' +
-                '<button type="button" class="pm-btn" data-pmbtn="' + i + '" title="Search ' + esc(p.label) + ' models">' +
-                  '<span class="pm-name">' + esc(btnModel) + '</span>' +
+                '<button type="button" class="pm-btn" data-pmbtn="' + i + '" title="' + modelTitle + '"' + (usable ? '' : ' disabled') + '>' +
+                  '<span class="pm-name">' + esc(usable ? btnModel : setupLabel) + '</span>' +
                   '<span class="caret">&#9660;</span>' +
                 '</button>' +
                 '<div class="model-menu pm-menu" hidden><input type="text" placeholder="Search models…"><div class="model-list"></div><div class="model-count"></div></div>' +
               '</div>' +
             '</div>' +
             '<div class="keysec">' +
-              '<input type="password" id="keyin-' + i + '" placeholder="paste ' + esc(p.id) + ' API key"' + (p.keyEnvVars && p.keyEnvVars.length ? ' title="stored locally as env var ' + esc(p.keyEnvVars.join(' or ')) + '"' : '') + ' style="margin:0;max-width:280px">' +
-              '<button class="btn dark" data-savekey="' + i + '">Save key</button>' +
-              '<button class="btn ghost" data-eye="' + i + '" title="show or hide the key">Show</button>' +
-              (storedVar ? '<button class="btn ghost" data-delkey="' + esc(storedVar) + '">Remove stored key</button>' : '') +
-              (p.keyEnvVars && p.keyEnvVars.length ? '<div class="hint">stored locally as env var ' + esc(p.keyEnvVars.join(' or ')) + '</div>' : '') +
+              (p.auth === 'chatgpt-subscription'
+                ? (usable
+                    ? '<div class="hint">Connected through local Codex' + (p.planType ? ' (' + esc(p.planType) + ')' : '') + '. Your ChatGPT credentials remain in Codex.</div>'
+                    : '<button type="button" class="btn dark" id="chatgptSignin">Sign in with ChatGPT</button>' +
+                      '<div class="hint">Opens the secure Codex sign-in flow. It uses the models included with your ChatGPT plan instead of an API key.</div>')
+                : '<input type="password" id="keyin-' + i + '" placeholder="paste ' + esc(p.id) + ' API key"' + (p.keyEnvVars && p.keyEnvVars.length ? ' title="stored locally as env var ' + esc(p.keyEnvVars.join(' or ')) + '"' : '') + ' style="margin:0;max-width:280px">' +
+                  '<button class="btn dark" data-savekey="' + i + '">Save key</button>' +
+                  '<button class="btn ghost" data-eye="' + i + '" title="show or hide the key">Show</button>' +
+                  (storedVar ? '<button class="btn ghost" data-delkey="' + esc(storedVar) + '">Remove stored key</button>' : '') +
+                  (p.keyEnvVars && p.keyEnvVars.length ? '<div class="hint">stored locally as env var ' + esc(p.keyEnvVars.join(' or ')) + '</div>' : '')) +
             '</div>' +
             '</div></div>';
         }).join('') || '<div class="meta">no providers available</div>';
+        var cgSignin = $('chatgptSignin');
+        if (cgSignin) cgSignin.onclick = function () {
+          cgSignin.disabled = true;
+          cgSignin.textContent = 'Opening sign-in…';
+          api('/api/chatgpt/login', { method: 'POST' }).then(function (r) {
+            if (r && r.url) window.open(r.url, '_blank', 'noopener');
+            var tries = 0;
+            var poll = function () {
+              tries += 1;
+              if (tries > 150) return; // ~5 min, matching the server-side timeout
+              api('/api/chatgpt/auth').then(function (st) {
+                if (st && st.loggedIn) {
+                  toast('ChatGPT connected');
+                  renderSettings();
+                  return;
+                }
+                setTimeout(poll, 2000);
+              }).catch(function () { setTimeout(poll, 2000); });
+            };
+            setTimeout(poll, 1500);
+          }).catch(function (e) {
+            cgSignin.disabled = false;
+            cgSignin.textContent = 'Sign in with ChatGPT';
+            toast('ChatGPT sign-in failed: ' + ((e && e.message) || e), true);
+          });
+        };
+        var providerFilter = $('providerFilter');
+        if (providerFilter) providerFilter.oninput = function () {
+          var q = providerFilter.value.toLowerCase().trim();
+          body.querySelectorAll('[data-provider-row]').forEach(function (row) {
+            row.hidden = Boolean(q && row.getAttribute('data-provider-row').indexOf(q) < 0);
+          });
+        };
         function closeAllPm(except) {
           body.querySelectorAll('.pm-wrap.open').forEach(function (w) {
             if (w === except) return;
@@ -3492,12 +4030,12 @@ export const UI_HTML = String.raw`<!doctype html>
           if (count) count.textContent = matched.length + (matched.length === 1 ? ' model' : ' models') + (q ? (matched.length === 1 ? ' matches' : ' match') : '');
           list.innerHTML = matched.map(function (m) {
             var val = p.id + '::' + m.id;
-            return '<div class="model-item' + (val === curVal ? ' cur' : '') + '" data-val="' + esc(val) + '">' +
+            return '<button type="button" class="model-item' + (val === curVal ? ' cur' : '') + '" data-val="' + esc(val) + '" role="option" aria-selected="' + (val === curVal ? 'true' : 'false') + '">' +
               '<div class="mi-top"><span class="mi-prov">' + (m.free ? 'free · no credits needed' : '') + '</span>' +
               '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span>' +
               (val === curVal ? '<span class="mi-cur" title="current default">&#10003;</span>' : '') + '</div>' +
               '<div class="mi-name">' + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
-              '</div>';
+              '</button>';
           }).join('') || '<div class="model-empty">No models match &ldquo;' + esc(q) + '&rdquo;<br><span style="font-size:11px">Try a model name</span></div>';
           var hl = list.querySelector('.model-item');
           if (hl) hl.classList.add('hl');
@@ -3560,11 +4098,14 @@ export const UI_HTML = String.raw`<!doctype html>
             var wasOpen = row.classList.contains('prov-open');
             body.querySelectorAll('.setrow').forEach(function (r) {
               r.classList.remove('prov-open');
+              var ph = r.querySelector('[data-provhead]');
+              if (ph) ph.setAttribute('aria-expanded', 'false');
               var ks = r.querySelector('.keysec');
               if (ks) ks.classList.remove('show');
             });
             if (!wasOpen) {
               row.classList.add('prov-open');
+              head.setAttribute('aria-expanded', 'true');
               S.provOpen = idx;
               var ks = row.querySelector('.keysec');
               if (ks) ks.classList.add('show');
@@ -3572,11 +4113,13 @@ export const UI_HTML = String.raw`<!doctype html>
               if (pin) setTimeout(function () { pin.focus(); }, 0);
             } else S.provOpen = null;
           };
+          head.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); head.click(); } };
         });
         if (typeof S.provOpen === 'number') {
           var orow = body.querySelectorAll('.setrow')[S.provOpen];
           if (orow && orow.querySelector('[data-provhead]')) {
             orow.classList.add('prov-open');
+            orow.querySelector('[data-provhead]').setAttribute('aria-expanded', 'true');
             var oks = orow.querySelector('.keysec');
             if (oks) oks.classList.add('show');
           } else S.provOpen = null;
@@ -3687,7 +4230,7 @@ export const UI_HTML = String.raw`<!doctype html>
     } else if (S.setSection === 'project') {
       b.innerHTML = '<h1>Project</h1>' +
         '<div class="setcard"><div class="setrow"><div class="grow"><div class="t">Active project path</div><div class="d">Each project has its own chats, skills, MCP servers and cron jobs.</div></div></div>' +
-        '<div class="setlist"><input type="text" id="prPath" value="' + esc(S.settings.projectPath) + '" placeholder="C:\\path\\to\\project">' +
+        '<div class="setlist"><input type="text" id="prPath" value="' + esc(effectiveProjectPath()) + '" placeholder="C:\\path\\to\\project">' +
         '<div class="row"><button class="btn dark" id="prSave">Save project</button><button class="btn ghost" id="prBrowse">Browse folders…</button></div></div></div>';
       $('prBrowse').onclick = openFolderBrowser;
       $('prSave').onclick = function () {
@@ -3881,7 +4424,7 @@ export const UI_HTML = String.raw`<!doctype html>
             .then(function () { renderSettings(); }).catch(function (e) { toast(e.message, true); });
         };
         $('mcFs').onclick = function () {
-          var root = S.settings.projectPath || (S.project && S.project.repoRoot) || '.';
+          var root = effectiveProjectPath() || '.';
           api('/api/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: 'fs', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', root] }) })
             .then(function () { toast('Filesystem MCP added for ' + root); renderSettings(); })
             .catch(function (e) { toast(e.message, true); });
@@ -3913,7 +4456,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function openFolderBrowser() {
     $('browseModal').hidden = false;
-    browseTo(S.settings.projectPath || '');
+    browseTo(effectiveProjectPath());
   }
 
   function browseTo(p, isFallback) {
@@ -3956,6 +4499,7 @@ export const UI_HTML = String.raw`<!doctype html>
       renderSidebar();
       $('browseModal').hidden = true;
       toast('Project set to ' + d.path);
+      if (S.active === 'home') openHome();
     };
   }
 
@@ -3968,7 +4512,12 @@ export const UI_HTML = String.raw`<!doctype html>
         updateProjChip();
       });
     }
-    api('/api/project').then(function (p) { S.project = p; updateProjChip(); }).catch(function () { updateProjChip(); });
+    api('/api/project').then(function (p) {
+      S.project = p;
+      updateProjChip();
+      renderSidebar();
+      if (S.active === 'home') openHome();
+    }).catch(function () { updateProjChip(); });
     api('/api/home').then(function (h) {
       var heal = function (p) {
         if (!p) return p;
@@ -3980,9 +4529,14 @@ export const UI_HTML = String.raw`<!doctype html>
       if (np !== S.settings.projectPath) { S.settings.projectPath = np; persist(); updateProjChip(); }
       S.lastProjectPath = heal(S.lastProjectPath);
     }).catch(function () {});
-    api('/api/models').then(function (data) { S.models = data.providers; if (S.active === 'home') openHome(); }).catch(function () {});
+    api('/api/models').then(function (data) {
+      S.models = data.providers;
+      S.modelsLoaded = true;
+      ensureUsableModelSelection();
+      if (S.active === 'home') openHome();
+    }).catch(function () { S.modelsLoaded = true; if (S.active === 'home') openHome(); });
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
-    $('gearBtn').onclick = function () { openSettings('general'); };
+    $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('general'); };
     $('gearBtn').innerHTML = icon('gear');
     $('sbCollapse').onclick = function () { S.settings.leftCollapsed = !S.settings.leftCollapsed; persist(); applyLayout(); };
     bindResize('sbResize', 'left');
@@ -3992,6 +4546,8 @@ export const UI_HTML = String.raw`<!doctype html>
     $('projChip').style.cursor = 'pointer';
     $('projChip').title = 'Choose a project folder';
     $('projChip').onclick = openFolderBrowser;
+    $('mobileNav').onclick = function () { toggleMobileNav(true); };
+    $('mobileBackdrop').onclick = function () { toggleMobileNav(false); };
     updateProjChip();
     renderSidebar();
     renderTopbar();
@@ -4003,13 +4559,16 @@ export const UI_HTML = String.raw`<!doctype html>
     var fab = document.createElement('button');
     fab.className = 'side-fab';
     fab.id = 'sideFab';
+    fab.hidden = true;
     fab.innerHTML = icon('layers') + '<span>Panel</span>';
     fab.title = 'toggle the state / browser / git panel';
     fab.onclick = function () {
       var rs = document.querySelector('.run-side');
       if (!rs) return;
-      rs.classList.toggle('narrow-open');
-      fab.querySelector('span').textContent = rs.classList.contains('narrow-open') ? 'Close' : 'Panel';
+      if (rs.classList.contains('narrow-open')) {
+        rs.classList.remove('narrow-open');
+        fab.querySelector('span').textContent = 'Panel';
+      } else showRunPanel();
     };
     document.body.appendChild(fab);
 
@@ -4018,6 +4577,8 @@ export const UI_HTML = String.raw`<!doctype html>
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       var prev = document.activeElement;
+      var sh = document.querySelector('.shell.mobile-nav-open');
+      if (sh) { toggleMobileNav(false); refocusEl(prev); return; }
       var rs2 = document.querySelector('.run-side.narrow-open');
       if (rs2) { rs2.classList.remove('narrow-open'); var f2 = $('sideFab'); if (f2) f2.querySelector('span').textContent = 'Panel'; refocusEl(prev); return; }
       var st = $('settings');
@@ -4034,6 +4595,7 @@ export const UI_HTML = String.raw`<!doctype html>
         return;
       }
     });
+    window.addEventListener('resize', function () { if (window.innerWidth > 720) toggleMobileNav(false); });
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   boot();

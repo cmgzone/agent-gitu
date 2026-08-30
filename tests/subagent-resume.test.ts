@@ -36,6 +36,54 @@ async function initGitRepo(dir: string): Promise<void> {
 }
 
 describe('specialist pause / preserve / resume lifecycle', () => {
+  it('publishes an active worktree to recovery status before the first model reply', async () => {
+    const dir = makeProject();
+    await initGitRepo(dir);
+    const events: string[] = [];
+    const waitingLlm: LlmClient = {
+      name: 'restart-recovery-worker',
+      complete(_messages: LlmMessage[], opts?: LlmOptions): Promise<string> {
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
+        });
+      },
+      async completeStream(messages: LlmMessage[], opts: LlmOptions, onDelta: (d: string) => void): Promise<string> {
+        const reply = await this.complete(messages, opts);
+        onDelta(reply);
+        return reply;
+      },
+    };
+    const runnerA = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => waitingLlm,
+      agentRole: () => 'worker',
+      isolate: true,
+      onEvent: (event) => events.push(event),
+    });
+    const [job] = runnerA.startMany([{ agent: 'worker', task: 'survive an app restart' }]);
+
+    for (let attempt = 0; attempt < 40 && !events.some((event) => event.includes('isolated in git worktree')); attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(events.some((event) => event.includes('isolated in git worktree'))).toBe(true);
+
+    // A fresh runner mirrors what the next app process sees after a restart:
+    // the in-memory job is gone, but its resumable worktree is discoverable.
+    const runnerB = new SubAgentRunner({
+      cwd: dir,
+      resolveLlm: () => waitingLlm,
+      agentRole: () => 'worker',
+      isolate: true,
+    });
+    const recovered = runnerB.status([job!.id]);
+    expect(recovered).toHaveLength(1);
+    expect(recovered[0]?.status).toBe('cancelled');
+    expect(recovered[0]?.summary).toContain('WORK PRESERVED');
+
+    runnerA.stop('test cleanup');
+    await runnerA.waitFor([job!.id]);
+  }, 30_000);
+
   it('keeps the worktree + checkpoints when a specialist stops early, and resumes where it left off', async () => {
     const dir = makeProject();
     await initGitRepo(dir);

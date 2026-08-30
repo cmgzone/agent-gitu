@@ -1,4 +1,5 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
+import { CodexSubscriptionClient, codexExecutable } from './codex-subscription.js';
 import { mergedEnv } from './keys.js';
 import { createEmbedder, type Embedder } from '../context/embeddings.js';
 
@@ -46,10 +47,14 @@ export interface ProviderSpec {
   defaultModel: string;
   models: string[];
   effortLevels: string[];
+  /** Provider-specific wording for an effort level when its API aliases it. */
+  effortLabels?: Partial<Record<string, string>>;
   /** Whether "max" effort is a genuinely distinct level on this provider. DashScope has real thinking budgets; generic OpenAI-compatible endpoints collapse max → high. */
   maxEffort?: 'distinct' | 'collapses-to-high';
   /** Model catalog is publicly fetchable without an API key (e.g. OpenCode Zen / Go). */
   publicModels?: boolean;
+  /** This provider uses Codex's locally managed ChatGPT OAuth session, never an API key. */
+  auth?: 'api-key' | 'chatgpt-subscription';
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
@@ -93,6 +98,32 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     defaultModel: 'gpt-4.1-mini',
     models: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o'],
     effortLevels: ['low', 'medium', 'high'],
+  },
+  deepseek: {
+    id: 'deepseek',
+    label: 'DeepSeek (direct API, OpenAI-compatible)',
+    baseUrl: 'https://api.deepseek.com',
+    keyEnvVars: ['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'],
+    defaultModel: 'deepseek-v4-pro',
+    // Offline seed only — a configured key also loads the current /models
+    // listing, so newly released DeepSeek models appear in the picker.
+    models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    // DeepSeek accepts medium for compatibility but maps it to high internally.
+    effortLabels: { medium: 'medium (= high)' },
+    maxEffort: 'distinct',
+  },
+  chatgpt: {
+    id: 'chatgpt',
+    label: 'ChatGPT subscription (via Codex)',
+    // A sentinel only: requests go through the local Codex runtime, not this URL.
+    baseUrl: 'codex://chatgpt',
+    keyEnvVars: [],
+    defaultModel: 'gpt-5.6-sol',
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    maxEffort: 'distinct',
+    auth: 'chatgpt-subscription',
   },
   'opencode-zen': {
     id: 'opencode-zen',
@@ -627,6 +658,10 @@ export async function resolveImageSupport(opts: {
 }): Promise<boolean> {
   const providerId = opts.providerId?.toLowerCase();
   const provider = providerId ? PROVIDERS[providerId] : undefined;
+  // Codex's subscription picker reports image support for every available
+  // model. The local runtime receives those images directly rather than via a
+  // provider /models endpoint.
+  if (provider?.auth === 'chatgpt-subscription') return true;
   const env = opts.env ?? mergedEnv();
   const baseUrl =
     provider?.baseUrl ?? (providerId === 'custom' ? env['HERMES_BASE_URL'] ?? env['OPENAI_BASE_URL'] : undefined);
@@ -650,6 +685,8 @@ export interface ResolveOptions {
   provider?: string;
   model?: string;
   baseUrl?: string;
+  /** Workspace Codex may inspect while responding. */
+  workingDirectory?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -690,6 +727,19 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
         `Unknown provider "${opts.provider}". Available: ${Object.keys(PROVIDERS).join(', ')}`,
       );
     }
+    if (spec.auth === 'chatgpt-subscription') {
+      if (!codexExecutable()) {
+        throw new ProviderError('ChatGPT subscription access needs the local Codex runtime. Install or update Codex, then restart Agent Gitu.');
+      }
+      const model = opts.model ?? env['HERMES_MODEL'] ?? spec.defaultModel;
+      return {
+        client: new CodexSubscriptionClient({ model, workingDirectory: opts.workingDirectory ?? process.cwd() }),
+        providerId: spec.id,
+        baseUrl: spec.baseUrl,
+        model,
+        keyEnvVar: 'CHATGPT_SUBSCRIPTION',
+      };
+    }
     const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
     if (!keyEnvVar) {
       throw new ProviderError(
@@ -720,7 +770,9 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
   }
 
   const providerHints = Object.values(PROVIDERS)
-    .map((p) => `  ${p.id}: set ${p.keyEnvVars.join(' or ')}`)
+    .map((p) => p.auth === 'chatgpt-subscription'
+      ? `  ${p.id}: sign in through Agent Gitu Settings → Providers or run hermes login`
+      : `  ${p.id}: set ${p.keyEnvVars.join(' or ')}`)
     .join('\n');
   throw new ProviderError(
     `No LLM configured. Options:\n${providerHints}\n  custom: set HERMES_API_KEY (optionally HERMES_BASE_URL, HERMES_MODEL)\nOr pass --provider <name> --model <model>.`,

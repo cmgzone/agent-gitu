@@ -3,7 +3,7 @@ import path from 'node:path';
 import { ensureHermesHome } from '../workspace/home.js';
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
-import { ContextEngine, contextBudgetForWindow } from '../context/context-engine.js';
+import { ContextEngine } from '../context/context-engine.js';
 import { EvidenceEngine, classifyEvidenceKind, commandsMatch, hasRegressionProof, isWeakEvidenceLink } from '../evidence/evidence.js';
 import { parentReverifyCriterion, type OracleRunner } from '../evidence/reverify.js';
 import { MissionGraph } from '../execution/mission.js';
@@ -32,12 +32,12 @@ import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
-import { SkillStore } from '../skills/skills.js';
+import { renderSkillContract, SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
 import { validateSpecialistEvidence } from './specialist-evidence.js';
 import { VERIFIER_AGENT, buildVerifierContract, verdictForFinding } from './findings.js';
-import type { CompletionReport, CriterionEvidenceType, CriterionSpec, DecisionBasis, EvidenceKind, MemoryRetrievalContext, PlanArea, TaskFinding } from '../types.js';
+import type { CompletionReport, CriterionEvidenceType, CriterionSpec, DecisionBasis, EvidenceKind, MemoryRetrievalContext, PlanArea, TaskFinding, TaskLedgerData } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -52,8 +52,8 @@ import {
 } from './architecture.js';
 import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry } from './telemetry.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
-import { buildModelContext } from '../context/model-context.js';
-import { buildDigestContent, extractDigestMaterial } from '../context/digest.js';
+import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
+import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestMaterial } from '../context/digest.js';
 
 export interface HermesConfig {
   cwd: string;
@@ -78,12 +78,15 @@ export interface HermesConfig {
   browser?: BrowserBridge;
   /** Optional LSP intelligence layer. When omitted, one is created lazily for the repo. */
   lsp?: LspManager;
+  /** Bootstrap trusted built-in language servers when the LSP layer is first used. */
+  autoInstallLsp?: boolean;
   subagents?: SubAgentRunner;
   /** Registered specialist agents (name + role). Used by the risk planner to
    *  recommend a right-sized roster that actually exists in the registry. */
   specialists?: { name: string; role: string }[];
   agentsSection?: string;
   images?: { name: string; dataUrl: string }[];
+  attachments?: ModelContextAttachment[];
   supportsImages?: boolean;
   /** Live context-window metadata for the selected provider/model. */
   contextWindowTokens?: number;
@@ -208,6 +211,50 @@ type ParsedAction =
       type: 'parallel';
       calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
     };
+
+/**
+ * Some capable coding models return only the required structured action. That
+ * is valid protocol, but it previously left the UI showing a spinner followed
+ * by tool output with no readable agent update. Build a short status from the
+ * executable action itself instead of exposing hidden model reasoning.
+ */
+function visibleActionSummary(action: ParsedAction): string | undefined {
+  const clean = (value: string, limit = 280): string => value.replace(/\s+/g, ' ').trim().slice(0, limit);
+  switch (action.type) {
+    case 'set_criteria':
+      return `I’m defining ${action.criteria.length === 1 ? 'a clear acceptance check' : `${action.criteria.length} clear acceptance checks`} before I proceed.`;
+    case 'set_plan':
+      return `I’m mapping the work into ${action.steps.length === 1 ? 'one verifiable step' : `${action.steps.length} verifiable steps`}.`;
+    case 'add_criteria':
+      return 'I’m adding the follow-up checks needed for this new scope.';
+    case 'append_plan':
+      return 'I’m extending the plan for the follow-up work.';
+    case 'set_design':
+      return 'I’m recording the implementation approach before making changes.';
+    case 'tool_call': {
+      const reason = clean(action.reason);
+      return reason ? `Next: ${reason}` : `Next: I’m using ${action.tool} to make the next verified step.`;
+    }
+    case 'parallel':
+      return `I’m running ${action.calls.length} independent checks in parallel.`;
+    case 'set_hypothesis':
+      return 'I’m recording the current diagnosis before testing it.';
+    case 'record_decision':
+      return 'I’m recording the design decision and the evidence behind it.';
+    case 'revise_step':
+      return `I’m updating the current plan step: ${clean(action.reason, 180)}`;
+    case 'complete_step':
+      return 'The current plan step is complete; I’m moving to the next one.';
+    case 'claim_criterion':
+      return 'I’m checking this acceptance condition against the recorded evidence.';
+    case 'delegate':
+      return `I’m assigning ${action.tasks.length === 1 ? 'an independent check' : `${action.tasks.length} independent checks`} to specialist work.`;
+    case 'report_finding':
+      return 'I found a potential issue and I’m recording it for independent verification.';
+    default:
+      return undefined;
+  }
+}
 
 function parseAction(raw: unknown): ParsedAction | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
@@ -449,13 +496,16 @@ function parseReplyAction(reply: string): ParsedAction | undefined {
   return undefined;
 }
 
-export const COMPACT_KEEP_RECENT = 12;
+/** A small verbatim tail gives the model immediate continuity; durable task
+ * state lives in the ledger/snapshot rather than in an ever-growing chat. */
+export const COMPACT_KEEP_RECENT = 6;
 const COMPACT_TRIGGER = 32;
-/** Token-aware compaction budget: ~50K tokens estimated at 4 chars/token.
- *  Compaction now triggers on cumulative conversation size (not just message
- *  count), because a handful of huge tool outputs can blow the context long
- *  before 32 messages accumulate. */
-export const COMPACT_CHAR_BUDGET = 200_000;
+/** ~20K tokens at 4 chars/token, including the system prompt and recent
+ * observations. Tool output is available on disk; it must not become a
+ * permanent context tax. */
+export const COMPACT_CHAR_BUDGET = 80_000;
+const COMPACT_MIN_RECENT = 2;
+const COMPACT_RECENT_MESSAGE_MAX_CHARS = 6_000;
 
 export function estimateMessageChars(messages: LlmMessage[]): number {
   let total = 0;
@@ -504,10 +554,6 @@ export function stripStaleImages(messages: LlmMessage[], keepLast = 1, fromIndex
   return removed;
 }
 
-/** Digest size ceiling: 8000 EXCERPTS (not chars) could re-inject megabytes
- *  into context, defeating the char budget that triggered compaction. */
-const COMPACT_DIGEST_MAX_CHARS = 24_000;
-
 /**
  * Recompute the stable-prefix boundary after compactHistory() splices
  * messages. Post-compaction the layout is always [system prompt, digest,
@@ -528,6 +574,23 @@ export function findLastScreenshotUrl(messages: LlmMessage[]): string | undefine
       const part = content[j];
       if (!part || part.type !== 'image_url') continue;
       if (part.image_url.url.startsWith('data:image/')) return part.image_url.url;
+    }
+  }
+  return undefined;
+}
+
+/** Most recent structured browser evidence collected for the finished UI. */
+export function findLastBrowserEvidence(data: TaskLedgerData): string | undefined {
+  for (let i = data.actions.length - 1; i >= 0; i--) {
+    const action = data.actions[i];
+    if (
+      action?.tool === 'browse' &&
+      action.status === 'success' &&
+      /evidence/.test(action.paramsSummary) &&
+      typeof action.observation === 'string' &&
+      action.observation.includes('BROWSER EVIDENCE')
+    ) {
+      return action.observation.slice(0, 6000);
     }
   }
   return undefined;
@@ -560,6 +623,12 @@ export interface QualityReviewInput {
   diffBody?: string;
   summary: string;
   screenshotUrl?: string;
+  /** True even when the selected model/browser cannot supply a screenshot. */
+  uiTask?: boolean;
+  /** Planned view/control intent, used to detect implementation drift. */
+  frontendDesign?: string;
+  /** Latest bounded DOM/accessibility/layout evidence for text-only review. */
+  browserEvidence?: string;
 }
 
 /** Build the strict-reviewer message list. UI tasks attach the final screenshot for vision judging. */
@@ -574,8 +643,17 @@ export function buildQualityReviewMessages(input: QualityReviewInput): LlmMessag
     `DIFF SUMMARY:\n${(input.diffStat || '(unavailable)').slice(0, 4000)}\n\n` +
     (input.diffBody ? `FULL DIFF (bounded):\n${input.diffBody}\n\n` : '') +
     `AGENT'S CLAIMED RESULT: ${input.summary.slice(0, 1500)}\n\n` +
+    (input.uiTask && input.frontendDesign
+      ? `FRONTEND DESIGN INTENT:\n${input.frontendDesign.slice(0, 1200)}\n\n`
+      : '') +
+    (input.uiTask && input.browserEvidence
+      ? `FINAL STRUCTURED BROWSER EVIDENCE:\n${input.browserEvidence.slice(0, 6000)}\n\n`
+      : '') +
     (input.screenshotUrl
       ? `The final UI state is attached as an image. JUDGE IT: does it look complete, correctly laid out, and consistent with the goal? Broken layouts, placeholder text, overlapping elements, or missing sections are defects.\n\n`
+      : '') +
+    (input.uiTask
+      ? `UI LOGIC REVIEW (required): inventory the interactive controls visible in the diff, design notes, browser evidence, and screenshot. Every button, link, field, menu, and call to action must have a user-relevant purpose supported by the goal/criteria or an established surrounding pattern; be located near the content or object it affects; have hierarchy proportional to its importance; use a label that predicts its effect; and have a real destination/handler plus correct disabled, loading, permission, validation, and destructive-confirmation behavior where applicable. Treat unrequested, misplaced, duplicated, misleading, dead, or contradictory controls as real defects. Do not reject conventional controls when the supplied evidence supports their purpose.\n\n`
       : '') +
     `Check specifically: regressions at call sites of changed code, missed error paths, edge cases, and whether the changes actually satisfy every criterion.\n\n` +
     `Reply EXACTLY in this format:\nVERDICT: PASS\nor\nVERDICT: REVISE\nFEEDBACK: <one short paragraph of concrete issues to fix>`;
@@ -585,7 +663,7 @@ export function buildQualityReviewMessages(input: QualityReviewInput): LlmMessag
     {
       role: 'system',
       content:
-        'You are a strict senior engineer reviewing a colleague\'s finished work before it ships. You have no stake in being agreeable. Judge only what is visible in the goal, criteria, diff and screenshot.',
+        'You are a strict senior engineer and product-interface reviewer examining finished work before it ships. You have no stake in being agreeable. Judge only what is supported by the goal, criteria, design intent, diff, browser evidence, and screenshot.',
     },
     { role: 'user', content: userContent },
   ];
@@ -615,6 +693,29 @@ export interface CompactionOptions {
   onExtract?: (info: { failures: string[] }) => void;
 }
 
+/**
+ * Last-resort reduction for a giant *recent* tool result. The original result
+ * remains in the ledger, terminal, file system, or browser evidence; this
+ * keeps enough head/tail/diagnostic context for the next model turn without
+ * letting a single log defeat the whole history budget.
+ */
+function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_RECENT_MESSAGE_MAX_CHARS): boolean {
+  if (typeof message.content !== 'string' || message.content.length <= maxChars) return false;
+  const text = message.content;
+  const headBudget = Math.floor(maxChars * 0.4);
+  const tailBudget = Math.floor(maxChars * 0.35);
+  const diagnostic = /RESULT \[error\]|\b(error|failed|exception|assertion)\b/i.test(text)
+    ? extractFailureDigest(text, Math.floor(maxChars * 0.25))
+    : '';
+  const availableTail = Math.max(200, tailBudget - diagnostic.length);
+  message.content =
+    `${text.slice(0, headBudget)}\n` +
+    `[... ${text.length - headBudget - availableTail} characters trimmed from recent history; re-read the file or rerun the command for the complete result ...]\n` +
+    (diagnostic ? `DIAGNOSTIC CORE:\n${diagnostic}\n` : '') +
+    text.slice(-availableTail);
+  return true;
+}
+
 export function compactHistory(
   messages: LlmMessage[],
   onEvent?: (text: string) => void,
@@ -624,39 +725,70 @@ export function compactHistory(
   const keepRecent = opts.keepRecent ?? COMPACT_KEEP_RECENT;
   const triggerMessages = opts.triggerMessages ?? COMPACT_TRIGGER;
 
-  const chars = estimateMessageChars(messages);
-  if (messages.length <= triggerMessages && chars <= charBudget) return false;
-  if (messages.length <= keepRecent + 2) return false;
+  const charsBefore = estimateMessageChars(messages);
+  if (messages.length <= triggerMessages && charsBefore <= charBudget) return false;
 
-  const keepFrom = messages.length - keepRecent;
-  const old = messages.splice(1, keepFrom - 1);
-  // Digest material extraction lives in the shared context core so the
-  // context authority (buildModelContext) digests trimmed history with the
-  // exact same format and carry-forward rules.
-  const material = extractDigestMaterial(old);
-  // Failures and evidence are CUMULATIVE across compaction cycles (deduped,
-  // capped) instead of covering only the latest batch.
-  const dedupe = (lines: string[]): string[] => [...new Set(lines.map((l) => l.replace(/\s+/g, ' ').trim()))];
-  const keptFailures = dedupe(material.failures).slice(-8);
-  const keptEvidence = dedupe(material.evidenceLines).slice(-10);
-  // Memory-aware compaction: durable knowledge is extracted BEFORE the
-  // verbose history is discarded, so the run keeps the lessons without the
-  // tokens.
-  opts.onExtract?.({ failures: keptFailures });
-  messages.splice(1, 0, {
-    role: 'user',
-    content: buildDigestContent({
+  let compacted = false;
+  let compactedMessages = 0;
+  // Keep two exchanges at minimum. If the recent tail itself is oversized,
+  // reduce its count before truncating any individual recent observation.
+  let retained = Math.max(COMPACT_MIN_RECENT, Math.min(keepRecent, Math.max(COMPACT_MIN_RECENT, messages.length - 2)));
+
+  while (messages.length > triggerMessages || estimateMessageChars(messages) > charBudget) {
+    const hasDigest = typeof messages[1]?.content === 'string' && messages[1]!.content.startsWith('COMPACTED HISTORY');
+    const minimumMessagesAtThisTail = 1 + retained + (hasDigest ? 1 : 0);
+    // We are down to system + digest + desired tail. Tighten the tail before
+    // touching a recent message; the next loop absorbs the oldest tail item
+    // into the digest alongside the prior digest.
+    if (messages.length <= minimumMessagesAtThisTail) {
+      if (retained > COMPACT_MIN_RECENT) {
+        retained -= 1;
+        continue;
+      }
+      break;
+    }
+    const keepFrom = messages.length - retained;
+    const old = messages.splice(1, keepFrom - 1);
+    compactedMessages += old.length;
+    // Digest material extraction lives in the shared context core so the
+    // context authority (buildModelContext) uses the exact same format and
+    // carry-forward rules.
+    const material = extractDigestMaterial(old);
+    const dedupe = (lines: string[]): string[] => [...new Set(lines.map((l) => l.replace(/\s+/g, ' ').trim()))];
+    const keptFailures = dedupe(material.failures).slice(-8);
+    const keptEvidence = dedupe(material.evidenceLines).slice(-10);
+    opts.onExtract?.({ failures: keptFailures });
+    let digest = buildDigestContent({
       condensedCount: material.carriedMessages + old.length,
       excerptLines: material.excerptLines,
       failures: keptFailures,
       evidence: keptEvidence,
       snapshot: opts.snapshot,
-    }),
-  });
-  onEvent?.(
-    `context compacted ${old.length} earlier messages into a digest (${chars} chars before) — ${messages.length} messages retained`,
-  );
-  return true;
+    });
+    // The shared digest target is intentionally lower than its hard ceiling:
+    // a durable summary must leave room for the next state message.
+    if (digest.length > DIGEST_TARGET_CHARS) digest = compressDigest(digest, DIGEST_TARGET_CHARS);
+    messages.splice(1, 0, { role: 'user', content: digest });
+    compacted = true;
+    if (retained > COMPACT_MIN_RECENT) retained -= 1;
+    else break;
+  }
+
+  // A few enormous recent read/command results can still exceed the target
+  // after the tail is reduced to two messages. Preserve their diagnostic
+  // beginning/end, but do not let them force 50K-token requests forever.
+  if (estimateMessageChars(messages) > charBudget) {
+    for (let i = 1; i < messages.length && estimateMessageChars(messages) > charBudget; i++) {
+      if (compactRecentMessage(messages[i]!)) compacted = true;
+    }
+  }
+
+  if (compacted) {
+    onEvent?.(
+      `context compacted ${compactedMessages} earlier messages (${charsBefore} chars before → ${estimateMessageChars(messages)} chars; ${messages.length} messages retained)`,
+    );
+  }
+  return compacted;
 }
 
 /**
@@ -795,7 +927,7 @@ function createProseStreamer(emitDelta: (chunk: string) => void): (delta: string
 export class Hermes {
   private readonly config: HermesConfig;
   private readonly emit: (event: string) => void;
-  private readonly inbox: string[] = [];
+  private readonly inbox: { text: string; attachmentContext?: string }[] = [];
   private aborted = false;
   private abortController?: AbortController;
 
@@ -804,13 +936,17 @@ export class Hermes {
     this.emit = config.onEvent ?? (() => {});
   }
 
-  queueMessage(text: string): void {
-    this.inbox.push(text);
+  queueMessage(text: string, attachmentContext?: string): void {
+    this.inbox.push({ text, attachmentContext });
   }
 
   stop(): void {
     this.aborted = true;
     this.abortController?.abort();
+    // A delegate may currently be awaiting its own model response rather than
+    // the parent agent's response. Propagate Stop to those workers too so a
+    // foreground delegation cannot keep the task alive indefinitely.
+    this.config.subagents?.stop('Parent task stopped by user.');
   }
 
   async run(goal: string): Promise<HermesRunResult> {
@@ -834,6 +970,14 @@ export class Hermes {
     this.emit(`project  locked: ${guard.lock.name} @ ${guard.lock.repoRoot} (${guard.lock.branch ?? 'no branch'})`);
 
     const memory = MemoryStore.forProject(guard.lock.repoRoot);
+    // A pattern can be encountered again when compaction replays the same
+    // failure history (or when a session is continued). Keep the notice
+    // idempotent without suppressing genuinely different patterns.
+    const memoryPatternKey = (scope: string, claim: string): string =>
+      `${scope}|${claim.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+    const announcedMemoryPatterns = new Set(
+      memory.query({ type: 'pattern', scope: guard.lock.name }).map((entry) => memoryPatternKey(entry.scope, entry.claim)),
+    );
     let ledger: TaskLedger;
     let resumeNote: string | undefined;
     if (this.config.resume) {
@@ -905,7 +1049,12 @@ export class Hermes {
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
     const skills = this.config.skills ?? SkillStore.forProject(guard.lock.repoRoot);
-    const lsp = this.config.lsp ?? new LspManager(guard.lock.repoRoot);
+    const lsp =
+      this.config.lsp ??
+      new LspManager(guard.lock.repoRoot, undefined, {
+        autoInstall: this.config.autoInstallLsp === true,
+        onEvent: this.emit,
+      });
     const executor = new Executor(
       guard,
       ledger,
@@ -945,6 +1094,16 @@ export class Hermes {
         this.emit(`skill    auto-activated high-confidence skill "${match.name}" (${match.description})`);
       }
     }
+    // The frontend quality bar is a real active skill, not merely a large
+    // system-prompt appendix. This gives it a durable contract every turn and
+    // lets the full procedure be reloaded after compaction.
+    if (isFrontendGoal(goal)) {
+      const frontendSkill = skills.get('frontend-quality-bar');
+      if (frontendSkill && !activeSkills.has(frontendSkill.name)) {
+        activeSkills.add(frontendSkill.name);
+        this.emit(`skill    activated frontend-quality-bar for UI task`);
+      }
+    }
     ledger.data.activeSkills = [...activeSkills];
     ledger.save();
 
@@ -975,25 +1134,32 @@ export class Hermes {
     );
     this.emit(`effort   ${effortPlan.complexity} — ${effortPlan.reason} (budget: ${effortPlan.maxTurns} turns, ${effortPlan.maxSpecialists} specialists, ${effortPlan.contextBudget.maxBytes} bytes context${effortPlan.requireReview ? ', review required' : ''})`);
 
-    // Full skill instructions are delivered exactly once (first state message
-    // that includes them); later turns carry only names + descriptions so the
-    // per-turn context stops paying for static text every single call.
-    const deliveredSkills = new Set<string>();
+    // Every active skill carries a small contract each turn. Full procedures
+    // are delivered on activation and re-delivered after compaction, so they
+    // stay recoverable without paying their full token cost forever.
+    const deliveredSkillVersions = new Map<string, string>();
     const activeSkillsSection = (): string | undefined => {
       const names = ledger.data.activeSkills ?? [];
       if (names.length === 0) return undefined;
-      const parts = names.map((name) => {
+      // A task with an accidentally broad activation set must not turn skills
+      // into a giant hidden prompt. The complete active set remains durable in
+      // the ledger and can be inspected through list_skills.
+      const visibleNames = names.slice(0, 6);
+      const parts = visibleNames.map((name) => {
         const s = skills.get(name);
         if (!s) return `✓ ${name}`;
-        if (deliveredSkills.has(s.name)) return `✓ ${s.name}: ${s.description} (full instructions provided earlier)`;
-        return `✓ ${s.name}: ${s.description}\n  Instructions:\n  ${s.instructions}`;
+        const version = s.instructions;
+        const contract = renderSkillContract(s);
+        if (deliveredSkillVersions.get(s.name) === version) return contract;
+        deliveredSkillVersions.set(s.name, version);
+        return `${contract}\n  Full instructions (loaded now):\n  ${s.instructions}`;
       });
-      for (const name of names) {
-        const s = skills.get(name);
-        if (s) deliveredSkills.add(s.name);
+      if (names.length > visibleNames.length) {
+        parts.push(`… ${names.length - visibleNames.length} additional active skill(s) are recorded in the task ledger; use list_skills to inspect or reload one.`);
       }
       return parts.join('\n\n');
     };
+    const reloadActiveSkillInstructions = (): void => deliveredSkillVersions.clear();
 
     let contextNote = '';
     if (ledger.data.mode === 'standard') {
@@ -1100,8 +1266,12 @@ export class Hermes {
           hasBrowser: this.config.browser ? this.config.browser.available() : false,
           autoLearn: this.config.autoLearn ?? true,
           uiTask: isFrontendGoal(goal),
-          // User skills shadow the built-in quality bar via the store.
-          uiQualityInstructions: skills.get('frontend-quality-bar')?.instructions,
+          // Keep only the quality bar's non-negotiable contract in the stable
+          // system prefix. Its full procedure is supplied by the active-skill
+          // state block on activation and after every compaction.
+          uiQualityContract: skills.get('frontend-quality-bar')
+            ? renderSkillContract(skills.get('frontend-quality-bar')!, 440)
+            : undefined,
       });
       // Strategy CONTENT comes from the skill layer (shadowable); the
       // classify-and-inject mechanism stays here in core.
@@ -1117,6 +1287,12 @@ export class Hermes {
       // the per-turn loop is assembled by buildModelContext — one priority
       // order, one budget, visible trims. Subsystems contribute content; they
       // no longer push model context around this gate.
+      // Static startup context is bounded by the task effort. The model still
+      // gets a focused source pack, while lower-effort work no longer inherits
+      // the old 60K-character default unnecessarily.
+      const modelContextBudget = this.config.contextBudget ?? {
+        maxChars: Math.max(28_000, Math.min(48_000, effortPlan.contextBudget.maxBytes + 12_000)),
+      };
       const assembled = buildModelContext({
         system: systemPrompt,
         strategy: strategySection,
@@ -1125,9 +1301,10 @@ export class Hermes {
         contextPack: contextNote || undefined,
         conversationHistory: this.config.conversationHistory,
         images: this.config.images,
+        attachments: this.config.attachments,
         supportsImages: this.config.supportsImages,
         followUp: followUpSection,
-        budget: this.config.contextBudget,
+        budget: modelContextBudget,
         onTrim: (info) => this.emit(`context  trimmed ${info.section} (-${info.charsRemoved} chars) to fit the model window`),
       });
       for (const trim of assembled.trims) {
@@ -1246,6 +1423,10 @@ export class Hermes {
     let delegateSlotsUsed = 0;
     let visualGateRejections = 0;
     let qualityReviewRejections = 0;
+    // A strict-risk task (security, payments, or data integrity) must not
+    // silently complete after the reviewer has exhausted its automatic repair
+    // rounds. Keep the last concrete concern for an explicit release decision.
+    let unresolvedQualityReview: string | undefined;
     let bugRigorRejections = 0;
     let planReconcileRejections = 0;
     const isBugTask = classifyTaskKind(goal) === 'bug-fix';
@@ -1326,6 +1507,10 @@ export class Hermes {
       const cutAt = proseCutIndex(reply);
       const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
       if (prose) this.emit(`say ${prose}`);
+      else if (parsed) {
+        const summary = visibleActionSummary(parsed);
+        if (summary) this.emit(`say ${summary}`);
+      }
       messages.push({ role: 'assistant', content: reply });
       if (!parsed) {
         invalidStreak += 1;
@@ -1373,13 +1558,23 @@ export class Hermes {
                 patternClaim: `Repeated failure pattern — ${claim.slice(0, 140)}. Check for this before retrying similar work.`,
                 scope: guard.lock.name,
               });
-              if (pattern) this.emit(`memory   pattern promoted from repeated failures (${pattern.claim.slice(0, 90)})`);
+              if (pattern) {
+                const key = memoryPatternKey(pattern.scope, pattern.claim);
+                if (!announcedMemoryPatterns.has(key)) {
+                  announcedMemoryPatterns.add(key);
+                  this.emit(`memory   pattern promoted from repeated failures (${pattern.claim.slice(0, 90)})`);
+                }
+              }
             }
           }
         },
       };
       if (compactHistory(messages, (t) => this.emit(t), compactionOpts)) {
         telemetry.noteCompaction();
+        // A compact state message is always authoritative; make full skill
+        // instructions available again on the next turn if their one-time
+        // copy was absorbed into the digest.
+        reloadActiveSkillInstructions();
         // Protected-state reconstruction (review two-tier model): compaction
         // digests the intake-era memory messages along with the old history.
         // Long missions must not lose durable guidance exactly when compaction
@@ -2065,6 +2260,42 @@ export class Hermes {
           // completion, and only ONE forced revision is possible so this can
           // never deadlock a legitimate task.
           const reviewRoundCap = effortPlan?.complexity === 'high' ? 2 : 1;
+          const reviewWarning = unresolvedQualityReview;
+          if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
+            const summary = reviewWarning.slice(0, 600);
+            if (!this.config.approvalHandler) {
+              const blocker = `Strict-risk quality reviewer warning needs explicit user approval: ${summary}`;
+              ledger.addBlocker(blocker);
+              this.emit('review   strict-risk warning unresolved — blocked because no approval handler is available');
+              exitReason = 'blocked';
+              break;
+            }
+            this.emit('review   strict-risk warning remains — explicit user approval required to complete');
+            const approved = await this.config.approvalHandler({
+              tool: 'quality-review',
+              tier: 'dangerous',
+              why: 'A security, payments, or data-integrity task still has an unresolved final quality-review warning.',
+              summary,
+            });
+            if (!approved) {
+              // A rejection means "keep working", not "complete with risk".
+              // Reset the counter so the eventual repair gets a fresh review.
+              qualityReviewRejections = 0;
+              unresolvedQualityReview = undefined;
+              this.emit('review   strict-risk completion not approved — returning to repair and fresh review');
+              observe(
+                `USER DID NOT APPROVE completion with the unresolved quality-review warning:\n${summary}\n` +
+                  `Fix it, then complete again. A fresh quality review will run before this task can finish.`,
+              );
+              break;
+            }
+            action.risks = [
+              ...(action.risks ?? []),
+              `User accepted unresolved strict-risk quality-review warning: ${summary}`,
+            ];
+            unresolvedQualityReview = undefined;
+            this.emit('review   strict-risk quality warning explicitly accepted by user — recorded as a release risk');
+          }
           const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityReviewRejections < reviewRoundCap;
           if (wantsReview) {
             try {
@@ -2073,6 +2304,7 @@ export class Hermes {
               const diffBody = deepReview
                 ? (await gitExec(guard.lock.repoRoot, ['diff', 'HEAD']).catch(() => '')).slice(0, 8000)
                 : '';
+              const reviewingUi = isUiTask(ledger.data);
               const reviewMsgs = buildQualityReviewMessages({
                 goal,
                 criteria: ledger.data.acceptanceCriteria.map((c) => c.text),
@@ -2080,7 +2312,10 @@ export class Hermes {
                 diffStat,
                 diffBody,
                 summary: action.summary,
-                screenshotUrl: isUiTask(ledger.data) ? findLastScreenshotUrl(messages) : undefined,
+                uiTask: reviewingUi,
+                frontendDesign: reviewingUi ? ledger.data.planDesign?.frontend : undefined,
+                browserEvidence: reviewingUi ? findLastBrowserEvidence(ledger.data) : undefined,
+                screenshotUrl: reviewingUi ? findLastScreenshotUrl(messages) : undefined,
               });
               const reviewReply = await llm.completeStream(
                 reviewMsgs,
@@ -2091,13 +2326,17 @@ export class Hermes {
               const review = parseReviewVerdict(reviewReply);
               if (review.verdict === 'revise') {
                 qualityReviewRejections += 1;
+                unresolvedQualityReview = review.feedback;
                 this.emit(`review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
                 observe(
                   `COMPLETION REJECTED by final quality review. Issues found:\n${review.feedback}\n` +
-                    `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`,
+                    (riskPlan.strictVerification
+                      ? `Fix these problems, then call complete again. If the reviewer still rejects the final result after the allowed repair rounds, only an explicit user approval can accept that release risk.`
+                      : `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`),
                 );
                 break;
               }
+              unresolvedQualityReview = undefined;
             } catch {
               // Reviewer unavailable (no vision, provider error) → fail open.
             }
@@ -2361,9 +2600,12 @@ export class Hermes {
       }
 
       while (this.inbox.length > 0) {
-        const msg = this.inbox.shift()!;
-        this.emit(`user-msg ${msg}`);
-        observe(`USER MESSAGE (sent while you were working — take it into account now): ${msg}`);
+        const queued = this.inbox.shift()!;
+        this.emit(`user-msg ${queued.text}`);
+        observe(
+          `USER MESSAGE (sent while you were working — take it into account now): ${queued.text}` +
+            (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
+        );
       }
 
       if (exitReason === 'complete' || exitReason === 'blocked') break;

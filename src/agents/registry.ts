@@ -41,7 +41,7 @@ export const DEFAULT_AGENTS: AgentDef[] = [
     id: 'builtin-frontend',
     name: 'frontend',
     role:
-      'Frontend implementation specialist. UI components, styling, client state, accessibility. Match the existing design system and naming conventions; verify visual behavior with the browser when available; keep bundles lean and avoid new dependencies unless required.',
+      'Frontend implementation and product-interface specialist. Map each view\'s user goal and action hierarchy before coding. Every control must be justified, placed near what it affects, clearly labeled, correctly wired, and verified through its real interaction states. Match the existing design system, information architecture, accessibility, and naming conventions; inspect visual behavior with the browser when available; keep bundles lean and avoid new dependencies unless required.',
     createdAt: '1970-01-01T00:00:00.000Z',
     builtin: true,
   },

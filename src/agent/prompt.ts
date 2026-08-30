@@ -17,6 +17,14 @@ const COMPACT_TODO_LINES_CAP = 18;
 const DONE_TAIL_CAP = 8;
 const ACTIVE_TODO_CAP = 6;
 const NEXT_ACTIONABLE_CAP = 3;
+const STATE_GOAL_MAX_CHARS = 4_000;
+const STATE_CRITERION_MAX_CHARS = 360;
+const STATE_EVIDENCE_CAP = 12;
+const STATE_EVIDENCE_MAX_CHARS = 260;
+const STATE_FILES_CAP = 20;
+const STATE_DECISIONS_MAX_CHARS = 2_400;
+const STATE_TRANSCRIPT_ACTIONS = 6;
+const STATE_FULL_PLAN_MAX_STEPS = 10;
 
 function trunc(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -180,7 +188,12 @@ export function buildSystemPrompt(
   /** Tier 1 PROTECTED memory (ACTIVE CONSTRAINTS & DECISIONS) — durable
    *  guidance that survives compaction regardless of lexical relevance. */
   protectedSection?: string;
-  uiTask?: boolean; /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string } = {},
+  uiTask?: boolean;
+  /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string;
+  /** Compact, durable frontend skill contract. Prefer this in long-running
+   *  agent sessions; full instructions are delivered only on skill activation. */
+  uiQualityContract?: string;
+  } = {},
 ): string {
   const lock = guard.lock;
   const autoLearn = opts.autoLearn ?? true;
@@ -224,7 +237,7 @@ export function buildSystemPrompt(
   // WHEN it applies stays a core mechanism. Bounded like every other
   // injected section — it taxes every model call.
   const frontendSection = opts.uiTask
-    ? `\n${opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n`
+    ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n`
     : '';
   return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
 ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
@@ -259,7 +272,7 @@ PROTOCOL — each turn you MUST respond in this exact shape:
 
 Intake/planning actions:
 {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
-{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
+{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
 {"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
 {"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
 {"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
@@ -358,7 +371,7 @@ ARCHITECTURE DECISIONS:
 PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - Low-complexity tasks: short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.
 - Medium/high complexity, and anything spanning UI + server: FIRST set_design with BOUNDED sections, THEN set_plan.
-  - frontend section: pages/views, layout & components, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
+  - frontend section: pages/views, layout & components, each control's user intent and placement, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
   - backend section: API routes & request/response contracts, schema/DB changes, authn/authz, validation, business logic, integrations, error handling, tests.
   - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
 - Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
@@ -369,13 +382,20 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 
 export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string): string {
   const d = ledger.data;
-  const detail: 'full' | 'compact' = isPlanningPhase(d) ? 'full' : 'compact';
+  // A full 30-step plan can exceed the useful working-memory budget on every
+  // planning turn. Small plans remain rich for review; larger ones use the
+  // compact view and can always be expanded with show_plan.
+  const detail: 'full' | 'compact' = isPlanningPhase(d) && d.plan.length <= STATE_FULL_PLAN_MAX_STEPS ? 'full' : 'compact';
+  const taskGoal =
+    d.goal.length <= STATE_GOAL_MAX_CHARS
+      ? d.goal
+      : `${d.goal.slice(0, 3_000)}\n… [${d.goal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${d.goal.slice(-700)}`;
   const criteria = d.acceptanceCriteria
-    .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${c.text}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
+    .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
     .join('\n');
   const evidence = d.evidence
-    .slice(-25)
-    .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${e.label}${e.command ? ` — ${e.command}` : ''}`)
+    .slice(-STATE_EVIDENCE_CAP)
+    .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${trunc(`${e.label}${e.command ? ` — ${e.command}` : ''}`, STATE_EVIDENCE_MAX_CHARS)}`)
     .join('\n');
   const effortLine = d.effortPlan
     ? `EFFORT: ${d.effortPlan.complexity} — ${d.effortPlan.reason} (budget: ${d.effortPlan.maxTurns} turns, ${d.effortPlan.maxSpecialists} specialists, ${d.effortPlan.contextBudget.maxBytes} bytes)`
@@ -383,7 +403,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const riskLine = d.riskPlan
     ? `RISK: ${d.riskPlan.risk} — ${d.riskPlan.reason}${d.riskPlan.recommendedSpecialists.length > 0 ? ` | suggested: ${d.riskPlan.recommendedSpecialists.map((r) => r.agent).join(', ')}` : ''}`
     : '';
-  const decisions = renderDecisions(d.architectureDecisions ?? []);
+  const decisions = trunc(renderDecisions(d.architectureDecisions ?? []), STATE_DECISIONS_MAX_CHARS);
   const failures = ledger.failureSummary();
   const next = ledger.nextStep();
   const counts = stepCounts(d.plan);
@@ -392,9 +412,13 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
       ? 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
       : `PLAN: ${counts.done}/${d.plan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(d.plan, detail)}`;
   const designBlock = renderDesign(d.planDesign, detail);
+  const files =
+    d.filesChanged.length > STATE_FILES_CAP
+      ? `… (+${d.filesChanged.length - STATE_FILES_CAP} earlier) ${d.filesChanged.slice(-STATE_FILES_CAP).join(', ')}`
+      : d.filesChanged.join(', ');
 
   return [
-    `TASK: ${d.goal}`,
+    `TASK: ${taskGoal}`,
     `STATUS: ${d.status} | mode: ${d.mode}`,
     effortLine,
     riskLine,
@@ -406,11 +430,11 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     planBlock,
     `EVIDENCE:\n${evidence || '  (none yet)'}`,
     failures.length ? `FAILED:\n${failures.map((f) => `  ${f}`).join('\n')}` : '',
-    `FILES CHANGED: ${d.filesChanged.join(', ') || '(none)'}`,
+    `FILES CHANGED: ${files || '(none)'}`,
     next ? `NEXT: ${next.id}${next.area ? ` (${next.area})` : ''} — ${next.description}` : '',
-    d.blockers.length ? `BLOCKERS: ${d.blockers.join('; ')}` : '',
-    `RECENT ACTIONS:\n${ledger.transcriptTail()}`,
-    extra ? `SYSTEM NOTE: ${extra}` : '',
+    d.blockers.length ? `BLOCKERS: ${d.blockers.slice(-3).map((b) => trunc(b, 300)).join('; ')}` : '',
+    `RECENT ACTIONS:\n${ledger.transcriptTail(STATE_TRANSCRIPT_ACTIONS)}`,
+    extra ? `SYSTEM NOTE: ${trunc(extra, 900)}` : '',
     'Respond with exactly one JSON action.',
   ]
     .filter(Boolean)

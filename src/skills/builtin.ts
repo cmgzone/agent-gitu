@@ -107,13 +107,18 @@ If LSP reports "unavailable", use search_files/read_file to find the integration
 export const FRONTEND_QUALITY_SKILL: ResolvedBuiltinSkill = def({
   name: 'frontend-quality-bar',
   uiTask: true,
-  description: 'Non-negotiable quality bar for user-facing UI: design system, states, responsive, a11y.',
+  description: 'Review frontend UI for control intent, placement, interaction logic, visual quality, responsiveness, and accessibility.',
   instructions: `FRONTEND QUALITY BAR (this task builds user-facing UI — non-negotiable):
-- Pick a small design system FIRST and reuse it everywhere: spacing scale (4/8/12/16/24/32px), one type scale, one accent palette incl. hover/focus/disabled states.
-- Every view implements loading, empty, AND error states; forms validate inline and confirm success.
+- Create an intent map. Every interactive control needs a justified purpose and placement.
+- Every interactive control needs evidence from the request, acceptance criteria, or an established product pattern. Do not invent buttons, links, menus, fields, or calls to action to fill space.
+- Audit control placement, prominence, label, target/handler, state behavior, and duplicates before completion.
+- Preserve the existing information architecture unless the task requires changing it. Inspect adjacent screens and shared components before adding, moving, or removing navigation and actions.
+- Pick a small design system and reuse it everywhere: spacing scale, type scale, accent palette, and hover/focus/disabled states.
+- Every view implements the states it can actually enter: loading, empty, error, validation, disabled, and success. Do not add irrelevant decorative states.
 - Responsive at 375px, 768px, and desktop widths; no horizontal scroll; touch targets ≥40px.
-- Accessibility basics: semantic elements, labels bound to inputs, visible focus styles, text contrast ≥4.5:1.
-- Ship COMPLETE pages (title, favicon, nav/footer) — no lorem ipsum or TODO placeholders unless explicitly requested.`,
+- Accessibility basics: semantic elements, labels bound to inputs, visible focus styles, text contrast ≥4.5:1, and keyboard-operable controls.
+- Verify the real interaction path, not just the render: exercise primary actions and inspect final screenshots/evidence for misplaced, misleading, unrequested, duplicated, or nonfunctional controls.
+- Ship complete requested views with real content structure—no lorem ipsum, TODO placeholders, or unrelated sections unless explicitly requested.`,
 });
 
 /** All built-in skills, in stable order. */

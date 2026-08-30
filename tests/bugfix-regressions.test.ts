@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { shiftPrefixEndAfterCompaction } from '../src/agent/hermes.js';
+import { shiftPrefixEndAfterCompaction } from '../src/agent/gitu.js';
 import { uiVisualGate } from '../src/agent/ui-gate.js';
 import { getWorkspaceFingerprint, gitDiscard, gitInfo, gitExec } from '../src/git/git.js';
 import { McpManager } from '../src/mcp/client.js';

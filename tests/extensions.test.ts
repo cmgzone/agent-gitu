@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AgentStore } from '../src/agents/registry.js';
 import { CronStore, parseEvery } from '../src/cron/scheduler.js';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { SkillStore } from '../src/skills/skills.js';
@@ -148,4 +148,3 @@ describe('AgentStore', () => {
     expect(store.list().every((a) => a.builtin)).toBe(true);
   });
 });
-

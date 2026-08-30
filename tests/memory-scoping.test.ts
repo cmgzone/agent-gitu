@@ -273,7 +273,7 @@ describe('mid-run publish_finding (review hardening #2)', () => {
   });
 });
 
-import { compactHistory } from '../src/agent/hermes.js';
+import { compactHistory } from '../src/agent/gitu.js';
 
 describe('post-evaluation fixes (T4/T6/T12)', () => {
   it('FIX 1: lexical fallback keeps contradictory claims separate and flags them', () => {

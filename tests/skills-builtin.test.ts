@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { MemoryStore } from '../src/memory/memory-store.js';
 import { builtinSkillByName, builtinSkills } from '../src/skills/builtin.js';
-import { SkillStore } from '../src/skills/skills.js';
+import { renderSkillContract, SkillStore } from '../src/skills/skills.js';
 import { buildSystemPrompt } from '../src/agent/prompt.js';
 import { buildTaskStrategySection, strategySkillFor } from '../src/agent/task-strategy.js';
 
@@ -76,7 +76,8 @@ describe('frontend quality bar as a skill', () => {
     const memory = { renderForPrompt: () => '' } as unknown as MemoryStore;
     const prompt = buildSystemPrompt(guard, memory, { uiTask: true });
     expect(prompt).toContain('FRONTEND QUALITY BAR');
-    expect(prompt).toContain('design system FIRST');
+    expect(prompt).toContain('intent map');
+    expect(prompt).toContain('Do not invent buttons');
 
     const plain = buildSystemPrompt(guard, memory, { uiTask: false });
     expect(plain).not.toContain('FRONTEND QUALITY BAR');
@@ -93,6 +94,28 @@ describe('frontend quality bar as a skill', () => {
       uiQualityInstructions: store.get('frontend-quality-bar')?.instructions,
     });
     expect(prompt).toContain('TEAM UI RULES');
-    expect(prompt).not.toContain('design system FIRST');
+    expect(prompt).not.toContain('intent map');
+  });
+
+  it('uses a small durable contract while keeping the full procedure in the skill store', () => {
+    const skill = builtinSkillByName('frontend-quality-bar')!;
+    const contract = renderSkillContract(skill, 260);
+    expect(contract.length).toBeLessThanOrEqual(260);
+    expect(contract).toContain('frontend-quality-bar');
+    expect(contract).toContain('intent map');
+    expect(contract).toContain('Every interactive control');
+    expect(skill.instructions.length).toBeGreaterThan(contract.length);
+  });
+
+  it('caps the per-turn skill catalog while keeping active skills first', () => {
+    const store = SkillStore.forProject(makeProject());
+    for (let i = 0; i < 12; i++) {
+      store.create({ name: `playbook-${i}`, description: `Long description ${'d'.repeat(300)}`, instructions: `Do the thing ${i}.` });
+    }
+    const prompt = store.renderForPrompt(['playbook-11'], { maxSkills: 4, descriptionMaxChars: 80 });
+    expect(prompt).toContain('playbook-11');
+    expect(prompt).toContain('[ACTIVE IN CURRENT TASK]');
+    expect(prompt).toContain('more skill(s) available via list_skills');
+    expect(prompt.length).toBeLessThan(700);
   });
 });

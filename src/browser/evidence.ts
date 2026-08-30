@@ -17,6 +17,15 @@ export interface BrowserFinding {
   detail: string;
 }
 
+/** Bounded semantic map of an interactive control and the region it affects. */
+export interface BrowserControl {
+  role: string;
+  name: string;
+  selector: string;
+  region: string;
+  destination?: string;
+}
+
 export interface BrowserEvidence {
   url: string;
   title: string;
@@ -33,6 +42,8 @@ export interface BrowserEvidence {
     elementsOutsideViewport: number;
   };
   styles: { clippedText: number; invisibleInteractive: number };
+  /** Visible controls, capped by the page probe, for interaction-logic review. */
+  controls: BrowserControl[];
   findings: BrowserFinding[];
   collected: boolean;
   reason?: string;
@@ -48,7 +59,8 @@ const PROBE = `(function(){
     a11y: { unlabeledInputs: 0, buttonsWithoutNames: 0, imagesWithoutAlt: 0 },
     layout: { zeroSize: 0, outsideViewport: 0 },
     styles: { clippedText: 0, invisibleInteractive: 0 },
-    samples: []
+    samples: [],
+    controls: []
   };
   function sel(el) {
     if (!el || el === document.body || el === document.documentElement) return el && el.tagName ? el.tagName.toLowerCase() : '?';
@@ -72,6 +84,26 @@ const PROBE = `(function(){
     }
     return '';
   }
+  function controlRegion(el) {
+    var box = el.closest('form, dialog, [role="dialog"], header, nav, main, aside, footer, section');
+    if (!box) return 'document';
+    var region = sel(box);
+    var heading = box.querySelector && box.querySelector('h1, h2, h3, legend');
+    var headingText = heading && heading.textContent ? heading.textContent.trim().replace(/\\s+/g, ' ').slice(0, 60) : '';
+    return headingText ? region + ' "' + headingText + '"' : region;
+  }
+  function controlDestination(el) {
+    if (el.tagName === 'A') return (el.getAttribute('href') || '').slice(0, 100);
+    if (el.tagName === 'BUTTON' || el.tagName === 'INPUT') {
+      var type = (el.getAttribute('type') || (el.tagName === 'BUTTON' ? 'submit' : '')).toLowerCase();
+      if (type === 'submit') {
+        var form = el.form || el.closest('form');
+        return 'submit' + (form && form.getAttribute('action') ? ' ' + form.getAttribute('action').slice(0, 90) : '');
+      }
+      return type ? 'type=' + type : '';
+    }
+    return '';
+  }
   var interactive = document.querySelectorAll('button, input, select, textarea, a[href], [role="button"]');
   for (var i = 0; i < interactive.length; i++) {
     var el = interactive[i];
@@ -83,6 +115,12 @@ const PROBE = `(function(){
     var style = window.getComputedStyle(el);
     var invisible = style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) === 0;
     var zero = r.width < 1 || r.height < 1;
+    if (!invisible && !zero && out.controls.length < 24) {
+      var role = (el.getAttribute('role') || (tag === 'INPUT' ? (el.getAttribute('type') || 'input') : tag.toLowerCase())).slice(0, 30);
+      var controlName = ((el.textContent || '').trim() || accessibleName(el) || el.value || '').replace(/\\s+/g, ' ').slice(0, 80);
+      var destination = controlDestination(el);
+      out.controls.push({ role: role, name: controlName || '(unnamed)', selector: sel(el), region: controlRegion(el), destination: destination });
+    }
     if (zero && !invisible) {
       out.layout.zeroSize += 1;
       if (out.samples.length < 12) sample('zero-size-interactive', 'high', el, r.width + 'x' + r.height);
@@ -156,6 +194,7 @@ export async function collectBrowserEvidence(bridge: BrowserBridge): Promise<Bro
     accessibility: { unlabeledInputs: 0, buttonsWithoutNames: 0, imagesWithoutAlt: 0 },
     layout: { viewportWidth: 0, viewportHeight: 0, scrollWidth: 0, horizontalOverflow: false, zeroSizeInteractive: 0, elementsOutsideViewport: 0 },
     styles: { clippedText: 0, invisibleInteractive: 0 },
+    controls: [],
     findings: [],
     collected: false,
   };
@@ -177,6 +216,7 @@ export async function collectBrowserEvidence(bridge: BrowserBridge): Promise<Bro
   const layout = (raw['layout'] ?? {}) as Record<string, unknown>;
   const styles = (raw['styles'] ?? {}) as Record<string, number>;
   const samples = Array.isArray(raw['samples']) ? (raw['samples'] as BrowserFinding[]) : [];
+  const controls = Array.isArray(raw['controls']) ? (raw['controls'] as BrowserControl[]) : [];
   const evidence: BrowserEvidence = {
     url: state.url,
     title: state.title,
@@ -197,6 +237,16 @@ export async function collectBrowserEvidence(bridge: BrowserBridge): Promise<Bro
       elementsOutsideViewport: Number(layout['outsideViewport'] ?? 0),
     },
     styles: { clippedText: styles['clippedText'] ?? 0, invisibleInteractive: styles['invisibleInteractive'] ?? 0 },
+    controls: controls
+      .filter((control) => control && typeof control.role === 'string' && typeof control.name === 'string')
+      .slice(0, 24)
+      .map((control) => ({
+        role: String(control.role).slice(0, 30),
+        name: String(control.name).slice(0, 80),
+        selector: String(control.selector ?? '?').slice(0, 100),
+        region: String(control.region ?? 'document').slice(0, 120),
+        ...(control.destination ? { destination: String(control.destination).slice(0, 100) } : {}),
+      })),
     findings: samples.filter((s) => s && typeof s.finding === 'string'),
     collected: true,
   };
@@ -238,6 +288,14 @@ export function formatBrowserEvidence(e: BrowserEvidence): string {
     `layout: viewport=${e.layout.viewportWidth}x${e.layout.viewportHeight} scrollWidth=${e.layout.scrollWidth} horizontalOverflow=${e.layout.horizontalOverflow} zeroSizeInteractive=${e.layout.zeroSizeInteractive}`,
   );
   lines.push(`styles: clippedText=${e.styles.clippedText} invisibleInteractive=${e.styles.invisibleInteractive}`);
+  if (e.controls.length > 0) {
+    lines.push(`interactive controls (${e.controls.length} sampled):`);
+    for (const control of e.controls.slice(0, 24)) {
+      lines.push(
+        `  ${control.role} "${control.name}" @ ${control.region} [${control.selector}]${control.destination ? ` -> ${control.destination}` : ''}`,
+      );
+    }
+  }
   const high = e.findings.filter((f) => f.severity === 'high');
   const rest = e.findings.filter((f) => f.severity !== 'high');
   if (e.findings.length === 0) {

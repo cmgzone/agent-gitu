@@ -45,6 +45,16 @@ describe('provider registry', () => {
     expect(or.defaultModel).toMatch(/\//);
     expect(or.models.some((m) => m.endsWith(':free'))).toBe(true);
   });
+
+  it('registers the direct DeepSeek API with its V4 model seed', () => {
+    const deepseek = PROVIDERS['deepseek'];
+    expect(deepseek).toBeDefined();
+    expect(deepseek!.baseUrl).toBe('https://api.deepseek.com');
+    expect(deepseek!.keyEnvVars).toEqual(['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY']);
+    expect(deepseek!.defaultModel).toBe('deepseek-v4-pro');
+    expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
+    expect(deepseek!.maxEffort).toBe('distinct');
+  });
 });
 
 describe('resolveLlm', () => {
@@ -104,6 +114,20 @@ describe('resolveLlm', () => {
     expect(or.model).toBe('anthropic/claude-sonnet-4.5');
     const overridden = resolveLlm({ provider: 'openrouter', model: 'deepseek/deepseek-v3.2-exp:free', env: { OPENROUTER_API_KEY: 'or-x' } });
     expect(overridden.model).toBe('deepseek/deepseek-v3.2-exp:free');
+  });
+
+  it('resolves DeepSeek from its dedicated API key', () => {
+    const deepseek = resolveLlm({ provider: 'deepseek', env: { DEEPSEEK_API_KEY: 'ds-x' } });
+    expect(deepseek.providerId).toBe('deepseek');
+    expect(deepseek.baseUrl).toBe('https://api.deepseek.com');
+    expect(deepseek.model).toBe('deepseek-v4-pro');
+    expect(deepseek.keyEnvVar).toBe('DEEPSEEK_API_KEY');
+  });
+
+  it('auto-detects DeepSeek when only its namespaced key is present', () => {
+    const deepseek = resolveLlm({ env: { HERMES_DEEPSEEK_API_KEY: 'ds-x' } });
+    expect(deepseek.providerId).toBe('deepseek');
+    expect(deepseek.keyEnvVar).toBe('HERMES_DEEPSEEK_API_KEY');
   });
 
   it('prefers generic HERMES_API_KEY as custom provider', () => {

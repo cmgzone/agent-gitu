@@ -37,6 +37,17 @@ export interface StoredEvent {
   text: string;
 }
 
+export interface StoredSessionFile {
+  runId: string;
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: 'user' | 'assistant';
+  path: string;
+  createdAt: string;
+}
+
 export class SessionStore {
   private readonly db: DatabaseSync;
 
@@ -82,6 +93,17 @@ export class SessionStore {
          t TEXT,
          text TEXT,
          PRIMARY KEY (runId, idx)
+       );
+       CREATE TABLE IF NOT EXISTS session_files (
+         runId TEXT,
+         id TEXT,
+         name TEXT,
+         mime TEXT,
+         size INTEGER,
+         kind TEXT,
+         path TEXT,
+         createdAt TEXT,
+         PRIMARY KEY (runId, id)
        );`,
     );
     // Existing installations created the sessions table before these fields
@@ -155,6 +177,34 @@ export class SessionStore {
 
   deleteEvent(runId: string, idx: number): void {
     this.db.prepare(`DELETE FROM events WHERE runId = ? AND idx = ?`).run(runId, idx);
+  }
+
+  addSessionFile(file: StoredSessionFile): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO session_files (runId, id, name, mime, size, kind, path, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(file.runId, file.id, file.name, file.mime, file.size, file.kind, file.path, file.createdAt);
+  }
+
+  filesFor(runId: string): StoredSessionFile[] {
+    return this.db
+      .prepare(`SELECT runId, id, name, mime, size, kind, path, createdAt FROM session_files WHERE runId = ? ORDER BY createdAt ASC`)
+      .all(runId)
+      .map((row) => {
+        const file = row as Record<string, unknown>;
+        return {
+          runId: String(file['runId'] ?? runId),
+          id: String(file['id'] ?? ''),
+          name: String(file['name'] ?? 'file'),
+          mime: String(file['mime'] ?? 'application/octet-stream'),
+          size: Number(file['size'] ?? 0),
+          kind: file['kind'] === 'assistant' ? 'assistant' : 'user',
+          path: String(file['path'] ?? ''),
+          createdAt: String(file['createdAt'] ?? ''),
+        } satisfies StoredSessionFile;
+      });
   }
 
   listSessions(): StoredSession[] {
@@ -250,6 +300,7 @@ export class SessionStore {
       .all(filter.path ?? null, filter.name ?? null) as { runId: string }[];
     for (const r of rows) {
       this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(r.runId);
+      this.db.prepare(`DELETE FROM session_files WHERE runId = ?`).run(r.runId);
       this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(r.runId);
     }
     return rows.length;
@@ -257,6 +308,7 @@ export class SessionStore {
 
   deleteSession(runId: string): boolean {
     this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(runId);
+    this.db.prepare(`DELETE FROM session_files WHERE runId = ?`).run(runId);
     const res = this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(runId);
     return Number(res.changes) > 0;
   }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyTaskComplexity } from '../src/agent/effort-planner.js';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { EvidenceEngine, isWeakEvidenceLink } from '../src/evidence/evidence.js';
 import { getWorkspaceFingerprint } from '../src/git/git.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';

@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { classifyTaskComplexity, isFrontendGoal, planEffort } from '../src/agent/effort-planner.js';
 import {
   buildPlanNote,
@@ -70,7 +70,7 @@ describe('classifyTaskComplexity', () => {
   });
 
   it('isFrontendGoal matches the same patterns used for escalation', () => {
-    for (const goal of ['build a landing page', 'redesign the settings dashboard', 'make the app responsive']) {
+    for (const goal of ['build a landing page', 'redesign the settings dashboard', 'make the app responsive', 'move the save button beside the edited record']) {
       expect(isFrontendGoal(goal)).toBe(true);
     }
     for (const goal of ['add API endpoint', 'fix auth bug', '']) {

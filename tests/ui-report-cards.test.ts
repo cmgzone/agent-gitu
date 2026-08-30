@@ -59,12 +59,14 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain('reportStatusLine(');
     // Conversational outcome first — not "1/3 checks passed" stats chips.
     expect(UI_HTML).toContain("doneIcon + ' ' + doneWord");
-    expect(UI_HTML).toContain('criteria satisfied');
-    expect(UI_HTML).not.toContain("checks passed</span>");
+    expect(UI_HTML).toContain('verification checks passed');
+    expect(UI_HTML).not.toContain('criteria satisfied');
   });
 
   it('parses the machine change dump into human-phrased changes', () => {
     expect(UI_HTML).toContain('function parseOutcome(summary)');
+    expect(UI_HTML).toContain('function reportLede(summary)');
+    expect(UI_HTML).toContain('dependency-free static website using vanilla HTML, CSS, and JavaScript');
     expect(UI_HTML).toContain('CHANGE_VERBS');
     expect(UI_HTML).toContain('What Gitu found');
   });

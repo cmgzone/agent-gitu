@@ -34,6 +34,15 @@ export interface ModelContextImage {
   dataUrl: string;
 }
 
+export interface ModelContextAttachment {
+  name: string;
+  path: string;
+  mime: string;
+  size: number;
+  /** Bounded UTF-8 excerpt for text-like files; binary files are path-only. */
+  textExcerpt?: string;
+}
+
 export interface ModelContextInput {
   system: string;
   strategy?: string;
@@ -47,6 +56,9 @@ export interface ModelContextInput {
   contextPack?: string;
   conversationHistory?: LlmMessage[];
   images?: ModelContextImage[];
+  /** User files are protected intent. Their metadata and bounded excerpts are
+   * never silently removed; the agent can read the stored path for more. */
+  attachments?: ModelContextAttachment[];
   supportsImages?: boolean;
   /** Prebuilt follow-up/resume note (never trimmed — it carries user intent). */
   followUp?: string;
@@ -64,9 +76,10 @@ export interface ModelContextResult {
   trims: { section: string; charsRemoved: number }[];
 }
 
-/** Default static-context budget (~15K tokens at 4 chars/token). The per-turn
- *  loop adds state + observations on top; compaction is that phase's budget. */
-export const DEFAULT_CONTEXT_MAX_CHARS = 60_000;
+/** Default static-context budget (~12K tokens at 4 chars/token). The per-turn
+ *  loop adds state + observations on top; compaction is that phase's budget.
+ *  A focused sample is more useful than repeatedly paying for a repo dump. */
+export const DEFAULT_CONTEXT_MAX_CHARS = 48_000;
 
 export function buildModelContext(input: ModelContextInput): ModelContextResult {
   const maxChars = Math.max(1_000, input.budget?.maxChars ?? DEFAULT_CONTEXT_MAX_CHARS);
@@ -74,9 +87,18 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   let contextPack = input.contextPack;
   let history = [...(input.conversationHistory ?? [])];
   let digestContent: string | undefined;
+  const attachmentContent = input.attachments?.length
+    ? [
+        `USER ATTACHED FILES (${input.attachments.length}) — treat these as part of the user's request. The files are stored inside the locked project; use read_file or an appropriate local tool when the excerpt is insufficient:`,
+        ...input.attachments.map((file) => {
+          const header = `- ${file.name} (${file.mime}, ${file.size} bytes) at ${file.path}`;
+          return file.textExcerpt ? `${header}\n  TEXT EXCERPT:\n${file.textExcerpt}` : header;
+        }),
+      ].join('\n')
+    : undefined;
 
   const charsOf = (): number => {
-    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (digestContent?.length ?? 0);
+    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
     for (const m of history) total += messageTextChars(m);
     if (input.images?.length && input.supportsImages) {
       for (const img of input.images) total += Math.floor(img.dataUrl.length / 4);
@@ -153,6 +175,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       imagesSkipped = true;
     }
   }
+  if (attachmentContent) messages.push({ role: 'user', content: attachmentContent });
   if (input.followUp) messages.push({ role: 'user', content: input.followUp });
 
   const sections: ContextSections = { system: 0, taskState: 0, digest: 0, contextPack: 0, strategy: 0, memory: 0, protected: 0, conversation: 0 };

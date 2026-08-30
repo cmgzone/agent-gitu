@@ -1,11 +1,39 @@
+import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { LspClient } from './client.js';
 import { DiagnosticsCache, formatDiagnostics, formatLocation } from './diagnostics.js';
 import { detectLanguages, languageForUnknownFile, languageIdForPath } from './language-detector.js';
-import { serverBinaryAvailable, ServerRegistry } from './server-registry.js';
-import type { LspCall, LspDiagnostic, LspPosition, LspServerConfig, LspStatusView, LspSymbol } from './lsp-types.js';
+import { installSpecFor, resolveSpawn, serverBinaryAvailable, ServerRegistry } from './server-registry.js';
+import type { LspCall, LspDiagnostic, LspInstallSpec, LspPosition, LspServerConfig, LspStatusView, LspSymbol } from './lsp-types.js';
+
+export interface LspInstallRequest {
+  server: LspServerConfig;
+  spec: LspInstallSpec;
+  command: string;
+}
+
+export interface LspInstallResult {
+  ok: boolean;
+  output?: string;
+  /** Optional executable directories supplied by a test/custom installer. */
+  pathEntries?: string[];
+}
+
+export interface LspManagerOptions {
+  /** Attempt a trusted built-in installer when a default server is missing. */
+  autoInstall?: boolean;
+  /** Optional approval hook. Returning false leaves the normal fallback path. */
+  approveInstall?: (request: LspInstallRequest) => Promise<boolean> | boolean;
+  /** Injectable installer for tests or an application-specific package manager. */
+  runInstaller?: (request: LspInstallRequest) => Promise<LspInstallResult>;
+  /** Receives short progress messages suitable for the run event stream. */
+  onEvent?: (text: string) => void;
+  /** Maximum time allowed for one package-manager invocation. */
+  installTimeoutMs?: number;
+}
 
 /**
  * LspManager — language-server lifecycle + agent-facing intelligence queries.
@@ -21,6 +49,7 @@ import type { LspCall, LspDiagnostic, LspPosition, LspServerConfig, LspStatusVie
  *
  * Reliability contract (LSP is an optional intelligence service):
  *   - a dead/crashed server is restarted once and the request retried
+ *   - a missing built-in server can be installed once on first use when enabled
  *   - if no server is configured or installed, tools report unavailability so
  *     the agent falls back to search_files / read_file
  *   - every request carries a timeout; malformed frames are ignored
@@ -35,6 +64,65 @@ interface NormalizedLocation {
 }
 
 const CONNECTION_ERROR_RE = /exited with code|ENOENT|timed out|ECONN|EPIPE|socket closed|write after end|spawn .* ENOENT/i;
+const MAX_INSTALL_OUTPUT = 12_000;
+
+interface ProcessResult {
+  ok: boolean;
+  output: string;
+  stdout: string;
+}
+
+function runProcess(program: string, args: string[], cwd: string, timeoutMs: number): Promise<ProcessResult> {
+  return new Promise((resolve) => {
+    const resolved = resolveSpawn(program, args);
+    let output = '';
+    let stdout = '';
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: ProcessResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(resolved.command, resolved.args, {
+        cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: process.env,
+        shell: resolved.shell,
+        windowsHide: true,
+      });
+    } catch (err) {
+      finish({ ok: false, output: (err as Error).message, stdout: '' });
+      return;
+    }
+    const append = (chunk: Buffer | string, isStdout: boolean): void => {
+      const text = String(chunk);
+      output = (output + text).slice(-MAX_INSTALL_OUTPUT);
+      if (isStdout) stdout = (stdout + text).slice(-MAX_INSTALL_OUTPUT);
+    };
+    child.stdout?.on('data', (chunk: Buffer | string) => append(chunk, true));
+    child.stderr?.on('data', (chunk: Buffer | string) => append(chunk, false));
+    child.once('error', (err) => finish({ ok: false, output: `${output}\n${err.message}`.trim(), stdout }));
+    child.once('close', (code, signal) =>
+      finish({
+        ok: code === 0,
+        output: `${output}${signal ? `\nterminated by ${signal}` : ''}`.trim(),
+        stdout,
+      }),
+    );
+    timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        /* already exited */
+      }
+      finish({ ok: false, output: `${output}\ninstaller timed out after ${timeoutMs}ms`.trim(), stdout });
+    }, timeoutMs);
+  });
+}
 
 function isConnectionError(err: Error): boolean {
   return CONNECTION_ERROR_RE.test(err.message) || (err as { code?: string }).code === 'ENOENT';
@@ -136,13 +224,107 @@ export class LspManager {
   private readonly versions = new Map<string, number>();
   /** Per-URI serialization chains for document syncs. */
   private readonly syncChains = new Map<string, Promise<string>>();
+  /** A missing server is installed at most once, even when queries run in parallel. */
+  private readonly installPromises = new Map<string, Promise<boolean>>();
   readonly registry: ServerRegistry;
 
   constructor(
     private readonly repoRoot: string,
     registry?: ServerRegistry,
+    private readonly options: LspManagerOptions = {},
   ) {
     this.registry = registry ?? new ServerRegistry(repoRoot);
+  }
+
+  private emit(text: string): void {
+    try {
+      this.options.onEvent?.(text);
+    } catch {
+      /* progress reporting must never break an LSP request */
+    }
+  }
+
+  private async pathEntriesAfterInstall(spec: LspInstallSpec): Promise<string[]> {
+    const entries: string[] = [];
+    const home = os.homedir();
+    const add = (entry: string | undefined): void => {
+      const normalized = entry?.trim();
+      if (normalized && !entries.includes(normalized)) entries.push(normalized);
+    };
+    if (spec.pathHint === 'npm-global') {
+      add(path.join(process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming'), 'npm'));
+      const prefix = await runProcess('npm', ['prefix', '--global'], this.repoRoot, 10_000);
+      if (prefix.ok) add(process.platform === 'win32' ? prefix.stdout.trim() : path.join(prefix.stdout.trim(), 'bin'));
+    } else if (spec.pathHint === 'python-user') {
+      const scripts = await runProcess(
+        'python',
+        ['-c', "import os,sysconfig; print(sysconfig.get_path('scripts', scheme='nt_user' if os.name == 'nt' else 'posix_user'))"],
+        this.repoRoot,
+        10_000,
+      );
+      if (scripts.ok) add(scripts.stdout.trim());
+    } else if (spec.pathHint === 'go-bin') {
+      const goEnv = await runProcess('go', ['env', 'GOBIN', 'GOPATH'], this.repoRoot, 10_000);
+      if (goEnv.ok) {
+        const [gobin, gopath] = goEnv.stdout.split(/\r?\n/).map((value) => value.trim());
+        add(gobin);
+        if (gopath) add(path.join(gopath, 'bin'));
+      }
+    } else if (spec.pathHint === 'cargo-bin') {
+      add(path.join(home, '.cargo', 'bin'));
+    } else if (spec.pathHint === 'dotnet-tools') {
+      add(path.join(home, '.dotnet', 'tools'));
+    }
+    return entries;
+  }
+
+  private addPathEntries(entries: string[]): void {
+    if (entries.length === 0) return;
+    const current = process.env.PATH ?? process.env.Path ?? '';
+    const parts = current.split(path.delimiter).filter(Boolean);
+    const merged = [...entries, ...parts.filter((entry) => !entries.includes(entry))];
+    process.env.PATH = merged.join(path.delimiter);
+  }
+
+  private async installServer(config: LspServerConfig): Promise<boolean> {
+    const spec = installSpecFor(config);
+    if (!spec) return false;
+    const request: LspInstallRequest = { server: config, spec, command: spec.label };
+    if (this.options.approveInstall && !(await this.options.approveInstall(request))) {
+      this.emit(`lsp install denied for ${config.name}`);
+      return false;
+    }
+    this.emit(`lsp installing ${config.name} — ${spec.label}`);
+    let result: LspInstallResult;
+    if (this.options.runInstaller) {
+      try {
+        result = await this.options.runInstaller(request);
+      } catch (err) {
+        result = { ok: false, output: (err as Error).message };
+      }
+    } else {
+      const processResult = await runProcess(spec.program, spec.args, this.repoRoot, this.options.installTimeoutMs ?? 180_000);
+      result = { ok: processResult.ok, output: processResult.output };
+      if (processResult.ok) this.addPathEntries(await this.pathEntriesAfterInstall(spec));
+    }
+    if (!result.ok) {
+      const detail = result.output ? `: ${result.output.split(/\r?\n/).filter(Boolean).slice(-2).join(' | ')}` : '';
+      this.emit(`lsp install failed for ${config.name}${detail}`);
+      return false;
+    }
+    this.addPathEntries(result.pathEntries ?? []);
+    const available = serverBinaryAvailable(config);
+    if (available) this.emit(`lsp ready — ${config.name} (${config.command})`);
+    else this.emit(`lsp installed ${config.name}, but ${config.command} is still not on PATH`);
+    return available;
+  }
+
+  private ensureInstalled(config: LspServerConfig): Promise<boolean> {
+    const previous = this.installPromises.get(config.name);
+    if (previous) return previous;
+    const current = this.installServer(config).catch(() => false);
+    this.installPromises.set(config.name, current);
+    return current;
   }
 
   // ---- lifecycle ---------------------------------------------------------
@@ -241,11 +423,13 @@ export class LspManager {
     return languageIdForPath(file) ?? languageForUnknownFile(this.repoRoot, file);
   }
 
-  private serverReadyFor(file: string): { languageId: string; config: LspServerConfig } | undefined {
+  private async serverReadyFor(file: string): Promise<{ languageId: string; config: LspServerConfig } | undefined> {
     const languageId = this.languageIdFor(file);
     if (!languageId) return undefined;
     const config = this.registry.serverForLanguage(languageId);
-    if (!config || !serverBinaryAvailable(config)) return undefined;
+    if (!config) return undefined;
+    if (!serverBinaryAvailable(config) && this.options.autoInstall) await this.ensureInstalled(config);
+    if (!serverBinaryAvailable(config)) return undefined;
     return { languageId, config };
   }
 
@@ -257,7 +441,8 @@ export class LspManager {
         ? `server "${config.command}" is not installed on PATH`
         : `no server is configured for language "${languageId}"`
       : `language for "${file}" is not supported`;
-    return `LSP unavailable: ${hint}. Fall back to search_files / read_file.`;
+    const installHint = config && installSpecFor(config) && !this.options.autoInstall ? ' Enable automatic LSP installation to bootstrap it.' : '';
+    return `LSP unavailable: ${hint}.${installHint} Fall back to search_files / read_file.`;
   }
 
   // ---- status ------------------------------------------------------------
@@ -272,9 +457,9 @@ export class LspManager {
     }));
   }
 
-  /** Whether any configured server binary is present on this machine. */
+  /** Whether LSP is usable now or can be bootstrapped on first request. */
   hasServers(): boolean {
-    return this.registry.serversList().some((s) => serverBinaryAvailable(s));
+    return this.registry.serversList().some((s) => serverBinaryAvailable(s) || (this.options.autoInstall === true && Boolean(installSpecFor(s))));
   }
 
   /** Languages detected from project markers (package.json, Cargo.toml, ...). */
@@ -285,7 +470,7 @@ export class LspManager {
   // ---- queries -----------------------------------------------------------
 
   async diagnostics(file: string): Promise<LspCall> {
-    const ready = this.serverReadyFor(file);
+    const ready = await this.serverReadyFor(file);
     if (!ready) return { ok: false, output: this.unavailable(file), errorSignature: 'lsp-unavailable' };
     try {
       const items = await this.withServer(ready.languageId, file, async (client, uri) => {
@@ -308,7 +493,7 @@ export class LspManager {
   }
 
   async definition(file: string, line: number, column: number): Promise<LspCall> {
-    const ready = this.serverReadyFor(file);
+    const ready = await this.serverReadyFor(file);
     if (!ready) return { ok: false, output: this.unavailable(file), errorSignature: 'lsp-unavailable' };
     try {
       const position: LspPosition = { line: Math.max(0, line - 1), character: Math.max(0, column - 1) };
@@ -323,7 +508,7 @@ export class LspManager {
   }
 
   async references(file: string, line: number, column: number): Promise<LspCall> {
-    const ready = this.serverReadyFor(file);
+    const ready = await this.serverReadyFor(file);
     if (!ready) return { ok: false, output: this.unavailable(file), errorSignature: 'lsp-unavailable' };
     try {
       const position: LspPosition = { line: Math.max(0, line - 1), character: Math.max(0, column - 1) };
@@ -338,7 +523,7 @@ export class LspManager {
   }
 
   async hover(file: string, line: number, column: number): Promise<LspCall> {
-    const ready = this.serverReadyFor(file);
+    const ready = await this.serverReadyFor(file);
     if (!ready) return { ok: false, output: this.unavailable(file), errorSignature: 'lsp-unavailable' };
     try {
       const position: LspPosition = { line: Math.max(0, line - 1), character: Math.max(0, column - 1) };
@@ -352,7 +537,7 @@ export class LspManager {
   }
 
   async symbols(file: string): Promise<LspCall> {
-    const ready = this.serverReadyFor(file);
+    const ready = await this.serverReadyFor(file);
     if (!ready) return { ok: false, output: this.unavailable(file), errorSignature: 'lsp-unavailable' };
     try {
       const result = await this.withServer(ready.languageId, file, (client, uri) => client.documentSymbols(uri));
@@ -371,6 +556,7 @@ export class LspManager {
     this.diags.clear();
     this.versions.clear();
     this.syncChains.clear();
+    this.installPromises.clear();
     await Promise.allSettled(clients.map((c) => c.shutdown()));
   }
 }

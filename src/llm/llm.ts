@@ -47,9 +47,11 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
  * DashScope's compatible mode exposes real effort budgets (thinking tokens),
  * so every level is genuinely distinct.  Generic OpenAI-compatible endpoints
  * only accept reasoning_effort low|medium|high; "max" collapses to "high"
- * there.  Exported so the UI can label levels honestly per provider.
+ * there. DeepSeek's compatible API supports a distinct max effort and a
+ * thinking-mode switch. Exported so the UI can label levels honestly per
+ * provider.
  */
-export type EffortStyle = 'dashscope' | 'openai';
+export type EffortStyle = 'dashscope' | 'deepseek' | 'openai';
 
 export const DASHSCOPE_THINKING_BUDGETS: Record<EffortLevel, number> = {
   low: 1024,
@@ -59,12 +61,17 @@ export const DASHSCOPE_THINKING_BUDGETS: Record<EffortLevel, number> = {
 };
 
 export function effortStyleFor(baseUrl: string): EffortStyle {
-  return /aliyuncs|dashscope/i.test(baseUrl) ? 'dashscope' : 'openai';
+  if (/aliyuncs|dashscope/i.test(baseUrl)) return 'dashscope';
+  if (/api\.deepseek\.com(?:\/|$)/i.test(baseUrl)) return 'deepseek';
+  return 'openai';
 }
 
 /** The wire-level value for an effort level on a given provider style. */
 export function effortWireValue(effort: EffortLevel, style: EffortStyle): string {
   if (style === 'dashscope') return effort;
+  // DeepSeek accepts low/high/max. Its API maps the compatibility value
+  // "medium" to high, while max remains a distinct effort level.
+  if (style === 'deepseek') return effort === 'medium' ? 'high' : effort;
   return effort === 'max' ? 'high' : effort;
 }
 
@@ -137,7 +144,7 @@ function parseUsage(value: unknown): LlmUsage | undefined {
   return { inputTokens: input ?? 0, outputTokens: output ?? 0, cachedTokens: cached ?? 0 };
 }
 
-function llmErrorMessage(status: number, text: string): string {
+export function llmErrorMessage(status: number, text: string): string {
   const trimmed = text.slice(0, 300);
   let message = trimmed;
   let type = '';
@@ -304,6 +311,12 @@ export class OpenAiCompatClient implements LlmClient {
       if (style === 'dashscope') {
         body['enable_thinking'] = opts.effort !== 'low';
         body['thinking_budget'] = DASHSCOPE_THINKING_BUDGETS[opts.effort];
+      } else if (style === 'deepseek') {
+        // DeepSeek thinking is enabled by default, but make it explicit so
+        // direct-API requests retain the requested reasoning effort across
+        // provider changes and compatible SDK implementations.
+        body['thinking'] = { type: 'enabled' };
+        body['reasoning_effort'] = effortWireValue(opts.effort, 'deepseek');
       } else {
         body['reasoning_effort'] = effortWireValue(opts.effort, 'openai');
       }

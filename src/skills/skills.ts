@@ -21,6 +21,29 @@ export interface SkillMatch {
   reason: string;
 }
 
+/**
+ * The small, durable part of a skill that is safe to carry on every model
+ * turn. The full procedure stays in the skill file and is loaded when the
+ * skill is activated (or after history compaction), so a large playbook does
+ * not become a permanent prompt tax.
+ */
+export function renderSkillContract(skill: Pick<Skill, 'name' | 'description' | 'instructions'>, maxChars = 360): string {
+  const clip = (text: string, max: number): string => (text.length > max ? `${text.slice(0, Math.max(1, max - 1))}…` : text);
+  const ruleLines = skill.instructions
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => /^[-*•]|^\d+[.)]/.test(line))
+    .slice(0, 3);
+  const ruleSummary = (ruleLines.length > 0 ? ruleLines : [skill.instructions.replace(/\s+/g, ' ').trim()])
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const header = `✓ ${skill.name}: ${clip(skill.description.replace(/\s+/g, ' ').trim(), 150)}`;
+  const room = Math.max(80, maxChars - header.length - 22);
+  return clip(`${header}\n  Contract: ${clip(ruleSummary, room)}`, maxChars);
+}
+
 export interface SkillResolutionResult {
   highConfidence: Skill[];
   suggestions: SkillMatch[];
@@ -280,16 +303,27 @@ export class SkillStore {
     return false;
   }
 
-  renderForPrompt(activeSkillNames?: string[]): string {
+  renderForPrompt(activeSkillNames?: string[], opts: { maxSkills?: number; descriptionMaxChars?: number } = {}): string {
     const skills = this.list();
     if (skills.length === 0) return '(no skills yet — you can create reusable skills with create_skill)';
     const activeSet = new Set(activeSkillNames?.map(normalizeToken) ?? []);
-    return skills
+    // Active skills come first, then a small catalog of alternatives. Listing
+    // every installed skill on every request eventually costs more context
+    // than it helps discovery; the model can still call list_skills for the
+    // full inventory.
+    const maxSkills = Math.max(1, opts.maxSkills ?? 8);
+    const descriptionMaxChars = Math.max(40, opts.descriptionMaxChars ?? 180);
+    const ordered = [...skills.filter((s) => activeSet.has(normalizeToken(s.name))), ...skills.filter((s) => !activeSet.has(normalizeToken(s.name)))];
+    const rendered = ordered
+      .slice(0, maxSkills)
       .map((s) => {
         const isActive = activeSet.has(normalizeToken(s.name));
-        const aliasStr = s.aliases && s.aliases.length ? ` (aliases: ${s.aliases.join(', ')})` : '';
-        return `- ${s.name}${aliasStr}: ${s.description}${isActive ? ' [ACTIVE IN CURRENT TASK]' : ''}`;
+        const aliasStr = s.aliases && s.aliases.length ? ` (aliases: ${s.aliases.slice(0, 3).join(', ')})` : '';
+        const description = s.description.length > descriptionMaxChars ? `${s.description.slice(0, descriptionMaxChars - 1)}…` : s.description;
+        return `- ${s.name}${aliasStr}: ${description}${isActive ? ' [ACTIVE IN CURRENT TASK]' : ''}`;
       })
       .join('\n');
+    const hidden = Math.max(0, ordered.length - maxSkills);
+    return hidden > 0 ? `${rendered}\n- … ${hidden} more skill(s) available via list_skills` : rendered;
   }
 }

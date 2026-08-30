@@ -28,6 +28,9 @@ const CLEAN_PAGE = {
   a11y: { unlabeledInputs: 0, buttonsWithoutNames: 0, imagesWithoutAlt: 0 },
   layout: { zeroSize: 0, outsideViewport: 0 },
   styles: { clippedText: 0, invisibleInteractive: 0 },
+  controls: [
+    { role: 'button', name: 'Save record', selector: 'button.save', region: 'form#record "Edit record"', destination: 'submit /records/7' },
+  ],
   samples: [],
 };
 
@@ -40,6 +43,8 @@ describe('collectBrowserEvidence — non-visual eyes', () => {
     expect(evidence.findings).toHaveLength(0);
     const digest = formatBrowserEvidence(evidence);
     expect(digest).toContain('BROWSER EVIDENCE');
+    expect(digest).toContain('interactive controls (1 sampled)');
+    expect(digest).toContain('button "Save record" @ form#record "Edit record"');
     expect(digest).toContain('findings: none');
     expect(digest).toContain('highFindings=0');
   });

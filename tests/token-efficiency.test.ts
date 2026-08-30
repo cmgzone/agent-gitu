@@ -8,7 +8,7 @@ import {
   estimateMessageChars,
   Hermes,
   stripStaleImages,
-} from '../src/agent/hermes.js';
+} from '../src/agent/gitu.js';
 import { buildStateMessage } from '../src/agent/prompt.js';
 import { estimateTokens, RunTelemetry, classifyCall } from '../src/agent/telemetry.js';
 import { decodedBytesFromBase64, planScreenshotResize, pngDimensionsFromBase64 } from '../src/browser/screenshot-opts.js';
@@ -108,10 +108,42 @@ describe('token-aware compaction', () => {
     expect(joined.includes('q'.repeat(30_000))).toBe(false);
   });
 
+  it('keeps compacting an oversized recent tail until it fits the target', () => {
+    const messages: LlmMessage[] = [{ role: 'system', content: 'SYS ' + 's'.repeat(3_000) }];
+    for (let i = 0; i < 18; i++) {
+      messages.push({ role: i % 2 ? 'user' : 'assistant', content: `RECENT_MARKER_${i} ${'r'.repeat(40_000)}` });
+    }
+    const target = 30_000;
+    expect(compactHistory(messages, undefined, { charBudget: target, keepRecent: 6 })).toBe(true);
+    expect(estimateMessageChars(messages)).toBeLessThanOrEqual(target);
+    // The newest exchange remains useful even though its verbose payload was
+    // reduced; its full source can be re-read if needed.
+    expect(String(messages.at(-1)!.content)).toContain('RECENT_MARKER_17');
+    expect(String(messages[1]!.content)).toContain('COMPACTED HISTORY');
+  });
+
   it('does not compact when both budgets are satisfied', () => {
     const messages: LlmMessage[] = [{ role: 'system', content: 'SYS' }];
     for (let i = 0; i < 10; i++) messages.push({ role: i % 2 ? 'user' : 'assistant', content: `small ${i}` });
     expect(compactHistory(messages)).toBe(false);
+  });
+
+  it('carries the previous digest forward instead of re-flattening it', () => {
+    const messages: LlmMessage[] = [{ role: 'system', content: 'SYS' }];
+    messages.push({ role: 'user', content: 'RESULT [error] run_command $ npm run build\nERR! missing dependency' });
+    for (let i = 0; i < 20; i++) messages.push({ role: i % 2 ? 'assistant' : 'user', content: `EARLY_MARKER_${i} ${'a'.repeat(12_000)}` });
+    compactHistory(messages);
+    expect(String(messages[1]!.content)).toContain('EARLY_MARKER_1');
+
+    // Grow past the trigger again and compact a second time.
+    for (let i = 0; i < 20; i++) messages.push({ role: i % 2 ? 'assistant' : 'user', content: `LATE_MARKER_${i} ${'b'.repeat(12_000)}` });
+    compactHistory(messages);
+    const digest = String(messages[1]!.content);
+    // First-batch content survives the second compaction (carried, not
+    // flattened into a 220-char excerpt of itself).
+    expect(digest).toContain('EARLY_MARKER_1');
+    // Failures are cumulative across compaction cycles.
+    expect(digest).toContain('npm run build');
   });
 });
 
@@ -161,6 +193,22 @@ describe('execution ledger survives compaction', () => {
     expect(state).toContain('FAILED:');
     expect(state).toContain('role validation failed');
     expect(state).toContain('NEXT: step-1');
+  });
+
+  it('bounds a large live state while retaining a pointer to the complete request', () => {
+    const dir = makeProject('bounded-state');
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: `Build the product:\n${'requirement\n'.repeat(2_000)}`, project: guard.lock, mode: 'standard' });
+    ledger.setCriteria(Array.from({ length: 10 }, (_x, i) => `criterion ${i}: ${'c'.repeat(1_000)}`));
+    ledger.setPlan(Array.from({ length: 19 }, (_x, i) => ({ description: `step ${i}: ${'d'.repeat(180)}`, verification: `verify ${'v'.repeat(160)}` })));
+    ledger.data.filesChanged = Array.from({ length: 65 }, (_x, i) => `src/component-${i}.tsx`);
+    const state = buildStateMessage(ledger);
+
+    expect(state.length).toBeLessThan(20_000);
+    expect(state).toContain(`.hermes/tasks/${ledger.data.taskId}.json`);
+    expect(state).toContain('criterion 0:');
+    expect(state).toContain('(+45 earlier)');
+    expect(state).toContain('(+15 more queued)');
   });
 });
 
@@ -294,6 +342,37 @@ describe('token telemetry', () => {
 });
 
 describe('Hermes e2e — decisions, telemetry, context efficiency', () => {
+  it('reloads active skill instructions after compaction while retaining the compact contract', async () => {
+    const dir = makeProject('skill-reload');
+    const prompts: string[] = [];
+    const llm = new ScriptedMockLlm([
+      (_n, messages) => {
+        prompts.push(JSON.stringify(messages));
+        return JSON.stringify({ action: { type: 'set_criteria', criteria: ['page renders'] } });
+      },
+      (_n, messages) => {
+        prompts.push(JSON.stringify(messages));
+        return JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'check page', verification: 'node --version' }] } });
+      },
+      (_n, messages) => {
+        prompts.push(JSON.stringify(messages));
+        return JSON.stringify({ action: { type: 'request_block', reason: 'test complete' } });
+      },
+    ]);
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      compaction: { triggerMessages: 1, keepRecent: 2, charBudget: 50_000 },
+    });
+
+    await hermes.run('Build a frontend landing page');
+
+    const fullSkillPrompts = prompts.filter((p) => p.includes('Full instructions (loaded now)'));
+    expect(fullSkillPrompts.length).toBeGreaterThanOrEqual(2);
+    expect(prompts.every((p) => p.includes('Contract:'))).toBe(true);
+  }, 30000);
+
   it('rejects a decision that drops an explicitly required technology', async () => {
     const dir = makeProject('react-required');
     const llm = new ScriptedMockLlm([

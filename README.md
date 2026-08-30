@@ -14,7 +14,7 @@ backed by passing evidence.
 ```
             CLI (src/cli.ts)
                  │
-         Hermes orchestrator (src/agent/hermes.ts)
+         Gitu orchestrator (src/agent/gitu.ts)
                  │
    ┌─────────────┼──────────────────────────────┐
    │             │                              │
@@ -58,6 +58,15 @@ Lock project → criteria → context pack → plan →
 | **Task↔session↔git binding** | Resuming a task in the wrong working tree or on the wrong branch |
 | **LSP intelligence layer** | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies |
 
+Web UI runs and `hermes run` bootstrap missing built-in language servers on first
+LSP use (once per server); progress is streamed into the run (or printed by the
+CLI).
+The allowlist covers TypeScript/JavaScript, Python, Go, Rust, C#, and CSS using
+their native package managers. Custom `.hermes/lsp.json` commands and languages
+without a trusted installer remain opt-in and continue to use the normal
+`search_files`/`read_file` fallback. Set `autoInstallLsp: false` in
+`HermesServer` configuration to disable this behavior.
+
 ## Quick start
 
 ```bash
@@ -85,6 +94,13 @@ node dist/cli.js memory
 Environment for `run`:
 
 ```
+# ChatGPT subscription — no API key (provider: chatgpt)
+hermes login                     # opens Codex's secure ChatGPT sign-in
+hermes run "goal" --provider chatgpt
+# Agent Gitu uses the local Codex runtime and its authenticated model list.
+# It never reads, writes, or sends your ChatGPT credentials itself.
+# Sign out with `codex logout` when needed.
+
 # Alibaba Cloud Model Studio / DashScope (provider: alibaba)
 HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
 # endpoint defaults to the workspace URL built in for this deployment;
@@ -92,6 +108,10 @@ HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
 
 # OpenAI (provider: openai)
 HERMES_OPENAI_API_KEY | OPENAI_API_KEY
+
+# DeepSeek direct API (provider: deepseek)
+HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
+# Uses https://api.deepseek.com and the built-in DeepSeek V4 model list.
 
 # Any OpenAI-compatible endpoint (provider: custom)
 HERMES_API_KEY  (+ optional HERMES_BASE_URL, HERMES_MODEL)
@@ -102,6 +122,7 @@ Select explicitly:
 ```bash
 node dist/cli.js providers                       # show providers + key status
 node dist/cli.js models --provider alibaba       # list all models (live from the endpoint when a key is set)
+node dist/cli.js models --provider deepseek      # list DeepSeek V4 models
 node dist/cli.js models --pick                   # interactive model chooser
 node dist/cli.js run "goal" --provider alibaba --model qwen3.7-max
 ```
@@ -111,6 +132,25 @@ endpoint whenever an API key is configured, so new models appear
 automatically; a built-in fallback list (qwen3.7-max, qwen3.7-plus,
 qwen3.6-flash, qwen3-coder-*, deepseek-v4-*, kimi-k2.7-code, glm-5.2, ...)
 is shown when offline or keyless.
+
+### Sign in with ChatGPT
+
+`hermes login` opens the supported browser sign-in managed by the local Codex
+runtime. Codex owns the authentication and requests; Agent Gitu does not read,
+write, or transmit your ChatGPT tokens. Your subscription is used without an
+OpenAI API key, subject to the limits of your ChatGPT plan:
+
+```bash
+hermes login                                          # browser sign-in
+hermes providers                                      # shows ChatGPT plan readiness
+hermes run "Fix the flaky test" --provider chatgpt
+codex logout                                          # sign out when needed
+```
+
+In the Web UI (and desktop app): **Settings → Providers → ChatGPT →
+"Sign in with ChatGPT"**. The models displayed there come from the current
+local Codex model list, so they match the active ChatGPT plan; usage is subject
+to that plan's limits rather than API credits.
 
 ## Development
 

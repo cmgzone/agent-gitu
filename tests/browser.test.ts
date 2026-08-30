@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { normalizeUrl, type BrowserBridge, type BrowserState } from '../src/browser/browser.js';
 import { PolicyEngine } from '../src/policy/policy.js';
 import { formatPageDiagnostics, toolBrowse } from '../src/tools/tools.js';

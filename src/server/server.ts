@@ -1,6 +1,6 @@
 import http from 'node:http';
 import os from 'node:os';
-import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
@@ -20,7 +20,7 @@ const FONT_FILES: Record<string, string> = {
   'jetbrains-mono-latin-400-normal.woff2': 'font/woff2',
   'jetbrains-mono-latin-700-normal.woff2': 'font/woff2',
 };
-import { Hermes } from '../agent/hermes.js';
+import { Hermes } from '../agent/gitu.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -32,16 +32,18 @@ import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../gi
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
-import { UsageTrackingClient } from '../llm/llm.js';
-import { PROVIDERS, ProviderError, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
+import { LlmError, UsageTrackingClient } from '../llm/llm.js';
+import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
+import { ProviderError, allProviderSpecs, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
-import { SessionStore, type SessionUsage } from './session-store.js';
+import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
+import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport } from '../types.js';
-import { nowIso, shortId } from '../util.js';
-import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, saveWorkspaceSettings, updateWorkspaceSettings } from '../workspace/home.js';
+import { nowIso, sha256, shortId } from '../util.js';
+import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 
 export interface PendingApproval {
@@ -65,6 +67,18 @@ export interface PendingQuestions {
   requestedAt: string;
 }
 
+export interface SessionFileView {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: 'user' | 'assistant';
+  createdAt: string;
+  previewable: boolean;
+  downloadUrl: string;
+  previewUrl?: string;
+}
+
 interface QuestionsWaiter extends PendingQuestions {
   resolve: (answer: string) => void;
 }
@@ -80,7 +94,7 @@ interface ApprovalWaiter extends PendingApproval {
 export interface RunSessionView {
   runId: string;
   goal: string;
-  status: 'running' | 'completed' | 'blocked' | 'failed';
+  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed';
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
@@ -91,18 +105,23 @@ export interface RunSessionView {
   mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
+  requestedProvider?: string;
+  requestedModel?: string;
+  activeProvider?: string;
+  activeModel?: string;
   pendingApprovals: PendingApproval[];
   pendingPlanReview?: PendingPlanReview;
   pendingQuestions?: PendingQuestions;
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage & { costUsd?: number };
+  files: SessionFileView[];
 }
 
 interface RunSession {
   runId: string;
   goal: string;
-  status: 'running' | 'completed' | 'blocked' | 'failed';
+  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed';
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
@@ -113,6 +132,13 @@ interface RunSession {
   mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
+  requestedProvider?: string;
+  requestedModel?: string;
+  activeProvider?: string;
+  activeModel?: string;
+  actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
+  /** Bound retry/fallback history for the live run; values are provider::model, never credentials. */
+  fallbackHistory?: string[];
   autoApprove?: boolean;
   events: { i: number; t: string; text: string }[];
   subscribers: Set<(ev: { i: number; t: string; text: string }) => void>;
@@ -125,6 +151,7 @@ interface RunSession {
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage;
+  files: StoredSessionFile[];
 }
 
 export interface HermesServerConfig {
@@ -133,10 +160,88 @@ export interface HermesServerConfig {
   host?: string;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
+  /** Automatically bootstrap missing built-in language servers (enabled by default). */
+  autoInstallLsp?: boolean;
   browser?: BrowserBridge;
+  /** Injectable for tests; production queries the local Codex runtime. */
+  codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
+  startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_SESSION_FILES_PER_MESSAGE = 8;
+const MAX_SESSION_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_SESSION_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT_EXCERPT = 12_000;
+const LONG_RESPONSE_DOCUMENT_CHARS = 6_000;
+
+/**
+ * Memory promotion notices are informational transcript events.  A resumed
+ * run can replay the same compaction history, so treat a notice as an
+ * idempotent event keyed by its normalized claim.
+ */
+function memoryPatternNoticeKey(text: string): string | undefined {
+  const match = /^memory\s+pattern promoted from repeated failures \((.*)\)\s*$/i.exec(text.trim());
+  if (!match) return undefined;
+  const claim = match[1]!.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  return claim || match[1]!.toLowerCase().trim();
+}
+
+function dedupeMemoryPatternEvents<T extends { text: string }>(events: T[]): T[] {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    const key = memoryPatternNoticeKey(event.text);
+    if (!key || seen.has(key)) return !key;
+    seen.add(key);
+    return true;
+  });
+}
+
+const MIME_BY_EXTENSION: Record<string, string> = {
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.pdf': 'application/pdf',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.zip': 'application/zip',
+};
+const BRAND_DIR = nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '../../assets');
+const BRAND_FILES: Record<string, string> = {
+  'agent-gitu-mark.svg': 'image/svg+xml',
+  'agent-gitu-logo.svg': 'image/svg+xml',
+};
+
+function safeFileName(input: string, fallback = 'file'): string {
+  const base = nodePath.basename(input || fallback).replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '-').trim();
+  return (base || fallback).slice(0, 180);
+}
+
+function mimeForFile(name: string, supplied?: string): string {
+  const known = MIME_BY_EXTENSION[nodePath.extname(name).toLowerCase()];
+  if (known) return known;
+  const clean = String(supplied ?? '').split(';')[0]!.trim().toLowerCase();
+  if (/^(text\/[a-z0-9.+-]+|image\/(png|jpeg|gif|webp)|application\/(pdf|json|zip))$/.test(clean)) return clean;
+  return 'application/octet-stream';
+}
+
+function isPreviewableMime(mime: string): boolean {
+  return /^(text\/plain|text\/markdown|text\/csv|application\/json|application\/pdf|image\/(png|jpeg|gif|webp))(;|$)/i.test(mime);
+}
+
+function isTextLikeFile(name: string, mime: string): boolean {
+  return /^text\//i.test(mime) || /application\/json/i.test(mime) || /\.(md|txt|csv|json|ya?ml|xml|log|js|jsx|ts|tsx|css|scss|html?|py|rb|go|rs|java|kt|sql)$/i.test(name);
+}
 
 export class HermesServer {
   private readonly indexWatchers = new Map<string, CodeIndex>();
@@ -207,6 +312,136 @@ export class HermesServer {
     return this.store;
   }
 
+  private fileView(file: StoredSessionFile): SessionFileView {
+    const base = `/api/runs/${encodeURIComponent(file.runId)}/files/${encodeURIComponent(file.id)}`;
+    return {
+      id: file.id,
+      name: file.name,
+      mime: file.mime,
+      size: file.size,
+      kind: file.kind,
+      createdAt: file.createdAt,
+      previewable: isPreviewableMime(file.mime),
+      downloadUrl: base,
+      ...(isPreviewableMime(file.mime) ? { previewUrl: `${base}?inline=1` } : {}),
+    };
+  }
+
+  private sessionFileRoot(session: RunSession, preferredRoot?: string): { root: string; dir: string } {
+    const root = nodePath.resolve(preferredRoot ?? session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd);
+    return { root, dir: nodePath.join(root, '.hermes', 'session-files', session.runId) };
+  }
+
+  private persistSessionFile(session: RunSession, file: StoredSessionFile): void {
+    session.files.push(file);
+    this.db().addSessionFile(file);
+  }
+
+  private storeUserFiles(
+    session: RunSession,
+    rawFiles: unknown,
+    preferredRoot?: string,
+  ): { files: StoredSessionFile[]; attachments: ModelContextAttachment[]; images: { name: string; dataUrl: string }[] } {
+    if (!Array.isArray(rawFiles) || rawFiles.length === 0) return { files: [], attachments: [], images: [] };
+    const incoming = (rawFiles as Record<string, unknown>[]).slice(0, MAX_SESSION_FILES_PER_MESSAGE);
+    const decoded = incoming.map((raw, index) => {
+      const name = safeFileName(String(raw['name'] ?? `file-${index + 1}`));
+      const dataUrl = String(raw['dataUrl'] ?? '');
+      const match = /^data:([^;,]*)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(dataUrl);
+      if (!match?.[2]) throw new Error(`Invalid attachment: ${name}`);
+      const bytes = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+      if (bytes.length === 0) throw new Error(`Invalid attachment: ${name} is empty`);
+      if (bytes.length > MAX_SESSION_FILE_BYTES) throw new Error(`Attachment too large: ${name} exceeds 8 MB`);
+      const mime = mimeForFile(name, String(raw['type'] ?? match[1] ?? ''));
+      return { name, mime, bytes, dataUrl };
+    });
+    const total = decoded.reduce((sum, file) => sum + file.bytes.length, 0);
+    if (total > MAX_SESSION_FILES_TOTAL_BYTES) throw new Error('Attachments too large: combined size exceeds 20 MB');
+
+    const { root, dir } = this.sessionFileRoot(session, preferredRoot);
+    mkdirSync(dir, { recursive: true });
+    const files: StoredSessionFile[] = [];
+    const attachments: ModelContextAttachment[] = [];
+    const images: { name: string; dataUrl: string }[] = [];
+    for (const entry of decoded) {
+      const id = shortId('file');
+      const target = nodePath.join(dir, `${id}-${entry.name}`);
+      writeFileSync(target, entry.bytes);
+      const file: StoredSessionFile = {
+        runId: session.runId,
+        id,
+        name: entry.name,
+        mime: entry.mime,
+        size: entry.bytes.length,
+        kind: 'user',
+        path: target,
+        createdAt: nowIso(),
+      };
+      this.persistSessionFile(session, file);
+      files.push(file);
+      const relative = nodePath.relative(root, target).replace(/\\/g, '/');
+      attachments.push({
+        name: file.name,
+        path: relative,
+        mime: file.mime,
+        size: file.size,
+        ...(isTextLikeFile(file.name, file.mime)
+          ? { textExcerpt: entry.bytes.toString('utf8', 0, Math.min(entry.bytes.length, MAX_ATTACHMENT_TEXT_EXCERPT)).replace(/\u0000/g, '') }
+          : {}),
+      });
+      if (/^image\/(png|jpeg|gif|webp)(;|$)/i.test(file.mime)) images.push({ name: file.name, dataUrl: entry.dataUrl });
+    }
+    return { files, attachments, images };
+  }
+
+  private attachmentContext(files: ModelContextAttachment[]): string | undefined {
+    if (files.length === 0) return undefined;
+    return [
+      `USER ATTACHED FILES (${files.length}) — use these as part of the request:`,
+      ...files.map((file) =>
+        `- ${file.name} (${file.mime}, ${file.size} bytes) at ${file.path}` +
+        (file.textExcerpt ? `\n  TEXT EXCERPT:\n${file.textExcerpt}` : ''),
+      ),
+    ].join('\n');
+  }
+
+  private createAssistantDocument(session: RunSession, prose: string): StoredSessionFile {
+    const { dir } = this.sessionFileRoot(session);
+    mkdirSync(dir, { recursive: true });
+    const id = shortId('file');
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const name = `agent-response-${stamp}.md`;
+    const target = nodePath.join(dir, `${id}-${name}`);
+    const content = `# Agent Gitu response\n\n${prose.trim()}\n`;
+    writeFileSync(target, content, 'utf8');
+    const file: StoredSessionFile = {
+      runId: session.runId,
+      id,
+      name,
+      mime: 'text/markdown; charset=utf-8',
+      size: Buffer.byteLength(content),
+      kind: 'assistant',
+      path: target,
+      createdAt: nowIso(),
+    };
+    this.persistSessionFile(session, file);
+    return file;
+  }
+
+  private removeSessionFileStorage(session: RunSession): void {
+    const dirs = new Set(session.files.map((file) => nodePath.dirname(file.path)));
+    for (const dir of dirs) {
+      const resolved = nodePath.resolve(dir);
+      const expectedSuffix = nodePath.join('.hermes', 'session-files', session.runId);
+      if (!resolved.endsWith(expectedSuffix)) continue;
+      try {
+        rmSync(resolved, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup; database deletion still proceeds */
+      }
+    }
+  }
+
   constructor(config: HermesServerConfig) {
     this.config = config;
   }
@@ -236,14 +471,27 @@ export class HermesServer {
     return undefined;
   }
 
+  /** Session worktrees must never live under <repo>/.hermes. That directory is
+   * deliberately ignored/private, so nesting a checkout there lets an
+   * executor mutate a tree the normal product verifier and Git integration
+   * cannot authoritatively observe. */
+  private sessionWorktreePath(repoRoot: string, taskId: string): string {
+    const repoKey = sha256(nodePath.resolve(repoRoot).toLowerCase()).slice(0, 16);
+    return nodePath.join(ensureHermesHome().sessions, 'worktrees', repoKey, taskId);
+  }
+
+  private isPrivateHermesPath(repoRoot: string, candidate: string): boolean {
+    const privateRoot = nodePath.resolve(repoRoot, '.hermes').toLowerCase();
+    const target = nodePath.resolve(candidate).toLowerCase();
+    return target === privateRoot || target.startsWith(privateRoot + nodePath.sep);
+  }
+
   /**
    * Dedicated persistent git worktree for one session's bound branch, so an
    * older session can be resumed without moving the branch of the shared
-   * checkout (which would detach whichever session owned it). The .hermes state
-   * directory is linked into the worktree so the existing task ledger stays the
-   * single source of truth; node_modules and .env are linked/copied so
-   * verification commands behave like they did in the main checkout.
-   * Returns undefined when git worktrees are unavailable or the branch is gone.
+   * checkout. Product files live in Agent Gitu's session area; only private
+   * .hermes metadata is linked in. This keeps integration Git-object based
+   * rather than dependent on an ignored parent directory.
    */
   private async ensureSessionWorktree(repoRoot: string, taskId: string, branch: string): Promise<string | undefined> {
     if (!taskId || !branch) return undefined;
@@ -268,17 +516,39 @@ export class HermesServer {
     } catch {
       /* best effort */
     }
-    const wtDir = nodePath.join(repoRoot, '.hermes', 'worktrees', taskId);
+    const wtDir = this.sessionWorktreePath(repoRoot, taskId);
     try {
       const list = await gitExec(repoRoot, ['worktree', 'list', '--porcelain']);
-      const registered = list.split(/\r?\n/).some(
+      const lines = list.split(/\r?\n/);
+      const worktrees: { root: string; branch?: string }[] = [];
+      let current: { root: string; branch?: string } | undefined;
+      for (const line of lines) {
+        if (line.startsWith('worktree ')) {
+          if (current) worktrees.push(current);
+          current = { root: nodePath.resolve(line.slice('worktree '.length)) };
+        } else if (line.startsWith('branch ') && current) {
+          current.branch = line.slice('branch '.length);
+        }
+      }
+      if (current) worktrees.push(current);
+      const registered = lines.some(
         (line) =>
           line.startsWith('worktree ') &&
           nodePath.resolve(line.slice('worktree '.length)).toLowerCase() === nodePath.resolve(wtDir).toLowerCase(),
       );
       if (!registered) {
         mkdirSync(nodePath.dirname(wtDir), { recursive: true });
-        await gitExec(repoRoot, ['worktree', 'add', wtDir, branch]);
+        // Upgrade legacy sessions in place. The branch can only be checked
+        // out once, so Git must move its registered worktree rather than add
+        // a second checkout of the same branch.
+        const legacyRoot = worktrees.find(
+          (entry) => entry.branch === `refs/heads/${branch}` && this.isPrivateHermesPath(repoRoot, entry.root),
+        );
+        if (legacyRoot) {
+          await gitExec(repoRoot, ['worktree', 'move', legacyRoot.root, wtDir]);
+        } else {
+          await gitExec(repoRoot, ['worktree', 'add', wtDir, branch]);
+        }
       }
     } catch {
       return undefined;
@@ -288,8 +558,8 @@ export class HermesServer {
     return wtDir;
   }
 
-  /** Share agent state and environment into a session worktree: .hermes is
-   *  linked (single ledger source of truth), node_modules is linked when the
+  /** Share private agent state and environment into a product worktree:
+   *  .hermes is linked (single ledger source of truth), node_modules is linked when the
    *  main checkout has one, .env is copied. All best-effort — a worktree with
    *  none of these still works for chat-style continuations. */
   private linkWorkspaceIntoWorktree(repoRoot: string, wtDir: string): void {
@@ -322,7 +592,13 @@ export class HermesServer {
   private loadRegistry() {
     return this.db()
       .listSessions()
-      .map((s) => ({ ...s, events: this.db().eventsFor(s.runId) }));
+      .map((s) => ({
+        ...s,
+        // Hide legacy duplicates already persisted by older compaction runs;
+        // the source rows remain recoverable in the session database.
+        events: dedupeMemoryPatternEvents(this.db().eventsFor(s.runId)),
+        files: this.db().filesFor(s.runId),
+      }));
   }
 
   private saveRegistry(): void {
@@ -347,6 +623,10 @@ export class HermesServer {
       mode: s.mode,
       provider: s.provider,
       model: s.model,
+      requestedProvider: s.requestedProvider ?? s.provider,
+      requestedModel: s.requestedModel ?? s.model,
+      activeProvider: s.activeProvider ?? s.provider,
+      activeModel: s.activeModel ?? s.model,
       report: s.report,
       error: s.error,
       usage: s.usage,
@@ -422,9 +702,14 @@ export class HermesServer {
         mode,
         provider: entry.provider,
         model: entry.model,
+        requestedProvider: entry.requestedProvider ?? entry.provider,
+        requestedModel: entry.requestedModel ?? entry.model,
+        activeProvider: entry.activeProvider ?? entry.provider,
+        activeModel: entry.activeModel ?? entry.model,
         report,
         error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : entry.error,
         usage: entry.usage,
+        files: entry.files,
         events: Array.isArray(entry.events) ? entry.events : [],
         subscribers: new Set(),
         approvals: new Map(),
@@ -476,7 +761,7 @@ export class HermesServer {
   private async startCronRun(root: string, job: CronJob): Promise<string | undefined> {
     let llm: LlmClient;
     try {
-      llm = this.config.llm ?? resolveLlm({}).client;
+      llm = this.config.llm ?? resolveLlm({ workingDirectory: root }).client;
     } catch {
       return undefined;
     }
@@ -490,6 +775,7 @@ export class HermesServer {
       events: [],
       subscribers: new Set(),
       approvals: new Map(),
+      files: [],
     };
     this.sessions.set(session.runId, session);
     this.saveRegistry();
@@ -502,6 +788,36 @@ export class HermesServer {
     const data = JSON.stringify(body);
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(data);
+  }
+
+  private sendLocalFile(
+    res: http.ServerResponse,
+    filePath: string,
+    name: string,
+    mime: string,
+    inline = false,
+    headOnly = false,
+  ): void {
+    if (!existsSync(filePath)) {
+      this.sendJson(res, 404, { error: 'file not found' });
+      return;
+    }
+    const info = statSync(filePath);
+    if (!info.isFile()) {
+      this.sendJson(res, 404, { error: 'file not found' });
+      return;
+    }
+    const safe = safeFileName(name).replace(/["\\]/g, '-');
+    const disposition = inline && isPreviewableMime(mime) ? 'inline' : 'attachment';
+    res.writeHead(200, {
+      'content-type': mime || 'application/octet-stream',
+      'content-length': info.size,
+      'content-disposition': `${disposition}; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    if (headOnly) res.end();
+    else createReadStream(filePath).pipe(res);
   }
 
   private async readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
@@ -575,6 +891,10 @@ export class HermesServer {
       mode: s.mode,
       provider: s.provider,
       model: s.model,
+      requestedProvider: s.requestedProvider ?? s.provider,
+      requestedModel: s.requestedModel ?? s.model,
+      activeProvider: s.activeProvider ?? s.provider,
+      activeModel: s.activeModel ?? s.model,
       pendingApprovals: [...s.approvals.values()].map(({ id, tool, why, summary, requestedAt }) => ({ id, tool, why, summary, requestedAt })),
       pendingPlanReview: s.planReview
         ? { id: s.planReview.id, criteria: s.planReview.criteria, steps: s.planReview.steps, requestedAt: s.planReview.requestedAt }
@@ -590,10 +910,13 @@ export class HermesServer {
             costUsd: usageCostUsd(modelMetadataFor(peekModelCatalog(), s.provider ?? '', s.model ?? ''), s.usage),
           }
         : undefined,
+      files: s.files.map((file) => this.fileView(file)),
     };
   }
 
-  private pushEvent(s: RunSession, text: string, persistDb = true): void {
+  private recordEvent(s: RunSession, text: string, persistDb = true): void {
+    const memoryKey = memoryPatternNoticeKey(text);
+    if (memoryKey && s.events.some((event) => memoryPatternNoticeKey(event.text) === memoryKey)) return;
     // Streaming deltas are intentionally not persisted.  After a restart the
     // in-memory array is therefore sparse, so its length is not a safe event
     // cursor: reusing it can overwrite an old persisted event (including a
@@ -610,6 +933,25 @@ export class HermesServer {
       }
     }
     for (const send of s.subscribers) send(ev);
+  }
+
+  private pushEvent(s: RunSession, text: string, persistDb = true): void {
+    const prose = text.startsWith('say ') ? text.slice(4) : '';
+    if (persistDb && prose.length >= LONG_RESPONSE_DOCUMENT_CHARS) {
+      try {
+        const file = this.createAssistantDocument(s, prose);
+        this.recordEvent(
+          s,
+          `file ${JSON.stringify({ ...this.fileView(file), replacesLongText: true })}`,
+          true,
+        );
+        this.recordEvent(s, `say I put the detailed response in ${file.name} so you can preview or download it.`, true);
+        return;
+      } catch {
+        // If document persistence fails, preserve the original response.
+      }
+    }
+    this.recordEvent(s, text, persistDb);
   }
 
   /**
@@ -653,8 +995,24 @@ export class HermesServer {
       const text = event.text;
       const user = text.startsWith('user-msg ') ? text.slice('user-msg '.length).trim() : '';
       const assistant = text.startsWith('say ') ? text.slice('say '.length).trim() : '';
-      if (!user && !assistant) continue;
-      const turn: LlmMessage = user ? { role: 'user', content: user } : { role: 'assistant', content: assistant };
+      let fileTurn: LlmMessage | undefined;
+      if (text.startsWith('file ')) {
+        try {
+          const metadata = JSON.parse(text.slice(5)) as { id?: string; kind?: string; name?: string };
+          const file = s.files.find((item) => item.id === metadata.id);
+          if (file) {
+            const intro = `${file.kind === 'assistant' ? 'I provided' : 'The user attached'} file ${file.name} (${file.mime}, ${file.size} bytes).`;
+            const body = file.kind === 'assistant' && isTextLikeFile(file.name, file.mime) && existsSync(file.path)
+              ? `\n${readFileSync(file.path, 'utf8').slice(0, 12_000)}`
+              : ` Stored at ${file.path}.`;
+            fileTurn = { role: file.kind === 'assistant' ? 'assistant' : 'user', content: intro + body };
+          }
+        } catch {
+          /* malformed historical metadata is ignored */
+        }
+      }
+      if (!user && !assistant && !fileTurn) continue;
+      const turn: LlmMessage = fileTurn ?? (user ? { role: 'user', content: user } : { role: 'assistant', content: assistant });
       const previous = turns[turns.length - 1];
       if (previous?.role === turn.role && previous.content === turn.content) continue;
       turns.push(turn);
@@ -754,7 +1112,7 @@ export class HermesServer {
       const body = await this.readBody(req);
       const projectsPath = typeof body['projectsPath'] === 'string' ? body['projectsPath'].trim() : '';
       if (!projectsPath) {
-        saveWorkspaceSettings({});
+        updateWorkspaceSettings({ projectsPath: undefined });
         this.sendJson(res, 200, { ok: true, projectsPath: projectsDir() });
         return;
       }
@@ -762,9 +1120,91 @@ export class HermesServer {
         this.sendJson(res, 400, { error: 'The workspace cannot be a drive root — pick a folder like <home>/Projects' });
         return;
       }
-      saveWorkspaceSettings({ projectsPath });
+      updateWorkspaceSettings({ projectsPath });
       this.sendJson(res, 200, { ok: true, projectsPath: projectsDir() });
       return;
+    }
+
+    const providerProfileMatch = path.match(/^\/api\/provider-profiles(?:\/(custom-[a-z0-9-]+))?(?:\/(test))?$/);
+    if (providerProfileMatch) {
+      const profileId = providerProfileMatch[1];
+      const action = providerProfileMatch[2];
+      if (method === 'GET' && !profileId) {
+        this.sendJson(res, 200, { profiles: loadWorkspaceSettings().customProviders ?? [] });
+        return;
+      }
+      if (method === 'POST' && !profileId) {
+        const body = await this.readBody(req);
+        const requestedToolMode: 'auto' | 'native' | 'structured_text' | 'text' =
+          body['toolMode'] === 'native' || body['toolMode'] === 'structured_text' || body['toolMode'] === 'text' ? body['toolMode'] : 'auto';
+        const profile = {
+          id: String(body['id'] ?? '').trim().toLowerCase(),
+          label: String(body['label'] ?? '').trim(),
+          baseUrl: String(body['baseUrl'] ?? '').trim(),
+          defaultModel: String(body['defaultModel'] ?? '').trim(),
+          keyEnvVar: String(body['keyEnvVar'] ?? '').trim().toUpperCase(),
+          models: Array.isArray(body['models']) ? body['models'].map(String) : undefined,
+          toolMode: requestedToolMode,
+        };
+        // Validate the candidate before replacing any matching saved profile.
+        // Otherwise an invalid update could silently delete its prior, working
+        // configuration when settings sanitization drops the invalid entry.
+        const validCandidate = sanitizeCustomProviders([profile])?.[0];
+        if (!validCandidate) {
+          this.sendJson(res, 400, { error: 'Invalid provider profile. Use custom-<slug>, an HTTPS endpoint (or localhost HTTP), a model, and a HERMES_CUSTOM_* key name.' });
+          return;
+        }
+        const existing = loadWorkspaceSettings().customProviders ?? [];
+        const next = [...existing.filter((candidate) => candidate.id !== validCandidate.id), validCandidate];
+        const settings = updateWorkspaceSettings({ customProviders: next });
+        const saved = settings.customProviders?.find((candidate) => candidate.id === validCandidate.id);
+        if (!saved) {
+          this.sendJson(res, 400, { error: 'Invalid provider profile. Use custom-<slug>, an HTTPS endpoint (or localhost HTTP), a model, and a HERMES_CUSTOM_* key name.' });
+          return;
+        }
+        this.sendJson(res, 200, { ok: true, profile: saved });
+        return;
+      }
+      if (method === 'DELETE' && profileId && !action) {
+        const existing = loadWorkspaceSettings().customProviders ?? [];
+        const next = existing.filter((candidate) => candidate.id !== profileId);
+        if (next.length === existing.length) {
+          this.sendJson(res, 404, { error: 'provider profile not found' });
+          return;
+        }
+        updateWorkspaceSettings({ customProviders: next });
+        this.sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (method === 'POST' && profileId && action === 'test') {
+        const body = await this.readBody(req);
+        try {
+          const resolved = resolveLlm({
+            provider: profileId,
+            model: typeof body['model'] === 'string' && body['model'].trim() ? body['model'].trim() : undefined,
+            workingDirectory: this.config.cwd,
+          });
+          await resolved.client.complete([{ role: 'user', content: 'Reply with exactly: ok' }], { retries: 0, maxTransportAttempts: 1 });
+          this.sendJson(res, 200, { ok: true, provider: resolved.providerId, model: resolved.model });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return;
+      }
+    }
+
+    if (path === '/api/model-fallbacks') {
+      if (method === 'GET') {
+        this.sendJson(res, 200, { fallbackModels: loadWorkspaceSettings().fallbackModels ?? [] });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        const values = Array.isArray(body['fallbackModels']) ? body['fallbackModels'].map(String) : [];
+        const settings = updateWorkspaceSettings({ fallbackModels: values });
+        this.sendJson(res, 200, { ok: true, fallbackModels: settings.fallbackModels ?? [] });
+        return;
+      }
     }
 
     if (method === 'POST' && path === '/api/projects') {
@@ -806,6 +1246,7 @@ export class HermesServer {
           // the session row via its periodic persist calls.
           s.hermes?.stop();
           void s.lsp?.shutdown().catch(() => {});
+          this.removeSessionFileStorage(s);
           this.sessions.delete(runId);
         }
       }
@@ -825,8 +1266,16 @@ export class HermesServer {
 
     if (method === 'GET' && path === '/api/models') {
       const catalogPromise = fetchModelCatalog();
+      const subscriptionPromise = (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
       const providerRows = await Promise.all(
-        Object.values(PROVIDERS).map(async (spec) => {
+        Object.values(allProviderSpecs()).map(async (spec) => {
+          if (spec.auth === 'chatgpt-subscription') {
+            const subscription = await subscriptionPromise;
+            const models: { id: string; vision?: boolean }[] = subscription.models.length > 0
+              ? subscription.models.map((model) => ({ id: model.id, vision: model.vision }))
+              : spec.models.map((id) => ({ id }));
+            return { spec, keyInfo: undefined, models, live: subscription.models.length > 0, subscription };
+          }
           const keyInfo = providerKey(spec);
           const staticInfo = spec.models.map((id) => ({ id }));
           let models: { id: string; vision?: boolean }[] = staticInfo;
@@ -844,16 +1293,22 @@ export class HermesServer {
               live = true;
             }
           }
-          return { spec, keyInfo, models, live };
+          return { spec, keyInfo, models, live, subscription: undefined };
         }),
       );
       const catalog = await catalogPromise;
-      const providers = providerRows.map(({ spec, keyInfo, models, live }) => {
+      const providers = providerRows.map(({ spec, keyInfo, models, live, subscription }) => {
         return {
           id: spec.id,
           label: spec.label,
           defaultModel: spec.defaultModel,
           hasKey: Boolean(keyInfo),
+          auth: spec.auth ?? 'api-key',
+          signedIn: subscription?.signedIn ?? false,
+          planType: subscription?.planType,
+          available: subscription?.available ?? true,
+          usable: Boolean(keyInfo) || Boolean(subscription?.signedIn),
+          publicModels: Boolean(spec.publicModels),
           live,
           models: models.map((mi) => ({
             id: mi.id,
@@ -866,13 +1321,29 @@ export class HermesServer {
             metadata: modelMetadataFor(catalog, spec.id, mi.id),
           })),
           effortLevels: spec.effortLevels,
+          effortLabels: spec.effortLabels,
           maxEffort: spec.maxEffort ?? 'collapses-to-high',
           keyEnvVars: spec.keyEnvVars,
           baseUrl: spec.baseUrl,
+          custom: Boolean(spec.custom),
+          toolMode: spec.toolMode ?? 'auto',
         };
       });
-      const withKey = providers.find((p) => p.hasKey);
-      this.sendJson(res, 200, { providers, defaultProvider: withKey?.id ?? 'alibaba' });
+      const usableProvider = providers.find((p) => p.usable);
+      this.sendJson(res, 200, { providers, defaultProvider: usableProvider?.id ?? 'alibaba' });
+      return;
+    }
+
+    if (method === 'GET' && path.startsWith('/brand/')) {
+      const assetName = path.slice('/brand/'.length);
+      const contentType = BRAND_FILES[assetName];
+      const assetPath = contentType ? nodePath.join(BRAND_DIR, assetName) : undefined;
+      if (!contentType || !assetPath || !existsSync(assetPath)) {
+        this.sendJson(res, 404, { error: 'brand asset not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
+      createReadStream(assetPath).pipe(res);
       return;
     }
 
@@ -1118,6 +1589,7 @@ export class HermesServer {
               description: String(body['description'] ?? ''),
               instructions: String(body['instructions'] ?? ''),
               createdBy: 'user',
+              scope: body['global'] === true ? 'global' : 'project',
             });
             this.sendJson(res, 200, { ok: true, skill });
           }
@@ -1142,7 +1614,7 @@ export class HermesServer {
       const manager = McpManager.forProject(root);
       if (method === 'GET') {
         const tools = await manager.listAllTools();
-        this.sendJson(res, 200, { servers: manager.servers(), tools });
+        this.sendJson(res, 200, { servers: manager.servers(), scopes: manager.serverScopes(), tools });
         return;
       }
       if (method === 'POST') {
@@ -1154,8 +1626,8 @@ export class HermesServer {
           return;
         }
         const args = Array.isArray(body['args']) ? (body['args'] as unknown[]).map(String) : [];
-        manager.addServer({ name, command, args });
-        this.sendJson(res, 200, { ok: true, servers: manager.servers() });
+        manager.addServer({ name, command, args }, body['global'] === true ? 'global' : 'project');
+        this.sendJson(res, 200, { ok: true, servers: manager.servers(), scopes: manager.serverScopes() });
         return;
       }
       if (method === 'DELETE' && mcpMatch[1]) {
@@ -1193,7 +1665,7 @@ export class HermesServer {
     }
 
     const allowedKeyVars = new Set<string>([
-      ...Object.values(PROVIDERS).flatMap((s) => s.keyEnvVars),
+      ...Object.values(allProviderSpecs()).flatMap((s) => s.keyEnvVars),
       'HERMES_API_KEY',
       'OPENAI_API_KEY',
     ]);
@@ -1229,6 +1701,27 @@ export class HermesServer {
       }
       removeStoredKey(envVar);
       this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/chatgpt/auth') {
+      const subscription = await (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
+      this.sendJson(res, 200, { ...subscription, loggedIn: subscription.signedIn, loginPending: false });
+      return;
+    }
+
+    if (method === 'POST' && path === '/api/chatgpt/login') {
+      try {
+        const login = await (this.config.startCodexSubscriptionLogin ?? startCodexSubscriptionLogin)();
+        this.sendJson(res, 202, { ...login, url: login.authUrl });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return;
+    }
+
+    if (method === 'DELETE' && path === '/api/chatgpt/auth') {
+      this.sendJson(res, 405, { error: 'Sign out in Codex. Agent Gitu never stores your ChatGPT credentials.' });
       return;
     }
 
@@ -1352,8 +1845,10 @@ export class HermesServer {
     }
 
     if (method === 'POST' && path === '/api/runs') {
-      const body = await this.readBody(req, 12_000_000);
-      const goal = typeof body['goal'] === 'string' ? body['goal'].trim() : '';
+      const body = await this.readBody(req, 30_000_000);
+      const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
+      const typedGoal = typeof body['goal'] === 'string' ? body['goal'].trim() : '';
+      const goal = typedGoal || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!goal) {
         this.sendJson(res, 400, { error: 'goal is required' });
         return;
@@ -1377,12 +1872,12 @@ export class HermesServer {
             .slice(0, 4)
         : undefined;
       let llm = this.config.llm;
-      let resolvedInfo: { providerId: string; model: string } | undefined;
+      let resolvedInfo: { providerId: string; model: string; toolMode?: 'auto' | 'native' | 'structured_text' | 'text' } | undefined;
       if (!llm) {
         try {
-          const resolved = resolveLlm({ provider, model });
+          const resolved = resolveLlm({ provider, model, workingDirectory: projectPath ?? this.projectRoot() ?? this.config.cwd });
           llm = resolved.client;
-          resolvedInfo = { providerId: resolved.providerId, model: resolved.model };
+          resolvedInfo = { providerId: resolved.providerId, model: resolved.model, toolMode: resolved.toolMode };
         } catch (err) {
           if (err instanceof ProviderError) {
             this.sendJson(res, 400, { error: err.message });
@@ -1400,18 +1895,88 @@ export class HermesServer {
         taskId: undefined,
         provider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
         model: resolvedInfo?.model ?? model,
+        actionProtocolMode: resolvedInfo?.toolMode,
+        requestedProvider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
+        requestedModel: resolvedInfo?.model ?? model,
+        activeProvider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
+        activeModel: resolvedInfo?.model ?? model,
         projectPath,
         mode,
         autoApprove,
         events: [],
         subscribers: new Set(),
         approvals: new Map(),
+        files: [],
       };
-    this.sessions.set(session.runId, session);
-    this.saveRegistry();
-    this.pushEvent(session, `user-msg ${goal}`);
-    this.sendJson(res, 202, { runId: session.runId, mode });
-      void this.executeRun(session, llm!, { goal, criteria, mode, review, scope, constraints, effort, projectPath, autoApprove, autoLearn, images, model: resolvedInfo?.model ?? model });
+      this.sessions.set(session.runId, session);
+      let stored: ReturnType<HermesServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
+      try {
+        stored = this.storeUserFiles(session, rawFiles, projectPath ?? this.projectRoot() ?? this.config.cwd);
+      } catch (err) {
+        this.removeSessionFileStorage(session);
+        this.sessions.delete(session.runId);
+        this.db().deleteSession(session.runId);
+        this.sendJson(res, 400, { error: (err as Error).message });
+        return;
+      }
+      const modelImages = [...stored.images, ...(images ?? [])].slice(0, 4);
+      this.saveRegistry();
+      this.pushEvent(session, `user-msg ${goal}`);
+      for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
+      this.sendJson(res, 202, { runId: session.runId, mode });
+      void this.executeRun(session, llm!, {
+        goal,
+        criteria,
+        mode,
+        review,
+        scope,
+        constraints,
+        effort,
+        projectPath,
+        autoApprove,
+        autoLearn,
+        images: modelImages.length ? modelImages : undefined,
+        attachments: stored.attachments,
+        model: resolvedInfo?.model ?? model,
+        actionProtocolMode: resolvedInfo?.toolMode,
+      });
+      return;
+    }
+
+    const sessionFileMatch = path.match(/^\/api\/runs\/([\w-]+)\/files\/([\w-]+)$/);
+    if ((method === 'GET' || method === 'HEAD') && sessionFileMatch) {
+      const session = this.sessions.get(sessionFileMatch[1]!);
+      const file = session?.files.find((item) => item.id === sessionFileMatch[2]);
+      if (!session || !file) {
+        this.sendJson(res, 404, { error: 'file not found' });
+        return;
+      }
+      this.sendLocalFile(res, file.path, file.name, file.mime, url.searchParams.get('inline') === '1', method === 'HEAD');
+      return;
+    }
+
+    const projectFileMatch = path.match(/^\/api\/runs\/([\w-]+)\/project-file$/);
+    if ((method === 'GET' || method === 'HEAD') && projectFileMatch) {
+      const session = this.sessions.get(projectFileMatch[1]!);
+      const requested = String(url.searchParams.get('path') ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+      if (!session || !requested || nodePath.isAbsolute(requested) || requested === '..' || requested.startsWith('../')) {
+        this.sendJson(res, 404, { error: 'file not found' });
+        return;
+      }
+      const root = nodePath.resolve(session.worktreePath ?? this.resolveTaskRoot(session.taskId ?? '', session.projectPath) ?? session.projectPath ?? this.config.cwd);
+      const ledger = session.taskId ? TaskLedger.load(root, session.taskId) : undefined;
+      const allowed = new Set([...(session.report?.filesChanged ?? []), ...(ledger?.data.filesChanged ?? [])].map((item) => String(item).replace(/\\/g, '/').replace(/^\.\//, '')));
+      if (!allowed.has(requested)) {
+        this.sendJson(res, 403, { error: 'only files produced or changed by this run can be downloaded' });
+        return;
+      }
+      const target = nodePath.resolve(root, requested);
+      if (target !== root && !target.startsWith(root + nodePath.sep)) {
+        this.sendJson(res, 403, { error: 'file is outside the task workspace' });
+        return;
+      }
+      const mime = mimeForFile(requested);
+      this.sendLocalFile(res, target, nodePath.basename(requested), mime, url.searchParams.get('inline') === '1', method === 'HEAD');
       return;
     }
 
@@ -1491,6 +2056,7 @@ export class HermesServer {
         if (s) {
           s.hermes?.stop();
           void s.lsp?.shutdown().catch(() => {});
+          this.removeSessionFileStorage(s);
         }
         this.sessions.delete(id);
         if (this.db().deleteSession(id)) removed += 1;
@@ -1506,6 +2072,7 @@ export class HermesServer {
       if (s) {
         s.hermes?.stop();
         void s.lsp?.shutdown().catch(() => {});
+        this.removeSessionFileStorage(s);
       }
       this.sessions.delete(id);
       const removed = this.db().deleteSession(id);
@@ -1520,8 +2087,40 @@ export class HermesServer {
         this.sendJson(res, 404, { error: 'run not found' });
         return;
       }
-      session.hermes?.stop();
-      session.lsp?.shutdown().catch(() => {});
+      if (session.status !== 'running') {
+        this.sendJson(res, 200, { ok: true, alreadyStopped: true });
+        return;
+      }
+
+      // Detach the active execution before aborting it.  A provider can take
+      // a moment to honour cancellation; without this, its late completion
+      // can overwrite the user-visible stopped state or keep emitting output.
+      const hermes = session.hermes;
+      const lsp = session.lsp;
+      session.hermes = undefined;
+      session.lsp = undefined;
+      hermes?.stop();
+      lsp?.shutdown().catch(() => {});
+
+      // Stop must be terminal immediately.  Previously this route only wrote
+      // an event, leaving status="running" and causing the UI spinner and
+      // subsequent messages to be treated as queued work.
+      session.status = 'blocked';
+      session.error = 'Stopped by user.';
+      session.finishedAt = nowIso();
+
+      // A run paused for a question, plan review, or approval is not waiting
+      // on the LLM abort signal.  Resolve those waiters so the cancelled run
+      // can unwind instead of remaining alive until their timeout.
+      const question = session.questions;
+      session.questions = undefined;
+      question?.resolve('(stopped by user)');
+      const planReview = session.planReview;
+      session.planReview = undefined;
+      planReview?.resolve({ approved: false, note: 'Stopped by user.' });
+      for (const approval of session.approvals.values()) approval.resolve(false);
+      session.approvals.clear();
+
       this.pushEvent(session, 'stopped by user');
       this.sendJson(res, 200, { ok: true });
       return;
@@ -1543,8 +2142,10 @@ export class HermesServer {
       const wasRunning = prevStatus === 'running';
       session.status = 'running';
       try {
-      const body = await this.readBody(req, 12_000_000);
-      const text = typeof body['text'] === 'string' ? body['text'].trim() : '';
+      const body = await this.readBody(req, 30_000_000);
+      const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
+      const typedText = typeof body['text'] === 'string' ? body['text'].trim() : '';
+      const text = typedText || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!text) {
         if (!wasRunning) session.status = prevStatus;
         this.sendJson(res, 400, { error: 'text is required' });
@@ -1556,6 +2157,19 @@ export class HermesServer {
             .filter((im) => im.dataUrl.startsWith('data:image/'))
             .slice(0, 4)
         : undefined;
+      let stored: ReturnType<HermesServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
+      try {
+        stored = this.storeUserFiles(
+          session,
+          rawFiles,
+          session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd,
+        );
+      } catch (err) {
+        if (!wasRunning) session.status = prevStatus;
+        this.sendJson(res, 400, { error: (err as Error).message });
+        return;
+      }
+      const modelImages = [...stored.images, ...(images ?? [])].slice(0, 4);
       // Older sessions created before provider/model persistence have no
       // model identity. Let the current picker supply it once so they can be
       // resumed after an app upgrade instead of falling back to an unrelated
@@ -1573,8 +2187,9 @@ export class HermesServer {
       else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
       if (wasRunning) {
-        session.hermes?.queueMessage(text);
+        session.hermes?.queueMessage(text, this.attachmentContext(stored.attachments));
         this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
+        for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
         this.sendJson(res, 200, { ok: true, queued: true });
         return;
       }
@@ -1603,7 +2218,21 @@ export class HermesServer {
       // shared checkout stays exactly where it is.
       let execRoot = taskRoot;
       if (ledger.data.worktreePath && existsSync(ledger.data.worktreePath)) {
-        execRoot = ledger.data.worktreePath;
+        if (this.isPrivateHermesPath(taskRoot, ledger.data.worktreePath)) {
+          const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
+          if (!wt) {
+            session.status = prevStatus;
+            this.sendJson(res, 409, { error: 'Execution rejected: legacy worktree is inside .hermes and could not be migrated to the canonical session workspace.' });
+            return;
+          }
+          execRoot = wt;
+          ledger.data.worktreePath = wt;
+          ledger.save();
+          session.worktreePath = wt;
+          this.pushEvent(session, `git     migrated legacy .hermes worktree to canonical session workspace ${wt}`);
+        } else {
+          execRoot = ledger.data.worktreePath;
+        }
       } else {
         const precheck = await ledger.validateEnvironment(execRoot);
         if (!precheck.ok && /branch mismatch/i.test(precheck.reason ?? '')) {
@@ -1629,6 +2258,7 @@ export class HermesServer {
       let llm = this.config.llm;
       let provider = session.provider;
       let model = session.model;
+      let actionProtocolMode = session.actionProtocolMode;
       if (useSelectedModel && selectedProvider && selectedModel) {
         // The UI only sends this flag after the user changes the picker for
         // this session, so a deliberate recovery from an unavailable model is
@@ -1637,11 +2267,22 @@ export class HermesServer {
         model = selectedModel;
         session.provider = provider;
         session.model = model;
+        session.requestedProvider = provider;
+        session.requestedModel = model;
+        session.activeProvider = provider;
+        session.activeModel = model;
+        actionProtocolMode = undefined;
+        session.actionProtocolMode = undefined;
+        session.fallbackHistory = [];
       } else if ((!provider || !model) && selectedProvider && selectedModel && (!provider || provider === selectedProvider)) {
         provider ??= selectedProvider;
         model ??= selectedModel;
         session.provider = provider;
         session.model = model;
+        session.requestedProvider ??= provider;
+        session.requestedModel ??= model;
+        session.activeProvider = provider;
+        session.activeModel = model;
       }
       // No-credits rescue: when the PREVIOUS attempt died on billing, walk the
       // USER-CONFIGURED fallback list (Settings → Fallback models) first; with
@@ -1664,6 +2305,8 @@ export class HermesServer {
           model = candidate[1];
           session.provider = provider;
           session.model = model;
+          session.activeProvider = provider;
+          session.activeModel = model;
           session.error = undefined;
           this.persistSession(session);
         } else {
@@ -1678,7 +2321,10 @@ export class HermesServer {
           // Keep a continuation on the model the user selected for the
           // original session instead of silently falling back to the current
           // global default after an app restart.
-          llm = resolveLlm({ provider, model }).client;
+          const resolved = resolveLlm({ provider, model, workingDirectory: execRoot });
+          llm = resolved.client;
+          actionProtocolMode = resolved.toolMode;
+          session.actionProtocolMode = resolved.toolMode;
         } catch (err) {
           if (err instanceof ProviderError) {
             session.status = prevStatus;
@@ -1695,6 +2341,7 @@ export class HermesServer {
       session.error = undefined;
       if (supersede) this.supersedeUserMessage(session, supersede, text);
       this.pushEvent(session, `user-msg ${text}`);
+      for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
       this.pushEvent(session, `continue — resuming this session`);
       void this.executeRun(session, llm, {
         goal: session.goal,
@@ -1703,8 +2350,10 @@ export class HermesServer {
         projectPath: execRoot,
         resume: { taskId: session.taskId, message: text },
         conversationHistory,
-        images,
+        images: modelImages.length ? modelImages : undefined,
+        attachments: stored.attachments,
         model,
+        actionProtocolMode,
         autoApprove: session.autoApprove,
       });
       this.sendJson(res, 200, { ok: true, resumed: true });
@@ -1785,10 +2434,17 @@ export class HermesServer {
       autoApprove?: boolean;
       autoLearn?: boolean;
       images?: { name: string; dataUrl: string }[];
+      attachments?: ModelContextAttachment[];
       model?: string;
+      actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
       conversationHistory?: LlmMessage[];
     },
   ): Promise<void> {
+    // Only the Hermes instance currently attached to the session may change
+    // its state.  This protects a fresh continuation from a late completion
+    // of an earlier run that was stopped or superseded.
+    let activeHermes: InstanceType<typeof Hermes> | undefined;
+    const isCurrentExecution = (): boolean => session.hermes === activeHermes;
     let root: string;
     let ignorePaths: string[] | undefined;
     // Catalog modality is the source of truth for image support; warm the
@@ -1803,7 +2459,10 @@ export class HermesServer {
     }
     const index = this.sharedIndex(root, ignorePaths);
     const catalog = await fetchModelCatalog();
-    const contextWindowTokens = modelMetadataFor(catalog, session.provider ?? '', opts.model ?? session.model ?? '')?.contextTokens;
+    const selectedModel = opts.model ?? session.model ?? '';
+    const modelMeta = modelMetadataFor(catalog, session.provider ?? '', selectedModel);
+    const contextWindowTokens = modelMeta?.contextTokens;
+    const modelCapability = modelCapabilityTier(modelMeta, selectedModel);
     const skills = SkillStore.forProject(root);
     const mcp = McpManager.forProject(root);
     const agentStore = new AgentStore();
@@ -1830,16 +2489,21 @@ export class HermesServer {
                   `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name (e.g. ${agentStore.list()[0]?.name ? `"${agentStore.list()[0]?.name}"` : '"explore"'}), NOT a model/provider identifier.`,
                 );
               }
-              return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model }).client, trackUsage);
+              return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root }).client, trackUsage);
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
-            onEvent: (t) => this.pushEvent(session, t),
+            onEvent: (t) => {
+              if (isCurrentExecution()) this.pushEvent(session, t);
+            },
           })
         : undefined;
     session.project = root.split(/[\\/]/).filter(Boolean).pop();
     session.mode ??= opts.mode;
-    const lsp = (session.lsp ??= new LspManager(root));
+    const lsp = (session.lsp ??= new LspManager(root, undefined, {
+      autoInstall: this.config.autoInstallLsp !== false,
+      onEvent: (text) => this.pushEvent(session, text),
+    }));
     const hermes = new Hermes({
       cwd: opts.projectPath ?? this.config.cwd,
       index,
@@ -1851,6 +2515,7 @@ export class HermesServer {
       scopeFiles: opts.scope,
       extraConstraints: opts.constraints,
       effort: opts.effort,
+      actionProtocolMode: opts.actionProtocolMode,
       skills,
       mcp,
       lsp,
@@ -1861,6 +2526,7 @@ export class HermesServer {
       conversationHistory: opts.conversationHistory,
       browser: this.browserImpl(),
       images: opts.images,
+      attachments: opts.attachments,
       // Full-precedence resolution (provider live /models → catalog → name
       // heuristic) so any vision-capable model actually receives the attached
       // images instead of having them silently skipped at run time.
@@ -1870,6 +2536,7 @@ export class HermesServer {
         catalog,
       }),
       contextWindowTokens,
+      modelCapability,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };
@@ -1924,6 +2591,7 @@ export class HermesServer {
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
       onEvent: (text) => {
+        if (!isCurrentExecution()) return;
         const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
         if (ledgerMatch) {
           session.taskId = ledgerMatch[1];
@@ -1937,10 +2605,12 @@ export class HermesServer {
         this.pushEvent(session, text, !text.startsWith('browseshot '));
       },
     });
+    activeHermes = hermes;
     session.hermes = hermes;
 
     try {
       const { ledger, report } = await hermes.run(opts.goal);
+      if (!isCurrentExecution()) return;
       session.status = report.status === 'complete' ? 'completed' : report.status === 'blocked' ? 'blocked' : 'failed';
       session.report = report;
       // Stalled/blocked runs previously left session.error null, so the UI
@@ -1953,10 +2623,67 @@ export class HermesServer {
           (session.status === 'failed' ? 'Task ended without completion (stalled): the effort budget ran out without verified progress.' : undefined);
       }
     } catch (err) {
-      session.status = 'failed';
+      if (!isCurrentExecution()) return;
+      const llmError = err instanceof LlmError ? err : undefined;
+      const canFallback = llmError && ['quota_exhausted', 'billing', 'auth', 'access', 'provider_unavailable', 'rate_limit_temporary'].includes(llmError.details.kind);
+      const activeProvider = session.activeProvider ?? session.provider;
+      const activeModel = session.activeModel ?? session.model;
+      const seen = new Set(session.fallbackHistory ?? []);
+      if (canFallback && activeProvider && activeModel) {
+        const current = `${activeProvider}::${activeModel}`;
+        seen.add(current);
+        const configured = (loadWorkspaceSettings().fallbackModels ?? [])
+          .find((entry) => !seen.has(entry) && /^[\w.-]+::[\w.\-/]+$/.test(entry));
+        const sameProviderFree = configured || !['quota_exhausted', 'billing'].includes(llmError.details.kind)
+          ? undefined
+          : freeModelFallback(activeProvider, activeModel);
+        const candidate = configured ?? (sameProviderFree ? `${activeProvider}::${sameProviderFree}` : undefined);
+        if (candidate) {
+          const [nextProvider, nextModel] = candidate.split('::') as [string, string];
+          try {
+            const next = resolveLlm({ provider: nextProvider, model: nextModel, workingDirectory: root });
+            session.fallbackHistory = [...seen, candidate].slice(-8);
+            session.provider = next.providerId;
+            session.model = next.model;
+            session.activeProvider = next.providerId;
+            session.activeModel = next.model;
+            session.actionProtocolMode = next.toolMode;
+            session.status = 'running';
+            session.error = undefined;
+            session.finishedAt = undefined;
+            this.pushEvent(
+              session,
+              `model    ${activeProvider}/${activeModel} failed (${llmError.details.kind}) — automatically continuing with ${configured ? 'configured fallback' : 'same-provider free fallback'} ${next.providerId}/${next.model}; your requested model remains ${session.requestedProvider ?? activeProvider}/${session.requestedModel ?? activeModel}`,
+            );
+            // Detach the old execution before starting the resume. Its finally
+            // block then becomes a no-op and cannot overwrite the new state.
+            session.hermes = undefined;
+            void this.executeRun(session, next.client, {
+              ...opts,
+              projectPath: root,
+              model: next.model,
+              actionProtocolMode: next.toolMode,
+              resume: session.taskId
+                ? { taskId: session.taskId, message: 'Continue from the preserved task state after the previous model became unavailable.' }
+                : opts.resume,
+              conversationHistory: this.conversationHistory(session),
+            });
+            return;
+          } catch (fallbackError) {
+            this.pushEvent(session, `warn    fallback ${candidate} could not start: ${(fallbackError as Error).message.slice(0, 220)}`);
+          }
+        }
+      }
+      session.status = llmError?.details.kind === 'rate_limit_temporary' ? 'waiting_for_model' : 'failed';
       session.error = (err as Error).message;
-      this.pushEvent(session, `fatal: ${session.error}`);
+      this.pushEvent(
+        session,
+        session.status === 'waiting_for_model'
+          ? `waiting-for-model: ${session.error} — task state is preserved; select a configured fallback or retry when the provider recovers`
+          : `fatal: ${session.error}`,
+      );
     } finally {
+      if (!isCurrentExecution()) return;
       session.finishedAt = nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       this.saveRegistry();

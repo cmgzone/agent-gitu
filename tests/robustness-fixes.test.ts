@@ -1,14 +1,16 @@
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { classifyTaskComplexity } from '../src/agent/effort-planner.js';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { EvidenceEngine, isWeakEvidenceLink } from '../src/evidence/evidence.js';
 import { getWorkspaceFingerprint } from '../src/git/git.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
-import { toolApplyEdit, toolWriteFile, type ToolContext } from '../src/tools/tools.js';
+import { CheckpointManager } from '../src/checkpoint/checkpoint.js';
+import { toolApplyEdit, toolWriteFile, verifyPersistedContent, type ToolContext } from '../src/tools/tools.js';
 import { Reporter } from '../src/report/reporter.js';
 import { SkillStore } from '../src/skills/skills.js';
 
@@ -62,6 +64,50 @@ describe('write_file truncation heuristic', () => {
     const fine = `function ok() {\n  return [1, 2].map((n) => ({ n }));\n}\n`;
     const result = toolWriteFile(ctx(dir), { path: 'ok.js', content: fine });
     expect(result.output).not.toContain('TRUNCATED');
+    expect(result.output).toContain('verified persisted content');
+  });
+
+  it('does not confuse a mismatched re-read with a successful mutation', () => {
+    const dir = makeProject('persisted-mismatch');
+    const file = path.join(dir, 'actual.txt');
+    writeFileSync(file, 'actual content', 'utf8');
+    const result = verifyPersistedContent(ctx(dir), file, 'expected content');
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toContain('content hash mismatch');
+  });
+});
+
+describe('checkpoint workspace isolation', () => {
+  it('keeps private .hermes state out of Git commits, including legacy tracked state', () => {
+    const dir = makeProject('checkpoint-private-state');
+    const git = (...args: string[]): string => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+    writeFileSync(path.join(dir, '.gitignore'), '', 'utf8');
+    writeFileSync(path.join(dir, '.hermes-state-seed'), 'seed', 'utf8');
+    // Deliberately reproduce an old Agent Gitu commit that included private
+    // state, then prove the next checkpoint detaches it from the index.
+    const privateDir = path.join(dir, '.hermes');
+    mkdirSync(privateDir, { recursive: true });
+    writeFileSync(path.join(privateDir, 'old-task.json'), '{"old":true}', 'utf8');
+    git('init');
+    git('config', 'user.name', 'test');
+    git('config', 'user.email', 'test@example.test');
+    git('add', '-A');
+    git('commit', '-m', 'legacy private state');
+
+    const guard = ProjectGuard.detect(dir);
+    writeFileSync(path.join(privateDir, 'old-task.json'), '{"changed":true}', 'utf8');
+    writeFileSync(path.join(dir, 'product.txt'), 'real product change', 'utf8');
+    const checkpoints = new CheckpointManager(guard);
+    const result = checkpoints.snapshot(
+      { data: { taskId: 'task-private' }, addCheckpoint: () => {} } as never,
+      'step-1',
+      'product change',
+    );
+
+    expect(result.ok).toBe(true);
+    expect(git('ls-files', '.hermes')).toBe('');
+    expect(git('show', '--format=', '--name-only', 'HEAD')).toContain('product.txt');
+    expect(git('ls-tree', '-r', '--name-only', 'HEAD').split(/\r?\n/)).not.toContain('.hermes/old-task.json');
   });
 });
 
@@ -213,5 +259,28 @@ describe('report summary shows its backing', () => {
     );
     const rendered = new Reporter().render(report);
     expect(rendered).toContain('no passing verification recorded');
+  });
+
+  it('separates final-workspace verification from superseded history', () => {
+    const report = new Reporter().build(
+      {
+        data: {
+          taskId: 't', goal: 'g', status: 'blocked', mode: 'standard', blockers: [], actions: [], filesChanged: [], plan: [], checkpoints: [], createdAt: '', updatedAt: '',
+          evidence: [
+            { id: 'old-pass', kind: 'test', label: 'npm test', command: 'npm test', passed: true, outputExcerpt: 'PASS', createdAt: '', workspaceFingerprint: 'before' },
+            { id: 'current-pass', kind: 'test', label: 'npm test', command: 'npm test', passed: true, outputExcerpt: 'PASS', createdAt: '', workspaceFingerprint: 'after' },
+            { id: 'current-fail', kind: 'lint', label: 'npm run lint', command: 'npm run lint', passed: false, outputExcerpt: 'FAIL', createdAt: '', workspaceFingerprint: 'after' },
+          ],
+        },
+      } as never,
+      'blocked',
+      { summary: 'blocked', risks: [], followUps: [] },
+      'after',
+    );
+    expect(report.verificationDetails?.map((item) => [item.id, item.authority])).toEqual([
+      ['old-pass', 'historical'],
+      ['current-pass', 'latest'],
+      ['current-fail', 'latest'],
+    ]);
   });
 });

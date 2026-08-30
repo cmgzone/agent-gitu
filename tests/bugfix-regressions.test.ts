@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { shiftPrefixEndAfterCompaction } from '../src/agent/hermes.js';
+import { shiftPrefixEndAfterCompaction } from '../src/agent/gitu.js';
 import { uiVisualGate } from '../src/agent/ui-gate.js';
 import { getWorkspaceFingerprint, gitDiscard, gitInfo, gitExec } from '../src/git/git.js';
 import { McpManager } from '../src/mcp/client.js';
@@ -255,6 +255,71 @@ describe('mcp manager protects config against silent wipes (L15)', () => {
     expect(mgr.servers().map((s) => s.name).sort()).toEqual(['added', 'keep']);
     mgr.removeServer('added');
     expect(mgr.servers().map((s) => s.name)).toEqual(['keep']);
+  });
+});
+
+describe('mcp manager global layer (workspace-wide servers)', () => {
+  it('merges global + project servers, project winning on name clashes', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, '.hermes'), { recursive: true });
+    const globalDir = mkdtempSync(path.join(tmpdir(), 'hermes-mcp-global-'));
+    const globalFile = path.join(globalDir, 'mcp.json');
+    writeFileSync(globalFile, JSON.stringify({ servers: [
+      { name: 'fs', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/data'] },
+      { name: 'shared', command: 'global-cmd' },
+    ] }));
+    const file = path.join(dir, '.hermes', 'mcp.json');
+    const mgr = new McpManager(file, globalFile);
+    // A server configured in ANOTHER project is visible here with no local config.
+    expect(mgr.servers().map((s) => s.name).sort()).toEqual(['fs', 'shared']);
+    expect(mgr.serverScopes()).toMatchObject({ fs: 'global', shared: 'global' });
+
+    // A project copy shadows the same-name global without touching it.
+    mgr.addServer({ name: 'shared', command: 'project-cmd' });
+    expect(mgr.servers().find((s) => s.name === 'shared')!.command).toBe('project-cmd');
+    expect(mgr.serverScopes()['shared']).toBe('project');
+    const raw = JSON.parse(readFileSync(globalFile, 'utf8')) as { servers: { name: string; command: string }[] };
+    expect(raw.servers.find((s) => s.name === 'shared')!.command).toBe('global-cmd');
+
+    // Removing the project copy reveals the global again.
+    mgr.removeServer('shared');
+    expect(mgr.servers().find((s) => s.name === 'shared')!.command).toBe('global-cmd');
+    // Removing a global-only server writes to the GLOBAL file.
+    mgr.removeServer('fs');
+    const after = JSON.parse(readFileSync(globalFile, 'utf8')) as { servers: { name: string }[] };
+    expect(after.servers.map((s) => s.name)).toEqual(['shared']);
+    expect(mgr.servers().map((s) => s.name)).toEqual(['shared']);
+  });
+
+  it('addServer with global scope writes to the global layer only', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, '.hermes'), { recursive: true });
+    const globalDir = mkdtempSync(path.join(tmpdir(), 'hermes-mcp-global2-'));
+    const globalFile = path.join(globalDir, 'mcp.json');
+    const file = path.join(dir, '.hermes', 'mcp.json');
+    const mgr = new McpManager(file, globalFile);
+    mgr.addServer({ name: 'browser', command: 'npx' }, 'global');
+    expect(existsSync(globalFile)).toBe(true);
+    expect(existsSync(file)).toBe(false);
+    // And it is visible from ANOTHER project.
+    const dir2 = makeProject();
+    const mgr2 = new McpManager(path.join(dir2, '.hermes', 'mcp.json'), globalFile);
+    expect(mgr2.servers().map((s) => s.name)).toEqual(['browser']);
+    expect(mgr2.serverScopes()['browser']).toBe('global');
+  });
+
+  it('treats a corrupt global config as fatal for writes, never wiping it', () => {
+    const dir = makeProject();
+    mkdirSync(path.join(dir, '.hermes'), { recursive: true });
+    const globalDir = mkdtempSync(path.join(tmpdir(), 'hermes-mcp-bad-'));
+    const globalFile = path.join(globalDir, 'mcp.json');
+    writeFileSync(globalFile, '{ nope');
+    const file = path.join(dir, '.hermes', 'mcp.json');
+    const mgr = new McpManager(file, globalFile);
+    expect(() => mgr.addServer({ name: 'x', command: 'y' }, 'project')).toThrow(/invalid JSON/);
+    expect(() => mgr.removeServer('x')).toThrow(/invalid JSON/);
+    expect(existsSync(file)).toBe(false);
+    expect(readFileSync(globalFile, 'utf8')).toBe('{ nope');
   });
 });
 

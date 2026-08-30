@@ -1,6 +1,8 @@
 import { OpenAiCompatClient, type LlmClient } from './llm.js';
+import { CodexSubscriptionClient, codexExecutable } from './codex-subscription.js';
 import { mergedEnv } from './keys.js';
 import { createEmbedder, type Embedder } from '../context/embeddings.js';
+import { loadWorkspaceSettings, type CustomProviderProfile } from '../workspace/home.js';
 
 /**
  * Resolve an embeddings-capable client from the SAME provider configuration
@@ -46,10 +48,18 @@ export interface ProviderSpec {
   defaultModel: string;
   models: string[];
   effortLevels: string[];
+  /** Provider-specific wording for an effort level when its API aliases it. */
+  effortLabels?: Partial<Record<string, string>>;
   /** Whether "max" effort is a genuinely distinct level on this provider. DashScope has real thinking budgets; generic OpenAI-compatible endpoints collapse max → high. */
   maxEffort?: 'distinct' | 'collapses-to-high';
   /** Model catalog is publicly fetchable without an API key (e.g. OpenCode Zen / Go). */
   publicModels?: boolean;
+  /** This provider uses Codex's locally managed ChatGPT OAuth session, never an API key. */
+  auth?: 'api-key' | 'chatgpt-subscription';
+  /** Saved user profile, not a built-in catalog entry. */
+  custom?: boolean;
+  /** Hint for the first action protocol attempt. `auto` starts native. */
+  toolMode?: 'auto' | 'native' | 'structured_text' | 'text';
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
@@ -93,6 +103,32 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     defaultModel: 'gpt-4.1-mini',
     models: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o'],
     effortLevels: ['low', 'medium', 'high'],
+  },
+  deepseek: {
+    id: 'deepseek',
+    label: 'DeepSeek (direct API, OpenAI-compatible)',
+    baseUrl: 'https://api.deepseek.com',
+    keyEnvVars: ['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'],
+    defaultModel: 'deepseek-v4-pro',
+    // Offline seed only — a configured key also loads the current /models
+    // listing, so newly released DeepSeek models appear in the picker.
+    models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    // DeepSeek accepts medium for compatibility but maps it to high internally.
+    effortLabels: { medium: 'medium (= high)' },
+    maxEffort: 'distinct',
+  },
+  chatgpt: {
+    id: 'chatgpt',
+    label: 'ChatGPT subscription (via Codex)',
+    // A sentinel only: requests go through the local Codex runtime, not this URL.
+    baseUrl: 'codex://chatgpt',
+    keyEnvVars: [],
+    defaultModel: 'gpt-5.6-sol',
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+    effortLevels: ['low', 'medium', 'high', 'max'],
+    maxEffort: 'distinct',
+    auth: 'chatgpt-subscription',
   },
   'opencode-zen': {
     id: 'opencode-zen',
@@ -237,6 +273,33 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
   },
 };
 
+function customProfileSpec(profile: CustomProviderProfile): ProviderSpec {
+  return {
+    id: profile.id,
+    label: profile.label,
+    baseUrl: profile.baseUrl,
+    keyEnvVars: [profile.keyEnvVar],
+    defaultModel: profile.defaultModel,
+    models: profile.models?.length ? profile.models : [profile.defaultModel],
+    effortLevels: ['low', 'medium', 'high'],
+    custom: true,
+    toolMode: profile.toolMode ?? 'auto',
+  };
+}
+
+/** Built-ins plus user-owned profiles; profile credentials are never included. */
+export function allProviderSpecs(): Record<string, ProviderSpec> {
+  const custom = loadWorkspaceSettings().customProviders ?? [];
+  return {
+    ...PROVIDERS,
+    ...Object.fromEntries(custom.map((profile) => [profile.id, customProfileSpec(profile)])),
+  };
+}
+
+export function providerSpec(providerId: string): ProviderSpec | undefined {
+  return allProviderSpecs()[providerId.toLowerCase()];
+}
+
 export interface ModelInfo {
   id: string;
   ownedBy?: string;
@@ -349,6 +412,24 @@ export function isFreeModel(model: string): boolean {
   return /-free$/i.test(model) || /:free$/i.test(model) || model === 'big-pickle';
 }
 
+export type ModelCapabilityTier = 'low' | 'standard' | 'high';
+
+/**
+ * Rough capability tier used to size the TURN budget (not the per-call
+ * reasoning effort, which is the provider's own `effort` parameter).
+ * Lower-capability models — free/community tiers are the clearest signal —
+ * get MORE turns, because each of their turns accomplishes less work; a
+ * budget tuned for a frontier model stalls them mid-task. Price is the best
+ * available proxy when the catalog publishes it.
+ */
+export function modelCapabilityTier(metadata: ModelMetadata | undefined, model: string): ModelCapabilityTier {
+  if (isFreeModel(model)) return 'low';
+  const out = metadata?.outputPricePerMillion;
+  if (out === undefined) return 'standard';
+  if (out >= 5) return 'high';
+  return 'standard';
+}
+
 /**
  * Pick a free fallback from the SAME provider when the selected model cannot
  * be billed (HTTP 401 / no credits). Returns undefined when the model is
@@ -357,7 +438,7 @@ export function isFreeModel(model: string): boolean {
  */
 export function freeModelFallback(providerId: string, model: string): string | undefined {
   if (!providerId || isFreeModel(model)) return undefined;
-  const spec = PROVIDERS[providerId];
+  const spec = providerSpec(providerId);
   const candidate = (spec?.models ?? []).find((m) => isFreeModel(m));
   return candidate;
 }
@@ -608,7 +689,11 @@ export async function resolveImageSupport(opts: {
   env?: NodeJS.ProcessEnv;
 }): Promise<boolean> {
   const providerId = opts.providerId?.toLowerCase();
-  const provider = providerId ? PROVIDERS[providerId] : undefined;
+  const provider = providerId ? providerSpec(providerId) : undefined;
+  // Codex's subscription picker reports image support for every available
+  // model. The local runtime receives those images directly rather than via a
+  // provider /models endpoint.
+  if (provider?.auth === 'chatgpt-subscription') return true;
   const env = opts.env ?? mergedEnv();
   const baseUrl =
     provider?.baseUrl ?? (providerId === 'custom' ? env['HERMES_BASE_URL'] ?? env['OPENAI_BASE_URL'] : undefined);
@@ -632,6 +717,8 @@ export interface ResolveOptions {
   provider?: string;
   model?: string;
   baseUrl?: string;
+  /** Workspace Codex may inspect while responding. */
+  workingDirectory?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -641,11 +728,14 @@ export interface ResolvedLlm {
   baseUrl: string;
   model: string;
   keyEnvVar: string;
+  toolMode?: 'auto' | 'native' | 'structured_text' | 'text';
+  /** Credential-name + provider limit group; never includes a secret. */
+  rateLimitKey?: string;
 }
 
 function build(
   providerId: string,
-  spec: { baseUrl: string; defaultModel: string } | undefined,
+  spec: { baseUrl: string; defaultModel: string; toolMode?: ProviderSpec['toolMode'] } | undefined,
   apiKey: string,
   keyEnvVar: string,
   opts: ResolveOptions,
@@ -654,11 +744,13 @@ function build(
   const baseUrl = opts.baseUrl ?? env['HERMES_BASE_URL'] ?? spec?.baseUrl ?? 'https://api.openai.com/v1';
   const model = opts.model ?? env['HERMES_MODEL'] ?? spec?.defaultModel ?? 'gpt-4.1-mini';
   return {
-    client: new OpenAiCompatClient({ apiKey, baseUrl, model }),
+    client: new OpenAiCompatClient({ apiKey, baseUrl, model, rateLimitKey: `${providerId}:${keyEnvVar}:chat` }),
     providerId,
     baseUrl,
     model,
     keyEnvVar,
+    toolMode: spec?.toolMode ?? 'auto',
+    rateLimitKey: `${providerId}:${keyEnvVar}:chat`,
   };
 }
 
@@ -666,11 +758,26 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
   const env = opts.env ?? mergedEnv();
 
   if (opts.provider) {
-    const spec = PROVIDERS[opts.provider.toLowerCase()];
+    const spec = providerSpec(opts.provider);
     if (!spec) {
       throw new ProviderError(
-        `Unknown provider "${opts.provider}". Available: ${Object.keys(PROVIDERS).join(', ')}`,
+        `Unknown provider "${opts.provider}". Available: ${Object.keys(allProviderSpecs()).join(', ')}`,
       );
+    }
+    if (spec.auth === 'chatgpt-subscription') {
+      if (!codexExecutable()) {
+        throw new ProviderError('ChatGPT subscription access needs the local Codex runtime. Install or update Codex, then restart Agent Gitu.');
+      }
+      const model = opts.model ?? env['HERMES_MODEL'] ?? spec.defaultModel;
+      return {
+        client: new CodexSubscriptionClient({ model, workingDirectory: opts.workingDirectory ?? process.cwd() }),
+        providerId: spec.id,
+        baseUrl: spec.baseUrl,
+        model,
+        keyEnvVar: 'CHATGPT_SUBSCRIPTION',
+        toolMode: 'text',
+        rateLimitKey: 'chatgpt:subscription:chat',
+      };
     }
     const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
     if (!keyEnvVar) {
@@ -686,23 +793,32 @@ export function resolveLlm(opts: ResolveOptions = {}): ResolvedLlm {
     const baseUrl = opts.baseUrl ?? env['HERMES_BASE_URL'] ?? env['OPENAI_BASE_URL'];
     const model = opts.model ?? env['HERMES_MODEL'] ?? env['OPENAI_MODEL'];
     return {
-      client: new OpenAiCompatClient({ apiKey: genericKey, baseUrl, model }),
+      client: new OpenAiCompatClient({
+        apiKey: genericKey,
+        baseUrl,
+        model,
+        rateLimitKey: `custom:${env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY'}:chat`,
+      }),
       providerId: 'custom',
       baseUrl: baseUrl ?? 'https://api.openai.com/v1',
       model: model ?? 'gpt-4.1-mini',
       keyEnvVar: env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY',
+      toolMode: 'auto',
+      rateLimitKey: `custom:${env['HERMES_API_KEY'] ? 'HERMES_API_KEY' : 'OPENAI_API_KEY'}:chat`,
     };
   }
 
-  for (const spec of Object.values(PROVIDERS)) {
+  for (const spec of Object.values(allProviderSpecs())) {
     const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
     if (keyEnvVar) {
       return build(spec.id, spec, env[keyEnvVar]!, keyEnvVar, opts, env);
     }
   }
 
-  const providerHints = Object.values(PROVIDERS)
-    .map((p) => `  ${p.id}: set ${p.keyEnvVars.join(' or ')}`)
+  const providerHints = Object.values(allProviderSpecs())
+    .map((p) => p.auth === 'chatgpt-subscription'
+      ? `  ${p.id}: sign in through Agent Gitu Settings → Providers or run hermes login`
+      : `  ${p.id}: set ${p.keyEnvVars.join(' or ')}`)
     .join('\n');
   throw new ProviderError(
     `No LLM configured. Options:\n${providerHints}\n  custom: set HERMES_API_KEY (optionally HERMES_BASE_URL, HERMES_MODEL)\nOr pass --provider <name> --model <model>.`,

@@ -1,4 +1,4 @@
-export { Hermes, type HermesConfig, type HermesRunResult } from './agent/hermes.js';
+export { Hermes, type HermesConfig, type HermesRunResult } from './agent/gitu.js';
 export { buildStateMessage, buildSystemPrompt } from './agent/prompt.js';
 export { classifyTaskComplexity, planEffort } from './agent/effort-planner.js';
 export { buildPlanNote, classifyRiskDomains, planRisk, selectSpecialists } from './agent/risk-planner.js';

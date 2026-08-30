@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
 import {
   buildSpecialistEvidenceReport,
@@ -239,13 +239,13 @@ describe('Hermes — specialist evidence inheritance end-to-end', () => {
     expect(specialistMessages.some((m) => m.includes('Do not claim this criterion using unrelated commands.'))).toBe(true);
 
     // Hermes accepted the specialist's evidence through the main ledger's gate.
-    expect(events.some((e) => e.includes('delegate-claim worker ac-1 <- ') && e.includes('accepted'))).toBe(true);
+    expect(events.some((e) => e.includes('delegate-claim worker ac-1 <- ') && e.includes('parent-reverified'))).toBe(true);
     const criterion = ledger.data.acceptanceCriteria[0]!;
     expect(criterion.satisfied).toBe(true);
     expect(criterion.evidenceIds).toHaveLength(1);
     const mirror = ledger.data.evidence.find((e) => e.id === criterion.evidenceIds[0]!);
     expect(mirror).toMatchObject({ passed: true, command: 'node --version', kind: 'command' });
-    expect(ledger.data.evidence.some((e) => e.label.startsWith('delegated: worker'))).toBe(true);
+    expect(ledger.data.evidence.some((e) => e.label.startsWith('reverify') && e.command === 'node --version')).toBe(true);
     expect(report.status).toBe('complete');
   }, 30000);
 

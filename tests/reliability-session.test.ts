@@ -63,6 +63,30 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     return { base: `http://127.0.0.1:${port}`, server };
   }
 
+  it('persists requested and active models independently across fallback', () => {
+    const runId = `run-requested-active-${Date.now().toString(36)}`;
+    const store = new SessionStore();
+    store.upsertSession({
+      runId,
+      goal: 'preserve selected model',
+      startedAt: new Date().toISOString(),
+      status: 'waiting_for_model',
+      provider: 'openrouter',
+      model: 'vendor/free-model:free',
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1',
+      activeProvider: 'openrouter',
+      activeModel: 'vendor/free-model:free',
+    });
+    const restored = store.listSessions().find((session) => session.runId === runId);
+    expect(restored).toMatchObject({
+      requestedProvider: 'openai',
+      requestedModel: 'gpt-4.1',
+      activeProvider: 'openrouter',
+      activeModel: 'vendor/free-model:free',
+    });
+  });
+
   it('binds session → taskId → ledger → branch and continues on the same task after restart', async () => {
     const dir = makeProject('attach');
     await initGitRepo(dir);

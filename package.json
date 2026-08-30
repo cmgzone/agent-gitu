@@ -1,6 +1,6 @@
 {
   "name": "agent-gitu",
-  "version": "0.2.1",
+  "version": "0.2.6",
   "description": "Agent Gitu: an autonomous engineering agent with project guard, task ledger, evidence gates, specialist sub-agents, in-app browser and an animated voxel mascot",
   "type": "module",
   "main": "desktop/main.cjs",
@@ -14,11 +14,12 @@
     "ui": "node dist/cli.js ui",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "generate:brand-icons": "electron scripts/generate-brand-icons.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "hermes": "tsx src/cli.ts",
     "app": "npm run build && electron desktop/main.cjs",
-    "dist": "npm run build && electron-builder --win --publish never"
+    "dist": "npm run generate:brand-icons && npm run build && electron-builder --win --publish never"
   },
   "build": {
     "appId": "dev.agentgitu.desktop",
@@ -35,6 +36,7 @@
       "output": "release"
     },
     "publish": null,
+    "icon": "assets/agent-gitu-icon.ico",
     "win": {
       "target": [
         {
@@ -77,6 +79,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "@openai/codex-sdk": "^0.150.1",
     "three": "^0.185.1"
   }
 }

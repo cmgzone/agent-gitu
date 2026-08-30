@@ -12,6 +12,18 @@ export interface LspServerConfig {
   env?: Record<string, string>;
 }
 
+/** A trusted, built-in way to install one of Gitu's default language servers. */
+export interface LspInstallSpec {
+  /** Executable used to install the server (for example npm, go, or dotnet). */
+  program: string;
+  /** Fixed arguments; these are never derived from project/user input. */
+  args: string[];
+  /** Human-readable command shown in progress events and diagnostics. */
+  label: string;
+  /** Known executable directory to add to PATH after a successful install. */
+  pathHint?: 'npm-global' | 'python-user' | 'go-bin' | 'cargo-bin' | 'dotnet-tools';
+}
+
 export interface LspPosition {
   line: number;
   character: number;

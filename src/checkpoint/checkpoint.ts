@@ -15,7 +15,7 @@ export class CheckpointManager {
 
   private git(args: string[]): string {
     return execFileSync('git', args, {
-      cwd: this.guard.lock.repoRoot,
+      cwd: this.guard.activeWritableRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
@@ -63,11 +63,25 @@ export class CheckpointManager {
     }
     // A transient git failure here (e.g. a stale index.lock from concurrent
     // IDE activity) must never fail the whole run — degrade to "skipped".
-    const staged = this.gitSafe(['add', '-A']);
+    // .hermes is execution metadata, never product state. Older versions
+    // checkpointed it with `git add -A`; once tracked, an ignored worktree can
+    // keep surfacing metadata changes as if they were specialist output. Drop
+    // any legacy index entry (without deleting the on-disk ledger), then stage
+    // only product paths through Git's object model.
+    const trackedPrivateState = this.gitSafe(['ls-files', '.hermes']);
+    if (trackedPrivateState?.trim()) {
+      const removed = this.gitSafe(['rm', '-r', '--cached', '--ignore-unmatch', '.hermes']);
+      if (removed === undefined) {
+        return { ok: false, message: 'Could not detach legacy .hermes metadata from the Git index; checkpoint skipped.' };
+      }
+    }
+    const staged = this.gitSafe(['add', '-A', '--', ':(exclude).hermes']);
     if (staged === undefined) {
       return { ok: false, message: 'git add failed during checkpoint; skipping snapshot.' };
     }
-    const dirty = this.gitSafe(['status', '--porcelain']);
+    // Inspect the index, not generic status. Untracked/private agent state is
+    // intentionally ignored and must never create a checkpoint by itself.
+    const dirty = this.gitSafe(['diff', '--cached', '--name-only']);
     const message = `hermes(${ledger.data.taskId}): ${stepId} ${label}`.slice(0, 200);
     if (!dirty) {
       const ref = this.gitSafe(['rev-parse', 'HEAD']);

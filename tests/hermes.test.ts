@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compactHistory, Hermes } from '../src/agent/hermes.js';
+import { compactHistory, Hermes } from '../src/agent/gitu.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
@@ -159,7 +159,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(compactHistory(messages, (t) => events.push(t))).toBe(true);
     expect(messages[0]!.content).toBe('SYS');
     expect(String(messages[1]!.content).startsWith('COMPACTED HISTORY')).toBe(true);
-    expect(messages.length).toBe(1 + 1 + 12);
+    expect(messages.length).toBe(1 + 1 + 6);
     expect(String(messages.at(-1)!.content)).toContain('turn 39');
     expect(String(messages[1]!.content)).toContain('turn 1');
     expect(events).toHaveLength(1);
@@ -278,6 +278,20 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(events.some((e) => e.startsWith('say I will define the acceptance criteria'))).toBe(true);
   }, 30000);
 
+  it('shows a concise agent update when a model returns structured actions without prose', async () => {
+    const dir = makeProject('structured-status');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification command passes'] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'test complete' } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+
+    await hermes.run('structured status test');
+
+    expect(events.some((e) => e.startsWith('say I’m defining a clear acceptance check'))).toBe(true);
+  }, 30000);
+
   it('pauses for plan review, applies edits, and only then builds', async () => {
     const dir = makeProject('review');
     let reviewed = 0;
@@ -308,6 +322,44 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.planApproved).toBe(true);
     expect(ledger.data.plan[0]!.description).toBe('user-edited step');
     expect(ledger.data.status).toBe('blocked');
+  }, 30000);
+
+  it('requires explicit user approval before accepting an unresolved strict-risk quality warning', async () => {
+    const dir = makeProject('strict-review-approval');
+    const events: string[] = [];
+    let approvals = 0;
+    const complete = () => JSON.stringify({ action: { type: 'complete', summary: 'authentication review complete', risks: [], followUps: [] } });
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification command passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify authentication change', verification: 'node --version' }] } }),
+      () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } }),
+      (_n, messages) => JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) } }),
+      complete,
+      () => 'VERDICT: REVISE\nFEEDBACK: Session invalidation is not covered by the final verification.',
+      complete,
+      () => 'VERDICT: REVISE\nFEEDBACK: Session invalidation is still not covered by the final verification.',
+      complete,
+    ]);
+    const hermes = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      requirePlanReview: false,
+      approvalHandler: async (request) => {
+        approvals += 1;
+        expect(request).toMatchObject({ tool: 'quality-review', tier: 'dangerous' });
+        expect(request.summary).toContain('Session invalidation');
+        return true;
+      },
+      onEvent: (event) => events.push(event),
+    });
+
+    const { report } = await hermes.run('Review authentication session handling');
+
+    expect(approvals).toBe(1);
+    expect(report.status).toBe('complete');
+    expect(report.remainingRisks.some((risk) => risk.includes('User accepted unresolved strict-risk quality-review warning'))).toBe(true);
+    expect(events.some((event) => event.includes('explicitly accepted by user'))).toBe(true);
   }, 30000);
 
   it('chat mode answers directly without tools', async () => {
@@ -540,7 +592,8 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.status).toBe('completed');
     expect(ledger.data.actions.some((a) => a.tool === 'create_skill')).toBe(false);
     expect(events.some((e) => e.startsWith('learn '))).toBe(false);
-    expect(SkillStore.forProject(path.resolve(dir)).list()).toHaveLength(0);
+    // No USER skill may be created (built-ins ship with the app and always exist).
+    expect(SkillStore.forProject(path.resolve(dir)).list().filter((s) => s.scope !== 'builtin')).toHaveLength(0);
   }, 30000);
 
   it('delegates parallel sub-tasks to named sub-agents', async () => {
@@ -778,7 +831,10 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.effortPlan?.maxTurns).toBe(20); // low effort budget
     expect(report.status).toBe('failed');
     expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(true);
-    expect(events.some((e) => e.includes('effort budget of 20 turns reached'))).toBe(true);
+    // The identical repeated list_files counts as progress exactly once
+    // (first distinct success), buying one budget extension; the stall then
+    // fires at the extended cap since nothing new ever succeeds.
+    expect(events.some((e) => /effort budget of \d+ turns reached/.test(e))).toBe(true);
   }, 30000);
 
   it('extends the turn budget while the run keeps producing verified progress', async () => {
@@ -802,20 +858,24 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('generate files');
 
-    expect(events.some((e) => e.includes('budget extended by 10 turns'))).toBe(true);
+    // 24 written files cross the escalation threshold (>= 8), so the first
+    // extension carries +10 escalation turns on top of the base 10.
+    expect(events.some((e) => /budget extended by \d+ turns/.test(e))).toBe(true);
+    expect(events.some((e) => e.includes('wide change surface'))).toBe(true);
     expect(report.status).toBe('blocked'); // ended by its own request_block, not a stall
     expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(false);
   }, 30000);
 
-  it('coaches through unparseable replies instead of stopping after three warnings', async () => {
+  it('stops the main execution lane after three unparseable replies', async () => {
     const dir = makeProject('garbage-recovery');
     const events: string[] = [];
     const llm = new ScriptedMockLlm([
       () => 'I think I should look around first.',
       () => 'Let me check the directory listing next.',
       () => 'Probably src has the answer.',
+      // A fourth reply must never be requested: the task state is preserved
+      // and the user can continue it with another configured model.
       () => 'One more moment please.',
-      // The model recovers and finishes the task properly.
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['Node is available'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify node', verification: 'node --version' }] } }),
       () =>
@@ -834,10 +894,9 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('say something useful');
 
-    expect(report.status).toBe('complete');
-    expect(ledger.data.blockers.some((b) => b.includes('unparseable'))).toBe(false);
-    expect(ledger.data.blockers.some((b) => b.includes('3 consecutive'))).toBe(false);
-    expect(events.some((e) => e.includes('final instruction repeated'))).toBe(true);
+    expect(report.status).toBe('blocked');
+    expect(ledger.data.blockers.some((b) => b.includes('Main execution lane stopped after 3'))).toBe(true);
+    expect(events.some((e) => e.includes('main execution lane stopped after 3'))).toBe(true);
   }, 30000);
 
   it('clamps delegate calls to the task specialist budget', async () => {

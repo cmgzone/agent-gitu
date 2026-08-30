@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { AgentStore } from '../src/agents/registry.js';
 import { CronStore, parseEvery } from '../src/cron/scheduler.js';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { SkillStore } from '../src/skills/skills.js';
@@ -19,13 +19,14 @@ describe('SkillStore', () => {
   it('creates, lists, gets and removes skills', () => {
     const dir = makeProject('skills');
     const store = SkillStore.forProject(dir);
+    const userSkills = () => store.list().filter((s) => s.scope !== 'builtin');
     const skill = store.create({ name: 'Deploy Checklist', description: 'how to deploy', instructions: '1. build\n2. test\n3. ship' });
     expect(skill.name).toBe('deploy-checklist');
-    expect(store.list()).toHaveLength(1);
+    expect(userSkills()).toHaveLength(1);
     expect(store.get('deploy-checklist')?.instructions).toContain('ship');
     expect(store.renderForPrompt()).toContain('deploy-checklist');
     expect(store.remove('deploy-checklist')).toBe(true);
-    expect(store.list()).toHaveLength(0);
+    expect(userSkills()).toHaveLength(0);
   });
 
   it('rejects empty instructions', () => {
@@ -147,4 +148,3 @@ describe('AgentStore', () => {
     expect(store.list().every((a) => a.builtin)).toBe(true);
   });
 });
-

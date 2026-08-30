@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { readJson } from '../util.js';
-import type { LspServerConfig } from './lsp-types.js';
+import type { LspInstallSpec, LspServerConfig } from './lsp-types.js';
 
 /**
  * ServerRegistry — decides which LSP server serves a languageId.
@@ -65,6 +65,67 @@ export const DEFAULT_SERVERS: LspServerConfig[] = [
     args: ['--stdio'],
   },
 ];
+
+/**
+ * Only these built-in servers may be bootstrapped automatically. A custom
+ * `.hermes/lsp.json` command is deliberately not treated as an installer: it
+ * could otherwise turn a read-only LSP lookup into arbitrary code execution.
+ */
+const DEFAULT_INSTALLERS: Record<string, LspInstallSpec> = {
+  typescript: {
+    program: 'npm',
+    args: ['install', '--global', '--ignore-scripts', '--no-fund', '--no-audit', 'typescript-language-server', 'typescript'],
+    label: 'npm install --global typescript-language-server typescript',
+    pathHint: 'npm-global',
+  },
+  python: {
+    program: 'python',
+    args: ['-m', 'pip', 'install', '--user', 'basedpyright'],
+    label: 'python -m pip install --user basedpyright',
+    pathHint: 'python-user',
+  },
+  go: {
+    program: 'go',
+    args: ['install', 'golang.org/x/tools/gopls@latest'],
+    label: 'go install golang.org/x/tools/gopls@latest',
+    pathHint: 'go-bin',
+  },
+  rust: {
+    program: 'rustup',
+    args: ['component', 'add', 'rust-analyzer'],
+    label: 'rustup component add rust-analyzer',
+    pathHint: 'cargo-bin',
+  },
+  csharp: {
+    program: 'dotnet',
+    args: ['tool', 'install', '--global', 'csharp-ls'],
+    label: 'dotnet tool install --global csharp-ls',
+    pathHint: 'dotnet-tools',
+  },
+  css: {
+    program: 'npm',
+    args: ['install', '--global', '--ignore-scripts', '--no-fund', '--no-audit', 'vscode-langservers-extracted'],
+    label: 'npm install --global vscode-langservers-extracted',
+    pathHint: 'npm-global',
+  },
+};
+
+/**
+ * Return an installer only for an unchanged built-in server definition.
+ * Matching the command as well as the name prevents a custom registry entry
+ * from inheriting an install command accidentally.
+ */
+export function installSpecFor(config: LspServerConfig): LspInstallSpec | undefined {
+  const builtin = DEFAULT_SERVERS.find(
+    (server) =>
+      server.name === config.name &&
+      server.command === config.command &&
+      JSON.stringify(server.args ?? []) === JSON.stringify(config.args ?? []),
+  );
+  if (!builtin) return undefined;
+  const spec = DEFAULT_INSTALLERS[builtin.name];
+  return spec ? { ...spec, args: [...spec.args] } : undefined;
+}
 
 export interface ServerRegistryConfigFile {
   servers?: LspServerConfig[];

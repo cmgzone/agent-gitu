@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { PROVIDERS, ProviderError, cachedLiveModels, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
+import { PROVIDERS, ProviderError, cachedLiveModels, modelCapabilityTier, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
+import { sanitizeCustomProviders } from '../src/workspace/home.js';
 
 const WS_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
 
@@ -44,6 +45,62 @@ describe('provider registry', () => {
     expect(or.keyEnvVars).toContain('HERMES_OPENROUTER_API_KEY');
     expect(or.defaultModel).toMatch(/\//);
     expect(or.models.some((m) => m.endsWith(':free'))).toBe(true);
+  });
+
+  it('registers the direct DeepSeek API with its V4 model seed', () => {
+    const deepseek = PROVIDERS['deepseek'];
+    expect(deepseek).toBeDefined();
+    expect(deepseek!.baseUrl).toBe('https://api.deepseek.com');
+    expect(deepseek!.keyEnvVars).toEqual(['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY']);
+    expect(deepseek!.defaultModel).toBe('deepseek-v4-pro');
+    expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
+    expect(deepseek!.maxEffort).toBe('distinct');
+  });
+});
+
+describe('custom provider profiles', () => {
+  it('accepts an HTTPS OpenAI-compatible profile without storing its secret', () => {
+    const profiles = sanitizeCustomProviders([
+      {
+        id: 'custom-team-gateway',
+        label: 'Team gateway',
+        baseUrl: 'https://models.example.test/v1/',
+        defaultModel: 'team-coder',
+        keyEnvVar: 'hermes_custom_team_gateway',
+        models: ['team-coder', 'team-fast', 'team-coder'],
+        toolMode: 'structured_text',
+        apiKey: 'must-not-be-kept',
+      },
+    ]);
+    expect(profiles).toEqual([
+      {
+        id: 'custom-team-gateway',
+        label: 'Team gateway',
+        baseUrl: 'https://models.example.test/v1',
+        defaultModel: 'team-coder',
+        keyEnvVar: 'HERMES_CUSTOM_TEAM_GATEWAY',
+        models: ['team-coder', 'team-fast'],
+        toolMode: 'structured_text',
+      },
+    ]);
+  });
+
+  it('rejects unsafe endpoints and arbitrary key-variable names', () => {
+    expect(
+      sanitizeCustomProviders([
+        { id: 'custom-unsafe', label: 'Unsafe', baseUrl: 'http://example.test/v1', defaultModel: 'm', keyEnvVar: 'OPENAI_API_KEY' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('allows a loopback IPv6 local model server', () => {
+    expect(
+      sanitizeCustomProviders([
+        { id: 'custom-local', label: 'Local', baseUrl: 'http://[::1]:11434/v1', defaultModel: 'local-coder', keyEnvVar: 'HERMES_CUSTOM_LOCAL' },
+      ]),
+    ).toEqual([
+      expect.objectContaining({ id: 'custom-local', baseUrl: 'http://[::1]:11434/v1' }),
+    ]);
   });
 });
 
@@ -104,6 +161,20 @@ describe('resolveLlm', () => {
     expect(or.model).toBe('anthropic/claude-sonnet-4.5');
     const overridden = resolveLlm({ provider: 'openrouter', model: 'deepseek/deepseek-v3.2-exp:free', env: { OPENROUTER_API_KEY: 'or-x' } });
     expect(overridden.model).toBe('deepseek/deepseek-v3.2-exp:free');
+  });
+
+  it('resolves DeepSeek from its dedicated API key', () => {
+    const deepseek = resolveLlm({ provider: 'deepseek', env: { DEEPSEEK_API_KEY: 'ds-x' } });
+    expect(deepseek.providerId).toBe('deepseek');
+    expect(deepseek.baseUrl).toBe('https://api.deepseek.com');
+    expect(deepseek.model).toBe('deepseek-v4-pro');
+    expect(deepseek.keyEnvVar).toBe('DEEPSEEK_API_KEY');
+  });
+
+  it('auto-detects DeepSeek when only its namespaced key is present', () => {
+    const deepseek = resolveLlm({ env: { HERMES_DEEPSEEK_API_KEY: 'ds-x' } });
+    expect(deepseek.providerId).toBe('deepseek');
+    expect(deepseek.keyEnvVar).toBe('HERMES_DEEPSEEK_API_KEY');
   });
 
   it('prefers generic HERMES_API_KEY as custom provider', () => {
@@ -413,5 +484,22 @@ describe('freeModelFallback � no-credits rescue', () => {
     // correctly declines and the server falls back to a LIVE catalog lookup.
     expect((PROVIDERS['opencode-go']!.models ?? []).some((m) => isFreeModel(m))).toBe(false);
     expect(freeModelFallback('opencode-go', 'kimi-k3')).toBeUndefined();
+  });
+});
+
+describe('modelCapabilityTier', () => {
+  it('treats free/community models as the low tier regardless of metadata', () => {
+    expect(modelCapabilityTier(undefined, 'grok-4-fast-free')).toBe('low');
+    expect(modelCapabilityTier({ source: 'models.dev', outputPricePerMillion: 3 }, 'some-model:free')).toBe('low');
+  });
+
+  it('uses catalog price as the proxy for paid models', () => {
+    expect(modelCapabilityTier({ source: 'models.dev', outputPricePerMillion: 10 }, 'claude-x')).toBe('high');
+    expect(modelCapabilityTier({ source: 'models.dev', outputPricePerMillion: 0.5 }, 'mini-model')).toBe('standard');
+  });
+
+  it('defaults to standard when the catalog has no price info', () => {
+    expect(modelCapabilityTier(undefined, 'unknown-model')).toBe('standard');
+    expect(modelCapabilityTier({ source: 'models.dev' }, 'unknown-model')).toBe('standard');
   });
 });

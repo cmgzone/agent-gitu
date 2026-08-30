@@ -4,6 +4,7 @@ import type {
   AcceptanceCriterion,
   ActionRecord,
   ArchitectureDecision,
+  BudgetExtensionRecord,
   CriterionSpec,
   DecisionBasis,
   PlanArea,
@@ -177,6 +178,39 @@ export class TaskLedger {
     return added;
   }
 
+  /**
+   * Spec-aware append for follow-up scopes: preserves each appendix's pinned
+   * verification command + evidence type so delegated / parent re-verification
+   * can run the real oracle later.
+   */
+  appendCriteriaFromSpecs(specs: CriterionSpec[]): AcceptanceCriterion[] {
+    const known = new Set(this.data.acceptanceCriteria.map((c) => c.text.trim().replace(/\s+/g, ' ').toLowerCase()));
+    const next = this.data.acceptanceCriteria.reduce((max, c) => {
+      const match = /^ac-(\d+)$/.exec(c.id);
+      return Math.max(max, match ? Number(match[1]) : 0);
+    }, 0);
+    const added: AcceptanceCriterion[] = [];
+    for (const spec of specs) {
+      const text = (spec.text ?? '').trim().replace(/\s+/g, ' ');
+      const key = text.toLowerCase();
+      if (!text || known.has(key)) continue;
+      known.add(key);
+      added.push({
+        id: 'ac-' + (next + added.length + 1),
+        text,
+        verification: spec.verification,
+        evidenceType: spec.evidenceType,
+        evidenceIds: [],
+        satisfied: false,
+      });
+    }
+    if (added.length > 0) {
+      this.data.acceptanceCriteria.push(...added);
+      this.save();
+    }
+    return added;
+  }
+
   setPlan(steps: PlanStepInput[]): void {
     const normalized = normalizeStepInput(steps).slice(0, STEP_LIMITS.count);
     this.data.plan = normalized.map((s, i) => ({
@@ -338,6 +372,14 @@ export class TaskLedger {
     this.save();
   }
 
+  /** Audit a granted budget extension: reason + evidence snapshot (cap 10). */
+  addBudgetExtension(record: Omit<BudgetExtensionRecord, 'at'>): void {
+    this.data.budgetExtensions ??= [];
+    this.data.budgetExtensions.push({ ...record, at: nowIso() });
+    if (this.data.budgetExtensions.length > 10) this.data.budgetExtensions.splice(0, this.data.budgetExtensions.length - 10);
+    this.save();
+  }
+
   setActiveSkills(skills: string[]): void {
     this.data.activeSkills = [...new Set(skills)];
     this.save();
@@ -429,7 +471,7 @@ export class TaskLedger {
   }
 
   /** Distinct recent failures (deduped by error signature) for the compact state. */
-  failureSummary(max = 3): string[] {
+  failureSummary(max = 5): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     for (let i = this.data.actions.length - 1; i >= 0 && out.length < max; i--) {
@@ -444,9 +486,12 @@ export class TaskLedger {
     return out;
   }
 
-  /** The next plan step the agent should work on, for the compact state. */
+  /** The next plan step the agent should work on, for the compact state.
+   *  Prefers the step already in progress: pointing at the first pending
+   *  step while another step is mid-flight made the state message nag the
+   *  agent back to work it had deliberately set aside. */
   nextStep(): PlanStep | undefined {
-    return this.data.plan.find((s) => s.status === 'pending' || s.status === 'in_progress');
+    return this.data.plan.find((s) => s.status === 'in_progress') ?? this.data.plan.find((s) => s.status === 'pending');
   }
 
   async validateEnvironment(cwd: string): Promise<{ ok: boolean; reason?: string }> {
@@ -471,7 +516,7 @@ export class TaskLedger {
     return { ok: true };
   }
 
-  transcriptTail(maxActions = 8): string {
+  transcriptTail(maxActions = 16): string {
     const tail = this.data.actions.slice(-maxActions);
     if (tail.length === 0) return '(no actions yet)';
     return tail

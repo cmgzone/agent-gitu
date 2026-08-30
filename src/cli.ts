@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { Hermes } from './agent/hermes.js';
+import { Hermes } from './agent/gitu.js';
 import { SubAgentRunner } from './agent/subagent.js';
 import { AgentStore } from './agents/registry.js';
 import { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
 import { TaskLedger } from './ledger/task-ledger.js';
 import { LlmError } from './llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, modelMetadataFor, providerKey, resolveLlm, type ProviderSpec } from './llm/providers.js';
+import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, modelCapabilityTier, modelMetadataFor, providerKey, resolveLlm, type ProviderSpec } from './llm/providers.js';
+import { codexSubscriptionInfo, startCodexSubscriptionLogin, waitForCodexSubscriptionLogin } from './llm/codex-subscription.js';
 import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
 import { HermesServer } from './server/server.js';
-import type { MemoryType } from './types.js';
+import type { MemoryStatus, MemoryType, MemoryVisibility } from './types.js';
 
 interface ParsedArgs {
   positional: string[];
@@ -53,6 +54,8 @@ Usage:
   hermes init                          Detect and lock the current project
   hermes run "<goal>" [options]        Run a task end-to-end
   hermes providers                     List LLM providers and key status
+  hermes login                         Sign in with ChatGPT (use your subscription, no API key)
+  hermes logout                        Sign out of ChatGPT
   hermes models [--provider <name>]    List models (live from endpoint when a key is set)
   hermes models --pick [provider]      Interactive model chooser
   hermes ui [--port 8321]              Start the Web UI (agent state viewer)
@@ -60,6 +63,7 @@ Usage:
   hermes show <taskId>                 Show a task ledger
   hermes report <taskId>               Show the completion report for a task
   hermes memory [--type <type>]        Show stored memory
+  hermes memory search <query>         Ranked search (--limit --scope --visibility --agent --project --type --status)
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
@@ -71,9 +75,14 @@ Run options:
   --review               Pause after planning for an interactive plan review before building
 
 Providers:
+  chatgpt   ChatGPT subscription — run \`hermes login\` (uses the models in your
+            ChatGPT plan through local Codex; no API key)
   alibaba   Alibaba Cloud Model Studio / DashScope (OpenAI-compatible)
             keys: HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
             models: run \`hermes models --provider alibaba\` (default: qwen3.8-max)
+  deepseek  DeepSeek direct API (OpenAI-compatible)
+            keys: HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
+            models: run \`hermes models --provider deepseek\` (default: deepseek-v4-pro)
   openai    OpenAI — keys: HERMES_OPENAI_API_KEY | OPENAI_API_KEY
   custom    HERMES_API_KEY (+ optional HERMES_BASE_URL, HERMES_MODEL)`;
 }
@@ -103,6 +112,33 @@ function askLine(question: string): Promise<string> {
 }
 
 async function listProviderModels(spec: ProviderSpec, pick: boolean): Promise<void> {
+  if (spec.auth === 'chatgpt-subscription') {
+    const status = await codexSubscriptionInfo();
+    const ids = status.models.length > 0 ? status.models.map((model) => model.id) : [...spec.models];
+    console.log(`\n${spec.id} — ${spec.label}`);
+    console.log(`source: ${status.signedIn ? 'models available through your local Codex sign-in' : 'built-in list (run hermes login to use this provider)'}`);
+    ids.forEach((id, i) => {
+      const marker = id === spec.defaultModel ? '  (default)' : '';
+      console.log(`  ${String(i + 1).padStart(3)}. ${id}${marker}`);
+    });
+    if (pick) {
+      for (;;) {
+        const answer = await askLine(`Choose a model [1-${ids.length}] (or type a model id, empty to cancel): `);
+        if (!answer) return;
+        const asNumber = Number(answer);
+        if (Number.isInteger(asNumber) && asNumber >= 1 && asNumber <= ids.length) {
+          console.log(ids[asNumber - 1]);
+          return;
+        }
+        if (ids.includes(answer)) {
+          console.log(answer);
+          return;
+        }
+        console.log('Invalid choice, try again.');
+      }
+    }
+    return;
+  }
   const keyInfo = providerKey(spec);
   let ids: string[] | undefined;
   let source = 'built-in list (set a key to fetch the live list)';
@@ -206,6 +242,33 @@ async function main(): Promise<void> {
     case 'memory': {
       const guard = ProjectGuard.detect(cwd);
       const memory = MemoryStore.forProject(guard.lock.repoRoot);
+      if (positional[1] === 'search') {
+        const query = positional.slice(2).join(' ').trim();
+        if (!query) {
+          console.log('Usage: hermes memory search <query> [--limit N] [--scope S] [--visibility V] [--agent A] [--project P] [--type T] [--status S]');
+          return;
+        }
+        const str = (k: string): string | undefined => (typeof flags.get(k) === 'string' ? (flags.get(k) as string) : undefined);
+        const limitRaw = str('limit');
+        const results = await memory.search(query, {
+          limit: limitRaw !== undefined && Number.isFinite(Number(limitRaw)) ? Number(limitRaw) : undefined,
+          scope: str('scope'),
+          visibility: str('visibility') as MemoryVisibility | undefined,
+          agentId: str('agent'),
+          projectId: str('project'),
+          type: str('type') as MemoryType | undefined,
+          status: str('status') as MemoryStatus | undefined,
+        });
+        if (results.length === 0) {
+          console.log('(no matching memories)');
+          return;
+        }
+        results.forEach((r, i) => {
+          console.log(`${i + 1}. [${r.score.toFixed(2)} ${r.matchReason}] ${r.claim}`);
+          console.log(`   ${r.type} · ${r.status} · scope:${r.scope} · conf ${r.confidence} · imp ${r.importance}${r.agentId ? ` · agent:${r.agentId}` : ''}${r.provenance ? ` · via ${r.provenance}` : ''}`);
+        });
+        return;
+      }
       const type = flags.get('type') as MemoryType | undefined;
       const entries = memory.query({ type, limit: 100 });
       if (entries.length === 0) {
@@ -221,6 +284,17 @@ async function main(): Promise<void> {
     case 'providers': {
       const env = mergedEnv();
       for (const spec of Object.values(PROVIDERS)) {
+        if (spec.id === 'chatgpt') {
+          const status = await codexSubscriptionInfo();
+          const statusText = status.signedIn
+            ? `ready (ChatGPT${status.planType ? ` · ${status.planType}` : ''})`
+            : 'not signed in — run `hermes login`';
+          console.log(`${spec.id.padEnd(9)} ${statusText.padEnd(40)} ${spec.label}`);
+          console.log(`          base: ${spec.baseUrl}`);
+          console.log(`          auth: local Codex browser sign-in (no API key) — run \`hermes login\``);
+          console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`hermes models --provider ${spec.id}\``);
+          continue;
+        }
         const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
         const status = keyEnvVar ? `ready (${keyEnvVar})` : 'no key';
         console.log(`${spec.id.padEnd(9)} ${status.padEnd(28)} ${spec.label}`);
@@ -298,6 +372,7 @@ async function main(): Promise<void> {
           provider: strFlag('provider'),
           model: strFlag('model'),
           baseUrl: strFlag('base-url'),
+          workingDirectory: cwd,
         });
       } catch (err) {
         if (err instanceof ProviderError) {
@@ -310,8 +385,10 @@ async function main(): Promise<void> {
       console.error(`[hermes] llm: provider=${resolved.providerId} model=${resolved.model} base=${resolved.baseUrl}`);
       const llm = resolved.client;
       const catalog = await fetchModelCatalog();
-      const contextWindowTokens = modelMetadataFor(catalog, resolved.providerId, resolved.model)?.contextTokens;
+      const modelMeta = modelMetadataFor(catalog, resolved.providerId, resolved.model);
+      const contextWindowTokens = modelMeta?.contextTokens;
       if (contextWindowTokens) console.error(`[hermes] context window: ${contextWindowTokens.toLocaleString()} tokens`);
+      const modelCapability = modelCapabilityTier(modelMeta, resolved.model);
 
       const criteriaFlag = flags.get('criteria');
       const criteria = typeof criteriaFlag === 'string' ? criteriaFlag.split('|').map((s) => s.trim()).filter(Boolean) : undefined;
@@ -329,7 +406,7 @@ async function main(): Promise<void> {
                     `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name, NOT a model/provider identifier.`,
                   );
                 }
-                return resolveLlm({ provider: def.provider, model: def.model }).client;
+                return resolveLlm({ provider: def.provider, model: def.model, workingDirectory: cwd }).client;
               },
                 agentRole: (name) => agentStore.get(name)?.role,
                 agentEffort: (name) => agentStore.get(name)?.effort,
@@ -342,11 +419,13 @@ async function main(): Promise<void> {
         llm,
         mode: flags.get('fast') ? 'fast' : 'standard',
         contextWindowTokens,
+        modelCapability,
         autoApprove: Boolean(flags.get('yes')),
         // Safe mode: even with --yes, dangerous-tier commands still require a
         // human. Opt in with --safe-mode or HERMES_SAFE_MODE=1.
         safeMode: Boolean(flags.get('safe-mode')) || /^(1|true|yes)$/i.test(process.env['HERMES_SAFE_MODE'] ?? ''),
         criteria,
+        autoInstallLsp: true,
         subagents,
         agentsSection: agentStore.renderForPrompt() || undefined,
         specialists: agentStore.list().map((a) => ({ name: a.name, role: a.role })),
@@ -390,6 +469,33 @@ async function main(): Promise<void> {
         }
         throw err;
       }
+      return;
+    }
+
+    case 'login': {
+      const started = await startCodexSubscriptionLogin();
+      if (started.alreadySignedIn) {
+        const status = await codexSubscriptionInfo(true);
+        console.log(`Already connected to ChatGPT${status.planType ? ` (${status.planType})` : ''}.`);
+        return;
+      }
+      console.log('Open this secure Codex sign-in link in a browser:');
+      console.log(`  ${started.authUrl}`);
+      console.log('\nWaiting up to five minutes for sign-in to complete…');
+      const completed = started.loginId ? await waitForCodexSubscriptionLogin(started.loginId) : false;
+      if (!completed) {
+        console.log('Sign-in was not completed. Run `hermes login` again when you are ready.');
+        process.exitCode = 2;
+        return;
+      }
+      const status = await codexSubscriptionInfo(true);
+      console.log(`Connected to ChatGPT${status.planType ? ` (${status.planType})` : ''}.`);
+      console.log('Use it with: hermes run "<goal>" --provider chatgpt');
+      return;
+    }
+
+    case 'logout': {
+      console.log('Run `codex logout` to sign out. Agent Gitu never stores your ChatGPT credentials.');
       return;
     }
 

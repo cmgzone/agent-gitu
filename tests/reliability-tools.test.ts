@@ -7,7 +7,7 @@ import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { LoopDetector } from '../src/loop/loop-detector.js';
 import { PolicyEngine } from '../src/policy/policy.js';
-import { formatToolValidationError, validateToolParams } from '../src/tools/tools.js';
+import { formatToolValidationError, toolSearchFiles, validateToolParams } from '../src/tools/tools.js';
 
 function makeProject(): string {
   const dir = mkdtempSync(path.join(tmpdir(), 'hermes-rtools-'));
@@ -208,5 +208,120 @@ describe('Executor schema boundary — validation before guard/policy', () => {
     });
     expect(outcome.result.ok).toBe(true);
     expect(policyCalls()).toBe(1);
+  });
+});
+
+describe('toolSearchFiles — language-agnostic search engine', () => {
+  function searchProject(): string {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-search-'));
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'search-test' }));
+    writeFileSync(
+      path.join(dir, 'enum.ts'),
+      ['export const ActivityKind =', '  | "project_created"', '  | "task_created"', '  | "document_created"'].join('\n'),
+    );
+    writeFileSync(path.join(dir, 'util.py'), 'def connect(a, b):\n    return a.b  # a dot call\n');
+    mkdirSync(path.join(dir, 'vendor'), { recursive: true });
+    writeFileSync(path.join(dir, 'vendor', 'gen.py'), 'def connect(a, b):\n    return 1\n');
+    writeFileSync(path.join(dir, 'README.md'), 'connect the dots\n');
+    return dir;
+  }
+  const search = (dir: string, params: Record<string, unknown>) => {
+    const guard = ProjectGuard.detect(dir);
+    return toolSearchFiles({ guard } as unknown as Parameters<typeof toolSearchFiles>[0], params);
+  };
+
+  it('literal mode matches plain text without regex escaping traps', () => {
+    const dir = searchProject();
+    const r = search(dir, { pattern: 'a.b', mode: 'literal', include: ['**/*.py'] });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('util.py');
+    expect(r.output).toContain('return a.b');
+    expect(r.output).toContain('mode=literal');
+  });
+
+  it('default regex mode keeps the classic path:line: text behavior', () => {
+    const dir = searchProject();
+    const r = search(dir, { pattern: 'export const' });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('enum.ts:1: export const ActivityKind =');
+    expect(r.output).toContain('matches=1');
+  });
+
+  it('regex matches across lines in any language (multiline span)', () => {
+    const dir = searchProject();
+    const r = search(dir, { pattern: 'ActivityKind[\\s\\S]{0,120}?document_created' });
+    expect(r.ok).toBe(true);
+    const matchLine = r.output.split('\n').find((l) => l.startsWith('enum.ts:'));
+    expect(matchLine).toBeTruthy();
+    // The full matched text is shown with visible line breaks.
+    expect(matchLine).toContain('ActivityKind');
+    expect(matchLine).toContain('document_created');
+    expect(matchLine).toContain('⏎');
+    expect(r.output).toContain('multiline=true');
+  });
+
+  it('dotall flag (s) lets the dot cross lines', () => {
+    const dir = searchProject();
+    const noS = search(dir, { pattern: 'ActivityKind.{0,40}task_created' });
+    const withS = search(dir, { pattern: 'ActivityKind.{0,40}task_created', flags: 's' });
+    expect(noS.output).toContain('(no matches)');
+    expect(withS.output).toContain('task_created');
+    expect(withS.output).toContain('multiline=true');
+  });
+
+  it('rejects unsupported flags instead of silently ignoring them', () => {
+    const dir = searchProject();
+    const r = search(dir, { pattern: 'x', flags: 'igx' });
+    expect(r.ok).toBe(false);
+    expect(r.output).toContain('unsupported flags');
+  });
+
+  it('include filters by glob, exclude removes subtrees', () => {
+    const dir = searchProject();
+    const py = search(dir, { pattern: 'connect', include: ['**/*.py'] });
+    expect(py.output).toContain('util.py');
+    expect(py.output).toContain('vendor/gen.py'); // include is extension-only; vendor needs exclude
+    const notVendor = search(dir, { pattern: 'connect', exclude: ['vendor/**'] });
+    expect(notVendor.output).toContain('util.py');
+    expect(notVendor.output).not.toContain('vendor');
+    const mdOnly = search(dir, { pattern: 'connect', include: ['*.md'] });
+    expect(mdOnly.output).toContain('README.md');
+    expect(mdOnly.output).not.toContain('.py');
+  });
+
+  it('contextLines emits neighboring lines with their numbers', () => {
+    const dir = searchProject();
+    const r = search(dir, { pattern: 'task_created', contextLines: 1 });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('project_created');
+    expect(r.output).toContain('document_created');
+    expect(r.output).toMatch(/    2: /);
+  });
+
+  it('maxResults caps matches and reports truncated=true', () => {
+    const dir = searchProject();
+    const big = mkdirSync(path.join(dir, 'bulk'), { recursive: true });
+    for (let i = 0; i < 10; i++) writeFileSync(path.join(big, `f${i}.txt`), 'needle here\n');
+    const r = search(dir, { pattern: 'needle', include: ['bulk/**'], maxResults: 3 });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('matches=3');
+    expect(r.output).toContain('truncated=true');
+  });
+
+  it('reports capabilities on empty results so the caller knows what ran', () => {
+    const dir = searchProject();
+    const r = search(dir, { pattern: 'definitely-not-present-xyz' });
+    expect(r.ok).toBe(true);
+    expect(r.output).toContain('(no matches)');
+    expect(r.output).toContain('languageAware=false');
+    expect(r.output).toContain('matches=0');
+  });
+
+  it('skips binary content instead of matching garbage', () => {
+    const dir = searchProject();
+    // Contains the literal needle text but a NUL byte marks it binary.
+    writeFileSync(path.join(dir, 'blob.bin'), Buffer.concat([Buffer.from('needle'), Buffer.from([0x00]), Buffer.from('needle')]));
+    const r = search(dir, { pattern: 'needle', include: ['**/*.bin'] });
+    expect(r.output).toContain('(no matches)');
   });
 });

@@ -139,6 +139,19 @@ export interface WorkspaceSettings {
    *  a run fails on billing (HTTP 401 / no credits). User-configured — never
    *  hardcoded. */
   fallbackModels?: string[];
+  /** User-owned OpenAI-compatible endpoints. Credentials stay in keys.json under keyEnvVar. */
+  customProviders?: CustomProviderProfile[];
+}
+
+export interface CustomProviderProfile {
+  id: string;
+  label: string;
+  baseUrl: string;
+  defaultModel: string;
+  keyEnvVar: string;
+  models?: string[];
+  /** `auto` starts with native function tools and safely downgrades per run. */
+  toolMode?: 'auto' | 'native' | 'structured_text' | 'text';
 }
 
 function settingsFile(): string {
@@ -161,19 +174,64 @@ function sanitizeFallbackModels(value: unknown): string[] | undefined {
   return out;
 }
 
+function safeCustomBaseUrl(value: string): string | undefined {
+  try {
+    const url = new URL(value.trim());
+    const localhost = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1' || url.hostname === '[::1]';
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && localhost)) return undefined;
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return undefined;
+  }
+}
+
+export function sanitizeCustomProviders(value: unknown): CustomProviderProfile[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const out: CustomProviderProfile[] = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const src = raw as Record<string, unknown>;
+    const id = String(src['id'] ?? '').trim().toLowerCase();
+    const label = String(src['label'] ?? '').trim().slice(0, 80);
+    const baseUrl = safeCustomBaseUrl(String(src['baseUrl'] ?? ''));
+    const defaultModel = String(src['defaultModel'] ?? '').trim().slice(0, 160);
+    const keyEnvVar = String(src['keyEnvVar'] ?? '').trim().toUpperCase();
+    if (!/^custom-[a-z0-9-]{1,48}$/.test(id) || seen.has(id) || !label || !baseUrl || !defaultModel || !/^HERMES_CUSTOM_[A-Z0-9_]{1,48}$/.test(keyEnvVar)) continue;
+    const models = Array.isArray(src['models'])
+      ? src['models'].map((model) => String(model).trim().slice(0, 160)).filter(Boolean).filter((model, index, all) => all.indexOf(model) === index).slice(0, 50)
+      : undefined;
+    const toolMode = src['toolMode'] === 'native' || src['toolMode'] === 'structured_text' || src['toolMode'] === 'text' || src['toolMode'] === 'auto'
+      ? src['toolMode']
+      : 'auto';
+    seen.add(id);
+    out.push({ id, label, baseUrl, defaultModel, keyEnvVar, ...(models?.length ? { models } : {}), toolMode });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+
 export function loadWorkspaceSettings(): WorkspaceSettings {
   const data = readJson<Record<string, unknown>>(settingsFile()) ?? {};
   const projectsPath = typeof data['projectsPath'] === 'string' && data['projectsPath'] ? String(data['projectsPath']) : undefined;
   const fallbackModels = sanitizeFallbackModels(data['fallbackModels']);
-  return { projectsPath, ...(fallbackModels ? { fallbackModels } : {}) };
+  const customProviders = sanitizeCustomProviders(data['customProviders']);
+  return { projectsPath, ...(fallbackModels ? { fallbackModels } : {}), ...(customProviders ? { customProviders } : {}) };
 }
 
 export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): WorkspaceSettings {
   const merged: WorkspaceSettings = { ...loadWorkspaceSettings() };
   if ('projectsPath' in patch) merged.projectsPath = patch.projectsPath;
-  const fallback = sanitizeFallbackModels(patch.fallbackModels ?? []);
-  if (fallback && fallback.length > 0) merged.fallbackModels = fallback;
-  else delete merged.fallbackModels;
+  if ('fallbackModels' in patch) {
+    const fallback = sanitizeFallbackModels(patch.fallbackModels ?? []);
+    if (fallback && fallback.length > 0) merged.fallbackModels = fallback;
+    else delete merged.fallbackModels;
+  }
+  if ('customProviders' in patch) {
+    const providers = sanitizeCustomProviders(patch.customProviders ?? []);
+    if (providers && providers.length > 0) merged.customProviders = providers;
+    else delete merged.customProviders;
+  }
   saveWorkspaceSettings(merged);
   return merged;
 }

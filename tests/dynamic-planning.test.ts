@@ -2,7 +2,7 @@
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compactHistory, Hermes } from '../src/agent/hermes.js';
+import { compactHistory, Hermes } from '../src/agent/gitu.js';
 import { buildStateMessage, renderFullPlanMessage } from '../src/agent/prompt.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';

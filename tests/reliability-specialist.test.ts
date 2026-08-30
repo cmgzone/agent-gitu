@@ -150,10 +150,10 @@ describe('SubAgentRunner — stagnation early termination', () => {
 
     const result = await runner.runOne('brooder', 'ponder the task');
 
-    expect(result.turnsUsed).toBe(6);
+    expect(result.turnsUsed).toBe(3);
     expect(result.status).toBe('BLOCKED');
     expect(result.ok).toBe(false);
-    expect(result.blockers?.some((b) => b.includes('Stalled'))).toBe(true);
+    expect(result.blockers?.some((b) => b.includes('consecutive replies without a valid action'))).toBe(true);
     expect(events.some((e) => e.includes('loop/stagnation detected'))).toBe(true);
   });
 });
@@ -203,4 +203,58 @@ describe('SubAgentRunner — structured result guarantee', () => {
     }
     expect(['SUCCESS', 'PARTIAL_SUCCESS', 'BLOCKED', 'FAILED', 'CANCELLED']).toContain(result.status);
   });
+});
+
+describe('SubAgentRunner — cancellation and stuck-turn recovery', () => {
+  it('cancels an in-flight specialist immediately when its parent stops', async () => {
+    const dir = makeProject();
+    const events: string[] = [];
+    let receivedSignal: AbortSignal | undefined;
+    const neverFinishes: LlmClient = {
+      name: 'waiting-worker',
+      complete(_messages: LlmMessage[], opts?: LlmOptions): Promise<string> {
+        receivedSignal = opts?.signal;
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(new Error('provider observed cancellation')), { once: true });
+        });
+      },
+      async completeStream(messages: LlmMessage[], opts: LlmOptions, onDelta: (delta: string) => void): Promise<string> {
+        const reply = await this.complete(messages, opts);
+        onDelta(reply);
+        return reply;
+      },
+    };
+    const runner = makeRunner(dir, neverFinishes, events, { turnTimeoutMs: 10_000 });
+    const [job] = runner.startMany([{ agent: 'waiting', task: 'wait for a model reply' }]);
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    runner.stop('Parent task stopped by user.');
+    const [result] = await runner.waitFor([job!.id]);
+
+    expect(receivedSignal?.aborted).toBe(true);
+    expect(result.status).toBe('CANCELLED');
+    expect(result.summary).toContain('Parent task stopped by user.');
+    expect(runner.status([job!.id])[0]?.status).toBe('cancelled');
+    expect(events.some((event) => event.includes('[cancelled]'))).toBe(true);
+  });
+
+  it('returns a bounded result when a provider ignores AbortSignal', async () => {
+    const dir = makeProject();
+    const ignoresAbort: LlmClient = {
+      name: 'hung-worker',
+      complete(): Promise<string> {
+        return new Promise(() => {});
+      },
+      async completeStream(): Promise<string> {
+        return new Promise(() => {});
+      },
+    };
+    const runner = makeRunner(dir, ignoresAbort, [], { turnTimeoutMs: 25 });
+
+    const result = await runner.runOne('hung', 'this request never settles');
+
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe('FAILED');
+    expect(result.summary).toContain('timed out after 25ms');
+  }, 5_000);
 });

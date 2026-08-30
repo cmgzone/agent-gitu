@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { toolRunCommand } from '../src/tools/tools.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
@@ -102,6 +102,78 @@ describe('Hermes — plan steps are marked done when their verification passes',
     // demands npm test -- auth — it must stay open.
     expect(ledger.data.acceptanceCriteria[0]!.satisfied).toBe(true);
     expect(ledger.data.plan[0]!.status).toBe('pending');
+  }, 30000);
+
+  it('does NOT complete a step when a non-verification tool succeeds with its stepId', async () => {
+    const dir = makeProject('readdone');
+    const llm = new ScriptedMockLlm([
+      () =>
+        JSON.stringify({
+          action: { type: 'set_criteria', criteria: [{ text: 'node runs', verification: 'node --version', evidenceType: 'command_success' }] },
+        }),
+      () =>
+        JSON.stringify({
+          action: { type: 'set_plan', steps: [{ description: 'verify node runs', verification: 'node --version' }] },
+        }),
+      // A successful read tagged with the stepId must only mark it in_progress.
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'read_file', params: { path: 'package.json' }, reason: 'inspect', expected: 'content' },
+        }),
+      (_n: number, messages: LlmMessage[]) => {
+        // The state message built after the read must still show step-1 open.
+        const state = [...messages].reverse().find((m) => String(m.content).includes('TASK:'));
+        expect(String(state?.content)).not.toContain('✓ step-1');
+        return JSON.stringify({
+          action: { type: 'tool_call', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+        });
+      },
+      (_n: number, messages: LlmMessage[]) => {
+        const text = messages.map((m) => m.content).join('\n');
+        const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+      },
+      () => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+
+    const { ledger, report } = await hermes.run('verify node');
+
+    // The step completes only when its verification command passes — not when
+    // the read succeeded.
+    expect(ledger.data.plan[0]!.status).toBe('done');
+    expect(report.status).toBe('complete');
+  }, 30000);
+
+  it('completes a step explicitly via complete_step', async () => {
+    const dir = makeProject('doneexplicit');
+    const llm = new ScriptedMockLlm([
+      () =>
+        JSON.stringify({
+          action: { type: 'set_criteria', criteria: [{ text: 'node runs', verification: 'node --version', evidenceType: 'command_success' }] },
+        }),
+      () =>
+        JSON.stringify({
+          action: { type: 'set_plan', steps: [{ description: 'verify node runs', verification: 'node --version' }] },
+        }),
+      () => JSON.stringify({ action: { type: 'complete_step', stepId: 'step-1', reason: 'nothing to build — verification already covered it' } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', tool: 'run_command', params: { command: 'node --version' }, reason: 'produce the evidence', expected: 'exit 0' },
+        }),
+      (_n: number, messages: LlmMessage[]) => {
+        const text = messages.map((m) => m.content).join('\n');
+        const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+      },
+      () => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+
+    const { ledger, report } = await hermes.run('verify node');
+
+    expect(ledger.data.plan[0]!.status).toBe('done');
+    expect(report.status).toBe('complete');
   }, 30000);
 });
 

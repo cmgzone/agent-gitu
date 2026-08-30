@@ -2,6 +2,7 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import type { MemoryStore } from '../memory/memory-store.js';
 import type { PlanArea, PlanDesign, PlanStep, TaskLedgerData } from '../types.js';
+import { builtinSkillByName } from '../skills/builtin.js';
 import { renderDecisions } from './architecture.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
@@ -16,6 +17,14 @@ const COMPACT_TODO_LINES_CAP = 18;
 const DONE_TAIL_CAP = 8;
 const ACTIVE_TODO_CAP = 6;
 const NEXT_ACTIONABLE_CAP = 3;
+const STATE_GOAL_MAX_CHARS = 4_000;
+const STATE_CRITERION_MAX_CHARS = 360;
+const STATE_EVIDENCE_CAP = 12;
+const STATE_EVIDENCE_MAX_CHARS = 260;
+const STATE_FILES_CAP = 20;
+const STATE_DECISIONS_MAX_CHARS = 2_400;
+const STATE_TRANSCRIPT_ACTIONS = 6;
+const STATE_FULL_PLAN_MAX_STEPS = 10;
 
 function trunc(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
@@ -170,7 +179,21 @@ export function renderFullPlanMessage(ledger: TaskLedger): string {
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; lspSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean; uiTask?: boolean } = {},
+  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; lspSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean;   /** Ranked memory retrieval query (usually the goal) — memories that matter
+   *  for THIS task surface first; everything else stays out of context. */
+  memoryQuery?: string;
+  /** Prebuilt RELEVANT MEMORY section — when provided it replaces the static
+   *  stored-memory block (memory enters context via buildModelContext). */
+  memorySection?: string;
+  /** Tier 1 PROTECTED memory (ACTIVE CONSTRAINTS & DECISIONS) — durable
+   *  guidance that survives compaction regardless of lexical relevance. */
+  protectedSection?: string;
+  uiTask?: boolean;
+  /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string;
+  /** Compact, durable frontend skill contract. Prefer this in long-running
+   *  agent sessions; full instructions are delivered only on skill activation. */
+  uiQualityContract?: string;
+  } = {},
 ): string {
   const lock = guard.lock;
   const autoLearn = opts.autoLearn ?? true;
@@ -209,15 +232,12 @@ export function buildSystemPrompt(
     ? '8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Never answer "I don\'t have that skill" without creating it. Also create skills proactively after any repeatable multi-step pattern (deploy flows, design conventions, checklists).'
     : '8. Skills: if the user explicitly asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge), THEN apply it with use_skill. Do NOT create skills proactively — auto-learn is disabled by the user.';
   // Frontend work gets a fixed quality bar so output quality does not depend
-  // on the model's taste that day. Bounded (~700 chars) like every other
+  // on the model's taste that day. The CONTENT is expertise and lives in the
+  // skill layer (frontend-quality-bar builtin, shadowable by user skills);
+  // WHEN it applies stays a core mechanism. Bounded like every other
   // injected section — it taxes every model call.
   const frontendSection = opts.uiTask
-    ? `\nFRONTEND QUALITY BAR (this task builds user-facing UI — non-negotiable):
-- Pick a small design system FIRST and reuse it everywhere: spacing scale (4/8/12/16/24/32px), one type scale, one accent palette incl. hover/focus/disabled states.
-- Every view implements loading, empty, AND error states; forms validate inline and confirm success.
-- Responsive at 375px, 768px, and desktop widths; no horizontal scroll; touch targets ≥40px.
-- Accessibility basics: semantic elements, labels bound to inputs, visible focus styles, text contrast ≥4.5:1.
-- Ship COMPLETE pages (title, favicon, nav/footer) — no lorem ipsum or TODO placeholders unless explicitly requested.\n`
+    ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n`
     : '';
   return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
 ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
@@ -225,6 +245,9 @@ ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}
 PROJECT LOCK (do not violate):
   name: ${lock.name}
   repo_root: ${lock.repoRoot}
+  common_repository_root: ${lock.workspace?.repositoryRoot ?? lock.repoRoot}
+  active_worktree_root: ${lock.workspace?.worktreeRoot ?? lock.repoRoot}
+  active_writable_root: ${lock.workspace?.writableRoot ?? lock.repoRoot}
   branch: ${lock.branch ?? '(none)'}
   tech_stack: ${lock.techStack.join(', ') || 'unknown'}
   entrypoints: ${lock.entrypoints.join(', ') || 'unknown'}
@@ -243,8 +266,8 @@ OPERATING RULES:
 7. "I changed something" is not "the task is complete".
 ${learnRule}
 
-STORED MEMORY (from previous work on this project):
-${memory.renderForPrompt(lock.name)}
+${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}\n`}
+${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
 
 PROTOCOL — each turn you MUST respond in this exact shape:
 1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
@@ -252,7 +275,7 @@ PROTOCOL — each turn you MUST respond in this exact shape:
 
 Intake/planning actions:
 {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
-{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
+{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
 {"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
 {"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
 {"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
@@ -262,8 +285,9 @@ Architecture decisions (record BEFORE implementing whenever the task involves a 
 {"thought":"...","action":{"type":"record_decision","decision":"the chosen approach, one line","alternatives":["evaluated alternative",...],"repoEvidence":"what in THIS repo supports the choice","requirements":["explicit requirement or repo constraint considered",...],"rejected":[{"alternative":"...","reason":"why it lost"}],"reconsiderIf":"conditions that would justify revisiting","basis":"explicit-requirement|repository-constraint|recommendation|preference","supersedes":"ad-..."}}
 
 Execution:
-{"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}
+{"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId records WHICH step you are working on — it does NOT complete the step)
 {"thought":"...","action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}}  (check off a subtask as you complete it; checking the last one completes the step)
+{"thought":"...","action":{"type":"complete_step","stepId":"step-N","reason":"why it is done"}}  (explicitly finish a step once its work is done; a step also auto-completes when a run_command matching its verification passes)
 {"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","todos":["new subtask",...]}}  (dynamic replanning: update ONLY the affected step when reality diverges — API differs, reuse found, dependency missing)
 {"thought":"...","action":{"type":"show_plan"}}  (prints the FULL plan + design once — use when you need details no longer shown in compact state)
 
@@ -272,7 +296,8 @@ Tools:
 - write_file   {"path":"src/x.ts","content":"full file content"}
 - apply_edit   {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
 - list_files   {"path":"src"}
-- search_files {"pattern":"regex","path":"src"}
+- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2}
+    language-agnostic whole-file search (any language, any text file). Regex mode scans full file content, so patterns match ACROSS lines: use \\n, \\s or [\\s\\S] spans, or flags "s"/"m". Use mode "literal" for plain text with no regex escaping. Every result ends with a capability line (mode/flags/multiline/matches) telling you exactly what ran.
 - run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
 - lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
 - lsp_definition {"path":"src/auth.ts","line":42,"column":17}  (1-based; where the symbol at that position is defined)
@@ -290,16 +315,21 @@ Tools:
   - web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
   - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
 - browse       full human-like browser control:
-                 {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"back"|"forward"|"reload"}
+                 {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"evidence"} | {"action":"back"|"forward"|"reload"}
                  {"action":"click","selector":"#submit"} (preferred) or {"action":"click","x":120,"y":340}
                  {"action":"hover","x":10,"y":20} | {"action":"scroll","x":640,"y":450,"deltaY":400} (positive = down)
                  {"action":"fill","selector":"input[name=email]","text":"value"} (forms; works with React/Vue inputs)
                  {"action":"select","selector":"#country","value":"France"} | {"action":"press","key":"Enter|Tab|Escape|Backspace|Down…"}
                  {"action":"type","text":"..."} (types into the focused element) | {"action":"wait","ms":1000}
-                 Interact like a human: screenshot → act → screenshot to confirm the effect. Prefer selector-based click/fill over raw coordinates.
+                 Interact like a human: act → verify. VERIFY with the CHEAPEST evidence that proves the criterion:
+                 - "evidence" = structured non-visual pass (DOM counts, accessibility, layout overflow, clipped text, invisible/covered controls, console errors) — the DEFAULT look after navigate and after edits; it proves functionality, structure, a11y and layout bugs WITHOUT vision.
+                 - "evidence" + "viewports":["mobile","tablet","desktop"] = responsive verification: the page is re-probed at each size (or explicit "375x812") and every finding is labeled with the viewport that produced it. Use for any responsive/layout criterion.
+                 - "screenshot" = visual escalation, for criteria that genuinely need pixels (visual hierarchy, spacing, color/contrast judgment). Every result ends with a capability line so you know exactly what ran.
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
-- create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge"}
+- create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge","global":true}
+                 global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
+                 Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
 
 Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
@@ -322,8 +352,8 @@ Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once,
 IMPORTANT: \`agent\` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
 For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
 {"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<registered specialist name>","task":"self-contained non-conflicting task"}]}}
-RESUMING PAUSED SPECIALISTS: a specialist that stops early (budget/timeout) does NOT lose its work — its changes stay committed on a preserved branch. Its result summary ends with "PAUSED AFTER n/m TURNS … resume with delegate …resume:{\"jobId\":\"sub-…\"}". To wake it exactly where it stopped, delegate the SAME agent with the SAME task plus the resume field:
-{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<same specialist>","task":"<same task>","resume":{"jobId":"<resumableJobId>"},"note":"finish AC-2 only"}]}}
+RESUMING PAUSED SPECIALISTS: a specialist that stops because of a model/provider/process failure may have either verified durable edits or context only. Never say its files were recovered unless its checkpoint reports "DURABLE CHANGES VERIFIED". To wake the SAME logical specialist job, delegate the SAME agent with the SAME task and its resume field; this reuses its specialist allocation rather than creating a second worker:
+{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<same specialist>","task":"<same task>","resume":{"jobId":"<resumableJobId>","note":"finish AC-2 only"}}]}}
 
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.
@@ -344,7 +374,7 @@ ARCHITECTURE DECISIONS:
 PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - Low-complexity tasks: short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.
 - Medium/high complexity, and anything spanning UI + server: FIRST set_design with BOUNDED sections, THEN set_plan.
-  - frontend section: pages/views, layout & components, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
+  - frontend section: pages/views, layout & components, each control's user intent and placement, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
   - backend section: API routes & request/response contracts, schema/DB changes, authn/authz, validation, business logic, integrations, error handling, tests.
   - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
 - Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
@@ -355,13 +385,20 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 
 export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string): string {
   const d = ledger.data;
-  const detail: 'full' | 'compact' = isPlanningPhase(d) ? 'full' : 'compact';
+  // A full 30-step plan can exceed the useful working-memory budget on every
+  // planning turn. Small plans remain rich for review; larger ones use the
+  // compact view and can always be expanded with show_plan.
+  const detail: 'full' | 'compact' = isPlanningPhase(d) && d.plan.length <= STATE_FULL_PLAN_MAX_STEPS ? 'full' : 'compact';
+  const taskGoal =
+    d.goal.length <= STATE_GOAL_MAX_CHARS
+      ? d.goal
+      : `${d.goal.slice(0, 3_000)}\n… [${d.goal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${d.goal.slice(-700)}`;
   const criteria = d.acceptanceCriteria
-    .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${c.text}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
+    .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
     .join('\n');
   const evidence = d.evidence
-    .slice(-12)
-    .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${e.label}${e.command ? ` — ${e.command}` : ''}`)
+    .slice(-STATE_EVIDENCE_CAP)
+    .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${trunc(`${e.label}${e.command ? ` — ${e.command}` : ''}`, STATE_EVIDENCE_MAX_CHARS)}`)
     .join('\n');
   const effortLine = d.effortPlan
     ? `EFFORT: ${d.effortPlan.complexity} — ${d.effortPlan.reason} (budget: ${d.effortPlan.maxTurns} turns, ${d.effortPlan.maxSpecialists} specialists, ${d.effortPlan.contextBudget.maxBytes} bytes)`
@@ -369,7 +406,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const riskLine = d.riskPlan
     ? `RISK: ${d.riskPlan.risk} — ${d.riskPlan.reason}${d.riskPlan.recommendedSpecialists.length > 0 ? ` | suggested: ${d.riskPlan.recommendedSpecialists.map((r) => r.agent).join(', ')}` : ''}`
     : '';
-  const decisions = renderDecisions(d.architectureDecisions ?? []);
+  const decisions = trunc(renderDecisions(d.architectureDecisions ?? []), STATE_DECISIONS_MAX_CHARS);
   const failures = ledger.failureSummary();
   const next = ledger.nextStep();
   const counts = stepCounts(d.plan);
@@ -378,9 +415,13 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
       ? 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
       : `PLAN: ${counts.done}/${d.plan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(d.plan, detail)}`;
   const designBlock = renderDesign(d.planDesign, detail);
+  const files =
+    d.filesChanged.length > STATE_FILES_CAP
+      ? `… (+${d.filesChanged.length - STATE_FILES_CAP} earlier) ${d.filesChanged.slice(-STATE_FILES_CAP).join(', ')}`
+      : d.filesChanged.join(', ');
 
   return [
-    `TASK: ${d.goal}`,
+    `TASK: ${taskGoal}`,
     `STATUS: ${d.status} | mode: ${d.mode}`,
     effortLine,
     riskLine,
@@ -392,11 +433,11 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     planBlock,
     `EVIDENCE:\n${evidence || '  (none yet)'}`,
     failures.length ? `FAILED:\n${failures.map((f) => `  ${f}`).join('\n')}` : '',
-    `FILES CHANGED: ${d.filesChanged.join(', ') || '(none)'}`,
+    `FILES CHANGED: ${files || '(none)'}`,
     next ? `NEXT: ${next.id}${next.area ? ` (${next.area})` : ''} — ${next.description}` : '',
-    d.blockers.length ? `BLOCKERS: ${d.blockers.join('; ')}` : '',
-    `RECENT ACTIONS:\n${ledger.transcriptTail()}`,
-    extra ? `SYSTEM NOTE: ${extra}` : '',
+    d.blockers.length ? `BLOCKERS: ${d.blockers.slice(-3).map((b) => trunc(b, 300)).join('; ')}` : '',
+    `RECENT ACTIONS:\n${ledger.transcriptTail(STATE_TRANSCRIPT_ACTIONS)}`,
+    extra ? `SYSTEM NOTE: ${trunc(extra, 900)}` : '',
     'Respond with exactly one JSON action.',
   ]
     .filter(Boolean)

@@ -26,6 +26,12 @@ export interface StoredSession {
   mode?: 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
+  /** The model the user selected when the run began. Never overwritten by fallback. */
+  requestedProvider?: string;
+  requestedModel?: string;
+  /** The model currently executing the run; mirrors provider/model for legacy clients. */
+  activeProvider?: string;
+  activeModel?: string;
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage;
@@ -35,6 +41,17 @@ export interface StoredEvent {
   i: number;
   t: string;
   text: string;
+}
+
+export interface StoredSessionFile {
+  runId: string;
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  kind: 'user' | 'assistant';
+  path: string;
+  createdAt: string;
 }
 
 export class SessionStore {
@@ -71,6 +88,10 @@ export class SessionStore {
          mode TEXT,
          provider TEXT,
          model TEXT,
+         requestedProvider TEXT,
+         requestedModel TEXT,
+         activeProvider TEXT,
+         activeModel TEXT,
          report TEXT,
          error TEXT,
          usage TEXT,
@@ -82,6 +103,17 @@ export class SessionStore {
          t TEXT,
          text TEXT,
          PRIMARY KEY (runId, idx)
+       );
+       CREATE TABLE IF NOT EXISTS session_files (
+         runId TEXT,
+         id TEXT,
+         name TEXT,
+         mime TEXT,
+         size INTEGER,
+         kind TEXT,
+         path TEXT,
+         createdAt TEXT,
+         PRIMARY KEY (runId, id)
        );`,
     );
     // Existing installations created the sessions table before these fields
@@ -92,6 +124,10 @@ export class SessionStore {
       'mode TEXT',
       'provider TEXT',
       'model TEXT',
+      'requestedProvider TEXT',
+      'requestedModel TEXT',
+      'activeProvider TEXT',
+      'activeModel TEXT',
       'report TEXT',
       'error TEXT',
       'usage TEXT',
@@ -109,8 +145,8 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, report, error, usage, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
@@ -123,6 +159,10 @@ export class SessionStore {
            mode = excluded.mode,
            provider = excluded.provider,
            model = excluded.model,
+           requestedProvider = excluded.requestedProvider,
+           requestedModel = excluded.requestedModel,
+           activeProvider = excluded.activeProvider,
+           activeModel = excluded.activeModel,
            report = excluded.report,
            error = excluded.error,
            usage = excluded.usage,
@@ -142,6 +182,10 @@ export class SessionStore {
         s.mode ?? null,
         s.provider ?? null,
         s.model ?? null,
+        s.requestedProvider ?? null,
+        s.requestedModel ?? null,
+        s.activeProvider ?? s.provider ?? null,
+        s.activeModel ?? s.model ?? null,
         s.report ? JSON.stringify(s.report) : null,
         s.error ?? null,
         s.usage ? JSON.stringify(s.usage) : null,
@@ -157,9 +201,37 @@ export class SessionStore {
     this.db.prepare(`DELETE FROM events WHERE runId = ? AND idx = ?`).run(runId, idx);
   }
 
+  addSessionFile(file: StoredSessionFile): void {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO session_files (runId, id, name, mime, size, kind, path, createdAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(file.runId, file.id, file.name, file.mime, file.size, file.kind, file.path, file.createdAt);
+  }
+
+  filesFor(runId: string): StoredSessionFile[] {
+    return this.db
+      .prepare(`SELECT runId, id, name, mime, size, kind, path, createdAt FROM session_files WHERE runId = ? ORDER BY createdAt ASC`)
+      .all(runId)
+      .map((row) => {
+        const file = row as Record<string, unknown>;
+        return {
+          runId: String(file['runId'] ?? runId),
+          id: String(file['id'] ?? ''),
+          name: String(file['name'] ?? 'file'),
+          mime: String(file['mime'] ?? 'application/octet-stream'),
+          size: Number(file['size'] ?? 0),
+          kind: file['kind'] === 'assistant' ? 'assistant' : 'user',
+          path: String(file['path'] ?? ''),
+          createdAt: String(file['createdAt'] ?? ''),
+        } satisfies StoredSessionFile;
+      });
+  }
+
   listSessions(): StoredSession[] {
     const rows = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, report, error, usage FROM sessions ORDER BY startedAt DESC`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage FROM sessions ORDER BY startedAt DESC`)
       .all() as {
         runId: string;
         taskId: string | null;
@@ -174,6 +246,10 @@ export class SessionStore {
         mode: string | null;
         provider: string | null;
         model: string | null;
+        requestedProvider: string | null;
+        requestedModel: string | null;
+        activeProvider: string | null;
+        activeModel: string | null;
         report: string | null;
         error: string | null;
         usage: string | null;
@@ -192,6 +268,10 @@ export class SessionStore {
       mode: r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
       provider: r.provider ?? undefined,
       model: r.model ?? undefined,
+      requestedProvider: r.requestedProvider ?? r.provider ?? undefined,
+      requestedModel: r.requestedModel ?? r.model ?? undefined,
+      activeProvider: r.activeProvider ?? r.provider ?? undefined,
+      activeModel: r.activeModel ?? r.model ?? undefined,
       report: parseReport(r.report),
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
@@ -200,7 +280,7 @@ export class SessionStore {
 
   getSessionByTaskId(taskId: string): StoredSession | undefined {
     const r = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, report, error, usage FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
       .get(taskId) as {
         runId: string;
         taskId: string | null;
@@ -215,6 +295,10 @@ export class SessionStore {
         mode: string | null;
         provider: string | null;
         model: string | null;
+        requestedProvider: string | null;
+        requestedModel: string | null;
+        activeProvider: string | null;
+        activeModel: string | null;
         report: string | null;
         error: string | null;
         usage: string | null;
@@ -234,6 +318,10 @@ export class SessionStore {
       mode: r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
       provider: r.provider ?? undefined,
       model: r.model ?? undefined,
+      requestedProvider: r.requestedProvider ?? r.provider ?? undefined,
+      requestedModel: r.requestedModel ?? r.model ?? undefined,
+      activeProvider: r.activeProvider ?? r.provider ?? undefined,
+      activeModel: r.activeModel ?? r.model ?? undefined,
       report: parseReport(r.report),
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
@@ -250,6 +338,7 @@ export class SessionStore {
       .all(filter.path ?? null, filter.name ?? null) as { runId: string }[];
     for (const r of rows) {
       this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(r.runId);
+      this.db.prepare(`DELETE FROM session_files WHERE runId = ?`).run(r.runId);
       this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(r.runId);
     }
     return rows.length;
@@ -257,6 +346,7 @@ export class SessionStore {
 
   deleteSession(runId: string): boolean {
     this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(runId);
+    this.db.prepare(`DELETE FROM session_files WHERE runId = ?`).run(runId);
     const res = this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(runId);
     return Number(res.changes) > 0;
   }

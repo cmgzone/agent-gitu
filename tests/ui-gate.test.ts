@@ -68,7 +68,7 @@ describe('uiVisualGate', () => {
     });
     const gate = uiVisualGate(data, { browserAvailable: true });
     expect(gate).toMatchObject({ required: true, verified: false });
-    expect(gate.reason).toContain('AFTER your last screenshot');
+    expect(gate.reason).toContain('AFTER your last look at the page');
   });
 
   it('accepts when the final state was seen after the last edit', () => {

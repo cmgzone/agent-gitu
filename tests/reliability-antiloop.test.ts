@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { Hermes } from '../src/agent/hermes.js';
+import { Hermes } from '../src/agent/gitu.js';
 import { SubAgentRunner } from '../src/agent/subagent.js';
 import {
   DEFAULT_MALFORMED_POLICY,
@@ -96,19 +96,20 @@ describe('Hermes — malformed-call spiral protection', () => {
     const llm = new ScriptedMockLlm([
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['the file is readable'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'read', verification: 'n/a' }] } }),
-      ...Array.from({ length: 6 }, (_, i) => malformedRead(i)),
+      ...Array.from({ length: 3 }, (_, i) => malformedRead(i)),
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
 
     const { ledger, report } = await hermes.run('read the file');
 
     expect(events.some((e) => e.includes('stall   malformed-call spiral detected'))).toBe(true);
-    expect(events.some((e) => e.includes('malformed call streak 4/6 — strategy change injected'))).toBe(true);
+    expect(events.some((e) => e.includes('malformed call streak 2/3 — strategy change injected'))).toBe(true);
     expect(report.status).toBe('failed');
     expect(ledger.data.blockers.some((b) => b.includes('consecutive malformed tool calls'))).toBe(true);
-    // Exactly six malformed attempts were recorded — the run stopped at the halt threshold.
+    // Exactly three malformed attempts were recorded — this lane stopped at
+    // the permanent no-loop threshold.
     const errors = ledger.data.actions.filter((a) => a.status === 'error');
-    expect(errors).toHaveLength(6);
+    expect(errors).toHaveLength(3);
   }, 30000);
 
   it('recovers when the model corrects itself after a short streak', async () => {
@@ -154,11 +155,11 @@ describe('Hermes — malformed-call spiral protection', () => {
 
     const { ledger, report } = await hermes.run('mixed meltdown');
 
-    expect(report.status).toBe('failed');
-    expect(ledger.data.blockers.some((b) => b.includes('consecutive malformed tool calls'))).toBe(true);
-    // invalidStreak alone would have reset on every parseable reply — only the
-    // category tracker can stop this mixed spiral.
-    expect(ledger.data.blockers[0]).not.toContain('unparseable');
+    expect(report.status).toBe('blocked');
+    expect(ledger.data.blockers.some((b) => b.includes('Main execution lane stopped after 3'))).toBe(true);
+    // The lane breaker counts malformed responses consistently even when they
+    // alternate between prose and schema-invalid actions.
+    expect(ledger.data.blockers[0]).toContain('Main execution lane');
   }, 30000);
 });
 

@@ -866,15 +866,16 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(false);
   }, 30000);
 
-  it('coaches through unparseable replies instead of stopping after three warnings', async () => {
+  it('stops the main execution lane after three unparseable replies', async () => {
     const dir = makeProject('garbage-recovery');
     const events: string[] = [];
     const llm = new ScriptedMockLlm([
       () => 'I think I should look around first.',
       () => 'Let me check the directory listing next.',
       () => 'Probably src has the answer.',
+      // A fourth reply must never be requested: the task state is preserved
+      // and the user can continue it with another configured model.
       () => 'One more moment please.',
-      // The model recovers and finishes the task properly.
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['Node is available'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify node', verification: 'node --version' }] } }),
       () =>
@@ -893,10 +894,9 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('say something useful');
 
-    expect(report.status).toBe('complete');
-    expect(ledger.data.blockers.some((b) => b.includes('unparseable'))).toBe(false);
-    expect(ledger.data.blockers.some((b) => b.includes('3 consecutive'))).toBe(false);
-    expect(events.some((e) => e.includes('final instruction repeated'))).toBe(true);
+    expect(report.status).toBe('blocked');
+    expect(ledger.data.blockers.some((b) => b.includes('Main execution lane stopped after 3'))).toBe(true);
+    expect(events.some((e) => e.includes('main execution lane stopped after 3'))).toBe(true);
   }, 30000);
 
   it('clamps delegate calls to the task specialist budget', async () => {

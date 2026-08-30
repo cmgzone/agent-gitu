@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { computeBackoffMs, isRetryableNetworkError } from '../src/llm/llm.js';
-import { computeResilientDelay, isTransientLlmError, resilientLlm } from '../src/llm/resilient.js';
+import { computeBackoffMs, isRetryableNetworkError, LlmError } from '../src/llm/llm.js';
+import { clearCooldownsForTest, computeResilientDelay, cooldownSnapshot, isTransientLlmError, resilientLlm } from '../src/llm/resilient.js';
 import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
 
 function msg(text: string): LlmMessage[] {
@@ -31,7 +31,7 @@ describe('dynamic backoff computation', () => {
   });
 
   it('honors Retry-After up to 120s', () => {
-    expect(computeBackoffMs(0, 1000, 90_000)).toBeGreaterThanOrEqual(90_000 * 0.75 - 1);
+    expect(computeBackoffMs(0, 1000, 90_000)).toBeGreaterThanOrEqual(90_000);
     expect(computeBackoffMs(0, 1000, 500_000)).toBeLessThanOrEqual(120_000 * 1.25 + 1);
   });
 
@@ -101,6 +101,44 @@ describe('resilientLlm wrapper', () => {
     const wrapped = resilientLlm(client, { maxRetries: 2, baseDelayMs: 10, sleep: async () => {} });
     await expect(wrapped.complete(msg('hi'))).rejects.toThrow(/connection reset/);
     expect(calls()).toBe(3); // initial + 2 retries
+  });
+
+  it('never exceeds the logical request transport allowance', async () => {
+    let calls = 0;
+    const client: LlmClient = {
+      name: 'bounded',
+      async complete() {
+        calls += 1;
+        throw new LlmError('busy', { kind: 'provider_unavailable' });
+      },
+      async completeStream() {
+        throw new Error('unused');
+      },
+    };
+    const wrapped = resilientLlm(client, { maxRetries: 8, baseDelayMs: 1, sleep: async () => {} });
+    await expect(wrapped.complete(msg('x'), { logicalRequestId: 'logical-abc', maxTransportAttempts: 3 })).rejects.toThrow('busy');
+    expect(calls).toBeLessThanOrEqual(3);
+    expect(calls).toBe(3);
+  });
+
+  it('opens a credential-scoped cooldown even after the final rate-limit attempt', async () => {
+    clearCooldownsForTest();
+    const key = 'test-provider:credential-a:chat';
+    const client: LlmClient = {
+      name: 'rate-limited',
+      rateLimitKey: key,
+      async complete() {
+        throw new LlmError('slow down', { kind: 'rate_limit_temporary', retryAfterMs: 200 });
+      },
+      async completeStream() {
+        throw new Error('unused');
+      },
+    };
+    const wrapped = resilientLlm(client, { maxRetries: 0, sleep: async () => {} });
+    await expect(wrapped.complete(msg('x'))).rejects.toThrow('slow down');
+    expect(cooldownSnapshot(key)).toMatchObject({ halfOpenProbe: false });
+    expect(cooldownSnapshot(key)?.openUntil).toBeGreaterThan(Date.now());
+    clearCooldownsForTest();
   });
 
   it('completeStream also benefits from the retry layer', async () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { PROVIDERS, ProviderError, cachedLiveModels, modelCapabilityTier, fetchLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, liveModelVision, modelMetadataFor, modelSupportsImages, parseModelCatalog, resolveImageSupport, resolveLlm, resolveSupportedImages } from '../src/llm/providers.js';
+import { sanitizeCustomProviders } from '../src/workspace/home.js';
 
 const WS_URL = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
 
@@ -54,6 +55,52 @@ describe('provider registry', () => {
     expect(deepseek!.defaultModel).toBe('deepseek-v4-pro');
     expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
     expect(deepseek!.maxEffort).toBe('distinct');
+  });
+});
+
+describe('custom provider profiles', () => {
+  it('accepts an HTTPS OpenAI-compatible profile without storing its secret', () => {
+    const profiles = sanitizeCustomProviders([
+      {
+        id: 'custom-team-gateway',
+        label: 'Team gateway',
+        baseUrl: 'https://models.example.test/v1/',
+        defaultModel: 'team-coder',
+        keyEnvVar: 'hermes_custom_team_gateway',
+        models: ['team-coder', 'team-fast', 'team-coder'],
+        toolMode: 'structured_text',
+        apiKey: 'must-not-be-kept',
+      },
+    ]);
+    expect(profiles).toEqual([
+      {
+        id: 'custom-team-gateway',
+        label: 'Team gateway',
+        baseUrl: 'https://models.example.test/v1',
+        defaultModel: 'team-coder',
+        keyEnvVar: 'HERMES_CUSTOM_TEAM_GATEWAY',
+        models: ['team-coder', 'team-fast'],
+        toolMode: 'structured_text',
+      },
+    ]);
+  });
+
+  it('rejects unsafe endpoints and arbitrary key-variable names', () => {
+    expect(
+      sanitizeCustomProviders([
+        { id: 'custom-unsafe', label: 'Unsafe', baseUrl: 'http://example.test/v1', defaultModel: 'm', keyEnvVar: 'OPENAI_API_KEY' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('allows a loopback IPv6 local model server', () => {
+    expect(
+      sanitizeCustomProviders([
+        { id: 'custom-local', label: 'Local', baseUrl: 'http://[::1]:11434/v1', defaultModel: 'local-coder', keyEnvVar: 'HERMES_CUSTOM_LOCAL' },
+      ]),
+    ).toEqual([
+      expect.objectContaining({ id: 'custom-local', baseUrl: 'http://[::1]:11434/v1' }),
+    ]);
   });
 });
 

@@ -12,6 +12,13 @@ export type TaskStatus =
 export interface ProjectLock {
   name: string;
   repoRoot: string;
+  /**
+   * Immutable identity of the filesystem target this run is allowed to
+   * mutate. `repoRoot` predates linked worktrees and remains the compatible
+   * name for `writableRoot`; new code must use this explicit record whenever
+   * it needs to distinguish the common repository from the active worktree.
+   */
+  workspace?: WorkspaceAuthority;
   branch?: string;
   techStack: string[];
   entrypoints: string[];
@@ -21,6 +28,15 @@ export interface ProjectLock {
   typecheckCommand?: string;
   ignorePaths: string[];
   lockedAt: string;
+}
+
+export interface WorkspaceAuthority {
+  /** The common/main checkout root when Git can identify one. */
+  repositoryRoot: string;
+  /** The current linked Git worktree, or the project root for non-Git work. */
+  worktreeRoot: string;
+  /** The only project root tools may resolve writes beneath. */
+  writableRoot: string;
 }
 
 export type CriterionEvidenceType =
@@ -367,6 +383,8 @@ export interface VerificationReportItem {
   exitCode?: number;
   command?: string;
   outputExcerpt?: string;
+  /** Evidence run against the final workspace state, or retained history. */
+  authority?: 'latest' | 'historical';
 }
 
 export interface BrowserActivity {

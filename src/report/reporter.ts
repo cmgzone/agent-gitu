@@ -18,7 +18,8 @@ function unique<T>(items: T[]): T[] {
 /** Keep the model's own summary honest: show whether passing verification
  *  actually backs it. The model writes the summary; the evidence decides. */
 function summaryBacking(report: CompletionReport): string {
-  const passing = report.verificationDetails?.filter((v) => v.passed).length ?? 0;
+  const authoritative = report.verificationDetails?.filter((v) => v.authority !== 'historical') ?? [];
+  const passing = authoritative.filter((v) => v.passed).length;
   if (report.status === 'complete' && passing === 0) return ' (note: no passing verification recorded)';
   if (passing > 0) return ` (backed by ${passing} passing verification${passing === 1 ? '' : 's'})`;
   return '';
@@ -29,8 +30,21 @@ export class Reporter {
     ledger: TaskLedger,
     exitReason: 'complete' | 'blocked' | 'stalled',
     completionInput?: { summary: string; risks: string[]; followUps: string[] },
+    finalWorkspaceFingerprint?: string,
   ): CompletionReport {
     const d = ledger.data;
+    // A check is authoritative only when it ran against the final workspace
+    // content, and only the most recent run of that exact command can be the
+    // current result. Earlier checks remain useful audit history but can no
+    // longer make a later failure look like a pass.
+    const latestAtFinal = new Map<string, string>();
+    if (finalWorkspaceFingerprint) {
+      for (const e of d.evidence) {
+        if (e.workspaceFingerprint === finalWorkspaceFingerprint) {
+          latestAtFinal.set(e.command || `${e.kind}:${e.label}`, e.id);
+        }
+      }
+    }
     const verificationDetails: VerificationReportItem[] = d.evidence.map((e) => ({
       id: e.id,
       kind: e.kind,
@@ -39,6 +53,11 @@ export class Reporter {
       exitCode: e.exitCode,
       command: e.command,
       outputExcerpt: e.outputExcerpt,
+      authority: finalWorkspaceFingerprint
+        ? latestAtFinal.get(e.command || `${e.kind}:${e.label}`) === e.id
+          ? 'latest'
+          : 'historical'
+        : 'latest',
     }));
     // Keep the plain-text report useful, but do not embed a duplicate raw
     // command in every line. The structured form retains it for disclosure.

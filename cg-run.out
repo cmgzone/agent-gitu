@@ -1,0 +1,3 @@
+(node:10604) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+ChatGPT account not connected. Run `hermes login` (or use Settings → Providers → Sign in with ChatGPT).

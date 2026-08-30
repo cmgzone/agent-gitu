@@ -3300,10 +3300,14 @@ export const UI_HTML = String.raw`<!doctype html>
         var details = '';
         if (item.command) details += 'Command\n' + item.command;
         if (item.outputExcerpt) details += (details ? '\n\n' : '') + 'Output\n' + item.outputExcerpt;
-        return { passed: item.passed !== false, kind: item.kind || 'check', label: readableCheckLabel(item.label || 'Verification recorded'), details: details };
+        return { passed: item.passed !== false, kind: item.kind || 'check', label: readableCheckLabel(item.label || 'Verification recorded'), details: details, authority: item.authority || 'latest' };
       });
     }
-    return (report.verification || []).map(compactVerification);
+    return (report.verification || []).map(function (item) {
+      var parsed = compactVerification(item);
+      parsed.authority = 'latest';
+      return parsed;
+    });
   }
 
   function checkRow(check) {
@@ -3311,15 +3315,22 @@ export const UI_HTML = String.raw`<!doctype html>
       ? '<details><summary>Show command and output</summary><pre>' + esc(check.details) + '</pre></details>'
       : '';
     return '<div class="verify-row"><span class="chip ' + (check.passed ? 'ok' : 'bad') + '">' + (check.passed ? 'PASS' : 'FAIL') + '</span>' +
-      '<span class="verify-kind">' + esc(check.kind) + '</span><span class="verify-label">' + esc(check.label) + '</span>' + details + '</div>';
+      '<span class="verify-kind">' + esc(check.kind) + '</span><span class="verify-label">' + esc(check.label) + '</span>' +
+      (check.authority === 'historical' ? '<span class="verify-kind">historical</span>' : '') + details + '</div>';
   }
 
   function verificationSection(checks) {
     if (!checks.length) return '';
-    var shown = checks.slice(0, 6);
-    var html = '<div class="sec"><h4>Verification</h4><div class="verify-list">' + shown.map(checkRow).join('') + '</div>';
-    if (checks.length > shown.length) {
-      html += '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Show ' + (checks.length - shown.length) + ' more checks</summary><div class="verify-list" style="margin-top:7px">' + checks.slice(shown.length).map(checkRow).join('') + '</div></details>';
+    var latest = checks.filter(function (check) { return check.authority !== 'historical'; });
+    var historical = checks.filter(function (check) { return check.authority === 'historical'; });
+    var shown = latest.slice(0, 6);
+    var html = '<div class="sec"><h4>Latest / authoritative verification</h4><div class="verify-list">' +
+      (shown.length ? shown.map(checkRow).join('') : '<div class="empty">No verification ran against the final workspace state.</div>') + '</div>';
+    if (latest.length > shown.length) {
+      html += '<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Show ' + (latest.length - shown.length) + ' more current checks</summary><div class="verify-list" style="margin-top:7px">' + latest.slice(shown.length).map(checkRow).join('') + '</div></details>';
+    }
+    if (historical.length) {
+      html += '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12px;color:var(--muted)">Historical evidence (' + historical.length + ')</summary><div class="verify-list" style="margin-top:7px">' + historical.map(checkRow).join('') + '</div></details>';
     }
     return html + '</div>';
   }
@@ -3335,7 +3346,8 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function reportSideCard(report) {
     var checks = reportChecks(report);
-    var passed = checks.filter(function (check) { return check.passed; }).length;
+    var currentChecks = checks.filter(function (check) { return check.authority !== 'historical'; });
+    var passed = currentChecks.filter(function (check) { return check.passed; }).length;
     var files = reportFiles(report);
     var parsed = parseOutcome(report.summary);
     var ok = report.status === 'complete';
@@ -3344,7 +3356,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + (ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : 'Failed')) + '</h2>' +
       '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
       '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || report.summary), 360)) + '</p>' +
-      reportStatusLine(report.status, checks, passed, files.length || parsed.changes.length) +
+      reportStatusLine(report.status, currentChecks, passed, files.length || parsed.changes.length) +
       browserHighlight(report.browserActivity) +
       (checks.length ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + '</details>' : '') +
       '</div>';
@@ -3359,7 +3371,8 @@ export const UI_HTML = String.raw`<!doctype html>
     var r = session.report;
     var files = reportFiles(r);
     var checks = reportChecks(r);
-    var passed = checks.filter(function (check) { return check.passed; }).length;
+    var currentChecks = checks.filter(function (check) { return check.authority !== 'historical'; });
+    var passed = currentChecks.filter(function (check) { return check.passed; }).length;
     var parsed = parseOutcome(r.summary);
     var div = document.createElement('div');
     div.className = 'report-flat';
@@ -3369,7 +3382,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
       '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
     html += '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || r.summary), 400)) + '</p>';
-    html += reportStatusLine(r.status, checks, passed, files.length || parsed.changes.length);
+    html += reportStatusLine(r.status, currentChecks, passed, files.length || parsed.changes.length);
     var findings = (r.findings || []).slice(0, 5);
     if (findings.length) {
       html += '<div class="r-sec"><h4>🔍 What Gitu found</h4><ul>' + findings.map(function (f) {
@@ -3915,8 +3928,42 @@ export const UI_HTML = String.raw`<!doctype html>
     } else if (S.setSection === 'providers') {
       b.innerHTML = '<h1>Providers</h1>' +
         '<p style="color:var(--muted);font-size:12.5px">Connect a provider, then choose the default model used for new tasks.</p>' +
+        '<div class="setcard" style="margin-bottom:10px"><div class="setrow"><div class="grow"><div class="t">Bring your own compatible provider</div><div class="d">Add an OpenAI-compatible endpoint. Its key stays in Agent Gitu’s local key store; native tools safely downgrade when unsupported.</div></div><button class="btn dark" id="addCustomProvider">Add provider</button><button class="btn ghost" id="editFallbackModels">Fallback models</button></div></div>' +
         '<div class="provider-toolbar"><input type="text" id="providerFilter" placeholder="Filter providers…" aria-label="Filter providers"><span class="meta" id="providerSummary"></span></div>' +
         '<div class="setcard" id="provBody"><div class="meta">loading providers…</div></div>';
+      var addCustomProvider = $('addCustomProvider');
+      if (addCustomProvider) addCustomProvider.onclick = function () {
+        var label = window.prompt('Provider name (for example: Team gateway)');
+        if (!label) return;
+        var slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+        if (!slug) { toast('Use a name with letters or numbers', true); return; }
+        var baseUrl = window.prompt('OpenAI-compatible base URL (HTTPS, or HTTP only for localhost)');
+        if (!baseUrl) return;
+        var defaultModel = window.prompt('Default model ID');
+        if (!defaultModel) return;
+        var keyEnvVar = 'HERMES_CUSTOM_' + slug.toUpperCase().replace(/-/g, '_');
+        var toolMode = window.prompt('Tool mode: auto, native, structured_text, or text', 'auto') || 'auto';
+        var profile = { id: 'custom-' + slug, label: label, baseUrl: baseUrl, defaultModel: defaultModel, keyEnvVar: keyEnvVar, toolMode: toolMode };
+        api('/api/provider-profiles', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+          .then(function () {
+            var key = window.prompt('Paste an API key now (optional — you can add it from the provider row)');
+            if (!key) { toast('Custom provider saved'); refreshModels(); return null; }
+            return api('/api/keys', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ envVar: keyEnvVar, key: key }) });
+          })
+          .then(function () { refreshModels(); })
+          .catch(function (e) { toast((e && e.message) || 'Could not save provider', true); });
+      };
+      var editFallbackModels = $('editFallbackModels');
+      if (editFallbackModels) editFallbackModels.onclick = function () {
+        api('/api/model-fallbacks').then(function (data) {
+          var current = (data.fallbackModels || []).join(', ');
+          var raw = window.prompt('Fallbacks in priority order, comma-separated (provider::model). Cross-provider fallbacks run only when listed here.', current);
+          if (raw === null) return;
+          var fallbackModels = raw.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+          return api('/api/model-fallbacks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fallbackModels: fallbackModels }) })
+            .then(function () { toast('Fallback models saved'); });
+        }).catch(function (e) { toast((e && e.message) || 'Could not save fallbacks', true); });
+      };
       Promise.all([api('/api/models'), api('/api/keys').catch(function () { return { stored: [] }; })]).then(function (res) {
         var d = res[0];
         var stored = (res[1] && res[1].stored) || [];
@@ -3971,6 +4018,7 @@ export const UI_HTML = String.raw`<!doctype html>
                   '<button class="btn dark" data-savekey="' + i + '">Save key</button>' +
                   '<button class="btn ghost" data-eye="' + i + '" title="show or hide the key">Show</button>' +
                   (storedVar ? '<button class="btn ghost" data-delkey="' + esc(storedVar) + '">Remove stored key</button>' : '') +
+                  (p.custom ? '<button class="btn ghost" data-testprofile="' + esc(p.id) + '" data-profilemodel="' + esc(p.defaultModel) + '">Test connection</button><button class="btn ghost" data-deleteprofile="' + esc(p.id) + '">Remove provider</button>' : '') +
                   (p.keyEnvVars && p.keyEnvVars.length ? '<div class="hint">stored locally as env var ' + esc(p.keyEnvVars.join(' or ')) + '</div>' : '')) +
             '</div>' +
             '</div></div>';
@@ -4001,6 +4049,27 @@ export const UI_HTML = String.raw`<!doctype html>
             toast('ChatGPT sign-in failed: ' + ((e && e.message) || e), true);
           });
         };
+        body.querySelectorAll('[data-testprofile]').forEach(function (btn) {
+          btn.onclick = function () {
+            var id = btn.getAttribute('data-testprofile');
+            var model = btn.getAttribute('data-profilemodel');
+            btn.disabled = true;
+            btn.textContent = 'Testing…';
+            api('/api/provider-profiles/' + encodeURIComponent(id) + '/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: model }) })
+              .then(function () { toast('Connection successful'); })
+              .catch(function (e) { toast((e && e.message) || 'Connection failed', true); })
+              .finally(function () { btn.disabled = false; btn.textContent = 'Test connection'; });
+          };
+        });
+        body.querySelectorAll('[data-deleteprofile]').forEach(function (btn) {
+          btn.onclick = function () {
+            var id = btn.getAttribute('data-deleteprofile');
+            if (!window.confirm('Remove this provider profile? Its locally stored key is not deleted.')) return;
+            api('/api/provider-profiles/' + encodeURIComponent(id), { method: 'DELETE' })
+              .then(function () { toast('Provider removed'); refreshModels(); })
+              .catch(function (e) { toast((e && e.message) || 'Could not remove provider', true); });
+          };
+        });
         var providerFilter = $('providerFilter');
         if (providerFilter) providerFilter.oninput = function () {
           var q = providerFilter.value.toLowerCase().trim();

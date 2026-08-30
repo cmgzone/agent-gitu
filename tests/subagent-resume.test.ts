@@ -78,7 +78,8 @@ describe('specialist pause / preserve / resume lifecycle', () => {
     const recovered = runnerB.status([job!.id]);
     expect(recovered).toHaveLength(1);
     expect(recovered[0]?.status).toBe('cancelled');
-    expect(recovered[0]?.summary).toContain('WORK PRESERVED');
+    expect(recovered[0]?.summary).toContain('Checkpoint discovered');
+    expect(recovered[0]?.summary).toContain('only claim recovered edits after that verification');
 
     runnerA.stop('test cleanup');
     await runnerA.waitFor([job!.id]);
@@ -136,7 +137,7 @@ describe('specialist pause / preserve / resume lifecycle', () => {
     // resumed branch's merge — nothing was lost or redone.
     expect(readFileSync(path.join(dir, 'out.txt'), 'utf8')).toBe('progress from attempt one');
 
-    // Old job id is consumed: resuming it again starts fresh gracefully.
+    // A consumed logical job must not silently create a replacement worker.
     const llmC = scriptedLlm([() => JSON.stringify({ action: { type: 'answer', summary: 'fresh start ok' } })]);
     const runnerC = new SubAgentRunner({
       cwd: dir,
@@ -148,6 +149,7 @@ describe('specialist pause / preserve / resume lifecycle', () => {
     const [r3] = await runnerC.runMany([
       { agent: 'worker', task: 'produce out.txt', resume: { jobId: r1.resumableJobId! } },
     ]);
-    expect(r3.ok).toBe(true);
+    expect(r3.ok).toBe(false);
+    expect(r3.resumeState).toBe('RESUME_CHECKPOINT_MISSING');
   }, 30000);
 });

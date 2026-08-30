@@ -326,13 +326,13 @@ describe('HermesServer', () => {
     // The shared checkout keeps the branch the newer run gave it; this session
     // resumed in a dedicated linked worktree on its own branch instead.
     expect(g('rev-parse --abbrev-ref HEAD')).toBe(`${taskBranch}-next`);
-    const wtDir = path.join(dir, '.hermes', 'worktrees', done.taskId);
-    expect(existsSync(wtDir)).toBe(true);
-    expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: wtDir }).toString().trim()).toBe(taskBranch);
     const ledger = JSON.parse(readFileSync(path.join(dir, '.hermes', 'tasks', `${done.taskId}.json`), 'utf8')) as {
       worktreePath?: string;
     };
-    expect(ledger.worktreePath?.toLowerCase()).toBe(wtDir.toLowerCase());
+    const wtDir = ledger.worktreePath!;
+    expect(existsSync(wtDir)).toBe(true);
+    expect(wtDir.toLowerCase()).not.toContain(`${path.sep}.hermes${path.sep}`.toLowerCase());
+    expect(execSync('git rev-parse --abbrev-ref HEAD', { cwd: wtDir }).toString().trim()).toBe(taskBranch);
 
     // A follow-up message reuses the same worktree (already recorded).
     const again = await fetch(`${base}/api/runs/${created.runId}/message`, {
@@ -376,7 +376,9 @@ describe('HermesServer', () => {
     expect(resp.status).toBe(200);
     // The checkout stays exactly where the active run left it.
     expect(g('rev-parse --abbrev-ref HEAD')).toBe('some-other-task-branch');
-    expect(existsSync(path.join(dir, '.hermes', 'worktrees', done.taskId))).toBe(true);
+    const ledger = JSON.parse(readFileSync(path.join(dir, '.hermes', 'tasks', `${done.taskId}.json`), 'utf8')) as { worktreePath?: string };
+    expect(ledger.worktreePath && existsSync(ledger.worktreePath)).toBe(true);
+    expect(ledger.worktreePath?.toLowerCase()).not.toContain(`${path.sep}.hermes${path.sep}`.toLowerCase());
   }, 60000);
 
   it('restores a chat transcript, its metadata, and conversational context after restart', async () => {

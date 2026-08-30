@@ -7,7 +7,7 @@ import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { CriterionSpec, ToolResult } from '../types.js';
-import { errorSignature, excerpt } from '../util.js';
+import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
 
@@ -502,7 +502,8 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
   ctx.guard.assertInside(abs);
   try {
     mkdirSync(path.dirname(abs), { recursive: true });
-    writeFileSync(abs, content, 'utf8');
+    const persisted = writeAndVerify(ctx, abs, content);
+    if (!persisted.ok) return persisted.result;
     let output = `Wrote ${content.length} chars to ${rel}`;
     // Truncation guard: models with long outputs sometimes stop mid-file.
     // Surface the suspicion instead of letting broken code look "done".
@@ -515,12 +516,75 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
     }
     return {
       ok: true,
-      output,
+      output: `${output}\n[verified persisted content at ${ctx.guard.toRelative(abs)}${persisted.recovered ? ' after one recovery write' : ''}]`,
       filesTouched: [ctx.guard.toRelative(abs)],
       linesAdded: content.split('\n').length,
     };
   } catch (err) {
     return fail(`write_file failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * A mutation is successful only after the same canonical workspace root that
+ * authorized it can stat and re-read exactly the bytes we intended to write.
+ * The retry is deliberately one bounded recovery attempt: a provider/tool
+ * path that keeps acknowledging non-persistent writes must stop the lane,
+ * not create an infinite edit loop.
+ */
+function writeAndVerify(
+  ctx: ToolContext,
+  abs: string,
+  expected: string,
+): { ok: true; recovered: boolean } | { ok: false; result: ToolResult } {
+  let lastReason = 'unknown persistence mismatch';
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      // Resolve and authorize again on every attempt so a changed/symlinked
+      // path cannot turn a recovery write into a write to another workspace.
+      const canonicalTarget = ctx.guard.resolve(abs);
+      ctx.guard.assertInside(canonicalTarget);
+      writeFileSync(canonicalTarget, expected, 'utf8');
+      const verified = verifyPersistedContent(ctx, canonicalTarget, expected);
+      if (verified.ok) return { ok: true, recovered: attempt === 2 };
+      lastReason = verified.reason;
+    } catch (err) {
+      lastReason = (err as Error).message;
+    }
+  }
+  return {
+    ok: false,
+    result: {
+      ok: false,
+      errorSignature: 'write-not-persisted',
+      output:
+        `WRITE_NOT_PERSISTED: ${ctx.guard.toRelative(abs)} did not match the requested content after write plus one recovery attempt. ` +
+        `Active writable workspace: ${ctx.guard.activeWritableRoot}. Reason: ${lastReason}. ` +
+        `No mutation was recorded as successful; stop this execution lane and repair workspace authority before retrying.`,
+    },
+  };
+}
+
+/** Exported for regression tests and non-tool mutation adapters. */
+export function verifyPersistedContent(
+  ctx: Pick<ToolContext, 'guard'>,
+  abs: string,
+  expected: string,
+): { ok: true; hash: string } | { ok: false; reason: string } {
+  try {
+    const canonicalTarget = ctx.guard.resolve(abs);
+    ctx.guard.assertInside(canonicalTarget);
+    const st = statSync(canonicalTarget);
+    if (!st.isFile()) return { ok: false, reason: 'target is not a regular file after write' };
+    const actual = readFileSync(canonicalTarget, 'utf8');
+    const expectedHash = sha256(expected);
+    const actualHash = sha256(actual);
+    if (actualHash !== expectedHash || actual !== expected) {
+      return { ok: false, reason: `content hash mismatch (expected ${expectedHash.slice(0, 12)}, got ${actualHash.slice(0, 12)})` };
+    }
+    return { ok: true, hash: actualHash };
+  } catch (err) {
+    return { ok: false, reason: (err as Error).message };
   }
 }
 
@@ -548,7 +612,8 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
       // $', $$ sequences in newStr as replacement patterns, silently corrupting
       // files that legitimately contain them (shell scripts, regexes, prices).
       const updated = content.split(oldStr).join(newStr);
-      writeFileSync(abs, updated, 'utf8');
+      const persisted = writeAndVerify(ctx, abs, updated);
+      if (!persisted.ok) return persisted.result;
       return editSuccess(ctx, abs, rel, newStr, oldStr, replaceAll ? ` (replaced ${count} occurrence${count === 1 ? '' : 's'})` : '');
     }
 
@@ -564,7 +629,8 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
     if (!replaceAll && normCount > 1) return fail(`apply_edit: oldString matches ${normCount} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
     const normUpdated = normFile.split(normOld).join(normNew);
     const finalContent = hadCRLF ? normUpdated.replace(/\n/g, '\r\n') : normUpdated;
-    writeFileSync(abs, finalContent, 'utf8');
+    const persisted = writeAndVerify(ctx, abs, finalContent);
+    if (!persisted.ok) return persisted.result;
     return editSuccess(ctx, abs, rel, newStr, oldStr, replaceAll ? ` (replaced ${normCount} occurrence${normCount === 1 ? '' : 's'}, normalized line endings)` : ' (matched with normalized line endings)');
   } catch (err) {
     return fail(`apply_edit failed: ${(err as Error).message}`);
@@ -582,7 +648,7 @@ function editSuccess(
   const delta = newStr.split('\n').length - oldStr.split('\n').length;
   return {
     ok: true,
-    output: `Edited ${rel}${note}`,
+    output: `Edited ${rel}${note}\n[verified persisted content at ${ctx.guard.toRelative(abs)}]`,
     filesTouched: [ctx.guard.toRelative(abs)],
     linesAdded: Math.max(newStr.split('\n').length, delta),
   };
@@ -1255,7 +1321,12 @@ export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown
     output: jobs
       .map((job) => {
         const detail = job.summary ? `\n${job.summary.slice(0, 1200)}` : '';
-        return `[${job.status.toUpperCase()}] ${job.agent} (${job.id}) — ${job.task.slice(0, 160)}${detail}`;
+        const identity = job.logicalJobId && job.logicalJobId !== job.id
+          ? `${job.id}; logical ${job.logicalJobId}; attempt ${job.executionAttempt ?? 1}`
+          : job.executionAttempt && job.executionAttempt > 1
+            ? `${job.id}; attempt ${job.executionAttempt}`
+            : job.id;
+        return `[${job.status.toUpperCase()}] ${job.agent} (${identity}) — ${job.task.slice(0, 160)}${detail}`;
       })
       .join('\n\n'),
   };

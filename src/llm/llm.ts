@@ -12,7 +12,11 @@ export interface LlmOptions {
   json?: boolean;
   effort?: 'low' | 'medium' | 'high' | 'max';
   signal?: AbortSignal;
-  /** Max retries for transient HTTP errors (429, 5xx). Defaults to 3. */
+  /**
+   * Max retries for a single transport call. The Agent Gitu resilience
+   * coordinator owns production retries, so this deliberately defaults to 0.
+   * It remains configurable for callers that use an LLM client directly.
+   */
   retries?: number;
   /** Base backoff delay in ms between retries (doubles each attempt). Defaults to 1000. */
   retryDelayMs?: number;
@@ -21,6 +25,15 @@ export interface LlmOptions {
   /** Called before a mid-stream fallback to complete(): earlier partial deltas
    *  are void and the caller should reset any streamed-prose state. */
   onStreamReset?: () => void;
+  /** A stable ID for one logical action-selection request. Never contains a secret. */
+  logicalRequestId?: string;
+  /** Absolute transport-attempt allowance left for this logical request. */
+  maxTransportAttempts?: number;
+  /** Preferred wire protocol. `native` is attempted only when tools are supplied. */
+  protocolMode?: 'native' | 'structured_text' | 'text';
+  /** Provider-neutral function definitions. Provider adapters own wire conversion. */
+  tools?: LlmToolDefinition[];
+  toolChoice?: 'auto' | 'required' | 'none';
 }
 
 export interface LlmUsage {
@@ -31,15 +44,103 @@ export interface LlmUsage {
 
 export type LlmDeltaHandler = (delta: string) => void;
 
+/** A provider-neutral function tool offered by the Gitu harness. */
+export interface LlmToolDefinition {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** A function call normalized from a provider response. */
+export interface LlmToolCall {
+  id?: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface LlmTurnMetadata {
+  logicalRequestId?: string;
+  providerRequestId?: string;
+  retryAfterMs?: number;
+  usage?: LlmUsage;
+  reasoning?: string;
+}
+
+/**
+ * The only shapes the agent is allowed to receive from a model. Keeping this
+ * a discriminated union prevents ambiguous text + invalid-tool-call states
+ * from reaching the executor.
+ */
+export type LlmTurnResult =
+  | { kind: 'tool_calls'; calls: LlmToolCall[]; metadata: LlmTurnMetadata; preamble?: string }
+  | { kind: 'text'; text: string; metadata: LlmTurnMetadata }
+  | { kind: 'refusal'; reason: string; metadata: LlmTurnMetadata }
+  | { kind: 'empty'; metadata: LlmTurnMetadata };
+
 export interface LlmClient {
   readonly name: string;
+  /** Process-local cooldown bucket identifier. Never contains the credential itself. */
+  readonly rateLimitKey?: string;
   /** Raw thinking trace from the last response, when the provider returns one. */
   lastReasoning?: string;
   complete(messages: LlmMessage[], opts?: LlmOptions): Promise<string>;
   completeStream(messages: LlmMessage[], opts: LlmOptions, onDelta: LlmDeltaHandler): Promise<string>;
+  /** Optional structured turn API. Older/custom clients continue through the text adapter. */
+  completeTurn?(messages: LlmMessage[], opts?: LlmOptions): Promise<LlmTurnResult>;
+  completeTurnStream?(messages: LlmMessage[], opts: LlmOptions, onDelta: LlmDeltaHandler): Promise<LlmTurnResult>;
 }
 
-export class LlmError extends Error {}
+export type LlmErrorKind =
+  | 'rate_limit_temporary'
+  | 'quota_exhausted'
+  | 'billing'
+  | 'auth'
+  | 'access'
+  | 'provider_unavailable'
+  | 'streaming_incompatible'
+  | 'network'
+  | 'tool_protocol_incompatible'
+  | 'aborted'
+  | 'unknown';
+
+export interface LlmErrorDetails {
+  kind: LlmErrorKind;
+  status?: number;
+  retryAfterMs?: number;
+  logicalRequestId?: string;
+  providerRequestId?: string;
+}
+
+export class LlmError extends Error {
+  readonly details: LlmErrorDetails;
+
+  constructor(message: string, details: Partial<LlmErrorDetails> = {}) {
+    super(message);
+    this.name = 'LlmError';
+    this.details = { kind: details.kind ?? 'unknown', ...details };
+  }
+}
+
+/**
+ * Adapt legacy text-only clients into the canonical turn protocol. This is
+ * intentionally the one compatibility boundary: the executor only needs to
+ * understand `LlmTurnResult`, regardless of model/provider response style.
+ */
+export async function requestLlmTurn(
+  client: LlmClient,
+  messages: LlmMessage[],
+  opts: LlmOptions = {},
+  onDelta?: LlmDeltaHandler,
+): Promise<LlmTurnResult> {
+  if (onDelta && client.completeTurnStream) return client.completeTurnStream(messages, opts, onDelta);
+  if (!onDelta && client.completeTurn) return client.completeTurn(messages, opts);
+  const text = onDelta
+    ? await client.completeStream(messages, opts, onDelta)
+    : await client.complete(messages, opts);
+  return text.trim()
+    ? { kind: 'text', text, metadata: { logicalRequestId: opts.logicalRequestId, reasoning: client.lastReasoning } }
+    : { kind: 'empty', metadata: { logicalRequestId: opts.logicalRequestId, reasoning: client.lastReasoning } };
+}
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
@@ -77,7 +178,7 @@ export function effortWireValue(effort: EffortLevel, style: EffortStyle): string
 
 const LLM_REQUEST_TIMEOUT_MS = 300_000;
 const LLM_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
-const LLM_DEFAULT_RETRIES = 3;
+const LLM_DEFAULT_RETRIES = 0;
 const LLM_RETRY_BASE_MS = 1_000;
 
 function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
@@ -144,7 +245,7 @@ function parseUsage(value: unknown): LlmUsage | undefined {
   return { inputTokens: input ?? 0, outputTokens: output ?? 0, cachedTokens: cached ?? 0 };
 }
 
-export function llmErrorMessage(status: number, text: string): string {
+function responseErrorParts(text: string): { message: string; type: string } {
   const trimmed = text.slice(0, 300);
   let message = trimmed;
   let type = '';
@@ -155,6 +256,68 @@ export function llmErrorMessage(status: number, text: string): string {
   } catch {
     /* keep raw text */
   }
+  return { message, type };
+}
+
+function retryAfterMs(headers?: Headers): number | undefined {
+  const raw = headers?.get('retry-after')?.trim();
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.min(120_000, Math.round(seconds * 1000));
+  const date = Date.parse(raw);
+  return Number.isFinite(date) && date > Date.now() ? Math.min(120_000, date - Date.now()) : undefined;
+}
+
+/** Classify provider failures once, so retry/fallback policy never parses prose. */
+export function classifyLlmHttpError(status: number, text: string, headers?: Headers): LlmError {
+  const { message, type } = responseErrorParts(text);
+  const retryAfter = retryAfterMs(headers);
+  const lower = `${type} ${message}`.toLowerCase();
+  const details = { status, retryAfterMs: retryAfter };
+  if (
+    type === 'FreeUsageLimitError' ||
+    /free[- ]?(models?|usage)[- ]?(per|limit)|daily (?:quota|limit)|quota (?:exceeded|exhausted)|insufficient[_ -]quota/.test(lower)
+  ) {
+    return new LlmError(`LLM rate limited (HTTP ${status}): quota exhausted — ${message} — try again later, choose another configured model, or add capacity`, {
+      ...details,
+      kind: 'quota_exhausted',
+    });
+  }
+  if (type === 'CreditsError' || /insufficient balance|no credits|billing|payment required/.test(lower)) {
+    return new LlmError(`LLM HTTP ${status} (no credits): ${message} — this is a paid model; add credits or a subscription`, {
+      ...details,
+      kind: 'billing',
+    });
+  }
+  if (status === 401 || /invalid[ _-]api[ _-]?key|unauthorized|authentication/.test(lower)) {
+    return new LlmError(`LLM HTTP ${status} (authentication failed): ${message}`, { ...details, kind: 'auth' });
+  }
+  if (status === 403 || /access.*denied|not eligible|opt in|permission/.test(lower)) {
+    return new LlmError(`LLM HTTP ${status} (model not available to you): ${message} — switch to a model your plan includes (free ones are marked "free")`, {
+      ...details,
+      kind: 'access',
+    });
+  }
+  if (status === 400 && /(?:tool|function|schema|response_format|json schema|tool_choice)/.test(lower)) {
+    return new LlmError(`LLM tool protocol is incompatible (HTTP 400): ${message}`, {
+      ...details,
+      kind: 'tool_protocol_incompatible',
+    });
+  }
+  if (status === 429 || /rate[- ]limit|too many requests|overloaded/.test(lower)) {
+    return new LlmError(`LLM rate limited (HTTP 429): ${message} — retrying is safe only after the provider cooldown`, {
+      ...details,
+      kind: 'rate_limit_temporary',
+    });
+  }
+  if ([500, 502, 503, 504].includes(status) || type === 'server_error' || /unavailable|bad gateway|internal server error/.test(lower)) {
+    return new LlmError(`LLM HTTP ${status} (upstream unavailable): ${message} — try again later or use a configured fallback`, { ...details, kind: 'provider_unavailable' });
+  }
+  return new LlmError(`LLM HTTP ${status}: ${message}`, details);
+}
+
+export function llmErrorMessage(status: number, text: string): string {
+  const { message, type } = responseErrorParts(text);
   if (status === 429 || type === 'FreeUsageLimitError' || /rate limit/i.test(message)) {
     return `LLM rate limited (HTTP 429): ${message} — try again later or switch to a less busy model`;
   }
@@ -201,8 +364,7 @@ async function postChatCompletion(opts: {
     if (!networkError) {
       if (!LLM_RETRYABLE_STATUS.has(res!.status) || attempt === maxRetries) return res!;
       // Respect server rate-limit hints when provided.
-      const retryAfter = Number(res!.headers.get('retry-after'));
-      const delay = computeBackoffMs(attempt, baseDelay, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : undefined);
+      const delay = computeBackoffMs(attempt, baseDelay, retryAfterMs(res!.headers));
       await sleep(delay, opts.signal);
       continue;
     }
@@ -223,21 +385,71 @@ export function isRetryableNetworkError(err: Error | undefined): boolean {
   );
 }
 
-/** Jittered exponential backoff; Retry-After (ms) wins and is capped at 120s. */
+/** Jittered exponential backoff; Retry-After is a minimum, never shortened. */
 export function computeBackoffMs(attempt: number, baseDelayMs: number, retryAfterMs?: number): number {
-  const cap = retryAfterMs !== undefined ? Math.min(retryAfterMs, 120_000) : Math.min(baseDelayMs * 2 ** attempt, 30_000);
-  const jittered = cap * (0.75 + Math.random() * 0.5); // ±25%
-  return Math.max(250, Math.round(jittered));
+  if (retryAfterMs !== undefined) {
+    const minimum = Math.min(retryAfterMs, 120_000);
+    return Math.max(250, Math.round(minimum * (1 + Math.random() * 0.25)));
+  }
+  const cap = Math.min(baseDelayMs * 2 ** attempt, 30_000);
+  return Math.max(250, Math.round(cap * (0.75 + Math.random() * 0.5)));
 }
 
 export interface OpenAiCompatConfig {
   apiKey: string;
   baseUrl?: string;
   model?: string;
+  rateLimitKey?: string;
+}
+
+type CompatMessage = {
+  content?: string | null;
+  reasoning_content?: string;
+  refusal?: string;
+  tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
+};
+
+function objectArguments(raw: unknown): Record<string, unknown> {
+  if (typeof raw !== 'string' || !raw.trim()) return {};
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeCompatTurn(message: CompatMessage | undefined, opts: LlmOptions, usage?: LlmUsage): LlmTurnResult {
+  const metadata: LlmTurnMetadata = {
+    logicalRequestId: opts.logicalRequestId,
+    usage,
+    reasoning: typeof message?.reasoning_content === 'string' ? message.reasoning_content : undefined,
+  };
+  const calls = (message?.tool_calls ?? [])
+    .map((call): LlmToolCall | undefined => {
+      const name = call.function?.name;
+      return typeof name === 'string' && name ? { id: call.id, name, arguments: objectArguments(call.function?.arguments) } : undefined;
+    })
+    .filter((call): call is LlmToolCall => Boolean(call));
+  if (calls.length > 0) {
+    const preamble = typeof message?.content === 'string' && message.content.trim() ? message.content : undefined;
+    return { kind: 'tool_calls', calls, metadata, ...(preamble ? { preamble } : {}) };
+  }
+  if (typeof message?.refusal === 'string' && message.refusal.trim()) return { kind: 'refusal', reason: message.refusal, metadata };
+  if (typeof message?.content === 'string' && message.content.trim()) return { kind: 'text', text: message.content, metadata };
+  return { kind: 'empty', metadata };
+}
+
+function turnAsText(turn: LlmTurnResult): string {
+  if (turn.kind === 'text') return turn.text;
+  if (turn.kind === 'refusal') return turn.reason;
+  if (turn.kind === 'tool_calls') return turn.preamble ?? '';
+  return '';
 }
 
 export class OpenAiCompatClient implements LlmClient {
   readonly name: string;
+  readonly rateLimitKey?: string;
   lastReasoning?: string;
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -248,6 +460,7 @@ export class OpenAiCompatClient implements LlmClient {
     this.baseUrl = (config.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
     this.model = config.model ?? 'gpt-4.1-mini';
     this.name = `openai-compat:${this.model}`;
+    this.rateLimitKey = config.rateLimitKey;
   }
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): OpenAiCompatClient | undefined {
@@ -260,9 +473,8 @@ export class OpenAiCompatClient implements LlmClient {
     });
   }
 
-  async complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<string> {
+  async completeTurn(messages: LlmMessage[], opts: LlmOptions = {}): Promise<LlmTurnResult> {
     const body = this.buildBody(messages, opts, false);
-
     let res: Response;
     try {
       res = await postChatCompletion({
@@ -274,25 +486,25 @@ export class OpenAiCompatClient implements LlmClient {
         retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
-      throw new LlmError(`LLM request failed: ${(err as Error).message}`);
+      const aborted = opts.signal?.aborted || /abort/i.test((err as Error).message);
+      throw new LlmError(`LLM request failed: ${(err as Error).message}`, { kind: aborted ? 'aborted' : 'network', logicalRequestId: opts.logicalRequestId });
     }
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      throw new LlmError(llmErrorMessage(res.status, text));
+      const error = classifyLlmHttpError(res.status, text, res.headers);
+      throw new LlmError(error.message, { ...error.details, logicalRequestId: opts.logicalRequestId, providerRequestId: res.headers.get('x-request-id') ?? undefined });
     }
-    const data = (await res.json()) as {
-      choices?: { message?: { content?: string; reasoning_content?: string } }[];
-      usage?: unknown;
-    };
-    const reasoning = data.choices?.[0]?.message?.reasoning_content;
-    this.lastReasoning = typeof reasoning === 'string' && reasoning ? reasoning : undefined;
-    if (opts.onUsage) {
-      const usage = parseUsage(data.usage);
-      if (usage) opts.onUsage(usage);
-    }
-    const content = data.choices?.[0]?.message?.content;
-    if (typeof content !== 'string') throw new LlmError('LLM returned no content');
-    return content;
+    const data = (await res.json()) as { choices?: { message?: CompatMessage }[]; usage?: unknown; id?: string };
+    const usage = parseUsage(data.usage);
+    if (usage && opts.onUsage) opts.onUsage(usage);
+    const turn = normalizeCompatTurn(data.choices?.[0]?.message, opts, usage);
+    turn.metadata.providerRequestId = typeof data.id === 'string' ? data.id : undefined;
+    this.lastReasoning = turn.metadata.reasoning;
+    return turn;
+  }
+
+  async complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<string> {
+    return turnAsText(await this.completeTurn(messages, opts));
   }
 
   private buildBody(messages: LlmMessage[], opts: LlmOptions, stream: boolean): Record<string, unknown> {
@@ -306,6 +518,13 @@ export class OpenAiCompatClient implements LlmClient {
       if (opts.onUsage) body['stream_options'] = { include_usage: true };
     }
     if (opts.json) body['response_format'] = { type: 'json_object' };
+    if (opts.protocolMode === 'native' && opts.tools && opts.tools.length > 0) {
+      body['tools'] = opts.tools.map((tool) => ({
+        type: 'function',
+        function: { name: tool.name, description: tool.description, parameters: tool.parameters },
+      }));
+      body['tool_choice'] = opts.toolChoice ?? 'auto';
+    }
     if (opts.effort) {
       const style = effortStyleFor(this.baseUrl);
       if (style === 'dashscope') {
@@ -341,13 +560,26 @@ export class OpenAiCompatClient implements LlmClient {
         retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
-      throw new LlmError(`LLM request failed: ${(err as Error).message}`);
+      const aborted = opts.signal?.aborted || /abort/i.test((err as Error).message);
+      throw new LlmError(`LLM request failed: ${(err as Error).message}`, { kind: aborted ? 'aborted' : 'network', logicalRequestId: opts.logicalRequestId });
     }
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => '');
-      if (!res.ok) throw new LlmError(llmErrorMessage(res.status, text));
-      // Streaming is not supported by this endpoint (no body); fall back to a
-      // single non-stream completion.
+      if (!res.ok) {
+        const error = classifyLlmHttpError(res.status, text, res.headers);
+        throw new LlmError(error.message, { ...error.details, logicalRequestId: opts.logicalRequestId, providerRequestId: res.headers.get('x-request-id') ?? undefined });
+      }
+      // A logical request is governed by the shared resilience coordinator.
+      // Do not hide another HTTP call here: doing so would make the coordinator
+      // unable to enforce its absolute transport-attempt budget. The caller can
+      // explicitly downgrade this one request to non-streaming mode instead.
+      if (opts.logicalRequestId) {
+        throw new LlmError('LLM streaming is not supported by this endpoint', {
+          kind: 'streaming_incompatible',
+          logicalRequestId: opts.logicalRequestId,
+        });
+      }
+      // Direct legacy callers retain the historical convenience fallback.
       return this.complete(messages, opts);
     }
 
@@ -410,11 +642,32 @@ export class OpenAiCompatClient implements LlmClient {
       // reset its streamed-prose state — otherwise the full text from the
       // fallback overlaps what the user already saw.
       if (forwardedAnyDelta) opts.onStreamReset?.();
+      if (opts.logicalRequestId) {
+        throw new LlmError('LLM streaming response was incomplete or unsupported', {
+          kind: 'streaming_incompatible',
+          logicalRequestId: opts.logicalRequestId,
+        });
+      }
       return this.complete(messages, opts);
     }
     this.lastReasoning = reasoning || undefined;
     if (streamUsage && opts.onUsage) opts.onUsage(streamUsage);
     return full;
+  }
+
+  async completeTurnStream(
+    messages: LlmMessage[],
+    opts: LlmOptions = {},
+    onDelta: LlmDeltaHandler,
+  ): Promise<LlmTurnResult> {
+    // Chat-completions tool-call deltas vary materially between compatible
+    // providers. A single non-stream native request gives the normalizer a
+    // complete call object; text/JSON compatibility retains live prose.
+    if (opts.protocolMode === 'native' && opts.tools?.length) return this.completeTurn(messages, opts);
+    const text = await this.completeStream(messages, opts, onDelta);
+    return text.trim()
+      ? { kind: 'text', text, metadata: { logicalRequestId: opts.logicalRequestId, reasoning: this.lastReasoning } }
+      : { kind: 'empty', metadata: { logicalRequestId: opts.logicalRequestId, reasoning: this.lastReasoning } };
   }
 }
 
@@ -435,6 +688,10 @@ export class UsageTrackingClient implements LlmClient {
 
   get lastReasoning(): string | undefined {
     return this.inner.lastReasoning;
+  }
+
+  get rateLimitKey(): string | undefined {
+    return this.inner.rateLimitKey;
   }
 
   async complete(messages: LlmMessage[], opts: LlmOptions = {}): Promise<string> {
@@ -464,6 +721,38 @@ export class UsageTrackingClient implements LlmClient {
       onDelta,
     );
     if (!seen) this.onCall(undefined);
+    return out;
+  }
+
+  async completeTurn(messages: LlmMessage[], opts: LlmOptions = {}): Promise<LlmTurnResult> {
+    let seen = false;
+    const tracked = {
+      ...opts,
+      onUsage: (usage: LlmUsage) => {
+        seen = true;
+        this.onCall(usage);
+      },
+    };
+    const out = this.inner.completeTurn
+      ? await this.inner.completeTurn(messages, tracked)
+      : await requestLlmTurn(this.inner, messages, tracked);
+    if (!seen) this.onCall(out.metadata.usage);
+    return out;
+  }
+
+  async completeTurnStream(messages: LlmMessage[], opts: LlmOptions = {}, onDelta: LlmDeltaHandler): Promise<LlmTurnResult> {
+    let seen = false;
+    const tracked = {
+      ...opts,
+      onUsage: (usage: LlmUsage) => {
+        seen = true;
+        this.onCall(usage);
+      },
+    };
+    const out = this.inner.completeTurnStream
+      ? await this.inner.completeTurnStream(messages, tracked, onDelta)
+      : await requestLlmTurn(this.inner, messages, tracked, onDelta);
+    if (!seen) this.onCall(out.metadata.usage);
     return out;
   }
 }

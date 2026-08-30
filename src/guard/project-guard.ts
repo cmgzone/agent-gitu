@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
-import type { ProjectLock } from '../types.js';
+import type { ProjectLock, WorkspaceAuthority } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
 
 const MARKER_FILES = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle'];
@@ -15,6 +15,34 @@ function tryGit(repoRoot: string, args: string[]): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function canonicalPath(candidate: string): string {
+  try {
+    return realpathSync(candidate);
+  } catch {
+    return path.resolve(candidate);
+  }
+}
+
+/**
+ * Worktrees have two meaningful roots: their writable checkout and the
+ * common repository which owns the Git object database. Keeping both in the
+ * lock prevents a later executor/verifier split from silently writing A and
+ * reading B.
+ */
+function discoverWorkspaceAuthority(projectRoot: string): WorkspaceAuthority {
+  const writableRoot = canonicalPath(projectRoot);
+  const worktreeRoot = canonicalPath(tryGit(writableRoot, ['rev-parse', '--show-toplevel']) || writableRoot);
+  const commonGitDir = tryGit(writableRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  let repositoryRoot = worktreeRoot;
+  if (commonGitDir) {
+    const common = canonicalPath(commonGitDir);
+    // Standard and linked worktrees both point at <main>/.git here. Do not
+    // guess for bare/custom layouts where that relationship is not true.
+    if (path.basename(common).toLowerCase() === '.git') repositoryRoot = canonicalPath(path.dirname(common));
+  }
+  return { repositoryRoot, worktreeRoot, writableRoot };
 }
 
 function findRepoRoot(startDir: string): { root: string; marker?: string } | undefined {
@@ -99,7 +127,9 @@ export class ProjectGuard {
         `No project marker found at or above ${cwd}. Hermes refuses to act without a locked project scope.`,
       );
     }
-    const { root, marker } = located;
+    const { root: locatedRoot, marker } = located;
+    const root = canonicalPath(locatedRoot);
+    const workspace = discoverWorkspaceAuthority(root);
 
     let branch = tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
     if (!branch && tryGit(root, ['rev-parse', '--is-inside-work-tree']) === 'true') {
@@ -122,6 +152,7 @@ export class ProjectGuard {
     const lock: ProjectLock = {
       name,
       repoRoot: root,
+      workspace,
       branch,
       techStack: marker === 'package.json' ? detectTechStack(pkg) : [marker ?? 'unknown'],
       entrypoints: detectEntrypoints(root, pkg),
@@ -147,15 +178,30 @@ export class ProjectGuard {
     return new ProjectGuard(data, lockFile);
   }
 
+  /** The canonical target that all executor file operations must share. */
+  get activeWritableRoot(): string {
+    return this.lock.workspace?.writableRoot ?? this.lock.repoRoot;
+  }
+
+  get workspace(): WorkspaceAuthority {
+    return (
+      this.lock.workspace ?? {
+        repositoryRoot: this.lock.repoRoot,
+        worktreeRoot: this.lock.repoRoot,
+        writableRoot: this.lock.repoRoot,
+      }
+    );
+  }
+
   isInsideProject(absPath: string): boolean {
-    const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
+    const rel = path.relative(this.activeWritableRoot, path.resolve(absPath));
     return !rel.startsWith('..') && !path.isAbsolute(rel);
   }
 
   private assertNoSymlinkEscape(absPath: string): void {
     let rootReal: string;
     try {
-      rootReal = realpathSync(this.lock.repoRoot);
+      rootReal = realpathSync(this.activeWritableRoot);
     } catch {
       return;
     }
@@ -191,7 +237,7 @@ export class ProjectGuard {
     // Windows filesystems are case-insensitive: textual comparison would let
     // ".HERMES/..." or "NODE_MODULES/x" bypass protection. Case-fold there.
     const fold = (s: string): string => (process.platform === 'win32' ? s.toLowerCase() : s);
-    const rel = path.relative(this.lock.repoRoot, path.resolve(absPath));
+    const rel = path.relative(this.activeWritableRoot, path.resolve(absPath));
     const foldedRel = fold(rel);
     if (foldedRel === '.hermes' || foldedRel.startsWith(`.hermes${path.sep}`)) {
       throw new ProjectGuardError(
@@ -206,11 +252,11 @@ export class ProjectGuard {
   }
 
   resolve(relOrAbs: string): string {
-    const abs = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(this.lock.repoRoot, relOrAbs);
+    const abs = path.isAbsolute(relOrAbs) ? relOrAbs : path.join(this.activeWritableRoot, relOrAbs);
     return path.resolve(abs);
   }
 
   toRelative(absPath: string): string {
-    return path.relative(this.lock.repoRoot, absPath).replace(/\\/g, '/');
+    return path.relative(this.activeWritableRoot, absPath).replace(/\\/g, '/');
   }
 }

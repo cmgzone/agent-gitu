@@ -1,0 +1,36 @@
+(node:8544) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+Agent Gitu — autonomous engineering agent (cli: hermes)
+
+Usage:
+  hermes init                          Detect and lock the current project
+  hermes run "<goal>" [options]        Run a task end-to-end
+  hermes providers                     List LLM providers and key status
+  hermes login                         Sign in with ChatGPT (use your subscription, no API key)
+  hermes logout                        Sign out of ChatGPT
+  hermes models [--provider <name>]    List models (live from endpoint when a key is set)
+  hermes models --pick [provider]      Interactive model chooser
+  hermes ui [--port 8321]              Start the Web UI (agent state viewer)
+  hermes tasks                         List task ledgers
+  hermes show <taskId>                 Show a task ledger
+  hermes report <taskId>               Show the completion report for a task
+  hermes memory [--type <type>]        Show stored memory
+  hermes memory search <query>         Ranked search (--limit --scope --visibility --agent --project --type --status)
+
+Run options:
+  --fast                 Skip context-pack ceremony (small tasks)
+  --criteria "<a>|<b>"   Pipe-separated acceptance criteria (skip LLM intake)
+  --yes                  Auto-approve dangerous actions (use with care)
+  --provider <name>      LLM provider: chatgpt, alibaba, openai, opencode-zen, opencode-go, openrouter (default: auto-detect from env)
+  --model <name>         Override model (env: HERMES_MODEL)
+  --base-url <url>       Override provider endpoint
+  --review               Pause after planning for an interactive plan review before building
+
+Providers:
+  chatgpt   ChatGPT subscription — run `hermes login` (uses your Plus/Pro plan,
+            no API key; models: gpt-5.1-codex-max, gpt-5.1-codex, …)
+  alibaba   Alibaba Cloud Model Studio / DashScope (OpenAI-compatible)
+            keys: HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
+            models: run `hermes models --provider alibaba` (default: qwen3.8-max)
+  openai    OpenAI — keys: HERMES_OPENAI_API_KEY | OPENAI_API_KEY
+  custom    HERMES_API_KEY (+ optional HERMES_BASE_URL, HERMES_MODEL)

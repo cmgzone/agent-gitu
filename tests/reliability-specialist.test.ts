@@ -150,10 +150,10 @@ describe('SubAgentRunner — stagnation early termination', () => {
 
     const result = await runner.runOne('brooder', 'ponder the task');
 
-    expect(result.turnsUsed).toBe(6);
+    expect(result.turnsUsed).toBe(3);
     expect(result.status).toBe('BLOCKED');
     expect(result.ok).toBe(false);
-    expect(result.blockers?.some((b) => b.includes('Stalled'))).toBe(true);
+    expect(result.blockers?.some((b) => b.includes('consecutive replies without a valid action'))).toBe(true);
     expect(events.some((e) => e.includes('loop/stagnation detected'))).toBe(true);
   });
 });

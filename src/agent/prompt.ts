@@ -245,6 +245,9 @@ ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}
 PROJECT LOCK (do not violate):
   name: ${lock.name}
   repo_root: ${lock.repoRoot}
+  common_repository_root: ${lock.workspace?.repositoryRoot ?? lock.repoRoot}
+  active_worktree_root: ${lock.workspace?.worktreeRoot ?? lock.repoRoot}
+  active_writable_root: ${lock.workspace?.writableRoot ?? lock.repoRoot}
   branch: ${lock.branch ?? '(none)'}
   tech_stack: ${lock.techStack.join(', ') || 'unknown'}
   entrypoints: ${lock.entrypoints.join(', ') || 'unknown'}
@@ -349,8 +352,8 @@ Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once,
 IMPORTANT: \`agent\` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
 For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
 {"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<registered specialist name>","task":"self-contained non-conflicting task"}]}}
-RESUMING PAUSED SPECIALISTS: a specialist that stops early (budget/timeout) does NOT lose its work — its changes stay committed on a preserved branch. Its result summary ends with "PAUSED AFTER n/m TURNS … resume with delegate …resume:{\"jobId\":\"sub-…\"}". To wake it exactly where it stopped, delegate the SAME agent with the SAME task plus the resume field:
-{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<same specialist>","task":"<same task>","resume":{"jobId":"<resumableJobId>"},"note":"finish AC-2 only"}]}}
+RESUMING PAUSED SPECIALISTS: a specialist that stops because of a model/provider/process failure may have either verified durable edits or context only. Never say its files were recovered unless its checkpoint reports "DURABLE CHANGES VERIFIED". To wake the SAME logical specialist job, delegate the SAME agent with the SAME task and its resume field; this reuses its specialist allocation rather than creating a second worker:
+{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<same specialist>","task":"<same task>","resume":{"jobId":"<resumableJobId>","note":"finish AC-2 only"}}]}}
 
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.

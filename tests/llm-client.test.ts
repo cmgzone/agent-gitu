@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   OpenAiCompatClient,
+  classifyLlmHttpError,
   DASHSCOPE_THINKING_BUDGETS,
   effortStyleFor,
   effortWireValue,
@@ -103,14 +104,20 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(calls()).toBe(2);
   });
 
-  it('retries by default (no opts) on transient errors', async () => {
+  it('does not hide a second HTTP request when a coordinated stream is unsupported', async () => {
+    const calls = mockFetch(async () => new Response('not an sse stream at all', { status: 200, headers: { 'content-type': 'text/html' } }));
+    const err = await client().completeStream(msg, { logicalRequestId: 'task:main:1' }, () => {}).catch((e) => e as Error);
+    expect(err.message).toContain('streaming response was incomplete or unsupported');
+    expect(calls()).toBe(1);
+  });
+
+  it('does not retry internally by default; the shared coordinator owns retries', async () => {
     const calls = mockFetch(async () => {
       if (calls() === 1) return jsonResponse({ error: { message: 'busy' } }, 429);
       return jsonResponse({ choices: [{ message: { content: 'recovered' } }] });
     });
-    const out = await client().complete(msg);
-    expect(out).toBe('recovered');
-    expect(calls()).toBe(2);
+    await expect(client().complete(msg)).rejects.toThrow(/rate limited/);
+    expect(calls()).toBe(1);
   });
 
   it('surfaces a clear message when the account has no credits', async () => {
@@ -153,6 +160,44 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(err.message).toContain('upstream unavailable');
     expect(err.message).toContain('try again later');
     expect(calls()).toBe(1);
+  });
+
+  it('normalizes native function calls into one discriminated tool-call turn', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    mockFetch(async (_url, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return jsonResponse({
+        id: 'req-native',
+        choices: [
+          {
+            message: {
+              content: 'I will inspect the files.',
+              tool_calls: [{ id: 'call-1', function: { name: 'agent_gitu_action', arguments: '{"action":{"type":"show_plan"}}' } }],
+            },
+          },
+        ],
+      });
+    });
+    const turn = await client().completeTurn(msg, {
+      protocolMode: 'native',
+      tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+      toolChoice: 'required',
+    });
+    expect(requestBody).toMatchObject({ tool_choice: 'required' });
+    expect(requestBody?.['tools']).toEqual([
+      { type: 'function', function: { name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } } },
+    ]);
+    expect(turn).toEqual({
+      kind: 'tool_calls',
+      calls: [{ id: 'call-1', name: 'agent_gitu_action', arguments: { action: { type: 'show_plan' } } }],
+      preamble: 'I will inspect the files.',
+      metadata: { providerRequestId: 'req-native', reasoning: undefined, usage: undefined, logicalRequestId: undefined },
+    });
+  });
+
+  it('classifies unsupported tool schemas separately from malformed model output', () => {
+    const error = classifyLlmHttpError(400, JSON.stringify({ error: { message: 'tools are not supported for this model' } }));
+    expect(error.details.kind).toBe('tool_protocol_incompatible');
   });
 });
 

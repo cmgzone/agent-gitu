@@ -16,11 +16,15 @@ import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '.
 import {
   extractJson,
   findXmlCallStart,
+  LlmError,
   parseXmlFunctionCall,
+  requestLlmTurn,
   xmlMarkerHoldBack,
   type LlmClient,
   type LlmContentPart,
   type LlmMessage,
+  type LlmToolDefinition,
+  type LlmTurnResult,
   type LlmUsage,
 } from '../llm/llm.js';
 import { resolveEmbedder } from '../llm/providers.js';
@@ -73,6 +77,8 @@ export interface HermesConfig {
   scopeFiles?: string[];
   extraConstraints?: string[];
   effort?: 'low' | 'medium' | 'high' | 'max';
+  /** Provider profile preference; `auto` starts native and safely downgrades. */
+  actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
   skills?: SkillStore;
   mcp?: McpManager;
   browser?: BrowserBridge;
@@ -198,7 +204,11 @@ type ParsedAction =
     | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
   | { type: 'request_block'; reason: string }
   | { type: 'ask_user'; questions: AskUserQuestion[] }
-  | { type: 'delegate'; tasks: { agent: string; task: string; criteria?: (string | CriterionSpec)[] }[]; background?: boolean }
+  | {
+      type: 'delegate';
+      tasks: { agent: string; task: string; criteria?: (string | CriterionSpec)[]; resume?: { jobId: string; note?: string } }[];
+      background?: boolean;
+    }
   | {
       type: 'report_finding';
       claim: string;
@@ -247,8 +257,11 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
       return 'The current plan step is complete; I’m moving to the next one.';
     case 'claim_criterion':
       return 'I’m checking this acceptance condition against the recorded evidence.';
-    case 'delegate':
+    case 'delegate': {
+      const resumed = action.tasks.filter((task) => task.resume?.jobId).length;
+      if (resumed) return `I’m resuming ${resumed === 1 ? 'a preserved specialist job' : `${resumed} preserved specialist jobs`} without allocating duplicate work.`;
       return `I’m assigning ${action.tasks.length === 1 ? 'an independent check' : `${action.tasks.length} independent checks`} to specialist work.`;
+    }
     case 'report_finding':
       return 'I found a potential issue and I’m recording it for independent verification.';
     default:
@@ -406,7 +419,14 @@ function parseAction(raw: unknown): ParsedAction | undefined {
                 )
                 .slice(0, 10)
             : undefined;
-          return { agent, task, criteria };
+          const rawResume = t?.['resume'];
+          const resume = rawResume && typeof rawResume === 'object' && typeof (rawResume as Record<string, unknown>)['jobId'] === 'string'
+            ? {
+                jobId: String((rawResume as Record<string, unknown>)['jobId']).trim(),
+                note: typeof (rawResume as Record<string, unknown>)['note'] === 'string' ? String((rawResume as Record<string, unknown>)['note']) : undefined,
+              }
+            : undefined;
+          return { agent, task, criteria, ...(resume?.jobId ? { resume } : {}) };
         })
         .filter((t) => t.agent && t.task)
         .slice(0, 6);
@@ -477,6 +497,48 @@ const KNOWN_ACTION_TYPES = new Set([
   'report_finding',
   'parallel',
 ]);
+
+/**
+ * One provider-neutral entrypoint keeps model-owned tool syntax outside the
+ * executor. A model can suggest an action, but only the existing Gitu parser,
+ * policy engine, and executor decide whether it runs.
+ */
+export const GITU_ACTION_TOOL: LlmToolDefinition = {
+  name: 'agent_gitu_action',
+  description:
+    'Submit exactly one Agent Gitu action for validation and execution. Put the normal action object (type, tool, params, reason, expected, etc.) in action. Do not describe an action in prose.',
+  parameters: {
+    type: 'object',
+    properties: {
+      action: {
+        type: 'object',
+        description: 'The Agent Gitu action object. Its type must be one of the documented actions in the system instructions.',
+        additionalProperties: true,
+      },
+    },
+    required: ['action'],
+    additionalProperties: false,
+  },
+};
+
+function actionReplyFromTurn(turn: LlmTurnResult): string {
+  switch (turn.kind) {
+    case 'text':
+      return turn.text;
+    case 'refusal':
+      return turn.reason;
+    case 'empty':
+      return '';
+    case 'tool_calls': {
+      // Unknown/provider-hosted calls are never executed directly. They are
+      // represented as an invalid response, so normal malformed-call recovery
+      // can coach or stop the agent without bypassing policy checks.
+      const call = turn.calls.find((candidate) => candidate.name === GITU_ACTION_TOOL.name);
+      if (!call) return '';
+      return JSON.stringify({ action: call.arguments['action'] ?? call.arguments });
+    }
+  }
+}
 
 function parseReplyAction(reply: string): ParsedAction | undefined {
   const fromJson = parseAction(extractJson(reply));
@@ -967,7 +1029,10 @@ export class Hermes {
       throw err;
     }
     guard.persist();
-    this.emit(`project  locked: ${guard.lock.name} @ ${guard.lock.repoRoot} (${guard.lock.branch ?? 'no branch'})`);
+    this.emit(
+      `project  locked: ${guard.lock.name} @ ${guard.activeWritableRoot} (${guard.lock.branch ?? 'no branch'}) ` +
+        `[repo=${guard.workspace.repositoryRoot}; worktree=${guard.workspace.worktreeRoot}; writable=${guard.workspace.writableRoot}]`,
+    );
 
     const memory = MemoryStore.forProject(guard.lock.repoRoot);
     // A pattern can be encountered again when compaction replays the same
@@ -1349,7 +1414,7 @@ export class Hermes {
         summary: prose.slice(0, 600) || 'Answered.',
         risks: [],
         followUps: [],
-      });
+      }, await getWorkspaceFingerprint(guard.activeWritableRoot));
       ledger.data.report = report;
       ledger.save();
       this.emit('done     completed — chat answer delivered');
@@ -1380,12 +1445,20 @@ export class Hermes {
       ...ledger.data.constraints,
     ]);
 
+    // This counter belongs only to the main execution lane. Specialists have
+    // their own trackers, so a weak reviewer cannot trip the parent breaker.
     let invalidStreak = 0;
     let loopBlocks = 0;
     let followUpCriteriaAdded = false;
     let architectureAuditRejections = 0;
     let planningNudged = false;
-    const malformed = new MalformedCallTracker();
+    const malformed = new MalformedCallTracker({ remindAt: 1, escalateAt: 2, haltAt: 3 });
+    let actionLaneHalted = false;
+    let logicalRequestSequence = 0;
+    let actionProtocolMode: 'native' | 'structured_text' | 'text' =
+      this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text'
+        ? this.config.actionProtocolMode
+        : 'native';
     const actionsAtStart = ledger.data.actions.length;
     let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
     let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
@@ -1454,9 +1527,18 @@ export class Hermes {
       this.abortController = new AbortController();
       let callUsage: LlmUsage | undefined;
       const phase = ledger.data.status === 'intake' || ledger.data.status === 'planning' || ledger.data.status === 'review' ? 'planning' : 'execution';
-      const callOpts = () => ({
+      const logicalRequestId = `${ledger.data.taskId}:main:${++logicalRequestSequence}`;
+      const callOpts = (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number) => ({
         effort: effortPlan.llmEffort ?? this.config.effort,
         signal: this.abortController!.signal,
+        logicalRequestId,
+        maxTransportAttempts,
+        protocolMode,
+        ...(protocolMode === 'native'
+          ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const }
+          : protocolMode === 'structured_text'
+            ? { json: true }
+            : {}),
         onUsage: (u: LlmUsage) => {
           callUsage = u;
         },
@@ -1467,8 +1549,21 @@ export class Hermes {
           resetProse();
         },
       });
-      const callOnce = async (): Promise<string> => {
-        const r = await llm.completeStream(messages, callOpts(), (delta) => streamer(delta));
+      const callOnce = async (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number): Promise<LlmTurnResult> => {
+        let r: LlmTurnResult;
+        try {
+          r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts), (delta) => streamer(delta));
+        } catch (err) {
+          // A compatible endpoint may accept ordinary completions while not
+          // supporting SSE. Downgrade explicitly, retaining the same logical
+          // request ID and only the unused transport budget. This keeps a
+          // stream failure from hiding a second HTTP attempt inside the client.
+          if (err instanceof LlmError && err.details.kind === 'streaming_incompatible' && protocolMode !== 'native') {
+            r = await requestLlmTurn(llm, messages, callOpts(protocolMode, Math.max(1, maxTransportAttempts - 1)));
+          } else {
+            throw err;
+          }
+        }
         flush();
         telemetry.recordCall(messages, callUsage, prefixEnd, phase);
         return r;
@@ -1481,29 +1576,41 @@ export class Hermes {
         if (!parsed && reasoning) parsed = parseReplyAction(reasoning);
         return parsed;
       };
-      let reply = await callOnce();
-      let parsed = finishParse(reply);
-      // Rescue retry for RETRYABLE failures only. Under saturated context the
-      // model often returns an EMPTY completion, or prose followed by JSON cut
-      // off mid-object by the output limit — both previously burned a whole
-      // wasted turn each and spiraled into 6-in-a-row stalls. One targeted
-      // retry with a corrective note breaks that loop; genuine protocol errors
-      // still fall through to the streak counter below.
-      if (!parsed && !this.aborted) {
-        const badKind = classifyBadReply(reply);
-        if (badKind) {
-          telemetry.noteWastedCall();
-          const note =
-            badKind === 'empty'
-              ? '[RETRY] Your previous response was EMPTY (no content at all). Respond again now: one short sentence of prose, then EXACTLY one complete JSON action object.'
-              : '[RETRY] Your previous response was cut off mid-JSON (output length limit). Respond AGAIN with ONLY the JSON action object — no prose before it, keep thought brief so it fits.';
-          this.emit(`recover ${badKind === 'empty' ? 'empty completion' : 'truncated action JSON'} — retrying once`);
-          messages.push({ role: 'user', content: note });
+      let turn: LlmTurnResult;
+      if (actionProtocolMode === 'native') {
+        try {
+          turn = await callOnce('native', 3);
+        } catch (err) {
+          // A provider that rejects our function schema is not a malformed
+          // model reply. Cache the downgrade for this execution lane and spend
+          // only the two remaining transport attempts on compatibility.
+          if (!(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
+          actionProtocolMode = 'structured_text';
+          this.emit('protocol native tools unsupported by this provider — using structured action compatibility');
           resetProse();
-          reply = await callOnce();
-          parsed = finishParse(reply);
+          try {
+            turn = await callOnce('structured_text', 2);
+          } catch (fallbackErr) {
+            if (!(fallbackErr instanceof LlmError) || fallbackErr.details.kind !== 'tool_protocol_incompatible') throw fallbackErr;
+            actionProtocolMode = 'text';
+            this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
+            resetProse();
+            turn = await callOnce('text', 1);
+          }
+        }
+      } else {
+        try {
+          turn = await callOnce(actionProtocolMode, 3);
+        } catch (err) {
+          if (actionProtocolMode !== 'structured_text' || !(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
+          actionProtocolMode = 'text';
+          this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
+          resetProse();
+          turn = await callOnce('text', 2);
         }
       }
+      let reply = actionReplyFromTurn(turn);
+      let parsed = finishParse(reply);
       const cutAt = proseCutIndex(reply);
       const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
       if (prose) this.emit(`say ${prose}`);
@@ -1515,11 +1622,20 @@ export class Hermes {
       if (!parsed) {
         invalidStreak += 1;
         telemetry.noteWastedCall();
-        malformed.note('unparseable');
+        const verdict = malformed.note('unparseable');
         logParseFailure(ledger.data.taskId, reply, llm.lastReasoning);
         this.emit(`warn    response had no executable action (streak ${invalidStreak}) — raw reply saved to logs/parse-failures.log`);
+        if (verdict.halt) {
+          actionLaneHalted = true;
+          ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
+          this.emit(`halt    main execution lane stopped after ${verdict.streak} malformed/no-action replies`);
+        }
       } else {
         invalidStreak = 0;
+        // A syntactically valid high-level action is real recovery. Tool calls
+        // reset only after executor validation below, so malformed parameters
+        // still accumulate across turns.
+        if (parsed.type !== 'tool_call' && parsed.type !== 'parallel') malformed.reset();
       }
       return parsed;
     };
@@ -1686,10 +1802,10 @@ export class Hermes {
       const action = await ask(effortNote);
 
       if (!action) {
-        // No forced stop here: unparseable replies are coached until the model
-        // recovers. The dynamic turn budget above is what eventually bounds a
-        // model that never recovers, so a rough patch does not kill an
-        // otherwise healthy run.
+        if (actionLaneHalted) {
+          exitReason = 'blocked';
+          break;
+        }
         observe(
           invalidStreak >= 3
             ? `STILL no executable action (${invalidStreak} replies in a row). Stop writing prose. Reply with exactly ONE JSON object and nothing else. ` +
@@ -1698,9 +1814,6 @@ export class Hermes {
               'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
               '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
         );
-        if (invalidStreak >= 3) {
-          this.emit(`warn    ${invalidStreak} replies in a row had no executable action — final instruction repeated`);
-        }
         continue;
       }
 
@@ -1955,11 +2068,23 @@ export class Hermes {
             observe(outcome.result.output);
             break;
           }
+          // A filesystem helper reporting success is never enough. The tools
+          // return this signature only after canonical-root stat/read/hash
+          // verification failed twice. Continuing would let the model edit a
+          // phantom workspace and later "verify" another checkout.
+          if (outcome.result.errorSignature === 'write-not-persisted') {
+            const blocker = `Workspace mutation was not persisted in the active writable target (${guard.activeWritableRoot}); execution stopped before claiming any file change.`;
+            ledger.addBlocker(blocker);
+            exitReason = 'blocked';
+            this.emit('blocked  WRITE_NOT_PERSISTED — canonical workspace verification failed');
+            observe(`${outcome.result.output}\nHARD STOP: do not retry a different file path. Repair the session workspace authority, then resume.`);
+            break mainLoop;
+          }
 
           let evidenceNote = '';
           if (action.tool === 'run_command') {
             const kind = classifyEvidenceKind(String(action.params['command'] ?? ''));
-            const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+            const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
             const ev = evidence.record(ledger.data, {
               kind,
               label: action.expected || String(action.params['command']),
@@ -2081,9 +2206,9 @@ export class Hermes {
           }
           if (malformedVerdict) {
             if (malformedVerdict.remind && !malformedVerdict.escalate) {
-              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/6 — schema errors repeating`);
+              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/3 — schema errors repeating`);
             } else if (malformedVerdict.escalate && !malformedVerdict.halt) {
-              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/6 — strategy change injected`);
+              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/3 — strategy change injected`);
               observedResult = `${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`;
             } else if (malformedVerdict.halt) {
               memory.add({
@@ -2123,7 +2248,7 @@ export class Hermes {
           break;
         }
         case 'claim_criterion': {
-          const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+          const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
           const link = evidence.link(ledger.data, action.criterionId, action.evidenceId, currentFp);
           ledger.save();
           this.emit(`claim    ${action.criterionId} <- ${action.evidenceId}: ${link.ok ? 'accepted' : link.reason}`);
@@ -2141,7 +2266,7 @@ export class Hermes {
           break;
         }
         case 'complete': {
-          const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+          const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
           const gate = evidence.gate(ledger.data, currentFp);
           const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
           if (!gate.open && !chatOnly) {
@@ -2300,9 +2425,9 @@ export class Hermes {
           if (wantsReview) {
             try {
               const deepReview = effortPlan?.complexity === 'high';
-              const diffStat = await gitExec(guard.lock.repoRoot, ['diff', 'HEAD', '--stat']).catch(() => '');
+              const diffStat = await gitExec(guard.activeWritableRoot, ['diff', 'HEAD', '--stat']).catch(() => '');
               const diffBody = deepReview
-                ? (await gitExec(guard.lock.repoRoot, ['diff', 'HEAD']).catch(() => '')).slice(0, 8000)
+                ? (await gitExec(guard.activeWritableRoot, ['diff', 'HEAD']).catch(() => '')).slice(0, 8000)
                 : '';
               const reviewingUi = isUiTask(ledger.data);
               const reviewMsgs = buildQualityReviewMessages({
@@ -2388,7 +2513,7 @@ export class Hermes {
             await runOne(call, index);
             this.emit(`browser action serialized — one state-changing operation at a time`);
           }
-          const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+          const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
           const parts = outcomes.map((o, i) => {
             if (!o) return `[${i + 1}] (not executed)`;
             if (o.record.tool === 'run_command') {
@@ -2433,9 +2558,12 @@ export class Hermes {
           break;
         }
         case 'delegate': {
-          // Adaptive effort: never spend beyond the task's specialist budget.
+          // Adaptive effort: a recovered logical job reuses its existing
+          // allocation. Only genuinely new specialists consume this budget.
           const remSpec = effortMaxSpecialists - delegateSlotsUsed;
-          if (remSpec <= 0) {
+          const resumedTasks = action.tasks.filter((task) => Boolean(task.resume?.jobId));
+          const freshTasks = action.tasks.filter((task) => !task.resume?.jobId);
+          if (remSpec <= 0 && resumedTasks.length === 0) {
             this.emit(`delegate budget exhausted — ${effortMaxSpecialists}/${effortMaxSpecialists} specialists used`);
             observe(
               `SPECIALIST BUDGET EXHAUSTED — you have already used all ${effortMaxSpecialists} specialist delegation(s) for this task. ` +
@@ -2443,13 +2571,14 @@ export class Hermes {
             );
             break;
           }
-          const runTasks =
-            action.tasks.length <= remSpec ? action.tasks : action.tasks.slice(0, remSpec);
-          const droppedTasks = action.tasks.length - runTasks.length;
-          delegateSlotsUsed += runTasks.length;
+          const allowedFresh = freshTasks.slice(0, Math.max(0, remSpec));
+          const allowedFreshSet = new Set(allowedFresh);
+          const runTasks = action.tasks.filter((task) => Boolean(task.resume?.jobId) || allowedFreshSet.has(task));
+          const droppedTasks = freshTasks.length - allowedFresh.length;
+          delegateSlotsUsed += allowedFresh.length;
           this.emit(
             `delegate ${runTasks.length} sub-task(s) to ${runTasks.map((t) => t.agent).join(', ')}${action.background ? ' in background' : ''} ` +
-              `(${delegateSlotsUsed}/${effortMaxSpecialists} specialists used)`,
+              `(${delegateSlotsUsed}/${effortMaxSpecialists} new specialist slots used${resumedTasks.length ? `; ${resumedTasks.length} resume(s) reused` : ''})`,
           );
           if (droppedTasks > 0) {
             this.emit(`delegate dropped ${droppedTasks} sub-task(s) over the ${effortMaxSpecialists}-specialist budget`);
@@ -2523,7 +2652,7 @@ export class Hermes {
                   this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — no matching criterion in the main ledger`);
                   continue;
                 }
-                const currentFp = await getWorkspaceFingerprint(guard.lock.repoRoot);
+                const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
                 // The verification oracle comes from the DELEGATED contract (the
                 // CriterionSpec we sent the specialist), which carries it even when
                 // the flat set_criteria text-path flattened the main criterion.
@@ -2548,7 +2677,7 @@ export class Hermes {
                     criterionId: mainCriterion.id,
                     currentFingerprint: currentFp,
                     runOracle: reverifyRunner,
-                    workdir: guard.lock.repoRoot,
+                    workdir: guard.activeWritableRoot,
                   });
                   ledger.save();
                   if (rv.verified) {
@@ -2669,7 +2798,7 @@ export class Hermes {
     ledger.save();
     this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
 
-    const report = reporter.build(ledger, exitReason, completionInput);
+    const report = reporter.build(ledger, exitReason, completionInput, await getWorkspaceFingerprint(guard.activeWritableRoot));
     ledger.data.report = report;
     ledger.save();
 

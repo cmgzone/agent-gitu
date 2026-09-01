@@ -1,7 +1,7 @@
 import type { Capability, CapabilityInput } from '../model/capability.js';
 import { normalizeHttpFailure, normalizeTransportError, type SemanticError } from '../model/errors.js';
 import type { ExecutionOutcome } from '../model/verification.js';
-import { scrub, type CredentialBroker } from '../credentials/credential-broker.js';
+import { deepScrub, scrub, type CredentialBroker } from '../credentials/credential-broker.js';
 import { operationFingerprint, type FingerprintContext } from './fingerprint.js';
 
 /**
@@ -9,6 +9,9 @@ import { operationFingerprint, type FingerprintContext } from './fingerprint.js'
  * a connection id, and resolved semantic parameters. Credentials come ONLY
  * from the mandatory broker; the executor filters parameters to the
  * capability's declared inputs so invented fields never reach the wire.
+ * Every byte the external system returns is scrubbed against the broker's
+ * secret list BEFORE it becomes model-visible data, trace or error detail —
+ * a hostile provider that echoes the credential cannot leak it.
  */
 
 export interface McpTransport {
@@ -115,15 +118,16 @@ export class UniversalExecutor {
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const response = await fetchImpl(url, { method: operation.method, headers, body: operation.method === 'GET' || operation.method === 'DELETE' || Object.keys(body).length === 0 ? undefined : JSON.stringify(body) });
     const text = await response.text();
+    const safeText = scrub(text, secrets);
     let data: unknown;
     try {
-      data = text ? JSON.parse(text) : undefined;
+      data = safeText ? JSON.parse(safeText) : undefined;
     } catch {
-      data = text.slice(0, 2000);
+      data = safeText.slice(0, 2000);
     }
     const trace = scrub(`REST ${operation.method} ${url}${Object.keys(body).length > 0 ? ` body=${JSON.stringify(body)}` : ''}`, secrets);
     if (response.ok) return { ok: true, status: response.status, executionConfidence: 1.0, data, fingerprint, trace };
-    const error = normalizeHttpFailure(response.status, text);
+    const error = normalizeHttpFailure(response.status, safeText);
     return { ok: false, status: response.status, executionConfidence: 0, data, fingerprint, trace, error };
   }
 
@@ -136,9 +140,10 @@ export class UniversalExecutor {
     const fetchImpl = this.options.fetchImpl ?? fetch;
     const response = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify({ query, variables: {} }) });
     const text = await response.text();
+    const safeText = scrub(text, secrets);
     let payload: { data?: unknown; errors?: { message?: string }[] } | undefined;
     try {
-      payload = JSON.parse(text) as typeof payload;
+      payload = JSON.parse(safeText) as typeof payload;
     } catch {
       payload = undefined;
     }
@@ -146,7 +151,7 @@ export class UniversalExecutor {
     if (response.ok && payload?.data && (!payload.errors || payload.errors.length === 0)) {
       return { ok: true, status: response.status, executionConfidence: 1.0, data: payload.data, fingerprint, trace };
     }
-    const error = payload?.errors?.length ? normalizeHttpFailure(response.status || 500, payload.errors.map((e) => e.message ?? '').join('; ')) : normalizeHttpFailure(response.status, text);
+    const error = payload?.errors?.length ? normalizeHttpFailure(response.status || 500, payload.errors.map((e) => e.message ?? '').join('; ')) : normalizeHttpFailure(response.status, safeText);
     return { ok: false, status: response.status, executionConfidence: 0, data: payload?.data, fingerprint, trace, error };
   }
 
@@ -155,11 +160,15 @@ export class UniversalExecutor {
     if (!this.options.mcpTransport) {
       return { ok: false, status: 0, executionConfidence: 0, fingerprint, trace: `MCP tool ${operation.tool} not executed — no MCP transport configured`, error: { category: 'TRANSPORT', retryable: false, operationValid: 'yes', suspectedCause: ['no MCP transport bound to this connection'] } };
     }
+    // The broker stays mandatory even for self-authenticating transports: its
+    // secret list redacts anything the tool result echoes back.
+    const { secrets } = await this.authenticatedHeaders();
     const result = await this.options.mcpTransport.callTool(operation.tool, params);
+    const data = deepScrub(result.data, secrets);
     if (result.status >= 200 && result.status < 300) {
-      return { ok: true, status: result.status, executionConfidence: 1.0, data: result.data, fingerprint, trace: `MCP tool ${operation.tool}` };
+      return { ok: true, status: result.status, executionConfidence: 1.0, data, fingerprint, trace: `MCP tool ${operation.tool}` };
     }
     const error = normalizeHttpFailure(result.status);
-    return { ok: false, status: result.status, executionConfidence: 0, data: result.data, fingerprint, trace: `MCP tool ${operation.tool}`, error };
+    return { ok: false, status: result.status, executionConfidence: 0, data, fingerprint, trace: `MCP tool ${operation.tool}`, error };
   }
 }

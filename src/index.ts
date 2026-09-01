@@ -75,7 +75,7 @@ export { operationFingerprint, type FingerprintContext } from './connections/run
 export { RetryGuard, type FailureRecord, type RetryAssessment } from './connections/runtime/execution/retry-guard.js';
 export { ResultVerifier } from './connections/runtime/verification/verifier.js';
 export { CapabilityCache, type CachedConnectionKnowledge } from './connections/runtime/cache/capability-cache.js';
-export { VaultCredentialBroker, scrub, type AuthMaterial, type CredentialBroker } from './connections/runtime/credentials/credential-broker.js';
+export { VaultCredentialBroker, scrub, deepScrub, type AuthMaterial, type CredentialBroker } from './connections/runtime/credentials/credential-broker.js';
 export { normalizeOperations, identifierStem } from './connections/runtime/semantics/inference.js';
 export { inferSemanticRole } from './connections/runtime/semantics/roles.js';
 export { inferSemanticTarget, singularize } from './connections/runtime/semantics/targets.js';

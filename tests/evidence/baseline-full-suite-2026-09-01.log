@@ -1,0 +1,679 @@
+
+ RUN  v3.2.7 C:/Users/Admin/Documents/monez/agentgitu
+
+(node:16608) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+Switched to a new branch 'gitu/hermes-task-20260901-009592-next'
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+Switched to a new branch 'some-other-task-branch'
+ ❯ tests/server.test.ts (25 tests | 2 failed) 90574ms
+   ✓ HermesServer > serves a syntactically valid inline UI script 11ms
+   ✓ HermesServer > keeps event ids monotonic when non-persisted stream deltas leave gaps 6ms
+   ✓ HermesServer > serves the UI and project info  570ms
+   ✓ HermesServer > serves the Agent Gitu SVG mark as a bundled brand asset  313ms
+   ✓ HermesServer > exposes live token limits and prices with the model catalog  2818ms
+   ✓ HermesServer > exposes the local Codex ChatGPT subscription without exposing credentials  360ms
+   ✓ HermesServer > runs a task end-to-end over HTTP with live state  3612ms
+   ✓ HermesServer > falls back to a same-provider free model when retrying after a no-credits failure  2462ms
+   ✓ HermesServer > keeps the paid model when the user explicitly overrides after topping up  2524ms
+   ✓ HermesServer > reactivates an older session in its own worktree without stealing the shared checkout  10125ms
+   ✓ HermesServer > resumes an older session even while another run is using the project checkout  6994ms
+   ✓ HermesServer > restores a chat transcript, its metadata, and conversational context after restart  5499ms
+   ✓ HermesServer > retry and edited resends supersede the original message instead of cloning it  4745ms
+   ✓ HermesServer > auto-approve applies to continuations when the client sends it  4873ms
+   × HermesServer > switches a chat session to build mode when the follow-up sends mode: standard 3583ms
+     → expected 'You are Agent Gitu, an autonomous sof…' to contain 'FOLLOW-UP MESSAGE'
+   ✓ HermesServer > switches a build session to chat mode when the follow-up sends mode: chat  3800ms
+   × HermesServer > resumes a standard session as a task and adopts the picker model for legacy sessions 4327ms
+     → expected false to be true // Object.is equality
+   ✓ HermesServer > gates dangerous actions behind the approval API  4287ms
+   ✓ HermesServer > pauses for plan review over HTTP and builds after approval  5134ms
+   ✓ HermesServer > queues user messages and stops a running task over HTTP  4298ms
+   ✓ HermesServer > stores attached documents, includes text in model context, and serves guarded downloads  6833ms
+   ✓ HermesServer > turns oversized agent prose into a downloadable Markdown document  6389ms
+   ✓ HermesServer > rejects runs without a goal  2231ms
+   ✓ HermesServer > exposes the in-app browser API when a bridge is configured  2257ms
+   ✓ HermesServer > reports 503 for browser endpoints without a bridge  2500ms
+ ❯ tests/hermes.test.ts (34 tests | 1 failed) 72522ms
+   ✓ Hermes end-to-end (mock LLM) > completes a task only when the evidence gate opens  3190ms
+   ✓ Hermes end-to-end (mock LLM) > recovers the action from the reasoning trace when the visible reply is prose-only  1328ms
+   ✓ Hermes end-to-end (mock LLM) > does not leak <json> fence tags into the streamed prose  1529ms
+   ✓ Hermes end-to-end (mock LLM) > compacts old history while keeping the system prompt and recent tail 2ms
+   ✓ Hermes end-to-end (mock LLM) > accepts JSON actions that use the tool name as the action type  1541ms
+   ✓ Hermes end-to-end (mock LLM) > rejects premature completion until criteria have evidence  1518ms
+   ✓ Hermes end-to-end (mock LLM) > honors request_block and records failure memory  592ms
+   ✓ Hermes end-to-end (mock LLM) > blocks repeated failing actions via loop prevention  1820ms
+   ✓ Hermes end-to-end (mock LLM) > streams natural-language updates and records them  607ms
+   ✓ Hermes end-to-end (mock LLM) > shows a concise agent update when a model returns structured actions without prose  578ms
+   ✓ Hermes end-to-end (mock LLM) > pauses for plan review, applies edits, and only then builds  648ms
+   ✓ Hermes end-to-end (mock LLM) > requires explicit user approval before accepting an unresolved strict-risk quality warning  1798ms
+   ✓ Hermes end-to-end (mock LLM) > chat mode answers directly without tools  442ms
+   × Hermes end-to-end (mock LLM) > switches a chat ledger to build mode when resuming with a different mode 1149ms
+     → expected false to be true // Object.is equality
+   ✓ Hermes end-to-end (mock LLM) > asks the user clarifying questions and uses the answers  884ms
+   ✓ Hermes end-to-end (mock LLM) > executes parallel tool calls concurrently and records evidence  1263ms
+   ✓ Hermes end-to-end (mock LLM) > emits live line counts when writing files  1965ms
+   ✓ Hermes end-to-end (mock LLM) > stop() aborts a running task and queued messages reach the agent  573ms
+   ✓ Hermes end-to-end (mock LLM) > answers follow-up comments conversationally without forcing task work  1529ms
+   ✓ Hermes end-to-end (mock LLM) > creates skills by itself when asked  789ms
+   ✓ Hermes end-to-end (mock LLM) > auto-learns a reusable skill after completing a task  2938ms
+   ✓ Hermes end-to-end (mock LLM) > does not auto-learn or create skills when the user disables it  1772ms
+   ✓ Hermes end-to-end (mock LLM) > delegates parallel sub-tasks to named sub-agents  1515ms
+   ✓ Hermes end-to-end (mock LLM) > starts independent specialist work in the background and exposes its status  1352ms
+   ✓ Hermes end-to-end (mock LLM) > parses dots-style XML function calls instead of leaking raw XML  3001ms
+   ✓ Hermes end-to-end (mock LLM) > denies dangerous commands that are not approved  700ms
+   ✓ Hermes end-to-end (mock LLM) > rejects completion when evidence does not match orchestrator-specified structured criteria  1161ms
+   ✓ Hermes end-to-end (mock LLM) > accepts completion when evidence matches orchestrator-specified structured criteria  1493ms
+   ✓ Hermes end-to-end (mock LLM) > halts a runaway task when the effort turn budget is exhausted  2356ms
+   ✓ Hermes end-to-end (mock LLM) > extends the turn budget while the run keeps producing verified progress  28520ms
+   ✓ Hermes end-to-end (mock LLM) > stops the main execution lane after three unparseable replies  550ms
+   ✓ Hermes end-to-end (mock LLM) > clamps delegate calls to the task specialist budget  1172ms
+   ✓ Hermes end-to-end (mock LLM) > records the risk plan and steers delegations toward the recommended specialists  1060ms
+   ✓ Hermes end-to-end (mock LLM) > warns when delegating to an agent outside the recommended risk roster  1182ms
+ ❯ tests/specialist-checkpoints.test.ts (7 tests | 1 failed) 34335ms
+   ✓ durable specialist checkpoint recovery > persists verified edits, rediscovers them after restart, and resumes the same logical job  6435ms
+   ✓ durable specialist checkpoint recovery > marks a transport failure before edits as context-only and never claims files were recovered  1683ms
+   ✓ durable specialist checkpoint recovery > fails closed when a persisted checkpoint no longer matches its branch/worktree  3348ms
+   ✓ durable specialist checkpoint recovery > recovers Git-verified edits written after the last checkpoint instead of restarting  4929ms
+   ✓ durable specialist checkpoint recovery > records the edit before a live attempt can be interrupted  2713ms
+   × durable specialist checkpoint recovery > preserves committed work in a recovery file when SQLite checkpoints fail mid-run 6060ms
+     → expected true to be false // Object.is equality
+   ✓ durable specialist checkpoint recovery > reuses the logical specialist allocation when a recovered job is delegated again  9167ms
+ ❯ tests/prerequisites.test.ts (11 tests | 2 failed) 6735ms
+   ✓ CapabilityAwareResolver > reuses a compatible connected resource and records no secret value 173ms
+   ✓ CapabilityAwareResolver > provisions only a declared reversible resource, health-checks it, and records the action 184ms
+   ✓ CapabilityAwareResolver > asks for a target rather than guessing between equally plausible resources 193ms
+   ✓ CapabilityAwareResolver > does not auto-provision costly/destructive resources or let a specialist bypass parent policy 206ms
+   ✓ CapabilityAwareResolver > rolls back an unhealthy provision and never loops through the same recovery strategy twice 180ms
+   ✓ CapabilityAwareResolver > discovers configured environment availability without exposing the value 173ms
+   × Gitu prerequisite blocking flow > resolves a missing prerequisite before honoring request_block, then continues the task 1716ms
+     → expected 'blocked' to be 'complete' // Object.is equality
+   ✓ Gitu prerequisite blocking flow > opens a host-owned secure connection request and retries discovery after the user saves it  1779ms
+   × Gitu prerequisite blocking flow > proposes a documented provider write through the host approval channel and continues after it runs 1679ms
+     → expected 'blocked' to be 'complete' // Object.is equality
+   ✓ Gitu prerequisite blocking flow > keeps Hermes as a compatibility alias 0ms
+   ✓ Gitu prerequisite blocking flow > closes resources it owns when chat mode returns early  453ms
+ ❯ tests/task-strategy.test.ts (10 tests | 2 failed) 3906ms
+   ✓ classifyTaskKind > detects bug fixes 1ms
+   ✓ classifyTaskKind > detects failing tests before bug fixes 0ms
+   ✓ classifyTaskKind > detects refactors 0ms
+   ✓ classifyTaskKind > detects exploration 0ms
+   ✓ classifyTaskKind > defaults to feature for build-style requests 0ms
+   ✓ buildTaskStrategySection > returns the matching strategy only when LSP is available 1ms
+   ✓ buildTaskStrategySection > never lets a strategy substitute for real verification 0ms
+   × Hermes task-strategy injection > injects the bug-fix strategy at intake when LSP servers exist 1850ms
+     → expected 'blocked' to be 'complete' // Object.is equality
+   × Hermes task-strategy injection > does not inject a strategy when no LSP servers are available 1631ms
+     → expected 'blocked' to be 'complete' // Object.is equality
+   ✓ Hermes task-strategy injection > skips the strategy in chat mode  421ms
+ ✓ tests/subagent.test.ts (8 tests) 42253ms
+   ✓ SubAgentRunner > queues background agents, limits concurrent workers, and retains their results  1889ms
+   ✓ SubAgentRunner > runs specialists in isolated git worktrees and merges product changes back  4073ms
+   ✓ SubAgentRunner > does not merge changes when the specialist fails, and reports merge conflicts  3412ms
+   ✓ SubAgentRunner > never lets two concurrent specialists silently clobber each other: same-file edits yield one clean merge and one detected conflict  6445ms
+   ✓ SubAgentRunner > keeps merging subsequent specialists after an earlier merge failed (chain is not poisoned)  8765ms
+   ✓ SubAgentRunner > uses a neutral git identity when none is configured, so worktree commits AND merges still succeed on fresh machines  4516ms
+   ✓ SubAgentRunner > rejects specialist completion and discards worktree when evidence gate is unsatisfied (lying specialist attack)  5067ms
+   ✓ SubAgentRunner > accepts specialist completion and merges worktree when required verification is satisfied  8086ms
+hidden: clamp(10,1,10) !== 10
+ ✓ tests/agent-evals/traps.test.ts (8 tests) 33521ms
+   ✓ agent-eval: false green (bug "fixed" without reproduction) > rigor gate rejects twice, then completion carries the gap as a risk  3126ms
+   ✓ agent-eval: context loss over a long run > the goal survives 25+ turns of state rebuilds  1751ms
+   ✓ agent-eval: compaction trap (huge outputs push history out) > compacts without losing the goal, and the run still completes  2165ms
+   ✓ agent-eval: wide refactor (scope discovered mid-run) > escalates complexity and records an auditable extension  16276ms
+   ✓ agent-eval: failure storm (repeated distinct failures) > escalates on distinct failure signatures and records the extension  4362ms
+   ✓ agent-eval: open-plan reconciliation at completion > rejects completion with an abandoned step, accepts after explicit reconcile  2803ms
+   ✓ agent-eval: hidden edge case (main test green, hidden test red) > records the hidden-check failure the agent never saw  3035ms
+ ✓ tests/reliability-session.test.ts (7 tests) 14550ms
+   ✓ HermesServer — session ↔ task ↔ git attachment (P0.1) > binds session → taskId → ledger → branch and continues on the same task after restart  9354ms
+   ✓ HermesServer — session ↔ task ↔ git attachment (P0.1) > restores branch and worktree from the ledger after restart  791ms
+   ✓ HermesServer — session ↔ task ↔ git attachment (P0.1) > rejects continuation when the task points at a missing worktree (409, no orphan)  921ms
+   ✓ HermesServer — session ↔ task ↔ git attachment (P0.1) > rejects continuation on git branch mismatch (409, no orphan)  1551ms
+   ✓ HermesServer — session ↔ task ↔ git attachment (P0.1) > rejects continuation with no task binding at all (409, no orphan)  811ms
+   ✓ HermesServer — session ↔ task ↔ git attachment (P0.1) > rejects continuation when the task ledger is gone (404, no silent new task)  1048ms
+ ✓ tests/subagent-resume.test.ts (2 tests) 8111ms
+   ✓ specialist pause / preserve / resume lifecycle > publishes an active worktree to recovery status before the first model reply  1785ms
+   ✓ specialist pause / preserve / resume lifecycle > keeps the worktree + checkpoints when a specialist stops early, and resumes where it left off  6325ms
+ ✓ tests/reliability-plan-steps.test.ts (7 tests) 10276ms
+   ✓ Hermes — plan steps are marked done when their verification passes > auto-completes the matching step even when the model omits stepId  1554ms
+   ✓ Hermes — plan steps are marked done when their verification passes > still marks the step done when the model provides an explicit stepId  1565ms
+   ✓ Hermes — plan steps are marked done when their verification passes > does NOT auto-complete steps whose verification does not match the command  1532ms
+   ✓ Hermes — plan steps are marked done when their verification passes > does NOT complete a step when a non-verification tool succeeds with its stepId  1707ms
+   ✓ Hermes — plan steps are marked done when their verification passes > completes a step explicitly via complete_step  1501ms
+   ✓ run_command — timeout kills the process tree before evidence resolves > resolves ok:false with a timeout note and does not hang past the deadline  1909ms
+   ✓ run_command — timeout kills the process tree before evidence resolves > still resolves normally for fast commands  506ms
+ ✓ tests/token-efficiency.test.ts (28 tests) 8467ms
+   ✓ Hermes e2e — decisions, telemetry, context efficiency > reloads active skill instructions after compaction while retaining the compact contract  789ms
+   ✓ Hermes e2e — decisions, telemetry, context efficiency > rejects a decision that drops an explicitly required technology  739ms
+   ✓ Hermes e2e — decisions, telemetry, context efficiency > allows choosing vanilla JS when nothing requires a framework  600ms
+   ✓ Hermes e2e — decisions, telemetry, context efficiency > records telemetry on the ledger and report for a completed run  1691ms
+   ✓ Hermes e2e — decisions, telemetry, context efficiency > keeps the stable prefix byte-identical across turns (prefix-cache friendly)  1748ms
+   ✓ Hermes e2e — decisions, telemetry, context efficiency > attaches targeted recovery context after a failed tool call  1747ms
+ ✓ tests/reliability-skills.test.ts (11 tests) 7098ms
+   ✓ Hermes — skill usage runtime tracking > records used skills into the ledger when the model loads one with use_skill  1633ms
+   ✓ Hermes — skill usage runtime tracking > does not record a used skill when use_skill fails or the skill does not exist  1437ms
+   ✓ Hermes — automatic skill activation and continuation continuity > auto-activates a high-confidence skill for the task goal  1472ms
+   ✓ Hermes — automatic skill activation and continuation continuity > restores previously active skills in a continuation  2229ms
+ ✓ tests/quality-upgrades.test.ts (28 tests) 6119ms
+   ✓ buildQualityReviewMessages > reviews committed task changes instead of only the clean working-tree diff  1102ms
+   ✓ buildQualityReviewMessages > uses a follow-up baseline so quality review excludes completed earlier work  1056ms
+   ✓ buildQualityReviewMessages > skips the final AI review for a fully-evidenced README-only completion and reuses its diff in the report  2831ms
+ ✓ tests/reliability-findings.test.ts (12 tests) 6104ms
+   ✓ Hermes — Finding Verification Gate end-to-end > reports a finding as CONFIRMED only after an independent specialist reproduces it  2193ms
+   ✓ Hermes — Finding Verification Gate end-to-end > downgrades a finding to FALSE-POSITIVE when the verifier cannot reproduce it  2302ms
+   ✓ Hermes — Finding Verification Gate end-to-end > leaves findings UNVERIFIABLE when no specialists are configured  1598ms
+stderr | tests/lsp.test.ts > server registry > ignores a malformed config file
+[hermes] warning: C:\Users\Admin\AppData\Local\Temp\gitu-lsp-6eS01g\.hermes\lsp.json exists but could not be parsed (Expected property name or '}' in JSON at position 2 (line 1 column 3))
+
+ ✓ tests/lsp.test.ts (21 tests) 5812ms
+   ✓ LSP manager lifecycle (fake server) > spawns lazily, reuses the server across requests, and shuts down cleanly  333ms
+   ✓ LSP manager lifecycle (fake server) > recovers when the server process is killed: next request re-spawns and succeeds  658ms
+   ✓ Hermes LSP post-edit diagnostics gate > surfaces diagnostics for the edited file when a language server is available  1908ms
+   ✓ Hermes LSP post-edit diagnostics gate > stays silent for files with no language server (LSP remains optional)  2542ms
+ ✓ tests/reliability-bug-rigor.test.ts (7 tests) 5741ms
+   ✓ Hermes — bug-fix rigor gate > accepts a bug fix that reproduces (FAIL), edits, and re-verifies (PASS), but rejects completion once for the missing root cause  3221ms
+   ✓ Hermes — bug-fix rigor gate > rejects a fix without reproduction twice, then completes with the gap recorded as a risk  2516ms
+ ✓ tests/dynamic-planning.test.ts (18 tests) 4934ms
+   ✓ completed-task follow-ups > appends new criteria and plan steps without replaying the completed plan  1064ms
+   ✓ Hermes e2e - dynamic planning > plans richly, executes on compact state, and attributes telemetry by phase  1302ms
+ ✓ tests/usage-tracking.test.ts (6 tests) 5244ms
+   ✓ session usage over HTTP > accumulates tokens and messages per session and keeps them after restart  5235ms
+warning: in the working copy of 'package.json', LF will be replaced by CRLF the next time Git touches it
+ ✓ tests/robustness-fixes.test.ts (19 tests) 3587ms
+   ✓ checkpoint workspace isolation > keeps private .hermes state out of Git commits, including legacy tracked state  1064ms
+   ✓ prose stream survives braces in commentary > does not cut user-facing text at a literal brace before the JSON action  1621ms
+ ✓ tests/extensions.test.ts (6 tests) 6186ms
+   ✓ resume (same-session continuation) > adds a new work phase after completed criteria instead of blocking or replacing history  6124ms
+ ✓ tests/reliability-specialist-evidence.test.ts (17 tests) 4129ms
+   ✓ Hermes — specialist evidence inheritance end-to-end > accepts a specialist report that matches the delegated contract and the gate opens  2621ms
+   ✓ Hermes — specialist evidence inheritance end-to-end > rejects a specialist that ran an unrelated command and never satisfies the criterion  1498ms
+ ✓ tests/memory-scoping.test.ts (21 tests) 4583ms
+   ✓ audit persistence (review hardening #1) > retention caps the audit ring at 500 events  3599ms
+   ✓ mid-run publish_finding (review hardening #2) > a specialist can publish a finding MID-RUN, and it survives even if the specialist later fails  780ms
+ ✓ tests/reliability-specialist.test.ts (9 tests) 4226ms
+   ✓ SubAgentRunner — dynamic turn budgeting > starts at the base budget of 30 turns  592ms
+   ✓ SubAgentRunner — dynamic turn budgeting > extends the budget when productive work continues past the limit  527ms
+   ✓ SubAgentRunner — dynamic turn budgeting > never exceeds the hard ceiling  727ms
+   ✓ SubAgentRunner — stagnation early termination > terminates early on repeated failing turns  371ms
+   ✓ SubAgentRunner — stagnation early termination > terminates early when the specialist stops producing valid actions  351ms
+   ✓ SubAgentRunner — structured result guarantee > returns a complete structured result even when the specialist crashes (drain fallback)  352ms
+   ✓ SubAgentRunner — structured result guarantee > always reports structured fields on every termination path  357ms
+   ✓ SubAgentRunner — cancellation and stuck-turn recovery > cancels an in-flight specialist immediately when its parent stops  530ms
+   ✓ SubAgentRunner — cancellation and stuck-turn recovery > returns a bounded result when a provider ignores AbortSignal  417ms
+ ✓ tests/reliability-effort-planner.test.ts (37 tests) 4382ms
+   ✓ Hermes — adaptive effort & risk integration > persists effort and risk plans on the ledger and emits them  740ms
+   ✓ Hermes — adaptive effort & risk integration > caps specialist delegations at the effort budget  1063ms
+   ✓ Hermes — adaptive effort & risk integration > surfaces risk-recommended specialists as guidance  579ms
+   ✓ Hermes — adaptive effort & risk integration > extends the budget for visual-verification progress without file changes  1986ms
+ ✓ tests/bugfix-regressions.test.ts (23 tests) 3322ms
+   ✓ checkpoint resilience (M3) > reports ok:false instead of throwing when git add fails on a stale lock  601ms
+   ✓ workspace fingerprint survives commits (M5) > is stable across staging+commit but reacts to later content edits  810ms
+   ✓ gitDiscard also undoes staged changes (M6) > reverts worktree AND index for a staged modification  955ms
+ ✓ tests/reliability-antiloop.test.ts (10 tests) 4644ms
+   ✓ Hermes — malformed-call spiral protection > halts a schema-error spiral instead of burning turns forever  892ms
+   ✓ Hermes — malformed-call spiral protection > recovers when the model corrects itself after a short streak  1637ms
+   ✓ Hermes — malformed-call spiral protection > catches a mixed meltdown of unparseable replies and malformed calls  883ms
+   ✓ SubAgentRunner — malformed-call protection > stops a specialist that spirals into malformed calls, with a malformed-aware blocker  386ms
+   ✓ SubAgentRunner — malformed-call protection > recovers after a short malformed streak and completes the task  844ms
+ ✓ tests/usage-probe.test.ts (1 test) 3723ms
+   ✓ usage across continuations > keeps accumulating tokens and messages when the same session is continued  3723ms
+ ✓ tests/reliability-tools.test.ts (28 tests) 2703ms
+   ✓ toolSearchFiles — language-agnostic search engine > dotall flag (s) lets the dot cross lines  316ms
+   ✓ toolSearchFiles — language-agnostic search engine > include filters by glob, exclude removes subtrees  437ms
+ ✓ tests/git.test.ts (2 tests) 2626ms
+   ✓ git integration > shows working tree, commits, and discards  2340ms
+ ✓ tests/reliability-evidence.test.ts (8 tests) 2064ms
+   ✓ workspace fingerprint — composite of git state > changes when content changes, but survives staging/checkpoint commits  978ms
+   ✓ workspace fingerprint — composite of git state > is deterministic for an unchanged workspace  536ms
+   ✓ EvidenceEngine — fingerprint-based staleness > proves the mechanism is the fingerprint, not a trivial-command blacklist  544ms
+ ✓ tests/browser.test.ts (8 tests) 1537ms
+   ✓ Hermes with in-app browser > delivers screenshots to vision models as image parts  831ms
+   ✓ Hermes with in-app browser > notes screenshots as undeliverable for text-only models  696ms
+ ✓ tests/code-index.test.ts (8 tests) 2021ms
+   ✓ CodeIndex > watches the repo and updates the index in the background  1061ms
+ ✓ tests/skills-v2.test.ts (9 tests) 1568ms
+   ✓ Skills v2 directory compatibility and progressive disclosure > handles a 200-skill library without injecting all instruction bodies  1015ms
+ ✓ tests/skills-builtin.test.ts (9 tests) 1075ms
+   ✓ built-in skill tier > does not add builtins when constructed with the 2-arg form (isolation for embedders)  716ms
+ ✓ tests/context-memory.test.ts (12 tests) 1115ms
+   ✓ executor artifact persistence — digest in context, raw on disk > keeps small outputs inline without artifacts  547ms
+ ✓ tests/context-engine.test.ts (8 tests) 1063ms
+   ✓ ContextEngine > refreshes a watched index before building a new context pack  317ms
+   ✓ ContextEngine > surfaces a graph-connected helper even when its path has no goal terms  313ms
+ ✓ tests/project-guard.test.ts (5 tests) 671ms
+ ✓ tests/llm-client.test.ts (29 tests) 1051ms
+   ✓ OpenAiCompatClient retry behavior > gives up after retries and surfaces a friendly rate-limit message  515ms
+ ✓ tests/task-ledger.test.ts (3 tests) 452ms
+ ✓ tests/hybrid-retrieval.test.ts (9 tests) 740ms
+ ✓ tests/connections.test.ts (7 tests) 721ms
+   ✓ ConnectionRegistry > activates a newly saved provider skill by alias without restarting the executor  330ms
+ ✓ tests/workspace-home.test.ts (4 tests) 495ms
+ ✓ tests/ui-specialist-cards.test.ts (11 tests) 487ms
+   ✓ UI — bundled fonts (Inter + JetBrains Mono) > serves woff2 files locally with immutable caching and blocks traversal  477ms
+ ✓ tests/reporter.test.ts (2 tests) 353ms
+ ✓ tests/connections-runtime.test.ts (21 tests) 137ms
+ ✓ tests/memory-semantic.test.ts (18 tests) 257ms
+ ✓ tests/memory-lifecycle.test.ts (13 tests) 248ms
+ ✓ tests/memory-search.test.ts (14 tests) 156ms
+ ✓ tests/architecture.test.ts (18 tests) 107ms
+ ✓ tests/memory-tiers.test.ts (7 tests) 112ms
+ ✓ tests/providers.test.ts (44 tests) 121ms
+ ✓ tests/skills-global.test.ts (4 tests) 66ms
+ ✓ tests/codex-subscription.test.ts (4 tests) 31ms
+ ✓ tests/execution-hardening.test.ts (37 tests) 33ms
+ ✓ tests/model-context.test.ts (13 tests) 15ms
+ ✓ tests/llm-resilience.test.ts (12 tests) 12ms
+ ✓ tests/browser-evidence.test.ts (14 tests) 14ms
+ ✓ tests/evidence.test.ts (22 tests) 7ms
+ ✓ tests/ui-responsive.test.ts (10 tests) 4ms
+ ✓ tests/ui-report-cards.test.ts (9 tests) 5ms
+ ✓ tests/cli-presenter.test.ts (5 tests) 3ms
+ ✓ tests/risk-planner.test.ts (11 tests) 11ms
+ ✓ tests/ui-gate.test.ts (7 tests) 4ms
+ ✓ tests/impact-escalation.test.ts (11 tests) 6ms
+ ✓ tests/effort-planner.test.ts (10 tests) 12ms
+ ✓ tests/policy.test.ts (9 tests) 8ms
+ ✓ tests/static-assets.test.ts (2 tests) 3ms
+ ✓ tests/loop-detector.test.ts (6 tests) 3ms
+ ✓ tests/util.test.ts (5 tests) 2ms
+ ✓ tests/evaluation-metrics.test.ts (1 test) 1ms
+ ✓ tests/change-signals.test.ts (2 tests) 1ms
+ ✓ tests/ui-parallel-tools.test.ts (1 test) 1ms
+ ✓ tests/quality-metrics.test.ts (2 tests) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 8 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/hermes.test.ts > Hermes end-to-end (mock LLM) > switches a chat ledger to build mode when resuming with a different mode
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ tests/hermes.test.ts:400:25
+    398|     });
+    399|     await resumed.run('now build it');
+    400|     expect(sawFollowUp).toBe(true);
+       |                         ^
+    401|     expect(sawChatPrompt).toBe(false);
+    402|     const reloaded = TaskLedger.load(dir, ledger.data.taskId);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/8]⎯
+
+ FAIL  tests/prerequisites.test.ts > Gitu prerequisite blocking flow > resolves a missing prerequisite before honoring request_block, then continues the task
+AssertionError: expected 'blocked' to be 'complete' // Object.is equality
+
+Expected: "complete"
+Received: "blocked"
+
+ ❯ tests/prerequisites.test.ts:194:27
+    192|     const { report, ledger } = await gitu.run('Run the database migrat…
+    193| 
+    194|     expect(report.status).toBe('complete');
+       |                           ^
+    195|     expect(ledger.data.blockers).toEqual([]);
+    196|     expect(ledger.data.prerequisiteRecoveries?.some((record) => record…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/8]⎯
+
+ FAIL  tests/prerequisites.test.ts > Gitu prerequisite blocking flow > proposes a documented provider write through the host approval channel and continues after it runs
+AssertionError: expected 'blocked' to be 'complete' // Object.is equality
+
+Expected: "complete"
+Received: "blocked"
+
+ ❯ tests/prerequisites.test.ts:286:27
+    284|     }).run('Create a preview database');
+    285| 
+    286|     expect(report.status).toBe('complete');
+       |                           ^
+    287|     expect(requests).toHaveLength(1);
+    288|     expect(ledger.data.blockers).toEqual([]);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/8]⎯
+
+ FAIL  tests/server.test.ts > HermesServer > switches a chat session to build mode when the follow-up sends mode: standard
+AssertionError: expected 'You are Agent Gitu, an autonomous sof…' to contain 'FOLLOW-UP MESSAGE'
+
+- Expected
++ Received
+
+- FOLLOW-UP MESSAGE
++ You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
++
++ REUSABLE SKILLS (apply them with use_skill; you MUST create new ones with create_skill whenever you learn a repeatable pattern or the user asks for a skill that does not exist yet — research with web_fetch first if the skill needs external knowledge):
++ - frontend-quality-bar@1
++   Review frontend UI for control intent, placement, interaction logic, visual quality, responsiveness, and accessibility.
++   scope: builtin; status: available
++ - strategy-bug-fix@1
++   Investigation strategy for bug fixes: reproduce first, trace with LSP, fix small.
++   scope: builtin; status: available
++ - strategy-explore@1
++   Investigation strategy for exploration: map structure first, read selectively.
++   scope: builtin; status: available
++ - strategy-feature@1
++   Investigation strategy for new features: ground in the integration points first.
++   scope: builtin; status: available
++ - strategy-refactor@1
++   Investigation strategy for refactors: map every caller before moving anything.
++   scope: builtin; status: available
++ - strategy-test-failure@1
++   Investigation strategy for failing tests: diagnose the assertion before repairing.
++   scope: builtin; status: available
++
++ DELEGATABLE SPECIALIST AGENTS (named workers you can run IN PARALLEL with the delegate tool — use them on big projects by splitting independent sub-tasks):
++ AVAILABLE SPECIALISTS (use the exact Agent Name in the "agent" field of delegate):
++ 1. Agent Name: "explore"
++    Model: default
++    Role: Repository exploration specialist. Trace code paths, locate symbols and references, map module boundaries, and summarize how things work. ALWAYS cite concrete file paths with line numbers for every cl
++
++ 2. Agent Name: "backend"
++    Model: default
++    Role: Backend implementation specialist. Server-side logic, APIs, data models, migrations, background jobs. Follow existing framework conventions exactly; add or update tests for changed behavior; keep chan
++
++ 3. Agent Name: "frontend"
++    Model: default
++    Role: Frontend implementation and product-interface specialist. Map each view's user goal and action hierarchy before coding. Every control must be justified, placed near what it affects, clearly labeled, c
++
++ 4. Agent Name: "tester"
++    Model: default
++    Role: Test engineering specialist. Write and run tests that reproduce the reported problem first (red), then pass after the fix (green). Prefer the project's existing test runner and style. Report exact com
++
++ 5. Agent Name: "reviewer"
++    Model: default
++    Role: Code review specialist. Review the current diff like a strict senior engineer: correctness, edge cases, security, error handling, and hidden coupling. Report findings ordered by severity with file:lin
++
++ 6. Agent Name: "docs"
++    Model: default
++    Role: Documentation specialist. Update README, API references, and inline doc comments to match actual behavior — never invent features. Verify documented commands actually run. Keep prose tight and example
++
++ LSP CODE INTELLIGENCE (optional, read-only; language servers keep the project indexed, so prefer these over blind text search for symbol facts):
++ - typescript server → lsp tools for: typescript, typescriptreact, javascript, javascriptreact
++ - rust server → lsp tools for: rust
++ - css server → lsp tools for: css
++
++
++ PROJECT LOCK (do not violate):
++   name: web-chat-to-build
++   repo_root: C:\Users\Admin\AppData\Local\Temp\hermes-web-chat-to-build-LoCTiT
++   common_repository_root: C:\Users\Admin\AppData\Local\Temp\hermes-web-chat-to-build-LoCTiT
++   active_worktree_root: C:\Users\Admin\AppData\Local\Temp\hermes-web-chat-to-build-LoCTiT
++   active_writable_root: C:\Users\Admin\AppData\Local\Temp\hermes-web-chat-to-build-LoCTiT
++   branch: (none)
++   tech_stack: node
++   entrypoints: unknown
++   test_command: npm run test
++   build_command: unknown
++   lint_command: unknown
++   typecheck_command: unknown
++
++ OPERATING RULES:
++ 1. Project boundary: only touch files inside repo_root. Never edit unrelated code.
++ 2. Read before you plan, and read before you write. Ground every plan and every edit in the actual code you have read — never in file names or assumptions. Small reversible changes. One focused action per turn.
++ 3. Every action needs a reason and an expected outcome.
++ 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
++ 5. Never claim success without evidence. Run verification commands (tests, typecheck, build, lint).
++ 6. A task is complete ONLY when every acceptance criterion is linked to passing evidence.
++ 7. "I changed something" is not "the task is complete".
++ 8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Never answer "I don't have that skill" without creating it. Also create skills proactively after any repeatable multi-step pattern (deploy flows, design conventions, checklists).
++
++ STORED MEMORY (from previous work on this project):
++ (no stored memory for this project yet)
++
++
++
++ PROTOCOL — each turn you MUST respond in this exact shape:
++ 1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
++ 2. Then, on a new line, EXACTLY ONE JSON object describing your action.
++
++ Intake/planning actions:
++ {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
++ {"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
++ {"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
++ {"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
++ {"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
++ {"thought":"...","action":{"type":"set_hypothesis","text":"current hypothesis about the problem/solution"}}
++
++ Architecture decisions (record BEFORE implementing whenever the task involves a significant technology or architecture choice):
++ {"thought":"...","action":{"type":"record_decision","decision":"the chosen approach, one line","alternatives":["evaluated alternative",...],"repoEvidence":"what in THIS repo supports the choice","requirements":["explicit requirement or repo constraint considered",...],"rejected":[{"alternative":"...","reason":"why it lost"}],"reconsiderIf":"conditions that would justify revisiting","basis":"explicit-requirement|repository-constraint|recommendation|preference","supersedes":"ad-..."}}
++
++ Execution:
++ {"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId records WHICH step you are working on — it does NOT complete the step)
++ {"thought":"...","action":{"type":"connection_action","connectionId":"saved-connection-id","operationId":"registered-read-operation","reason":"why this provider discovery is needed"}}  (only registered read operations; never provide a URL, header, or credential)
++ {"thought":"...","action":{"type":"connection_operation","connectionId":"saved-connection-id","operation":{"id":"create-resource","label":"Create resource","capability":"resources.create","method":"POST","path":"/api/v1/resources","risk":"reversible-write"},"body":{"name":"example"},"documentationUrl":"https://docs.provider.example/api/resources","reason":"documented operation needed for the approved plan"}}  (the host validates the static operation, shows the exact request for user approval, and only then runs it; never include credentials or unverified paths)
++ {"thought":"...","action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}}  (check off a subtask as you complete it; checking the last one completes the step)
++ {"thought":"...","action":{"type":"complete_step","stepId":"step-N","reason":"why it is done"}}  (explicitly finish a step once its work is done; a step also auto-completes when a run_command matching its verification passes)
++ {"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","todos":["new subtask",...]}}  (dynamic replanning: update ONLY the affected step when reality diverges — API differs, reuse found, dependency missing)
++ {"thought":"...","action":{"type":"show_plan"}}  (prints the FULL plan + design once — use when you need details no longer shown in compact state)
++
++ Tools:
++ - read_file    {"path":"src/x.ts","offset":1,"limit":200}
++ - write_file   {"path":"src/x.ts","content":"full file content"}
++ - apply_edit   {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
++ - list_files   {"path":"src"}
++ - search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2}
++     language-agnostic whole-file search (any language, any text file). Regex mode scans full file content, so patterns match ACROSS lines: use \n, \s or [\s\S] spans, or flags "s"/"m". Use mode "literal" for plain text with no regex escaping. Every result ends with a capability line (mode/flags/multiline/matches) telling you exactly what ran.
++ - run_command  {"command":"npm run test","timeoutMs":120000}
++ - lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
++ - lsp_definition {"path":"src/auth.ts","line":42,"column":17}  (1-based; where the symbol at that position is defined)
++ - lsp_references {"path":"src/auth.ts","line":42,"column":17}  (every place the symbol is used)
++ - lsp_hover {"path":"src/auth.ts","line":42,"column":17}  (type + documentation at the position)
++ - lsp_symbols {"path":"src/auth.ts"}  (classes, functions, interfaces... in a file)
++   (LSP is optional: when it reports "unavailable", fall back to search_files/read_file — never treat LSP failure as a task failure)
++   WHEN TO USE LSP (prefer it over blind text search for symbol facts):
++   - unfamiliar file → lsp_symbols first to see its structure, then read_file the symbols that matter
++   - "where is this defined/declared?" → lsp_definition at the use site
++   - "what else touches this?" → lsp_references before any refactor (all call sites)
++   - "what type is this / what does this API do?" → lsp_hover
++   - after edits: an automatic LSP post-edit check reports diagnostics for the file you changed — fix what it surfaces BEFORE running the real verification commands
++   - NEVER use LSP for whole-project search (search_files), and never treat "No diagnostics"/LSP as the task's verification (run the real test/typecheck/build commands)
++ - web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
++   web_fetch is intentionally anonymous. For a saved provider connection, use connection_action with the exact connection id and registered read operation provided by the secure connection context; never put authorization headers or tokens in web_fetch. When a documented provider write is needed, first fetch its official documentation and use connection_operation with that HTTPS documentationUrl; it waits for the user's individual approval instead of treating an unregistered write as a provider failure.
++   - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
++ - browse       full human-like browser control:
++                  {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"evidence"} | {"action":"back"|"forward"|"reload"}
++                  {"action":"click","selector":"#submit"} (preferred) or {"action":"click","x":120,"y":340}
++                  {"action":"hover","x":10,"y":20} | {"action":"scroll","x":640,"y":450,"deltaY":400} (positive = down)
++                  {"action":"fill","selector":"input[name=email]","text":"value"} (forms; works with React/Vue inputs)
++                  {"action":"select","selector":"#country","value":"France"} | {"action":"press","key":"Enter|Tab|Escape|Backspace|Down…"}
++                  {"action":"type","text":"..."} (types into the focused element) | {"action":"wait","ms":1000}
++                  Interact like a human: act → verify. VERIFY with the CHEAPEST evidence that proves the criterion:
++                  - "evidence" = structured non-visual pass (DOM counts, accessibility, layout overflow, clipped text, invisible/covered controls, console errors) — the DEFAULT look after navigate and after edits; it proves functionality, structure, a11y and layout bugs WITHOUT vision.
++                  - "evidence" + "viewports":["mobile","tablet","desktop"] = responsive verification: the page is re-probed at each size (or explicit "375x812") and every finding is labeled with the viewport that produced it. Use for any responsive/layout criterion.
++                  - "screenshot" = visual escalation, for criteria that genuinely need pixels (visual hierarchy, spacing, color/contrast judgment). Every result ends with a capability line so you know exactly what ran.
++ - list_skills  {}
++ - use_skill    {"name":"skill-name"}
++                  Use the registered skill name or alias only. Saved connections are matched by their host-provided capabilities; never include a connectionId or credential in this call.
++ - use_skill_reference {"skill":"skill-name","path":"references/accessibility.md"}
++                  Skill references are loaded only on demand. Bundled skill scripts never run automatically; propose any script through run_command so normal policy and workspace checks apply.
++ - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge","global":true}
++                  global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
++                  Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
++
++ Completion/escalation:
++ {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
++ {"thought":"...","action":{"type":"complete","summary":"...","risks":["..."],"followUps":["..."]}}
++ {"thought":"...","action":{"type":"complete","summary":"<conversational reply>","chat":true}}  (chat-only close: answering a comment/question without doing work; allowed only when you took no actions this turn)
++ {"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried","prerequisite":{"id":"provider-access","kind":"credential","description":"provider API access","requiredFor":"discover deployment targets","providerHint":"provider-name","capabilities":["servers.read"],"connectionSetup":{"label":"Provider production","baseUrl":"https://api.provider.example","documentationUrl":"https://docs.provider.example/api","validationPath":"/api/v1/targets","validationCapability":"servers.read"},"hints":["PROVIDER_API_KEY"],"riskIfWrong":"high"}}}
++
++ Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
++ {"thought":"...","action":{"type":"ask_user","questions":[{"question":"...","header":"short label","options":["option A","option B"]}]}}
++
++ Reporting a discovered problem (vulnerability, bug, data risk — use the moment you NOTICE it, do not wait for completion):
++ {"thought":"...","action":{"type":"report_finding","claim":"what is wrong and why it matters","kind":"security|bug|performance|data|other","severity":"low|medium|high|critical","location":"path/file.ts:42","reproductionCommand":"the exact command that demonstrates it"}}
++ Every finding is handed to an independent verifier that tries to REPRODUCE it; only reproduced findings are reported as confirmed.
++
++ Parallel independent work (only for tools that do not depend on each other, max 6 — always batch independent reads/searches/commands together instead of one per turn):
++ {"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
++
++ Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once, each returns a summary):
++ {"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"one concrete outcome; name the file/symbol boundary, what to change or verify, what is out of scope, and the expected verification"}]}}
++ IMPORTANT: `agent` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
++ The runtime adds a bounded WORK HANDOFF with ranked files, excerpts, plan targets, and verification targets. It does NOT give a specialist your conversation. Make the task line precise enough to be an ownership contract; never delegate vague work such as "look into it" or "check the repo".
++ For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
++ {"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<registered specialist name>","task":"self-contained non-conflicting task"}]}}
++ RESUMING PAUSED SPECIALISTS: a specialist that stops because of a model/provider/process failure may have either verified durable edits or context only. Never say its files were recovered unless its checkpoint reports "DURABLE CHANGES VERIFIED". To wake the SAME logical specialist job, delegate the SAME agent with the SAME task and its resume field; this reuses its specialist allocation rather than creating a second worker:
++ {"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<same specialist>","task":"<same task>","resume":{"jobId":"<resumableJobId>","note":"finish AC-2 only"}}]}}
++
++ Rules for the protocol:
++ - The streamed prose must describe what you are doing or learning right now, in user language.
++ - BEFORE set_plan on a project with existing code: study the CURRENT CODE context, then read_file/search_files every file you intend to change. Your plan steps must name the concrete files and functions that actually exist in this codebase and describe real edits to them. If the context is not enough to plan confidently, read more first — do not plan from file names or guess at the implementation.
++ - When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: use add_criteria, then append_plan. Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
++ - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
++ - In a complete action, write a plain-language outcome summary in one or two sentences: what the user can now do and the important result. Do not dump tool calls, JSON, headings, or a file list; the host builds the polished delivery report from the ledger.
++ - Evidence ids come from verification results reported to you (ev-...).
++ - Use background agents only for work that cannot conflict with your own edits. Poll agent_status and incorporate completed results before claiming their work is done.
++ - If the same action failed twice, you MUST propose a different action or request_block.
++ - Before a missing credential, connection, resource, configuration, dependency, service, target, or permission becomes BLOCKED, use request_block with its structured prerequisite. For a remote provider, include providerHint and the exact capability ids needed. First use web_fetch on official documentation. If it gives a reliable HTTPS base URL and a read-only validation route, include connectionSetup (label, baseUrl, documentationUrl, validationPath, validationCapability) so the secure form can ask the user for only an API key; omit unknown fields rather than guessing. The orchestrator first tries authorized repository/environment discovery, connected-provider reuse, and safe provisioning. If no matching saved connection exists, it can show the USER a private connection form; never request or repeat a token in chat. It never exposes secret values, never guesses between ambiguous targets, and records every recovery attempt.
++ - An unregistered provider write is not a terminal blocker. Research the official documentation, use saved read operations to discover concrete target IDs, then propose one exact connection_operation. The user must approve every non-read invocation. If the API contract or target remains ambiguous, ask the user a precise question rather than guessing or reporting a provider limitation.
++
++ ARCHITECTURE DECISIONS:
++ - When a task involves an important technology or architecture choice, do NOT blindly pick the most popular framework or your first idea. Evaluate reasonable alternatives against the ACTUAL repository and the task requirements, then record_decision BEFORE implementing.
++ - Separate the kinds of inputs: explicit task requirements, existing repository constraints, recommended technologies, and optional preferences. Weigh them in that order.
++ - If the user explicitly requires a technology (e.g. "use React"), you MUST use it — do not reject it merely because something simpler exists. If nothing is required, you MAY choose a simpler option (e.g. vanilla JS, or the repo's existing architecture) when the evidence supports it.
++ - Keep the decision compact; it is stored in the ledger and shown to you every turn. Record alternatives, repository evidence, why alternatives were rejected, and what would justify reconsidering.
++ - If you later change an architecture decision, record a NEW decision with "supersedes" and a reason — never silently drift from a recorded decision.
++
++ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
++ - Low-complexity tasks: short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.
++ - Medium/high complexity, and anything spanning UI + server: FIRST set_design with BOUNDED sections, THEN set_plan.
++   - frontend section: pages/views, layout & components, each control's user intent and placement, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
++   - backend section: API routes & request/response contracts, schema/DB changes, authn/authz, validation, business logic, integrations, error handling, tests.
++   - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
++ - Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
++ - Plans answer: what are we building, how will it work, which files/surfaces are involved, how is each part verified.
++ - DYNAMIC REPLANNING: when execution reveals the plan is wrong (API differs from assumption, reusable component found, missing dependency, test exposes an architectural problem), revise_step ONLY the affected step with a reason instead of blindly continuing or regenerating everything. Check off toggle_todo as you complete each subtask.
++ - The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.
++ TASK STRATEGY — new feature. Ground yourself before building:
++ 1. Find the integration points: lsp_symbols + read_file on the files you will extend.
++ 2. lsp_definition/lsp_references to see the existing APIs you must match.
++ 3. Implement in small steps; rely on the post-edit LSP diagnostics check.
++ 4. Verify with the real test/typecheck/build commands.
++ If LSP reports "unavailable", use search_files/read_file to find the integration points instead.
++ CONTEXT PACK (ranked, role-labeled, budgeted):
++ Config:
++   - package.json [config] (score 0.16)
++ Chat first
++ First chat reply.
++ ACTIVE FOLLOW-UP WORK PHASE — user request:
++ "now build it"
++ The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. Add only the needed criteria and append only the needed plan steps. Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.
++ TASK: now build it
++
++ STATUS: planning | mode: standard
++
++ EFFORT: medium — standard task complexity (budget: 35 turns, 2 specialists, 30000 bytes)
++
++ RISK: unknown — no specific risk detected (primary: unknown); complexity medium -> standard verification
++
++ ACCEPTANCE CRITERIA:
++   (none set yet — use set_criteria)
++
++ ARCHITECTURE:
++ (none recorded — use record_decision before significant technology/architecture choices)
++
++ PLAN: 0/0 steps · 0/0 todos
++   (none set yet — record set_design for multi-surface work, then set_plan)
++
++ EVIDENCE:
++   (none yet)
++
++ FILES CHANGED: (none)
++
++ RECENT ACTIONS:
++ (no actions yet)
++
++ SYSTEM NOTE: PLANNED EFFORT - medium (standard task complexity). Turn budget 35; 2 specialists; 30000 bytes context; verification standard.
++ RISK ANALYSIS - unknown: no specific risk detected (primary: unknown); complexity medium -> standard verification. Recommended specialists: none recommended - do the work yourself with your own tools. Spend specialists intentionally: only for the risks above, never beyond the budget.
++
++ Respond with exactly one JSON action.
+
+ ❯ tests/server.test.ts:579:26
+    577|     expect(finished.mode).toBe('standard');
+    578|     expect(finished.taskId).toBeTruthy();
+    579|     expect(secondPrompt).toContain('FOLLOW-UP MESSAGE');
+       |                          ^
+    580|     expect(secondPrompt).not.toContain('chat mode — answer directly');
+    581|   }, 30000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/8]⎯
+
+ FAIL  tests/server.test.ts > HermesServer > resumes a standard session as a task and adopts the picker model for legacy sessions
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ tests/server.test.ts:657:40
+    655|     expect(finished.provider).toBe('opencode-zen');
+    656|     expect(finished.model).toBe('hy3-free');
+    657|     expect(sawContinuationInstruction).toBe(true);
+       |                                        ^
+    658|   }, 30000);
+    659| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/8]⎯
+
+ FAIL  tests/specialist-checkpoints.test.ts > durable specialist checkpoint recovery > preserves committed work in a recovery file when SQLite checkpoints fail mid-run
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ tests/specialist-checkpoints.test.ts:220:37
+    218|     expect(resumed?.resumeState).toBe('RESUME_WITH_CHANGES');
+    219|     expect(readFileSync(path.join(dir, 'src', 'api.ts'), 'utf8')).toCo…
+    220|     expect(existsSync(fallbackDir)).toBe(false);
+       |                                     ^
+    221|   }, 30_000);
+    222| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/8]⎯
+
+ FAIL  tests/task-strategy.test.ts > Hermes task-strategy injection > injects the bug-fix strategy at intake when LSP servers exist
+AssertionError: expected 'blocked' to be 'complete' // Object.is equality
+
+Expected: "complete"
+Received: "blocked"
+
+ ❯ tests/task-strategy.test.ts:125:27
+    123|     const { report } = await hermes.run('Fix the crash in the login fl…
+    124| 
+    125|     expect(report.status).toBe('complete');
+       |                           ^
+    126|     const strategy = seen.find((s) => s.includes('TASK STRATEGY'));
+    127|     expect(strategy).toBeDefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/8]⎯
+
+ FAIL  tests/task-strategy.test.ts > Hermes task-strategy injection > does not inject a strategy when no LSP servers are available
+AssertionError: expected 'blocked' to be 'complete' // Object.is equality
+
+Expected: "complete"
+Received: "blocked"
+
+ ❯ tests/task-strategy.test.ts:157:27
+    155|     const { report } = await hermes.run('Fix the crash in the login fl…
+    156| 
+    157|     expect(report.status).toBe('complete');
+       |                           ^
+    158|     expect(seen.some((s) => s.includes('TASK STRATEGY'))).toBe(false);
+    159|   }, 30000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/8]⎯
+
+
+ Test Files  5 failed | 68 passed (73)
+      Tests  8 failed | 879 passed (887)
+   Start at  19:15:44
+   Duration  435.42s (transform 3.00s, setup 306ms, collect 6.74s, tests 427.21s, environment 0ms, prepare 216ms)
+

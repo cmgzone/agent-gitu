@@ -69,6 +69,8 @@ export function conceptFromWord(word: string): { id: string; label: string } {
   const vocab = VOCABULARY[word.toLowerCase()];
   if (vocab) return { id: vocab.id, label: vocab.label };
   const singular = singularize(word);
+  const singularVocab = VOCABULARY[singular];
+  if (singularVocab) return { id: singularVocab.id, label: singularVocab.label };
   const label = singular.replace(/[_-]+/g, ' ');
   return { id: singular.replace(/[_-]+/g, '-'), label: label.charAt(0).toUpperCase() + label.slice(1) };
 }
@@ -96,8 +98,23 @@ export interface TargetHints {
 }
 
 /**
+ * First vocabulary concept embedded in a compound enum value, e.g.
+ * "relational-postgres" → postgresql-database. Naming conventions must not be
+ * able to hide a type the schema explicitly declares.
+ */
+function embeddedVocabularyConcept(value: string): { id: string; label: string } | undefined {
+  for (const token of scanWords(value)) {
+    const vocab = VOCABULARY[token] ?? VOCABULARY[singularize(token)];
+    if (vocab) return vocab;
+  }
+  return undefined;
+}
+
+/**
  * Infer the semantic target of an operation plus its type variants. Confidence
  * ranking: schema enum (strongest) > description > name > weak lexical hint.
+ * Exact enum matches outrank compound enum values; plural forms resolve at the
+ * same tier as their singulars.
  */
 export function inferSemanticTarget(hints: TargetHints): TargetInference {
   const evidence: string[] = [...(hints.evidence ?? [])];
@@ -106,9 +123,14 @@ export function inferSemanticTarget(hints: TargetHints): TargetInference {
   // Enum values are the strongest signal: a schema that literally offers
   // ["postgres","mysql","redis"] is declaring its type variants.
   for (const value of hints.enumValues ?? []) {
-    const concept = VOCABULARY[value.toLowerCase()];
+    const exact = VOCABULARY[value.toLowerCase()];
+    const concept = exact ?? embeddedVocabularyConcept(value);
     if (concept && !variants.some((v) => v.id === concept.id)) {
-      variants.push({ ...concept, confidence: 0.92, evidence: [`schema enum contains "${value}"`] });
+      variants.push({
+        ...concept,
+        confidence: exact ? 0.92 : 0.85,
+        evidence: exact ? [`schema enum contains "${value}"`] : [`schema enum value "${value}" contains vocabulary token`],
+      });
     }
   }
 
@@ -116,7 +138,7 @@ export function inferSemanticTarget(hints: TargetHints): TargetInference {
   let target: SemanticConcept | undefined;
   if (hints.description) {
     for (const word of scanWords(hints.description)) {
-      const vocab = VOCABULARY[word];
+      const vocab = VOCABULARY[word] ?? VOCABULARY[singularize(word)];
       if (vocab) {
         evidence.push(`description mentions "${word}"`);
         target = { ...vocab, confidence: 0.8, evidence: [...evidence] };
@@ -128,7 +150,7 @@ export function inferSemanticTarget(hints: TargetHints): TargetInference {
   // Name / path segment keywords.
   if (!target && hints.name) {
     for (const word of scanWords(hints.name.replace(/([a-z])([A-Z])/g, '$1 $2'))) {
-      const vocab = VOCABULARY[word];
+      const vocab = VOCABULARY[word] ?? VOCABULARY[singularize(word)];
       if (vocab) {
         evidence.push(`name "${hints.name}" contains "${word}"`);
         target = { ...vocab, confidence: 0.68, evidence: [...evidence] };

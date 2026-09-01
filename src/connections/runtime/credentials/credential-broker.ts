@@ -27,6 +27,23 @@ export function scrub(text: string, secrets: string[]): string {
   return out;
 }
 
+/**
+ * Redact known secrets from arbitrary JSON data (tool results, response
+ * payloads) before anything model-visible is built from it. Structure is
+ * preserved; only string values carrying a secret are rewritten.
+ */
+export function deepScrub(value: unknown, secrets: string[]): unknown {
+  if (secrets.length === 0) return value;
+  if (typeof value === 'string') return scrub(value, secrets);
+  if (Array.isArray(value)) return value.map((item) => deepScrub(item, secrets));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) out[key] = deepScrub(item, secrets);
+    return out;
+  }
+  return value;
+}
+
 export interface VaultBrokerOptions {
   /** Override the vault lookup (tests, custom vaults). Default: Gitu key vault. */
   readSecret?: (connectionId: string) => string | undefined;

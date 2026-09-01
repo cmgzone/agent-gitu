@@ -31,6 +31,8 @@ export interface GraphQlType {
   name?: string | null;
   description?: string | null;
   fields?: GraphQlField[] | null;
+  /** Present on ENUM kinds in standard introspection results. */
+  enumValues?: { name?: string | null }[] | null;
 }
 
 export interface GraphQlIntrospection {
@@ -61,18 +63,30 @@ function mutationActionHint(field: string): RawOperation['actionHint'] {
 export function introspectGraphQl(introspection: GraphQlIntrospection): RawOperation[] {
   const types = introspection.types ?? [];
   const byName = new Map(types.map((t) => [t.name ?? '', t]));
-  const operations: RawOperation[] = [];
+
+  /** Protocol-faithful enum extraction: an ENUM-typed argument carries its
+   * declared values so the normalizer can infer type variants. */
+  const parametersFromArgs = (args: GraphQlArg[] | null | undefined): RawParameter[] =>
+    (args ?? []).map((arg) => {
+      const unwrapped = unwrapType(arg.type);
+      let enumValues: string[] | undefined;
+      if (unwrapped.named && unwrapped.type === 'object') {
+        const declared = byName.get(unwrapped.named);
+        if (declared?.kind === 'ENUM' && Array.isArray(declared.enumValues)) {
+          enumValues = declared.enumValues.map((value) => String(value.name ?? '')).filter(Boolean);
+        }
+      }
+      return { externalName: arg.name, location: 'argument', required: unwrapped.required, type: unwrapped.type, description: arg.description ?? undefined, enumValues };
+    });
 
   const rootFields = (rootName: string | null | undefined, isMutation: boolean): GraphQlField[] => {
     if (!rootName) return [];
     return byName.get(rootName)?.fields ?? [];
   };
 
+  const operations: RawOperation[] = [];
   for (const field of rootFields(introspection.queryType?.name, false)) {
-    const parameters: RawParameter[] = (field.args ?? []).map((arg) => {
-      const unwrapped = unwrapType(arg.type);
-      return { externalName: arg.name, location: 'argument', required: unwrapped.required, type: unwrapped.type, description: arg.description ?? undefined };
-    });
+    const parameters = parametersFromArgs(field.args);
     const unwrapped = unwrapType(field.type ?? undefined);
     const targetType = unwrapped.named ? byName.get(unwrapped.named) : undefined;
     const outputs: RawOutput[] = (targetType?.fields ?? []).slice(0, 24).map((f) => ({ externalName: f.name, type: unwrapType(f.type ?? undefined).type, description: f.description ?? undefined }));
@@ -90,10 +104,7 @@ export function introspectGraphQl(introspection: GraphQlIntrospection): RawOpera
   }
 
   for (const field of rootFields(introspection.mutationType?.name, true)) {
-    const parameters: RawParameter[] = (field.args ?? []).map((arg) => {
-      const unwrapped = unwrapType(arg.type);
-      return { externalName: arg.name, location: 'argument', required: unwrapped.required, type: unwrapped.type, description: arg.description ?? undefined };
-    });
+    const parameters = parametersFromArgs(field.args);
     operations.push({
       id: `mutation:${field.name}`,
       label: field.name,

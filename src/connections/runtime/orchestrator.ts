@@ -54,6 +54,14 @@ export interface ExecuteOptions {
 
 const MUTATION_ACTIONS = new Set(['create', 'update', 'delete', 'attach', 'detach', 'execute']);
 
+/**
+ * A destructive capability whose semantic target was inferred below this
+ * confidence is treated as AMBIGUOUS: approving an unclear plan is not
+ * informed consent, so the runtime refuses it even when an approval hook
+ * would say yes. The schema or description must identify the target first.
+ */
+const AMBIGUOUS_DESTRUCTIVE_CONFIDENCE = 0.6;
+
 export interface IntrospectionResult {
   capabilityCount: number;
   fromCache: boolean;
@@ -143,6 +151,20 @@ export class UniversalConnectionRuntime {
     // Policy gate: destructive actions need explicit approval; reversible
     // mutations pass through the approval hook when one is provided.
     if (capability.sideEffect !== 'none') {
+      if (capability.sideEffect === 'destructive' && capability.confidence < AMBIGUOUS_DESTRUCTIVE_CONFIDENCE) {
+        return blocked(
+          {
+            category: 'POLICY_BLOCKED',
+            retryable: false,
+            operationValid: 'yes',
+            suspectedCause: [
+              `semantic target inferred at confidence ${capability.confidence.toFixed(2)}, below the ${AMBIGUOUS_DESTRUCTIVE_CONFIDENCE} threshold for destructive actions`,
+              'approval cannot make an ambiguous plan safe — the schema or description must identify the target first',
+            ],
+          },
+          `capability ${capabilityId} blocked: destructive action on an ambiguously inferred target`,
+        );
+      }
       const approved = options.approval ? await options.approval({ capability, plan: this.resolver.plan(capabilityId, params) }) : capability.sideEffect !== 'destructive';
       if (!approved) return blocked({ category: 'POLICY_BLOCKED', retryable: false, operationValid: 'yes', suspectedCause: ['policy gate declined or withheld approval'] }, `capability ${capabilityId} blocked by policy gate`);
     }

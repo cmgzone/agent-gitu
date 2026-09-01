@@ -242,6 +242,29 @@ function safeErrorStatus(status: number): string {
   return 'The provider rejected the request';
 }
 
+/**
+ * What an invocation failure actually means for a NON-IDEMPOTENT write:
+ * - 'not-run'       — refused before anything left the process; safe to retry.
+ * - 'sent-rejected' — the request REACHED the provider and was refused; verify
+ *                     server state before retrying (partial effects possible).
+ * - 'sent-unknown'  — sent, outcome unconfirmed (transport died mid-flight, or
+ *                     a 2xx whose response could not be read); re-running a
+ *                     write can duplicate resources.
+ * Reporting every failure as "not run" invites duplicate writes and blind
+ * retry loops; the outcome class drives honest agent guidance.
+ */
+export type ConnectionInvocationOutcome = 'not-run' | 'sent-rejected' | 'sent-unknown';
+
+export class ConnectionInvocationError extends Error {
+  readonly outcome: ConnectionInvocationOutcome;
+
+  constructor(outcome: ConnectionInvocationOutcome, message: string) {
+    super(message);
+    this.name = 'ConnectionInvocationError';
+    this.outcome = outcome;
+  }
+}
+
 function redactProviderData(value: unknown, depth = 0): unknown {
   if (depth > 6) return '[truncated]';
   if (typeof value === 'string') {
@@ -495,27 +518,34 @@ export class ConnectionRegistry {
   }
 
   private updateValidation(id: string, status: 'ok' | 'failed'): void {
-    const profiles = this.profiles();
-    const current = profiles.find((profile) => profile.id === id);
-    if (!current) return;
-    current.lastValidatedAt = nowIso();
-    current.lastValidationStatus = status;
-    current.updatedAt = nowIso();
-    this.saveProfiles(profiles);
+    // Telemetry only — a persistence failure here must never corrupt an
+    // invocation result: a successful write reported as failed invites a
+    // duplicate retry.
+    try {
+      const profiles = this.profiles();
+      const current = profiles.find((profile) => profile.id === id);
+      if (!current) return;
+      current.lastValidatedAt = nowIso();
+      current.lastValidationStatus = status;
+      current.updatedAt = nowIso();
+      this.saveProfiles(profiles);
+    } catch {
+      /* best effort */
+    }
   }
 
   async invoke(id: string, operationId: string, body?: unknown): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
-    if (!profile) throw new Error('Saved connection not found.');
+    if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.');
     const operation = profile.operations.find((candidate) => candidate.id === operationId);
-    if (!operation) throw new Error('Connection operation is not registered.');
+    if (!operation) throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.');
     const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
-    if (!token) throw new Error('Saved connection needs its credential added again.');
-    if (body !== undefined && operation.method === 'GET') throw new Error('A read-only GET operation cannot include a request body.');
+    if (!token) throw new ConnectionInvocationError('not-run', 'Saved connection needs its credential added again.');
+    if (body !== undefined && operation.method === 'GET') throw new ConnectionInvocationError('not-run', 'A read-only GET operation cannot include a request body.');
     let encoded: string | undefined;
     if (body !== undefined) {
       encoded = JSON.stringify(normalizeConnectionOperationBody(body));
-      if (encoded.length > 64 * 1024) throw new Error('Connection request body is too large.');
+      if (encoded.length > 64 * 1024) throw new ConnectionInvocationError('not-run', 'Connection request body is too large.');
     }
     let response: Response;
     try {
@@ -528,14 +558,33 @@ export class ConnectionRegistry {
       });
     } catch {
       this.updateValidation(profile.id, 'failed');
-      throw new Error('Connection request could not reach the provider.');
+      // The transport failed mid-flight (network, timeout, redirect refusal):
+      // for a POST the provider may or may not have received the request, so
+      // the honest classification is UNKNOWN, never "not run".
+      throw new ConnectionInvocationError(
+        'sent-unknown',
+        'Connection request did not complete (network, timeout, or redirect). The provider may or may not have received it — verify provider state before any retry.',
+      );
     }
     if (!response.ok) {
       this.updateValidation(profile.id, 'failed');
-      throw new Error(`${safeErrorStatus(response.status)} (HTTP ${response.status}).`);
+      // The request REACHED the provider and was refused. Surface the
+      // provider's own error body (bounded, redacted) so the caller can fix
+      // the request instead of retrying blindly.
+      const detail = await boundedResponseData(response).catch(() => undefined);
+      const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 1_200)}`;
+      throw new ConnectionInvocationError('sent-rejected', `${safeErrorStatus(response.status)} (HTTP ${response.status}).${detailText}`);
     }
     this.updateValidation(profile.id, 'ok');
-    const data = await boundedResponseData(response);
+    let data: unknown;
+    try {
+      data = await boundedResponseData(response);
+    } catch {
+      throw new ConnectionInvocationError(
+        'sent-unknown',
+        `The provider accepted the operation (HTTP ${response.status}) but its response could not be read. Treat the operation as POSSIBLY completed — verify provider state before re-running anything non-idempotent.`,
+      );
+    }
     return { ok: true, status: response.status, message: `${operation.label} succeeded (HTTP ${response.status}).`, ...(data !== undefined ? { data } : {}) };
   }
 

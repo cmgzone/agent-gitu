@@ -225,3 +225,61 @@ describe('ConnectionRegistry', () => {
     expect(outcome.result.output).not.toContain('private-token');
   });
 });
+
+describe('ConnectionRegistry invocation outcomes', () => {
+  function registryWithApprovedWrite(): { registry: ConnectionRegistry; id: string; operationId: string } {
+    home();
+    const registry = new ConnectionRegistry();
+    const saved = registry.save({
+      label: 'Coolify', provider: 'coolify', baseUrl: 'https://coolify.example.test', capabilities: ['servers.read', 'databases.create'], token: 'private-token',
+      operations: [{ id: 'validate', label: 'Validate', capability: 'servers.read', method: 'GET', path: '/api/v1/servers', risk: 'read' }],
+    });
+    const operation = registry.registerApprovedOperation(saved.id, {
+      id: 'create-database', label: 'Create database', capability: 'databases.create', method: 'POST', path: '/api/v1/databases', risk: 'reversible-write',
+    });
+    return { registry, id: saved.id, operationId: operation.id };
+  }
+
+  const readOutcome = (error: unknown): string | undefined => (error as { outcome?: string }).outcome;
+
+  it('surfaces the provider error body and marks a refused request as sent-rejected', async () => {
+    const { registry, id, operationId } = registryWithApprovedWrite();
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: 'type is required' }), { status: 422 })) as typeof fetch;
+    const err = await registry.invoke(id, operationId, { project_name: 'x' }).catch((e: Error) => e);
+    expect(readOutcome(err)).toBe('sent-rejected');
+    expect(err.message).toContain('HTTP 422');
+    expect(err.message).toContain('type is required');
+  });
+
+  it('marks a mid-flight transport failure as sent-unknown, never "not run"', async () => {
+    const { registry, id, operationId } = registryWithApprovedWrite();
+    globalThis.fetch = (async () => {
+      throw new Error('socket reset');
+    }) as typeof fetch;
+    const err = await registry.invoke(id, operationId, { project_name: 'x' }).catch((e: Error) => e);
+    expect(readOutcome(err)).toBe('sent-unknown');
+    expect(err.message).toContain('may or may not have received');
+  });
+
+  it('reports a 2xx write whose response cannot be read as sent-unknown (possibly completed)', async () => {
+    const { registry, id, operationId } = registryWithApprovedWrite();
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new Error('stream died'));
+          },
+        }),
+        { status: 200 },
+      )) as typeof fetch;
+    const err = await registry.invoke(id, operationId, { project_name: 'x' }).catch((e: Error) => e);
+    expect(readOutcome(err)).toBe('sent-unknown');
+    expect(err.message).toContain('POSSIBLY completed');
+  });
+
+  it('keeps true pre-flight refusals as not-run', async () => {
+    const { registry, id } = registryWithApprovedWrite();
+    const err = await registry.invoke(id, 'unknown-operation').catch((e: Error) => e);
+    expect(readOutcome(err)).toBe('not-run');
+  });
+});

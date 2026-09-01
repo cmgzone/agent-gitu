@@ -2918,10 +2918,31 @@ export class Gitu {
                   `PROVIDER OPERATION RESULT: ${result.message}${rendered}\nContinue from the provider response. The operation was individually approved and is not blanket authorization for other writes.`,
                 );
               } catch (error) {
-                this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run`);
-                observe(
-                  `PROVIDER OPERATION NOT RUN: ${(error as Error).message}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`,
-                );
+                const message = (error as Error).message;
+                // Post-grant failures are NOT all "not run": a refused or
+                // mid-flight-unknown request may still have reached the
+                // provider. Re-running a non-idempotent write on a false
+                // "not run" creates duplicate resources, so the outcome class
+                // (set by ConnectionInvocationError) decides the wording.
+                const outcome = (error as { outcome?: 'not-run' | 'sent-rejected' | 'sent-unknown' }).outcome;
+                if (outcome === 'sent-rejected') {
+                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} rejected`);
+                  observe(
+                    `PROVIDER OPERATION REJECTED: ${message}\n` +
+                      'The request REACHED the provider and was refused — the provider message above says what was wrong. Fix the documented operation or body accordingly, and verify provider state before any retry: a refused write may still have had partial effects. Do not loop the identical request.',
+                  );
+                } else if (outcome === 'sent-unknown') {
+                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} outcome unknown`);
+                  observe(
+                    `PROVIDER OPERATION OUTCOME UNKNOWN: ${message}\n` +
+                      'The request was sent but its result could not be confirmed. Check the provider console or a registered read operation before ANY retry — re-running a non-idempotent write can duplicate resources.',
+                  );
+                } else {
+                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run`);
+                  observe(
+                    `PROVIDER OPERATION NOT RUN: ${message}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`,
+                  );
+                }
               }
               break;
             }

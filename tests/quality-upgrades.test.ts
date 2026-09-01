@@ -161,6 +161,25 @@ describe('buildQualityReviewMessages', () => {
     expect(review.diffStat).toContain('reviewed.ts');
     expect(review.diffBody).toContain('export const reviewed = true');
   });
+
+  it('uses a follow-up baseline so quality review excludes completed earlier work', async () => {
+    const dir = makeProject();
+    await gitExec(dir, ['init']);
+    await gitExec(dir, ['add', '-A']);
+    await gitExec(dir, ['-c', 'user.name=quality-test', '-c', 'user.email=quality@test.local', 'commit', '-m', 'initial']);
+    writeFileSync(path.join(dir, 'old-work.ts'), 'export const oldWork = true;\n');
+    await gitExec(dir, ['add', '-A']);
+    await gitExec(dir, ['-c', 'user.name=quality-test', '-c', 'user.email=quality@test.local', 'commit', '-m', 'completed earlier phase']);
+    const followUpBase = (await gitExec(dir, ['rev-parse', 'HEAD'])).trim();
+    writeFileSync(path.join(dir, 'follow-up.ts'), 'export const followUp = true;\n');
+    await gitExec(dir, ['add', '-A']);
+    await gitExec(dir, ['-c', 'user.name=quality-test', '-c', 'user.email=quality@test.local', 'commit', '-m', 'follow-up phase']);
+
+    const review = await collectQualityReviewDiff(dir, followUpBase);
+    expect(review.changedFiles).toEqual(['follow-up.ts']);
+    expect(review.diffStat).toContain('follow-up.ts');
+    expect(review.diffStat).not.toContain('old-work.ts');
+  });
 });
 
 // ---- built-in specialist roster ------------------------------------------

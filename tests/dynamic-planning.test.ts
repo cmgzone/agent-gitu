@@ -41,6 +41,33 @@ function seedPlan(ledger: TaskLedger): void {
 // ── buildStateMessage ────────────────────────────────────────────────────
 
 describe('buildStateMessage - phase-aware rendering', () => {
+  it('shows only new criteria and steps for a follow-up phase', () => {
+    const { ledger } = makeLedger('follow-up-scope');
+    ledger.setCriteria(['original dashboard works']);
+    ledger.setPlan([{ description: 'Build the original dashboard', verification: 'npm test' }]);
+    ledger.updateStep('step-1', { status: 'done' });
+    ledger.ensureInitialWorkPhase('Build the original dashboard');
+    ledger.completeActiveWorkPhase();
+    const phase = ledger.startWorkPhase({ kind: 'follow_up', goal: 'Add a compact export button' });
+    const [criterion] = ledger.appendCriteria(['export button works']);
+    const [step] = ledger.appendPlan([{ description: 'Add export button', verification: 'npm test -- export' }]);
+    ledger.setStatus('planning');
+
+    const text = buildStateMessage(ledger, undefined, undefined, {
+      goal: phase.goal,
+      criterionIds: criterion ? [criterion.id] : [],
+      planStepIds: step ? [step.id] : [],
+      evidenceStartIndex: phase.evidenceStartIndex,
+      files: [],
+    });
+
+    expect(text).toContain('TASK: Add a compact export button');
+    expect(text).toContain('export button works');
+    expect(text).toContain('Add export button');
+    expect(text).not.toContain('original dashboard works');
+    expect(text).not.toContain('Build the original dashboard');
+  });
+
   it('renders PLAN and NEXT exactly once in PLANNING phase, richly', () => {
     const { ledger } = makeLedger('rich');
     seedPlan(ledger);
@@ -130,6 +157,42 @@ describe('buildStateMessage - phase-aware rendering', () => {
     expect(first.length).toBeLessThan(5000);
     expect(first).toContain('(+26 more queued)');
   });
+});
+
+describe('completed-task follow-ups', () => {
+  it('appends new criteria and plan steps without replaying the completed plan', async () => {
+    const { ledger, dir } = makeLedger('resume-completed');
+    ledger.setCriteria(['original dashboard works']);
+    ledger.data.acceptanceCriteria[0]!.satisfied = true;
+    ledger.setPlan([{ description: 'Build the original dashboard', verification: 'npm test' }]);
+    ledger.updateStep('step-1', { status: 'done' });
+    ledger.data.planApproved = true;
+    ledger.setStatus('completed');
+
+    let firstState = '';
+    const llm = new ScriptedMockLlm([
+      (_call, messages) => {
+        firstState = lastUserText(messages);
+        return JSON.stringify({ action: { type: 'set_criteria', criteria: ['export button works'] } });
+      },
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'Add export button', verification: 'npm test -- export' }] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stop after checking the follow-up plan' } }),
+    ]);
+
+    const resumed = new Hermes({
+      cwd: dir,
+      llm,
+      mode: 'fast',
+      resume: { taskId: ledger.data.taskId, message: 'Add a compact export button' },
+    });
+    const { ledger: result } = await resumed.run('Add a compact export button');
+
+    expect(firstState).toContain('TASK: Add a compact export button');
+    expect(firstState).not.toContain('original dashboard works');
+    expect(result.data.acceptanceCriteria.map((criterion) => criterion.text)).toEqual(['original dashboard works', 'export button works']);
+    expect(result.data.plan.map((step) => step.description)).toEqual(['Build the original dashboard', 'Add export button']);
+    expect(result.activeWorkPhase()?.kind).toBe('follow_up');
+  }, 30000);
 });
 
 // ── Design records ───────────────────────────────────────────────────────
@@ -280,9 +343,10 @@ describe('Hermes e2e - dynamic planning', () => {
 
     const llm = new ScriptedMockLlm([
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['dashboard works'] } }),
-      () => JSON.stringify({
-        action: { type: 'set_design', design: { frontend: frontendFull, backend: backendFull } },
-      }),
+      () =>
+        JSON.stringify({
+          action: { type: 'set_design', design: { frontend: frontendFull, backend: backendFull } },
+        }),
       (_n, messages) => {
         // State message at set_plan time: design recorded, plan not yet.
         designState = lastUserText(messages);
@@ -302,9 +366,10 @@ describe('Hermes e2e - dynamic planning', () => {
         if (!executionState) executionState = lastUserText(messages);
         return JSON.stringify({ action: { type: 'toggle_todo', stepId: 'step-1', index: 0, done: true } });
       },
-      () => JSON.stringify({
-        action: { type: 'toggle_todo', stepId: 'step-1', index: 1, done: true },
-      }),
+      () =>
+        JSON.stringify({
+          action: { type: 'toggle_todo', stepId: 'step-1', index: 1, done: true },
+        }),
       (_n, messages) => JSON.stringify({ action: { type: 'toggle_todo', stepId: 'step-1', index: 2, done: true } }),
       // Ask for the FULL plan explicitly - the on-demand rich representation.
       () => JSON.stringify({ action: { type: 'show_plan' } }),

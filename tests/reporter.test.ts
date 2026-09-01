@@ -62,11 +62,64 @@ describe('Reporter', () => {
 
     expect(report.filesChanged).toEqual(['src/app.ts']);
     expect(report.verification).toEqual(['PASS [test] Project test suite']);
-    expect(report.verificationDetails).toMatchObject([
-      { kind: 'test', passed: true, command: 'npm run test -- --coverage', outputExcerpt: 'all tests passed' },
-    ]);
+    expect(report.verificationDetails).toMatchObject([{ kind: 'test', passed: true, command: 'npm run test -- --coverage', outputExcerpt: 'all tests passed' }]);
     expect(report.browserActivity).toEqual({ total: 2, successful: 1, screenshots: 1 });
     expect(new Reporter().render(report)).not.toContain('(npm run test -- --coverage)');
     expect(new Reporter().render(report)).toContain('Visual verification:');
+  });
+
+  it('renders a follow-up as a scoped delivery instead of replaying earlier work', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({
+      repoRoot: dir,
+      goal: 'Build the original dashboard',
+      project: ProjectGuard.detect(dir).lock,
+      mode: 'standard',
+    });
+    ledger.setCriteria(['original dashboard works']);
+    ledger.setPlan([{ description: 'Build dashboard', verification: 'npm test' }]);
+    ledger.recordAction({
+      tool: 'write_file',
+      paramsHash: 'old',
+      paramsSummary: 'write_file src/dashboard.ts',
+      status: 'success',
+      reason: 'build dashboard',
+      expected: 'dashboard exists',
+      durationMs: 1,
+    });
+    new EvidenceEngine().record(ledger.data, { kind: 'test', label: 'old test', command: 'npm test', passed: true, output: 'ok' });
+    const initial = ledger.ensureInitialWorkPhase('Build the original dashboard', 'old-base');
+    ledger.completeActiveWorkPhase();
+
+    const phase = ledger.startWorkPhase({ kind: 'follow_up', goal: 'Add a compact export button', baseRef: 'follow-up-base' });
+    const [criterion] = ledger.appendCriteria(['export button works']);
+    ledger.appendPlan([{ description: 'Add export button', verification: 'npm test -- export' }]);
+    ledger.recordAction({
+      tool: 'write_file',
+      paramsHash: 'new',
+      paramsSummary: 'write_file src/export.ts',
+      status: 'success',
+      reason: 'add the export action',
+      expected: 'button exports data',
+      durationMs: 1,
+    });
+    new EvidenceEngine().record(ledger.data, { kind: 'test', label: 'export test', command: 'npm test -- export', passed: true, output: 'ok' });
+
+    const report = new Reporter().build(ledger, 'complete', { summary: 'Added the export button.', risks: [], followUps: [] }, undefined, {
+      goal: phase.goal,
+      phase: { id: phase.id, kind: phase.kind, startedAt: phase.startedAt },
+      evidenceStartIndex: phase.evidenceStartIndex,
+      actionStartIndex: phase.actionStartIndex,
+      criterionIds: criterion ? [criterion.id] : [],
+      filesChanged: ['src/export.ts'],
+    });
+
+    expect(initial.kind).toBe('initial');
+    expect(report.goal).toBe('Add a compact export button');
+    expect(report.phase?.kind).toBe('follow_up');
+    expect(report.changes).toEqual(['Updated src/export.ts — add the export action']);
+    expect(report.filesChanged).toEqual(['src/export.ts']);
+    expect(report.verification).toEqual(['PASS [test] export test']);
+    expect(new Reporter().render(report)).toContain('Follow-up work (earlier task history preserved)');
   });
 });

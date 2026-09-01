@@ -411,6 +411,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .report-flat .r-sec ul { margin: 0; padding: 0; list-style: none; font-size: 12.5px; line-height: 1.55; }
   .report-flat .r-sec li { position: relative; padding-left: 16px; margin: 3px 0; }
   .report-flat .r-sec li::before { content: '\2022'; position: absolute; left: 4px; color: var(--faint); }
+  .report-flat .r-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
   .report-flat .r-note { margin-top: 7px; font-size: 12px; color: var(--muted); }
   .report-flat .sec { margin-top: 14px; }
   .report-flat .sec h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
@@ -3440,9 +3441,10 @@ export const UI_HTML = String.raw`<!doctype html>
     var icon = ok ? '🎉' : (report.status === 'blocked' ? '⚠️' : '❌');
     var html = '<div class="report-flat" style="margin:12px 0 0;border-top:0;padding-top:0">' +
       '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + (ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : 'Failed')) + '</h2>' +
-      '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span></div>' +
+      '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span>' +
+      (report.phase && report.phase.kind === 'follow_up' ? '<span class="chip" style="margin-left:6px">follow-up</span>' : '') + '</div>' +
       '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || report.summary), 360)) + '</p>' +
-      reportStatusLine(report.status, currentChecks, passed, files.length || parsed.changes.length) +
+      reportStatusLine(report.status, currentChecks, passed, files.length || (report.changes || []).length || parsed.changes.length) +
       browserHighlight(report.browserActivity) +
       ((checks.length || report.qualityMetrics) ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + qualityMetricsHtml(report.qualityMetrics) + '</details>' : '') +
       '</div>';
@@ -3482,30 +3484,25 @@ export const UI_HTML = String.raw`<!doctype html>
     var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
       '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
     html += '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || r.summary), 400)) + '</p>';
-    html += reportStatusLine(r.status, currentChecks, passed, files.length || parsed.changes.length);
+    html += reportStatusLine(r.status, currentChecks, passed, files.length || (r.changes || []).length || parsed.changes.length);
+    if (r.phase && r.phase.kind === 'follow_up') html += '<div class="r-note">Follow-up delivery — earlier task work was preserved and is not repeated here.</div>';
     var findings = (r.findings || []).slice(0, 5);
     if (findings.length) {
       html += '<div class="r-sec"><h4>🔍 What Gitu found</h4><ul>' + findings.map(function (f) {
         return '<li>' + esc(shortText(f.claim, 220)) + '</li>';
       }).join('') + '</ul></div>';
     }
-    // Change list: human-phrased entries parsed out of the summary dump first,
-    // then reportable files the dump did not already mention.
-    var changeItems = parsed.changes.slice(0, 8);
-    var listed = {};
-    changeItems.forEach(function (c) { listed[c.path.toLowerCase()] = 1; });
-    files.forEach(function (f) {
-      var base = f.split('/').pop().toLowerCase();
-      if (listed[f.toLowerCase()] || listed[base]) return;
-      changeItems.push({ action: 'NEW', path: f });
-      listed[f.toLowerCase()] = 1;
-    });
-    if (changeItems.length) {
-      html += '<div class="r-sec"><h4>🛠️ Changes</h4><ul>' + changeItems.map(function (c) {
-        var cLower = String(c.path).toLowerCase();
-        var actual = files.find(function (f) { return f.toLowerCase() === cLower || f.split('/').pop().toLowerCase() === cLower; });
-        return '<li>' + (CHANGE_VERBS[c.action] || 'Changed') + ' ' + projectFileChipHtml(runId, c.path, actual) + '</li>';
-      }).join('') + '</ul>' + (files.length ? '' : '<div class="r-note">🔒 No source code was modified.</div>') + '</div>';
+    // The reporter now emits short, reader-facing delivery lines. Legacy
+    // summaries still fall back to the old parser, so saved runs keep their
+    // useful detail without forcing raw tool output into the report.
+    var deliveryItems = Array.isArray(r.changes) && r.changes.length
+      ? r.changes.slice(0, 8)
+      : parsed.changes.slice(0, 8).map(function (c) { return (CHANGE_VERBS[c.action] || 'Changed') + ' ' + c.path; });
+    if (deliveryItems.length || files.length) {
+      html += '<div class="r-sec"><h4>🛠️ Delivered</h4>' +
+        (deliveryItems.length ? '<ul>' + deliveryItems.map(function (item) { return '<li>' + esc(shortText(item, 260)) + '</li>'; }).join('') + '</ul>' : '') +
+        (files.length ? '<div class="r-files">' + files.slice(0, 12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') + '</div>' : '<div class="r-note">🔒 No source code was modified.</div>') +
+        '</div>';
     } else if (!files.length) {
       html += '<div class="r-note">🔒 No source code was modified.</div>';
     }
@@ -3906,6 +3903,8 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function reportText(r) {
     var lines = [r.status.toUpperCase() + ' — ' + r.summary];
+    if (r.phase && r.phase.kind === 'follow_up') lines.push('Scope: follow-up work (earlier task history preserved)');
+    if (r.changes && r.changes.length) lines.push('', 'Delivered:', '  ' + r.changes.join('\n  '));
     if (r.filesChanged.length) lines.push('Files: ' + r.filesChanged.join(', '));
     if (r.verification.length) lines.push('', 'Verification:', '  ' + r.verification.join('\n  '));
     if (r.remainingRisks.length) lines.push('', 'Risks:', '  ' + r.remainingRisks.join('\n  '));

@@ -1,13 +1,4 @@
-export type TaskStatus =
-  | 'intake'
-  | 'planning'
-  | 'review'
-  | 'executing'
-  | 'verifying'
-  | 'blocked'
-  | 'completed'
-  | 'failed'
-  | 'aborted';
+export type TaskStatus = 'intake' | 'planning' | 'review' | 'executing' | 'verifying' | 'blocked' | 'completed' | 'failed' | 'aborted';
 
 export interface ProjectLock {
   name: string;
@@ -39,13 +30,7 @@ export interface WorkspaceAuthority {
   writableRoot: string;
 }
 
-export type CriterionEvidenceType =
-  | 'command_success'
-  | 'test_success'
-  | 'build_success'
-  | 'lint_success'
-  | 'typecheck_success'
-  | 'any';
+export type CriterionEvidenceType = 'command_success' | 'test_success' | 'build_success' | 'lint_success' | 'typecheck_success' | 'any';
 
 export interface CriterionSpec {
   text: string;
@@ -64,16 +49,7 @@ export interface AcceptanceCriterion {
   satisfied: boolean;
 }
 
-export type EvidenceKind =
-  | 'test'
-  | 'build'
-  | 'lint'
-  | 'typecheck'
-  | 'command'
-  | 'diff'
-  | 'manual'
-  | 'log'
-  | 'file';
+export type EvidenceKind = 'test' | 'build' | 'lint' | 'typecheck' | 'command' | 'diff' | 'manual' | 'log' | 'file';
 
 export interface Evidence {
   id: string;
@@ -96,15 +72,7 @@ export type StepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'blocke
 
 /** Which surface a plan step touches — drives richer frontend/backend design
  *  output and lets the state message summarize progress per area. */
-export type PlanArea =
-  | 'frontend'
-  | 'backend'
-  | 'integration'
-  | 'shared'
-  | 'database'
-  | 'infra'
-  | 'tests'
-  | 'docs';
+export type PlanArea = 'frontend' | 'backend' | 'integration' | 'shared' | 'database' | 'infra' | 'tests' | 'docs';
 
 /** A todo-level breakdown item under a plan step (small, verifiable, cheap). */
 export interface PlanSubtask {
@@ -187,15 +155,7 @@ export type MemoryStatus = 'candidate' | 'verified' | 'durable' | 'superseded' |
 
 /** Where a memory came from. model_inference memories are NOT authoritative:
  *  they stay candidates until verified against source/tests/evidence. */
-export type MemorySourceType =
-  | 'user_statement'
-  | 'source_code'
-  | 'test'
-  | 'browser_evidence'
-  | 'tool_result'
-  | 'model_inference'
-  | 'task_completion'
-  | 'failure_analysis';
+export type MemorySourceType = 'user_statement' | 'source_code' | 'test' | 'browser_evidence' | 'tool_result' | 'model_inference' | 'task_completion' | 'failure_analysis';
 
 /** Visibility scope (review: ONE store, FOUR scopes). Distinct from the
  *  lexical `scope` string: this controls WHO may retrieve the memory.
@@ -261,18 +221,7 @@ export interface MemoryEntry {
   pinned?: boolean;
 }
 
-export type FileRole =
-  | 'entrypoint'
-  | 'implementation'
-  | 'interface'
-  | 'test'
-  | 'config'
-  | 'docs'
-  | 'generated'
-  | 'legacy'
-  | 'dependency'
-  | 'artifact'
-  | 'unknown';
+export type FileRole = 'entrypoint' | 'implementation' | 'interface' | 'test' | 'config' | 'docs' | 'generated' | 'legacy' | 'dependency' | 'artifact' | 'unknown';
 
 export interface FileRef {
   path: string;
@@ -331,15 +280,7 @@ export interface EffortPlan {
 
 /** The dominant risk categories a task can carry. Drives which specialists get
  *  recommended and whether a domain review pass is required before completion. */
-export type RiskDomain =
-  | 'security'
-  | 'payments'
-  | 'data'
-  | 'performance'
-  | 'frontend'
-  | 'refactor'
-  | 'bug'
-  | 'unknown';
+export type RiskDomain = 'security' | 'payments' | 'data' | 'performance' | 'frontend' | 'refactor' | 'bug' | 'unknown';
 
 export interface RecommendedSpecialist {
   /** Exact registered agent name to use in the delegate tool. */
@@ -370,6 +311,9 @@ export interface RiskPlan {
 export interface CompletionReport {
   taskId: string;
   goal: string;
+  /** Present when this report covers a scoped continuation, rather than the
+   * entire historical task. */
+  phase?: { id: string; kind: WorkPhaseKind; startedAt: string };
   status: 'complete' | 'blocked' | 'failed';
   summary: string;
   changes: string[];
@@ -425,11 +369,7 @@ export interface BrowserActivity {
 /** What kind of authority a requirement or constraint carries. Ordering matters:
  *  explicit user requirements outrank repository constraints, which outrank
  *  recommendations, which outrank optional preferences. */
-export type DecisionBasis =
-  | 'explicit-requirement'
-  | 'repository-constraint'
-  | 'recommendation'
-  | 'preference';
+export type DecisionBasis = 'explicit-requirement' | 'repository-constraint' | 'recommendation' | 'preference';
 
 /** A compact, persisted architecture/technology decision. Kept small on
  *  purpose: it is re-emitted in the per-turn state message, so verbosity here
@@ -502,6 +442,28 @@ export interface TokenTelemetrySnapshot {
   filesInContextPack: number;
 }
 
+/** A bounded unit of work inside one durable task. A new user follow-up starts
+ * a new phase instead of resetting the completed task that preceded it. */
+export type WorkPhaseKind = 'initial' | 'follow_up';
+
+export interface WorkPhase {
+  id: string;
+  kind: WorkPhaseKind;
+  /** The exact user-facing scope for this phase. */
+  goal: string;
+  startedAt: string;
+  completedAt?: string;
+  /** Git state before this phase began, used to scope review and reporting. */
+  baseRef?: string;
+  /** Ledger slices belonging to this phase. */
+  evidenceStartIndex: number;
+  actionStartIndex: number;
+  fileStartIndex?: number;
+  /** Criteria and plan steps that belonged to earlier phases. */
+  priorCriterionIds: string[];
+  priorPlanStepIds: string[];
+}
+
 export interface TaskLedgerData {
   schemaVersion: 1;
   taskId: string;
@@ -538,6 +500,10 @@ export interface TaskLedgerData {
   budgetExtensions?: BudgetExtensionRecord[];
   plan: PlanStep[];
   planApproved?: boolean;
+  /** Completed work remains auditable; continuations add a phase instead of
+   * replacing the prior plan, proof, or report. */
+  workPhases?: WorkPhase[];
+  activeWorkPhaseId?: string;
   currentHypothesis?: string;
   actions: ActionRecord[];
   evidence: Evidence[];
@@ -570,15 +536,7 @@ export interface SkillLifecycleEvent {
 }
 
 /** A concrete thing the task cannot safely continue without. */
-export type PrerequisiteKind =
-  | 'credential'
-  | 'connection'
-  | 'resource'
-  | 'configuration'
-  | 'dependency'
-  | 'service'
-  | 'target'
-  | 'permission';
+export type PrerequisiteKind = 'credential' | 'connection' | 'resource' | 'configuration' | 'dependency' | 'service' | 'target' | 'permission';
 
 /** Safe, non-secret connection details Gitu learned from an official provider
  * document or an existing saved profile. They prefill the secure form so the
@@ -626,13 +584,7 @@ export enum RecoveryRisk {
   PRODUCTION_CRITICAL = 'PRODUCTION_CRITICAL',
 }
 
-export type PrerequisiteRecoveryStatus =
-  | 'RESOLVING_PREREQUISITE'
-  | 'RESOURCE_DISCOVERY'
-  | 'RESOURCE_REUSED'
-  | 'RESOURCE_PROVISIONED'
-  | 'RECOVERY_EXHAUSTED'
-  | 'NEEDS_USER';
+export type PrerequisiteRecoveryStatus = 'RESOLVING_PREREQUISITE' | 'RESOURCE_DISCOVERY' | 'RESOURCE_REUSED' | 'RESOURCE_PROVISIONED' | 'RECOVERY_EXHAUSTED' | 'NEEDS_USER';
 
 /** No secret values are stored here: only source, policy and outcome facts. */
 export interface PrerequisiteRecoveryRecord {
@@ -718,11 +670,7 @@ export type RiskTier = 'safe' | 'moderate' | 'dangerous';
  */
 export type FindingKind = 'security' | 'bug' | 'performance' | 'data' | 'other';
 
-export type FindingStatus =
-  | 'unverified'
-  | 'confirmed'
-  | 'false-positive'
-  | 'unverifiable';
+export type FindingStatus = 'unverified' | 'confirmed' | 'false-positive' | 'unverifiable';
 
 export interface TaskFinding {
   id: string;

@@ -36,26 +36,43 @@ import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
-import { normalizeConnectionDocumentationUrl, normalizeConnectionOperation, normalizeConnectionOperationBody, normalizeConnectionSetupHint, type ConnectionOperation, type ConnectionOperationProposal } from '../connections/connections.js';
+import {
+  normalizeConnectionDocumentationUrl,
+  normalizeConnectionOperation,
+  normalizeConnectionOperationBody,
+  normalizeConnectionSetupHint,
+  type ConnectionOperation,
+  type ConnectionOperationProposal,
+} from '../connections/connections.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
 import { validateSpecialistEvidence } from './specialist-evidence.js';
 import { VERIFIER_AGENT, buildVerifierContract, verdictForFinding } from './findings.js';
-import { RecoveryRisk, type CompletionReport, type ContextPack, type CriterionEvidenceType, type CriterionSpec, type DecisionBasis, type EvidenceKind, type MemoryRetrievalContext, type MissingPrerequisite, type PlanArea, type PlanStep, type SpecialistHandoff, type TaskFinding, type TaskLedgerData } from '../types.js';
+import {
+  RecoveryRisk,
+  type CompletionReport,
+  type ContextPack,
+  type CriterionEvidenceType,
+  type CriterionSpec,
+  type DecisionBasis,
+  type EvidenceKind,
+  type MemoryRetrievalContext,
+  type MissingPrerequisite,
+  type PlanArea,
+  type PlanStep,
+  type SpecialistHandoff,
+  type TaskFinding,
+  type TaskLedgerData,
+} from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
 import { analyzeChangeImpact } from './impact.js';
 import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './effort-planner.js';
 import { uiVisualGate, isUiTask } from './ui-gate.js';
 import { buildPlanNote, planRisk } from './risk-planner.js';
-import {
-  auditArchitecture,
-  decisionConflicts,
-  detectExplicitTechnologies,
-  normalizeDecisionDraft,
-} from './architecture.js';
+import { auditArchitecture, decisionConflicts, detectExplicitTechnologies, normalizeDecisionDraft } from './architecture.js';
 import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry } from './telemetry.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
@@ -171,13 +188,18 @@ interface PlanActionStep {
 const PLAN_AREAS: readonly PlanArea[] = ['frontend', 'backend', 'integration', 'shared', 'database', 'infra', 'tests', 'docs'];
 
 function parseArea(value: unknown): PlanArea | undefined {
-  const text = String(value ?? '').trim().toLowerCase();
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase();
   return (PLAN_AREAS as readonly string[]).includes(text) ? (text as PlanArea) : undefined;
 }
 
 function parseSubtasks(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const items = value.map((t) => String(t).trim().slice(0, 140)).filter(Boolean).slice(0, 8);
+  const items = value
+    .map((t) => String(t).trim().slice(0, 140))
+    .filter(Boolean)
+    .slice(0, 8);
   return items.length > 0 ? items : undefined;
 }
 
@@ -211,16 +233,18 @@ export function buildSpecialistHandoff(
   parentPack: ContextPack | undefined,
   parentPlan: PlanStep[],
   delegatedCriteria: (string | CriterionSpec)[] | undefined,
+  budget?: { maxFiles: number; maxExcerptChars: number },
 ): SpecialistHandoff {
-  const criteria = (delegatedCriteria ?? []).map((criterion) =>
-    typeof criterion === 'string' ? { text: criterion } : criterion,
-  );
+  const maxFiles = Math.max(1, Math.min(6, budget?.maxFiles ?? 6));
+  const maxExcerptChars = Math.max(800, Math.min(6_000, budget?.maxExcerptChars ?? 6_000));
+  const maxExcerpts = maxFiles <= 3 ? 1 : maxFiles <= 4 ? 2 : 3;
+  const criteria = (delegatedCriteria ?? []).map((criterion) => (typeof criterion === 'string' ? { text: criterion } : criterion));
   const criterionText = criteria.flatMap((criterion) => [criterion.text, criterion.verification ?? '']).filter(Boolean);
   let scopedPack: ContextPack | undefined;
   try {
     // Keep this local and lexical. Semantic embedding calls can be expensive;
     // the worker needs an immediate starting map, not another broad analysis.
-    scopedPack = context.buildPack(task, { maxFiles: 6, maxBytes: 7_500 }, criterionText);
+    scopedPack = context.buildPack(task, { maxFiles, maxBytes: Math.max(2_000, maxExcerptChars + 1_500) }, criterionText);
   } catch {
     // A handoff is an optimisation, never a reason to reject delegation.
   }
@@ -229,7 +253,7 @@ export function buildSpecialistHandoff(
   const seen = new Set<string>();
   const addFiles = (refs: SpecialistHandoff['startingFiles'], limit: number): void => {
     for (const ref of refs) {
-      if (startingFiles.length >= 6 || seen.has(ref.path)) continue;
+      if (startingFiles.length >= maxFiles || seen.has(ref.path)) continue;
       seen.add(ref.path);
       startingFiles.push(ref);
       if (startingFiles.length >= limit) break;
@@ -237,25 +261,25 @@ export function buildSpecialistHandoff(
   };
   const source = scopedPack ?? parentPack;
   if (source) {
-    addFiles(source.primaryFiles, 3);
-    addFiles(source.testFiles, 4);
-    addFiles(source.relatedFiles, 5);
-    addFiles(source.configFiles, 6);
+    addFiles(source.primaryFiles, Math.min(3, maxFiles));
+    addFiles(source.testFiles, Math.min(4, maxFiles));
+    addFiles(source.relatedFiles, Math.min(5, maxFiles));
+    addFiles(source.configFiles, maxFiles);
   }
   // A very sparse task can have no lexical matches. Fall back to the parent
   // retrieval pack rather than making the specialist inventory the project.
   if (startingFiles.length === 0 && parentPack && parentPack !== source) {
-    addFiles(parentPack.primaryFiles, 3);
-    addFiles(parentPack.testFiles, 4);
-    addFiles(parentPack.relatedFiles, 5);
-    addFiles(parentPack.configFiles, 6);
+    addFiles(parentPack.primaryFiles, Math.min(3, maxFiles));
+    addFiles(parentPack.testFiles, Math.min(4, maxFiles));
+    addFiles(parentPack.relatedFiles, Math.min(5, maxFiles));
+    addFiles(parentPack.configFiles, maxFiles);
   }
 
   const excerpts: SpecialistHandoff['excerpts'] = [];
-  let sourceCharsLeft = 6_000;
+  let sourceCharsLeft = maxExcerptChars;
   for (const file of startingFiles) {
-    if (excerpts.length >= 3 || sourceCharsLeft <= 0) break;
-    const content = context.peekFile(file.path, Math.min(2_400, sourceCharsLeft));
+    if (excerpts.length >= maxExcerpts || sourceCharsLeft <= 0) break;
+    const content = context.peekFile(file.path, Math.min(Math.ceil(maxExcerptChars / maxExcerpts), sourceCharsLeft));
     if (!content) continue;
     excerpts.push({ path: file.path, content });
     sourceCharsLeft -= content.length;
@@ -270,11 +294,11 @@ export function buildSpecialistHandoff(
     .slice(0, 3)
     .map(({ step }) => ({ description: step.description, verification: step.verification }));
   const verificationTargets = [
-    ...criteria.map((criterion) =>
-      criterion.verification ? `${criterion.text} — verify: ${criterion.verification}` : criterion.text,
-    ),
+    ...criteria.map((criterion) => (criterion.verification ? `${criterion.text} — verify: ${criterion.verification}` : criterion.text)),
     ...planSteps.map((step) => step.verification).filter((verification) => verification && !/^n\/?a$|^manual check$/i.test(verification)),
-  ].filter(Boolean).slice(0, 5);
+  ]
+    .filter(Boolean)
+    .slice(0, 5);
 
   return {
     parentGoal: parentGoal.slice(0, 1_200),
@@ -299,14 +323,38 @@ function parseMissingPrerequisite(value: unknown, fallbackRequiredFor: string): 
   const kind = String(raw['kind'] ?? '').trim();
   const description = String(raw['description'] ?? '').trim();
   if (!kinds.has(kind) || !description) return undefined;
-  const id = String(raw['id'] ?? '').trim() || `model-${kind}-${description.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60)}`;
+  const id =
+    String(raw['id'] ?? '').trim() ||
+    `model-${kind}-${description
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 60)}`;
   const requiredFor = String(raw['requiredFor'] ?? fallbackRequiredFor).trim() || fallbackRequiredFor;
-  const hints = Array.isArray(raw['hints']) ? raw['hints'].map(String).map((hint) => hint.trim()).filter(Boolean).slice(0, 8) : undefined;
-  const providerHint = typeof raw['providerHint'] === 'string'
-    ? raw['providerHint'].trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64)
+  const hints = Array.isArray(raw['hints'])
+    ? raw['hints']
+        .map(String)
+        .map((hint) => hint.trim())
+        .filter(Boolean)
+        .slice(0, 8)
     : undefined;
+  const providerHint =
+    typeof raw['providerHint'] === 'string'
+      ? raw['providerHint']
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9-]/g, '')
+          .slice(0, 64)
+      : undefined;
   const capabilities = Array.isArray(raw['capabilities'])
-    ? [...new Set(raw['capabilities'].map(String).map((capability) => capability.trim().toLowerCase()).filter((capability) => /^[a-z][a-z0-9._-]{0,80}$/.test(capability)))].slice(0, 24)
+    ? [
+        ...new Set(
+          raw['capabilities']
+            .map(String)
+            .map((capability) => capability.trim().toLowerCase())
+            .filter((capability) => /^[a-z][a-z0-9._-]{0,80}$/.test(capability)),
+        ),
+      ].slice(0, 24)
     : undefined;
   const connectionSetup = normalizeConnectionSetupHint(raw['connectionSetup']);
   const riskIfWrong = raw['riskIfWrong'];
@@ -360,7 +408,7 @@ type ParsedAction =
   | { type: 'connection_action'; connectionId: string; operationId: string; reason: string }
   | { type: 'connection_operation'; connectionId: string; operation: ConnectionOperation; body?: unknown; documentationUrl?: string; reason: string }
   | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
-    | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
+  | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
   | { type: 'request_block'; reason: string; prerequisite?: MissingPrerequisite }
   | { type: 'ask_user'; questions: AskUserQuestion[] }
   | {
@@ -549,13 +597,26 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       };
     }
     case 'connection_action': {
-      const connectionId = String(action['connectionId'] ?? '').trim().toLowerCase();
-      const operationId = String(action['operationId'] ?? '').trim().toLowerCase();
+      const connectionId = String(action['connectionId'] ?? '')
+        .trim()
+        .toLowerCase();
+      const operationId = String(action['operationId'] ?? '')
+        .trim()
+        .toLowerCase();
       if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId) || !/^[a-z][a-z0-9-]{0,48}$/.test(operationId)) return undefined;
-      return { type, connectionId, operationId, reason: String(action['reason'] ?? '').trim().slice(0, 240) };
+      return {
+        type,
+        connectionId,
+        operationId,
+        reason: String(action['reason'] ?? '')
+          .trim()
+          .slice(0, 240),
+      };
     }
     case 'connection_operation': {
-      const connectionId = String(action['connectionId'] ?? '').trim().toLowerCase();
+      const connectionId = String(action['connectionId'] ?? '')
+        .trim()
+        .toLowerCase();
       if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) return undefined;
       const operation = normalizeConnectionOperation(action['operation']);
       if (!operation) return undefined;
@@ -564,7 +625,10 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       if (rawDocumentationUrl !== undefined && !documentationUrl) return undefined;
       try {
         const body = action['body'] === undefined ? undefined : normalizeConnectionOperationBody(action['body']);
-        const reason = String(action['reason'] ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
+        const reason = String(action['reason'] ?? '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 240);
         if (!reason) return undefined;
         return { type, connectionId, operation, ...(body !== undefined ? { body } : {}), ...(documentationUrl ? { documentationUrl } : {}), reason };
       } catch {
@@ -595,24 +659,17 @@ function parseAction(raw: unknown): ParsedAction | undefined {
           const task = String(t?.['task'] ?? '');
           const rawCrit = t?.['criteria'];
           const criteria = Array.isArray(rawCrit)
-            ? (rawCrit as unknown[])
-                .map((c) =>
-                  typeof c === 'string'
-                    ? c
-                    : typeof c === 'object' && c !== null
-                      ? (c as CriterionSpec)
-                      : String(c),
-                )
-                .slice(0, 10)
+            ? (rawCrit as unknown[]).map((c) => (typeof c === 'string' ? c : typeof c === 'object' && c !== null ? (c as CriterionSpec) : String(c))).slice(0, 10)
             : undefined;
           const rawResume = t?.['resume'];
-          const resume = rawResume && typeof rawResume === 'object' && typeof (rawResume as Record<string, unknown>)['jobId'] === 'string'
-            ? {
-                jobId: String((rawResume as Record<string, unknown>)['jobId']).trim(),
-                note: typeof (rawResume as Record<string, unknown>)['note'] === 'string' ? String((rawResume as Record<string, unknown>)['note']) : undefined,
-                allowSkillRecovery: (rawResume as Record<string, unknown>)['allowSkillRecovery'] === true,
-              }
-            : undefined;
+          const resume =
+            rawResume && typeof rawResume === 'object' && typeof (rawResume as Record<string, unknown>)['jobId'] === 'string'
+              ? {
+                  jobId: String((rawResume as Record<string, unknown>)['jobId']).trim(),
+                  note: typeof (rawResume as Record<string, unknown>)['note'] === 'string' ? String((rawResume as Record<string, unknown>)['note']) : undefined,
+                  allowSkillRecovery: (rawResume as Record<string, unknown>)['allowSkillRecovery'] === true,
+                }
+              : undefined;
           return { agent, task, criteria, ...(resume?.jobId ? { resume } : {}) };
         })
         .filter((t) => t.agent && t.task)
@@ -856,10 +913,7 @@ export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise' 
   const m = /VERDICT:\s*(REVISE|PASS|REJECT)/i.exec(reply);
   if (m && m[1] && /revise|reject/i.test(m[1])) {
     const fbIdx = reply.search(/FEEDBACK:/i);
-    const feedback = (fbIdx >= 0 ? reply.slice(fbIdx + 8) : reply.slice((m.index ?? 0) + m[0].length))
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 600);
+    const feedback = (fbIdx >= 0 ? reply.slice(fbIdx + 8) : reply.slice((m.index ?? 0) + m[0].length)).replace(/\s+/g, ' ').trim().slice(0, 600);
     return { verdict: 'revise', feedback: feedback || 'Reviewer did not provide specifics — re-check the diff against the acceptance criteria.' };
   }
   if (m && m[1] && /pass/i.test(m[1])) return { verdict: 'pass', feedback: '' };
@@ -884,27 +938,31 @@ export interface QualityReviewInput {
 }
 
 /**
- * Review the task's full delta since its first durable checkpoint. Individual
+ * Review a durable task delta. A new follow-up supplies its phase baseline;
+ * initial tasks retain the historical first-checkpoint behavior. Individual
  * steps are checkpointed as they complete, so `git diff HEAD` alone is often
- * empty by the time final quality review runs.
+ * empty by final quality review.
  */
 export async function collectQualityReviewDiff(
   root: string,
-  checkpoints: { ref: string }[],
+  checkpointsOrBaseRef: { ref: string }[] | string | undefined,
   maxBodyChars = 8_000,
-): Promise<{ baseRef?: string; diffStat: string; diffBody?: string }> {
-  const baseRef = checkpoints.find((checkpoint) => checkpoint.ref.trim())?.ref.trim();
+): Promise<{ baseRef?: string; diffStat: string; diffBody?: string; changedFiles: string[] }> {
+  const baseRef =
+    typeof checkpointsOrBaseRef === 'string' ? checkpointsOrBaseRef.trim() || undefined : checkpointsOrBaseRef?.find((checkpoint) => checkpoint.ref.trim())?.ref.trim();
   const args = baseRef ? ['diff', baseRef] : ['diff', 'HEAD'];
   const diffStat = await gitExec(root, [...args, '--stat']).catch(() => '');
   const diffBody = maxBodyChars > 0 ? (await gitExec(root, args).catch(() => '')).slice(0, maxBodyChars) : undefined;
-  return { baseRef, diffStat, ...(diffBody ? { diffBody } : {}) };
+  const changedFiles = (await gitExec(root, [...args, '--name-only']).catch(() => ''))
+    .split(/\r?\n/)
+    .map((file) => file.trim())
+    .filter(Boolean);
+  return { baseRef, diffStat, changedFiles, ...(diffBody ? { diffBody } : {}) };
 }
 
 /** Build the strict-reviewer message list. UI tasks attach the final screenshot for vision judging. */
 export function buildQualityReviewMessages(input: QualityReviewInput): LlmMessage[] {
-  const criteriaText = input.criteria.length
-    ? input.criteria.map((c, i) => `${i + 1}. ${c}`).join('\n')
-    : '(no explicit criteria — judge against the goal)';
+  const criteriaText = input.criteria.length ? input.criteria.map((c, i) => `${i + 1}. ${c}`).join('\n') : '(no explicit criteria — judge against the goal)';
   const text =
     `Review this COMPLETED engineering task with fresh eyes. Be strict about real defects; do not nitpick style.\n\n` +
     `GOAL: ${input.goal}\n\nACCEPTANCE CRITERIA:\n${criteriaText}\n\n` +
@@ -912,12 +970,8 @@ export function buildQualityReviewMessages(input: QualityReviewInput): LlmMessag
     `DIFF SUMMARY:\n${(input.diffStat || '(unavailable)').slice(0, 4000)}\n\n` +
     (input.diffBody ? `FULL DIFF (bounded):\n${input.diffBody}\n\n` : '') +
     `AGENT'S CLAIMED RESULT: ${input.summary.slice(0, 1500)}\n\n` +
-    (input.uiTask && input.frontendDesign
-      ? `FRONTEND DESIGN INTENT:\n${input.frontendDesign.slice(0, 1200)}\n\n`
-      : '') +
-    (input.uiTask && input.browserEvidence
-      ? `FINAL STRUCTURED BROWSER EVIDENCE:\n${input.browserEvidence.slice(0, 6000)}\n\n`
-      : '') +
+    (input.uiTask && input.frontendDesign ? `FRONTEND DESIGN INTENT:\n${input.frontendDesign.slice(0, 1200)}\n\n` : '') +
+    (input.uiTask && input.browserEvidence ? `FINAL STRUCTURED BROWSER EVIDENCE:\n${input.browserEvidence.slice(0, 6000)}\n\n` : '') +
     (input.screenshotUrl
       ? `The final UI state is attached as an image. JUDGE IT: does it look complete, correctly laid out, and consistent with the goal? Broken layouts, placeholder text, overlapping elements, or missing sections are defects.\n\n`
       : '') +
@@ -973,9 +1027,7 @@ function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_RECENT_MES
   const text = message.content;
   const headBudget = Math.floor(maxChars * 0.4);
   const tailBudget = Math.floor(maxChars * 0.35);
-  const diagnostic = /RESULT \[error\]|\b(error|failed|exception|assertion)\b/i.test(text)
-    ? extractFailureDigest(text, Math.floor(maxChars * 0.25))
-    : '';
+  const diagnostic = /RESULT \[error\]|\b(error|failed|exception|assertion)\b/i.test(text) ? extractFailureDigest(text, Math.floor(maxChars * 0.25)) : '';
   const availableTail = Math.max(200, tailBudget - diagnostic.length);
   message.content =
     `${text.slice(0, headBudget)}\n` +
@@ -985,11 +1037,7 @@ function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_RECENT_MES
   return true;
 }
 
-export function compactHistory(
-  messages: LlmMessage[],
-  onEvent?: (text: string) => void,
-  opts: CompactionOptions = {},
-): boolean {
+export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) => void, opts: CompactionOptions = {}): boolean {
   const charBudget = opts.charBudget ?? COMPACT_CHAR_BUDGET;
   const keepRecent = opts.keepRecent ?? COMPACT_KEEP_RECENT;
   const triggerMessages = opts.triggerMessages ?? COMPACT_TRIGGER;
@@ -1106,7 +1154,10 @@ export function braceBalance(text: string): number {
       else if (ch === inStr) inStr = null;
       continue;
     }
-    if (ch === '"' || ch === "'" || ch === '`') { inStr = ch; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inStr = ch;
+      continue;
+    }
     if (ch === '{') bal += 1;
     else if (ch === '}') bal -= 1;
   }
@@ -1134,8 +1185,7 @@ export function classifyBadReply(reply: string | undefined | null): BadReplyKind
   if (idx >= 0) {
     const tail = reply.slice(idx);
     const before = reply.slice(Math.max(0, idx - 32), idx);
-    const nearProtocol =
-      /"(?:thought|action)"\s*:/.test(tail.slice(0, 60)) || /"(?:thought|action)"\s*:\s*$/.test(before);
+    const nearProtocol = /"(?:thought|action)"\s*:/.test(tail.slice(0, 60)) || /"(?:thought|action)"\s*:\s*$/.test(before);
     if (tail.length <= 8000 && nearProtocol && braceBalance(tail) > 0) return 'truncated-json';
   }
   return null;
@@ -1147,8 +1197,7 @@ function logParseFailure(taskId: string, reply: string, reasoning?: string): voi
     const logs = path.join(ensureGituHome().root, 'logs');
     mkdirSync(logs, { recursive: true });
     const entry =
-      `\n=== ${new Date().toISOString()} task=${taskId} ===\n--- reply ---\n${reply.slice(0, 4000)}\n` +
-      (reasoning ? `--- reasoning ---\n${reasoning.slice(0, 4000)}\n` : '');
+      `\n=== ${new Date().toISOString()} task=${taskId} ===\n--- reply ---\n${reply.slice(0, 4000)}\n` + (reasoning ? `--- reasoning ---\n${reasoning.slice(0, 4000)}\n` : '');
     appendFileSync(path.join(logs, 'parse-failures.log'), entry);
   } catch {
     /* diagnostics must never break the run */
@@ -1191,7 +1240,24 @@ function createProseStreamer(emitDelta: (chunk: string) => void): (delta: string
   };
 }
 
-
+/** Follow-ups have their exact new request in the protected follow-up block.
+ * Keep only a small, recent conversational tail for tone/references instead
+ * of paying to replay the whole finished task. */
+function compactFollowUpConversation(history: LlmMessage[] | undefined, maxChars = 6_000): LlmMessage[] | undefined {
+  if (!history?.length) return history;
+  const kept: LlmMessage[] = [];
+  let used = 0;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index]!;
+    const text = typeof message.content === 'string' ? message.content : message.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+    const size = text.length;
+    if (kept.length > 0 && used + size > maxChars) continue;
+    kept.unshift(message);
+    used += size;
+    if (used >= maxChars) break;
+  }
+  return kept;
+}
 
 export class Gitu {
   private readonly config: GituConfig;
@@ -1246,18 +1312,21 @@ export class Gitu {
     // failure history (or when a session is continued). Keep the notice
     // idempotent without suppressing genuinely different patterns.
     const memoryPatternKey = (scope: string, claim: string): string =>
-      `${scope}|${claim.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
-    const announcedMemoryPatterns = new Set(
-      memory.query({ type: 'pattern', scope: guard.lock.name }).map((entry) => memoryPatternKey(entry.scope, entry.claim)),
-    );
+      `${scope}|${claim
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim()}`;
+    const announcedMemoryPatterns = new Set(memory.query({ type: 'pattern', scope: guard.lock.name }).map((entry) => memoryPatternKey(entry.scope, entry.claim)));
     let ledger: TaskLedger;
     let resumeNote: string | undefined;
+    let resumedCompletedScope = false;
     if (this.config.resume) {
       const loaded = TaskLedger.load(guard.lock.repoRoot, this.config.resume.taskId);
       if (!loaded) {
         throw new ProjectGuardError(`Cannot resume: task not found: ${this.config.resume.taskId}`);
       }
       ledger = loaded;
+      resumedCompletedScope = ledger.data.status === 'completed';
       // An explicit mode change from the caller (e.g. the UI's workflow
       // dropdown) switches this continuation to the newly chosen mode instead
       // of being locked into the mode the session was created with.
@@ -1265,7 +1334,8 @@ export class Gitu {
         ledger.data.mode = this.config.mode;
         this.emit(`mode     switched to ${this.config.mode} for this continuation`);
       }
-      ledger.data.planApproved = false;
+      // Keep approved plans from earlier completed work. A new user request
+      // gets its own phase instead of forcing a review of the old task.
       ledger.data.blockers = [];
       ledger.data.completedAt = undefined;
       ledger.data.report = undefined;
@@ -1278,9 +1348,7 @@ export class Gitu {
       // the fingerprint to a stable "clean" hash); here we opt those evidence
       // records out explicitly. Fresh evidence from THIS phase stays strict.
       try {
-        const acceptedIds = new Set(
-          ledger.data.acceptanceCriteria.filter((c) => c.satisfied).flatMap((c) => c.evidenceIds),
-        );
+        const acceptedIds = new Set(ledger.data.acceptanceCriteria.filter((c) => c.satisfied).flatMap((c) => c.evidenceIds));
         let rebased = 0;
         for (const ev of ledger.data.evidence) {
           if (ev.passed && acceptedIds.has(ev.id) && ev.workspaceFingerprint !== undefined) {
@@ -1316,6 +1384,23 @@ export class Gitu {
       ledger.save();
     }
     this.emit(`branch   ${branchInfo.message}`);
+
+    // Follow-up work must not overwrite or re-review a completed task. Phase
+    // boundaries retain the history but give the new request a clean baseline
+    // for planning, context selection, verification, and reporting.
+    const phaseBaseRef = (await gitExec(guard.activeWritableRoot, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
+    let activeWorkPhase = ledger.ensureInitialWorkPhase(ledger.data.goal, phaseBaseRef);
+    if (resumedCompletedScope) {
+      ledger.completeActiveWorkPhase();
+      activeWorkPhase = ledger.startWorkPhase({
+        kind: 'follow_up',
+        goal: resumeNote ?? goal,
+        baseRef: phaseBaseRef,
+      });
+      this.emit(`phase    follow-up started — prior work preserved; new scope: ${activeWorkPhase.goal.slice(0, 160)}`);
+    }
+    const isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
+    const activeGoal = isFollowUpPhase ? activeWorkPhase.goal : goal;
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
@@ -1356,259 +1441,317 @@ export class Gitu {
     const reporter = new Reporter();
 
     try {
-    const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
-    if (userCriteriaProvided) {
-      const raw = this.config.criteria!;
-      const hasSpecs = raw.some((c) => typeof c === 'object');
-      if (hasSpecs) {
-        const specs = EvidenceEngine.normalizeCriteria(raw as (string | CriterionSpec)[]);
-        ledger.setCriteriaFromSpecs(specs);
-      } else {
-        ledger.setCriteria(raw as string[]);
+      const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
+      if (userCriteriaProvided) {
+        const raw = this.config.criteria!;
+        const hasSpecs = raw.some((c) => typeof c === 'object');
+        if (isFollowUpPhase && hasSpecs) {
+          const specs = EvidenceEngine.normalizeCriteria(raw as (string | CriterionSpec)[]);
+          ledger.appendCriteriaFromSpecs(specs);
+        } else if (isFollowUpPhase) {
+          ledger.appendCriteria(raw as string[]);
+        } else if (hasSpecs) {
+          const specs = EvidenceEngine.normalizeCriteria(raw as (string | CriterionSpec)[]);
+          ledger.setCriteriaFromSpecs(specs);
+        } else {
+          ledger.setCriteria(raw as string[]);
+        }
+        this.emit(`criteria ${isFollowUpPhase ? 'added for follow-up' : 'provided by user'} (${raw.length})`);
       }
-      this.emit(`criteria provided by user (${raw.length})`);
-    }
 
-    // Discovery stays metadata-only. Loading a full procedure happens only
-    // after selection/explicit use_skill, never for the whole installed set.
-    const skillContext = {
-      task: goal,
-      repositorySignals: guard.lock.techStack,
-      activeSkills: ledger.data.activeSkills,
-      priorUsedSkills: ledger.data.usedSkills,
-      availableTools: [...KNOWN_TOOL_NAMES, ...(this.config.browser ? ['browser', 'screenshot'] : [])],
-      availableCapabilities: prerequisiteResolver.capabilities().map((capability) => capability.id),
-    };
-    const skillResolution = skills.resolver().resolve(goal + (resumeNote ? ` ${resumeNote}` : ''), skillContext);
-    for (const match of skillResolution.allMatches.slice(0, 12)) {
-      ledger.recordSkillEvent({ stage: 'discovered', name: match.skill.name, version: String(match.skill.version ?? '1'), scope: match.skill.scope, selectionScore: match.score, reason: match.reason });
-    }
-    const activeSkills = new Set(ledger.data.activeSkills ?? []);
-    const identities = new Map<string, SkillIdentity>();
-    const savedIdentities = new Map((ledger.data.selectedSkills ?? []).map((identity) => [identity.name.toLowerCase(), identity]));
-    for (const name of [...activeSkills]) {
-      const current = skills.identity(name);
-      const saved = savedIdentities.get(name.toLowerCase());
-      if (saved && (!current || current.version !== saved.version || current.contentHash !== saved.contentHash || current.scope !== saved.scope)) {
-        activeSkills.delete(name);
-        ledger.recordSkillEvent({ stage: 'rejected', name: saved.name, version: saved.version, contentHash: saved.contentHash, scope: saved.scope, failureCode: current ? 'SKILL_STATE_CHANGED' : 'SKILL_STATE_MISSING', reason: 'Persisted active skill identity no longer matches; it was not silently substituted.' });
-        this.emit(`skill    ${current ? 'SKILL_STATE_CHANGED' : 'SKILL_STATE_MISSING'} — "${saved.name}" requires explicit recovery`);
-      } else if (current) {
-        identities.set(current.name.toLowerCase(), current);
+      // Discovery stays metadata-only. Loading a full procedure happens only
+      // after selection/explicit use_skill, never for the whole installed set.
+      const skillContext = {
+        task: activeGoal,
+        repositorySignals: guard.lock.techStack,
+        activeSkills: ledger.data.activeSkills,
+        priorUsedSkills: ledger.data.usedSkills,
+        availableTools: [...KNOWN_TOOL_NAMES, ...(this.config.browser ? ['browser', 'screenshot'] : [])],
+        availableCapabilities: prerequisiteResolver.capabilities().map((capability) => capability.id),
+      };
+      const skillResolution = skills.resolver().resolve(activeGoal, skillContext);
+      for (const match of skillResolution.allMatches.slice(0, 12)) {
+        ledger.recordSkillEvent({
+          stage: 'discovered',
+          name: match.skill.name,
+          version: String(match.skill.version ?? '1'),
+          scope: match.skill.scope,
+          selectionScore: match.score,
+          reason: match.reason,
+        });
       }
-    }
-    for (const match of skillResolution.highConfidence) {
-      // Built-in investigation strategies remain owned by the existing
-      // LSP-first gate below. The generic selector must not bypass that gate
-      // merely because a bug-fix goal shares their descriptive keywords.
-      if (match.scope === 'builtin' && match.name.startsWith('strategy-')) continue;
-      if (activeSkills.size >= 6 || activeSkills.has(match.name)) continue;
-      const activation = skills.activate(match.name, skillContext);
-      if (!activation.ok || !activation.skill || !activation.identity) {
-        ledger.recordSkillEvent({ stage: 'rejected', name: match.name, version: String(match.version ?? '1'), scope: match.scope, selectionScore: skillResolution.allMatches.find((item) => item.skill.name === match.name)?.score, failureCode: activation.code, reason: activation.message });
-        this.emit(`skill    ${activation.code ?? 'rejected'} — "${match.name}" not activated`);
-        continue;
-      }
-      activeSkills.add(activation.skill.name);
-      identities.set(activation.identity.name.toLowerCase(), activation.identity);
-      ledger.recordSkillEvent({ stage: 'selected', name: activation.identity.name, version: activation.identity.version, contentHash: activation.identity.contentHash, scope: activation.identity.scope, selectionScore: skillResolution.allMatches.find((item) => item.skill.name === match.name)?.score, reason: 'contextual high-confidence selection', loadChars: activation.skill.instructions.length });
-      this.emit(`skill    auto-activated high-confidence skill "${activation.identity.name}" (${activation.skill.description})`);
-    }
-    // The frontend quality bar is a real active skill, not merely a large
-    // system-prompt appendix. This gives it a durable contract every turn and
-    // lets the full procedure be reloaded after compaction.
-    if (isFrontendGoal(goal)) {
-      const frontendSkill = skills.get('frontend-quality-bar');
-      if (frontendSkill && !activeSkills.has(frontendSkill.name) && activeSkills.size < 6) {
-        const activation = skills.activate(frontendSkill.name, skillContext);
-        if (activation.ok && activation.identity) {
-          activeSkills.add(frontendSkill.name);
-          identities.set(activation.identity.name.toLowerCase(), activation.identity);
-          ledger.recordSkillEvent({ stage: 'selected', name: activation.identity.name, version: activation.identity.version, contentHash: activation.identity.contentHash, scope: activation.identity.scope, reason: 'frontend task quality bar', loadChars: activation.skill?.instructions.length });
-          this.emit(`skill    selected frontend-quality-bar for UI task`);
+      const activeSkills = new Set(ledger.data.activeSkills ?? []);
+      const identities = new Map<string, SkillIdentity>();
+      const savedIdentities = new Map((ledger.data.selectedSkills ?? []).map((identity) => [identity.name.toLowerCase(), identity]));
+      for (const name of [...activeSkills]) {
+        const current = skills.identity(name);
+        const saved = savedIdentities.get(name.toLowerCase());
+        if (saved && (!current || current.version !== saved.version || current.contentHash !== saved.contentHash || current.scope !== saved.scope)) {
+          activeSkills.delete(name);
+          ledger.recordSkillEvent({
+            stage: 'rejected',
+            name: saved.name,
+            version: saved.version,
+            contentHash: saved.contentHash,
+            scope: saved.scope,
+            failureCode: current ? 'SKILL_STATE_CHANGED' : 'SKILL_STATE_MISSING',
+            reason: 'Persisted active skill identity no longer matches; it was not silently substituted.',
+          });
+          this.emit(`skill    ${current ? 'SKILL_STATE_CHANGED' : 'SKILL_STATE_MISSING'} — "${saved.name}" requires explicit recovery`);
+        } else if (current) {
+          identities.set(current.name.toLowerCase(), current);
         }
       }
-    }
-    ledger.setSelectedSkills([...identities.values()].filter((identity) => activeSkills.has(identity.name)));
+      for (const match of skillResolution.highConfidence) {
+        // Built-in investigation strategies remain owned by the existing
+        // LSP-first gate below. The generic selector must not bypass that gate
+        // merely because a bug-fix goal shares their descriptive keywords.
+        if (match.scope === 'builtin' && match.name.startsWith('strategy-')) continue;
+        if (activeSkills.size >= 6 || activeSkills.has(match.name)) continue;
+        const activation = skills.activate(match.name, skillContext);
+        if (!activation.ok || !activation.skill || !activation.identity) {
+          ledger.recordSkillEvent({
+            stage: 'rejected',
+            name: match.name,
+            version: String(match.version ?? '1'),
+            scope: match.scope,
+            selectionScore: skillResolution.allMatches.find((item) => item.skill.name === match.name)?.score,
+            failureCode: activation.code,
+            reason: activation.message,
+          });
+          this.emit(`skill    ${activation.code ?? 'rejected'} — "${match.name}" not activated`);
+          continue;
+        }
+        activeSkills.add(activation.skill.name);
+        identities.set(activation.identity.name.toLowerCase(), activation.identity);
+        ledger.recordSkillEvent({
+          stage: 'selected',
+          name: activation.identity.name,
+          version: activation.identity.version,
+          contentHash: activation.identity.contentHash,
+          scope: activation.identity.scope,
+          selectionScore: skillResolution.allMatches.find((item) => item.skill.name === match.name)?.score,
+          reason: 'contextual high-confidence selection',
+          loadChars: activation.skill.instructions.length,
+        });
+        this.emit(`skill    auto-activated high-confidence skill "${activation.identity.name}" (${activation.skill.description})`);
+      }
+      // The frontend quality bar is a real active skill, not merely a large
+      // system-prompt appendix. This gives it a durable contract every turn and
+      // lets the full procedure be reloaded after compaction.
+      if (isFrontendGoal(activeGoal)) {
+        const frontendSkill = skills.get('frontend-quality-bar');
+        if (frontendSkill && !activeSkills.has(frontendSkill.name) && activeSkills.size < 6) {
+          const activation = skills.activate(frontendSkill.name, skillContext);
+          if (activation.ok && activation.identity) {
+            activeSkills.add(frontendSkill.name);
+            identities.set(activation.identity.name.toLowerCase(), activation.identity);
+            ledger.recordSkillEvent({
+              stage: 'selected',
+              name: activation.identity.name,
+              version: activation.identity.version,
+              contentHash: activation.identity.contentHash,
+              scope: activation.identity.scope,
+              reason: 'frontend task quality bar',
+              loadChars: activation.skill?.instructions.length,
+            });
+            this.emit(`skill    selected frontend-quality-bar for UI task`);
+          }
+        }
+      }
+      ledger.setSelectedSkills([...identities.values()].filter((identity) => activeSkills.has(identity.name)));
 
-    const effortPlan = planEffort(goal, {
-      scopeFiles: this.config.scopeFiles,
-      criteriaCount: ledger.data.acceptanceCriteria.length,
-      mode: ledger.data.mode,
-      explicitEffort: this.config.effort,
-      contextWindowTokens: this.config.contextWindowTokens,
-      modelCapability: this.config.modelCapability,
-    });
-    ledger.data.effortPlan = effortPlan;
-    ledger.save();
-
-    const riskPlan = planRisk(goal, {
-      complexity: effortPlan.complexity,
-      specialists: this.config.specialists,
-      maxSpecialists: effortPlan.maxSpecialists,
-    });
-    ledger.data.riskPlan = riskPlan;
-    ledger.save();
-    this.emit(
-      `risk    ${riskPlan.risk} - ${riskPlan.reason}${
-        riskPlan.recommendedSpecialists.length > 0
-          ? ` (relevant specialists: ${riskPlan.recommendedSpecialists.map((r) => r.agent).join(', ')})`
-          : ' (no specialists needed)'
-      }`,
-    );
-    this.emit(`effort   ${effortPlan.complexity} — ${effortPlan.reason} (budget: ${effortPlan.maxTurns} turns, ${effortPlan.maxSpecialists} specialists, ${effortPlan.contextBudget.maxBytes} bytes context${effortPlan.requireReview ? ', review required' : ''})`);
-
-    // Every active skill carries a small contract each turn. Full procedures
-    // are delivered on activation and re-delivered after compaction, so they
-    // stay recoverable without paying their full token cost forever.
-    const deliveredSkillVersions = new Map<string, string>();
-    const activeSkillsSection = (): string | undefined => {
-      const names = ledger.data.activeSkills ?? [];
-      if (names.length === 0) return undefined;
-      // A task with an accidentally broad activation set must not turn skills
-      // into a giant hidden prompt. The complete active set remains durable in
-      // the ledger and can be inspected through list_skills.
-      const visibleNames = names.slice(0, 6);
-      let loadedChars = 0;
-      const parts = visibleNames.map((name) => {
-        const s = skills.get(name);
-        if (!s) return `✓ ${name}`;
-        const version = s.contentHash ?? s.instructions;
-        const contract = renderSkillContract(s);
-        if (deliveredSkillVersions.get(s.name) === version) return contract;
-        deliveredSkillVersions.set(s.name, version);
-        const remaining = Math.max(0, 24_000 - loadedChars);
-        const body = s.instructions.slice(0, remaining);
-        loadedChars += body.length;
-        return `${contract}\n  ACTIVE SKILL ${s.name}@${String(s.version ?? '1')}\n  Full instructions (loaded now):\n  ${body}${body.length < s.instructions.length ? '\n  [instruction body clipped by task skill-context limit]' : ''}`;
+      const effortPlan = planEffort(activeGoal, {
+        scopeFiles: this.config.scopeFiles,
+        criteriaCount: isFollowUpPhase
+          ? ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).length
+          : ledger.data.acceptanceCriteria.length,
+        mode: ledger.data.mode,
+        explicitEffort: this.config.effort,
+        contextWindowTokens: this.config.contextWindowTokens,
+        modelCapability: this.config.modelCapability,
       });
-      if (names.length > visibleNames.length) {
-        parts.push(`… ${names.length - visibleNames.length} additional active skill(s) are recorded in the task ledger; use list_skills to inspect or reload one.`);
-      }
-      return parts.join('\n\n');
-    };
-    const reloadActiveSkillInstructions = (): void => deliveredSkillVersions.clear();
+      ledger.data.effortPlan = effortPlan;
+      ledger.save();
 
-    let contextNote = '';
-    if (ledger.data.mode === 'standard') {
-      const contextBudget = effortPlan.contextBudget;
-      // Incremental SEMANTIC memory consolidation (review semantic phase):
-      // runs ONCE per intake, never per model call. Embeddings find
-      // candidates; only strong duplicates merge; possible duplicates and
-      // possible contradictions are flagged (advisory). Embedding failure
-      // degrades silently to the lexical path.
-      try {
-        memory.setEmbedder(resolveEmbedder());
-        const consolidation = await memory.consolidateSemantic({ scope: guard.lock.name, maxPool: 40 });
-        if (consolidation.merged.length > 0) {
-          this.emit(`memory   semantic consolidation merged ${consolidation.merged.length} duplicate group(s)`);
-        }
-        for (const flag of consolidation.flagged.filter((f) => f.relationship === 'possible-contradiction').slice(0, 3)) {
-          this.emit(`memory   possible contradiction flagged (${flag.relationship}, score ${flag.hybrid.toFixed(2)}) — advisory, needs evaluation`);
-        }
-      } catch {
-        /* consolidation is advisory — memory keeps working without it */
-      }
-      // Retrieval sees the criteria and their pinned verification commands,
-      // not just the one-line goal — they name concrete APIs/files the goal
-      // wording often omits.
-      const retrievalTexts = [
-        ...ledger.data.acceptanceCriteria.map((c) => c.text),
-        ...ledger.data.acceptanceCriteria.map((c) => c.verification ?? ''),
-      ].filter(Boolean);
-      // Hybrid retrieval: lexical/IDF + embedding cosine when an embeddings
-      // endpoint is configured; silent fallback otherwise.
-      const { pack, semantic } = await context.buildPackHybrid(goal, contextBudget, retrievalTexts, resolveEmbedder());
-      if (semantic) this.emit('context  semantic retrieval active (embeddings + lexical blend)');
-      ledger.data.contextPack = pack;
-      ledger.data.contextPack = pack;
-      contextNote = `CONTEXT PACK (ranked, role-labeled, budgeted):\n${context.renderPackWithContent(pack)}`;
+      const riskPlan = planRisk(activeGoal, {
+        complexity: effortPlan.complexity,
+        specialists: this.config.specialists,
+        maxSpecialists: effortPlan.maxSpecialists,
+      });
+      ledger.data.riskPlan = riskPlan;
+      ledger.save();
       this.emit(
-        `context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected ` +
-          `(${this.config.contextWindowTokens ? `${this.config.contextWindowTokens} token model window; ` : ''}${pack.budget.maxBytes} character source budget)`,
+        `risk    ${riskPlan.risk} - ${riskPlan.reason}${
+          riskPlan.recommendedSpecialists.length > 0 ? ` (relevant specialists: ${riskPlan.recommendedSpecialists.map((r) => r.agent).join(', ')})` : ' (no specialists needed)'
+        }`,
       );
-    }
+      this.emit(
+        `effort   ${effortPlan.complexity} — ${effortPlan.reason} (budget: ${effortPlan.maxTurns} turns, ${effortPlan.maxSpecialists} specialists, ${effortPlan.contextBudget.maxBytes} bytes context${effortPlan.requireReview ? ', review required' : ''})`,
+      );
 
-    // Ranked long-term memory retrieval (review Phase 8/9): budgeted,
-    // verification-preferring candidates for THIS goal. Injection happens
-    // exclusively through buildModelContext — retrieval never touches the
-    // model request directly.
-    const memoryEntries = memory.retrieveForContext(`${goal} ${resumeNote ?? ''}`.trim(), guard.lock.name, {
-      limit: 8,
-      maxChars: 2_000,
-      ctx: this.config.memoryRetrieval,
-    });
-    if (memoryEntries.length > 0) {
-      const byScope: Record<string, number> = {};
-      for (const m of memoryEntries) {
-        const v = m.visibility ?? 'project';
-        byScope[v] = (byScope[v] ?? 0) + 1;
-      }
-      this.emit(`memory   retrieved ${memoryEntries.length} scoped memory(ies) — ${Object.entries(byScope).map(([k, n]) => `${k}=${n}`).join(' ')}`);
-    }
-    const memorySection = (() => {
-      if (memoryEntries.length === 0) return undefined;
-      const isFailureLesson = (m: typeof memoryEntries[number]) => m.type === 'failure' || (m.type === 'pattern' && /repeated failure/i.test(m.claim));
-      const background = memoryEntries.filter((m) => !isFailureLesson(m));
-      const lessons = memoryEntries.filter(isFailureLesson);
-      const lines: string[] = [];
-      if (background.length) {
-        lines.push('RELEVANT MEMORY (ranked; verified knowledge first — superseded entries excluded):');
-        lines.push(...background.map((m) => `- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`));
-      }
-      if (lessons.length) {
-        lines.push('PRE-FLIGHT FAILURE LESSONS (before repeating any action listed below, verify the known failure cause has been resolved; if resolved you may safely retry):');
-        for (const m of lessons) {
-          lines.push(`- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`);
-          lines.push('  → Confirm the failure condition above is fixed BEFORE repeating the action; otherwise choose a different verification path.');
+      // Every active skill carries a small contract each turn. Full procedures
+      // are delivered on activation and re-delivered after compaction, so they
+      // stay recoverable without paying their full token cost forever.
+      const deliveredSkillVersions = new Map<string, string>();
+      const activeSkillsSection = (): string | undefined => {
+        const names = ledger.data.activeSkills ?? [];
+        if (names.length === 0) return undefined;
+        // A task with an accidentally broad activation set must not turn skills
+        // into a giant hidden prompt. The complete active set remains durable in
+        // the ledger and can be inspected through list_skills.
+        const visibleNames = names.slice(0, isFollowUpPhase ? 3 : 6);
+        let loadedChars = 0;
+        const parts = visibleNames.map((name) => {
+          const s = skills.get(name);
+          if (!s) return `✓ ${name}`;
+          const version = s.contentHash ?? s.instructions;
+          const contract = renderSkillContract(s);
+          if (deliveredSkillVersions.get(s.name) === version) return contract;
+          deliveredSkillVersions.set(s.name, version);
+          const remaining = Math.max(0, (isFollowUpPhase ? 6_000 : 24_000) - loadedChars);
+          const body = s.instructions.slice(0, remaining);
+          loadedChars += body.length;
+          return `${contract}\n  ACTIVE SKILL ${s.name}@${String(s.version ?? '1')}\n  Full instructions (loaded now):\n  ${body}${body.length < s.instructions.length ? '\n  [instruction body clipped by task skill-context limit]' : ''}`;
+        });
+        if (names.length > visibleNames.length) {
+          parts.push(`… ${names.length - visibleNames.length} additional active skill(s) are recorded in the task ledger; use list_skills to inspect or reload one.`);
         }
-      }
-      return lines.join('\n');
-    })();
-    // Tier 1 protected/active memory (review two-tier model): durable guidance
-    // — decisions, constraints, conventions, pinned + critical failure lessons
-    // — surfaced regardless of lexical relevance to the goal, and re-injected
-    // after every compaction so it never silently disappears under pressure.
-    const protectedSection = memory.renderProtected(guard.lock.name, 12, this.config.memoryRetrieval);
+        return parts.join('\n\n');
+      };
+      const reloadActiveSkillInstructions = (): void => deliveredSkillVersions.clear();
 
-    const systemPrompt = buildSystemPrompt(guard, memory, {
-          scopeFiles: this.config.scopeFiles,
-          extraConstraints: this.config.extraConstraints,
+      let contextNote = '';
+      if (ledger.data.mode === 'standard') {
+        // A completed task already has its durable ledger and plan. Retrieve
+        // only enough source to address the new request instead of re-sending a
+        // broad project pack to every follow-up turn.
+        const contextBudget = isFollowUpPhase
+          ? {
+              maxFiles: Math.min(4, effortPlan.contextBudget.maxFiles),
+              maxBytes: Math.min(12_000, effortPlan.contextBudget.maxBytes),
+            }
+          : effortPlan.contextBudget;
+        // Incremental SEMANTIC memory consolidation (review semantic phase):
+        // runs ONCE per intake, never per model call. Embeddings find
+        // candidates; only strong duplicates merge; possible duplicates and
+        // possible contradictions are flagged (advisory). Embedding failure
+        // degrades silently to the lexical path.
+        try {
+          memory.setEmbedder(resolveEmbedder());
+          const consolidation = await memory.consolidateSemantic({ scope: guard.lock.name, maxPool: 40 });
+          if (consolidation.merged.length > 0) {
+            this.emit(`memory   semantic consolidation merged ${consolidation.merged.length} duplicate group(s)`);
+          }
+          for (const flag of consolidation.flagged.filter((f) => f.relationship === 'possible-contradiction').slice(0, 3)) {
+            this.emit(`memory   possible contradiction flagged (${flag.relationship}, score ${flag.hybrid.toFixed(2)}) — advisory, needs evaluation`);
+          }
+        } catch {
+          /* consolidation is advisory — memory keeps working without it */
+        }
+        // Retrieval sees the criteria and their pinned verification commands,
+        // not just the one-line goal — they name concrete APIs/files the goal
+        // wording often omits.
+        const retrievalTexts = [...ledger.data.acceptanceCriteria.map((c) => c.text), ...ledger.data.acceptanceCriteria.map((c) => c.verification ?? '')].filter(Boolean);
+        // Hybrid retrieval: lexical/IDF + embedding cosine when an embeddings
+        // endpoint is configured; silent fallback otherwise.
+        const { pack, semantic } = await context.buildPackHybrid(activeGoal, contextBudget, retrievalTexts, resolveEmbedder());
+        if (semantic) this.emit('context  semantic retrieval active (embeddings + lexical blend)');
+        ledger.data.contextPack = pack;
+        ledger.data.contextPack = pack;
+        contextNote = `CONTEXT PACK (ranked, role-labeled, budgeted):\n${context.renderPackWithContent(pack)}`;
+        this.emit(
+          `context  ${pack.primaryFiles.length} primary, ${pack.testFiles.length} test files selected ` +
+            `(${this.config.contextWindowTokens ? `${this.config.contextWindowTokens} token model window; ` : ''}${pack.budget.maxBytes} character source budget)`,
+        );
+      }
+
+      // Ranked long-term memory retrieval (review Phase 8/9): budgeted,
+      // verification-preferring candidates for THIS goal. Injection happens
+      // exclusively through buildModelContext — retrieval never touches the
+      // model request directly.
+      const memoryEntries = memory.retrieveForContext(activeGoal, guard.lock.name, {
+        limit: isFollowUpPhase ? 4 : 8,
+        maxChars: isFollowUpPhase ? 1_000 : 2_000,
+        ctx: this.config.memoryRetrieval,
+      });
+      if (memoryEntries.length > 0) {
+        const byScope: Record<string, number> = {};
+        for (const m of memoryEntries) {
+          const v = m.visibility ?? 'project';
+          byScope[v] = (byScope[v] ?? 0) + 1;
+        }
+        this.emit(
+          `memory   retrieved ${memoryEntries.length} scoped memory(ies) — ${Object.entries(byScope)
+            .map(([k, n]) => `${k}=${n}`)
+            .join(' ')}`,
+        );
+      }
+      const memorySection = (() => {
+        if (memoryEntries.length === 0) return undefined;
+        const isFailureLesson = (m: (typeof memoryEntries)[number]) => m.type === 'failure' || (m.type === 'pattern' && /repeated failure/i.test(m.claim));
+        const background = memoryEntries.filter((m) => !isFailureLesson(m));
+        const lessons = memoryEntries.filter(isFailureLesson);
+        const lines: string[] = [];
+        if (background.length) {
+          lines.push('RELEVANT MEMORY (ranked; verified knowledge first — superseded entries excluded):');
+          lines.push(...background.map((m) => `- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`));
+        }
+        if (lessons.length) {
+          lines.push('PRE-FLIGHT FAILURE LESSONS (before repeating any action listed below, verify the known failure cause has been resolved; if resolved you may safely retry):');
+          for (const m of lessons) {
+            lines.push(`- [${m.type}${m.status ? `/${m.status}` : ''}] ${m.claim}`);
+            lines.push('  → Confirm the failure condition above is fixed BEFORE repeating the action; otherwise choose a different verification path.');
+          }
+        }
+        return lines.join('\n');
+      })();
+      // Tier 1 protected/active memory (review two-tier model): durable guidance
+      // — decisions, constraints, conventions, pinned + critical failure lessons
+      // — surfaced regardless of lexical relevance to the goal, and re-injected
+      // after every compaction so it never silently disappears under pressure.
+      const protectedSection = memory.renderProtected(guard.lock.name, 12, this.config.memoryRetrieval);
+
+      const systemPrompt = buildSystemPrompt(guard, memory, {
+        scopeFiles: this.config.scopeFiles,
+        extraConstraints: this.config.extraConstraints,
         // Ranked memory retrieval: memories relevant to THIS goal surface
         // first (relevance + scope + confidence + recency + usage).
         memorySection,
         protectedSection,
-          skillsSection: skills.renderForPrompt(ledger.data.activeSkills),
-          agentsSection: this.config.agentsSection,
-          mcpSection: this.config.mcp
-            ? this.config.mcp.servers().map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') || undefined
-            : undefined,
-          lspSection: lsp.hasServers()
-            ? lsp
-                .status()
-                .filter((s) => s.configured)
-                .map((s) => `- ${s.server} server → lsp tools for: ${s.languageIds.join(', ')}`)
-                .join('\n')
-            : undefined,
-          vision: this.config.supportsImages ?? false,
-          hasBrowser: this.config.browser ? this.config.browser.available() : false,
-          autoLearn: this.config.autoLearn ?? true,
-          uiTask: isFrontendGoal(goal),
-          // Keep only the quality bar's non-negotiable contract in the stable
-          // system prefix. Its full procedure is supplied by the active-skill
-          // state block on activation and after every compaction.
-          uiQualityContract: skills.get('frontend-quality-bar')
-            ? renderSkillContract(skills.get('frontend-quality-bar')!, 440)
-            : undefined,
+        skillsSection: skills.renderForPrompt(ledger.data.activeSkills),
+        agentsSection: this.config.agentsSection,
+        mcpSection: this.config.mcp
+          ? this.config.mcp
+              .servers()
+              .map((s) => `- mcp server "${s.name}" (${s.command})`)
+              .join('\n') || undefined
+          : undefined,
+        lspSection: lsp.hasServers()
+          ? lsp
+              .status()
+              .filter((s) => s.configured)
+              .map((s) => `- ${s.server} server → lsp tools for: ${s.languageIds.join(', ')}`)
+              .join('\n')
+          : undefined,
+        vision: this.config.supportsImages ?? false,
+        hasBrowser: this.config.browser ? this.config.browser.available() : false,
+        autoLearn: this.config.autoLearn ?? true,
+        uiTask: isFrontendGoal(activeGoal),
+        // Keep only the quality bar's non-negotiable contract in the stable
+        // system prefix. Its full procedure is supplied by the active-skill
+        // state block on activation and after every compaction.
+        uiQualityContract: skills.get('frontend-quality-bar') ? renderSkillContract(skills.get('frontend-quality-bar')!, 440) : undefined,
       });
       // Strategy CONTENT comes from the skill layer (shadowable); the
       // classify-and-inject mechanism stays here in core.
-      const strategySection = ledger.data.mode !== 'chat' ? buildTaskStrategySection(resumeNote ?? goal, lsp.hasServers(), skills) : undefined;
+      const strategySection = ledger.data.mode !== 'chat' ? buildTaskStrategySection(activeGoal, lsp.hasServers(), skills) : undefined;
       const followUpSection =
         resumeNote && ledger.data.mode !== 'chat'
-          ? `FOLLOW-UP MESSAGE in an ongoing session. The user wrote:\n"${resumeNote}"\n` +
-            `If the user asks to continue, resume, finish, proceed, or keep working — or the existing task is unfinished — resume the existing task immediately. Review the ledger and take the next useful action; do not return a chat-only completion. ` +
-            `If they clearly request a change, update the acceptance criteria/plan as needed and execute it, reusing what was already built. ` +
+          ? `ACTIVE ${isFollowUpPhase ? 'FOLLOW-UP WORK PHASE' : 'CONTINUATION'} — user request:\n"${activeGoal}"\n` +
+            (isFollowUpPhase
+              ? `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. Add only the needed criteria and append only the needed plan steps. `
+              : `The task is unfinished. Continue from the durable ledger and take the next useful action; do not restart discovery or planning unless the evidence requires it. `) +
             `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
           : undefined;
       // Unified context authority: EVERYTHING that reaches the model before
@@ -1618,16 +1761,17 @@ export class Gitu {
       // Static startup context is bounded by the task effort. The model still
       // gets a focused source pack, while lower-effort work no longer inherits
       // the old 60K-character default unnecessarily.
-      const modelContextBudget = this.config.contextBudget ?? {
+      const defaultModelContextBudget = this.config.contextBudget ?? {
         maxChars: Math.max(28_000, Math.min(48_000, effortPlan.contextBudget.maxBytes + 12_000)),
       };
+      const modelContextBudget = isFollowUpPhase ? { maxChars: Math.min(26_000, defaultModelContextBudget.maxChars ?? 26_000) } : defaultModelContextBudget;
       const assembled = buildModelContext({
         system: systemPrompt,
         strategy: strategySection,
         memory: memorySection,
         protectedMemory: protectedSection,
         contextPack: contextNote || undefined,
-        conversationHistory: this.config.conversationHistory,
+        conversationHistory: isFollowUpPhase ? compactFollowUpConversation(this.config.conversationHistory) : this.config.conversationHistory,
         images: this.config.images,
         attachments: this.config.attachments,
         supportsImages: this.config.supportsImages,
@@ -1642,1659 +1786,1762 @@ export class Gitu {
       if (assembled.imagesSkipped) this.emit('images   skipped — model does not support images');
       const messages = assembled.messages;
 
-    if (
-      resumeNote &&
-      ledger.data.mode !== 'chat' &&
-      ledger.data.acceptanceCriteria.length > 0 &&
-      ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied)
-    ) {
-      messages.push({
-        role: 'user',
-        content:
-          'The earlier scope is fully satisfied. If this follow-up asks for different work, keep this task and use add_criteria followed by append_plan. ' +
-          'Do not erase prior criteria/evidence and do not request_block just because the earlier scope is complete.',
+      if (resumeNote && ledger.data.mode !== 'chat' && ledger.data.acceptanceCriteria.length > 0 && ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied)) {
+        messages.push({
+          role: 'user',
+          content:
+            'The earlier scope is complete and preserved. Work only on the active follow-up request: add only new criteria, append only new plan steps, and verify only the new delta unless it changes prior behavior.',
+        });
+      }
+
+      if (ledger.data.mode === 'chat') {
+        ledger.setStatus('executing');
+        this.emit('think  composing answer');
+        messages.push({
+          role: 'user',
+          content: `User request (chat mode — answer directly and helpfully in plain text only; no tools, no JSON): ${activeGoal}`,
+        });
+        const reply = await llm.completeStream(
+          messages,
+          { effort: effortPlan.llmEffort ?? this.config.effort },
+          createProseStreamer((chunk) => this.emit(`tdelta ${chunk}`)),
+        );
+        const parsedReply = parseReplyAction(reply);
+        const cutAt = proseCutIndex(reply);
+        const prose = (parsedReply && cutAt >= 0 ? reply.slice(0, cutAt) : reply).trim();
+        if (prose) this.emit(`say ${prose}`);
+        ledger.setStatus('completed');
+        ledger.completeActiveWorkPhase();
+        const report = reporter.build(
+          ledger,
+          'complete',
+          {
+            summary: prose.slice(0, 600) || 'Answered.',
+            risks: [],
+            followUps: [],
+          },
+          await getWorkspaceFingerprint(guard.activeWritableRoot),
+          {
+            goal: activeGoal,
+            phase: { id: activeWorkPhase.id, kind: activeWorkPhase.kind, startedAt: activeWorkPhase.startedAt },
+            evidenceStartIndex: activeWorkPhase.evidenceStartIndex,
+            actionStartIndex: activeWorkPhase.actionStartIndex,
+            criterionIds: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).map((criterion) => criterion.id),
+          },
+        );
+        ledger.data.report = report;
+        ledger.save();
+        this.emit('done     completed — chat answer delivered');
+        return { ledger, report };
+      }
+
+      ledger.setStatus('planning');
+
+      // Token telemetry: attribute every call's input to its source so token
+      // spend can be diagnosed. Everything pushed so far (system prompt,
+      // strategy, context pack, resumed conversation, user images) forms the
+      // byte-stable prefix that providers can prefix-cache across turns.
+      const telemetry = new RunTelemetry();
+      let prefixEnd = messages.length;
+      if (ledger.data.contextPack) {
+        telemetry.filesInContextPack =
+          ledger.data.contextPack.primaryFiles.length +
+          ledger.data.contextPack.testFiles.length +
+          ledger.data.contextPack.relatedFiles.length +
+          ledger.data.contextPack.configFiles.length;
+      }
+      // Explicit technology requirements bound this whole run: decisions and
+      // their audits are checked against them.
+      const explicitTech = detectExplicitTechnologies([activeGoal, ...ledger.data.acceptanceCriteria.map((c) => c.text), ...ledger.data.constraints]);
+
+      // This counter belongs only to the main execution lane. Specialists have
+      // their own trackers, so a weak reviewer cannot trip the parent breaker.
+      let invalidStreak = 0;
+      let loopBlocks = 0;
+      const connectionActionAttempts = new Map<string, number>();
+      const connectionOperationAttempts = new Map<string, number>();
+      let followUpCriteriaAdded = false;
+      let followUpPlanReviewHandled = false;
+      let architectureAuditRejections = 0;
+      let planningNudged = false;
+      const malformed = new MalformedCallTracker({ remindAt: 1, escalateAt: 2, haltAt: 3 });
+      let actionLaneHalted = false;
+      let logicalRequestSequence = 0;
+      let actionProtocolMode: 'native' | 'structured_text' | 'text' =
+        this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
+      const actionsAtStart = ledger.data.actions.length;
+      let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
+      let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
+
+      // Adaptive effort enforcement (P1 — effort planner): the plan sets a turn
+      // budget and a specialist budget. The turn budget is DYNAMIC: it extends
+      // itself whenever the run keeps producing verified progress (evidence,
+      // satisfied criteria, completed steps, changed files) and only stalls when
+      // turns are being spent without any of those moving.
+      const effortMaxTurns = effortPlan?.maxTurns ?? Number.MAX_SAFE_INTEGER;
+      let effortMaxSpecialists = effortPlan?.maxSpecialists ?? Number.MAX_SAFE_INTEGER;
+      const BUDGET_EXTENSIONS_MAX = 4;
+      const budgetExtensionTurns = Number.isFinite(effortMaxTurns) ? Math.max(10, Math.ceil(effortMaxTurns / 2)) : 0;
+      let budgetCap = effortMaxTurns;
+      let budgetExtensions = 0;
+      const progressSnapshot = (): { evidence: number; satisfied: number; files: number; todos: number; browses: number; distinctOk: number } => ({
+        evidence: ledger.data.evidence.length,
+        satisfied: ledger.data.acceptanceCriteria.filter((c) => c.satisfied).length,
+        files: ledger.data.filesChanged?.length ?? 0,
+        // Checked todos are real execution progress — they let fine-grained
+        // breakdowns keep the dynamic budget alive without new evidence records.
+        todos: ledger.data.plan.reduce((n, s) => n + (s.subtasks?.filter((t) => t.done).length ?? 0), 0),
+        // Visual-verification turns are real progress on UI work: screenshot /
+        // click-through inspection produces no new commands or diffs, but a run
+        // that is actively LOOKING at what it built must not be killed mid-QA.
+        browses: ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success').length,
+        // Distinct successful actions = genuinely new work (a repeated identical
+        // call does not grow the set). Diagnosis/reading turns used to register
+        // ZERO progress and stalled runs that were actively making new attempts.
+        distinctOk: new Set(ledger.data.actions.filter((a) => a.status === 'success').map((a) => a.paramsHash)).size,
       });
-    }
-
-    if (ledger.data.mode === 'chat') {
-      ledger.setStatus('executing');
-      this.emit('think  composing answer');
-      messages.push({
-        role: 'user',
-        content: `User request (chat mode — answer directly and helpfully in plain text only; no tools, no JSON): ${resumeNote ?? goal}`,
+      let lastProgress = progressSnapshot();
+      let turns = 0;
+      let budgetWarned = false;
+      let delegateSlotsUsed = 0;
+      let visualGateRejections = 0;
+      let qualityReviewRejections = 0;
+      // A strict-risk task (security, payments, or data integrity) must not
+      // silently complete after the reviewer has exhausted its automatic repair
+      // rounds. Keep the last concrete concern for an explicit release decision.
+      let unresolvedQualityReview: string | undefined;
+      let bugRigorRejections = 0;
+      let planReconcileRejections = 0;
+      const isBugTask = classifyTaskKind(activeGoal) === 'bug-fix';
+      const effortNote = buildPlanNote(effortPlan, riskPlan);
+      const activePhaseStateScope = () => ({
+        goal: activeGoal,
+        criterionIds: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).map((criterion) => criterion.id),
+        planStepIds: ledger.data.plan.filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id)).map((step) => step.id),
+        evidenceStartIndex: activeWorkPhase.evidenceStartIndex,
+        ...(isFollowUpPhase ? { files: ledger.data.filesChanged.slice(activeWorkPhase.fileStartIndex ?? 0) } : {}),
       });
-      const reply = await llm.completeStream(
-        messages,
-        { effort: effortPlan.llmEffort ?? this.config.effort },
-        createProseStreamer((chunk) => this.emit(`tdelta ${chunk}`)),
-      );
-      const parsedReply = parseReplyAction(reply);
-      const cutAt = proseCutIndex(reply);
-      const prose = (parsedReply && cutAt >= 0 ? reply.slice(0, cutAt) : reply).trim();
-      if (prose) this.emit(`say ${prose}`);
-      ledger.setStatus('completed');
-      const report = reporter.build(ledger, 'complete', {
-        summary: prose.slice(0, 600) || 'Answered.',
-        risks: [],
-        followUps: [],
-      }, await getWorkspaceFingerprint(guard.activeWritableRoot));
-      ledger.data.report = report;
-      ledger.save();
-      this.emit('done     completed — chat answer delivered');
-      return { ledger, report };
-    }
-
-    ledger.setStatus('planning');
-
-    // Token telemetry: attribute every call's input to its source so token
-    // spend can be diagnosed. Everything pushed so far (system prompt,
-    // strategy, context pack, resumed conversation, user images) forms the
-    // byte-stable prefix that providers can prefix-cache across turns.
-    const telemetry = new RunTelemetry();
-    let prefixEnd = messages.length;
-    if (ledger.data.contextPack) {
-      telemetry.filesInContextPack =
-        ledger.data.contextPack.primaryFiles.length +
-        ledger.data.contextPack.testFiles.length +
-        ledger.data.contextPack.relatedFiles.length +
-        ledger.data.contextPack.configFiles.length;
-    }
-    // Explicit technology requirements bound this whole run: decisions and
-    // their audits are checked against them.
-    const explicitTech = detectExplicitTechnologies([
-      goal,
-      resumeNote ?? '',
-      ...ledger.data.acceptanceCriteria.map((c) => c.text),
-      ...ledger.data.constraints,
-    ]);
-
-    // This counter belongs only to the main execution lane. Specialists have
-    // their own trackers, so a weak reviewer cannot trip the parent breaker.
-    let invalidStreak = 0;
-    let loopBlocks = 0;
-    const connectionActionAttempts = new Map<string, number>();
-    const connectionOperationAttempts = new Map<string, number>();
-    let followUpCriteriaAdded = false;
-    let architectureAuditRejections = 0;
-    let planningNudged = false;
-    const malformed = new MalformedCallTracker({ remindAt: 1, escalateAt: 2, haltAt: 3 });
-    let actionLaneHalted = false;
-    let logicalRequestSequence = 0;
-    let actionProtocolMode: 'native' | 'structured_text' | 'text' =
-      this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text'
-        ? this.config.actionProtocolMode
-        : 'native';
-    const actionsAtStart = ledger.data.actions.length;
-    let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
-    let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
-
-    // Adaptive effort enforcement (P1 — effort planner): the plan sets a turn
-    // budget and a specialist budget. The turn budget is DYNAMIC: it extends
-    // itself whenever the run keeps producing verified progress (evidence,
-    // satisfied criteria, completed steps, changed files) and only stalls when
-    // turns are being spent without any of those moving.
-    const effortMaxTurns = effortPlan?.maxTurns ?? Number.MAX_SAFE_INTEGER;
-    let effortMaxSpecialists = effortPlan?.maxSpecialists ?? Number.MAX_SAFE_INTEGER;
-    const BUDGET_EXTENSIONS_MAX = 4;
-    const budgetExtensionTurns = Number.isFinite(effortMaxTurns) ? Math.max(10, Math.ceil(effortMaxTurns / 2)) : 0;
-    let budgetCap = effortMaxTurns;
-    let budgetExtensions = 0;
-    const progressSnapshot = (): { evidence: number; satisfied: number; files: number; todos: number; browses: number; distinctOk: number } => ({
-      evidence: ledger.data.evidence.length,
-      satisfied: ledger.data.acceptanceCriteria.filter((c) => c.satisfied).length,
-      files: ledger.data.filesChanged?.length ?? 0,
-      // Checked todos are real execution progress — they let fine-grained
-      // breakdowns keep the dynamic budget alive without new evidence records.
-      todos: ledger.data.plan.reduce((n, s) => n + (s.subtasks?.filter((t) => t.done).length ?? 0), 0),
-      // Visual-verification turns are real progress on UI work: screenshot /
-      // click-through inspection produces no new commands or diffs, but a run
-      // that is actively LOOKING at what it built must not be killed mid-QA.
-      browses: ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success').length,
-      // Distinct successful actions = genuinely new work (a repeated identical
-      // call does not grow the set). Diagnosis/reading turns used to register
-      // ZERO progress and stalled runs that were actively making new attempts.
-      distinctOk: new Set(ledger.data.actions.filter((a) => a.status === 'success').map((a) => a.paramsHash)).size,
-    });
-    let lastProgress = progressSnapshot();
-    let turns = 0;
-    let budgetWarned = false;
-    let delegateSlotsUsed = 0;
-    let visualGateRejections = 0;
-    let qualityReviewRejections = 0;
-    // A strict-risk task (security, payments, or data integrity) must not
-    // silently complete after the reviewer has exhausted its automatic repair
-    // rounds. Keep the last concrete concern for an explicit release decision.
-    let unresolvedQualityReview: string | undefined;
-    let bugRigorRejections = 0;
-    let planReconcileRejections = 0;
-    const isBugTask = classifyTaskKind(goal) === 'bug-fix';
-    const effortNote = buildPlanNote(effortPlan, riskPlan);
-
-    const ask = async (note?: string): Promise<ParsedAction | undefined> => {
-      messages.push({ role: 'user', content: buildStateMessage(ledger, note, activeSkillsSection()) });
-      this.emit('think  reviewing task state and choosing the next action');
-      let pending = '';
-      let lastFlush = Date.now();
-      const flush = (): void => {
-        if (pending) this.emit(`tdelta ${pending}`);
-        pending = '';
-        lastFlush = Date.now();
-      };
-      const sink = (chunk: string): void => {
-        pending += chunk;
-        if (pending.length >= 32 || Date.now() - lastFlush > 50) flush();
-      };
-      let streamer = createProseStreamer(sink);
-      const resetProse = (): void => {
-        pending = '';
-        streamer = createProseStreamer(sink);
-      };
-      this.abortController = new AbortController();
-      let callUsage: LlmUsage | undefined;
-      const phase = ledger.data.status === 'intake' || ledger.data.status === 'planning' || ledger.data.status === 'review' ? 'planning' : 'execution';
-      const logicalRequestId = `${ledger.data.taskId}:main:${++logicalRequestSequence}`;
-      const callOpts = (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number) => ({
-        effort: effortPlan.llmEffort ?? this.config.effort,
-        signal: this.abortController!.signal,
-        logicalRequestId,
-        maxTransportAttempts,
-        protocolMode,
-        ...(protocolMode === 'native'
-          ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const }
-          : protocolMode === 'structured_text'
-            ? { json: true }
-            : {}),
-        onUsage: (u: LlmUsage) => {
-          callUsage = u;
-        },
-        onStreamReset: () => {
-          // The connection died after partial deltas went out and the LLM
-          // client fell back to a full completion. Discard streamed state so
-          // the authoritative final text is not overlaid on stale fragments.
-          resetProse();
-        },
+      const activePhaseData = (): TaskLedgerData => ({
+        ...ledger.data,
+        acceptanceCriteria: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)),
+        plan: ledger.data.plan.filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id)),
+        evidence: ledger.data.evidence.slice(activeWorkPhase.evidenceStartIndex),
+        actions: ledger.data.actions.slice(activeWorkPhase.actionStartIndex),
+        // A prior UI phase must not force screenshot work for an unrelated
+        // backend/docs follow-up. The final diff supplies real phase files.
+        filesChanged: [],
+        planDesign: isFollowUpPhase ? undefined : ledger.data.planDesign,
       });
-      const callOnce = async (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number): Promise<LlmTurnResult> => {
-        let r: LlmTurnResult;
-        try {
-          r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts), (delta) => streamer(delta));
-        } catch (err) {
-          // A compatible endpoint may accept ordinary completions while not
-          // supporting SSE. Downgrade explicitly, retaining the same logical
-          // request ID and only the unused transport budget. This keeps a
-          // stream failure from hiding a second HTTP attempt inside the client.
-          if (err instanceof LlmError && err.details.kind === 'streaming_incompatible' && protocolMode !== 'native') {
-            r = await requestLlmTurn(llm, messages, callOpts(protocolMode, Math.max(1, maxTransportAttempts - 1)));
-          } else {
-            throw err;
-          }
-        }
-        flush();
-        telemetry.recordCall(messages, callUsage, prefixEnd, phase);
-        return r;
-      };
-      const finishParse = (r: string): ParsedAction | undefined => {
-        let parsed = parseReplyAction(r);
-        const reasoning = llm.lastReasoning;
-        // Thinking models under long context sometimes keep the action JSON in
-        // the reasoning trace and only emit commentary as visible content.
-        if (!parsed && reasoning) parsed = parseReplyAction(reasoning);
-        return parsed;
-      };
-      let turn: LlmTurnResult;
-      if (actionProtocolMode === 'native') {
-        try {
-          turn = await callOnce('native', 3);
-        } catch (err) {
-          // A provider that rejects our function schema is not a malformed
-          // model reply. Cache the downgrade for this execution lane and spend
-          // only the two remaining transport attempts on compatibility.
-          if (!(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
-          actionProtocolMode = 'structured_text';
-          this.emit('protocol native tools unsupported by this provider — using structured action compatibility');
-          resetProse();
+
+      const ask = async (note?: string): Promise<ParsedAction | undefined> => {
+        messages.push({ role: 'user', content: buildStateMessage(ledger, note, activeSkillsSection(), activePhaseStateScope()) });
+        this.emit('think  reviewing task state and choosing the next action');
+        let pending = '';
+        let lastFlush = Date.now();
+        const flush = (): void => {
+          if (pending) this.emit(`tdelta ${pending}`);
+          pending = '';
+          lastFlush = Date.now();
+        };
+        const sink = (chunk: string): void => {
+          pending += chunk;
+          if (pending.length >= 32 || Date.now() - lastFlush > 50) flush();
+        };
+        let streamer = createProseStreamer(sink);
+        const resetProse = (): void => {
+          pending = '';
+          streamer = createProseStreamer(sink);
+        };
+        this.abortController = new AbortController();
+        let callUsage: LlmUsage | undefined;
+        const phase = ledger.data.status === 'intake' || ledger.data.status === 'planning' || ledger.data.status === 'review' ? 'planning' : 'execution';
+        const logicalRequestId = `${ledger.data.taskId}:main:${++logicalRequestSequence}`;
+        const callOpts = (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number) => ({
+          effort: effortPlan.llmEffort ?? this.config.effort,
+          signal: this.abortController!.signal,
+          logicalRequestId,
+          maxTransportAttempts,
+          protocolMode,
+          ...(protocolMode === 'native' ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const } : protocolMode === 'structured_text' ? { json: true } : {}),
+          onUsage: (u: LlmUsage) => {
+            callUsage = u;
+          },
+          onStreamReset: () => {
+            // The connection died after partial deltas went out and the LLM
+            // client fell back to a full completion. Discard streamed state so
+            // the authoritative final text is not overlaid on stale fragments.
+            resetProse();
+          },
+        });
+        const callOnce = async (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number): Promise<LlmTurnResult> => {
+          let r: LlmTurnResult;
           try {
-            turn = await callOnce('structured_text', 2);
-          } catch (fallbackErr) {
-            if (!(fallbackErr instanceof LlmError) || fallbackErr.details.kind !== 'tool_protocol_incompatible') throw fallbackErr;
+            r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts), (delta) => streamer(delta));
+          } catch (err) {
+            // A compatible endpoint may accept ordinary completions while not
+            // supporting SSE. Downgrade explicitly, retaining the same logical
+            // request ID and only the unused transport budget. This keeps a
+            // stream failure from hiding a second HTTP attempt inside the client.
+            if (err instanceof LlmError && err.details.kind === 'streaming_incompatible' && protocolMode !== 'native') {
+              r = await requestLlmTurn(llm, messages, callOpts(protocolMode, Math.max(1, maxTransportAttempts - 1)));
+            } else {
+              throw err;
+            }
+          }
+          flush();
+          telemetry.recordCall(messages, callUsage, prefixEnd, phase);
+          return r;
+        };
+        const finishParse = (r: string): ParsedAction | undefined => {
+          let parsed = parseReplyAction(r);
+          const reasoning = llm.lastReasoning;
+          // Thinking models under long context sometimes keep the action JSON in
+          // the reasoning trace and only emit commentary as visible content.
+          if (!parsed && reasoning) parsed = parseReplyAction(reasoning);
+          return parsed;
+        };
+        let turn: LlmTurnResult;
+        if (actionProtocolMode === 'native') {
+          try {
+            turn = await callOnce('native', 3);
+          } catch (err) {
+            // A provider that rejects our function schema is not a malformed
+            // model reply. Cache the downgrade for this execution lane and spend
+            // only the two remaining transport attempts on compatibility.
+            if (!(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
+            actionProtocolMode = 'structured_text';
+            this.emit('protocol native tools unsupported by this provider — using structured action compatibility');
+            resetProse();
+            try {
+              turn = await callOnce('structured_text', 2);
+            } catch (fallbackErr) {
+              if (!(fallbackErr instanceof LlmError) || fallbackErr.details.kind !== 'tool_protocol_incompatible') throw fallbackErr;
+              actionProtocolMode = 'text';
+              this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
+              resetProse();
+              turn = await callOnce('text', 1);
+            }
+          }
+        } else {
+          try {
+            turn = await callOnce(actionProtocolMode, 3);
+          } catch (err) {
+            if (actionProtocolMode !== 'structured_text' || !(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
             actionProtocolMode = 'text';
             this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
             resetProse();
-            turn = await callOnce('text', 1);
+            turn = await callOnce('text', 2);
           }
         }
-      } else {
-        try {
-          turn = await callOnce(actionProtocolMode, 3);
-        } catch (err) {
-          if (actionProtocolMode !== 'structured_text' || !(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
-          actionProtocolMode = 'text';
-          this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
-          resetProse();
-          turn = await callOnce('text', 2);
+        let reply = actionReplyFromTurn(turn);
+        let parsed = finishParse(reply);
+        const cutAt = proseCutIndex(reply);
+        const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
+        if (prose) this.emit(`say ${prose}`);
+        else if (parsed) {
+          const summary = visibleActionSummary(parsed);
+          if (summary) this.emit(`say ${summary}`);
         }
-      }
-      let reply = actionReplyFromTurn(turn);
-      let parsed = finishParse(reply);
-      const cutAt = proseCutIndex(reply);
-      const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
-      if (prose) this.emit(`say ${prose}`);
-      else if (parsed) {
-        const summary = visibleActionSummary(parsed);
-        if (summary) this.emit(`say ${summary}`);
-      }
-      messages.push({ role: 'assistant', content: reply });
-      if (!parsed) {
-        invalidStreak += 1;
-        telemetry.noteWastedCall();
-        const verdict = malformed.note('unparseable');
-        logParseFailure(ledger.data.taskId, reply, llm.lastReasoning);
-        this.emit(`warn    response had no executable action (streak ${invalidStreak}) — raw reply saved to logs/parse-failures.log`);
-        if (verdict.halt) {
-          actionLaneHalted = true;
-          ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
-          this.emit(`halt    main execution lane stopped after ${verdict.streak} malformed/no-action replies`);
+        messages.push({ role: 'assistant', content: reply });
+        if (!parsed) {
+          invalidStreak += 1;
+          telemetry.noteWastedCall();
+          const verdict = malformed.note('unparseable');
+          logParseFailure(ledger.data.taskId, reply, llm.lastReasoning);
+          this.emit(`warn    response had no executable action (streak ${invalidStreak}) — raw reply saved to logs/parse-failures.log`);
+          if (verdict.halt) {
+            actionLaneHalted = true;
+            ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
+            this.emit(`halt    main execution lane stopped after ${verdict.streak} malformed/no-action replies`);
+          }
+        } else {
+          invalidStreak = 0;
+          // A syntactically valid high-level action is real recovery. Tool calls
+          // reset only after executor validation below, so malformed parameters
+          // still accumulate across turns.
+          if (parsed.type !== 'tool_call' && parsed.type !== 'parallel') malformed.reset();
         }
-      } else {
-        invalidStreak = 0;
-        // A syntactically valid high-level action is real recovery. Tool calls
-        // reset only after executor validation below, so malformed parameters
-        // still accumulate across turns.
-        if (parsed.type !== 'tool_call' && parsed.type !== 'parallel') malformed.reset();
-      }
-      return parsed;
-    };
+        return parsed;
+      };
 
-    const observe = (content: string | LlmContentPart[]): void => {
-      messages.push({ role: 'user', content });
-      const lengthBefore = messages.length;
-      const compactionOpts = {
-        ...(this.config.compaction ?? {}),
-        // Memory-aware compaction: the canonical snapshot rides in the digest
-        // and durable failure lessons are extracted into project memory
-        // (deduped) before the verbose history is dropped.
-        snapshot: renderContextSnapshot(buildContextSnapshot(ledger.data)),
-        onExtract: ({ failures }: { failures: string[] }): void => {
-          const known = new Set(memory.query({ type: 'failure' }).map((m) => m.claim.trim().toLowerCase()));
-          for (const failure of failures.slice(-3)) {
-            const claim = failure.replace(/^RESULT \[error\]\s*/, '').slice(0, 200);
-            const key = claim.trim().toLowerCase();
-            if (!key || known.has(key)) continue;
-            known.add(key);
-            // Structured failure lesson (review Phase 12): action + observed
-            // failure in one retrievable record; the diagnostic cause is the
-            // part after the '|' separator when present.
-            const [action, cause] = claim.split(' | ');
-            const added = memory.addFailureLesson({
-              action: action ?? claim,
-              cause: cause ?? 'cause not captured — diagnose on recurrence',
-              scope: guard.lock.name,
-              confidence: 0.75,
-            });
-            // Learned patterns (review Phase 13): repeated verified failures
-            // earn a pattern memory — never a single speculative observation.
-            if (!added.created) {
-              const pattern = memory.maybePromotePattern({
-                entryId: added.entry.id,
-                patternClaim: `Repeated failure pattern — ${claim.slice(0, 140)}. Check for this before retrying similar work.`,
+      const observe = (content: string | LlmContentPart[]): void => {
+        messages.push({ role: 'user', content });
+        const lengthBefore = messages.length;
+        const compactionOpts = {
+          ...(this.config.compaction ?? {}),
+          // Memory-aware compaction: the canonical snapshot rides in the digest
+          // and durable failure lessons are extracted into project memory
+          // (deduped) before the verbose history is dropped.
+          snapshot: renderContextSnapshot(buildContextSnapshot(ledger.data)),
+          onExtract: ({ failures }: { failures: string[] }): void => {
+            const known = new Set(memory.query({ type: 'failure' }).map((m) => m.claim.trim().toLowerCase()));
+            for (const failure of failures.slice(-3)) {
+              const claim = failure.replace(/^RESULT \[error\]\s*/, '').slice(0, 200);
+              const key = claim.trim().toLowerCase();
+              if (!key || known.has(key)) continue;
+              known.add(key);
+              // Structured failure lesson (review Phase 12): action + observed
+              // failure in one retrievable record; the diagnostic cause is the
+              // part after the '|' separator when present.
+              const [action, cause] = claim.split(' | ');
+              const added = memory.addFailureLesson({
+                action: action ?? claim,
+                cause: cause ?? 'cause not captured — diagnose on recurrence',
                 scope: guard.lock.name,
+                confidence: 0.75,
               });
-              if (pattern) {
-                const key = memoryPatternKey(pattern.scope, pattern.claim);
-                if (!announcedMemoryPatterns.has(key)) {
-                  announcedMemoryPatterns.add(key);
-                  this.emit(`memory   pattern promoted from repeated failures (${pattern.claim.slice(0, 90)})`);
+              // Learned patterns (review Phase 13): repeated verified failures
+              // earn a pattern memory — never a single speculative observation.
+              if (!added.created) {
+                const pattern = memory.maybePromotePattern({
+                  entryId: added.entry.id,
+                  patternClaim: `Repeated failure pattern — ${claim.slice(0, 140)}. Check for this before retrying similar work.`,
+                  scope: guard.lock.name,
+                });
+                if (pattern) {
+                  const key = memoryPatternKey(pattern.scope, pattern.claim);
+                  if (!announcedMemoryPatterns.has(key)) {
+                    announcedMemoryPatterns.add(key);
+                    this.emit(`memory   pattern promoted from repeated failures (${pattern.claim.slice(0, 90)})`);
+                  }
                 }
               }
             }
+          },
+        };
+        if (compactHistory(messages, (t) => this.emit(t), compactionOpts)) {
+          telemetry.noteCompaction();
+          // A compact state message is always authoritative; make full skill
+          // instructions available again on the next turn if their one-time
+          // copy was absorbed into the digest.
+          reloadActiveSkillInstructions();
+          // Protected-state reconstruction (review two-tier model): compaction
+          // digests the intake-era memory messages along with the old history.
+          // Long missions must not lose durable guidance exactly when compaction
+          // makes it most needed — re-inject BOTH the Tier 1 protected section
+          // and the Tier 2 relevant-memory section right after the fresh digest
+          // so they survive every compaction generation.
+          if (protectedSection) {
+            messages.splice(2, 0, { role: 'user', content: protectedSection });
           }
-        },
+          if (memorySection) {
+            messages.splice(protectedSection ? 3 : 2, 0, { role: 'user', content: memorySection });
+          }
+          // Compaction removes messages[1..keepFrom) and inserts the digest at
+          // index 1, shifting every retained message. The prefix boundary must
+          // move with it — otherwise later calls misattribute live history as a
+          // stable cached prefix and stripStaleImages silently skips.
+          prefixEnd = shiftPrefixEndAfterCompaction(prefixEnd, lengthBefore - COMPACT_KEEP_RECENT);
+        }
       };
-      if (compactHistory(messages, (t) => this.emit(t), compactionOpts)) {
-        telemetry.noteCompaction();
-        // A compact state message is always authoritative; make full skill
-        // instructions available again on the next turn if their one-time
-        // copy was absorbed into the digest.
-        reloadActiveSkillInstructions();
-        // Protected-state reconstruction (review two-tier model): compaction
-        // digests the intake-era memory messages along with the old history.
-        // Long missions must not lose durable guidance exactly when compaction
-        // makes it most needed — re-inject BOTH the Tier 1 protected section
-        // and the Tier 2 relevant-memory section right after the fresh digest
-        // so they survive every compaction generation.
-        if (protectedSection) {
-          messages.splice(2, 0, { role: 'user', content: protectedSection });
-        }
-        if (memorySection) {
-          messages.splice(protectedSection ? 3 : 2, 0, { role: 'user', content: memorySection });
-        }
-        // Compaction removes messages[1..keepFrom) and inserts the digest at
-        // index 1, shifting every retained message. The prefix boundary must
-        // move with it — otherwise later calls misattribute live history as a
-        // stable cached prefix and stripStaleImages silently skips.
-        prefixEnd = shiftPrefixEndAfterCompaction(prefixEnd, lengthBefore - COMPACT_KEEP_RECENT);
-      }
-    };
 
-    try {
-    mainLoop: for (;;) {
-      if (this.aborted) {
-        ledger.addBlocker('Stopped by user.');
-        exitReason = 'blocked';
-        break;
-      }
-
-      // Adaptive effort: the turn budget is a floor, not a cliff. Keep going
-      // while verified progress continues; stall only when turns are spent
-      // without anything verifiable moving.
-      if (turns >= budgetCap) {
-        const now = progressSnapshot();
-        // Only hard outcomes count as progress: bookkeeping like marking a
-        // plan step done must not keep an aimless run alive on its own. Active
-        // browser verification (screenshots, click-throughs) counts too — it is
-        // how frontend work proves anything.
-        const progressing =
-          now.evidence > lastProgress.evidence ||
-          now.satisfied > lastProgress.satisfied ||
-          now.files > lastProgress.files ||
-          now.todos > lastProgress.todos ||
-          now.browses > lastProgress.browses ||
-          now.distinctOk > lastProgress.distinctOk;
-        if (progressing && budgetExtensions < BUDGET_EXTENSIONS_MAX) {
-          budgetExtensions += 1;
-          lastProgress = now;
-          // Dynamic escalation: the DISCOVERED scope (files touched, distinct
-          // failures) can reveal a harder task than the goal text suggested.
-          // Escalated runs get bigger extensions and a wider specialist budget
-          // (bounded by the delegate hard cap).
-          const escalation = escalationFor({
-            filesChanged: ledger.data.filesChanged?.length ?? 0,
-            distinctFailures: new Set(
-              ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature),
-            ).size,
-          });
-          const extraTurns = escalation?.extraTurns ?? 0;
-          budgetCap = turns + budgetExtensionTurns + extraTurns;
-          if (escalation && Number.isFinite(effortMaxSpecialists) && effortMaxSpecialists < 6) {
-            effortMaxSpecialists = Math.min(6, effortMaxSpecialists + escalation.extraSpecialists);
-          }
-          // Audit trail: every extension records WHY (reason + evidence
-          // snapshot), so a longer run is explainable, not just permitted.
-          ledger.addBudgetExtension({
-            turn: turns,
-            reason: escalation?.reason ?? 'verified progress continued past the initial budget',
-            filesChanged: ledger.data.filesChanged?.length ?? 0,
-            distinctFailures: new Set(
-              ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature),
-            ).size,
-            evidenceCount: ledger.data.evidence.length,
-            extraTurns: budgetExtensionTurns + extraTurns,
-            extraSpecialists: escalation?.extraSpecialists ?? 0,
-            specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
-          });
-          this.emit(
-            `effort  ${turns} turns in, but verified progress continues — budget extended by ${budgetExtensionTurns + extraTurns} turns (extension ${budgetExtensions}/${BUDGET_EXTENSIONS_MAX})${escalation ? ` — ${escalation.reason}, specialist budget now ${effortMaxSpecialists}` : ''}`,
-          );
-          observe(
-            `Your turn budget was extended by ${budgetExtensionTurns + extraTurns} turns because you kept making verified progress. ` +
-              (escalation ? `${escalation.reason.charAt(0).toUpperCase()}${escalation.reason.slice(1)} — delegate specialists where it helps. ` : '') +
-              'Keep working, but steer toward completing and verifying acceptance criteria rather than exploring.',
-          );
-        } else {
-          ledger.addBlocker(
-            `Exhausted the task's effort budget (${turns} turns used` +
-              `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
-              `Retry with effort=high — that raises BOTH the model's per-step reasoning effort at the provider AND the turn budget — ` +
-              `or narrow the task.`,
-          );
-          exitReason = 'stalled';
-          this.emit(`stall   effort budget of ${budgetCap} turns reached without verified progress — stopping`);
-          break;
-        }
-      }
-
-      // Every model exchange costs a turn — including replies with no usable
-      // action — so a garbage spiral is bounded by the same dynamic budget.
-      turns += 1;
-      const warnAt = Math.max(1, Math.floor(budgetCap * 0.66));
-      if (!budgetWarned && turns >= warnAt && turns < budgetCap) {
-        budgetWarned = true;
-        this.emit(
-          `effort  ${turns}/${budgetCap} turns used — about ${budgetCap - turns} left; wrap up verified work if you can`,
-        );
-      }
-
-      const action = await ask(effortNote);
-
-      if (!action) {
-        if (actionLaneHalted) {
-          exitReason = 'blocked';
-          break;
-        }
-        observe(
-          invalidStreak >= 3
-            ? `STILL no executable action (${invalidStreak} replies in a row). Stop writing prose. Reply with exactly ONE JSON object and nothing else. ` +
-              'If you truly cannot proceed, {"thought":"...","action":{"type":"request_block","reason":"what is blocking you"}} is a valid action.'
-            : 'Your last response contained no executable JSON action — describing intentions is not enough. ' +
-              'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
-              '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
-        );
-        continue;
-      }
-
-      switch (action.type) {
-        case 'set_criteria': {
-          const criteriaAlreadySet = ledger.data.acceptanceCriteria.length > 0;
-          const hasEvidence = ledger.data.evidence.length > 0;
-          if (userCriteriaProvided) {
-            observe(
-              'Acceptance criteria were provided by the user and are immutable. Work against the existing criteria; do not redefine them.',
-            );
+      try {
+        mainLoop: for (;;) {
+          if (this.aborted) {
+            ledger.addBlocker('Stopped by user.');
+            exitReason = 'blocked';
             break;
           }
-          if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
-            const completedScope = ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied);
-            if (resumeNote && completedScope) {
+
+          // Adaptive effort: the turn budget is a floor, not a cliff. Keep going
+          // while verified progress continues; stall only when turns are spent
+          // without anything verifiable moving.
+          if (turns >= budgetCap) {
+            const now = progressSnapshot();
+            // Only hard outcomes count as progress: bookkeeping like marking a
+            // plan step done must not keep an aimless run alive on its own. Active
+            // browser verification (screenshots, click-throughs) counts too — it is
+            // how frontend work proves anything.
+            const progressing =
+              now.evidence > lastProgress.evidence ||
+              now.satisfied > lastProgress.satisfied ||
+              now.files > lastProgress.files ||
+              now.todos > lastProgress.todos ||
+              now.browses > lastProgress.browses ||
+              now.distinctOk > lastProgress.distinctOk;
+            if (progressing && budgetExtensions < BUDGET_EXTENSIONS_MAX) {
+              budgetExtensions += 1;
+              lastProgress = now;
+              // Dynamic escalation: the DISCOVERED scope (files touched, distinct
+              // failures) can reveal a harder task than the goal text suggested.
+              // Escalated runs get bigger extensions and a wider specialist budget
+              // (bounded by the delegate hard cap).
+              const escalation = escalationFor({
+                filesChanged: ledger.data.filesChanged?.length ?? 0,
+                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
+              });
+              const extraTurns = escalation?.extraTurns ?? 0;
+              budgetCap = turns + budgetExtensionTurns + extraTurns;
+              if (escalation && Number.isFinite(effortMaxSpecialists) && effortMaxSpecialists < 6) {
+                effortMaxSpecialists = Math.min(6, effortMaxSpecialists + escalation.extraSpecialists);
+              }
+              // Audit trail: every extension records WHY (reason + evidence
+              // snapshot), so a longer run is explainable, not just permitted.
+              ledger.addBudgetExtension({
+                turn: turns,
+                reason: escalation?.reason ?? 'verified progress continued past the initial budget',
+                filesChanged: ledger.data.filesChanged?.length ?? 0,
+                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
+                evidenceCount: ledger.data.evidence.length,
+                extraTurns: budgetExtensionTurns + extraTurns,
+                extraSpecialists: escalation?.extraSpecialists ?? 0,
+                specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
+              });
+              this.emit(
+                `effort  ${turns} turns in, but verified progress continues — budget extended by ${budgetExtensionTurns + extraTurns} turns (extension ${budgetExtensions}/${BUDGET_EXTENSIONS_MAX})${escalation ? ` — ${escalation.reason}, specialist budget now ${effortMaxSpecialists}` : ''}`,
+              );
+              observe(
+                `Your turn budget was extended by ${budgetExtensionTurns + extraTurns} turns because you kept making verified progress. ` +
+                  (escalation ? `${escalation.reason.charAt(0).toUpperCase()}${escalation.reason.slice(1)} — delegate specialists where it helps. ` : '') +
+                  'Keep working, but steer toward completing and verifying acceptance criteria rather than exploring.',
+              );
+            } else {
+              ledger.addBlocker(
+                `Exhausted the task's effort budget (${turns} turns used` +
+                  `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
+                  `Retry with effort=high — that raises BOTH the model's per-step reasoning effort at the provider AND the turn budget — ` +
+                  `or narrow the task.`,
+              );
+              exitReason = 'stalled';
+              this.emit(`stall   effort budget of ${budgetCap} turns reached without verified progress — stopping`);
+              break;
+            }
+          }
+
+          // Every model exchange costs a turn — including replies with no usable
+          // action — so a garbage spiral is bounded by the same dynamic budget.
+          turns += 1;
+          const warnAt = Math.max(1, Math.floor(budgetCap * 0.66));
+          if (!budgetWarned && turns >= warnAt && turns < budgetCap) {
+            budgetWarned = true;
+            this.emit(`effort  ${turns}/${budgetCap} turns used — about ${budgetCap - turns} left; wrap up verified work if you can`);
+          }
+
+          const action = await ask(effortNote);
+
+          if (!action) {
+            if (actionLaneHalted) {
+              exitReason = 'blocked';
+              break;
+            }
+            observe(
+              invalidStreak >= 3
+                ? `STILL no executable action (${invalidStreak} replies in a row). Stop writing prose. Reply with exactly ONE JSON object and nothing else. ` +
+                    'If you truly cannot proceed, {"thought":"...","action":{"type":"request_block","reason":"what is blocking you"}} is a valid action.'
+                : 'Your last response contained no executable JSON action — describing intentions is not enough. ' +
+                    'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
+                    '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
+            );
+            continue;
+          }
+
+          switch (action.type) {
+            case 'set_criteria': {
+              const criteriaAlreadySet = ledger.data.acceptanceCriteria.length > 0;
+              const hasEvidence = ledger.data.evidence.length > 0;
+              if (userCriteriaProvided) {
+                observe('Acceptance criteria were provided by the user and are immutable. Work against the existing criteria; do not redefine them.');
+                break;
+              }
+              if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
+                const completedScope = ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied);
+                if (resumeNote && completedScope) {
+                  const adds = EvidenceEngine.normalizeCriteria(action.criteria);
+                  const added = adds.some((s) => s.verification || (s.evidenceType && s.evidenceType !== 'any'))
+                    ? ledger.appendCriteriaFromSpecs(adds)
+                    : ledger.appendCriteria(adds.map((s) => s.text));
+                  if (added.length > 0) {
+                    followUpCriteriaAdded = true;
+                    this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
+                    observe(
+                      'The previous scope is complete. Added ' +
+                        added.length +
+                        ' acceptance criterion/criteria for this follow-up work. Now use append_plan with small, verifiable steps for the new scope.',
+                    );
+                  } else {
+                    observe('Those follow-up criteria are already recorded. Use append_plan for the remaining work, or continue the current plan.');
+                  }
+                  break;
+                }
+                observe(
+                  'Criteria are locked once a plan is approved or evidence is recorded; they cannot be redefined. ' +
+                    'For a new scope in a resumed completed task, use add_criteria instead; otherwise continue working against them.',
+                );
+                break;
+              }
+              ledger.setCriteria(action.criteria);
+              this.emit(`criteria ${action.criteria.map((c) => `"${c}"`).join('; ')}`);
+              observe('Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');
+              break;
+            }
+            case 'add_criteria': {
+              if (!resumeNote) {
+                observe('add_criteria is for a new scope in a resumed task. Use set_criteria for a new task.');
+                break;
+              }
               const adds = EvidenceEngine.normalizeCriteria(action.criteria);
               const added = adds.some((s) => s.verification || (s.evidenceType && s.evidenceType !== 'any'))
                 ? ledger.appendCriteriaFromSpecs(adds)
                 : ledger.appendCriteria(adds.map((s) => s.text));
-              if (added.length > 0) {
-                followUpCriteriaAdded = true;
-                this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
-                observe(
-                  'The previous scope is complete. Added ' +
-                    added.length +
-                    ' acceptance criterion/criteria for this follow-up work. Now use append_plan with small, verifiable steps for the new scope.',
-                );
-              } else {
-                observe('Those follow-up criteria are already recorded. Use append_plan for the remaining work, or continue the current plan.');
+              if (added.length === 0) {
+                observe('Those criteria are already recorded. Use append_plan for the remaining work.');
+                break;
               }
-              break;
-            }
-            observe(
-              'Criteria are locked once a plan is approved or evidence is recorded; they cannot be redefined. ' +
-                'For a new scope in a resumed completed task, use add_criteria instead; otherwise continue working against them.',
-            );
-            break;
-          }
-          ledger.setCriteria(action.criteria);
-          this.emit(`criteria ${action.criteria.map((c) => `"${c}"`).join('; ')}`);
-          observe('Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');
-          break;
-        }
-        case 'add_criteria': {
-          if (!resumeNote) {
-            observe('add_criteria is for a new scope in a resumed task. Use set_criteria for a new task.');
-            break;
-          }
-          const adds = EvidenceEngine.normalizeCriteria(action.criteria);
-          const added = adds.some((s) => s.verification || (s.evidenceType && s.evidenceType !== 'any'))
-            ? ledger.appendCriteriaFromSpecs(adds)
-            : ledger.appendCriteria(adds.map((s) => s.text));
-          if (added.length === 0) {
-            observe('Those criteria are already recorded. Use append_plan for the remaining work.');
-            break;
-          }
-          followUpCriteriaAdded = true;
-          this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
-          observe(
-            'Added ' +
-              added.length +
-              ' follow-up acceptance criterion/criteria while preserving the earlier completed scope. Now use append_plan with small, verifiable steps.',
-          );
-          break;
-        }
-        case 'set_plan':
-        case 'append_plan': {
-          const append = action.type === 'append_plan' || followUpCriteriaAdded;
-          if (append) ledger.appendPlan(action.steps);
-          else ledger.setPlan(action.steps);
-          checkpoints.snapshot(ledger, append ? 'follow-up-plan' : 'plan', append ? 'follow-up plan created' : 'plan created');
-          this.emit('plan     ' + action.steps.length + (append ? ' follow-up' : '') + ' steps');
-          if (this.config.requirePlanReview && this.config.planReviewHandler && !ledger.data.planApproved) {
-            ledger.setStatus('review');
-            this.emit('plan-review waiting for user review');
-            const decision = await this.config.planReviewHandler({
-              criteria: ledger.data.acceptanceCriteria.map((c) => c.text),
-              steps: append ? ledger.data.plan.map((step) => ({ description: step.description, verification: step.verification })) : action.steps,
-            });
-            if (decision.criteria && decision.criteria.length > 0) ledger.setCriteria(decision.criteria);
-            if (decision.steps && decision.steps.length > 0) ledger.setPlan(decision.steps);
-            if (decision.approved) {
-              ledger.data.planApproved = true;
-              ledger.save();
-              ledger.setStatus('executing');
-              this.emit('plan approved — switching to build');
-              observe('The user reviewed and approved the plan. Execute the approved plan one step at a time; verify with commands.');
-            } else {
-              ledger.setStatus('planning');
-              this.emit(`plan-review changes requested: ${decision.note ?? '(no note)'}`);
+              followUpCriteriaAdded = true;
+              this.emit('criteria added ' + added.map((criterion) => '"' + criterion.text + '"').join('; '));
               observe(
-                `The user reviewed the plan and requested changes: ${decision.note || '(no note)'}\n` +
-                  `Revise the plan with set_plan. Keep it small, reversible, and verifiable.`,
+                'Added ' +
+                  added.length +
+                  ' follow-up acceptance criterion/criteria while preserving the earlier completed scope. Now use append_plan with small, verifiable steps.',
               );
-            }
-          } else {
-            ledger.setStatus('executing');
-            // Soft planning-quality nudge — once per run, never a hard gate:
-            // richer design/breakdown helps multi-surface work, but simple
-            // tasks should not pay for ceremony.
-            const areas = new Set(action.steps.map((s) => s.area).filter(Boolean));
-            const wantsDesign = effortPlan.complexity !== 'low' && !ledger.data.planDesign && !planningNudged;
-            const wantsTodos = effortPlan.complexity !== 'low' && action.steps.length >= 3 && !action.steps.some((s) => s.subtasks?.length);
-            let note = 'Plan recorded. Execute one step at a time. Verify with commands; evidence ids will be reported.';
-            if (wantsDesign || wantsTodos) {
-              planningNudged = true;
-              const tips: string[] = [];
-              if (wantsDesign) {
-                tips.push(
-                  `no DESIGN recorded yet${areas.size >= 2 ? ` and this plan spans ${[...areas].join(' + ')}` : ''} — consider set_design with bounded frontend/backend/integration notes before building`,
-                );
-              }
-              if (wantsTodos) {
-                tips.push('consider revising key steps (revise_step) to add small todo subtasks so progress is verifiable incrementally');
-              }
-              note += `\nPLANNING NOTE: ${tips.join('; ')}. This is guidance, not a blocker.`;
-            }
-            observe(note);
-          }
-          break;
-        }
-        case 'set_hypothesis': {
-          ledger.data.currentHypothesis = action.text;
-          ledger.save();
-          this.emit(`hypothesis ${action.text.slice(0, 120)}`);
-          observe('Hypothesis recorded. Proceed with the next action.');
-          break;
-        }
-        case 'set_design': {
-          ledger.setPlanDesign(action.design);
-          const present = [
-            action.design.frontend ? `frontend(${action.design.frontend.length})` : '',
-            action.design.backend ? `backend(${action.design.backend.length})` : '',
-            action.design.integration ? `integration(${action.design.integration.length})` : '',
-          ].filter(Boolean);
-          this.emit(`design   recorded: ${present.join(' ')}`);
-          observe(
-            'DESIGN RECORDED and pinned to task state (shown in compact form each turn; use show_plan for full detail). ' +
-              'Now break the work into SMALL todo-sized steps grouped by area (frontend/backend/...), each with concrete subtasks and a real verification.',
-          );
-          break;
-        }
-        case 'revise_step': {
-          const revised = ledger.reviseStep(
-            action.stepId,
-            { description: action.description, verification: action.verification, area: action.area, addSubtasks: action.addSubtasks },
-            action.reason,
-          );
-          if (!revised) {
-            observe(`Cannot revise: unknown step "${action.stepId}". Use show_plan to see current step ids.`);
-            break;
-          }
-          this.emit(`replan   ${action.stepId} revised — ${action.reason.slice(0, 90)}`);
-          observe(
-            `STEP REVISED (${action.stepId}) — reason recorded in the revision log. Continue with the UPDATED step only; do not replan unrelated steps.`,
-          );
-          break;
-        }
-        case 'toggle_todo': {
-          const ok = ledger.toggleSubtask(action.stepId, action.index, action.done);
-          if (!ok) {
-            observe(`Cannot update todo #${action.index} of ${action.stepId}: out of range. Use show_plan if unsure.`);
-            break;
-          }
-          const step = ledger.step(action.stepId)!;
-          const todo = step.subtasks?.[action.index];
-          this.emit(
-            step.status === 'done'
-              ? `step     ${action.stepId} done (all todos checked)`
-              : `todo     ${action.stepId}[${action.index}] ${todo?.done ? '✓' : '·'} ${(todo?.text ?? '').slice(0, 60)}`,
-          );
-          observe('Noted.');
-          break;
-        }
-        case 'complete_step': {
-          const step = ledger.step(action.stepId);
-          if (!step) {
-            observe(`Cannot complete: unknown step "${action.stepId}". Use show_plan to see current step ids.`);
-            break;
-          }
-          if (step.status === 'done') {
-            observe(`${action.stepId} is already done.`);
-            break;
-          }
-          ledger.updateStep(action.stepId, { status: 'done' });
-          checkpoints.snapshot(ledger, action.stepId, step.description.slice(0, 60));
-          this.emit(`step     ${action.stepId} done (explicit) — ${action.reason.slice(0, 80)}`);
-          observe(
-            `STEP DONE (${action.stepId}): ${action.reason}\n` +
-              `Move to the next open step in TASK STATE. If the step had a verification command that has not run yet, run it before claiming related criteria.`,
-          );
-          break;
-        }
-        case 'show_plan': {
-          observe(renderFullPlanMessage(ledger));
-          break;
-        }
-        case 'record_decision': {
-          const conflicts = decisionConflicts(action, explicitTech.required);
-          if (conflicts.length > 0) {
-            observe(
-              `DECISION REJECTED — it conflicts with an explicit requirement:\n${conflicts.map((c) => `  - ${c}`).join('\n')}\n` +
-                `Record a decision that honors the explicit requirement (or ask the user to change it).`,
-            );
-            break;
-          }
-          const superseded = action.supersedes ?? (ledger.activeArchitectureDecisions().length === 1 ? ledger.activeArchitectureDecisions()[0]!.id : undefined);
-          const record = ledger.recordArchitectureDecision(action);
-          this.emit(`decision ${record.id} — ${record.decision.slice(0, 100)}`);
-          observe(
-            `ARCHITECTURE DECISION RECORDED (${record.id})${superseded && superseded !== record.id ? `, superseding ${superseded}` : ''}: ${record.decision}\n` +
-              `It is now part of the task state and will be checked against the implementation at completion. ` +
-              `Implement accordingly; if you change course later, record a new decision with supersedes.`,
-          );
-          break;
-        }
-        case 'tool_call': {
-          if (ledger.data.acceptanceCriteria.length === 0) {
-            observe('No acceptance criteria exist yet. Use set_criteria first.');
-            break;
-          }
-          const outcome = await executor.execute({
-            tool: action.tool,
-            params: action.params,
-            reason: action.reason,
-            expected: action.expected,
-            stepId: action.stepId,
-          });
-
-          const malformedKind = malformedKindFor(outcome.result.errorSignature);
-          const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
-
-          if (outcome.blockedByLoop) {
-            loopBlocks += 1;
-            memory.add({
-              type: 'failure',
-              claim: `Repeated failure on ${outcome.record.paramsSummary}: ${action.reason}`,
-              scope: guard.lock.name,
-              confidence: 0.8,
-            });
-            if (loopBlocks >= 3) {
-              ledger.addBlocker('Three loop-prevention blocks occurred; task escalated.');
-              exitReason = 'blocked';
-              observe(outcome.result.output);
               break;
             }
-            observe(outcome.result.output);
-            break;
-          }
-          if (outcome.deniedByPolicy) {
-            observe(outcome.result.output);
-            break;
-          }
-          // A filesystem helper reporting success is never enough. The tools
-          // return this signature only after canonical-root stat/read/hash
-          // verification failed twice. Continuing would let the model edit a
-          // phantom workspace and later "verify" another checkout.
-          if (outcome.result.errorSignature === 'write-not-persisted') {
-            const blocker = `Workspace mutation was not persisted in the active writable target (${guard.activeWritableRoot}); execution stopped before claiming any file change.`;
-            ledger.addBlocker(blocker);
-            exitReason = 'blocked';
-            this.emit('blocked  WRITE_NOT_PERSISTED — canonical workspace verification failed');
-            observe(`${outcome.result.output}\nHARD STOP: do not retry a different file path. Repair the session workspace authority, then resume.`);
-            break mainLoop;
-          }
-
-          let evidenceNote = '';
-          if (action.tool === 'run_command') {
-            const kind = classifyEvidenceKind(String(action.params['command'] ?? ''));
-            const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-            const ev = evidence.record(ledger.data, {
-              kind,
-              label: action.expected || String(action.params['command']),
-              command: String(action.params['command']),
-              exitCode: outcome.result.exitCode,
-              passed: outcome.result.ok,
-              output: outcome.result.output,
-              workspaceFingerprint: currentFp,
-            });
-            ledger.save();
-            evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
-            this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
-          }
-
-          if (action.tool === 'browse' && outcome.result.image) {
-            this.emit(`browseshot ${outcome.result.image}`);
-          }
-
-          // Track every skill the model actually loads so continuations and the
-          // report can show which reusable knowledge drove the task.
-          if (action.tool === 'use_skill' && outcome.result.ok) {
-            const skillName = String(action.params['name'] ?? '').trim();
-            if (skillName) {
-              const identity = skills.identity(skillName);
-              ledger.addUsedSkill(skillName, identity);
-              if (identity) ledger.recordSkillEvent({ stage: 'loaded', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, reason: 'explicit use_skill', loadChars: skills.get(skillName)?.instructions.length });
-              if (identity) ledger.recordSkillEvent({ stage: 'applied', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, reason: 'use_skill tool completed' });
-              this.emit(`skill    used "${skillName}"`);
+            case 'set_plan':
+            case 'append_plan': {
+              // A completed task's plan is immutable history. Even if the model
+              // emits set_plan out of habit, a follow-up may only append its new
+              // steps; this prevents the old plan from disappearing on resume.
+              const append = isFollowUpPhase || action.type === 'append_plan' || followUpCriteriaAdded;
+              if (append) ledger.appendPlan(action.steps);
+              else ledger.setPlan(action.steps);
+              checkpoints.snapshot(ledger, append ? 'follow-up-plan' : 'plan', append ? 'follow-up plan created' : 'plan created');
+              this.emit('plan     ' + action.steps.length + (append ? ' follow-up' : '') + ' steps');
+              const planReviewHandler = this.config.planReviewHandler;
+              const needsPlanReview = this.config.requirePlanReview && planReviewHandler && (!ledger.data.planApproved || (isFollowUpPhase && !followUpPlanReviewHandled));
+              if (needsPlanReview) {
+                ledger.setStatus('review');
+                this.emit('plan-review waiting for user review');
+                const decision = await planReviewHandler({
+                  // A strict review requested by the user still applies to a new
+                  // phase, but it receives only the new criteria/steps — never a
+                  // costly replay of work that was already approved.
+                  criteria: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).map((criterion) => criterion.text),
+                  steps: append
+                    ? ledger.data.plan
+                        .filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id))
+                        .map((step) => ({ description: step.description, verification: step.verification }))
+                    : action.steps,
+                });
+                if (decision.criteria && decision.criteria.length > 0) {
+                  if (isFollowUpPhase) ledger.appendCriteria(decision.criteria);
+                  else ledger.setCriteria(decision.criteria);
+                }
+                if (decision.steps && decision.steps.length > 0) {
+                  if (isFollowUpPhase) {
+                    // Replace only this phase's proposed steps. The completed
+                    // task plan remains immutable history, while reviewer edits
+                    // do not leave duplicate follow-up steps behind.
+                    ledger.replacePlanSteps(
+                      ledger.data.plan.filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id)).map((step) => step.id),
+                      decision.steps,
+                    );
+                  } else {
+                    ledger.setPlan(decision.steps);
+                  }
+                }
+                if (decision.approved) {
+                  ledger.data.planApproved = true;
+                  followUpPlanReviewHandled = true;
+                  ledger.save();
+                  ledger.setStatus('executing');
+                  this.emit('plan approved — switching to build');
+                  observe('The user reviewed and approved the plan. Execute the approved plan one step at a time; verify with commands.');
+                } else {
+                  ledger.setStatus('planning');
+                  this.emit(`plan-review changes requested: ${decision.note ?? '(no note)'}`);
+                  observe(
+                    `The user reviewed the plan and requested changes: ${decision.note || '(no note)'}\n` +
+                      `Revise the ${isFollowUpPhase ? 'follow-up plan with append_plan' : 'plan with set_plan'}. Keep it small, reversible, and verifiable.`,
+                  );
+                }
+              } else {
+                ledger.setStatus('executing');
+                // Soft planning-quality nudge — once per run, never a hard gate:
+                // richer design/breakdown helps multi-surface work, but simple
+                // tasks should not pay for ceremony.
+                const areas = new Set(action.steps.map((s) => s.area).filter(Boolean));
+                const wantsDesign = effortPlan.complexity !== 'low' && !ledger.data.planDesign && !planningNudged;
+                const wantsTodos = effortPlan.complexity !== 'low' && action.steps.length >= 3 && !action.steps.some((s) => s.subtasks?.length);
+                let note = 'Plan recorded. Execute one step at a time. Verify with commands; evidence ids will be reported.';
+                if (wantsDesign || wantsTodos) {
+                  planningNudged = true;
+                  const tips: string[] = [];
+                  if (wantsDesign) {
+                    tips.push(
+                      `no DESIGN recorded yet${areas.size >= 2 ? ` and this plan spans ${[...areas].join(' + ')}` : ''} — consider set_design with bounded frontend/backend/integration notes before building`,
+                    );
+                  }
+                  if (wantsTodos) {
+                    tips.push('consider revising key steps (revise_step) to add small todo subtasks so progress is verifiable incrementally');
+                  }
+                  note += `\nPLANNING NOTE: ${tips.join('; ')}. This is guidance, not a blocker.`;
+                }
+                observe(note);
+              }
+              break;
             }
-          }
-
-          // Step completion is INTENTIONAL, never a side effect of tagging a
-          // tool call with a stepId. A step is done when a successful
-          // run_command matches the step's own verification (below), its last
-          // todo is checked (toggleSubtask), or the model explicitly calls
-          // complete_step. Previously ANY successful stepId-tagged tool —
-          // even a read_file — completed the step and force-checked its
-          // todos, so the plan claimed progress for work that never happened
-          // and the agent skipped ahead.
-          if (action.stepId && action.tool === 'run_command' && outcome.result.ok) {
-            const step = ledger.step(action.stepId);
-            const cmd = String(action.params['command'] ?? '');
-            if (step && step.status !== 'done' && step.verification && commandsMatch(step.verification, cmd)) {
-              ledger.updateStep(step.id, { status: 'done' });
-              checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
-              this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
+            case 'set_hypothesis': {
+              ledger.data.currentHypothesis = action.text;
+              ledger.save();
+              this.emit(`hypothesis ${action.text.slice(0, 120)}`);
+              observe('Hypothesis recorded. Proceed with the next action.');
+              break;
             }
-          } else if (!action.stepId && action.tool === 'run_command' && outcome.result.ok) {
-            // Models frequently omit stepId. When a verification command passes,
-            // auto-complete every open plan step that names exactly this
-            // command as its verification — otherwise plans silently never
-            // progress even though the work was verified.
-            const cmd = String(action.params['command'] ?? '');
-            if (cmd.trim()) {
-              for (const step of ledger.data.plan) {
-                if (step.status === 'done' || !step.verification) continue;
-                if (commandsMatch(step.verification, cmd)) {
+            case 'set_design': {
+              ledger.setPlanDesign(action.design);
+              const present = [
+                action.design.frontend ? `frontend(${action.design.frontend.length})` : '',
+                action.design.backend ? `backend(${action.design.backend.length})` : '',
+                action.design.integration ? `integration(${action.design.integration.length})` : '',
+              ].filter(Boolean);
+              this.emit(`design   recorded: ${present.join(' ')}`);
+              observe(
+                'DESIGN RECORDED and pinned to task state (shown in compact form each turn; use show_plan for full detail). ' +
+                  'Now break the work into SMALL todo-sized steps grouped by area (frontend/backend/...), each with concrete subtasks and a real verification.',
+              );
+              break;
+            }
+            case 'revise_step': {
+              const revised = ledger.reviseStep(
+                action.stepId,
+                { description: action.description, verification: action.verification, area: action.area, addSubtasks: action.addSubtasks },
+                action.reason,
+              );
+              if (!revised) {
+                observe(`Cannot revise: unknown step "${action.stepId}". Use show_plan to see current step ids.`);
+                break;
+              }
+              this.emit(`replan   ${action.stepId} revised — ${action.reason.slice(0, 90)}`);
+              observe(`STEP REVISED (${action.stepId}) — reason recorded in the revision log. Continue with the UPDATED step only; do not replan unrelated steps.`);
+              break;
+            }
+            case 'toggle_todo': {
+              const ok = ledger.toggleSubtask(action.stepId, action.index, action.done);
+              if (!ok) {
+                observe(`Cannot update todo #${action.index} of ${action.stepId}: out of range. Use show_plan if unsure.`);
+                break;
+              }
+              const step = ledger.step(action.stepId)!;
+              const todo = step.subtasks?.[action.index];
+              this.emit(
+                step.status === 'done'
+                  ? `step     ${action.stepId} done (all todos checked)`
+                  : `todo     ${action.stepId}[${action.index}] ${todo?.done ? '✓' : '·'} ${(todo?.text ?? '').slice(0, 60)}`,
+              );
+              observe('Noted.');
+              break;
+            }
+            case 'complete_step': {
+              const step = ledger.step(action.stepId);
+              if (!step) {
+                observe(`Cannot complete: unknown step "${action.stepId}". Use show_plan to see current step ids.`);
+                break;
+              }
+              if (step.status === 'done') {
+                observe(`${action.stepId} is already done.`);
+                break;
+              }
+              ledger.updateStep(action.stepId, { status: 'done' });
+              checkpoints.snapshot(ledger, action.stepId, step.description.slice(0, 60));
+              this.emit(`step     ${action.stepId} done (explicit) — ${action.reason.slice(0, 80)}`);
+              observe(
+                `STEP DONE (${action.stepId}): ${action.reason}\n` +
+                  `Move to the next open step in TASK STATE. If the step had a verification command that has not run yet, run it before claiming related criteria.`,
+              );
+              break;
+            }
+            case 'show_plan': {
+              observe(renderFullPlanMessage(ledger));
+              break;
+            }
+            case 'record_decision': {
+              const conflicts = decisionConflicts(action, explicitTech.required);
+              if (conflicts.length > 0) {
+                observe(
+                  `DECISION REJECTED — it conflicts with an explicit requirement:\n${conflicts.map((c) => `  - ${c}`).join('\n')}\n` +
+                    `Record a decision that honors the explicit requirement (or ask the user to change it).`,
+                );
+                break;
+              }
+              const superseded = action.supersedes ?? (ledger.activeArchitectureDecisions().length === 1 ? ledger.activeArchitectureDecisions()[0]!.id : undefined);
+              const record = ledger.recordArchitectureDecision(action);
+              this.emit(`decision ${record.id} — ${record.decision.slice(0, 100)}`);
+              observe(
+                `ARCHITECTURE DECISION RECORDED (${record.id})${superseded && superseded !== record.id ? `, superseding ${superseded}` : ''}: ${record.decision}\n` +
+                  `It is now part of the task state and will be checked against the implementation at completion. ` +
+                  `Implement accordingly; if you change course later, record a new decision with supersedes.`,
+              );
+              break;
+            }
+            case 'tool_call': {
+              if (ledger.data.acceptanceCriteria.length === 0) {
+                observe('No acceptance criteria exist yet. Use set_criteria first.');
+                break;
+              }
+              const outcome = await executor.execute({
+                tool: action.tool,
+                params: action.params,
+                reason: action.reason,
+                expected: action.expected,
+                stepId: action.stepId,
+              });
+
+              const malformedKind = malformedKindFor(outcome.result.errorSignature);
+              const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
+
+              if (outcome.blockedByLoop) {
+                loopBlocks += 1;
+                memory.add({
+                  type: 'failure',
+                  claim: `Repeated failure on ${outcome.record.paramsSummary}: ${action.reason}`,
+                  scope: guard.lock.name,
+                  confidence: 0.8,
+                });
+                if (loopBlocks >= 3) {
+                  ledger.addBlocker('Three loop-prevention blocks occurred; task escalated.');
+                  exitReason = 'blocked';
+                  observe(outcome.result.output);
+                  break;
+                }
+                observe(outcome.result.output);
+                break;
+              }
+              if (outcome.deniedByPolicy) {
+                observe(outcome.result.output);
+                break;
+              }
+              // A filesystem helper reporting success is never enough. The tools
+              // return this signature only after canonical-root stat/read/hash
+              // verification failed twice. Continuing would let the model edit a
+              // phantom workspace and later "verify" another checkout.
+              if (outcome.result.errorSignature === 'write-not-persisted') {
+                const blocker = `Workspace mutation was not persisted in the active writable target (${guard.activeWritableRoot}); execution stopped before claiming any file change.`;
+                ledger.addBlocker(blocker);
+                exitReason = 'blocked';
+                this.emit('blocked  WRITE_NOT_PERSISTED — canonical workspace verification failed');
+                observe(`${outcome.result.output}\nHARD STOP: do not retry a different file path. Repair the session workspace authority, then resume.`);
+                break mainLoop;
+              }
+
+              let evidenceNote = '';
+              if (action.tool === 'run_command') {
+                const kind = classifyEvidenceKind(String(action.params['command'] ?? ''));
+                const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                const ev = evidence.record(ledger.data, {
+                  kind,
+                  label: action.expected || String(action.params['command']),
+                  command: String(action.params['command']),
+                  exitCode: outcome.result.exitCode,
+                  passed: outcome.result.ok,
+                  output: outcome.result.output,
+                  workspaceFingerprint: currentFp,
+                });
+                ledger.save();
+                evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
+                this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+              }
+
+              if (action.tool === 'browse' && outcome.result.image) {
+                this.emit(`browseshot ${outcome.result.image}`);
+              }
+
+              // Track every skill the model actually loads so continuations and the
+              // report can show which reusable knowledge drove the task.
+              if (action.tool === 'use_skill' && outcome.result.ok) {
+                const skillName = String(action.params['name'] ?? '').trim();
+                if (skillName) {
+                  const identity = skills.identity(skillName);
+                  ledger.addUsedSkill(skillName, identity);
+                  if (identity)
+                    ledger.recordSkillEvent({
+                      stage: 'loaded',
+                      name: identity.name,
+                      version: identity.version,
+                      contentHash: identity.contentHash,
+                      scope: identity.scope,
+                      reason: 'explicit use_skill',
+                      loadChars: skills.get(skillName)?.instructions.length,
+                    });
+                  if (identity)
+                    ledger.recordSkillEvent({
+                      stage: 'applied',
+                      name: identity.name,
+                      version: identity.version,
+                      contentHash: identity.contentHash,
+                      scope: identity.scope,
+                      reason: 'use_skill tool completed',
+                    });
+                  this.emit(`skill    used "${skillName}"`);
+                }
+              }
+
+              // Step completion is INTENTIONAL, never a side effect of tagging a
+              // tool call with a stepId. A step is done when a successful
+              // run_command matches the step's own verification (below), its last
+              // todo is checked (toggleSubtask), or the model explicitly calls
+              // complete_step. Previously ANY successful stepId-tagged tool —
+              // even a read_file — completed the step and force-checked its
+              // todos, so the plan claimed progress for work that never happened
+              // and the agent skipped ahead.
+              if (action.stepId && action.tool === 'run_command' && outcome.result.ok) {
+                const step = ledger.step(action.stepId);
+                const cmd = String(action.params['command'] ?? '');
+                if (step && step.status !== 'done' && step.verification && commandsMatch(step.verification, cmd)) {
                   ledger.updateStep(step.id, { status: 'done' });
                   checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
                   this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
                 }
-              }
-            }
-          }
-
-          // LSP post-edit gate: after any successful edit, surface diagnostics
-          // for the touched files so introduced errors are caught at the source
-          // instead of at the evidence gate. Silently skipped when no language
-          // server is configured for the file (LSP stays optional).
-          let lspNote = '';
-          if ((action.tool === 'write_file' || action.tool === 'apply_edit') && outcome.result.ok) {
-            const touched = outcome.result.filesTouched ?? [];
-            const issues: string[] = [];
-            for (const file of touched) {
-              const diag = await lsp.diagnostics(file);
-              if (diag.ok && /^\[(ERROR|WARNING)\]/m.test(diag.output)) {
-                issues.push(diag.output);
-              }
-            }
-            if (issues.length > 0) {
-              lspNote = `\nLSP DIAGNOSTICS (post-edit check):\n${issues.join('\n\n')}`;
-              this.emit(`lsp      post-edit diagnostics: issues in ${issues.length} file(s) — fix before the evidence gate`);
-            }
-            // Change-impact analysis: surface edited symbols with wide fan-in
-            // so the model checks callers instead of assuming a local fix is
-            // safe. Silently skipped without a language server.
-            const impact = await analyzeChangeImpact(lsp, touched).catch(() => undefined);
-            if (impact) {
-              lspNote += `${lspNote ? '\n' : ''}\n${impact}`;
-              this.emit('impact   wide fan-in symbols changed — caller check advised');
-            }
-          }
-
-          // Failed commands get the failure DIGEST (error lines + tail) rather
-          // than a head slice that typically misses the actual cause.
-          const outputForModel = outcome.result.ok
-            ? outcome.result.output.slice(0, 2500)
-            : `${extractFailureDigest(outcome.result.output)}${outcome.result.output.length > 2500 ? `\n[... ${outcome.result.output.length} chars total; showing failure-relevant lines]` : ''}`;
-          let observedResult = `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outputForModel}${evidenceNote}${lspNote}`;
-          telemetry.noteToolCall();
-          if (!outcome.result.ok) {
-            // Targeted failure recovery: hand back the compact state needed to
-            // diagnose THIS failure — not a replay of the whole conversation.
-            const openCriteria = ledger.data.acceptanceCriteria.filter((c) => !c.satisfied);
-            const recentFiles = ledger.data.filesChanged.slice(-5);
-            observedResult +=
-              `\nRECOVERY (targeted, not the full history):\n` +
-              `  failure: ${outcome.record.paramsSummary}\n` +
-              (outcome.record.errorSignature ? `  signature: ${outcome.record.errorSignature}\n` : '') +
-              (openCriteria.length ? `  open criteria: ${openCriteria.map((c) => `${c.id}:${c.text}`).join('; ').slice(0, 300)}\n` : '') +
-              (recentFiles.length ? `  files in play: ${recentFiles.join(', ')}\n` : '') +
-              `  Next: form a new hypothesis about this specific error, make a targeted fix, then re-verify.`;
-          }
-          // Plan-order drift: the agent is working a different step than the
-          // one the state message points at. Left unremarked, models tend to
-          // obey the stale NEXT pointer and jump back and forth.
-          const nextStep = ledger.nextStep();
-          if (action.stepId && nextStep && nextStep.id !== action.stepId && nextStep.status !== 'done') {
-            observedResult +=
-              `\nPLAN ORDER: you are working on ${action.stepId}, but NEXT points at ${nextStep.id} — ${nextStep.description.slice(0, 90)}. ` +
-              `Finish that step first, or revise_step/reorder if the plan order genuinely changed.`;
-          }
-          if (malformedVerdict) {
-            if (malformedVerdict.remind && !malformedVerdict.escalate) {
-              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/3 — schema errors repeating`);
-            } else if (malformedVerdict.escalate && !malformedVerdict.halt) {
-              this.emit(`warn    malformed call streak ${malformedVerdict.streak}/3 — strategy change injected`);
-              observedResult = `${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`;
-            } else if (malformedVerdict.halt) {
-              memory.add({
-                type: 'failure',
-                claim: `Repeated malformed tool calls (${malformedVerdict.streak}×): ${action.tool}`,
-                scope: guard.lock.name,
-                confidence: 0.8,
-              });
-              ledger.addBlocker(`LLM produced ${malformedVerdict.streak} consecutive malformed tool calls (${action.tool}); task stalled.`);
-              exitReason = 'stalled';
-              this.emit('stall   malformed-call spiral detected — stopping');
-              observe(`${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`);
-              break mainLoop;
-            }
-          }
-          const img = outcome.result.image;
-          const imgValid = typeof img === 'string' && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]{200,}$/.test(img);
-          if (imgValid && this.config.supportsImages) {
-            // Older screenshots are cost, but keeping ONLY the newest destroyed
-            // cross-page/state consistency on frontend runs: the model could
-            // never compare what it changed against what it built before. Keep
-            // the most recent few (plus user attachments in the stable prefix,
-            // which are always preserved).
-            const dropped = stripStaleImages(messages, KEEP_RECENT_SCREENSHOTS, prefixEnd);
-            if (dropped > 0) this.emit(`image    dropped ${dropped} stale screenshot(s) from model context`);
-            telemetry.noteScreenshot(img!.length - img!.indexOf(',') - 1);
-            observe([
-              { type: 'text', text: observedResult },
-              { type: 'image_url', image_url: { url: img! } },
-            ]);
-            this.emit('image    visual result attached to model context');
-          } else if (img) {
-            observe(`${observedResult}\n(A screenshot was captured but is not deliverable to the current model${this.config.supportsImages ? ' (invalid image data)' : ' (no image support)'}; it is visible in the desktop Browser panel.)`);
-          } else {
-            observe(observedResult);
-          }
-          break;
-        }
-        case 'connection_action': {
-          const connectionActionKey = `${action.connectionId}:${action.operationId}`;
-          const connectionAttempts = (connectionActionAttempts.get(connectionActionKey) ?? 0) + 1;
-          connectionActionAttempts.set(connectionActionKey, connectionAttempts);
-          if (connectionAttempts > 3) {
-            const blocker = `Saved connection action ${connectionActionKey} was requested more than three times without a new operation.`;
-            ledger.addBlocker(blocker);
-            exitReason = 'stalled';
-            this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
-            observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
-            break mainLoop;
-          }
-          if (!this.config.connectionActionHandler) {
-            observe('No saved-connection adapter is available in this host. Use request_block with a structured provider prerequisite instead of constructing authenticated headers.');
-            break;
-          }
-          try {
-            const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
-            const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
-            this.emit(`connection ${action.connectionId}/${action.operationId} completed`);
-            observe(`CONNECTION ACTION RESULT: ${result.message}${rendered}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`);
-          } catch (error) {
-            this.emit(`connection ${action.connectionId}/${action.operationId} failed`);
-            observe(`CONNECTION ACTION FAILED: ${(error as Error).message}\nDo not retry by adding raw headers to web_fetch. Check the saved connection's registered read operation or request a corrected secure connection.`);
-          }
-          break;
-        }
-        case 'connection_operation': {
-          // The key intentionally omits body values. Bodies may contain user
-          // business data and must never become model-visible telemetry; a
-          // repeated documented operation is still bounded by its immutable
-          // connection/id/method/path identity.
-          const operationKey = `${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`;
-          const operationAttempts = (connectionOperationAttempts.get(operationKey) ?? 0) + 1;
-          connectionOperationAttempts.set(operationKey, operationAttempts);
-          if (operationAttempts > 3) {
-            this.emit(`connection proposal paused — repeated ${operationKey}`);
-            observe(`CONNECTION OPERATION PAUSED: ${action.operation.label} was proposed more than three times. Do not retry it unchanged; inspect the provider documentation, use read discovery, or ask the user for a different target.`);
-            break;
-          }
-          if (!this.config.connectionOperationHandler) {
-            observe('This host does not yet provide a provider-operation approval channel. Do not treat that as provider failure: gather documentation and request a user decision or a host update instead of claiming the task is complete.');
-            break;
-          }
-          try {
-            const result = await this.config.connectionOperationHandler({
-              connectionId: action.connectionId,
-              operation: action.operation,
-              ...(action.body !== undefined ? { body: action.body } : {}),
-              ...(action.documentationUrl ? { documentationUrl: action.documentationUrl } : {}),
-              reason: action.reason,
-            });
-            const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
-            this.emit(`connection operation ${action.connectionId}/${action.operation.id} completed`);
-            observe(`PROVIDER OPERATION RESULT: ${result.message}${rendered}\nContinue from the provider response. The operation was individually approved and is not blanket authorization for other writes.`);
-          } catch (error) {
-            this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run`);
-            observe(`PROVIDER OPERATION NOT RUN: ${(error as Error).message}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`);
-          }
-          break;
-        }
-        case 'claim_criterion': {
-          const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-          const link = evidence.link(ledger.data, action.criterionId, action.evidenceId, currentFp);
-          ledger.save();
-          this.emit(`claim    ${action.criterionId} <- ${action.evidenceId}: ${link.ok ? 'accepted' : link.reason}`);
-          if (link.ok) {
-            for (const identity of ledger.data.usedSkillIdentities ?? []) {
-              ledger.recordSkillEvent({ stage: 'verified', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, reason: `criterion ${action.criterionId} accepted` });
-            }
-            const criterion = ledger.data.acceptanceCriteria.find((c) => c.id === action.criterionId);
-            const evidenceRecord = ledger.data.evidence.find((e) => e.id === action.evidenceId);
-            const weak =
-              criterion && evidenceRecord && isWeakEvidenceLink(criterion, evidenceRecord)
-                ? '\nNOTE: weakly bound — this criterion pins no verification command, so any passing command would satisfy it. Pin it with a real verification command for hard proof.'
-                : '';
-            observe(`Accepted: ${link.reason}${weak}`);
-          } else {
-            observe(`Rejected: ${link.reason}`);
-          }
-          break;
-        }
-        case 'complete': {
-          const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-          const gate = evidence.gate(ledger.data, currentFp);
-          const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
-          if (!gate.open && !chatOnly) {
-            observe(
-              `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
-                `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
-                `Continue working, or request_block if you cannot proceed.`,
-            );
-            break;
-          }
-          // Visual-verification gate: UI work is only done when the final state
-          // was actually SEEN. Command evidence cannot see pixels, so without
-          // this gate broken/unfinished layouts ship as "complete". Soft-capped
-          // like the architecture audit so it can never deadlock a task.
-          const visual = uiVisualGate(ledger.data, {
-            browserAvailable: Boolean(this.config.browser?.available()),
-            visionAvailable: this.config.supportsImages ?? false,
-          });
-          if (!visual.verified && !chatOnly) {
-            if (visualGateRejections < 2) {
-              visualGateRejections += 1;
-              observe(
-                `COMPLETION REJECTED by visual-verification gate — ${visual.reason}.\n` +
-                  `Serve or rebuild the app (run_command), browse navigate to it, take a screenshot of every changed view ` +
-                  `(and exercise interactions with click/type where relevant), confirm layout, content, and states look right, then complete again.`,
-              );
-              break;
-            }
-            this.emit('visual-gate screenshot requirement unmet — overriding after repeated rejections');
-            action.risks = [
-              ...(action.risks ?? []),
-              'Final UI state was never verified with a screenshot',
-            ];
-          }
-          // Architecture audit: verify the implementation actually follows the
-          // recorded decisions. A soft gate — after two rejections the agent's
-          // judgment wins so this can never deadlock a legitimate task.
-          if (!chatOnly && (ledger.data.architectureDecisions ?? []).some((d) => d.status === 'active')) {
-            const audit = auditArchitecture(ledger.data, guard.lock.repoRoot);
-            if (!audit.ok && architectureAuditRejections < 2) {
-              architectureAuditRejections += 1;
-              observe(
-                `COMPLETION REJECTED by architecture review — the implementation does not match the recorded decision(s):\n` +
-                  `${audit.issues.map((i) => `  - ${i}`).join('\n')}\n` +
-                  `Either bring the implementation in line with the decision, or record a new decision (record_decision with supersedes) explaining the change, then complete again.`,
-              );
-              break;
-            }
-            if (!audit.ok) {
-              this.emit('decision architecture drift noted but overridden by engineering judgment — recorded as a risk');
-              action.risks = [
-                ...(action.risks ?? []),
-                `Architecture drift: ${audit.issues[0]?.slice(0, 200)}`,
-              ];
-            }
-          }
-          // Bug rigor gate: "verification passed" does not prove the bug was
-          // fixed — the pre-existing suite may never have covered it. A bug
-          // fix must show causality: a recorded root cause, and a FAIL ->
-          // (edit) -> PASS pair for the same non-trivial command. Soft-capped
-          // like the architecture audit so it can never deadlock a task whose
-          // reproduction is genuinely impossible.
-          if (!chatOnly && isBugTask && (ledger.data.filesChanged?.length ?? 0) > 0) {
-            const missing: string[] = [];
-            if (!ledger.data.currentHypothesis) {
-              missing.push('a recorded root cause — call set_hypothesis stating why the bug happened');
-            }
-            if (!hasRegressionProof(ledger.data)) {
-              missing.push(
-                'regression proof — no command went FAIL before your fix and PASS after it. Run the reproduction/verification command FIRST (watch it fail), fix, then run the SAME command again',
-              );
-            }
-            if (missing.length > 0 && bugRigorRejections < 2) {
-              bugRigorRejections += 1;
-              this.emit('rigor    bug-fix completion rejected — root cause / regression proof missing');
-              observe(
-                `COMPLETION REJECTED by bug-fix rigor gate:\n${missing.map((m) => `  - ${m}`).join('\n')}\n` +
-                  `Do that, then complete again. If reproduction is genuinely impossible (environment/data specific), complete again — the gate yields after repeated rejection and records the gap as a risk.`,
-              );
-              break;
-            }
-            if (missing.length > 0) {
-              action.risks = [
-                ...(action.risks ?? []),
-                `Bug-fix rigor override: completed without ${missing.join(' and ')}.`,
-              ];
-              this.emit('rigor    bug-fix gap accepted after repeated rejection — recorded as a risk');
-            }
-          }
-          // Plan reconciliation: the criteria/evidence gate above is the
-          // completion authority, but an ABANDONED plan must be reconciled
-          // explicitly — open steps mean either work the criteria missed or
-          // stale scope. One forced reconciliation so this can never deadlock;
-          // after that, completing with open steps is recorded as a risk.
-          const openSteps = ledger.data.plan.filter((s) => s.status === 'pending' || s.status === 'in_progress');
-          if (!chatOnly && openSteps.length > 0 && (ledger.data.filesChanged?.length ?? 0) > 0) {
-            if (planReconcileRejections < 1) {
-              planReconcileRejections += 1;
-              this.emit(`reconcile completion rejected — ${openSteps.length} open plan step(s): ${openSteps.map((s) => s.id).join(', ')}`);
-              observe(
-                `COMPLETION REJECTED — the plan still has open step(s): ${openSteps.map((s) => `${s.id} (${s.description.slice(0, 60)})`).join('; ')}.\n` +
-                  `Reconcile before completing: finish the work, mark genuinely-finished steps done (complete_step), or revise_step to explicitly drop scope that is no longer needed. Then complete again.`,
-              );
-              break;
-            }
-            action.risks = [
-              ...(action.risks ?? []),
-              `Completed with ${openSteps.length} open plan step(s): ${openSteps.map((s) => s.id).join(', ')}.`,
-            ];
-            this.emit('reconcile open plan steps accepted at completion — recorded as a risk');
-          }
-          // Final quality review: a strict second-opinion pass over the finished
-          // work — diff summary + criteria, and for UI tasks the last screenshot
-          // judged by the model itself (vision), closing the "nobody looks at
-          // the pixels" gap. Fail-open: errors or ambiguous verdicts accept
-          // completion, and only ONE forced revision is possible so this can
-          // never deadlock a legitimate task.
-          const reviewRoundCap = effortPlan?.complexity === 'high' ? 2 : 1;
-          const reviewWarning = unresolvedQualityReview;
-          if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
-            const summary = reviewWarning.slice(0, 600);
-            if (!this.config.approvalHandler) {
-              const blocker = `Strict-risk quality reviewer warning needs explicit user approval: ${summary}`;
-              ledger.addBlocker(blocker);
-              this.emit('review   strict-risk warning unresolved — blocked because no approval handler is available');
-              exitReason = 'blocked';
-              break;
-            }
-            this.emit('review   strict-risk warning remains — explicit user approval required to complete');
-            const approved = await this.config.approvalHandler({
-              tool: 'quality-review',
-              tier: 'dangerous',
-              why: 'A security, payments, or data-integrity task still has an unresolved final quality-review warning.',
-              summary,
-            });
-            if (!approved) {
-              // A rejection means "keep working", not "complete with risk".
-              // Reset the counter so the eventual repair gets a fresh review.
-              qualityReviewRejections = 0;
-              unresolvedQualityReview = undefined;
-              this.emit('review   strict-risk completion not approved — returning to repair and fresh review');
-              observe(
-                `USER DID NOT APPROVE completion with the unresolved quality-review warning:\n${summary}\n` +
-                  `Fix it, then complete again. A fresh quality review will run before this task can finish.`,
-              );
-              break;
-            }
-            action.risks = [
-              ...(action.risks ?? []),
-              `User accepted unresolved strict-risk quality-review warning: ${summary}`,
-            ];
-            unresolvedQualityReview = undefined;
-            this.emit('review   strict-risk quality warning explicitly accepted by user — recorded as a release risk');
-          }
-          if (!riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
-            // Non-strict work may proceed after its bounded repair budget, but
-            // never silently: the final report must say the reviewer concern
-            // was not independently cleared.
-            action.risks = [
-              ...(action.risks ?? []),
-              `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${reviewWarning.slice(0, 600)}`,
-            ];
-            unresolvedQualityReview = undefined;
-            this.emit('review   quality warning unresolved after repair budget — recorded as a release risk');
-          }
-          const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityReviewRejections < reviewRoundCap;
-          if (wantsReview) {
-            try {
-              const deepReview = effortPlan?.complexity === 'high';
-              const reviewDiff = await collectQualityReviewDiff(guard.activeWritableRoot, ledger.data.checkpoints, deepReview ? 8_000 : 4_000);
-              const reviewingUi = isUiTask(ledger.data);
-              const reviewMsgs = buildQualityReviewMessages({
-                goal,
-                criteria: ledger.data.acceptanceCriteria.map((c) => c.text),
-                filesChanged: ledger.data.filesChanged ?? [],
-                diffStat: reviewDiff.diffStat,
-                diffBody: reviewDiff.diffBody,
-                summary: action.summary,
-                uiTask: reviewingUi,
-                frontendDesign: reviewingUi ? ledger.data.planDesign?.frontend : undefined,
-                browserEvidence: reviewingUi ? findLastBrowserEvidence(ledger.data) : undefined,
-                screenshotUrl: reviewingUi ? findLastScreenshotUrl(messages) : undefined,
-              });
-              const reviewReply = await llm.completeStream(
-                reviewMsgs,
-                { effort: deepReview ? 'medium' : 'low', signal: this.abortController?.signal },
-                () => {},
-              );
-              telemetry.recordCall(reviewMsgs, undefined, 0, 'planning');
-              const review = parseReviewVerdict(reviewReply);
-              if (review.verdict === 'unavailable') {
-                const warning = `Final quality review was unavailable: ${review.feedback}`;
-                this.emit('review   quality reviewer returned no usable verdict');
-                if (riskPlan.strictVerification) {
-                  // Strict-risk work cannot claim the second opinion happened.
-                  // The next completion goes through the explicit approval
-                  // path above, rather than silently accepting this gap.
-                  qualityReviewRejections = reviewRoundCap;
-                  unresolvedQualityReview = warning;
-                  observe(`${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`);
-                  break;
+              } else if (!action.stepId && action.tool === 'run_command' && outcome.result.ok) {
+                // Models frequently omit stepId. When a verification command passes,
+                // auto-complete every open plan step that names exactly this
+                // command as its verification — otherwise plans silently never
+                // progress even though the work was verified.
+                const cmd = String(action.params['command'] ?? '');
+                if (cmd.trim()) {
+                  for (const step of ledger.data.plan) {
+                    if (step.status === 'done' || !step.verification) continue;
+                    if (commandsMatch(step.verification, cmd)) {
+                      ledger.updateStep(step.id, { status: 'done' });
+                      checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
+                      this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
+                    }
+                  }
                 }
-                action.risks = [...(action.risks ?? []), warning];
               }
-              if (review.verdict === 'revise') {
-                qualityReviewRejections += 1;
-                unresolvedQualityReview = review.feedback;
-                this.emit(`review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
+
+              // LSP post-edit gate: after any successful edit, surface diagnostics
+              // for the touched files so introduced errors are caught at the source
+              // instead of at the evidence gate. Silently skipped when no language
+              // server is configured for the file (LSP stays optional).
+              let lspNote = '';
+              if ((action.tool === 'write_file' || action.tool === 'apply_edit') && outcome.result.ok) {
+                const touched = outcome.result.filesTouched ?? [];
+                const issues: string[] = [];
+                for (const file of touched) {
+                  const diag = await lsp.diagnostics(file);
+                  if (diag.ok && /^\[(ERROR|WARNING)\]/m.test(diag.output)) {
+                    issues.push(diag.output);
+                  }
+                }
+                if (issues.length > 0) {
+                  lspNote = `\nLSP DIAGNOSTICS (post-edit check):\n${issues.join('\n\n')}`;
+                  this.emit(`lsp      post-edit diagnostics: issues in ${issues.length} file(s) — fix before the evidence gate`);
+                }
+                // Change-impact analysis: surface edited symbols with wide fan-in
+                // so the model checks callers instead of assuming a local fix is
+                // safe. Silently skipped without a language server.
+                const impact = await analyzeChangeImpact(lsp, touched).catch(() => undefined);
+                if (impact) {
+                  lspNote += `${lspNote ? '\n' : ''}\n${impact}`;
+                  this.emit('impact   wide fan-in symbols changed — caller check advised');
+                }
+              }
+
+              // Failed commands get the failure DIGEST (error lines + tail) rather
+              // than a head slice that typically misses the actual cause.
+              const outputForModel = outcome.result.ok
+                ? outcome.result.output.slice(0, 2500)
+                : `${extractFailureDigest(outcome.result.output)}${outcome.result.output.length > 2500 ? `\n[... ${outcome.result.output.length} chars total; showing failure-relevant lines]` : ''}`;
+              let observedResult = `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outputForModel}${evidenceNote}${lspNote}`;
+              telemetry.noteToolCall();
+              if (!outcome.result.ok) {
+                // Targeted failure recovery: hand back the compact state needed to
+                // diagnose THIS failure — not a replay of the whole conversation.
+                const openCriteria = ledger.data.acceptanceCriteria.filter((c) => !c.satisfied);
+                const recentFiles = ledger.data.filesChanged.slice(-5);
+                observedResult +=
+                  `\nRECOVERY (targeted, not the full history):\n` +
+                  `  failure: ${outcome.record.paramsSummary}\n` +
+                  (outcome.record.errorSignature ? `  signature: ${outcome.record.errorSignature}\n` : '') +
+                  (openCriteria.length
+                    ? `  open criteria: ${openCriteria
+                        .map((c) => `${c.id}:${c.text}`)
+                        .join('; ')
+                        .slice(0, 300)}\n`
+                    : '') +
+                  (recentFiles.length ? `  files in play: ${recentFiles.join(', ')}\n` : '') +
+                  `  Next: form a new hypothesis about this specific error, make a targeted fix, then re-verify.`;
+              }
+              // Plan-order drift: the agent is working a different step than the
+              // one the state message points at. Left unremarked, models tend to
+              // obey the stale NEXT pointer and jump back and forth.
+              const nextStep = ledger.nextStep();
+              if (action.stepId && nextStep && nextStep.id !== action.stepId && nextStep.status !== 'done') {
+                observedResult +=
+                  `\nPLAN ORDER: you are working on ${action.stepId}, but NEXT points at ${nextStep.id} — ${nextStep.description.slice(0, 90)}. ` +
+                  `Finish that step first, or revise_step/reorder if the plan order genuinely changed.`;
+              }
+              if (malformedVerdict) {
+                if (malformedVerdict.remind && !malformedVerdict.escalate) {
+                  this.emit(`warn    malformed call streak ${malformedVerdict.streak}/3 — schema errors repeating`);
+                } else if (malformedVerdict.escalate && !malformedVerdict.halt) {
+                  this.emit(`warn    malformed call streak ${malformedVerdict.streak}/3 — strategy change injected`);
+                  observedResult = `${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`;
+                } else if (malformedVerdict.halt) {
+                  memory.add({
+                    type: 'failure',
+                    claim: `Repeated malformed tool calls (${malformedVerdict.streak}×): ${action.tool}`,
+                    scope: guard.lock.name,
+                    confidence: 0.8,
+                  });
+                  ledger.addBlocker(`LLM produced ${malformedVerdict.streak} consecutive malformed tool calls (${action.tool}); task stalled.`);
+                  exitReason = 'stalled';
+                  this.emit('stall   malformed-call spiral detected — stopping');
+                  observe(`${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`);
+                  break mainLoop;
+                }
+              }
+              const img = outcome.result.image;
+              const imgValid = typeof img === 'string' && /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]{200,}$/.test(img);
+              if (imgValid && this.config.supportsImages) {
+                // Older screenshots are cost, but keeping ONLY the newest destroyed
+                // cross-page/state consistency on frontend runs: the model could
+                // never compare what it changed against what it built before. Keep
+                // the most recent few (plus user attachments in the stable prefix,
+                // which are always preserved).
+                const dropped = stripStaleImages(messages, KEEP_RECENT_SCREENSHOTS, prefixEnd);
+                if (dropped > 0) this.emit(`image    dropped ${dropped} stale screenshot(s) from model context`);
+                telemetry.noteScreenshot(img!.length - img!.indexOf(',') - 1);
+                observe([
+                  { type: 'text', text: observedResult },
+                  { type: 'image_url', image_url: { url: img! } },
+                ]);
+                this.emit('image    visual result attached to model context');
+              } else if (img) {
                 observe(
-                  `COMPLETION REJECTED by final quality review. Issues found:\n${review.feedback}\n` +
-                    (riskPlan.strictVerification
-                      ? `Fix these problems, then call complete again. If the reviewer still rejects the final result after the allowed repair rounds, only an explicit user approval can accept that release risk.`
-                      : `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`),
+                  `${observedResult}\n(A screenshot was captured but is not deliverable to the current model${this.config.supportsImages ? ' (invalid image data)' : ' (no image support)'}; it is visible in the desktop Browser panel.)`,
+                );
+              } else {
+                observe(observedResult);
+              }
+              break;
+            }
+            case 'connection_action': {
+              const connectionActionKey = `${action.connectionId}:${action.operationId}`;
+              const connectionAttempts = (connectionActionAttempts.get(connectionActionKey) ?? 0) + 1;
+              connectionActionAttempts.set(connectionActionKey, connectionAttempts);
+              if (connectionAttempts > 3) {
+                const blocker = `Saved connection action ${connectionActionKey} was requested more than three times without a new operation.`;
+                ledger.addBlocker(blocker);
+                exitReason = 'stalled';
+                this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
+                observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
+                break mainLoop;
+              }
+              if (!this.config.connectionActionHandler) {
+                observe(
+                  'No saved-connection adapter is available in this host. Use request_block with a structured provider prerequisite instead of constructing authenticated headers.',
                 );
                 break;
               }
-              unresolvedQualityReview = undefined;
-            } catch (err) {
-              const warning = `Final quality review could not run: ${(err as Error).message.slice(0, 300)}`;
-              this.emit('review   quality reviewer unavailable — review gap recorded');
-              if (riskPlan.strictVerification) {
-                qualityReviewRejections = reviewRoundCap;
-                unresolvedQualityReview = warning;
-                observe(`${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`);
+              try {
+                const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
+                const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
+                this.emit(`connection ${action.connectionId}/${action.operationId} completed`);
+                observe(
+                  `CONNECTION ACTION RESULT: ${result.message}${rendered}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
+                );
+              } catch (error) {
+                this.emit(`connection ${action.connectionId}/${action.operationId} failed`);
+                observe(
+                  `CONNECTION ACTION FAILED: ${(error as Error).message}\nDo not retry by adding raw headers to web_fetch. Check the saved connection's registered read operation or request a corrected secure connection.`,
+                );
+              }
+              break;
+            }
+            case 'connection_operation': {
+              // The key intentionally omits body values. Bodies may contain user
+              // business data and must never become model-visible telemetry; a
+              // repeated documented operation is still bounded by its immutable
+              // connection/id/method/path identity.
+              const operationKey = `${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`;
+              const operationAttempts = (connectionOperationAttempts.get(operationKey) ?? 0) + 1;
+              connectionOperationAttempts.set(operationKey, operationAttempts);
+              if (operationAttempts > 3) {
+                this.emit(`connection proposal paused — repeated ${operationKey}`);
+                observe(
+                  `CONNECTION OPERATION PAUSED: ${action.operation.label} was proposed more than three times. Do not retry it unchanged; inspect the provider documentation, use read discovery, or ask the user for a different target.`,
+                );
                 break;
               }
-              action.risks = [...(action.risks ?? []), warning];
-            }
-          }
-          completionInput = {
-            summary: action.summary,
-            risks: action.risks ?? [],
-            followUps: action.followUps ?? [],
-          };
-          exitReason = 'complete';
-          break;
-        }
-        case 'ask_user': {
-          if (this.config.askUserHandler) {
-            this.emit(`ask-user ${action.questions.length} question(s) for you`);
-            const answer = await this.config.askUserHandler(action.questions);
-            this.emit('ask-user answered');
-            observe(`User answered your clarifying questions:\n${answer}\nUse these answers to set criteria and plan.`);
-          } else {
-            observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
-          }
-          break;
-        }
-        case 'parallel': {
-          this.emit(`parallel ${action.calls.length} concurrent tool calls`);
-          // The in-app browser is stateful: only one state-changing browser
-          // operation may run at a time.  Non-browser tools stay parallel;
-          // browser calls are serialized afterwards so a click/type/screenshot
-          // sequence never races against itself.
-          const browserCalls: { call: typeof action.calls[number]; index: number }[] = [];
-          const otherCalls: { call: typeof action.calls[number]; index: number }[] = [];
-          action.calls.forEach((call, index) => {
-            (call.tool === 'browse' ? browserCalls : otherCalls).push({ call, index });
-          });
-          const outcomes: (Awaited<ReturnType<typeof executor.execute>> | undefined)[] = new Array(action.calls.length);
-          const runOne = async (call: typeof action.calls[number], index: number): Promise<void> => {
-            // Batched calls are real tool executions too; without this every
-            // parallel turn undercounts tokenTelemetry.toolCalls.
-            telemetry.noteToolCall();
-            outcomes[index] = await executor.execute({
-              tool: call.tool,
-              params: call.params,
-              reason: call.reason,
-              expected: call.expected,
-            });
-          };
-          await Promise.all(otherCalls.map(({ call, index }) => runOne(call, index)));
-          for (const { call, index } of browserCalls) {
-            await runOne(call, index);
-            this.emit(`browser action serialized — one state-changing operation at a time`);
-          }
-          const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-          const parts = outcomes.map((o, i) => {
-            if (!o) return `[${i + 1}] (not executed)`;
-            if (o.record.tool === 'run_command') {
-              const kind = classifyEvidenceKind(String(action.calls[i]?.params['command'] ?? ''));
-              const ev = evidence.record(ledger.data, {
-                kind,
-                label: o.record.paramsSummary,
-                command: String(action.calls[i]?.params['command'] ?? ''),
-                exitCode: o.result.exitCode,
-                passed: o.result.ok,
-                output: o.result.output,
-                workspaceFingerprint: currentFp,
-              });
-              ledger.save();
-              this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
-            }
-            return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}`;
-          });
-          observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
-          break;
-        }
-        case 'report_finding': {
-          const finding = ledger.addFinding({
-            claim: action.claim,
-            kind: (action.kind as TaskFinding['kind']) ?? 'other',
-            severity: action.severity as TaskFinding['severity'],
-            location: action.location,
-            reproductionCommand: action.reproductionCommand,
-          });
-          this.emit(`finding  ${finding.id} reported (${finding.kind}) — will be verified before the report`);
-          observe(
-            `FINDING RECORDED (${finding.id}). It will be handed to an independent verifier that attempts to reproduce it ` +
-              `${action.reproductionCommand ? `with exactly: ${action.reproductionCommand}` : 'with its own reproduction attempt'}. ` +
-              `Only findings that reproduce with real evidence are reported as confirmed; continue your task.`,
-          );
-          break;
-        }
-        case 'request_block': {
-          const prerequisite = action.prerequisite ?? inferMissingPrerequisite(action.reason, action.reason);
-          if (prerequisite) {
-            this.emit(`recovery RESOLVING_PREREQUISITE — ${prerequisite.description}`);
-            const resolution = await prerequisiteResolver.resolve(prerequisite, {
-              repoRoot: guard.activeWritableRoot,
-              goal,
-              ledger,
-              specialist: false,
-            });
-            for (const attempt of resolution.attempts) {
-              this.emit(`recovery ${attempt.status} — ${attempt.strategy}: ${attempt.outcome.slice(0, 180)}`);
-            }
-            if (resolution.status === 'resolved') {
-              const connectionContext = this.config.connectionContext?.();
-              observe(
-                `PREREQUISITE RESOLVED: ${prerequisite.description}. ${resolution.message} ` +
-                  `Continue the task; do not request_block for this prerequisite again. Values and provider references stay protected.` +
-                  (connectionContext ? `\nREGISTERED SAVED CONNECTIONS (metadata only):\n${connectionContext}` : ''),
-              );
-              break;
-            }
-            if (resolution.status === 'needs-user' && this.config.askUserHandler && resolution.question) {
-              this.emit(`ask-user prerequisite decision needed — ${prerequisite.description}`);
-              const answer = await this.config.askUserHandler([resolution.question]);
-              this.emit('ask-user answered prerequisite decision');
-              observe(`User chose how to resolve ${prerequisite.description}: ${answer}\nContinue with that decision; do not claim a provider action you did not execute.`);
-              break;
-            }
-            // A saved connection is user-owned input, so never ask the model
-            // to carry a token in conversation.  The host renders a secure
-            // form, stores the credential separately, validates it, then the
-            // resolver gets one fresh discovery pass.
-            if (resolution.status === 'exhausted' && this.config.connectionRequestHandler && (prerequisite.providerHint || prerequisite.capabilities?.length)) {
-              ledger.recordPrerequisiteRecovery({
-                prerequisiteId: prerequisite.id,
-                prerequisiteKind: prerequisite.kind,
-                description: prerequisite.description,
-                requiredFor: prerequisite.requiredFor,
-                strategy: 'secure-connection-request',
-                status: 'NEEDS_USER',
-                outcome: 'Waiting for the user to configure and validate a saved connection through the local secure form.',
-                risk: RecoveryRisk.READ_ONLY,
-              });
-              this.emit(`connection required — ${prerequisite.description}`);
-              const connected = await this.config.connectionRequestHandler(prerequisite);
-              if (connected) {
-                this.emit(`connection saved — retrying discovery for ${prerequisite.description}`);
-                const retried = await prerequisiteResolver.resolve(prerequisite, {
-                  repoRoot: guard.activeWritableRoot,
-                  goal,
-                  ledger,
-                  specialist: false,
-                  retry: true,
+              if (!this.config.connectionOperationHandler) {
+                observe(
+                  'This host does not yet provide a provider-operation approval channel. Do not treat that as provider failure: gather documentation and request a user decision or a host update instead of claiming the task is complete.',
+                );
+                break;
+              }
+              try {
+                const result = await this.config.connectionOperationHandler({
+                  connectionId: action.connectionId,
+                  operation: action.operation,
+                  ...(action.body !== undefined ? { body: action.body } : {}),
+                  ...(action.documentationUrl ? { documentationUrl: action.documentationUrl } : {}),
+                  reason: action.reason,
                 });
-                for (const attempt of retried.attempts) {
-                  this.emit(`recovery ${attempt.status} — ${attempt.strategy}: ${attempt.outcome.slice(0, 180)}`);
+                const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
+                this.emit(`connection operation ${action.connectionId}/${action.operation.id} completed`);
+                observe(
+                  `PROVIDER OPERATION RESULT: ${result.message}${rendered}\nContinue from the provider response. The operation was individually approved and is not blanket authorization for other writes.`,
+                );
+              } catch (error) {
+                this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run`);
+                observe(
+                  `PROVIDER OPERATION NOT RUN: ${(error as Error).message}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`,
+                );
+              }
+              break;
+            }
+            case 'claim_criterion': {
+              const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              const link = evidence.link(ledger.data, action.criterionId, action.evidenceId, currentFp);
+              ledger.save();
+              this.emit(`claim    ${action.criterionId} <- ${action.evidenceId}: ${link.ok ? 'accepted' : link.reason}`);
+              if (link.ok) {
+                for (const identity of ledger.data.usedSkillIdentities ?? []) {
+                  ledger.recordSkillEvent({
+                    stage: 'verified',
+                    name: identity.name,
+                    version: identity.version,
+                    contentHash: identity.contentHash,
+                    scope: identity.scope,
+                    reason: `criterion ${action.criterionId} accepted`,
+                  });
                 }
-                if (retried.status === 'resolved') {
-                  const connectionContext = this.config.connectionContext?.();
-                  observe(`PREREQUISITE RESOLVED after secure connection setup: ${prerequisite.description}. ${retried.message} Continue the task; values and provider references stay protected.` + (connectionContext ? `\nREGISTERED SAVED CONNECTIONS (metadata only):\n${connectionContext}` : ''));
+                const criterion = ledger.data.acceptanceCriteria.find((c) => c.id === action.criterionId);
+                const evidenceRecord = ledger.data.evidence.find((e) => e.id === action.evidenceId);
+                const weak =
+                  criterion && evidenceRecord && isWeakEvidenceLink(criterion, evidenceRecord)
+                    ? '\nNOTE: weakly bound — this criterion pins no verification command, so any passing command would satisfy it. Pin it with a real verification command for hard proof.'
+                    : '';
+                observe(`Accepted: ${link.reason}${weak}`);
+              } else {
+                observe(`Rejected: ${link.reason}`);
+              }
+              break;
+            }
+            case 'complete': {
+              const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              const gate = evidence.gate(ledger.data, currentFp);
+              const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
+              if (!gate.open && !chatOnly) {
+                observe(
+                  `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
+                    `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
+                    `Continue working, or request_block if you cannot proceed.`,
+                );
+                break;
+              }
+              // Visual-verification gate: UI work is only done when the final state
+              // was actually SEEN. Command evidence cannot see pixels, so without
+              // this gate broken/unfinished layouts ship as "complete". Soft-capped
+              // like the architecture audit so it can never deadlock a task.
+              const visual = uiVisualGate(activePhaseData(), {
+                browserAvailable: Boolean(this.config.browser?.available()),
+                visionAvailable: this.config.supportsImages ?? false,
+              });
+              if (!visual.verified && !chatOnly) {
+                if (visualGateRejections < 2) {
+                  visualGateRejections += 1;
+                  observe(
+                    `COMPLETION REJECTED by visual-verification gate — ${visual.reason}.\n` +
+                      `Serve or rebuild the app (run_command), browse navigate to it, take a screenshot of every changed view ` +
+                      `(and exercise interactions with click/type where relevant), confirm layout, content, and states look right, then complete again.`,
+                  );
                   break;
                 }
-                const blocked = formatBlockedPrerequisite(retried);
-                ledger.addBlocker(blocked);
-                exitReason = 'blocked';
-                observe(`Saved connection did not resolve the prerequisite:\n${blocked}`);
-                break;
+                this.emit('visual-gate screenshot requirement unmet — overriding after repeated rejections');
+                action.risks = [...(action.risks ?? []), 'Final UI state was never verified with a screenshot'];
               }
-            }
-            const blocked = formatBlockedPrerequisite(resolution);
-            ledger.addBlocker(blocked);
-            exitReason = 'blocked';
-            observe(`Recovery exhausted before block:\n${blocked}`);
-            break;
-          }
-          ledger.addBlocker(action.reason);
-          exitReason = 'blocked';
-          observe(`Block recorded: ${action.reason}`);
-          break;
-        }
-        case 'delegate': {
-          // Adaptive effort: a recovered logical job reuses its existing
-          // allocation. Only genuinely new specialists consume this budget.
-          const remSpec = effortMaxSpecialists - delegateSlotsUsed;
-          const resumedTasks = action.tasks.filter((task) => Boolean(task.resume?.jobId));
-          const freshTasks = action.tasks.filter((task) => !task.resume?.jobId);
-          if (remSpec <= 0 && resumedTasks.length === 0) {
-            this.emit(`delegate budget exhausted — ${effortMaxSpecialists}/${effortMaxSpecialists} specialists used`);
-            observe(
-              `SPECIALIST BUDGET EXHAUSTED — you have already used all ${effortMaxSpecialists} specialist delegation(s) for this task. ` +
-                `Complete any remaining work with your own tools; do not call delegate again.`,
-            );
-            break;
-          }
-          const allowedFresh = freshTasks.slice(0, Math.max(0, remSpec));
-          const allowedFreshSet = new Set(allowedFresh);
-          const runTasks = action.tasks.filter((task) => Boolean(task.resume?.jobId) || allowedFreshSet.has(task));
-          const droppedTasks = freshTasks.length - allowedFresh.length;
-          delegateSlotsUsed += allowedFresh.length;
-          this.emit(
-            `delegate ${runTasks.length} sub-task(s) to ${runTasks.map((t) => t.agent).join(', ')}${action.background ? ' in background' : ''} ` +
-              `(${delegateSlotsUsed}/${effortMaxSpecialists} new specialist slots used${resumedTasks.length ? `; ${resumedTasks.length} resume(s) reused` : ''})`,
-          );
-          if (droppedTasks > 0) {
-            this.emit(`delegate dropped ${droppedTasks} sub-task(s) over the ${effortMaxSpecialists}-specialist budget`);
-            observe(
-              `DROPPED ${droppedTasks} delegated sub-task(s): they exceeded the task's ${effortMaxSpecialists}-specialist budget ` +
-                `and were not started. Handle that ${droppedTasks} yourself with your own tools instead of delegating again.`,
-            );
-          }
-          // Risk-based steering: keep delegations on the recommended (right-sized)
-          // roster for this task's risk. A gentle steer, not a hard block: the
-          // model can still justify a different specialist by ignoring the note.
-          if (riskPlan && riskPlan.recommendedSpecialists.length > 0) {
-            const recommendedNames = new Set(riskPlan.recommendedSpecialists.map((r) => r.agent));
-            const stray = runTasks.filter((t) => !recommendedNames.has(t.agent));
-            if (stray.length > 0) {
-              this.emit(
-                `delegate note: ${stray.map((t) => t.agent).join(', ')} not among the ${riskPlan.risk}-risk recommendations`,
-              );
-              observe(
-                `DELEGATION STEERING - ${stray.map((t) => `"${t.agent}"`).join(', ')} not in the recommended roster for this task's ` +
-                  `${riskPlan.risk} risk (${riskPlan.recommendedSpecialists.map((r) => `"${r.agent}"`).join(', ')}). ` +
-                  `Prefer those specialists unless you have a concrete reason not to.`,
-              );
-            }
-          }
-          const delegatedTasks = runTasks.map((task) => {
-            const handoffCriteria = task.criteria && task.criteria.length > 0
-              ? task.criteria
-              : ledger.data.acceptanceCriteria.slice(0, 5).map((criterion) => ({ text: criterion.text, verification: criterion.verification }));
-            return {
-              ...task,
-              handoff: buildSpecialistHandoff(
-                task.task,
-                goal,
-                context,
-                ledger.data.contextPack,
-                ledger.data.plan,
-                handoffCriteria,
-              ),
-            };
-          });
-          this.emit(
-            `delegate handoff prepared for ${delegatedTasks.length} specialist(s): ` +
-              delegatedTasks.map((task) => `${task.agent} (${task.handoff.startingFiles.length} files, ${task.handoff.excerpts.length} excerpts)`).join(', '),
-          );
-          const outcome = await executor.execute({
-            tool: 'delegate',
-            params: { tasks: delegatedTasks, background: action.background },
-            reason: action.background ? 'background specialist sub-tasks' : 'parallel specialist sub-tasks',
-            expected: action.background ? 'tracked background agent jobs' : 'summaries from each agent',
-          });
-          const output = outcome.result.output;
-          const payload = (outcome.result.payload ?? {}) as { results?: SubAgentResult[] };
-          const results = payload.results ?? [];
-
-          // P1.1 — Specialist Evidence Inheritance: a specialist's evidence is
-          // evidence for Gitu to evaluate, never automatic proof. Each report
-          // is revalidated against the exact contract that was delegated; only
-          // evidence that passes is mirrored into the MAIN ledger through the
-          // EvidenceEngine so the acceptance gate keeps its authority.
-          const validationLines: string[] = [];
-          if (results.length > 0) {
-            // P — formal parent re-verification. A specialist's self-report is
-            // NEVER sufficient. Runnable criteria are re-executed through the
-            // orchestrator's OWN command executor (fresh, fingerprint-bound
-            // evidence generated by actually running the oracle). Manual /
-            // judgment criteria (no verification command) fall back to the
-            // structural mirror, since they cannot be automated.
-            const reverifyRunner: OracleRunner = async (req) => {
-              const out = await executor.execute({
-                tool: 'run_command',
-                params: { command: req.command },
-                reason: req.reason,
-                expected: req.expected ?? 'verification passes',
-              });
-              return { passed: out.result.ok, output: out.result.output, exitCode: out.result.exitCode };
-            };
-            for (let j = 0; j < results.length; j++) {
-              const r = results[j]!;
-              const specs = runTasks[j]?.criteria ?? [];
-              const expected = specs.map((spec, k) => ({
-                id: `ac-${k + 1}`,
-                verification: typeof spec === 'object' ? spec.verification : undefined,
-                evidenceType: typeof spec === 'object' ? spec.evidenceType : undefined,
-              }));
-              const verdict = validateSpecialistEvidence(r.evidenceReport, expected);
-              for (const a of verdict.accepted) {
-                const mainCriterion = ledger.data.acceptanceCriteria.find((c) => c.id === a.criterionId);
-                if (!mainCriterion) {
-                  validationLines.push(`  ✗ ${a.criterionId}: main ledger has no criterion ${a.criterionId} to attach specialist evidence to`);
-                  this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — no matching criterion in the main ledger`);
-                  continue;
+              // Architecture audit: verify the implementation actually follows the
+              // recorded decisions. A soft gate — after two rejections the agent's
+              // judgment wins so this can never deadlock a legitimate task.
+              if (!chatOnly && (ledger.data.architectureDecisions ?? []).some((d) => d.status === 'active')) {
+                const audit = auditArchitecture(ledger.data, guard.lock.repoRoot);
+                if (!audit.ok && architectureAuditRejections < 2) {
+                  architectureAuditRejections += 1;
+                  observe(
+                    `COMPLETION REJECTED by architecture review — the implementation does not match the recorded decision(s):\n` +
+                      `${audit.issues.map((i) => `  - ${i}`).join('\n')}\n` +
+                      `Either bring the implementation in line with the decision, or record a new decision (record_decision with supersedes) explaining the change, then complete again.`,
+                  );
+                  break;
                 }
-                const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-                // The verification oracle comes from the DELEGATED contract (the
-                // CriterionSpec we sent the specialist), which carries it even when
-                // the flat set_criteria text-path flattened the main criterion.
-                const expectedIndex = expected.findIndex((e) => e.id === a.criterionId);
-                const expectedCrit = expectedIndex >= 0 ? expected[expectedIndex] : undefined;
-                const oracle = expectedCrit?.verification;
-                if (oracle) {
-                  // Runnable criterion: parent independently re-executes the oracle
-                  // rather than trusting the specialist's status read. Adopt the
-                  // delegated spec (real text + oracle) onto the main criterion so
-                  // the evidence gate later attributes fresh re-verified evidence
-                  // to it and the oracle-quality check sees the real artifact.
-                  const rawSpec = specs[expectedIndex];
-                  if (rawSpec && typeof rawSpec === 'object') {
-                    mainCriterion.text = rawSpec.text;
-                    mainCriterion.verification = oracle;
-                  } else if (!mainCriterion.verification) {
-                    mainCriterion.verification = oracle;
-                  }
-                  const rv = await parentReverifyCriterion({
-                    ledger: ledger.data,
-                    criterionId: mainCriterion.id,
-                    currentFingerprint: currentFp,
-                    runOracle: reverifyRunner,
-                    workdir: guard.activeWritableRoot,
+                if (!audit.ok) {
+                  this.emit('decision architecture drift noted but overridden by engineering judgment — recorded as a risk');
+                  action.risks = [...(action.risks ?? []), `Architecture drift: ${audit.issues[0]?.slice(0, 200)}`];
+                }
+              }
+              // Bug rigor gate: "verification passed" does not prove the bug was
+              // fixed — the pre-existing suite may never have covered it. A bug
+              // fix must show causality: a recorded root cause, and a FAIL ->
+              // (edit) -> PASS pair for the same non-trivial command. Soft-capped
+              // like the architecture audit so it can never deadlock a task whose
+              // reproduction is genuinely impossible.
+              if (
+                !chatOnly &&
+                isBugTask &&
+                activePhaseData().actions.some(
+                  (record) => record.status === 'success' && (record.tool === 'write_file' || record.tool === 'apply_edit' || record.tool === 'run_command'),
+                )
+              ) {
+                const missing: string[] = [];
+                if (!ledger.data.currentHypothesis) {
+                  missing.push('a recorded root cause — call set_hypothesis stating why the bug happened');
+                }
+                if (!hasRegressionProof(activePhaseData())) {
+                  missing.push(
+                    'regression proof — no command went FAIL before your fix and PASS after it. Run the reproduction/verification command FIRST (watch it fail), fix, then run the SAME command again',
+                  );
+                }
+                if (missing.length > 0 && bugRigorRejections < 2) {
+                  bugRigorRejections += 1;
+                  this.emit('rigor    bug-fix completion rejected — root cause / regression proof missing');
+                  observe(
+                    `COMPLETION REJECTED by bug-fix rigor gate:\n${missing.map((m) => `  - ${m}`).join('\n')}\n` +
+                      `Do that, then complete again. If reproduction is genuinely impossible (environment/data specific), complete again — the gate yields after repeated rejection and records the gap as a risk.`,
+                  );
+                  break;
+                }
+                if (missing.length > 0) {
+                  action.risks = [...(action.risks ?? []), `Bug-fix rigor override: completed without ${missing.join(' and ')}.`];
+                  this.emit('rigor    bug-fix gap accepted after repeated rejection — recorded as a risk');
+                }
+              }
+              // Plan reconciliation: the criteria/evidence gate above is the
+              // completion authority, but an ABANDONED plan must be reconciled
+              // explicitly — open steps mean either work the criteria missed or
+              // stale scope. One forced reconciliation so this can never deadlock;
+              // after that, completing with open steps is recorded as a risk.
+              const openSteps = ledger.data.plan.filter(
+                (step) => !activeWorkPhase.priorPlanStepIds.includes(step.id) && (step.status === 'pending' || step.status === 'in_progress'),
+              );
+              if (!chatOnly && openSteps.length > 0 && activePhaseData().actions.length > 0) {
+                if (planReconcileRejections < 1) {
+                  planReconcileRejections += 1;
+                  this.emit(`reconcile completion rejected — ${openSteps.length} open plan step(s): ${openSteps.map((s) => s.id).join(', ')}`);
+                  observe(
+                    `COMPLETION REJECTED — the plan still has open step(s): ${openSteps.map((s) => `${s.id} (${s.description.slice(0, 60)})`).join('; ')}.\n` +
+                      `Reconcile before completing: finish the work, mark genuinely-finished steps done (complete_step), or revise_step to explicitly drop scope that is no longer needed. Then complete again.`,
+                  );
+                  break;
+                }
+                action.risks = [...(action.risks ?? []), `Completed with ${openSteps.length} open plan step(s): ${openSteps.map((s) => s.id).join(', ')}.`];
+                this.emit('reconcile open plan steps accepted at completion — recorded as a risk');
+              }
+              // Final quality review: a strict second-opinion pass over the finished
+              // work — diff summary + criteria, and for UI tasks the last screenshot
+              // judged by the model itself (vision), closing the "nobody looks at
+              // the pixels" gap. Fail-open: errors or ambiguous verdicts accept
+              // completion, and only ONE forced revision is possible so this can
+              // never deadlock a legitimate task.
+              const reviewRoundCap = effortPlan?.complexity === 'high' ? 2 : 1;
+              const reviewWarning = unresolvedQualityReview;
+              if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
+                const summary = reviewWarning.slice(0, 600);
+                if (!this.config.approvalHandler) {
+                  const blocker = `Strict-risk quality reviewer warning needs explicit user approval: ${summary}`;
+                  ledger.addBlocker(blocker);
+                  this.emit('review   strict-risk warning unresolved — blocked because no approval handler is available');
+                  exitReason = 'blocked';
+                  break;
+                }
+                this.emit('review   strict-risk warning remains — explicit user approval required to complete');
+                const approved = await this.config.approvalHandler({
+                  tool: 'quality-review',
+                  tier: 'dangerous',
+                  why: 'A security, payments, or data-integrity task still has an unresolved final quality-review warning.',
+                  summary,
+                });
+                if (!approved) {
+                  // A rejection means "keep working", not "complete with risk".
+                  // Reset the counter so the eventual repair gets a fresh review.
+                  qualityReviewRejections = 0;
+                  unresolvedQualityReview = undefined;
+                  this.emit('review   strict-risk completion not approved — returning to repair and fresh review');
+                  observe(
+                    `USER DID NOT APPROVE completion with the unresolved quality-review warning:\n${summary}\n` +
+                      `Fix it, then complete again. A fresh quality review will run before this task can finish.`,
+                  );
+                  break;
+                }
+                action.risks = [...(action.risks ?? []), `User accepted unresolved strict-risk quality-review warning: ${summary}`];
+                unresolvedQualityReview = undefined;
+                this.emit('review   strict-risk quality warning explicitly accepted by user — recorded as a release risk');
+              }
+              if (!riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
+                // Non-strict work may proceed after its bounded repair budget, but
+                // never silently: the final report must say the reviewer concern
+                // was not independently cleared.
+                action.risks = [
+                  ...(action.risks ?? []),
+                  `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${reviewWarning.slice(0, 600)}`,
+                ];
+                unresolvedQualityReview = undefined;
+                this.emit('review   quality warning unresolved after repair budget — recorded as a release risk');
+              }
+              const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityReviewRejections < reviewRoundCap;
+              if (wantsReview) {
+                try {
+                  const deepReview = effortPlan?.complexity === 'high';
+                  const reviewDiff = await collectQualityReviewDiff(guard.activeWritableRoot, activeWorkPhase.baseRef || ledger.data.checkpoints, deepReview ? 8_000 : 4_000);
+                  const phaseData = { ...activePhaseData(), filesChanged: reviewDiff.changedFiles };
+                  const reviewingUi = isUiTask(phaseData);
+                  const reviewMsgs = buildQualityReviewMessages({
+                    goal: activeGoal,
+                    criteria: phaseData.acceptanceCriteria.map((criterion) => criterion.text),
+                    filesChanged: reviewDiff.changedFiles,
+                    diffStat: reviewDiff.diffStat,
+                    diffBody: reviewDiff.diffBody,
+                    summary: action.summary,
+                    uiTask: reviewingUi,
+                    frontendDesign: reviewingUi ? phaseData.planDesign?.frontend : undefined,
+                    browserEvidence: reviewingUi ? findLastBrowserEvidence(phaseData) : undefined,
+                    screenshotUrl: reviewingUi ? findLastScreenshotUrl(messages) : undefined,
                   });
-                  ledger.save();
-                  if (rv.verified) {
-                    validationLines.push(`  ✓ ${a.criterionId} parent-reverified via ${r.agent} — re-executed "${oracle}" (fresh ${rv.freshEvidenceId ?? 'evidence'})`);
-                    this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${rv.freshEvidenceId ?? rv.criterionId}: parent-reverified — ${oracle}`);
-                    this.emit(`evidence ${rv.freshEvidenceId ?? '?'} PASS (parent-reverified)`);
-                  } else {
-                    validationLines.push(`  ✗ ${a.criterionId}: parent re-verification not confirmed — ${rv.reason}`);
-                    this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — ${rv.reason}`);
+                  const reviewReply = await llm.completeStream(reviewMsgs, { effort: deepReview ? 'medium' : 'low', signal: this.abortController?.signal }, () => {});
+                  telemetry.recordCall(reviewMsgs, undefined, 0, 'planning');
+                  const review = parseReviewVerdict(reviewReply);
+                  if (review.verdict === 'unavailable') {
+                    const warning = `Final quality review was unavailable: ${review.feedback}`;
+                    this.emit('review   quality reviewer returned no usable verdict');
+                    if (riskPlan.strictVerification) {
+                      // Strict-risk work cannot claim the second opinion happened.
+                      // The next completion goes through the explicit approval
+                      // path above, rather than silently accepting this gap.
+                      qualityReviewRejections = reviewRoundCap;
+                      unresolvedQualityReview = warning;
+                      observe(
+                        `${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`,
+                      );
+                      break;
+                    }
+                    action.risks = [...(action.risks ?? []), warning];
                   }
-                } else {
-                  // Manual/judgment criterion (no oracle to re-run): preserve the
-                  // specialist's structurally-validated evidence — a manual
-                  // criterion is not an automation defect.
+                  if (review.verdict === 'revise') {
+                    qualityReviewRejections += 1;
+                    unresolvedQualityReview = review.feedback;
+                    this.emit(`review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
+                    observe(
+                      `COMPLETION REJECTED by final quality review. Issues found:\n${review.feedback}\n` +
+                        (riskPlan.strictVerification
+                          ? `Fix these problems, then call complete again. If the reviewer still rejects the final result after the allowed repair rounds, only an explicit user approval can accept that release risk.`
+                          : `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`),
+                    );
+                    break;
+                  }
+                  unresolvedQualityReview = undefined;
+                } catch (err) {
+                  const warning = `Final quality review could not run: ${(err as Error).message.slice(0, 300)}`;
+                  this.emit('review   quality reviewer unavailable — review gap recorded');
+                  if (riskPlan.strictVerification) {
+                    qualityReviewRejections = reviewRoundCap;
+                    unresolvedQualityReview = warning;
+                    observe(
+                      `${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`,
+                    );
+                    break;
+                  }
+                  action.risks = [...(action.risks ?? []), warning];
+                }
+              }
+              completionInput = {
+                summary: action.summary,
+                risks: action.risks ?? [],
+                followUps: action.followUps ?? [],
+              };
+              exitReason = 'complete';
+              break;
+            }
+            case 'ask_user': {
+              if (this.config.askUserHandler) {
+                this.emit(`ask-user ${action.questions.length} question(s) for you`);
+                const answer = await this.config.askUserHandler(action.questions);
+                this.emit('ask-user answered');
+                observe(`User answered your clarifying questions:\n${answer}\nUse these answers to set criteria and plan.`);
+              } else {
+                observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
+              }
+              break;
+            }
+            case 'parallel': {
+              this.emit(`parallel ${action.calls.length} concurrent tool calls`);
+              // The in-app browser is stateful: only one state-changing browser
+              // operation may run at a time.  Non-browser tools stay parallel;
+              // browser calls are serialized afterwards so a click/type/screenshot
+              // sequence never races against itself.
+              const browserCalls: { call: (typeof action.calls)[number]; index: number }[] = [];
+              const otherCalls: { call: (typeof action.calls)[number]; index: number }[] = [];
+              action.calls.forEach((call, index) => {
+                (call.tool === 'browse' ? browserCalls : otherCalls).push({ call, index });
+              });
+              const outcomes: (Awaited<ReturnType<typeof executor.execute>> | undefined)[] = new Array(action.calls.length);
+              const runOne = async (call: (typeof action.calls)[number], index: number): Promise<void> => {
+                // Batched calls are real tool executions too; without this every
+                // parallel turn undercounts tokenTelemetry.toolCalls.
+                telemetry.noteToolCall();
+                outcomes[index] = await executor.execute({
+                  tool: call.tool,
+                  params: call.params,
+                  reason: call.reason,
+                  expected: call.expected,
+                });
+              };
+              await Promise.all(otherCalls.map(({ call, index }) => runOne(call, index)));
+              for (const { call, index } of browserCalls) {
+                await runOne(call, index);
+                this.emit(`browser action serialized — one state-changing operation at a time`);
+              }
+              const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              const parts = outcomes.map((o, i) => {
+                if (!o) return `[${i + 1}] (not executed)`;
+                if (o.record.tool === 'run_command') {
+                  const kind = classifyEvidenceKind(String(action.calls[i]?.params['command'] ?? ''));
                   const ev = evidence.record(ledger.data, {
-                    kind: a.evidence.kind,
-                    label: `delegated: ${r.agent} — ${a.evidence.command ?? a.evidence.id}`,
-                    command: a.evidence.command,
-                    passed: true,
-                    output: a.evidence.outputExcerpt,
+                    kind,
+                    label: o.record.paramsSummary,
+                    command: String(action.calls[i]?.params['command'] ?? ''),
+                    exitCode: o.result.exitCode,
+                    passed: o.result.ok,
+                    output: o.result.output,
                     workspaceFingerprint: currentFp,
                   });
                   ledger.save();
-                  const link = evidence.link(ledger.data, a.criterionId, ev.id, currentFp);
-                  ledger.save();
-                  if (link.ok) {
-                    validationLines.push(`  ✓ ${a.criterionId} backed by ${a.evidenceId} (${a.evidence.command ?? a.evidence.id}) via ${r.agent}`);
-                    this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${a.evidenceId}: accepted — ${a.evidence.command ?? 'evidence'}`);
-                    this.emit(`evidence ${ev.id} PASS (delegated)`);
-                  } else {
-                    validationLines.push(`  ✗ ${a.criterionId}: main ledger rejected the mirror evidence — ${link.reason}`);
-                    this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED by main ledger — ${link.reason}`);
+                  this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+                }
+                return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}`;
+              });
+              observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
+              break;
+            }
+            case 'report_finding': {
+              const finding = ledger.addFinding({
+                claim: action.claim,
+                kind: (action.kind as TaskFinding['kind']) ?? 'other',
+                severity: action.severity as TaskFinding['severity'],
+                location: action.location,
+                reproductionCommand: action.reproductionCommand,
+              });
+              this.emit(`finding  ${finding.id} reported (${finding.kind}) — will be verified before the report`);
+              observe(
+                `FINDING RECORDED (${finding.id}). It will be handed to an independent verifier that attempts to reproduce it ` +
+                  `${action.reproductionCommand ? `with exactly: ${action.reproductionCommand}` : 'with its own reproduction attempt'}. ` +
+                  `Only findings that reproduce with real evidence are reported as confirmed; continue your task.`,
+              );
+              break;
+            }
+            case 'request_block': {
+              const prerequisite = action.prerequisite ?? inferMissingPrerequisite(action.reason, action.reason);
+              if (prerequisite) {
+                this.emit(`recovery RESOLVING_PREREQUISITE — ${prerequisite.description}`);
+                const resolution = await prerequisiteResolver.resolve(prerequisite, {
+                  repoRoot: guard.activeWritableRoot,
+                  goal: activeGoal,
+                  ledger,
+                  specialist: false,
+                });
+                for (const attempt of resolution.attempts) {
+                  this.emit(`recovery ${attempt.status} — ${attempt.strategy}: ${attempt.outcome.slice(0, 180)}`);
+                }
+                if (resolution.status === 'resolved') {
+                  const connectionContext = this.config.connectionContext?.();
+                  observe(
+                    `PREREQUISITE RESOLVED: ${prerequisite.description}. ${resolution.message} ` +
+                      `Continue the task; do not request_block for this prerequisite again. Values and provider references stay protected.` +
+                      (connectionContext ? `\nREGISTERED SAVED CONNECTIONS (metadata only):\n${connectionContext}` : ''),
+                  );
+                  break;
+                }
+                if (resolution.status === 'needs-user' && this.config.askUserHandler && resolution.question) {
+                  this.emit(`ask-user prerequisite decision needed — ${prerequisite.description}`);
+                  const answer = await this.config.askUserHandler([resolution.question]);
+                  this.emit('ask-user answered prerequisite decision');
+                  observe(`User chose how to resolve ${prerequisite.description}: ${answer}\nContinue with that decision; do not claim a provider action you did not execute.`);
+                  break;
+                }
+                // A saved connection is user-owned input, so never ask the model
+                // to carry a token in conversation.  The host renders a secure
+                // form, stores the credential separately, validates it, then the
+                // resolver gets one fresh discovery pass.
+                if (resolution.status === 'exhausted' && this.config.connectionRequestHandler && (prerequisite.providerHint || prerequisite.capabilities?.length)) {
+                  ledger.recordPrerequisiteRecovery({
+                    prerequisiteId: prerequisite.id,
+                    prerequisiteKind: prerequisite.kind,
+                    description: prerequisite.description,
+                    requiredFor: prerequisite.requiredFor,
+                    strategy: 'secure-connection-request',
+                    status: 'NEEDS_USER',
+                    outcome: 'Waiting for the user to configure and validate a saved connection through the local secure form.',
+                    risk: RecoveryRisk.READ_ONLY,
+                  });
+                  this.emit(`connection required — ${prerequisite.description}`);
+                  const connected = await this.config.connectionRequestHandler(prerequisite);
+                  if (connected) {
+                    this.emit(`connection saved — retrying discovery for ${prerequisite.description}`);
+                    const retried = await prerequisiteResolver.resolve(prerequisite, {
+                      repoRoot: guard.activeWritableRoot,
+                      goal: activeGoal,
+                      ledger,
+                      specialist: false,
+                      retry: true,
+                    });
+                    for (const attempt of retried.attempts) {
+                      this.emit(`recovery ${attempt.status} — ${attempt.strategy}: ${attempt.outcome.slice(0, 180)}`);
+                    }
+                    if (retried.status === 'resolved') {
+                      const connectionContext = this.config.connectionContext?.();
+                      observe(
+                        `PREREQUISITE RESOLVED after secure connection setup: ${prerequisite.description}. ${retried.message} Continue the task; values and provider references stay protected.` +
+                          (connectionContext ? `\nREGISTERED SAVED CONNECTIONS (metadata only):\n${connectionContext}` : ''),
+                      );
+                      break;
+                    }
+                    const blocked = formatBlockedPrerequisite(retried);
+                    ledger.addBlocker(blocked);
+                    exitReason = 'blocked';
+                    observe(`Saved connection did not resolve the prerequisite:\n${blocked}`);
+                    break;
+                  }
+                }
+                const blocked = formatBlockedPrerequisite(resolution);
+                ledger.addBlocker(blocked);
+                exitReason = 'blocked';
+                observe(`Recovery exhausted before block:\n${blocked}`);
+                break;
+              }
+              ledger.addBlocker(action.reason);
+              exitReason = 'blocked';
+              observe(`Block recorded: ${action.reason}`);
+              break;
+            }
+            case 'delegate': {
+              // Adaptive effort: a recovered logical job reuses its existing
+              // allocation. Only genuinely new specialists consume this budget.
+              const remSpec = effortMaxSpecialists - delegateSlotsUsed;
+              const resumedTasks = action.tasks.filter((task) => Boolean(task.resume?.jobId));
+              const freshTasks = action.tasks.filter((task) => !task.resume?.jobId);
+              if (remSpec <= 0 && resumedTasks.length === 0) {
+                this.emit(`delegate budget exhausted — ${effortMaxSpecialists}/${effortMaxSpecialists} specialists used`);
+                observe(
+                  `SPECIALIST BUDGET EXHAUSTED — you have already used all ${effortMaxSpecialists} specialist delegation(s) for this task. ` +
+                    `Complete any remaining work with your own tools; do not call delegate again.`,
+                );
+                break;
+              }
+              const allowedFresh = freshTasks.slice(0, Math.max(0, remSpec));
+              const allowedFreshSet = new Set(allowedFresh);
+              const runTasks = action.tasks.filter((task) => Boolean(task.resume?.jobId) || allowedFreshSet.has(task));
+              const droppedTasks = freshTasks.length - allowedFresh.length;
+              delegateSlotsUsed += allowedFresh.length;
+              this.emit(
+                `delegate ${runTasks.length} sub-task(s) to ${runTasks.map((t) => t.agent).join(', ')}${action.background ? ' in background' : ''} ` +
+                  `(${delegateSlotsUsed}/${effortMaxSpecialists} new specialist slots used${resumedTasks.length ? `; ${resumedTasks.length} resume(s) reused` : ''})`,
+              );
+              if (droppedTasks > 0) {
+                this.emit(`delegate dropped ${droppedTasks} sub-task(s) over the ${effortMaxSpecialists}-specialist budget`);
+                observe(
+                  `DROPPED ${droppedTasks} delegated sub-task(s): they exceeded the task's ${effortMaxSpecialists}-specialist budget ` +
+                    `and were not started. Handle that ${droppedTasks} yourself with your own tools instead of delegating again.`,
+                );
+              }
+              // Risk-based steering: keep delegations on the recommended (right-sized)
+              // roster for this task's risk. A gentle steer, not a hard block: the
+              // model can still justify a different specialist by ignoring the note.
+              if (riskPlan && riskPlan.recommendedSpecialists.length > 0) {
+                const recommendedNames = new Set(riskPlan.recommendedSpecialists.map((r) => r.agent));
+                const stray = runTasks.filter((t) => !recommendedNames.has(t.agent));
+                if (stray.length > 0) {
+                  this.emit(`delegate note: ${stray.map((t) => t.agent).join(', ')} not among the ${riskPlan.risk}-risk recommendations`);
+                  observe(
+                    `DELEGATION STEERING - ${stray.map((t) => `"${t.agent}"`).join(', ')} not in the recommended roster for this task's ` +
+                      `${riskPlan.risk} risk (${riskPlan.recommendedSpecialists.map((r) => `"${r.agent}"`).join(', ')}). ` +
+                      `Prefer those specialists unless you have a concrete reason not to.`,
+                  );
+                }
+              }
+              const delegatedTasks = runTasks.map((task) => {
+                const handoffCriteria =
+                  task.criteria && task.criteria.length > 0
+                    ? task.criteria
+                    : ledger.data.acceptanceCriteria
+                        .filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id))
+                        .slice(0, 5)
+                        .map((criterion) => ({ text: criterion.text, verification: criterion.verification }));
+                const handoffBudget =
+                  effortPlan.complexity === 'low'
+                    ? { maxFiles: 3, maxExcerptChars: 2_000 }
+                    : effortPlan.complexity === 'medium'
+                      ? { maxFiles: 4, maxExcerptChars: 4_000 }
+                      : { maxFiles: 6, maxExcerptChars: 6_000 };
+                return {
+                  ...task,
+                  handoff: buildSpecialistHandoff(
+                    task.task,
+                    activeGoal,
+                    context,
+                    ledger.data.contextPack,
+                    ledger.data.plan.filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id)),
+                    handoffCriteria,
+                    handoffBudget,
+                  ),
+                };
+              });
+              this.emit(
+                `delegate handoff prepared for ${delegatedTasks.length} specialist(s): ` +
+                  delegatedTasks.map((task) => `${task.agent} (${task.handoff.startingFiles.length} files, ${task.handoff.excerpts.length} excerpts)`).join(', '),
+              );
+              const outcome = await executor.execute({
+                tool: 'delegate',
+                params: { tasks: delegatedTasks, background: action.background },
+                reason: action.background ? 'background specialist sub-tasks' : 'parallel specialist sub-tasks',
+                expected: action.background ? 'tracked background agent jobs' : 'summaries from each agent',
+              });
+              const output = outcome.result.output;
+              const payload = (outcome.result.payload ?? {}) as { results?: SubAgentResult[] };
+              const results = payload.results ?? [];
+
+              // P1.1 — Specialist Evidence Inheritance: a specialist's evidence is
+              // evidence for Gitu to evaluate, never automatic proof. Each report
+              // is revalidated against the exact contract that was delegated; only
+              // evidence that passes is mirrored into the MAIN ledger through the
+              // EvidenceEngine so the acceptance gate keeps its authority.
+              const validationLines: string[] = [];
+              if (results.length > 0) {
+                // P — formal parent re-verification. A specialist's self-report is
+                // NEVER sufficient. Runnable criteria are re-executed through the
+                // orchestrator's OWN command executor (fresh, fingerprint-bound
+                // evidence generated by actually running the oracle). Manual /
+                // judgment criteria (no verification command) fall back to the
+                // structural mirror, since they cannot be automated.
+                const reverifyRunner: OracleRunner = async (req) => {
+                  const out = await executor.execute({
+                    tool: 'run_command',
+                    params: { command: req.command },
+                    reason: req.reason,
+                    expected: req.expected ?? 'verification passes',
+                  });
+                  return { passed: out.result.ok, output: out.result.output, exitCode: out.result.exitCode };
+                };
+                for (let j = 0; j < results.length; j++) {
+                  const r = results[j]!;
+                  const specs = runTasks[j]?.criteria ?? [];
+                  const expected = specs.map((spec, k) => ({
+                    id: `ac-${k + 1}`,
+                    verification: typeof spec === 'object' ? spec.verification : undefined,
+                    evidenceType: typeof spec === 'object' ? spec.evidenceType : undefined,
+                  }));
+                  const verdict = validateSpecialistEvidence(r.evidenceReport, expected);
+                  for (const a of verdict.accepted) {
+                    const mainCriterion = ledger.data.acceptanceCriteria.find((c) => c.id === a.criterionId);
+                    if (!mainCriterion) {
+                      validationLines.push(`  ✗ ${a.criterionId}: main ledger has no criterion ${a.criterionId} to attach specialist evidence to`);
+                      this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — no matching criterion in the main ledger`);
+                      continue;
+                    }
+                    const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                    // The verification oracle comes from the DELEGATED contract (the
+                    // CriterionSpec we sent the specialist), which carries it even when
+                    // the flat set_criteria text-path flattened the main criterion.
+                    const expectedIndex = expected.findIndex((e) => e.id === a.criterionId);
+                    const expectedCrit = expectedIndex >= 0 ? expected[expectedIndex] : undefined;
+                    const oracle = expectedCrit?.verification;
+                    if (oracle) {
+                      // Runnable criterion: parent independently re-executes the oracle
+                      // rather than trusting the specialist's status read. Adopt the
+                      // delegated spec (real text + oracle) onto the main criterion so
+                      // the evidence gate later attributes fresh re-verified evidence
+                      // to it and the oracle-quality check sees the real artifact.
+                      const rawSpec = specs[expectedIndex];
+                      if (rawSpec && typeof rawSpec === 'object') {
+                        mainCriterion.text = rawSpec.text;
+                        mainCriterion.verification = oracle;
+                      } else if (!mainCriterion.verification) {
+                        mainCriterion.verification = oracle;
+                      }
+                      const rv = await parentReverifyCriterion({
+                        ledger: ledger.data,
+                        criterionId: mainCriterion.id,
+                        currentFingerprint: currentFp,
+                        runOracle: reverifyRunner,
+                        workdir: guard.activeWritableRoot,
+                      });
+                      ledger.save();
+                      if (rv.verified) {
+                        validationLines.push(`  ✓ ${a.criterionId} parent-reverified via ${r.agent} — re-executed "${oracle}" (fresh ${rv.freshEvidenceId ?? 'evidence'})`);
+                        this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${rv.freshEvidenceId ?? rv.criterionId}: parent-reverified — ${oracle}`);
+                        this.emit(`evidence ${rv.freshEvidenceId ?? '?'} PASS (parent-reverified)`);
+                      } else {
+                        validationLines.push(`  ✗ ${a.criterionId}: parent re-verification not confirmed — ${rv.reason}`);
+                        this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — ${rv.reason}`);
+                      }
+                    } else {
+                      // Manual/judgment criterion (no oracle to re-run): preserve the
+                      // specialist's structurally-validated evidence — a manual
+                      // criterion is not an automation defect.
+                      const ev = evidence.record(ledger.data, {
+                        kind: a.evidence.kind,
+                        label: `delegated: ${r.agent} — ${a.evidence.command ?? a.evidence.id}`,
+                        command: a.evidence.command,
+                        passed: true,
+                        output: a.evidence.outputExcerpt,
+                        workspaceFingerprint: currentFp,
+                      });
+                      ledger.save();
+                      const link = evidence.link(ledger.data, a.criterionId, ev.id, currentFp);
+                      ledger.save();
+                      if (link.ok) {
+                        validationLines.push(`  ✓ ${a.criterionId} backed by ${a.evidenceId} (${a.evidence.command ?? a.evidence.id}) via ${r.agent}`);
+                        this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${a.evidenceId}: accepted — ${a.evidence.command ?? 'evidence'}`);
+                        this.emit(`evidence ${ev.id} PASS (delegated)`);
+                      } else {
+                        validationLines.push(`  ✗ ${a.criterionId}: main ledger rejected the mirror evidence — ${link.reason}`);
+                        this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED by main ledger — ${link.reason}`);
+                      }
+                    }
+                  }
+                  for (const rej of verdict.rejected) {
+                    validationLines.push(`  ✗ ${rej.criterionId}${rej.evidenceId ? ` (${rej.evidenceId})` : ''}: ${rej.reason} (via ${r.agent})`);
+                    this.emit(`delegate-claim ${r.agent} ${rej.criterionId}: REJECTED — ${rej.reason}`);
                   }
                 }
               }
-              for (const rej of verdict.rejected) {
-                validationLines.push(`  ✗ ${rej.criterionId}${rej.evidenceId ? ` (${rej.evidenceId})` : ''}: ${rej.reason} (via ${r.agent})`);
-                this.emit(`delegate-claim ${r.agent} ${rej.criterionId}: REJECTED — ${rej.reason}`);
-              }
+              const validationText =
+                validationLines.length > 0 ? `\nEVIDENCE VALIDATION (specialist evidence enters the gate only through the main ledger):\n${validationLines.join('\n')}` : '';
+              observe(
+                `${action.background ? 'BACKGROUND AGENTS' : 'DELEGATE RESULTS'} [${outcome.result.ok ? 'started/ok' : 'some agents failed'}]\n${output.slice(0, 5000)}${validationText}`,
+              );
+              break;
             }
           }
-          const validationText =
-            validationLines.length > 0
-              ? `\nEVIDENCE VALIDATION (specialist evidence enters the gate only through the main ledger):\n${validationLines.join('\n')}`
-              : '';
-          observe(`${action.background ? 'BACKGROUND AGENTS' : 'DELEGATE RESULTS'} [${outcome.result.ok ? 'started/ok' : 'some agents failed'}]\n${output.slice(0, 5000)}${validationText}`);
-          break;
+
+          while (this.inbox.length > 0) {
+            const queued = this.inbox.shift()!;
+            this.emit(`user-msg ${queued.text}`);
+            observe(`USER MESSAGE (sent while you were working — take it into account now): ${queued.text}` + (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''));
+          }
+
+          if (exitReason === 'complete' || exitReason === 'blocked') break;
         }
+      } catch (err) {
+        if (!this.aborted) throw err;
       }
 
-      while (this.inbox.length > 0) {
-        const queued = this.inbox.shift()!;
-        this.emit(`user-msg ${queued.text}`);
-        observe(
-          `USER MESSAGE (sent while you were working — take it into account now): ${queued.text}` +
-            (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
-        );
+      if (this.aborted && exitReason === 'stalled') {
+        ledger.addBlocker('Stopped by user.');
+        exitReason = 'blocked';
       }
 
-      if (exitReason === 'complete' || exitReason === 'blocked') break;
-    }
-    } catch (err) {
-      if (!this.aborted) throw err;
-    }
-
-    if (this.aborted && exitReason === 'stalled') {
-      ledger.addBlocker('Stopped by user.');
-      exitReason = 'blocked';
-    }
-
-    // ── Finding Verification Gate ──────────────────────────────────────────
-    // Before the report is built, every unverified finding must face an
-    // independent verifier. Only mechanically-reproduced findings are
-    // reported as confirmed; everything else is downgraded explicitly.
-    const pendingFindings = (ledger.data.findings ?? []).filter((f) => f.status === 'unverified');
-    if (pendingFindings.length > 0) {
-      if (this.config.subagents) {
-        this.emit(`findings verifying ${pendingFindings.length} finding(s) with independent specialists`);
-        for (const finding of pendingFindings) {
-          const criteria = finding.reproductionCommand
-            ? [{ text: `reproduce: ${finding.claim}`, verification: finding.reproductionCommand, evidenceType: 'command_success' as const }]
-            : [{ text: `reproduce: ${finding.claim}` }];
-          try {
-            const result = await this.config.subagents.runOne(VERIFIER_AGENT, buildVerifierContract(finding), criteria);
-            const verdict = verdictForFinding(finding, result);
-            ledger.updateFinding(finding.id, {
-              status: verdict.status,
-              evidenceIds: verdict.evidenceIds,
-              verifierSummary: verdict.verifierSummary,
-            });
-            this.emit(`finding  ${finding.id} [${verdict.status.toUpperCase()}] ${finding.claim.slice(0, 100)}`);
-          } catch (err) {
+      // ── Finding Verification Gate ──────────────────────────────────────────
+      // Before the report is built, every unverified finding must face an
+      // independent verifier. Only mechanically-reproduced findings are
+      // reported as confirmed; everything else is downgraded explicitly.
+      const pendingFindings = (ledger.data.findings ?? []).filter((f) => f.status === 'unverified');
+      if (pendingFindings.length > 0) {
+        if (this.config.subagents) {
+          this.emit(`findings verifying ${pendingFindings.length} finding(s) with independent specialists`);
+          for (const finding of pendingFindings) {
+            const criteria = finding.reproductionCommand
+              ? [{ text: `reproduce: ${finding.claim}`, verification: finding.reproductionCommand, evidenceType: 'command_success' as const }]
+              : [{ text: `reproduce: ${finding.claim}` }];
+            try {
+              const result = await this.config.subagents.runOne(VERIFIER_AGENT, buildVerifierContract(finding), criteria);
+              const verdict = verdictForFinding(finding, result);
+              ledger.updateFinding(finding.id, {
+                status: verdict.status,
+                evidenceIds: verdict.evidenceIds,
+                verifierSummary: verdict.verifierSummary,
+              });
+              this.emit(`finding  ${finding.id} [${verdict.status.toUpperCase()}] ${finding.claim.slice(0, 100)}`);
+            } catch (err) {
+              ledger.updateFinding(finding.id, {
+                status: 'unverifiable',
+                verifierSummary: `verifier crashed: ${(err as Error).message.slice(0, 200)}`,
+              });
+              this.emit(`finding  ${finding.id} [UNVERIFIABLE] verifier crashed`);
+            }
+          }
+        } else {
+          for (const finding of pendingFindings) {
             ledger.updateFinding(finding.id, {
               status: 'unverifiable',
-              verifierSummary: `verifier crashed: ${(err as Error).message.slice(0, 200)}`,
+              verifierSummary: 'no specialist agents configured to verify findings independently',
             });
-            this.emit(`finding  ${finding.id} [UNVERIFIABLE] verifier crashed`);
           }
+          this.emit(`findings ${pendingFindings.length} finding(s) left unverifiable — no specialists configured`);
         }
-      } else {
-        for (const finding of pendingFindings) {
-          ledger.updateFinding(finding.id, {
-            status: 'unverifiable',
-            verifierSummary: 'no specialist agents configured to verify findings independently',
-          });
-        }
-        this.emit(`findings ${pendingFindings.length} finding(s) left unverifiable — no specialists configured`);
       }
-    }
 
-    const status = exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : 'failed';
-    ledger.setStatus(status);
+      const status = exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : 'failed';
+      ledger.setStatus(status);
+      if (exitReason === 'complete') ledger.completeActiveWorkPhase();
 
-    // Persist token telemetry so spend can be attributed after the fact.
-    const snap = telemetry.snapshot();
-    const artifacts = estimatePlanningArtifactTokens(ledger.data);
-    ledger.data.tokenTelemetry = { ...snap, ...artifacts };
-    ledger.save();
-    this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
+      // Persist token telemetry so spend can be attributed after the fact.
+      const snap = telemetry.snapshot();
+      const artifacts = estimatePlanningArtifactTokens(ledger.data);
+      ledger.data.tokenTelemetry = { ...snap, ...artifacts };
+      ledger.save();
+      this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
 
-    const report = reporter.build(ledger, exitReason, completionInput, await getWorkspaceFingerprint(guard.activeWritableRoot));
-    ledger.data.report = report;
-    ledger.save();
-
-    if ((this.config.autoLearn ?? true) && exitReason === 'complete') {
-      try {
-        await this.autoLearn(messages, ledger, executor, skills);
-      } catch (err) {
-        // The run already completed and the report is saved; a transient
-        // failure in this optional reflection pass must not flip the session
-        // to errored after the fact.
-        this.emit(`warn    post-run learning skipped: ${(err as Error).message}`);
-      }
-    }
-
-    memory.add({
-      type: 'task',
-      claim:
-        `Task "${goal}" finished as ${status}: ${report.summary}` +
-        `${ledger.data.filesChanged.length ? ` Changed files: ${ledger.data.filesChanged.slice(0, 16).join(', ')}.` : ''}` +
-        `${ledger.data.evidence.some((e) => e.passed) ? ` Passing checks: ${ledger.data.evidence.filter((e) => e.passed).slice(-4).map((e) => e.label).join('; ')}.` : ''}`,
-      evidence: ledger.data.taskId,
-      scope: guard.lock.name,
-      confidence: 0.9,
-    });
-    if (status !== 'completed') {
-      memory.add({
-        type: 'failure',
-        claim: `Task "${goal}" did not complete (${status}). Blockers: ${ledger.data.blockers.join('; ') || 'none recorded'}`,
-        scope: guard.lock.name,
-        confidence: 0.85,
+      const finalWorkspaceFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot);
+      const phaseFiles = activeWorkPhase.baseRef ? (await collectQualityReviewDiff(guard.activeWritableRoot, activeWorkPhase.baseRef, 0)).changedFiles : undefined;
+      const report = reporter.build(ledger, exitReason, completionInput, finalWorkspaceFingerprint, {
+        goal: activeGoal,
+        phase: {
+          id: activeWorkPhase.id,
+          kind: activeWorkPhase.kind,
+          startedAt: activeWorkPhase.startedAt,
+        },
+        evidenceStartIndex: activeWorkPhase.evidenceStartIndex,
+        actionStartIndex: activeWorkPhase.actionStartIndex,
+        criterionIds: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).map((criterion) => criterion.id),
+        filesChanged: phaseFiles ?? ledger.data.filesChanged.slice(activeWorkPhase.fileStartIndex ?? 0),
       });
-    }
+      ledger.data.report = report;
+      ledger.save();
 
-    // Memory observability (review Phase 13): per-run lifecycle stats land on
-    // the ledger so the completion report and details panel can surface them.
-    ledger.data.memoryStats = memory.stats();
+      if ((this.config.autoLearn ?? true) && exitReason === 'complete') {
+        try {
+          await this.autoLearn(messages, ledger, executor, skills);
+        } catch (err) {
+          // The run already completed and the report is saved; a transient
+          // failure in this optional reflection pass must not flip the session
+          // to errored after the fact.
+          this.emit(`warn    post-run learning skipped: ${(err as Error).message}`);
+        }
+      }
 
-    this.emit(`done     ${status} — ${report.summary.slice(0, 160)}`);
-    return { ledger, report };
+      memory.add({
+        type: 'task',
+        claim:
+          `Task phase "${activeGoal}" finished as ${status}: ${report.summary}` +
+          `${report.filesChanged.length ? ` Changed files: ${report.filesChanged.slice(0, 16).join(', ')}.` : ''}` +
+          `${
+            report.verificationDetails?.some((e) => e.passed)
+              ? ` Passing checks: ${report.verificationDetails
+                  .filter((e) => e.passed)
+                  .slice(-4)
+                  .map((e) => e.label)
+                  .join('; ')}.`
+              : ''
+          }`,
+        evidence: ledger.data.taskId,
+        scope: guard.lock.name,
+        confidence: 0.9,
+      });
+      if (status !== 'completed') {
+        memory.add({
+          type: 'failure',
+          claim: `Task phase "${activeGoal}" did not complete (${status}). Blockers: ${ledger.data.blockers.join('; ') || 'none recorded'}`,
+          scope: guard.lock.name,
+          confidence: 0.85,
+        });
+      }
+
+      // Memory observability (review Phase 13): per-run lifecycle stats land on
+      // the ledger so the completion report and details panel can surface them.
+      ledger.data.memoryStats = memory.stats();
+
+      this.emit(`done     ${status} — ${report.summary.slice(0, 160)}`);
+      return { ledger, report };
     } finally {
       // Only dispose resources created for this direct run. Server-owned
       // indexes and session-scoped LSP managers must remain available for a
@@ -3304,18 +3551,17 @@ export class Gitu {
     }
   }
 
-  private async autoLearn(
-    messages: LlmMessage[],
-    ledger: TaskLedger,
-    executor: Executor,
-    skills: SkillStore,
-  ): Promise<void> {
+  private async autoLearn(messages: LlmMessage[], ledger: TaskLedger, executor: Executor, skills: SkillStore): Promise<void> {
     const d = ledger.data;
     const didWork = d.actions.length > 0 && (d.filesChanged.length > 0 || d.evidence.some((e) => e.passed));
     const alreadyLearned = d.actions.some((a) => a.tool === 'create_skill' && a.status === 'success');
     if (!didWork || alreadyLearned) return;
     this.emit('learn   reflecting on the completed work to extract a reusable skill');
-    const existing = skills.list().map((s) => s.name).join(', ') || '(none)';
+    const existing =
+      skills
+        .list()
+        .map((s) => s.name)
+        .join(', ') || '(none)';
     messages.push({
       role: 'user',
       content:
@@ -3327,11 +3573,7 @@ export class Gitu {
         `Use global:true unless the pattern is specific to THIS project's internals (global skills are visible from every project).\n` +
         `Otherwise respond with: {"thought":"nothing reusable","action":{"type":"complete","summary":"nothing to learn","chat":true}}`,
     });
-    const reply = await this.config.llm.completeStream(
-      messages,
-      { effort: this.config.effort, signal: this.abortController?.signal },
-      () => {},
-    );
+    const reply = await this.config.llm.completeStream(messages, { effort: this.config.effort, signal: this.abortController?.signal }, () => {});
     messages.push({ role: 'assistant', content: reply });
     const parsed = parseReplyAction(reply);
     if (parsed?.type === 'tool_call' && parsed.tool === 'create_skill') {
@@ -3343,11 +3585,7 @@ export class Gitu {
       });
       ledger.save();
       const name = String(parsed.params['name'] ?? 'skill');
-      this.emit(
-        outcome.result.ok
-          ? `learn   auto-saved skill "${name}"`
-          : `learn   could not save skill: ${outcome.result.output.slice(0, 200)}`,
-      );
+      this.emit(outcome.result.ok ? `learn   auto-saved skill "${name}"` : `learn   could not save skill: ${outcome.result.output.slice(0, 200)}`);
     } else {
       this.emit('learn   nothing new worth saving');
     }

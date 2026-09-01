@@ -16,6 +16,8 @@ import type {
   TaskLedgerData,
   TaskStatus,
   SkillLifecycleEvent,
+  WorkPhase,
+  WorkPhaseKind,
 } from '../types.js';
 import type { SkillIdentity } from '../skills/skills.js';
 
@@ -38,7 +40,12 @@ function normalizeStepInput(steps: PlanStepInput[]): NormalizedStep[] {
     verification: String(s.verification ?? '').slice(0, STEP_LIMITS.verification),
     ...(s.area ? { area: s.area } : {}),
     ...(Array.isArray(s.subtasks)
-      ? { subtasks: s.subtasks.map((t) => String(t).slice(0, STEP_LIMITS.todoText)).filter(Boolean).slice(0, STEP_LIMITS.todosPerStep) }
+      ? {
+          subtasks: s.subtasks
+            .map((t) => String(t).slice(0, STEP_LIMITS.todoText))
+            .filter(Boolean)
+            .slice(0, STEP_LIMITS.todosPerStep),
+        }
       : {}),
   }));
 }
@@ -223,9 +230,7 @@ export class TaskLedger {
       status: 'pending' as const,
       attempts: 0,
       ...(s.area ? { area: s.area } : {}),
-      ...(s.subtasks && s.subtasks.length > 0
-        ? { subtasks: s.subtasks.map((text) => ({ text, done: false })) }
-        : {}),
+      ...(s.subtasks && s.subtasks.length > 0 ? { subtasks: s.subtasks.map((text) => ({ text, done: false })) } : {}),
     }));
     this.save();
   }
@@ -247,15 +252,106 @@ export class TaskLedger {
         status: 'pending' as const,
         attempts: 0,
         ...(s.area ? { area: s.area } : {}),
-        ...(s.subtasks && s.subtasks.length > 0
-          ? { subtasks: s.subtasks.map((text) => ({ text, done: false })) }
-          : {}),
+        ...(s.subtasks && s.subtasks.length > 0 ? { subtasks: s.subtasks.map((text) => ({ text, done: false })) } : {}),
       }));
     if (added.length > 0) {
       this.data.plan.push(...added);
       this.save();
     }
     return added;
+  }
+
+  /** Replace only a small named slice of a plan (used by a follow-up plan
+   * review). Earlier completed steps remain untouched. */
+  replacePlanSteps(ids: string[], steps: PlanStepInput[]): PlanStep[] {
+    const replacing = new Set(ids);
+    const retained = this.data.plan.filter((step) => !replacing.has(step.id));
+    const room = Math.max(0, STEP_LIMITS.count - retained.length);
+    const next = retained.reduce((max, step) => {
+      const match = /^step-(\d+)$/.exec(step.id);
+      return Math.max(max, match ? Number(match[1]) : 0);
+    }, 0);
+    const replacement = normalizeStepInput(steps)
+      .slice(0, room)
+      .map((step, index) => ({
+        id: 'step-' + (next + index + 1),
+        description: step.description,
+        verification: step.verification,
+        status: 'pending' as const,
+        attempts: 0,
+        ...(step.area ? { area: step.area } : {}),
+        ...(step.subtasks && step.subtasks.length > 0 ? { subtasks: step.subtasks.map((text) => ({ text, done: false })) } : {}),
+      }));
+    this.data.plan = [...retained, ...replacement];
+    this.save();
+    return replacement;
+  }
+
+  /** Return the current work phase, if this ledger has been phase-enabled. */
+  activeWorkPhase(): WorkPhase | undefined {
+    const id = this.data.activeWorkPhaseId;
+    return id ? this.data.workPhases?.find((phase) => phase.id === id) : undefined;
+  }
+
+  /**
+   * Add phase tracking to new and older ledgers without changing their
+   * contents. The initial phase deliberately begins at index zero: historical
+   * task evidence stays attributable to the work that originally produced it.
+   */
+  ensureInitialWorkPhase(goal = this.data.goal, baseRef?: string): WorkPhase {
+    const existing = this.data.workPhases?.find((phase) => phase.kind === 'initial');
+    if (existing) {
+      if (!this.data.activeWorkPhaseId) {
+        this.data.activeWorkPhaseId = existing.id;
+        this.save();
+      }
+      return existing;
+    }
+    const phase: WorkPhase = {
+      id: 'phase-1',
+      kind: 'initial',
+      goal: goal.trim().slice(0, 1_500) || this.data.goal,
+      startedAt: this.data.startedAt ?? this.data.createdAt,
+      ...(baseRef?.trim() ? { baseRef: baseRef.trim() } : {}),
+      evidenceStartIndex: 0,
+      actionStartIndex: 0,
+      fileStartIndex: 0,
+      priorCriterionIds: [],
+      priorPlanStepIds: [],
+    };
+    this.data.workPhases = [phase];
+    this.data.activeWorkPhaseId = phase.id;
+    this.save();
+    return phase;
+  }
+
+  /** Start a distinct follow-up scope while preserving all earlier work. */
+  startWorkPhase(input: { kind: WorkPhaseKind; goal: string; baseRef?: string }): WorkPhase {
+    const phases = this.data.workPhases ?? [];
+    const phase: WorkPhase = {
+      id: `phase-${phases.length + 1}`,
+      kind: input.kind,
+      goal: input.goal.trim().slice(0, 1_500) || this.data.goal,
+      startedAt: nowIso(),
+      ...(input.baseRef?.trim() ? { baseRef: input.baseRef.trim() } : {}),
+      evidenceStartIndex: this.data.evidence.length,
+      actionStartIndex: this.data.actions.length,
+      fileStartIndex: this.data.filesChanged.length,
+      priorCriterionIds: this.data.acceptanceCriteria.map((criterion) => criterion.id),
+      priorPlanStepIds: this.data.plan.map((step) => step.id),
+    };
+    this.data.workPhases = [...phases, phase];
+    this.data.activeWorkPhaseId = phase.id;
+    this.save();
+    return phase;
+  }
+
+  /** Mark the active phase complete without erasing its durable baseline. */
+  completeActiveWorkPhase(): void {
+    const phase = this.activeWorkPhase();
+    if (!phase || phase.completedAt) return;
+    phase.completedAt = nowIso();
+    this.save();
   }
 
   step(id: string): PlanStep | undefined {
@@ -295,11 +391,7 @@ export class TaskLedger {
    * Dynamic replanning: revise ONE step in place and record why. The original
    * intent stays reconstructable from the revision log; nothing else moves.
    */
-  reviseStep(
-    stepId: string,
-    patch: { description?: string; verification?: string; area?: PlanArea; addSubtasks?: string[] },
-    reason: string,
-  ): PlanStep | undefined {
+  reviseStep(stepId: string, patch: { description?: string; verification?: string; area?: PlanArea; addSubtasks?: string[] }, reason: string): PlanStep | undefined {
     const step = this.step(stepId);
     if (!step) return undefined;
     if (patch.description !== undefined) step.description = patch.description.slice(0, STEP_LIMITS.description);
@@ -405,7 +497,11 @@ export class TaskLedger {
     }
     if (identity) {
       const identities = this.data.usedSkillIdentities ?? [];
-      if (!identities.some((entry) => entry.name === identity.name && entry.version === identity.version && entry.contentHash === identity.contentHash && entry.scope === identity.scope)) {
+      if (
+        !identities.some(
+          (entry) => entry.name === identity.name && entry.version === identity.version && entry.contentHash === identity.contentHash && entry.scope === identity.scope,
+        )
+      ) {
         identities.push(identity);
         this.data.usedSkillIdentities = identities;
       }

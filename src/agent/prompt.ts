@@ -71,10 +71,7 @@ function renderPlanBodyCompact(plan: PlanStep[]): string {
 
   // The active step: first in_progress, else the first actionable pending.
   const activeIndex = plan.findIndex((s) => s.status === 'in_progress');
-  const active =
-    activeIndex >= 0
-      ? activeIndex
-      : plan.findIndex((s) => s.status === 'pending');
+  const active = activeIndex >= 0 ? activeIndex : plan.findIndex((s) => s.status === 'pending');
 
   const doneLines: string[] = [];
   let nextActionable = 0;
@@ -143,16 +140,15 @@ function renderDesign(design: PlanDesign | undefined, detail: 'full' | 'compact'
     if (!text) return '';
     if (detail === 'full') {
       return text.includes('\n')
-        ? `  ${label}:\n${text.split('\n').map((l) => `    ${l.trim()}`).join('\n')}`
+        ? `  ${label}:\n${text
+            .split('\n')
+            .map((l) => `    ${l.trim()}`)
+            .join('\n')}`
         : `  ${label}: ${text}`;
     }
     return `  ${label}: ${trunc(text.replace(/\s+/g, ' ').trim(), 240)}`;
   };
-  const parts = [
-    section('FRONTEND', design.frontend),
-    section('BACKEND', design.backend),
-    section('INTEGRATION', design.integration),
-  ].filter(Boolean);
+  const parts = [section('FRONTEND', design.frontend), section('BACKEND', design.backend), section('INTEGRATION', design.integration)].filter(Boolean);
   if (parts.length === 0) return '';
   const hint = detail === 'compact' ? '\n  (show_plan for full design text)' : '';
   return `PLAN DESIGN:\n${parts.join('\n')}${hint}`;
@@ -165,9 +161,7 @@ export function renderFullPlanMessage(ledger: TaskLedger): string {
   const parts: string[] = [`FULL PLAN (${counts.done}/${d.plan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos):`];
   const design = renderDesign(d.planDesign, 'full');
   if (design) parts.push(design);
-  parts.push(
-    d.plan.length === 0 ? '(no steps yet)' : d.plan.map(renderStepFull).join('\n'),
-  );
+  parts.push(d.plan.length === 0 ? '(no steps yet)' : d.plan.map(renderStepFull).join('\n'));
   const revisions = (d.planRevisions ?? []).slice(-3);
   if (revisions.length > 0) {
     parts.push(`RECENT REVISIONS:\n${revisions.map((r) => `  ${r.stepId}: ${r.reason}`).join('\n')}`);
@@ -179,20 +173,29 @@ export function renderFullPlanMessage(ledger: TaskLedger): string {
 export function buildSystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
-  opts: { scopeFiles?: string[]; extraConstraints?: string[]; skillsSection?: string; mcpSection?: string; agentsSection?: string; lspSection?: string; vision?: boolean; hasBrowser?: boolean; autoLearn?: boolean;   /** Ranked memory retrieval query (usually the goal) — memories that matter
-   *  for THIS task surface first; everything else stays out of context. */
-  memoryQuery?: string;
-  /** Prebuilt RELEVANT MEMORY section — when provided it replaces the static
-   *  stored-memory block (memory enters context via buildModelContext). */
-  memorySection?: string;
-  /** Tier 1 PROTECTED memory (ACTIVE CONSTRAINTS & DECISIONS) — durable
-   *  guidance that survives compaction regardless of lexical relevance. */
-  protectedSection?: string;
-  uiTask?: boolean;
-  /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string;
-  /** Compact, durable frontend skill contract. Prefer this in long-running
-   *  agent sessions; full instructions are delivered only on skill activation. */
-  uiQualityContract?: string;
+  opts: {
+    scopeFiles?: string[];
+    extraConstraints?: string[];
+    skillsSection?: string;
+    mcpSection?: string;
+    agentsSection?: string;
+    lspSection?: string;
+    vision?: boolean;
+    hasBrowser?: boolean;
+    autoLearn?: boolean; /** Ranked memory retrieval query (usually the goal) — memories that matter
+     *  for THIS task surface first; everything else stays out of context. */
+    memoryQuery?: string;
+    /** Prebuilt RELEVANT MEMORY section — when provided it replaces the static
+     *  stored-memory block (memory enters context via buildModelContext). */
+    memorySection?: string;
+    /** Tier 1 PROTECTED memory (ACTIVE CONSTRAINTS & DECISIONS) — durable
+     *  guidance that survives compaction regardless of lexical relevance. */
+    protectedSection?: string;
+    uiTask?: boolean;
+    /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string;
+    /** Compact, durable frontend skill contract. Prefer this in long-running
+     *  agent sessions; full instructions are delivered only on skill activation. */
+    uiQualityContract?: string;
   } = {},
 ): string {
   const lock = guard.lock;
@@ -204,10 +207,7 @@ export function buildSystemPrompt(
     opts.scopeFiles && opts.scopeFiles.length > 0
       ? `\nUSER-SELECTED SCOPE (the user chose these files to work on — prefer them, avoid everything else):\n${opts.scopeFiles.map((f) => `  - ${f}`).join('\n')}\n`
       : '';
-  const constraintSection =
-    opts.extraConstraints && opts.extraConstraints.length > 0
-      ? `\nUSER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}\n`
-      : '';
+  const constraintSection = opts.extraConstraints && opts.extraConstraints.length > 0 ? `\nUSER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}\n` : '';
   const skillsSection = opts.skillsSection
     ? `\nREUSABLE SKILLS (apply them with use_skill${
         autoLearn
@@ -215,9 +215,7 @@ export function buildSystemPrompt(
           : '; you MAY create skills with create_skill only when the user explicitly asks for one'
       }):\n${opts.skillsSection}\n`
     : '';
-  const mcpSection = opts.mcpSection
-    ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n`
-    : '';
+  const mcpSection = opts.mcpSection ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n` : '';
   const agentsSection = opts.agentsSection
     ? `\nDELEGATABLE SPECIALIST AGENTS (named workers you can run IN PARALLEL with the delegate tool — use them on big projects by splitting independent sub-tasks):\n${opts.agentsSection}\n`
     : '';
@@ -236,9 +234,7 @@ export function buildSystemPrompt(
   // skill layer (frontend-quality-bar builtin, shadowable by user skills);
   // WHEN it applies stays a core mechanism. Bounded like every other
   // injected section — it taxes every model call.
-  const frontendSection = opts.uiTask
-    ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n`
-    : '';
+  const frontendSection = opts.uiTask ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n` : '';
   return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
 ${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
 
@@ -367,6 +363,7 @@ Rules for the protocol:
 - BEFORE set_plan on a project with existing code: study the CURRENT CODE context, then read_file/search_files every file you intend to change. Your plan steps must name the concrete files and functions that actually exist in this codebase and describe real edits to them. If the context is not enough to plan confidently, read more first — do not plan from file names or guess at the implementation.
 - When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: use add_criteria, then append_plan. Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
 - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
+- In a complete action, write a plain-language outcome summary in one or two sentences: what the user can now do and the important result. Do not dump tool calls, JSON, headings, or a file list; the host builds the polished delivery report from the ledger.
 - Evidence ids come from verification results reported to you (ev-...).
 - Use background agents only for work that cannot conflict with your own edits. Poll agent_status and incorporate completed results before claiming their work is done.
 - If the same action failed twice, you MUST propose a different action or request_block.
@@ -392,20 +389,37 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.`;
 }
 
-export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string): string {
+export interface TaskStateScope {
+  goal: string;
+  criterionIds: string[];
+  planStepIds: string[];
+  evidenceStartIndex: number;
+  /** Files are intentionally omitted for a follow-up until touched in this
+   * phase, rather than replaying the old task's file list every turn. */
+  files?: string[];
+}
+
+export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string, scope?: TaskStateScope): string {
   const d = ledger.data;
   // A full 30-step plan can exceed the useful working-memory budget on every
   // planning turn. Small plans remain rich for review; larger ones use the
   // compact view and can always be expanded with show_plan.
-  const detail: 'full' | 'compact' = isPlanningPhase(d) && d.plan.length <= STATE_FULL_PLAN_MAX_STEPS ? 'full' : 'compact';
+  const scopedPlan = scope ? d.plan.filter((step) => scope.planStepIds.includes(step.id)) : d.plan;
+  const scopedCriteria = scope ? d.acceptanceCriteria.filter((criterion) => scope.criterionIds.includes(criterion.id)) : d.acceptanceCriteria;
+  const scopedEvidence = scope ? d.evidence.slice(scope.evidenceStartIndex) : d.evidence;
+  const detail: 'full' | 'compact' = isPlanningPhase(d) && scopedPlan.length <= STATE_FULL_PLAN_MAX_STEPS ? 'full' : 'compact';
+  const stateGoal = scope?.goal ?? d.goal;
   const taskGoal =
-    d.goal.length <= STATE_GOAL_MAX_CHARS
-      ? d.goal
-      : `${d.goal.slice(0, 3_000)}\n… [${d.goal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${d.goal.slice(-700)}`;
-  const criteria = d.acceptanceCriteria
-    .map((c) => `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`)
+    stateGoal.length <= STATE_GOAL_MAX_CHARS
+      ? stateGoal
+      : `${stateGoal.slice(0, 3_000)}\n… [${stateGoal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${stateGoal.slice(-700)}`;
+  const criteria = scopedCriteria
+    .map(
+      (c) =>
+        `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`,
+    )
     .join('\n');
-  const evidence = d.evidence
+  const evidence = scopedEvidence
     .slice(-STATE_EVIDENCE_CAP)
     .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${trunc(`${e.label}${e.command ? ` — ${e.command}` : ''}`, STATE_EVIDENCE_MAX_CHARS)}`)
     .join('\n');
@@ -417,17 +431,16 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     : '';
   const decisions = trunc(renderDecisions(d.architectureDecisions ?? []), STATE_DECISIONS_MAX_CHARS);
   const failures = ledger.failureSummary();
-  const next = ledger.nextStep();
-  const counts = stepCounts(d.plan);
+  const next = scopedPlan.find((step) => step.status === 'in_progress') ?? scopedPlan.find((step) => step.status === 'pending');
+  const counts = stepCounts(scopedPlan);
   const planBlock =
-    d.plan.length === 0
+    scopedPlan.length === 0
       ? 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
-      : `PLAN: ${counts.done}/${d.plan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(d.plan, detail)}`;
+      : `PLAN: ${counts.done}/${scopedPlan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(scopedPlan, detail)}`;
   const designBlock = renderDesign(d.planDesign, detail);
+  const phaseFiles = scope?.files ?? d.filesChanged;
   const files =
-    d.filesChanged.length > STATE_FILES_CAP
-      ? `… (+${d.filesChanged.length - STATE_FILES_CAP} earlier) ${d.filesChanged.slice(-STATE_FILES_CAP).join(', ')}`
-      : d.filesChanged.join(', ');
+    phaseFiles.length > STATE_FILES_CAP ? `… (+${phaseFiles.length - STATE_FILES_CAP} earlier) ${phaseFiles.slice(-STATE_FILES_CAP).join(', ')}` : phaseFiles.join(', ');
 
   return [
     `TASK: ${taskGoal}`,
@@ -444,7 +457,12 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     failures.length ? `FAILED:\n${failures.map((f) => `  ${f}`).join('\n')}` : '',
     `FILES CHANGED: ${files || '(none)'}`,
     next ? `NEXT: ${next.id}${next.area ? ` (${next.area})` : ''} — ${next.description}` : '',
-    d.blockers.length ? `BLOCKERS: ${d.blockers.slice(-3).map((b) => trunc(b, 300)).join('; ')}` : '',
+    d.blockers.length
+      ? `BLOCKERS: ${d.blockers
+          .slice(-3)
+          .map((b) => trunc(b, 300))
+          .join('; ')}`
+      : '',
     `RECENT ACTIONS:\n${ledger.transcriptTail(STATE_TRANSCRIPT_ACTIONS)}`,
     extra ? `SYSTEM NOTE: ${trunc(extra, 900)}` : '',
     'Respond with exactly one JSON action.',

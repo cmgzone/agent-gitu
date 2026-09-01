@@ -16,6 +16,23 @@ function unique<T>(items: T[]): T[] {
   return [...new Set(items)];
 }
 
+export interface ReportBuildScope {
+  goal: string;
+  phase?: { id: string; kind: 'initial' | 'follow_up'; startedAt: string };
+  evidenceStartIndex: number;
+  actionStartIndex: number;
+  criterionIds: string[];
+  filesChanged?: string[];
+}
+
+function friendlyChange(paramsSummary: string, reason: string): string {
+  const raw = paramsSummary.replace(/\s+/g, ' ').trim();
+  const path = /^(?:write_file|apply_edit)\s+(.+)$/i.exec(raw)?.[1]?.trim();
+  const target = path ? `Updated ${path}` : 'Updated implementation files';
+  const why = reason.replace(/\s+/g, ' ').trim().replace(/[.]+$/, '');
+  return why ? `${target} — ${why.slice(0, 180)}` : target;
+}
+
 /** Keep the model's own summary honest: show whether passing verification
  *  actually backs it. The model writes the summary; the evidence decides. */
 function summaryBacking(report: CompletionReport): string {
@@ -32,21 +49,25 @@ export class Reporter {
     exitReason: 'complete' | 'blocked' | 'stalled',
     completionInput?: { summary: string; risks: string[]; followUps: string[] },
     finalWorkspaceFingerprint?: string,
+    scope?: ReportBuildScope,
   ): CompletionReport {
     const d = ledger.data;
+    const phaseEvidence = d.evidence.slice(scope?.evidenceStartIndex ?? 0);
+    const phaseActions = d.actions.slice(scope?.actionStartIndex ?? 0);
+    const phaseCriteria = scope ? d.acceptanceCriteria.filter((criterion) => scope.criterionIds.includes(criterion.id)) : d.acceptanceCriteria;
     // A check is authoritative only when it ran against the final workspace
     // content, and only the most recent run of that exact command can be the
     // current result. Earlier checks remain useful audit history but can no
     // longer make a later failure look like a pass.
     const latestAtFinal = new Map<string, string>();
     if (finalWorkspaceFingerprint) {
-      for (const e of d.evidence) {
+      for (const e of phaseEvidence) {
         if (e.workspaceFingerprint === finalWorkspaceFingerprint) {
           latestAtFinal.set(e.command || `${e.kind}:${e.label}`, e.id);
         }
       }
     }
-    const verificationDetails: VerificationReportItem[] = d.evidence.map((e) => ({
+    const verificationDetails: VerificationReportItem[] = phaseEvidence.map((e) => ({
       id: e.id,
       kind: e.kind,
       label: e.label,
@@ -59,8 +80,12 @@ export class Reporter {
     // Keep the plain-text report useful, but do not embed a duplicate raw
     // command in every line. The structured form retains it for disclosure.
     const verification = verificationDetails.map((e) => `${e.passed ? 'PASS' : 'FAIL'} [${e.kind}] ${e.label}`);
-    const changes = d.actions.filter((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success').map((a) => a.paramsSummary);
-    const browserActions = d.actions.filter((a) => a.tool === 'browse');
+    const changes = unique(
+      phaseActions
+        .filter((action) => (action.tool === 'write_file' || action.tool === 'apply_edit') && action.status === 'success')
+        .map((action) => friendlyChange(action.paramsSummary, action.reason)),
+    );
+    const browserActions = phaseActions.filter((action) => action.tool === 'browse');
     const browserActivity = browserActions.length
       ? {
           total: browserActions.length,
@@ -81,30 +106,31 @@ export class Reporter {
       // Older persisted ledgers and lightweight integrations can predate
       // acceptance criteria. Their report remains valid; it simply receives
       // zero criterion coverage instead of crashing during metric rendering.
-      criteria: d.acceptanceCriteria ?? [],
+      criteria: phaseCriteria ?? [],
       verification: verificationDetails,
       telemetry: d.tokenTelemetry,
     });
 
     return {
       taskId: d.taskId,
-      goal: d.goal,
+      goal: scope?.goal ?? d.goal,
+      ...(scope?.phase ? { phase: scope.phase } : {}),
       status,
       summary:
         completionInput?.summary ??
         (exitReason === 'blocked' ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}` : `Task ended without completion (${exitReason}).`),
       changes,
-      filesChanged: unique(d.filesChanged.filter(isReportableFile)),
+      filesChanged: unique((scope?.filesChanged ?? d.filesChanged).filter(isReportableFile)),
       verification,
       verificationDetails,
       browserActivity,
       effortPlan: d.effortPlan,
-      findings: d.findings,
+      findings: d.findings?.filter((finding) => !scope?.phase || finding.createdAt >= scope.phase.startedAt),
       architectureDecisions: d.architectureDecisions,
       tokenTelemetry: d.tokenTelemetry,
       qualityMetrics,
       memoryStats: d.memoryStats,
-      evidence: d.evidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
+      evidence: phaseEvidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
       remainingRisks: completionInput?.risks ?? (d.blockers.length > 0 ? [`Unresolved blockers: ${d.blockers.join('; ')}`] : []),
       followUps: completionInput?.followUps ?? [],
       generatedAt: nowIso(),
@@ -113,19 +139,19 @@ export class Reporter {
 
   render(report: CompletionReport): string {
     const lines: string[] = [
-      `Task: ${report.goal}`,
-      `Task ID: ${report.taskId}`,
-      `Status: ${report.status.toUpperCase()}`,
+      `Delivery report — ${report.status.toUpperCase()}`,
+      `Scope: ${report.goal}`,
+      ...(report.phase?.kind === 'follow_up' ? ['Phase: Follow-up work (earlier task history preserved)'] : []),
       '',
-      `Summary: ${report.summary}${summaryBacking(report)}`,
+      `Outcome: ${report.summary}${summaryBacking(report)}`,
       '',
-      'Changes made:',
+      'Delivered:',
       ...(report.changes.length > 0 ? report.changes.map((c) => `  - ${c}`) : ['  (none)']),
       '',
-      'Files changed:',
+      'Files affected:',
       ...(report.filesChanged.length > 0 ? report.filesChanged.map((f) => `  - ${f}`) : ['  (none)']),
       '',
-      'Verification:',
+      'Verification performed:',
       ...(report.verification.length > 0 ? report.verification.map((v) => `  - ${v}`) : ['  (none recorded)']),
       ...(report.architectureDecisions && report.architectureDecisions.length > 0
         ? [
@@ -141,10 +167,9 @@ export class Reporter {
       ...(report.tokenTelemetry
         ? [
             '',
-            'Token telemetry:',
+            'Run telemetry:',
             `  - ${report.tokenTelemetry.calls} model call(s); provider input=${report.tokenTelemetry.inputTokens} cached=${report.tokenTelemetry.cachedTokens} output=${report.tokenTelemetry.outputTokens}`,
-            `  - ~${report.tokenTelemetry.estimatedInputTokens} estimated input tokens: system=${report.tokenTelemetry.estimatedBySource.system}, contextPack=${report.tokenTelemetry.estimatedBySource.contextPack}, taskState=${report.tokenTelemetry.estimatedBySource.state}, digest=${report.tokenTelemetry.estimatedBySource.digest}, strategy=${report.tokenTelemetry.estimatedBySource.strategy}, memory=${report.tokenTelemetry.estimatedBySource.memory}, conversation=${report.tokenTelemetry.estimatedBySource.conversation}, images=${report.tokenTelemetry.estimatedBySource.images}`,
-            `  - ${report.tokenTelemetry.compactions} compaction(s), ${report.tokenTelemetry.toolCalls} tool call(s), ${report.tokenTelemetry.screenshots} screenshot(s), ${report.tokenTelemetry.wastedCalls} wasted call(s)`,
+            `  - ${report.tokenTelemetry.toolCalls} tool call(s), ${report.tokenTelemetry.screenshots} screenshot(s), ${report.tokenTelemetry.wastedCalls} wasted model call(s)`,
           ]
         : []),
       ...(report.memoryStats

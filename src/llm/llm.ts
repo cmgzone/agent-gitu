@@ -1,3 +1,5 @@
+import { outputCapabilityFor, resolveOutputBudgetTokens, type OutputBudgetCapability } from './output-budget.js';
+
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | LlmContentPart[];
@@ -34,6 +36,12 @@ export interface LlmOptions {
   /** Provider-neutral function definitions. Provider adapters own wire conversion. */
   tools?: LlmToolDefinition[];
   toolChoice?: 'auto' | 'required' | 'none';
+  /**
+   * Absolute output-budget request (pre-clamp) for the adaptive recovery path.
+   * Ignored by transports that cannot express an output limit or that do not
+   * know the model's ceiling — see src/llm/output-budget.ts.
+   */
+  outputBudgetTokens?: number;
 }
 
 export interface LlmUsage {
@@ -400,6 +408,8 @@ export interface OpenAiCompatConfig {
   baseUrl?: string;
   model?: string;
   rateLimitKey?: string;
+  /** The model's known maximum output tokens (e.g. from the model catalog). */
+  modelMaxOutputTokens?: number;
 }
 
 type CompatMessage = {
@@ -454,6 +464,8 @@ export class OpenAiCompatClient implements LlmClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly model: string;
+  private readonly modelMaxOutputTokens: number | undefined;
+  private readonly outputCapability: OutputBudgetCapability;
 
   constructor(config: OpenAiCompatConfig) {
     this.apiKey = config.apiKey;
@@ -461,6 +473,8 @@ export class OpenAiCompatClient implements LlmClient {
     this.model = config.model ?? 'gpt-4.1-mini';
     this.name = `openai-compat:${this.model}`;
     this.rateLimitKey = config.rateLimitKey;
+    this.modelMaxOutputTokens = config.modelMaxOutputTokens;
+    this.outputCapability = outputCapabilityFor(effortStyleFor(this.baseUrl), this.model);
   }
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): OpenAiCompatClient | undefined {
@@ -539,6 +553,18 @@ export class OpenAiCompatClient implements LlmClient {
       } else {
         body['reasoning_effort'] = effortWireValue(opts.effort, 'openai');
       }
+    }
+    // UniversalOutputBudgetPolicy: reserve room for the final action when
+    // reasoning shares the completion budget, clamped to the model's known
+    // ceiling. Unknown ceiling → no field at all (never guess aggressively).
+    const budgetTokens = resolveOutputBudgetTokens({
+      effort: opts.effort,
+      capability: this.outputCapability,
+      overrideTokens: opts.outputBudgetTokens,
+      modelMaxOutputTokens: this.modelMaxOutputTokens,
+    });
+    if (budgetTokens !== undefined) {
+      body[this.outputCapability.field] = budgetTokens;
     }
     return body;
   }

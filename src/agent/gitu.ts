@@ -28,6 +28,7 @@ import {
   type LlmUsage,
 } from '../llm/llm.js';
 import { resolveEmbedder } from '../llm/providers.js';
+import { recoveryBudgetTokens, reduceEffortOneLevel, type EffortLevel } from '../llm/output-budget.js';
 import { resilientLlm } from '../llm/resilient.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
 import { LspManager } from '../lsp/manager.js';
@@ -1940,6 +1941,8 @@ export class Gitu {
       // Recovery advice differs from generic malformed replies (provider-neutral:
       // any model that reports reasoning_content/reasoning).
       let thinkingOnlyNoAction = false;
+      // One adaptive recovery per run for a reasoning-only empty turn (see ask()).
+      let thinkingRecoveryUsed = false;
       let loopBlocks = 0;
       const connectionActionAttempts = new Map<string, number>();
       const connectionOperationAttempts = new Map<string, number>();
@@ -2041,12 +2044,17 @@ export class Gitu {
         let callUsage: LlmUsage | undefined;
         const phase = ledger.data.status === 'intake' || ledger.data.status === 'planning' || ledger.data.status === 'review' ? 'planning' : 'execution';
         const logicalRequestId = `${ledger.data.taskId}:main:${++logicalRequestSequence}`;
-        const callOpts = (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number) => ({
-          effort: effortPlan.llmEffort ?? this.config.effort,
+        const callOpts = (
+          protocolMode: 'native' | 'structured_text' | 'text',
+          maxTransportAttempts: number,
+          override?: { effort?: EffortLevel; outputBudgetTokens?: number },
+        ) => ({
+          effort: override?.effort ?? effortPlan.llmEffort ?? this.config.effort,
           signal: this.abortController!.signal,
           logicalRequestId,
           maxTransportAttempts,
           protocolMode,
+          ...(override?.outputBudgetTokens !== undefined ? { outputBudgetTokens: override.outputBudgetTokens } : {}),
           ...(protocolMode === 'native' ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const } : protocolMode === 'structured_text' ? { json: true } : {}),
           onUsage: (u: LlmUsage) => {
             callUsage = u;
@@ -2058,17 +2066,21 @@ export class Gitu {
             resetProse();
           },
         });
-        const callOnce = async (protocolMode: 'native' | 'structured_text' | 'text', maxTransportAttempts: number): Promise<LlmTurnResult> => {
+        const callOnce = async (
+          protocolMode: 'native' | 'structured_text' | 'text',
+          maxTransportAttempts: number,
+          override?: { effort?: EffortLevel; outputBudgetTokens?: number },
+        ): Promise<LlmTurnResult> => {
           let r: LlmTurnResult;
           try {
-            r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts), (delta) => streamer(delta));
+            r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts, override), (delta) => streamer(delta));
           } catch (err) {
             // A compatible endpoint may accept ordinary completions while not
             // supporting SSE. Downgrade explicitly, retaining the same logical
             // request ID and only the unused transport budget. This keeps a
             // stream failure from hiding a second HTTP attempt inside the client.
             if (err instanceof LlmError && err.details.kind === 'streaming_incompatible' && protocolMode !== 'native') {
-              r = await requestLlmTurn(llm, messages, callOpts(protocolMode, Math.max(1, maxTransportAttempts - 1)));
+              r = await requestLlmTurn(llm, messages, callOpts(protocolMode, Math.max(1, maxTransportAttempts - 1), override));
             } else {
               throw err;
             }
@@ -2121,6 +2133,27 @@ export class Gitu {
         let reply = actionReplyFromTurn(turn);
         let parsed = finishParse(reply);
         thinkingOnlyNoAction = !parsed && turn.kind === 'empty' && Boolean(turn.metadata.reasoning);
+        if (thinkingOnlyNoAction && !thinkingRecoveryUsed) {
+          // Adaptive recovery (one per run): the reasoning trace consumed the
+          // entire output budget, so the model finished with no final action.
+          // Replaying the identical request would exhaust identically — retry
+          // once with one step less reasoning effort and a larger reserved
+          // output budget. Transports that cannot express an output budget
+          // ignore the override (see src/llm/output-budget.ts).
+          thinkingRecoveryUsed = true;
+          const baseEffort = effortPlan.llmEffort ?? this.config.effort;
+          const lowerEffort = reduceEffortOneLevel(baseEffort);
+          this.emit(
+            `recover  reasoning-only reply — one retry with ${lowerEffort ? `effort ${baseEffort} → ${lowerEffort}` : 'a larger reserved output budget'}`,
+          );
+          turn = await callOnce(actionProtocolMode, 2, {
+            effort: lowerEffort ?? baseEffort,
+            outputBudgetTokens: recoveryBudgetTokens(baseEffort),
+          });
+          reply = actionReplyFromTurn(turn);
+          parsed = finishParse(reply);
+          thinkingOnlyNoAction = !parsed && turn.kind === 'empty' && Boolean(turn.metadata.reasoning);
+        }
         const cutAt = proseCutIndex(reply);
         const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
         if (prose) this.emit(`say ${prose}`);

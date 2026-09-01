@@ -542,6 +542,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** Test/diagnostic hook: pin the cached catalog so policy wiring is deterministic. */
+export function setModelCatalogForTest(catalog: ModelCatalog | undefined): void {
+  catalogCache = catalog;
+  catalogExpiresAt = catalog ? Date.now() + MODEL_CATALOG_TTL_MS : 0;
+}
+
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
@@ -743,8 +749,14 @@ function build(
 ): ResolvedLlm {
   const baseUrl = opts.baseUrl ?? env['HERMES_BASE_URL'] ?? spec?.baseUrl ?? 'https://api.openai.com/v1';
   const model = opts.model ?? env['HERMES_MODEL'] ?? spec?.defaultModel ?? 'gpt-4.1-mini';
+  // Output-budget policy input: the model's known ceiling from the live
+  // catalog (warmed by the model picker / settings flows). Cold cache →
+  // undefined → requests carry no output-limit field (conservative, never
+  // guessed). A fire-and-forget fetch here would poison the shared catalog
+  // backoff on failure, so warming is deliberately left to existing callers.
+  const modelMaxOutputTokens = modelMetadataFor(peekModelCatalog(), providerId, model)?.outputTokens;
   return {
-    client: new OpenAiCompatClient({ apiKey, baseUrl, model, rateLimitKey: `${providerId}:${keyEnvVar}:chat` }),
+    client: new OpenAiCompatClient({ apiKey, baseUrl, model, rateLimitKey: `${providerId}:${keyEnvVar}:chat`, modelMaxOutputTokens }),
     providerId,
     baseUrl,
     model,

@@ -97,7 +97,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .proj:hover .delx { display: inline-flex; }
   .sb .proj .delx:hover { color: var(--err); background: var(--err-dim); }
   .sb .proj .delx svg { width: 11px; height: 11px; }
-  .sb .chat { display: flex; align-items: center; gap: 8px; padding: 5px 10px 5px 26px; font-size: 12.5px; color: var(--muted); border-radius: 8px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; position: relative; }
+  .sb .chat { display: flex; align-items: flex-start; gap: 8px; padding: 5px 10px 5px 26px; font-size: 12.5px; color: var(--muted); border-radius: 8px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; position: relative; }
+  .sb .chat .dot { margin-top: 4px; }
+  .sb .chat .chat-label { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; padding: 1px 0; }
   .sb .chat:hover { background: var(--hover); color: var(--text); }
   /* Per-session hover delete — single-session cleanup no longer requires
      discovering bulk-manage mode. Two-click arm/confirm, no native dialogs. */
@@ -212,6 +214,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .run-overview-dot.waiting { background: var(--evidence); }
   .run-overview-goal { color: var(--text); font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .run-overview-next { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .run-overview-next.wrapped { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; }
   .run-overview-stats { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
   .run-overview .details-btn { border: 1px solid var(--border2); background: rgba(19,24,38,.84); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; transition: background .15s ease, border-color .15s ease; }
   .run-overview .details-btn:hover { background: var(--hover); border-color: rgba(143,128,255,.48); }
@@ -444,7 +447,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .side-more > summary { cursor: pointer; padding: 4px 0; }
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
   .stat .k { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
-  .stat .v { font-size: 12.5px; font-weight: 600; word-break: break-word; }
+  .stat .v { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stat .v.mono { font-family: var(--mono); font-weight: 500; font-size: 12px; }
   .section-h { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 20px 0 8px; }
   .crit { display: flex; gap: 8px; padding: 5px 0; font-size: 12.5px; align-items: flex-start; }
@@ -456,8 +459,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .step .st.done { color: var(--green); } .step .st.failed, .step .st.blocked { color: var(--red); } .step .st.in_progress { color: var(--blue); }
   .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; display: flex; margin: 8px 0 6px; }
   .bar span { height: 100%; }
-  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+  .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 11px; color: var(--muted); }
   .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
+  .tl-time { margin-left: auto; flex: none; align-self: flex-start; margin-top: 5px; color: var(--faint); font: 10px var(--mono); opacity: .8; }
   .raw { border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; overflow: hidden; }
   .raw .row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px; font-family: var(--mono); font-size: 11px; border-bottom: 1px solid var(--border); color: var(--muted); }
   .raw .row:last-child { border-bottom: 0; }
@@ -829,6 +833,10 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
   function titleCase(m) { return m.replace(/(^|[-.])([a-z])/g, function (a, sep, ch) { return sep + ch.toUpperCase(); }); }
+  // Display-only model-name polish: family casing that titleCase cannot know.
+  function prettyModelName(mid) { return titleCase(mid).replace(/Deepseek/gi, 'DeepSeek'); }
+  function hhmm(iso) { var d = new Date(iso); return isNaN(d) ? '' : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }); }
+  function shortDate(iso) { var d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleDateString(undefined, { day: '2-digit', month: 'short' }) + ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }); }
   function basename(p) { var parts = String(p).replace(/\\/g, '/').split('/'); return parts[parts.length - 1] || p; }
   function effectiveProjectPath() {
     return S.settings.projectPath || S.lastProjectPath || (S.project && S.project.repoRoot) || '';
@@ -893,7 +901,7 @@ export const UI_HTML = String.raw`<!doctype html>
         if (s.projectPath && !projPath[p]) projPath[p] = s.projectPath;
       });
       var activePath = effectiveProjectPath();
-      var html = '<button class="newbtn" id="sbNew" title="starts in: ' + esc(activePath || 'choose a project first') + '">' + icon('pencil') + ' New session <span style="opacity:.6;font-weight:500;font-size:11.5px">· ' + esc(effectiveProjectName()) + '</span></button>' +
+      var html = '<button class="newbtn" id="sbNew" title="starts in: ' + esc(activePath || 'choose a project first') + '">' + icon('pencil') + ' New session <span style="opacity:.6;font-weight:500;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">· ' + esc(effectiveProjectName()) + '</span></button>' +
         '<button class="newbtn" id="sbNewProject" style="background:none;border:1px dashed var(--border2)">' + icon('folder') + ' New project</button>' +
         '<button class="navitem" data-set="cron"><span class="ico">' + icon('clock') + '</span>Scheduled</button>' +
         '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
@@ -929,7 +937,7 @@ export const UI_HTML = String.raw`<!doctype html>
               html += '<label class="chat"><input type="checkbox" class="chk" data-selrun="' + esc(s.runId) + '"' + (S.selRuns && S.selRuns[s.runId] ? ' checked' : '') + '><span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></label>';
             } else {
               html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '" title="' + esc(s.goal) + (wf ? '\n⏸ waiting for you — ' + wf : '') + '">' +
-                '<span class="dot ' + (wf ? 'waiting' : esc(s.status)) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span>' +
+                '<span class="dot ' + (wf ? 'waiting' : esc(s.status)) + '"></span><span class="chat-label">' + esc(s.goal) + '</span>' +
                 '<span class="rowdel" data-delrun="' + esc(s.runId) + '" title="delete this session" role="button" tabindex="0" aria-label="Delete session">' + icon('x') + '</span></button>';
             }
           });
@@ -1307,9 +1315,9 @@ export const UI_HTML = String.raw`<!doctype html>
       if (p.id !== pid) continue;
       for (var j = 0; j < p.models.length; j++) {
         if (p.models[j].id !== mid) continue;
-        return p.id + ' / ' + titleCase(mid) + (p.models[j].free ? ' (free)' : '');
+        return p.id + ' / ' + prettyModelName(mid) + (p.models[j].free ? ' (free)' : '');
       }
-      return p.id + ' / ' + titleCase(mid);
+      return p.id + ' / ' + prettyModelName(mid);
     }
     return String(value || '');
   }
@@ -1697,7 +1705,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="run-overview" id="runOverview"><div class="run-overview-main"><span class="run-overview-dot" id="runOverviewDot"></span><div style="min-width:0"><div class="run-overview-next" id="runOverviewNext">Connecting to task state</div></div></div><div class="run-overview-stats" id="runOverviewStats"></div><button type="button" class="details-btn" id="overviewPanel">Details</button></div>' +
       '<div class="progress" id="progress" style="display:none"><span class="plabel" id="progText"></span><div class="pbar"><span id="progFill"></span></div><span class="plabel" id="progMeta"></span></div>' +
       '<div class="stream" id="stream"></div>' +
-      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu… Enter sends to this session while working, or continues it when done"></textarea>' +
+      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div></div></div>' +
       '</div>' +
@@ -2518,7 +2526,16 @@ export const UI_HTML = String.raw`<!doctype html>
     )) return;
 
     var working = $('working');
-    function insert(el) { if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream); }
+    function insert(el) {
+      if (ev && ev.t && el.classList && el.classList.contains('tl-row')) {
+        var stamp = document.createElement('span');
+        stamp.className = 'tl-time';
+        stamp.textContent = hhmm(ev.t);
+        stamp.title = new Date(ev.t).toLocaleString();
+        el.appendChild(stamp);
+      }
+      if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream);
+    }
 
     if (text.indexOf('file ') === 0) {
       try {
@@ -2696,6 +2713,50 @@ export const UI_HTML = String.raw`<!doctype html>
       thtml += '</div></details>';
       trow.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body">' + thtml + '</div>';
       appendLive(stream, trow);
+      stickScroll(stream);
+      return;
+    }
+
+    // Consecutive recovery rows (the same discovery strategy repeating across
+    // strategies/attempts) collapse into one row with a repeat chip — the
+    // recovery ladder is noise-dense by design, but rarely worth N lines.
+    if (text.indexOf('recovery ') === 0) {
+      closeThought(runId);
+      var rKey = text.slice(9).split(' — ')[0].split(':')[0].trim();
+      var lastR = sess.nodes.lastRecovery;
+      if (lastR && lastR.key === rKey && lastR.el && lastR.el.isConnected) {
+        lastR.count++;
+        var rChip = lastR.el.querySelector('.repeat-count');
+        if (rChip) rChip.textContent = '×' + lastR.count;
+        stickScroll(stream);
+        return;
+      }
+      var rRow = document.createElement('div');
+      rRow.className = 'tl-row tl-meta';
+      rRow.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>recovery</b> ' + esc(text.slice(9).trim()) + ' <span class="chip warn repeat-count">×1</span></div>';
+      sess.nodes.lastRecovery = { key: rKey, count: 1, el: rRow };
+      insert(rRow);
+      stickScroll(stream);
+      return;
+    }
+
+    // Machine bookkeeping (diff snapshots, specialist checkpoints) accumulates
+    // into ONE collapsed group instead of narrating over the agent's work.
+    if (text.indexOf('report ') === 0 || text.indexOf('checkpoint ') === 0) {
+      closeThought(runId);
+      if (!sess.nodes.internal) {
+        var ig = document.createElement('div');
+        ig.className = 'tl-row tl-meta';
+        ig.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><details class="exec-details"><summary><b>Internal activity</b><span class="exec-sum internal-count">1 entry</span><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre></details></div>';
+        sess.nodes.internal = ig;
+        sess.nodes.internalCount = 0;
+        insert(ig);
+      }
+      sess.nodes.internalCount++;
+      var igCount = sess.nodes.internal.querySelector('.internal-count');
+      if (igCount) igCount.textContent = sess.nodes.internalCount + (sess.nodes.internalCount === 1 ? ' entry' : ' entries');
+      var igSink = sess.nodes.internal.querySelector('.exec-pre');
+      if (igSink) igSink.appendChild(document.createTextNode(text + '\n'));
       stickScroll(stream);
       return;
     }
@@ -2894,6 +2955,7 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.nodes.lastWarn = { key: warnKey, count: 1, el: meta };
     } else {
       sess.nodes.lastWarn = null;
+      sess.nodes.lastRecovery = null;
       meta.className = 'tl-row tl-meta';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>' + esc(tag) + '</b> ' + esc(body) + '</div>';
     }
@@ -2910,8 +2972,8 @@ export const UI_HTML = String.raw`<!doctype html>
     L.plan.forEach(function (s) { if (s.status === 'done') done++; });
     var total = L.plan.length;
     p.style.display = 'flex';
-    $('progText').textContent = total ? 'Step ' + done + '/' + total : 'Planning…';
-    $('progMeta').textContent = L.actions.length + ' steps · ' + L.evidence.length + ' checks';
+    $('progText').textContent = total ? 'Plan step ' + done + ' of ' + total : 'Planning…';
+    $('progMeta').textContent = L.actions.length + ' actions · ' + L.evidence.length + ' checks';
     var width = Math.min(100, Math.round((done / Math.max(1, total)) * 100));
     $('progFill').style.width = width + '%';
   }
@@ -2922,6 +2984,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var waiting = waitingFor(session);
     var status = waiting ? 'waiting' : (session.status || 'idle');
     dot.className = 'run-overview-dot ' + status;
+    // The blocker line is the most important sentence on screen when a run
+    // stops — let it wrap to two lines instead of clipping mid-sentence.
+    next.classList.toggle('wrapped', status === 'blocked' || status === 'failed');
     var current = '';
     if (ledger && ledger.blockers && ledger.blockers.length) current = 'Blocked: ' + ledger.blockers[ledger.blockers.length - 1];
     if (!current && waiting) current = 'Needs your ' + waiting + ' before work can continue';
@@ -3918,15 +3983,17 @@ export const UI_HTML = String.raw`<!doctype html>
     var L = sess.ledger;
     var session = sess.session;
     var html = '<div class="stat-grid">';
-    function stat(k, v, mono) { html += '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v ' + (mono ? 'mono' : '') + '">' + esc(v) + '</div></div>'; }
+    function stat(k, v, mono) { html += '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v ' + (mono ? 'mono' : '') + '" title="' + esc(v) + '">' + esc(v) + '</div></div>'; }
     stat('Session', runId, true);
     stat('Status', session ? session.status : '—');
     stat('Provider', session && session.provider ? session.provider : '—');
-    stat('Model', session && session.model ? session.model : '—');
+    stat('Model', session && session.model ? prettyModelName(session.model) : '—');
     stat('Mode', L ? L.mode : '—');
-    stat('Effort', S.sel.effort);
-    stat('Started', session ? new Date(session.startedAt).toLocaleString() : '—');
-    stat('Finished', session && session.finishedAt ? new Date(session.finishedAt).toLocaleString() : 'running…');
+    // The run's EFFECTIVE effort (the effort planner may escalate); the
+    // composer selection is only what the NEXT run would use.
+    stat('Effort', (L && L.effortPlan && L.effortPlan.llmEffort) ? L.effortPlan.llmEffort + ' (run)' : (S.sel.effort || '—'));
+    stat('Started', session ? shortDate(session.startedAt) : '—');
+    stat('Finished', session && session.finishedAt ? shortDate(session.finishedAt) : 'running…');
     if (L) {
       stat('Actions', L.actions.length);
       stat('Plan attempts', L.plan.reduce(function (n, s) { return n + s.attempts; }, 0));

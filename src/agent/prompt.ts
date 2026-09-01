@@ -262,6 +262,11 @@ OPERATING RULES:
 7. "I changed something" is not "the task is complete".
 ${learnRule}
 
+AUTHORITY ORDER (how conflicts are decided):
+1. GOAL — highest authority: the user's request and the accepted acceptance criteria define WHAT must ultimately be true.
+2. CONSTRAINTS — never violated by anything: the project boundary, security, user approvals, the evidence gates, and the destructive-action policy.
+3. STRATEGY — lowest authority: the plan steps are the CURRENT approach, not the goal. When runtime evidence disproves the strategy (an API rejects the request, a resource differs from assumptions, a hostname does not resolve where you assumed), ADAPT: use revise_step / append_plan to change the implementation or verification path, then continue toward the goal. Adapting after evidence is EXPECTED behavior — the only wrong move is re-running a disproven strategy unchanged.
+
 ${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}\n`}
 ${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
 

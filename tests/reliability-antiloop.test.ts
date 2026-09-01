@@ -155,11 +155,14 @@ describe('Hermes — malformed-call spiral protection', () => {
 
     const { ledger, report } = await hermes.run('mixed meltdown');
 
-    expect(report.status).toBe('blocked');
-    expect(ledger.data.blockers.some((b) => b.includes('Main execution lane stopped after 3'))).toBe(true);
-    // The lane breaker counts malformed responses consistently even when they
-    // alternate between prose and schema-invalid actions.
-    expect(ledger.data.blockers[0]).toContain('Main execution lane');
+    // The protocol-repair layer converts the prose replies into the model's
+    // own next scripted action, so the spiral surfaces through the executor's
+    // schema gate instead of the unparseable-reply counter — the run is still
+    // bounded and still stopped.
+    expect(report.status).toBe('failed');
+    expect(ledger.data.blockers.some((b) => b.includes('consecutive malformed tool calls'))).toBe(true);
+    const errors = ledger.data.actions.filter((a) => a.status === 'error');
+    expect(errors.length).toBeGreaterThanOrEqual(3);
   }, 30000);
 
   it('diagnoses a reasoning-only reply instead of giving generic malformed advice', async () => {

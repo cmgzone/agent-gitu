@@ -283,3 +283,29 @@ describe('ConnectionRegistry invocation outcomes', () => {
     expect(readOutcome(err)).toBe('not-run');
   });
 });
+
+describe('ConnectionRegistry safestRead', () => {
+  it('prefers the requested connection and only offers read-only GET operations', () => {
+    home();
+    const registry = new ConnectionRegistry();
+    registry.save({
+      label: 'A', provider: 'a', baseUrl: 'https://a.example.test', capabilities: ['x.read'], token: 't-a',
+      operations: [{ id: 'validate', label: 'Validate', capability: 'x.read', method: 'GET', path: '/api/v1/x', risk: 'read' }],
+    });
+    registry.save({
+      label: 'B', provider: 'b', baseUrl: 'https://b.example.test', capabilities: ['y.read'], token: 't-b',
+      operations: [
+        { id: 'create-thing', label: 'Create thing', capability: 'y.read', method: 'POST', path: '/api/v1/things', risk: 'reversible-write' },
+        { id: 'validate', label: 'Validate', capability: 'y.read', method: 'GET', path: '/api/v1/y', risk: 'read' },
+      ],
+    });
+    expect(registry.safestRead('b')).toEqual({ connectionId: 'b', operationId: 'validate' });
+    expect(registry.safestRead('missing')).toEqual({ connectionId: 'a', operationId: 'validate' });
+    // A connection without any read-only GET offers nothing to the controller.
+    registry.save({
+      label: 'C', provider: 'c', baseUrl: 'https://c.example.test', capabilities: ['z.read'], token: 't-c',
+      operations: [{ id: 'create-z', label: 'Create z', capability: 'z.read', method: 'POST', path: '/api/v1/z', risk: 'reversible-write' }],
+    });
+    expect(registry.safestRead('c')).toEqual({ connectionId: 'a', operationId: 'validate' });
+  });
+});

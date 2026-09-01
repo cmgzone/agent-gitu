@@ -15,6 +15,7 @@ import { LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import {
   extractJson,
+  extractLastJsonObject,
   findXmlCallStart,
   LlmError,
   parseXmlFunctionCall,
@@ -83,6 +84,13 @@ import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestM
 export interface GituConfig {
   cwd: string;
   llm: LlmClient;
+  /**
+   * Optional second model used ONLY for protocol-repair calls after malformed
+   * replies (formatting one executable action from the drifted reply). Never
+   * used for primary reasoning; repair output passes every gate a normal
+   * action would.
+   */
+  protocolRepairLlm?: LlmClient;
   /** Shared code index to reuse (e.g. a watched one owned by the server). */
   index?: CodeIndex;
   mode?: 'fast' | 'standard' | 'chat';
@@ -101,6 +109,10 @@ export interface GituConfig {
   /** Executes only a registered, read-only provider operation. URLs and
    * authorization headers stay inside the host adapter. */
   connectionActionHandler?: (input: { connectionId: string; operationId: string }) => Promise<{ message: string; data?: unknown }>;
+  /** Selects the safest information-gathering action for the recovery
+   * controller: a registered read-only operation, preferring the connection
+   * named by the caller (usually the one that just failed). */
+  safestProviderRead?: (preferredConnectionId?: string) => { connectionId: string; operationId: string } | undefined;
   /** Proposes one documented provider operation. The host validates it,
    * requests user approval for writes, then invokes only the approved entry. */
   connectionOperationHandler?: (input: ConnectionOperationProposal) => Promise<{ message: string; data?: unknown }>;
@@ -817,6 +829,13 @@ export const COMPACT_CHAR_BUDGET = 80_000;
 const COMPACT_MIN_RECENT = 2;
 const COMPACT_RECENT_MESSAGE_MAX_CHARS = 6_000;
 
+/** Constrained protocol-repair calls per run: after a malformed/no-action
+ * reply, one short call asks for EXACTLY the action object. Bounded so a
+ * drifting model cannot double the run cost. */
+export const MAX_PROTOCOL_REPAIRS = 3;
+export const PROTOCOL_REPAIR_INSTRUCTION =
+  'PROTOCOL REPAIR: your previous reply did not contain a usable executable action. Reply NOW with EXACTLY ONE JSON action object and NOTHING else — no prose, no markdown, no code fences, no reasoning: {"thought":"...","action":{...}}';
+
 export function estimateMessageChars(messages: LlmMessage[]): number {
   let total = 0;
   for (const m of messages) {
@@ -906,13 +925,78 @@ export function findLastBrowserEvidence(data: TaskLedgerData): string | undefine
   return undefined;
 }
 
+/** One bounded single-line reason for a timeline event: provider errors carry
+ * detail the user must see, but events stay compact and never multi-line. */
+export function connectionEventReason(message: string): string {
+  const text = String(message ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return text.length > 220 ? `${text.slice(0, 219).trimEnd()}…` : text;
+}
+
+export interface ExecutableRecoveryInput {
+  invalidStreak: number;
+  lastProviderRejection?: string;
+  /** Actual provider state already gathered by the recovery controller. */
+  recoveryEvidence?: string;
+  connectionContext?: string;
+  openSteps: { id: string; description: string; verification?: string }[];
+  unclaimedCriteria: string[];
+}
+
+/**
+ * The anti-loop recovery directive. After repeated no-action replies the model
+ * must stop analyzing and output ONE executable action; this synthesizes the
+ * concrete options from REAL task state — actual provider evidence, registered
+ * provider reads, the pending verification command, unclaimed criteria — plus
+ * the last provider rejection, so the forced action addresses the actual
+ * blocker instead of burning the remaining turn budget on repeated analysis.
+ * ADAPT authorization is explicit: evidence may invalidate the strategy, and
+ * revising it (revise_step/append_plan) is expected behavior, not a failure.
+ */
+export function synthesizeExecutableRecovery(input: ExecutableRecoveryInput): string {
+  const lines: string[] = [
+    `EXECUTABLE ACTION REQUIRED — your last ${input.invalidStreak} replies contained no executable action. Do not analyze again: reply with exactly ONE executable JSON action this turn.`,
+    'You are authorized to ADAPT: the goal and constraints are unchanged, but evidence may invalidate the current strategy — revise_step / append_plan to change the implementation or verification path and continue. The only wrong move is re-running a disproven strategy unchanged.',
+  ];
+  if (input.lastProviderRejection) {
+    lines.push(
+      `The last provider write is still unresolved: ${input.lastProviderRejection}`,
+      'Either fix that request (the provider error says what was wrong) or ground the next action in the provider state below.',
+    );
+  }
+  if (input.recoveryEvidence) {
+    lines.push(input.recoveryEvidence);
+  }
+  if (input.connectionContext) {
+    lines.push(
+      '1. Verify actual provider state with a registered read:',
+      '   {"thought":"...","action":{"type":"connection_action","connectionId":"<real id from the list>","operationId":"<registered read id>","reason":"read back resource state"}}',
+      `   Registered reads:\n${input.connectionContext.slice(0, 1_200)}`,
+    );
+  }
+  const step = input.openSteps.find((candidate) => candidate.verification);
+  if (step) {
+    lines.push(
+      `2. Run the pending verification for step ${step.id} ("${step.description.slice(0, 80)}"):`,
+      `   {"thought":"...","action":{"type":"tool_call","tool":"run_command","params":${JSON.stringify({ command: step.verification })},"reason":"execute the planned verification","expected":"exit 0"}}`,
+    );
+  }
+  if (input.unclaimedCriteria.length > 0) {
+    lines.push(`3. Claim a criterion you already hold evidence for: ${input.unclaimedCriteria.slice(0, 3).join('; ')}`);
+  }
+  lines.push(
+    '4. Only if nothing executable can move the task forward: {"thought":"...","action":{"type":"request_block","reason":"<the concrete missing piece>"}} — a concrete blocker with evidence, not analysis.',
+  );
+  return lines.join('\n');
+}
+
 /**
  * Parse the reviewer's reply. Only an explicit PASS counts as a successful
  * second opinion; malformed/unavailable review output is reported as such so
  * it cannot masquerade as verification.
  */
-export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise' | 'unavailable'; feedback: string } {
-  const m = /VERDICT:\s*(REVISE|PASS|REJECT)/i.exec(reply);
+export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise' | 'unavailable'; feedback: string } {  const m = /VERDICT:\s*(REVISE|PASS|REJECT)/i.exec(reply);
   if (m && m[1] && /revise|reject/i.test(m[1])) {
     const fbIdx = reply.search(/FEEDBACK:/i);
     const feedback = (fbIdx >= 0 ? reply.slice(fbIdx + 8) : reply.slice((m.index ?? 0) + m[0].length)).replace(/\s+/g, ' ').trim().slice(0, 600);
@@ -1093,6 +1177,8 @@ export interface CompactionOptions {
    *  durable lessons can be extracted into project memory before the verbose
    *  history is discarded. */
   onExtract?: (info: { failures: string[] }) => void;
+  /** Skip the normal triggers and compact now (protocol-drift recovery). */
+  force?: boolean;
 }
 
 /**
@@ -1122,7 +1208,7 @@ export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) 
   const triggerMessages = opts.triggerMessages ?? COMPACT_TRIGGER;
 
   const charsBefore = estimateMessageChars(messages);
-  if (messages.length <= triggerMessages && charsBefore <= charBudget) return false;
+  if (!opts.force && messages.length <= triggerMessages && charsBefore <= charBudget) return false;
 
   let compacted = false;
   let compactedMessages = 0;
@@ -1873,6 +1959,25 @@ export class Gitu {
         });
       }
 
+      // Provider-resource verification rules ride with the connection list so
+      // the model verifies through the provider's own reads from turn one:
+      // DNS/port probes against internal identifiers and premature BLOCKED
+      // declarations were the failure modes of real provider deployments.
+      const providerContext = ledger.data.mode === 'chat' ? undefined : this.config.connectionContext?.();
+      if (providerContext) {
+        messages.push({
+          role: 'user',
+          content:
+            'PROVIDER RESOURCE VERIFICATION RULES (apply whenever the task touches a resource managed by a saved connection):\n' +
+            '- Verify provider-managed resources through the REGISTERED READ OPERATIONS (read back actual state) — not through DNS, ping, or port probes.\n' +
+            '- Every verification has SEMANTIC PRECONDITIONS. Before treating a failed check as proof of failure, ask: where is this hostname/port SUPPOSED to resolve, from which machine, on which network? A provider resource identifier (UUID or internal hostname) is not a public DNS name — probing it from the host machine is an invalid test, not a failed deployment.\n' +
+            '- Probe public endpoints (DNS, database ports like 5432, HTTP) ONLY when the architecture explicitly exposes the resource externally; internal app-to-database traffic runs on the provider private network.\n' +
+            '- Keep criteria SEPARATE: (a) resource exists and is running — proven by provider read-back; (b) migration/configuration succeeded — proven by that application own command or logs. Never satisfy one of them with the other evidence.\n' +
+            '- One failed verification method does NOT block the task: switch to a different valid verification path (provider read-back, provider logs, application health) before declaring anything blocked.\n' +
+            `REGISTERED SAVED CONNECTIONS (metadata only):\n${providerContext}`,
+        });
+      }
+
       if (ledger.data.mode === 'chat') {
         ledger.setStatus('executing');
         this.emit('think  composing answer');
@@ -1943,6 +2048,19 @@ export class Gitu {
       let thinkingOnlyNoAction = false;
       // One adaptive recovery per run for a reasoning-only empty turn (see ask()).
       let thinkingRecoveryUsed = false;
+      // The most recent refused/unconfirmed provider write, preserved verbatim
+      // (bounded): the anti-loop recovery controller hands it back to the model
+      // so a reasoning-only spiral still converts into a concrete fix.
+      let lastProviderRejection: { text: string; connectionId: string } | undefined;
+      // The recovery controller may execute ONE safe provider read itself
+      // (reasoning-only #2) so the next turn reasons over fresh facts.
+      let recoveryReadExecuted = false;
+      // Constrained protocol-repair budget (see MAX_PROTOCOL_REPAIRS).
+      let protocolRepairsUsed = 0;
+      // Set when a reply arrives without an executable action: the very next
+      // observe() forces a compaction pass (long context correlates with
+      // protocol drift), regardless of the normal compaction triggers.
+      let driftCompactionRequested = false;
       let loopBlocks = 0;
       const connectionActionAttempts = new Map<string, number>();
       const connectionOperationAttempts = new Map<string, number>();
@@ -2091,10 +2209,17 @@ export class Gitu {
         };
         const finishParse = (r: string): ParsedAction | undefined => {
           let parsed = parseReplyAction(r);
-          const reasoning = llm.lastReasoning;
-          // Thinking models under long context sometimes keep the action JSON in
-          // the reasoning trace and only emit commentary as visible content.
-          if (!parsed && reasoning) parsed = parseReplyAction(reasoning);
+          if (!parsed) {
+            // Protocol drift: reasoning models narrate with braces before the
+            // real action — try the structured object that CLOSES LAST.
+            parsed = parseAction(extractLastJsonObject(r));
+          }
+          if (!parsed) {
+            // Thinking models under long context sometimes keep the action JSON
+            // in the reasoning trace and only emit commentary as visible content.
+            const reasoning = llm.lastReasoning;
+            if (reasoning) parsed = parseReplyAction(reasoning) ?? parseAction(extractLastJsonObject(reasoning));
+          }
           return parsed;
         };
         let turn: LlmTurnResult;
@@ -2154,6 +2279,32 @@ export class Gitu {
           parsed = finishParse(reply);
           thinkingOnlyNoAction = !parsed && turn.kind === 'empty' && Boolean(turn.metadata.reasoning);
         }
+        if (!parsed && reply.trim() && !thinkingOnlyNoAction && protocolRepairsUsed < MAX_PROTOCOL_REPAIRS) {
+          // Protocol-repair layer: the reply carried content but no usable
+          // action (the model drifted into prose). One constrained call — the
+          // repair model when the host provides one, else the same model —
+          // asking for EXACTLY the action object. A repair only PRODUCES a
+          // candidate action: policy, the executor, and the evidence gates
+          // still own everything else.
+          protocolRepairsUsed += 1;
+          this.emit(`repair  protocol-repair call ${protocolRepairsUsed}/${MAX_PROTOCOL_REPAIRS} — requesting exactly one executable action`);
+          try {
+            const repairTurn = await requestLlmTurn(
+              this.config.protocolRepairLlm ?? llm,
+              [...messages, { role: 'user', content: PROTOCOL_REPAIR_INSTRUCTION }],
+              callOpts(actionProtocolMode, 2, { effort: 'low' }),
+            );
+            const repairedReply = actionReplyFromTurn(repairTurn);
+            const repaired = finishParse(repairedReply);
+            if (repaired) {
+              this.emit('repair  recovered an executable action from the repair call');
+              reply = repairedReply;
+              parsed = repaired;
+            }
+          } catch {
+            /* repair is best-effort — the reply counts as malformed below */
+          }
+        }
         const cutAt = proseCutIndex(reply);
         const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
         if (prose) this.emit(`say ${prose}`);
@@ -2165,6 +2316,7 @@ export class Gitu {
         if (!parsed) {
           invalidStreak += 1;
           telemetry.noteWastedCall();
+          driftCompactionRequested = true;
           const verdict = malformed.note('unparseable');
           logParseFailure(ledger.data.taskId, reply, llm.lastReasoning);
           this.emit(
@@ -2190,8 +2342,15 @@ export class Gitu {
       const observe = (content: string | LlmContentPart[]): void => {
         messages.push({ role: 'user', content });
         const lengthBefore = messages.length;
+        // Protocol-drift hygiene: a reply without an executable action forces
+        // the very next compaction pass regardless of the normal triggers —
+        // long context correlates with protocol drift, so the tail gets shed
+        // before the model is asked again.
+        const driftCompaction = driftCompactionRequested;
+        driftCompactionRequested = false;
         const compactionOpts = {
           ...(this.config.compaction ?? {}),
+          ...(driftCompaction ? { force: true, keepRecent: 3, triggerMessages: 4 } : {}),
           // Memory-aware compaction: the canonical snapshot rides in the digest
           // and durable failure lessons are extracted into project memory
           // (deduped) before the verbose history is dropped.
@@ -2347,18 +2506,56 @@ export class Gitu {
               exitReason = 'blocked';
               break;
             }
-            observe(
-              thinkingOnlyNoAction
-                ? `Your reply streamed only reasoning and produced no final content — the thinking phase likely consumed the entire output budget. ` +
-                    'Do not restate your analysis: your entire visible reply must be exactly one short JSON action object, e.g. ' +
-                    '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}.'
-                : invalidStreak >= 3
-                  ? `STILL no executable action (${invalidStreak} replies in a row). Stop writing prose. Reply with exactly ONE JSON object and nothing else. ` +
-                      'If you truly cannot proceed, {"thought":"...","action":{"type":"request_block","reason":"what is blocking you"}} is a valid action.'
-                  : 'Your last response contained no executable JSON action — describing intentions is not enough. ' +
-                      'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
-                      '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
-            );
+            if (invalidStreak >= 2) {
+              // The anti-loop recovery must CONVERT state into a next action
+              // instead of repeating generic advice. Before asking the model
+              // again, the recovery controller executes the SAFEST
+              // information-gathering action itself — one registered read-only
+              // provider operation — so the next turn reasons over fresh facts
+              // (reads only: a write here would bypass user approval).
+              let recoveryEvidence = '';
+              if (!recoveryReadExecuted && this.config.connectionActionHandler) {
+                const safeRead = this.config.safestProviderRead?.(lastProviderRejection?.connectionId);
+                if (safeRead) {
+                  recoveryReadExecuted = true;
+                  this.emit(`recover  controller executing a safe provider read — ${safeRead.connectionId}/${safeRead.operationId}`);
+                  try {
+                    const result = await this.config.connectionActionHandler(safeRead);
+                    const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 8_000)}`;
+                    this.emit(`connection ${safeRead.connectionId}/${safeRead.operationId} completed`);
+                    recoveryEvidence = `The recovery controller already ran the read for you — ACTUAL provider state right now:\n${result.message}${rendered}\nGround your next action in this data.\n`;
+                  } catch (error) {
+                    recoveryEvidence = `The recovery controller attempted the same read and it failed: ${connectionEventReason((error as Error).message)}\n`;
+                  }
+                }
+              }
+              observe(
+                synthesizeExecutableRecovery({
+                  invalidStreak,
+                  lastProviderRejection: lastProviderRejection?.text,
+                  recoveryEvidence: recoveryEvidence || undefined,
+                  connectionContext: this.config.connectionContext?.() || undefined,
+                  openSteps: ledger.data.plan
+                    .filter((step) => step.status === 'pending' || step.status === 'in_progress')
+                    .map((step) => ({ id: step.id, description: step.description, verification: step.verification })),
+                  unclaimedCriteria: ledger.data.acceptanceCriteria
+                    .filter((criterion) => !criterion.satisfied)
+                    .map((criterion) => `${criterion.id} ${criterion.text.slice(0, 80)}`),
+                }),
+              );
+            } else if (thinkingOnlyNoAction) {
+              observe(
+                `Your reply streamed only reasoning and produced no final content — the thinking phase likely consumed the entire output budget. ` +
+                  'Do not restate your analysis: your entire visible reply must be exactly one short JSON action object, e.g. ' +
+                  '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}.',
+              );
+            } else {
+              observe(
+                'Your last response contained no executable JSON action — describing intentions is not enough. ' +
+                  'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
+                  '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
+              );
+            }
             continue;
           }
 
@@ -2876,9 +3073,14 @@ export class Gitu {
                   `CONNECTION ACTION RESULT: ${result.message}${rendered}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
                 );
               } catch (error) {
-                this.emit(`connection ${action.connectionId}/${action.operationId} failed`);
+                const reason = connectionEventReason((error as Error).message);
+                const exampleEcho =
+                  action.connectionId === 'saved-connection-id'
+                    ? ' The connection id you used is the documentation EXAMPLE — use a real id from REGISTERED SAVED CONNECTIONS in TASK STATE.'
+                    : '';
+                this.emit(`connection ${action.connectionId}/${action.operationId} failed — ${reason}`);
                 observe(
-                  `CONNECTION ACTION FAILED: ${(error as Error).message}\nDo not retry by adding raw headers to web_fetch. Check the saved connection's registered read operation or request a corrected secure connection.`,
+                  `CONNECTION ACTION FAILED: ${(error as Error).message}${exampleEcho}\nDo not retry by adding raw headers to web_fetch. Check the saved connection's registered read operation or request a corrected secure connection.`,
                 );
               }
               break;
@@ -2923,24 +3125,41 @@ export class Gitu {
                 // mid-flight-unknown request may still have reached the
                 // provider. Re-running a non-idempotent write on a false
                 // "not run" creates duplicate resources, so the outcome class
-                // (set by ConnectionInvocationError) decides the wording.
+                // (set by ConnectionInvocationError) decides the wording. The
+                // event carries the bounded reason so the USER sees why, not
+                // only the model.
                 const outcome = (error as { outcome?: 'not-run' | 'sent-rejected' | 'sent-unknown' }).outcome;
+                const reason = connectionEventReason(message);
+                if (outcome === 'sent-rejected' || outcome === 'sent-unknown') {
+                  lastProviderRejection = {
+                    text: connectionEventReason(`${action.connectionId}/${action.operation.id} ${action.operation.method} ${action.operation.path} — ${message}`),
+                    connectionId: action.connectionId,
+                  };
+                }
+                const exampleEcho =
+                  action.connectionId === 'saved-connection-id'
+                    ? ' The connection id you used is the documentation EXAMPLE — use a real id from REGISTERED SAVED CONNECTIONS in TASK STATE.'
+                    : '';
                 if (outcome === 'sent-rejected') {
-                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} rejected`);
+                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} rejected — ${reason}`);
+                  const sentBody =
+                    action.body === undefined ? '(no request body)' : JSON.stringify(action.body).slice(0, 2_000);
                   observe(
                     `PROVIDER OPERATION REJECTED: ${message}\n` +
-                      'The request REACHED the provider and was refused — the provider message above says what was wrong. Fix the documented operation or body accordingly, and verify provider state before any retry: a refused write may still have had partial effects. Do not loop the identical request.',
+                      `Request you sent: ${action.operation.method} ${action.operation.path}\nBody: ${sentBody}\n` +
+                      'The request REACHED the provider and was refused — the provider error above says exactly what was wrong (missing field, wrong id, permission scope). Fix the documented operation or body accordingly, and verify provider state before any retry: a refused write may still have had partial effects. Do not loop the identical request.' +
+                      `${exampleEcho}`,
                   );
                 } else if (outcome === 'sent-unknown') {
-                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} outcome unknown`);
+                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} outcome unknown — ${reason}`);
                   observe(
-                    `PROVIDER OPERATION OUTCOME UNKNOWN: ${message}\n` +
+                    `PROVIDER OPERATION OUTCOME UNKNOWN: ${message}${exampleEcho}\n` +
                       'The request was sent but its result could not be confirmed. Check the provider console or a registered read operation before ANY retry — re-running a non-idempotent write can duplicate resources.',
                   );
                 } else {
-                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run`);
+                  this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run — ${reason}`);
                   observe(
-                    `PROVIDER OPERATION NOT RUN: ${message}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`,
+                    `PROVIDER OPERATION NOT RUN: ${message}${exampleEcho}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`,
                   );
                 }
               }

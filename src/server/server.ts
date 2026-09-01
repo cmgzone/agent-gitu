@@ -2616,6 +2616,9 @@ export class GituServer {
         const result = await this.connections.invokeRead(connectionId, operationId);
         return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
       },
+      // The recovery controller may run ONE read-only operation on its own
+      // when the model spirals — never a write: approval stays mandatory.
+      safestProviderRead: (preferredConnectionId) => this.connections.safestRead(preferredConnectionId),
       connectionOperationHandler: async (proposal) => {
         const profile = this.connections.get(proposal.connectionId);
         const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);

@@ -4,9 +4,10 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Gitu, Hermes } from '../src/agent/gitu.js';
 import { CodeIndex } from '../src/context/code-index.js';
+import { ConnectionInvocationError } from '../src/connections/connections.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
-import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmClient, type LlmMessage, type LlmTurnResult } from '../src/llm/llm.js';
 import { CapabilityAwareResolver, type PrerequisiteProvider } from '../src/recovery/prerequisites.js';
 import { RecoveryRisk, type MissingPrerequisite } from '../src/types.js';
 
@@ -290,6 +291,151 @@ describe('Gitu prerequisite blocking flow', () => {
     expect(report.status).toBe('complete');
     expect(requests).toHaveLength(1);
     expect(ledger.data.blockers).toEqual([]);
+  }, 30000);
+
+  it('shows the provider rejection reason in the timeline and coaches a placeholder echo', async () => {
+    const root = project('rejected-operation');
+    const events: string[] = [];
+    const seen: string[] = [];
+    const capture = (reply: (messages: LlmMessage[]) => string) => (_turn: number, messages: LlmMessage[]) => {
+      seen.push(...messages.filter((message) => message.role === 'user' && typeof message.content === 'string').map((message) => message.content as string));
+      return reply(messages);
+    };
+    const llm = new ScriptedMockLlm([
+      capture(() => JSON.stringify({ action: { type: 'set_criteria', criteria: ['runtime is verified'] } })),
+      capture(() => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify runtime', verification: 'node --version' }] } })),
+      // The model copies the documentation EXAMPLE ids verbatim — the run must
+      // coach that specifically instead of failing opaquely.
+      capture(() =>
+        JSON.stringify({
+          action: {
+            type: 'connection_operation',
+            connectionId: 'saved-connection-id',
+            operation: { id: 'create-database', label: 'Create PostgreSQL database', capability: 'databases.create', method: 'POST', path: '/api/v1/databases', risk: 'reversible-write' },
+            body: { name: 'preview-db' },
+            reason: 'create the approved preview database',
+          },
+        }),
+      ),
+      capture(() => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify runtime', expected: 'exit 0' } })),
+      capture((messages) => {
+        const text = messages.map((message) => (typeof message.content === 'string' ? message.content : '')).join(' ');
+        const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } });
+      }),
+      capture(() => JSON.stringify({ action: { type: 'complete', summary: 'provider task complete', risks: [], followUps: [] } })),
+      // Strict-risk completion triggers the final quality review, which needs an explicit verdict.
+      capture(() => 'VERDICT: PASS\nFEEDBACK: nothing to flag.'),
+    ]);
+
+    const { report } = await new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (e) => events.push(e),
+      connectionOperationHandler: async () => {
+        throw new ConnectionInvocationError('sent-rejected', 'The provider rejected the request (HTTP 422). Provider said: {"message":"type is required"}');
+      },
+    }).run('Create a preview database');
+
+    expect(report.status).toBe('complete');
+    // The timeline event carries the bounded provider reason — the user sees
+    // WHY the approved write failed, not just "rejected".
+    const rejection = events.find((e) => e.includes('connection operation saved-connection-id/create-database rejected'));
+    expect(rejection).toBeDefined();
+    expect(rejection).toContain('HTTP 422');
+    expect(rejection).toContain('type is required');
+    // The model is told the connection id was the documentation example.
+    const afterRejection = seen.find((message) => message.includes('PROVIDER OPERATION REJECTED'));
+    expect(afterRejection).toBeDefined();
+    expect(afterRejection).toContain('documentation EXAMPLE');
+  }, 30000);
+
+  it('synthesizes an executable recovery directive instead of halting on reasoning-only spirals', async () => {
+    const root = project('recovery-directive');
+    const events: string[] = [];
+    const calls: { input: string }[] = [];
+    const context = 'coolify (id: coolify) — validate: GET /api/v1/validate; list-databases: GET /api/v1/databases';
+    let call = 0;
+    const emptyTurn = (): LlmTurnResult => ({ kind: 'empty', metadata: { reasoning: 'Deliberating about the deployment; the output budget went to thinking.' } });
+    const llm: LlmClient = {
+      name: 'directive-mock',
+      async complete() {
+        return '';
+      },
+      // The final quality review is the only completeStream consumer in this
+      // flow — it must see an explicit verdict.
+      async completeStream() {
+        return 'VERDICT: PASS\nFEEDBACK: nothing to flag.';
+      },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        calls.push({ input: messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n') });
+        const n = call++;
+        if (n <= 2) return emptyTurn(); // turn 1 + its one-shot retry, then turn 2
+        if (n === 3)
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['runtime is verified'] } }), metadata: {} };
+        if (n === 4)
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify runtime', verification: 'node --version' }] } }), metadata: {} };
+        if (n === 5)
+          return {
+            kind: 'text',
+            text: JSON.stringify({ thought: 'verify actual state', action: { type: 'connection_action', connectionId: 'coolify', operationId: 'list-databases', reason: 'read back database state' } }),
+            metadata: {},
+          };
+        if (n === 6)
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify runtime', expected: 'exit 0' } }),
+            metadata: {},
+          };
+        if (n === 7) {
+          const text = calls[calls.length - 1]!.input;
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }), metadata: {} };
+        }
+        if (n === 8) return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'provider task complete', risks: [], followUps: [] } }), metadata: {} };
+        return { kind: 'text', text: 'VERDICT: PASS\nFEEDBACK: nothing to flag.', metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const { report } = await new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (e) => events.push(e),
+      connectionContext: () => context,
+      connectionActionHandler: async () => ({ message: 'Listed databases (HTTP 200).', data: { databases: [{ name: 'gitu-marketing' }] } }),
+      safestProviderRead: (preferred) => ({ connectionId: preferred ?? 'coolify', operationId: 'list-databases' }),
+    }).run('Create a preview database');
+
+    expect(report.status).toBe('complete');
+    // Verification rules + the registered reads are in context from turn one,
+    // and the system prompt states the authority order (goal > constraints >
+    // strategy, with explicit ADAPT authorization).
+    expect(calls[0]!.input).toContain('PROVIDER RESOURCE VERIFICATION RULES');
+    expect(calls[0]!.input).toContain('SEMANTIC PRECONDITIONS');
+    expect(calls[0]!.input).toContain('AUTHORITY ORDER');
+    expect(calls[0]!.input).toContain('list-databases');
+    // Turn 1 gets the thinking-only note; turn 2 gets the SYNTHESIZED
+    // directive — and the recovery controller has ALREADY executed the safe
+    // provider read, so the directive carries actual provider state.
+    const directiveInput = calls[3]!.input;
+    expect(calls[2]!.input).not.toContain('EXECUTABLE ACTION REQUIRED');
+    expect(directiveInput).toContain('EXECUTABLE ACTION REQUIRED');
+    expect(directiveInput).toContain('already ran the read for you');
+    expect(directiveInput).toContain('Listed databases (HTTP 200)');
+    expect(directiveInput).toContain('connection_action');
+    expect(directiveInput).toContain('request_block');
+    expect(directiveInput).toContain('You are authorized to ADAPT');
+    // The controller's read ran on the timeline, the model converted the
+    // directive into its own read, and the lane never halted despite two
+    // reasoning-only replies.
+    expect(events.filter((e) => e.includes('connection coolify/list-databases completed')).length).toBeGreaterThanOrEqual(2);
+    expect(events.some((e) => e.includes('controller executing a safe provider read'))).toBe(true);
+    expect(events.some((e) => e.includes('Main execution lane stopped'))).toBe(false);
   }, 30000);
 
   it('keeps Hermes as a compatibility alias', () => {

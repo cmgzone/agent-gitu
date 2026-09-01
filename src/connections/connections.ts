@@ -572,7 +572,9 @@ export class ConnectionRegistry {
       // provider's own error body (bounded, redacted) so the caller can fix
       // the request instead of retrying blindly.
       const detail = await boundedResponseData(response).catch(() => undefined);
-      const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 1_200)}`;
+      // The provider error body is THE evidence the brain needs (missing
+      // fields, wrong ids, permission scope) — keep up to 4k of it.
+      const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 4_000)}`;
       throw new ConnectionInvocationError('sent-rejected', `${safeErrorStatus(response.status)} (HTTP ${response.status}).${detailText}`);
     }
     this.updateValidation(profile.id, 'ok');
@@ -594,6 +596,24 @@ export class ConnectionRegistry {
       throw new Error('Only registered read-only GET connection operations may be used by an agent.');
     }
     return this.invoke(id, operationId);
+  }
+
+  /**
+   * The safest information-gathering action the recovery controller can take
+   * on its own: a registered READ-ONLY GET operation on a credentialed
+   * connection, preferring the connection that just failed. Read-only by
+   * construction — the controller never executes a write without approval.
+   */
+  safestRead(preferredConnectionId?: string): { connectionId: string; operationId: string } | undefined {
+    const tokens = loadStoredKeys();
+    const profiles = this.profiles()
+      .filter((profile) => Boolean(tokens[keyRef(profile.id)]?.trim()))
+      .sort((a, b) => Number(b.id === preferredConnectionId) - Number(a.id === preferredConnectionId));
+    for (const profile of profiles) {
+      const read = profile.operations.find((candidate) => candidate.risk === 'read' && candidate.method === 'GET');
+      if (read) return { connectionId: profile.id, operationId: read.id };
+    }
+    return undefined;
   }
 
   /** Add an operation only after a host-level approval. Existing operation

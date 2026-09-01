@@ -936,3 +936,44 @@ export function extractJson(text: string): unknown {
     return undefined;
   }
 }
+
+/**
+ * Aggressive fallback extraction for protocol-drifted replies: reasoning
+ * models narrate with braces before the real action, so the action is the
+ * structured object that CLOSES LAST. Scans every balanced span and keeps the
+ * parseable one with the greatest end offset (outermost wins ties, because a
+ * nested span always closes earlier than its parent).
+ */
+export function extractLastJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  let best: { end: number; value: unknown } | undefined;
+  for (let start = trimmed.indexOf('{'); start >= 0; start = trimmed.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < trimmed.length; i++) {
+      const ch = trimmed[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            const value = JSON.parse(trimmed.slice(start, i + 1));
+            if (!best || i > best.end) best = { end: i, value };
+          } catch {
+            /* this span is not JSON */
+          }
+          break;
+        }
+      }
+    }
+  }
+  return best?.value;
+}

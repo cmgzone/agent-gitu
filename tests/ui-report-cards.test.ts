@@ -79,7 +79,29 @@ describe('UI — narration structuring & technical disclosures', () => {
   });
 
   it('rephrases machine counters in the progress header', () => {
-    expect(UI_HTML).toContain("' steps · ' + L.evidence.length + ' checks'");
-    expect(UI_HTML).not.toContain("actions · ' + L.evidence.length + ' evidence'");
+    expect(UI_HTML).toContain("' actions · ' + L.evidence.length + ' checks'");
+    expect(UI_HTML).toContain("'Plan step ' + done + ' of ' + total");
+    expect(UI_HTML).not.toContain("' steps · ' + L.evidence.length + ' checks'");
+  });
+
+  it('collapses recovery noise and internal bookkeeping in the timeline', () => {
+    // Consecutive recovery strategies group into one row with a repeat chip…
+    expect(UI_HTML).toContain("text.indexOf('recovery ') === 0");
+    expect(UI_HTML).toContain('sess.nodes.lastRecovery');
+    // …and diff-snapshot/checkpoint bookkeeping folds into one disclosure.
+    expect(UI_HTML).toContain('<b>Internal activity</b>');
+    expect(UI_HTML).toContain("text.indexOf('report ') === 0 || text.indexOf('checkpoint ') === 0");
+  });
+
+  it('stamps timeline rows with their event time', () => {
+    expect(UI_HTML).toContain("stamp.className = 'tl-time'");
+    expect(UI_HTML).toContain('hhmm(ev.t)');
+  });
+
+  it('shows the run effort, compact dates, and a two-line blocker clamp', () => {
+    expect(UI_HTML).toContain("L.effortPlan.llmEffort");
+    expect(UI_HTML).toContain("shortDate(session.startedAt)");
+    expect(UI_HTML).toContain("next.classList.toggle('wrapped'");
+    expect(UI_HTML).toContain('webkit-line-clamp: 2');
   });
 });

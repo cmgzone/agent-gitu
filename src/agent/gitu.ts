@@ -65,6 +65,7 @@ import {
   type SpecialistHandoff,
   type TaskFinding,
   type TaskLedgerData,
+  type VerifiedDiffSnapshot,
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
@@ -947,17 +948,94 @@ export async function collectQualityReviewDiff(
   root: string,
   checkpointsOrBaseRef: { ref: string }[] | string | undefined,
   maxBodyChars = 8_000,
-): Promise<{ baseRef?: string; diffStat: string; diffBody?: string; changedFiles: string[] }> {
+): Promise<{ baseRef?: string; headRef?: string; diffStat: string; diffBody?: string; diffBodyTruncated: boolean; changedFiles: string[] }> {
   const baseRef =
     typeof checkpointsOrBaseRef === 'string' ? checkpointsOrBaseRef.trim() || undefined : checkpointsOrBaseRef?.find((checkpoint) => checkpoint.ref.trim())?.ref.trim();
   const args = baseRef ? ['diff', baseRef] : ['diff', 'HEAD'];
   const diffStat = await gitExec(root, [...args, '--stat']).catch(() => '');
-  const diffBody = maxBodyChars > 0 ? (await gitExec(root, args).catch(() => '')).slice(0, maxBodyChars) : undefined;
+  const fullDiff = maxBodyChars > 0 ? await gitExec(root, args).catch(() => '') : '';
+  const diffBody = maxBodyChars > 0 ? fullDiff.slice(0, maxBodyChars) : undefined;
+  const diffBodyTruncated = maxBodyChars > 0 && fullDiff.length > maxBodyChars;
   const changedFiles = (await gitExec(root, [...args, '--name-only']).catch(() => ''))
     .split(/\r?\n/)
     .map((file) => file.trim())
     .filter(Boolean);
-  return { baseRef, diffStat, changedFiles, ...(diffBody ? { diffBody } : {}) };
+  const headRef = (await gitExec(root, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
+  return { baseRef, headRef, diffStat, changedFiles, diffBodyTruncated, ...(diffBody ? { diffBody } : {}) };
+}
+
+/** A saved diff is proof only for the exact workspace/commit that produced it. */
+export function isVerifiedDiffSnapshotCurrent(
+  snapshot: VerifiedDiffSnapshot | undefined,
+  input: { phaseId?: string; workspaceFingerprint: string; headRef?: string },
+): snapshot is VerifiedDiffSnapshot {
+  return Boolean(
+    snapshot &&
+      snapshot.phaseId === input.phaseId &&
+      snapshot.workspaceFingerprint === input.workspaceFingerprint &&
+      snapshot.headRef === input.headRef,
+  );
+}
+
+const SAFE_COMPLETION_PATH = /(?:^|\/)(?:docs?(?:\/|$)|readme(?:\.[^/]+)?$|changelog(?:\.[^/]+)?$|license(?:\.[^/]+)?$|contributing(?:\.[^/]+)?$|\.editorconfig$|\.gitattributes$|\.gitignore$|\.prettier(?:rc|ignore)?(?:\.[^/]+)?$|eslint\.config\.[^/]+$)|\.(?:md|mdx|rst|txt)$/i;
+
+function diffContainsOnlyComments(diffBody: string | undefined, truncated: boolean): boolean {
+  if (!diffBody || truncated) return false;
+  const changedLines = diffBody
+    .split(/\r?\n/)
+    .filter((line) => /^[+-]/.test(line) && !/^\+\+\+|^---/.test(line))
+    .map((line) => line.slice(1).trim())
+    .filter(Boolean);
+  return changedLines.length > 0 && changedLines.every((line) => /^(?:\/\/|\/\*|\*\/|\*|<!--|-->|#)/.test(line));
+}
+
+function allApplicableTargetedChecksPassed(data: TaskLedgerData, workspaceFingerprint: string): boolean {
+  const latest = new Map<string, (typeof data.evidence)[number]>();
+  for (const evidence of data.evidence) {
+    if (!evidence.command) continue;
+    latest.set(evidence.command, evidence);
+  }
+  return [...latest.values()].every(
+    (evidence) => evidence.passed && !evidence.stale && (!evidence.workspaceFingerprint || evidence.workspaceFingerprint === workspaceFingerprint),
+  );
+}
+
+/** Decide whether a fresh AI second opinion can prove something new. This is
+ * deliberately conservative: ambiguity keeps the review enabled. */
+export function shouldRunFinalQualityReview(input: {
+  effortPlan?: Pick<EffortPlan, 'complexity'>;
+  riskPlan?: { risk: string; strictVerification: boolean; domains: string[] };
+  bugFix: boolean;
+  phaseData: TaskLedgerData;
+  diff: { changedFiles: string[]; diffBody?: string; diffBodyTruncated?: boolean };
+  workspaceFingerprint: string;
+  evidenceGateOpen: boolean;
+  specialistOrVerificationUncertain: boolean;
+}): { run: boolean; reason: string } {
+  if (input.effortPlan?.complexity !== 'low') return { run: true, reason: 'task complexity is not low' };
+  if (
+    input.riskPlan &&
+    (input.riskPlan.strictVerification || input.riskPlan.risk !== 'unknown' || input.riskPlan.domains.some((domain) => domain !== 'unknown'))
+  ) {
+    return { run: true, reason: 'risk plan is not low/unknown' };
+  }
+  if (input.bugFix) return { run: true, reason: 'bug fix needs behavioral review' };
+  if (isUiTask(input.phaseData)) return { run: true, reason: 'UI-affecting change needs review' };
+  if (!input.evidenceGateOpen) return { run: true, reason: 'acceptance evidence is incomplete' };
+  if (!allApplicableTargetedChecksPassed(input.phaseData, input.workspaceFingerprint)) {
+    return { run: true, reason: 'a targeted check is missing, stale, or failed' };
+  }
+  if (input.specialistOrVerificationUncertain) return { run: true, reason: 'specialist or verification reported uncertainty' };
+  if (input.phaseData.actions.some((action) => action.status === 'error' || action.status === 'denied' || action.status === 'blocked')) {
+    return { run: true, reason: 'execution included an unresolved uncertainty' };
+  }
+  if (input.diff.changedFiles.length === 0) {
+    return { run: true, reason: 'verified diff has no changed-file scope to classify as safe' };
+  }
+  const safeFiles = input.diff.changedFiles.every((file) => SAFE_COMPLETION_PATH.test(file));
+  const commentOnly = diffContainsOnlyComments(input.diff.diffBody, input.diff.diffBodyTruncated ?? false);
+  if (!safeFiles && !commentOnly) return { run: true, reason: 'change may affect application or runtime behavior' };
+  return { run: false, reason: safeFiles ? 'low-risk documentation, metadata, or simple configuration only' : 'low-risk comment-only code change' };
 }
 
 /** Build the strict-reviewer message list. UI tasks attach the final screenshot for vision judging. */
@@ -1906,6 +1984,8 @@ export class Gitu {
       let delegateSlotsUsed = 0;
       let visualGateRejections = 0;
       let qualityReviewRejections = 0;
+      let completionAttempts = 0;
+      let specialistOrVerificationUncertain = false;
       // A strict-risk task (security, payments, or data integrity) must not
       // silently complete after the reviewer has exhausted its automatic repair
       // rounds. Keep the last concrete concern for an explicit release decision.
@@ -2525,6 +2605,13 @@ export class Gitu {
 
               let evidenceNote = '';
               if (action.tool === 'run_command') {
+                if (!outcome.result.ok) {
+                  // A later retry may repair the command, but its first failed
+                  // result is still uncertainty the cheap completion path must
+                  // not silently erase.
+                  specialistOrVerificationUncertain = true;
+                  this.emit('verification uncertainty recorded — final quality review remains required');
+                }
                 const kind = classifyEvidenceKind(String(action.params['command'] ?? ''));
                 const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
                 const ev = evidence.record(ledger.data, {
@@ -2928,12 +3015,14 @@ export class Gitu {
                 action.risks = [...(action.risks ?? []), `Completed with ${openSteps.length} open plan step(s): ${openSteps.map((s) => s.id).join(', ')}.`];
                 this.emit('reconcile open plan steps accepted at completion — recorded as a risk');
               }
-              // Final quality review: a strict second-opinion pass over the finished
-              // work — diff summary + criteria, and for UI tasks the last screenshot
-              // judged by the model itself (vision), closing the "nobody looks at
-              // the pixels" gap. Fail-open: errors or ambiguous verdicts accept
-              // completion, and only ONE forced revision is possible so this can
-              // never deadlock a legitimate task.
+              // Final quality review: a risk-triggered second-opinion pass over
+              // finished work — diff summary + criteria, and for UI tasks the
+              // last screenshot judged by the model itself (vision), closing the
+              // "nobody looks at the pixels" gap. Safe documentation/comment-only
+              // work can skip only after every deterministic gate has proved it
+              // harmless. Fail-open: errors or ambiguous verdicts accept completion,
+              // and only ONE forced revision is possible so this can never deadlock
+              // a legitimate task.
               const reviewRoundCap = effortPlan?.complexity === 'high' ? 2 : 1;
               const reviewWarning = unresolvedQualityReview;
               if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
@@ -2979,19 +3068,70 @@ export class Gitu {
                 unresolvedQualityReview = undefined;
                 this.emit('review   quality warning unresolved after repair budget — recorded as a release risk');
               }
-              const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityReviewRejections < reviewRoundCap;
+              // Collect one completion diff snapshot. The final report reuses
+              // this exact snapshot when its workspace fingerprint and HEAD
+              // still match, rather than rerunning equivalent Git operations.
+              const completionAttempt = ++completionAttempts;
+              const currentHeadRef = (await gitExec(guard.activeWritableRoot, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
+              const existingSnapshot = ledger.data.latestVerifiedDiff;
+              let verifiedDiff: VerifiedDiffSnapshot;
+              if (
+                isVerifiedDiffSnapshotCurrent(existingSnapshot, {
+                  phaseId: activeWorkPhase.id,
+                  workspaceFingerprint: currentFp,
+                  headRef: currentHeadRef,
+                })
+              ) {
+                verifiedDiff = existingSnapshot;
+                this.emit(`review   reusing verified diff snapshot from completion attempt ${existingSnapshot.attempt}`);
+              } else {
+                const deepReview = effortPlan?.complexity === 'high';
+                const collected = await collectQualityReviewDiff(
+                  guard.activeWritableRoot,
+                  activeWorkPhase.baseRef || ledger.data.checkpoints,
+                  deepReview ? 8_000 : 4_000,
+                );
+                verifiedDiff = {
+                  phaseId: activeWorkPhase.id,
+                  workspaceFingerprint: currentFp,
+                  headRef: collected.headRef,
+                  baseRef: collected.baseRef,
+                  changedFiles: collected.changedFiles,
+                  diffStat: collected.diffStat,
+                  ...(collected.diffBody ? { diffBody: collected.diffBody } : {}),
+                  diffBodyTruncated: collected.diffBodyTruncated,
+                  collectedAt: new Date().toISOString(),
+                  attempt: completionAttempt,
+                };
+                ledger.data.latestVerifiedDiff = verifiedDiff;
+                ledger.save();
+                this.emit(`review   verified diff snapshot collected for completion attempt ${completionAttempt}`);
+              }
+              const phaseData = { ...activePhaseData(), filesChanged: verifiedDiff.changedFiles };
+              const qualityDecision = shouldRunFinalQualityReview({
+                effortPlan,
+                riskPlan,
+                bugFix: isBugTask,
+                phaseData,
+                diff: verifiedDiff,
+                workspaceFingerprint: currentFp,
+                evidenceGateOpen: gate.open,
+                specialistOrVerificationUncertain: specialistOrVerificationUncertain || unresolvedQualityReview !== undefined,
+              });
+              const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityDecision.run && qualityReviewRejections < reviewRoundCap;
+              if (!wantsReview && !chatOnly && !qualityDecision.run) {
+                this.emit(`review   final AI quality review skipped — ${qualityDecision.reason}; evidence gates remain enforced`);
+              }
               if (wantsReview) {
                 try {
                   const deepReview = effortPlan?.complexity === 'high';
-                  const reviewDiff = await collectQualityReviewDiff(guard.activeWritableRoot, activeWorkPhase.baseRef || ledger.data.checkpoints, deepReview ? 8_000 : 4_000);
-                  const phaseData = { ...activePhaseData(), filesChanged: reviewDiff.changedFiles };
                   const reviewingUi = isUiTask(phaseData);
                   const reviewMsgs = buildQualityReviewMessages({
                     goal: activeGoal,
                     criteria: phaseData.acceptanceCriteria.map((criterion) => criterion.text),
-                    filesChanged: reviewDiff.changedFiles,
-                    diffStat: reviewDiff.diffStat,
-                    diffBody: reviewDiff.diffBody,
+                    filesChanged: verifiedDiff.changedFiles,
+                    diffStat: verifiedDiff.diffStat,
+                    diffBody: verifiedDiff.diffBody,
                     summary: action.summary,
                     uiTask: reviewingUi,
                     frontendDesign: reviewingUi ? phaseData.planDesign?.frontend : undefined,
@@ -3298,6 +3438,20 @@ export class Gitu {
               const output = outcome.result.output;
               const payload = (outcome.result.payload ?? {}) as { results?: SubAgentResult[] };
               const results = payload.results ?? [];
+              const specialistReportedUncertainty =
+                action.background ||
+                !outcome.result.ok ||
+                results.some(
+                  (result) =>
+                    !result.ok ||
+                    result.status !== 'SUCCESS' ||
+                    (result.blockers?.length ?? 0) > 0 ||
+                    /\b(?:uncertain|not sure|unable|could not|inconclusive)\b/i.test(`${result.summary}\n${result.recommendation ?? ''}`),
+                );
+              if (specialistReportedUncertainty) {
+                specialistOrVerificationUncertain = true;
+                this.emit('delegate uncertainty recorded — final quality review remains required');
+              }
 
               // P1.1 — Specialist Evidence Inheritance: a specialist's evidence is
               // evidence for Gitu to evaluate, never automatic proof. Each report
@@ -3330,6 +3484,7 @@ export class Gitu {
                     evidenceType: typeof spec === 'object' ? spec.evidenceType : undefined,
                   }));
                   const verdict = validateSpecialistEvidence(r.evidenceReport, expected);
+                  if (verdict.rejected.length > 0) specialistOrVerificationUncertain = true;
                   for (const a of verdict.accepted) {
                     const mainCriterion = ledger.data.acceptanceCriteria.find((c) => c.id === a.criterionId);
                     if (!mainCriterion) {
@@ -3370,6 +3525,7 @@ export class Gitu {
                         this.emit(`delegate-claim ${r.agent} ${a.criterionId} <- ${rv.freshEvidenceId ?? rv.criterionId}: parent-reverified — ${oracle}`);
                         this.emit(`evidence ${rv.freshEvidenceId ?? '?'} PASS (parent-reverified)`);
                       } else {
+                        specialistOrVerificationUncertain = true;
                         validationLines.push(`  ✗ ${a.criterionId}: parent re-verification not confirmed — ${rv.reason}`);
                         this.emit(`delegate-claim ${r.agent} ${a.criterionId}: REJECTED — ${rv.reason}`);
                       }
@@ -3482,7 +3638,37 @@ export class Gitu {
       this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
 
       const finalWorkspaceFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot);
-      const phaseFiles = activeWorkPhase.baseRef ? (await collectQualityReviewDiff(guard.activeWritableRoot, activeWorkPhase.baseRef, 0)).changedFiles : undefined;
+      const finalHeadRef = (await gitExec(guard.activeWritableRoot, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
+      let phaseFiles: string[] | undefined;
+      if (
+        isVerifiedDiffSnapshotCurrent(ledger.data.latestVerifiedDiff, {
+          phaseId: activeWorkPhase.id,
+          workspaceFingerprint: finalWorkspaceFingerprint,
+          headRef: finalHeadRef,
+        })
+      ) {
+        phaseFiles = ledger.data.latestVerifiedDiff.changedFiles;
+        this.emit(`report   reused verified diff snapshot from completion attempt ${ledger.data.latestVerifiedDiff.attempt}`);
+      } else if (activeWorkPhase.baseRef) {
+        // The workspace changed after completion verification (or this run
+        // ended before a completion attempt), so the report needs fresh diff
+        // metadata. This is an invalidation path, not duplicate work.
+        const collected = await collectQualityReviewDiff(guard.activeWritableRoot, activeWorkPhase.baseRef, 0);
+        ledger.data.latestVerifiedDiff = {
+          phaseId: activeWorkPhase.id,
+          workspaceFingerprint: finalWorkspaceFingerprint,
+          headRef: collected.headRef,
+          baseRef: collected.baseRef,
+          changedFiles: collected.changedFiles,
+          diffStat: collected.diffStat,
+          diffBodyTruncated: collected.diffBodyTruncated,
+          collectedAt: new Date().toISOString(),
+          attempt: completionAttempts,
+        };
+        ledger.save();
+        phaseFiles = collected.changedFiles;
+        this.emit('report   diff snapshot refreshed after workspace changed');
+      }
       const report = reporter.build(ledger, exitReason, completionInput, finalWorkspaceFingerprint, {
         goal: activeGoal,
         phase: {

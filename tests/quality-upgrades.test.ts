@@ -10,12 +10,15 @@ import {
   collectQualityReviewDiff,
   extractFailureDigest,
   findLastScreenshotUrl,
+  isVerifiedDiffSnapshotCurrent,
   parseReviewVerdict,
+  shouldRunFinalQualityReview,
+  Hermes,
 } from '../src/agent/gitu.js';
 import { tokenize } from '../src/context/context-engine.js';
 import { CodeIndex } from '../src/context/code-index.js';
 import { gitExec } from '../src/git/git.js';
-import type { LlmMessage } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { Executor } from '../src/executor/executor.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
@@ -180,6 +183,167 @@ describe('buildQualityReviewMessages', () => {
     expect(review.diffStat).toContain('follow-up.ts');
     expect(review.diffStat).not.toContain('old-work.ts');
   });
+
+  it('skips the AI second opinion only for low-risk documentation changes with sufficient evidence', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'fix README typo', project: ProjectGuard.detect(dir).lock, mode: 'fast' });
+    const decision = shouldRunFinalQualityReview({
+      effortPlan: { complexity: 'low' },
+      riskPlan: { risk: 'unknown', strictVerification: false, domains: ['unknown'] },
+      bugFix: false,
+      phaseData: ledger.data,
+      diff: { changedFiles: ['README.md'], diffBody: '+Fix a typo in the setup section\n', diffBodyTruncated: false },
+      workspaceFingerprint: 'workspace',
+      evidenceGateOpen: true,
+      specialistOrVerificationUncertain: false,
+    });
+    expect(decision).toMatchObject({ run: false });
+  });
+
+  it('keeps the AI review for runtime changes and any reported uncertainty', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'small change', project: ProjectGuard.detect(dir).lock, mode: 'fast' });
+    const runtime = shouldRunFinalQualityReview({
+      effortPlan: { complexity: 'low' },
+      riskPlan: { risk: 'unknown', strictVerification: false, domains: ['unknown'] },
+      bugFix: false,
+      phaseData: ledger.data,
+      diff: { changedFiles: ['src/router.ts'], diffBody: '+export function route() {}\n', diffBodyTruncated: false },
+      workspaceFingerprint: 'workspace',
+      evidenceGateOpen: true,
+      specialistOrVerificationUncertain: false,
+    });
+    const uncertain = shouldRunFinalQualityReview({
+      effortPlan: { complexity: 'low' },
+      riskPlan: { risk: 'unknown', strictVerification: false, domains: ['unknown'] },
+      bugFix: false,
+      phaseData: ledger.data,
+      diff: { changedFiles: ['README.md'], diffBody: '+Fix typo\n', diffBodyTruncated: false },
+      workspaceFingerprint: 'workspace',
+      evidenceGateOpen: true,
+      specialistOrVerificationUncertain: true,
+    });
+    expect(runtime).toMatchObject({ run: true });
+    expect(uncertain).toMatchObject({ run: true });
+  });
+
+  it('keeps the AI review when the verified diff cannot prove a safe file scope', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'small documentation task', project: ProjectGuard.detect(dir).lock, mode: 'fast' });
+    const decision = shouldRunFinalQualityReview({
+      effortPlan: { complexity: 'low' },
+      riskPlan: { risk: 'unknown', strictVerification: false, domains: ['unknown'] },
+      bugFix: false,
+      phaseData: ledger.data,
+      diff: { changedFiles: [], diffBodyTruncated: false },
+      workspaceFingerprint: 'workspace',
+      evidenceGateOpen: true,
+      specialistOrVerificationUncertain: false,
+    });
+    expect(decision).toMatchObject({ run: true });
+  });
+
+  it('keeps the AI review for UI, bug-fix, security, dependency, and cross-cutting work', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'small change', project: ProjectGuard.detect(dir).lock, mode: 'fast' });
+    const base = {
+      effortPlan: { complexity: 'low' as const },
+      riskPlan: { risk: 'unknown', strictVerification: false, domains: ['unknown'] },
+      bugFix: false,
+      phaseData: ledger.data,
+      diff: { changedFiles: ['README.md'], diffBody: '+Clarify setup\n', diffBodyTruncated: false },
+      workspaceFingerprint: 'workspace',
+      evidenceGateOpen: true,
+      specialistOrVerificationUncertain: false,
+    };
+    expect(shouldRunFinalQualityReview({ ...base, diff: { changedFiles: ['src/Page.tsx'], diffBody: '+export const Page = () => null;\n', diffBodyTruncated: false } }).run).toBe(true);
+    expect(shouldRunFinalQualityReview({ ...base, bugFix: true }).run).toBe(true);
+    expect(
+      shouldRunFinalQualityReview({
+        ...base,
+        riskPlan: { risk: 'security', strictVerification: true, domains: ['security'] },
+      }).run,
+    ).toBe(true);
+    expect(shouldRunFinalQualityReview({ ...base, diff: { changedFiles: ['package.json'], diffBody: '+"new-runtime-dependency": "1.0.0"\n', diffBodyTruncated: false } }).run).toBe(true);
+    expect(shouldRunFinalQualityReview({ ...base, effortPlan: { complexity: 'medium' } }).run).toBe(true);
+  });
+
+  it('reuses only a diff snapshot from the same phase, workspace, and HEAD', () => {
+    const snapshot = {
+      phaseId: 'phase-2',
+      workspaceFingerprint: 'fingerprint-a',
+      headRef: 'abc123',
+      changedFiles: ['README.md'],
+      diffStat: ' README.md | 1 +',
+      collectedAt: '2026-09-01T00:00:00.000Z',
+      attempt: 1,
+    };
+    expect(isVerifiedDiffSnapshotCurrent(snapshot, { phaseId: 'phase-2', workspaceFingerprint: 'fingerprint-a', headRef: 'abc123' })).toBe(true);
+    expect(isVerifiedDiffSnapshotCurrent(snapshot, { phaseId: 'phase-2', workspaceFingerprint: 'fingerprint-b', headRef: 'abc123' })).toBe(false);
+    expect(isVerifiedDiffSnapshotCurrent(snapshot, { phaseId: 'phase-3', workspaceFingerprint: 'fingerprint-a', headRef: 'abc123' })).toBe(false);
+  });
+
+  it('skips the final AI review for a fully-evidenced README-only completion and reuses its diff in the report', async () => {
+    const dir = makeProject();
+    writeFileSync(path.join(dir, 'README.md'), '# Install\nRun teh setup command.\n');
+    await gitExec(dir, ['init']);
+    await gitExec(dir, ['add', '-A']);
+    await gitExec(dir, ['-c', 'user.name=quality-test', '-c', 'user.email=quality@test.local', 'commit', '-m', 'baseline']);
+
+    const events: string[] = [];
+    let reviewerCalls = 0;
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['README setup wording is corrected'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'Correct the README typo', verification: 'node --version', area: 'docs' }] } }),
+      () =>
+        JSON.stringify({
+          action: {
+            type: 'tool_call',
+            stepId: 'step-1',
+            tool: 'write_file',
+            params: { path: 'README.md', content: '# Install\nRun the setup command.\n' },
+            reason: 'correct the documented setup wording',
+            expected: 'README contains the corrected sentence',
+          },
+        }),
+      () =>
+        JSON.stringify({
+          action: {
+            type: 'tool_call',
+            stepId: 'step-1',
+            tool: 'run_command',
+            params: { command: 'node --version' },
+            reason: 'run the planned targeted check',
+            expected: 'command exits successfully',
+          },
+        }),
+      (_call, messages) => {
+        const evidenceId = [...messages]
+          .reverse()
+          .map((message) => (typeof message.content === 'string' ? message.content : ''))
+          .join('\n')
+          .match(/(ev-\d{8}-[0-9a-f]{6})/)?.[1];
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId } });
+      },
+      (_call, messages) => {
+        const system = typeof messages[0]?.content === 'string' ? messages[0].content : '';
+        if (system.includes('strict senior engineer')) {
+          reviewerCalls += 1;
+          return 'VERDICT: PASS';
+        }
+        return JSON.stringify({ action: { type: 'complete', summary: 'Corrected the README typo and ran the targeted check.', risks: [], followUps: [] } });
+      },
+    ]);
+
+    const { ledger, report } = await new Hermes({ cwd: dir, llm, mode: 'fast', autoLearn: false, onEvent: (event) => events.push(event) }).run('Correct a README typo');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.latestVerifiedDiff?.changedFiles).toEqual(['README.md']);
+    expect(report.filesChanged).toEqual(['README.md']);
+    expect(reviewerCalls).toBe(0);
+    expect(events.some((event) => event.includes('final AI quality review skipped'))).toBe(true);
+    expect(events.some((event) => event.includes('report   reused verified diff snapshot'))).toBe(true);
+  }, 30000);
 });
 
 // ---- built-in specialist roster ------------------------------------------

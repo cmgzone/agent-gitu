@@ -464,6 +464,23 @@ export interface WorkPhase {
   priorPlanStepIds: string[];
 }
 
+/** A Git diff collected during completion verification. It is reusable only
+ * when the workspace and commit identity still match exactly. */
+export interface VerifiedDiffSnapshot {
+  phaseId?: string;
+  workspaceFingerprint: string;
+  /** HEAD identity at collection time (undefined outside a Git repository). */
+  headRef?: string;
+  baseRef?: string;
+  changedFiles: string[];
+  diffStat: string;
+  diffBody?: string;
+  diffBodyTruncated?: boolean;
+  collectedAt: string;
+  /** Completion attempt that produced this snapshot. */
+  attempt: number;
+}
+
 export interface TaskLedgerData {
   schemaVersion: 1;
   taskId: string;
@@ -504,6 +521,9 @@ export interface TaskLedgerData {
    * replacing the prior plan, proof, or report. */
   workPhases?: WorkPhase[];
   activeWorkPhaseId?: string;
+  /** Most recent completion-verification diff. Reused by the final report
+   * only after fingerprint and HEAD identity validation. */
+  latestVerifiedDiff?: VerifiedDiffSnapshot;
   currentHypothesis?: string;
   actions: ActionRecord[];
   evidence: Evidence[];

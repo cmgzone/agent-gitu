@@ -1,4 +1,14 @@
-export { Hermes, type HermesConfig, type HermesRunResult } from './agent/gitu.js';
+export {
+  Gitu,
+  type GituConfig,
+  type GituRunResult,
+  /** @deprecated Use Gitu. */
+  Hermes,
+  /** @deprecated Use GituConfig. */
+  type HermesConfig,
+  /** @deprecated Use GituRunResult. */
+  type HermesRunResult,
+} from './agent/gitu.js';
 export { buildStateMessage, buildSystemPrompt } from './agent/prompt.js';
 export { classifyTaskComplexity, planEffort } from './agent/effort-planner.js';
 export { buildPlanNote, classifyRiskDomains, planRisk, selectSpecialists } from './agent/risk-planner.js';
@@ -36,8 +46,41 @@ export {
   type ResolvedLlm,
 } from './llm/providers.js';
 export { MemoryStore } from './memory/memory-store.js';
+export {
+  ConnectionRegistry,
+  type ConnectionDraft,
+  type ConnectionHttpMethod,
+  type ConnectionInvocationResult,
+  type ConnectionOperation,
+  type ConnectionOperationRisk,
+  type ConnectionProfile,
+  type ConnectionProfileView,
+  type ConnectionRequirement,
+} from './connections/connections.js';
 export { PolicyEngine, classifyCommand, type ApprovalHandler, type PolicyDecision } from './policy/policy.js';
+export {
+  CapabilityAwareResolver,
+  RecoveryPolicy,
+  formatBlockedPrerequisite,
+  inferMissingPrerequisite,
+  type PrerequisiteProvider,
+  type PrerequisiteRecoveryOptions,
+  type PrerequisiteResolution,
+  type RecoveryAttempt,
+  type RecoveryContext,
+  type RecoveryPolicyOptions,
+  type RecoveryStrategy,
+  type RecoveryStrategyResult,
+} from './recovery/prerequisites.js';
 export { Reporter } from './report/reporter.js';
-export { HermesServer, type HermesServerConfig, type RunSessionView } from './server/server.js';
+export {
+  GituServer,
+  type GituServerConfig,
+  /** @deprecated Use GituServer. */
+  HermesServer,
+  /** @deprecated Use GituServerConfig. */
+  type HermesServerConfig,
+  type RunSessionView,
+} from './server/server.js';
 export * from './types.js';
 export { errorSignature, hashParams, normalizeErrorText } from './util.js';

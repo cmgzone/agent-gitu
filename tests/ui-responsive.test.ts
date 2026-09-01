@@ -49,6 +49,11 @@ describe('UI — responsive task shell and trustworthy controls', () => {
     expect(UI_HTML).not.toContain('chatgptSignout');
   });
 
+  it('gives runtime recovery guidance instead of blaming the selected model', () => {
+    expect(UI_HTML).toContain('subscriptionRuntimeFailure');
+    expect(UI_HTML).toContain('Changing models will not fix this runtime error.');
+  });
+
   it('exposes keyboard and screen-reader semantics for primary controls', () => {
     expect(UI_HTML).toContain('button:focus-visible');
     expect(UI_HTML).toContain('aria-label="Workflow mode"');

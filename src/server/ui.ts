@@ -45,7 +45,7 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.6 var(--sans); }
+  body { margin: 0; background: radial-gradient(circle at 48% -18%, rgba(143,128,255,.13), transparent 33rem), var(--bg); color: var(--text); font: 13.5px/1.6 var(--sans); }
   ::selection { background: rgba(143,128,255,.35); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -73,16 +73,16 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .shell { display: flex; height: 100%; min-width: 0; }
   .mobile-nav-btn, .mobile-backdrop { display: none; }
-  .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
-  .sb .head { display: flex; align-items: center; gap: 8px; padding: 14px 14px 8px; }
+  .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: linear-gradient(180deg, rgba(19,24,38,.72), var(--bg) 150px); display: flex; flex-direction: column; overflow: hidden; }
+  .sb .head { display: flex; align-items: center; gap: 8px; padding: 16px 14px 10px; }
   .sb .head .name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 2px; font-size: 14px; }
   .brand-mark { width: 22px; height: 22px; flex: none; border-radius: 6px; }
   .sb .head .spacer { flex: 1; }
   .sb .iconbtn { background: none; border: 0; color: var(--muted); width: 28px; height: 28px; border-radius: 7px; font-size: 15px; }
   .sb .iconbtn:hover { background: var(--hover); color: var(--text); }
   .sb .scroll { flex: 1; overflow-y: auto; padding: 4px 10px 10px; }
-  .sb .newbtn { margin: 6px 4px 10px; display: flex; align-items: center; gap: 9px; border: 1px solid var(--border); background: var(--hover); color: var(--text); border-radius: 9px; padding: 8px 11px; font-weight: 600; font-size: 13px; width: calc(100% - 8px); text-align: left; }
-  .sb .newbtn:hover { background: #232c3f; border-color: var(--border2); }
+  .sb .newbtn { margin: 6px 4px 10px; display: flex; align-items: center; gap: 9px; border: 1px solid rgba(143,128,255,.34); background: linear-gradient(135deg, rgba(143,128,255,.20), rgba(91,168,255,.12)); color: var(--text); border-radius: 10px; padding: 9px 11px; font-weight: 650; font-size: 13px; width: calc(100% - 8px); text-align: left; transition: transform .16s ease, border-color .16s ease, background .16s ease; }
+  .sb .newbtn:hover { background: linear-gradient(135deg, rgba(143,128,255,.31), rgba(91,168,255,.18)); border-color: rgba(143,128,255,.62); transform: translateY(-1px); }
   .sb .navitem { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
   .sb .navitem:hover { background: var(--hover); }
   .sb .navitem .ico { width: 16px; text-align: center; color: var(--muted); }
@@ -133,18 +133,26 @@ export const UI_HTML = String.raw`<!doctype html>
   .topbar .spacer { flex: 1; }
   .view { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
-  .home { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 24px; overflow: auto; }
-  .home h1 { font-size: 24px; font-weight: 600; margin: 0; }
+  .home { position: relative; isolation: isolate; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; overflow: auto; }
+  .home::before { content: ''; position: absolute; z-index: -1; width: min(920px, 86vw); height: 520px; top: calc(50% - 270px); border-radius: 50%; background: radial-gradient(ellipse, rgba(91,168,255,.075), rgba(143,128,255,.04) 39%, transparent 70%); pointer-events: none; }
+  .home-intro { width: min(760px, 94vw); }
+  .home-eyebrow { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: #b9b1ff; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+  .home-eyebrow::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px var(--ok-dim); }
+  .home h1 { font-size: clamp(24px, 3vw, 32px); font-weight: 650; letter-spacing: -.035em; line-height: 1.18; margin: 0; }
   .home h1 .u { border-bottom: 2px dotted var(--faint); }
-  .sugs { display: grid; grid-template-columns: repeat(4, 170px); gap: 12px; }
-  @media (max-width: 900px) { .sugs { grid-template-columns: repeat(2, 170px); } }  .sug { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--text); }
-  .sug:hover { border-color: var(--border2); box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+  .home-copy { max-width: 580px; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  .sugs { display: grid; grid-template-columns: repeat(4, 170px); gap: 10px; }
+  @media (max-width: 900px) { .sugs { grid-template-columns: repeat(2, 170px); } }  .sug { min-height: 130px; background: linear-gradient(155deg, rgba(27,34,49,.94), var(--card)); border: 1px solid var(--border); border-radius: 13px; padding: 14px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--text); transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+  .sug:hover { border-color: rgba(143,128,255,.48); box-shadow: 0 12px 30px rgba(2,6,17,.28); transform: translateY(-2px); }
   .sug .ico { font-size: 15px; display: block; margin-bottom: 10px; }
+  .sug-title { display: block; font-weight: 650; line-height: 1.38; }
+  .sug-hint { display: block; margin-top: 5px; color: var(--faint); font-size: 11px; line-height: 1.38; }
   .setup-card { border: 1px solid rgba(91,168,255,.34); background: var(--run-dim); color: var(--text); border-radius: 12px; padding: 12px 14px; }
   .setup-card:hover { border-color: var(--run); background: rgba(91,168,255,.16); }
   .setup-card h3 { color: #cfe6ff; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; }
   .setup-card .setup-action { display: inline-block; margin-top: 6px; color: var(--run); font-size: 12px; font-weight: 650; }
-  .composer { width: min(760px, 94vw); background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 8px 24px rgba(0,0,0,.05); padding: 6px 8px 8px; }
+  .composer { width: min(760px, 94vw); background: linear-gradient(145deg, rgba(24,31,47,.98), var(--card)); border: 1px solid var(--border2); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 12px 32px rgba(0,0,0,.15); padding: 6px 8px 8px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+  .composer:focus-within { border-color: rgba(143,128,255,.72); box-shadow: 0 0 0 3px rgba(143,128,255,.12), 0 16px 38px rgba(0,0,0,.24); }
   .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
   .composer textarea::placeholder { color: var(--faint); }
   .composer-bar { display: flex; align-items: center; gap: 5px; padding: 2px 6px; flex-wrap: wrap; }
@@ -176,7 +184,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .model-empty { color: var(--faint); font-size: 12px; padding: 10px 9px; text-align: center; line-height: 1.5; }
   .model-list mark { background: rgba(143,128,255,.28); color: inherit; border-radius: 3px; }
   .model-count { padding: 5px 10px 2px; margin-top: 4px; border-top: 1px solid var(--border); color: var(--faint); font-size: 10.5px; text-align: right; }
-  .send { margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0; background: var(--dark); color: #10141d; font-size: 14px; }
+  .send { margin-left: auto; width: 32px; height: 32px; border-radius: 10px; border: 0; background: linear-gradient(135deg, #a99cff, #6f98ff); color: #fff; font-size: 14px; box-shadow: 0 4px 12px rgba(112,134,255,.28); transition: transform .16s ease, filter .16s ease, box-shadow .16s ease; }
+  .send:not(:disabled):hover { filter: brightness(1.1); box-shadow: 0 7px 18px rgba(112,134,255,.38); transform: translateY(-1px); }
   /* Send ⇄ Stop: while the agent runs the same button stops it. */
   .send.stop { background: var(--err); color: #fff; font-size: 11px; animation: stopPulse 1.6s ease-in-out infinite; }
   .send.stop:hover { filter: brightness(1.12); }
@@ -194,7 +203,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .progress .pbar { flex: 1; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
   .progress .pbar span { display: block; height: 100%; width: 0; background: var(--run); transition: width .5s ease; }
   .stream { position: relative; flex: 1; overflow-y: auto; padding: 10px 24px 18px 20px; }
-  .run-overview { display: flex; align-items: center; gap: 12px; padding: 12px 24px 10px; border-bottom: 1px solid var(--border); background: var(--bg); flex: none; min-width: 0; }
+  .run-overview { display: flex; align-items: center; gap: 12px; padding: 12px 24px 10px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, rgba(19,24,38,.78), var(--bg)); flex: none; min-width: 0; }
   .run-overview-main { display: flex; align-items: flex-start; gap: 9px; min-width: 0; flex: 1; }
   .run-overview-dot { width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: var(--faint); flex: none; }
   .run-overview-dot.running { background: var(--run); box-shadow: 0 0 0 4px var(--run-dim); }
@@ -204,7 +213,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .run-overview-goal { color: var(--text); font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .run-overview-next { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .run-overview-stats { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
-  .run-overview .details-btn { border: 1px solid var(--border2); background: var(--card2); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; }
+  .run-overview .details-btn { border: 1px solid var(--border2); background: rgba(19,24,38,.84); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; transition: background .15s ease, border-color .15s ease; }
+  .run-overview .details-btn:hover { background: var(--hover); border-color: rgba(143,128,255,.48); }
   .timeline-trim-note { margin: 4px 0 10px 20px; color: var(--faint); font-size: 11.5px; }
   .stream::before { content: ''; position: absolute; left: 24px; top: 0; bottom: 0; width: 1px; background: var(--line); }
   .tl-row { position: relative; display: flex; align-items: flex-start; gap: 11px; padding: 5px 0; min-width: 0; animation: toolIn .22s ease-out both; }
@@ -453,7 +463,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .raw .row .t { color: var(--faint); flex: none; }
   .empty { color: var(--faint); font-size: 12.5px; padding: 4px 0; }
 
-  .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: var(--bg); }
+  .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: linear-gradient(180deg, rgba(13,16,23,.72), var(--bg)); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
 
   .settings { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: flex; }
@@ -606,6 +616,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .bpanel2 .bwrap img { width: 100%; display: block; border: 1px solid var(--border); border-radius: 10px; background: var(--card2); min-height: 160px; object-fit: top left; }
   .bdrive { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 7px; background: var(--accent); color: #fff; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; box-shadow: 0 4px 16px rgba(124,108,240,.5); animation: pulse 1.4s infinite; white-space: nowrap; }
   .bdrive svg { width: 13px; height: 13px; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+  }
   /* Narrow windows: the right panel becomes a slide-in overlay instead of
      disappearing — Browser/Git/state must stay reachable, not vanish. */
   @media (max-width: 1080px) {
@@ -839,6 +852,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!s) return null;
     if (s.pendingPlanReview) return 'plan review';
     if (s.pendingQuestions) return 'your answer';
+    if (s.pendingConnection) return 'secure connection setup';
     if (s.pendingApprovals && s.pendingApprovals.length) return 'approval';
     return null;
   }
@@ -1186,19 +1200,22 @@ export const UI_HTML = String.raw`<!doctype html>
     var heading = effProj
       ? 'What should we work on in <span class="u">' + esc(name) + '</span>?'
       : 'What should we work on?';
+    var homeCopy = effProj
+      ? 'Describe the outcome you want. Gitu will plan, make changes, and show the evidence behind every result.'
+      : 'Choose a project, then describe the outcome you want. Gitu will keep the work scoped and evidence-backed.';
     $('view').innerHTML =
       '<div class="home">' +
-      '<h1>' + heading + '</h1>' +
+      '<div class="home-intro"><div class="home-eyebrow">Ready when you are</div><h1>' + heading + '</h1><p class="home-copy">' + homeCopy + '</p></div>' +
       (keyless
         ? '<button class="setup-card" id="keylessCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto 8px;max-width:760px">' +
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
           '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
-        : '') +
+      : '') +
       '<div class="sugs">' +
-      '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:var(--run)">' + icon('search') + '</span>Explore and understand code</button>' +
-      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:var(--accent)">' + icon('bolt') + '</span>Build a new feature, app, or tool</button>' +
-      '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:var(--ok)">' + icon('layers') + '</span>Review code and suggest changes</button>' +
-      '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:var(--err)">' + icon('wrench') + '</span>Fix issues and failures</button>' +
+      '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:var(--run)">' + icon('search') + '</span><span class="sug-title">Explore the codebase</span><span class="sug-hint">Map the architecture and find the right starting point.</span></button>' +
+      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:var(--accent)">' + icon('bolt') + '</span><span class="sug-title">Build something new</span><span class="sug-hint">Turn an idea into a planned, verified change.</span></button>' +
+      '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:var(--ok)">' + icon('layers') + '</span><span class="sug-title">Review the code</span><span class="sug-hint">Check quality, risks, and practical next improvements.</span></button>' +
+      '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:var(--err)">' + icon('wrench') + '</span><span class="sug-title">Fix an issue</span><span class="sug-hint">Investigate a failure and verify the repair.</span></button>' +
       '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
@@ -2957,6 +2974,7 @@ export const UI_HTML = String.raw`<!doctype html>
       renderApprovals(runId, session);
       renderPlanReview(runId, session);
       renderQuestions(runId, session);
+      renderConnectionRequest(runId, session);
       renderErrorCard(runId, session);
       if (session.status !== 'running' && !sess.summaryShown && session.report) {
         sess.summaryShown = true;
@@ -3113,6 +3131,74 @@ export const UI_HTML = String.raw`<!doctype html>
       }).join('\n');
       api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer: answers }) })
         .catch(function (er) { restore(); toast(er.message, true); });
+    };
+  }
+
+  function renderConnectionRequest(runId, session) {
+    var stream = $('stream');
+    if (!stream) return;
+    var sess = S.sessions[runId];
+    var pending = session.pendingConnection;
+    if (!pending) {
+      if (sess.connShown) {
+        sess.connShown = null;
+        var oldCards = stream.querySelectorAll('.connection-card');
+        for (var oi = 0; oi < oldCards.length; oi++) oldCards[oi].remove();
+      }
+      return;
+    }
+    if (sess.connShown === pending.id) return;
+    sess.connShown = pending.id;
+    var olds = stream.querySelectorAll('.connection-card');
+    for (var i = 0; i < olds.length; i++) olds[i].remove();
+    var req = pending.requirement || {};
+    var provider = req.providerHint || 'provider';
+    var caps = req.capabilities || [];
+    var setup = req.setup || {};
+    var apiKeyOnly = Boolean(setup.baseUrl && setup.validationPath);
+    var label = setup.label || provider;
+    var configurationFields =
+      '<input class="conn-label" placeholder="Connection name" value="' + esc(label) + '">' +
+      '<input class="conn-provider" placeholder="Provider identifier" value="' + esc(provider) + '">' +
+      '<input class="conn-base" placeholder="Base URL (HTTPS, or HTTP only for localhost)" value="' + esc(setup.baseUrl || '') + '">' +
+      '<input class="conn-docs" placeholder="Documentation URL (optional, HTTPS)" value="' + esc(setup.documentationUrl || '') + '">' +
+      '<input class="conn-path" placeholder="Read-only validation path" value="' + esc(setup.validationPath || '/') + '">';
+    var documentation = setup.documentationUrl
+      ? ' Documentation source: <a href="' + esc(setup.documentationUrl) + '" target="_blank" rel="noreferrer">' + esc(setup.documentationUrl) + '</a>.'
+      : '';
+    var formFields = apiKeyOnly
+      ? '<div class="hint" style="margin-top:10px">Gitu filled the provider endpoint and validation route from available provider information.' + documentation + ' Review them below only if they are not correct for this account.</div>' +
+        '<input class="conn-token" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model" style="margin-top:8px">' +
+        '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted)">Review or change connection details</summary><div style="display:grid;gap:8px;margin-top:8px">' + configurationFields + '</div></details>'
+      : configurationFields +
+        '<input class="conn-token" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model">' +
+        '<div class="hint">If you only have an API key, ask Gitu to find the provider’s official API documentation first; it can prefill safe endpoint details when they are verified.</div>';
+    var div = document.createElement('div');
+    div.className = 'qcard connection-card';
+    div.innerHTML = '<h3>secure connection required</h3>' +
+      '<div class="meta-line">Agent Gitu needs ' + esc(req.description || 'provider access') + ' for ' + esc(req.requiredFor || 'this task') + '. Your credential is validated locally and is never shown to the model, task history, generated skill, or logs.</div>' +
+      '<div style="display:grid;gap:8px;margin-top:10px">' + formFields + '</div>' +
+      (caps.length ? '<div class="hint" style="margin-top:8px">Required capabilities: ' + esc(caps.join(', ')) + '</div>' : '') +
+      '<div class="actions"><button class="btn dark" data-saveconnection>' + (apiKeyOnly ? 'Save API key, validate, and resume' : 'Save, validate, and resume') + '</button></div>';
+    var working = $('working');
+    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
+    stickScroll(stream, true);
+    var save = div.querySelector('[data-saveconnection]');
+    save.onclick = function () {
+      if (save.disabled) return;
+      save.disabled = true; save.textContent = 'Validating…';
+      var body = {
+        label: div.querySelector('.conn-label').value,
+        provider: div.querySelector('.conn-provider').value,
+        baseUrl: div.querySelector('.conn-base').value,
+        documentationUrl: div.querySelector('.conn-docs').value,
+        validationPath: div.querySelector('.conn-path').value || '/',
+        token: div.querySelector('.conn-token').value,
+        capabilities: caps
+      };
+      api('/api/runs/' + encodeURIComponent(runId) + '/connection', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function () { div.querySelector('.conn-token').value = ''; toast('Connection validated — task is resuming'); })
+        .catch(function (e) { save.disabled = false; save.textContent = 'Save, validate, and resume'; toast((e && e.message) || 'Connection could not be validated', true); });
     };
   }
 
@@ -3358,9 +3444,23 @@ export const UI_HTML = String.raw`<!doctype html>
       '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || report.summary), 360)) + '</p>' +
       reportStatusLine(report.status, currentChecks, passed, files.length || parsed.changes.length) +
       browserHighlight(report.browserActivity) +
-      (checks.length ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + '</details>' : '') +
+      ((checks.length || report.qualityMetrics) ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + qualityMetricsHtml(report.qualityMetrics) + '</details>' : '') +
       '</div>';
     return html;
+  }
+
+  function qualityMetricsHtml(metrics) {
+    if (!metrics || typeof metrics.score !== 'number') return '';
+    var criteria = metrics.criteria || {};
+    var verification = metrics.verification || {};
+    var bits = [
+      Math.round(metrics.score) + '/100 outcome quality',
+      (Number(criteria.satisfied) || 0) + '/' + (Number(criteria.total) || 0) + ' criteria',
+      (Number(verification.passing) || 0) + '/' + (Number(verification.authoritative) || 0) + ' final checks',
+    ];
+    if (typeof metrics.tokensPerVerifiedCriterion === 'number') bits.push(Math.round(metrics.tokensPerVerifiedCriterion).toLocaleString() + ' tokens / verified criterion');
+    if (typeof metrics.wastedCallRate === 'number') bits.push(Math.round(metrics.wastedCallRate * 100) + '% wasted calls');
+    return '<div class="r-note" data-quality-metrics><b>Outcome quality</b> · ' + esc(bits.join(' · ')) + '</div>';
   }
 
   function appendSummary(runId, session) {
@@ -3418,8 +3518,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var evHtml = verificationSection(checks);
     var rawHtml = '<div class="sec"><h4>Raw summary</h4><pre class="exec-pre" style="max-height:240px">' + esc(readableSummary(r.summary)) + '</pre></div>';
     var teleHtml = r.tokenTelemetry ? telemetryGridHtml(r.tokenTelemetry) : '';
-    if (evHtml || rawHtml || teleHtml) {
-      html += '<details class="exec-details" style="margin-top:16px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + evHtml + rawHtml + teleHtml + '</details>';
+    var qualityHtml = qualityMetricsHtml(r.qualityMetrics);
+    if (evHtml || rawHtml || teleHtml || qualityHtml) {
+      html += '<details class="exec-details" style="margin-top:16px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + qualityHtml + evHtml + rawHtml + teleHtml + '</details>';
     }
     div.innerHTML = html;
     // The full-report text exporter finally gets a consumer.
@@ -3451,8 +3552,12 @@ export const UI_HTML = String.raw`<!doctype html>
     var failure = sess.session && sess.session.error;
     var satisfied = L.acceptanceCriteria.filter(function (c) { return c.satisfied; }).length;
     var planDone = L.plan.filter(function (s) { return s.status === 'done'; }).length;
+    var subscriptionRuntimeFailure = typeof failure === 'string' && /(ChatGPT subscription runtime could not start|ChatGPT subscription request failed:\s*spawn\s+(?:EFTYPE|ENOENT|EACCES|EPERM))/i.test(failure);
+    var recoveryHint = subscriptionRuntimeFailure
+      ? 'The local Codex runtime could not start. Restart Agent Gitu; if it persists, repair or reinstall Agent Gitu (or update Codex), then retry. Changing models will not fix this runtime error.'
+      : 'Choose an available model in the composer, then send a message to retry. Your task and history are preserved.';
     var html = failure
-      ? '<div style="margin:0 0 14px;padding:10px;border:1px solid rgba(255,100,101,.4);border-radius:9px;background:rgba(255,100,101,.1);color:#ffb3b4;font-size:12px;line-height:1.45"><b>Last attempt failed.</b> ' + esc(failure) + '<br>Choose an available model in the composer, then send a message to retry. Your task and history are preserved.</div>'
+      ? '<div style="margin:0 0 14px;padding:10px;border:1px solid rgba(255,100,101,.4);border-radius:9px;background:rgba(255,100,101,.1);color:#ffb3b4;font-size:12px;line-height:1.45"><b>Last attempt failed.</b> ' + esc(failure) + '<br>' + recoveryHint + '</div>'
       : '';
     html += '<div class="side-summary"><div class="t">Task state</div><div class="d">' +
       satisfied + '/' + L.acceptanceCriteria.length + ' criteria · ' + planDone + '/' + L.plan.length + ' plan steps · ' + L.evidence.length + ' checks</div></div>';
@@ -3890,6 +3995,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var items = [
       ['general', 'gear', 'General'],
       ['providers', 'layers', 'Providers'],
+      ['connections', 'plug', 'Connections'],
       ['permissions', 'shield', 'Permissions'],
       ['workspace', 'folder', 'Workspace'],
       ['project', 'search', 'Project'],
@@ -3911,7 +4017,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var b = $('setbody');
     // Async sections seed an instant loading row instead of a blank flash.
     if (S.setSection !== 'general' && S.setSection !== 'workspace') {
-      b.innerHTML = '<h1>' + esc(S.setSection === 'mcp' ? 'MCP servers' : S.setSection === 'skills' ? 'Skills' : S.setSection === 'agents' ? 'Specialist agents' : S.setSection === 'cron' ? 'Scheduled / heartbeat' : S.setSection) + '</h1><p class="meta" style="color:var(--muted);font-size:12.5px">loading…</p>';
+      b.innerHTML = '<h1>' + esc(S.setSection === 'mcp' ? 'MCP servers' : S.setSection === 'skills' ? 'Skills' : S.setSection === 'agents' ? 'Specialist agents' : S.setSection === 'cron' ? 'Scheduled / heartbeat' : S.setSection === 'connections' ? 'Connections' : S.setSection) + '</h1><p class="meta" style="color:var(--muted);font-size:12.5px">loading…</p>';
     }
     if (S.setSection === 'general') {
       b.innerHTML = '<h1>General</h1>' +
@@ -3925,6 +4031,67 @@ export const UI_HTML = String.raw`<!doctype html>
       $('gEffort').value = S.sel.effort;
       $('gWf').onchange = function () { S.sel.wf = $('gWf').value; persist(); };
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
+    } else if (S.setSection === 'connections') {
+      b.innerHTML = '<h1>Connections</h1>' +
+        '<p style="color:var(--muted);font-size:12.5px">Save a provider connection once, then let tasks reuse its documented capabilities. Credentials stay separate from global skills, task history, and model context.</p>' +
+        '<div class="setcard" style="margin-bottom:12px"><div class="t" style="margin-bottom:10px">Add a provider connection</div>' +
+        '<div class="d" style="margin-bottom:10px">The form registers a read-only validation path. During a task, Gitu can research a documented write operation and show its exact request for your individual approval; it never gains unrestricted provider write access.</div>' +
+        '<div style="display:grid;gap:8px;max-width:620px">' +
+        '<input id="connLabel" placeholder="Connection name (for example: Production platform)">' +
+        '<input id="connProvider" placeholder="Provider identifier (for example: platform-api)">' +
+        '<input id="connBaseUrl" placeholder="Base URL (HTTPS, or HTTP only for localhost)">' +
+        '<input id="connDocsUrl" placeholder="Documentation URL (optional, HTTPS)">' +
+        '<input id="connCapabilities" placeholder="Capabilities, comma-separated (for example: servers.read, databases.read)">' +
+        '<input id="connValidationPath" value="/" placeholder="Read-only validation path, for example: /api/v1/servers">' +
+        '<input id="connToken" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model">' +
+        '<div><button class="btn dark" id="saveConnection">Save and validate</button></div></div></div>' +
+        '<div class="setcard" id="connectionsBody"><div class="meta">loading connections…</div></div>';
+      function renderConnections() {
+        api('/api/connections').then(function (data) {
+          var body = $('connectionsBody');
+          if (!body || S.setSection !== 'connections') return;
+          var rows = data.connections || [];
+          body.innerHTML = rows.map(function (c) {
+            var capabilities = (c.capabilities || []).join(', ') || 'no declared capabilities';
+            var status = c.lastValidationStatus === 'ok' ? '<span class="chip ok">validated</span>' : c.lastValidationStatus === 'failed' ? '<span class="chip bad">validation failed</span>' : '<span class="chip">not tested</span>';
+            return '<div class="setrow" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(c.label) + ' ' + status + '</div><div class="d">' + esc(c.provider) + ' · ' + esc(capabilities) + '</div><div class="hint">' + esc(c.baseUrl) + (c.documentationUrl ? ' · docs configured' : '') + ' · credential ' + (c.hasCredential ? 'saved locally' : 'missing') + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" data-testconn="' + esc(c.id) + '">Test</button><button class="btn ghost" data-delconn="' + esc(c.id) + '">Remove</button></div></div>';
+          }).join('') || '<div class="meta">No saved connections yet.</div>';
+          body.querySelectorAll('[data-testconn]').forEach(function (btn) {
+            btn.onclick = function () {
+              var id = btn.getAttribute('data-testconn'); btn.disabled = true; btn.textContent = 'Testing…';
+              api('/api/connections/' + encodeURIComponent(id) + '/test', { method: 'POST' }).then(function () { toast('Connection validated'); renderConnections(); }).catch(function (e) { toast((e && e.message) || 'Connection failed', true); }).finally(function () { btn.disabled = false; btn.textContent = 'Test'; });
+            };
+          });
+          body.querySelectorAll('[data-delconn]').forEach(function (btn) {
+            btn.onclick = function () {
+              var id = btn.getAttribute('data-delconn');
+              if (!window.confirm('Remove this connection, its local credential, and its generated global skill?')) return;
+              api('/api/connections/' + encodeURIComponent(id), { method: 'DELETE' }).then(function () { toast('Connection removed'); renderConnections(); }).catch(function (e) { toast((e && e.message) || 'Could not remove connection', true); });
+            };
+          });
+        }).catch(function (e) { if ($('connectionsBody')) $('connectionsBody').innerHTML = '<div class="meta">Could not load connections: ' + esc((e && e.message) || 'unknown error') + '</div>'; });
+      }
+      $('saveConnection').onclick = function () {
+        var btn = this;
+        var caps = $('connCapabilities').value.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
+        var capability = caps[0] || 'connection.discover';
+        var profile = {
+          label: $('connLabel').value,
+          provider: $('connProvider').value,
+          baseUrl: $('connBaseUrl').value,
+          documentationUrl: $('connDocsUrl').value,
+          capabilities: caps.length ? caps : [capability],
+          operations: [{ id: 'validate', label: 'Validate saved connection', capability: capability, method: 'GET', path: $('connValidationPath').value || '/', risk: 'read' }],
+          token: $('connToken').value
+        };
+        btn.disabled = true; btn.textContent = 'Saving…';
+        api('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+          .then(function (result) { return api('/api/connections/' + encodeURIComponent(result.connection.id) + '/test', { method: 'POST' }); })
+          .then(function () { $('connToken').value = ''; toast('Connection saved and validated'); renderConnections(); })
+          .catch(function (e) { toast((e && e.message) || 'Could not save connection', true); })
+          .finally(function () { btn.disabled = false; btn.textContent = 'Save and validate'; });
+      };
+      renderConnections();
     } else if (S.setSection === 'providers') {
       b.innerHTML = '<h1>Providers</h1>' +
         '<p style="color:var(--muted);font-size:12.5px">Connect a provider, then choose the default model used for new tasks.</p>' +
@@ -4590,7 +4757,10 @@ export const UI_HTML = String.raw`<!doctype html>
     api('/api/home').then(function (h) {
       var heal = function (p) {
         if (!p) return p;
-        var i = p.indexOf('\\Hermes\\');
+        var i = p.indexOf('\\AgentGitu\\');
+        if (i >= 0) return h.root + p.slice(i + 10);
+        // Restore projects created before the Gitu rename as well.
+        i = p.indexOf('\\Hermes\\');
         if (i >= 0) return h.root + p.slice(i + 7);
         return p;
       };

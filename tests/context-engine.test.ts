@@ -110,4 +110,18 @@ describe('ContextEngine', () => {
     index.stopWatch();
     index.close();
   });
+
+  it('surfaces a graph-connected helper even when its path has no goal terms', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-ctx-'));
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'ctx-graph', private: true }));
+    mkdirSync(path.join(dir, 'src', 'infra'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'checkout.ts'), "import { request } from './infra/transport';\nexport const checkout = request;");
+    writeFileSync(path.join(dir, 'src', 'infra', 'transport.ts'), 'export const request = () => true;');
+    writeFileSync(path.join(dir, 'src', 'unrelated.ts'), 'export const unrelated = true;');
+
+    const guard = ProjectGuard.detect(dir);
+    const db = path.join(mkdtempSync(path.join(tmpdir(), 'hermes-ctxdb-')), 'code-index.db');
+    const pack = new ContextEngine(guard, new CodeIndex(guard.lock.repoRoot, db)).buildPack('fix the checkout flow', { maxFiles: 3, maxBytes: 40_000 });
+    expect(pack.primaryFiles.some((f) => f.path === 'src/infra/transport.ts')).toBe(true);
+  });
 });

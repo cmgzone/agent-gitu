@@ -1,17 +1,28 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline';
-import { Hermes } from './agent/gitu.js';
+import { Gitu } from './agent/gitu.js';
 import { SubAgentRunner } from './agent/subagent.js';
 import { AgentStore } from './agents/registry.js';
+import { createCliPresenter } from './cli/presenter.js';
 import { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
 import { TaskLedger } from './ledger/task-ledger.js';
 import { LlmError } from './llm/llm.js';
-import { PROVIDERS, ProviderError, fetchLiveModels, fetchModelCatalog, modelCapabilityTier, modelMetadataFor, providerKey, resolveLlm, type ProviderSpec } from './llm/providers.js';
+import {
+  PROVIDERS,
+  ProviderError,
+  fetchLiveModels,
+  fetchModelCatalog,
+  modelCapabilityTier,
+  modelMetadataFor,
+  providerKey,
+  resolveLlm,
+  type ProviderSpec,
+} from './llm/providers.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, waitForCodexSubscriptionLogin } from './llm/codex-subscription.js';
 import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
-import { HermesServer } from './server/server.js';
+import { GituServer } from './server/server.js';
 import type { MemoryStatus, MemoryType, MemoryVisibility } from './types.js';
 
 interface ParsedArgs {
@@ -24,7 +35,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const flags = new Map<string, string | boolean>();
   // Flags that take an explicit value. Anything else is boolean — and the
   // literal tokens false/no/off/0 DISABLE it instead of truthy-enabling it.
-  const VALUE_FLAGS = new Set(['provider', 'model', 'port', 'type', 'criteria']);
+  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status']);
   const FALSEY = new Set(['false', 'no', 'off', '0']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -48,22 +59,23 @@ function parseArgs(argv: string[]): ParsedArgs {
 }
 
 function usage(): string {
-  return `Agent Gitu — autonomous engineering agent (cli: hermes)
+  return `Agent Gitu — autonomous engineering agent (cli: gitu; hermes is a legacy alias)
 
 Usage:
-  hermes init                          Detect and lock the current project
-  hermes run "<goal>" [options]        Run a task end-to-end
-  hermes providers                     List LLM providers and key status
-  hermes login                         Sign in with ChatGPT (use your subscription, no API key)
-  hermes logout                        Sign out of ChatGPT
-  hermes models [--provider <name>]    List models (live from endpoint when a key is set)
-  hermes models --pick [provider]      Interactive model chooser
-  hermes ui [--port 8321]              Start the Web UI (agent state viewer)
-  hermes tasks                         List task ledgers
-  hermes show <taskId>                 Show a task ledger
-  hermes report <taskId>               Show the completion report for a task
-  hermes memory [--type <type>]        Show stored memory
-  hermes memory search <query>         Ranked search (--limit --scope --visibility --agent --project --type --status)
+  gitu init                            Detect and lock the current project
+  gitu run "<goal>" [options]          Run a task end-to-end
+  gitu providers                       List LLM providers and key status
+  gitu login                           Sign in with ChatGPT (use your subscription, no API key)
+  gitu logout                          Sign out of ChatGPT
+  gitu models [--provider <name>]      List models (live from endpoint when a key is set)
+  gitu models --pick [provider]        Interactive model chooser
+  gitu ui [--port 8321]                Start the Web UI (agent state viewer)
+  gitu status [--json]                 Show a compact developer-workspace overview
+  gitu tasks                           List task ledgers
+  gitu show <taskId> [--json]          Show a focused task view (or its raw ledger)
+  gitu report <taskId>                 Show the completion report for a task
+  gitu memory [--type <type>] [--json] Show stored memory
+  gitu memory search <query>           Ranked search (--limit --scope --visibility --agent --project --type --status --json)
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
@@ -73,16 +85,18 @@ Run options:
   --model <name>         Override model (env: HERMES_MODEL)
   --base-url <url>       Override provider endpoint
   --review               Pause after planning for an interactive plan review before building
+  --json                 Return structured JSON for inspection commands
+  --no-color             Disable terminal colour
 
 Providers:
-  chatgpt   ChatGPT subscription — run \`hermes login\` (uses the models in your
+  chatgpt   ChatGPT subscription — run \`gitu login\` (uses the models in your
             ChatGPT plan through local Codex; no API key)
   alibaba   Alibaba Cloud Model Studio / DashScope (OpenAI-compatible)
             keys: HERMES_ALIBABA_API_KEY | DASHSCOPE_API_KEY | ALIBABA_API_KEY
-            models: run \`hermes models --provider alibaba\` (default: qwen3.8-max)
+            models: run \`gitu models --provider alibaba\` (default: qwen3.8-max)
   deepseek  DeepSeek direct API (OpenAI-compatible)
             keys: HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
-            models: run \`hermes models --provider deepseek\` (default: deepseek-v4-pro)
+            models: run \`gitu models --provider deepseek\` (default: deepseek-v4-pro)
   openai    OpenAI — keys: HERMES_OPENAI_API_KEY | OPENAI_API_KEY
   custom    HERMES_API_KEY (+ optional HERMES_BASE_URL, HERMES_MODEL)`;
 }
@@ -116,7 +130,7 @@ async function listProviderModels(spec: ProviderSpec, pick: boolean): Promise<vo
     const status = await codexSubscriptionInfo();
     const ids = status.models.length > 0 ? status.models.map((model) => model.id) : [...spec.models];
     console.log(`\n${spec.id} — ${spec.label}`);
-    console.log(`source: ${status.signedIn ? 'models available through your local Codex sign-in' : 'built-in list (run hermes login to use this provider)'}`);
+    console.log(`source: ${status.signedIn ? 'models available through your local Codex sign-in' : 'built-in list (run gitu login to use this provider)'}`);
     ids.forEach((id, i) => {
       const marker = id === spec.defaultModel ? '  (default)' : '';
       console.log(`  ${String(i + 1).padStart(3)}. ${id}${marker}`);
@@ -182,16 +196,37 @@ async function main(): Promise<void> {
   const { positional, flags } = parseArgs(process.argv.slice(2));
   const command = positional[0];
   const cwd = process.cwd();
+  const json = flags.get('json') === true;
+  const noColor = flags.get('no-color') === true;
+  const plain = flags.get('plain') === true;
+  const ascii = flags.get('ascii') === true;
+  const presenter = createCliPresenter({
+    color: Boolean(process.stdout.isTTY) && !noColor && !plain && !('NO_COLOR' in process.env),
+    unicode: process.env['TERM'] !== 'dumb' && !ascii,
+    width: typeof process.stdout.columns === 'number' ? process.stdout.columns : undefined,
+  });
 
   switch (command) {
     case 'init': {
       const guard = ProjectGuard.detect(cwd);
       guard.persist();
-      console.log(`Locked project: ${guard.lock.name}`);
-      console.log(`  root: ${guard.lock.repoRoot}`);
-      console.log(`  branch: ${guard.lock.branch ?? '(none)'}`);
-      console.log(`  stack: ${guard.lock.techStack.join(', ') || 'unknown'}`);
-      console.log(`  test: ${guard.lock.testCommand ?? '?'} | build: ${guard.lock.buildCommand ?? '?'} | lint: ${guard.lock.lintCommand ?? '?'} | typecheck: ${guard.lock.typecheckCommand ?? '?'}`);
+      if (json) console.log(JSON.stringify(guard.lock, null, 2));
+      else console.log(presenter.projectLocked(guard.lock));
+      return;
+    }
+
+    case 'status': {
+      let guard: ProjectGuard;
+      try {
+        guard = ProjectGuard.detect(cwd);
+      } catch {
+        console.log('No project detected here. Run `gitu init` inside a project.');
+        return;
+      }
+      const tasks = TaskLedger.list(guard.lock.repoRoot).map((task) => task.data);
+      const memory = MemoryStore.forProject(guard.lock.repoRoot).stats();
+      if (json) console.log(JSON.stringify({ project: guard.lock, tasks, memory }, null, 2));
+      else console.log(presenter.workspaceStatus(guard.lock, tasks, memory));
       return;
     }
 
@@ -200,7 +235,7 @@ async function main(): Promise<void> {
       try {
         guard = ProjectGuard.detect(cwd);
       } catch {
-        console.log('No project detected here. Run `hermes init` inside a project.');
+        console.log('No project detected here. Run `gitu init` inside a project.');
         return;
       }
       const tasks = TaskLedger.list(guard.lock.repoRoot);
@@ -208,26 +243,32 @@ async function main(): Promise<void> {
         console.log('No tasks yet.');
         return;
       }
-      for (const t of tasks) {
-        const d = t.data;
-        console.log(`${d.taskId}  [${d.status.padEnd(9)}]  ${d.goal.slice(0, 80)}`);
-      }
+      if (json)
+        console.log(
+          JSON.stringify(
+            tasks.map((task) => task.data),
+            null,
+            2,
+          ),
+        );
+      else console.log(presenter.taskList(tasks.map((task) => task.data)));
       return;
     }
 
     case 'show': {
       const taskId = positional[1];
-      if (!taskId) throw new Error('Usage: hermes show <taskId>');
+      if (!taskId) throw new Error('Usage: gitu show <taskId>');
       const guard = ProjectGuard.detect(cwd);
       const ledger = TaskLedger.load(guard.lock.repoRoot, taskId);
       if (!ledger) throw new Error(`Task not found: ${taskId}`);
-      console.log(JSON.stringify(ledger.data, null, 2));
+      if (json) console.log(JSON.stringify(ledger.data, null, 2));
+      else console.log(presenter.taskDetails(ledger.data));
       return;
     }
 
     case 'report': {
       const taskId = positional[1];
-      if (!taskId) throw new Error('Usage: hermes report <taskId>');
+      if (!taskId) throw new Error('Usage: gitu report <taskId>');
       const guard = ProjectGuard.detect(cwd);
       const ledger = TaskLedger.load(guard.lock.repoRoot, taskId);
       if (!ledger) throw new Error(`Task not found: ${taskId}`);
@@ -235,7 +276,8 @@ async function main(): Promise<void> {
         console.log('No completion report for this task yet.');
         return;
       }
-      console.log(new Reporter().render(ledger.data.report));
+      if (json) console.log(JSON.stringify(ledger.data.report, null, 2));
+      else console.log(`${presenter.completion(ledger.data.report)}\n\n${new Reporter().render(ledger.data.report)}`);
       return;
     }
 
@@ -245,7 +287,7 @@ async function main(): Promise<void> {
       if (positional[1] === 'search') {
         const query = positional.slice(2).join(' ').trim();
         if (!query) {
-          console.log('Usage: hermes memory search <query> [--limit N] [--scope S] [--visibility V] [--agent A] [--project P] [--type T] [--status S]');
+          console.log('Usage: gitu memory search <query> [--limit N] [--scope S] [--visibility V] [--agent A] [--project P] [--type T] [--status S]');
           return;
         }
         const str = (k: string): string | undefined => (typeof flags.get(k) === 'string' ? (flags.get(k) as string) : undefined);
@@ -263,10 +305,8 @@ async function main(): Promise<void> {
           console.log('(no matching memories)');
           return;
         }
-        results.forEach((r, i) => {
-          console.log(`${i + 1}. [${r.score.toFixed(2)} ${r.matchReason}] ${r.claim}`);
-          console.log(`   ${r.type} · ${r.status} · scope:${r.scope} · conf ${r.confidence} · imp ${r.importance}${r.agentId ? ` · agent:${r.agentId}` : ''}${r.provenance ? ` · via ${r.provenance}` : ''}`);
-        });
+        if (json) console.log(JSON.stringify(results, null, 2));
+        else console.log(presenter.memorySearch(results));
         return;
       }
       const type = flags.get('type') as MemoryType | undefined;
@@ -275,9 +315,8 @@ async function main(): Promise<void> {
         console.log('(no memory entries)');
         return;
       }
-      for (const e of entries) {
-        console.log(`[${e.type}] ${e.claim}  (scope: ${e.scope}, conf ${e.confidence}, ${e.createdAt})`);
-      }
+      if (json) console.log(JSON.stringify(entries, null, 2));
+      else console.log(presenter.memoryList(entries));
       return;
     }
 
@@ -286,13 +325,11 @@ async function main(): Promise<void> {
       for (const spec of Object.values(PROVIDERS)) {
         if (spec.id === 'chatgpt') {
           const status = await codexSubscriptionInfo();
-          const statusText = status.signedIn
-            ? `ready (ChatGPT${status.planType ? ` · ${status.planType}` : ''})`
-            : 'not signed in — run `hermes login`';
+          const statusText = status.signedIn ? `ready (ChatGPT${status.planType ? ` · ${status.planType}` : ''})` : 'not signed in — run `gitu login`';
           console.log(`${spec.id.padEnd(9)} ${statusText.padEnd(40)} ${spec.label}`);
           console.log(`          base: ${spec.baseUrl}`);
-          console.log(`          auth: local Codex browser sign-in (no API key) — run \`hermes login\``);
-          console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`hermes models --provider ${spec.id}\``);
+          console.log(`          auth: local Codex browser sign-in (no API key) — run \`gitu login\``);
+          console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`gitu models --provider ${spec.id}\``);
           continue;
         }
         const keyEnvVar = spec.keyEnvVars.find((v) => env[v]);
@@ -300,7 +337,7 @@ async function main(): Promise<void> {
         console.log(`${spec.id.padEnd(9)} ${status.padEnd(28)} ${spec.label}`);
         console.log(`          base: ${spec.baseUrl}`);
         console.log(`          keys: ${spec.keyEnvVars.join(' | ')}`);
-        console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`hermes models --provider ${spec.id}\``);
+        console.log(`          models: ${spec.models.length} known (default: ${spec.defaultModel}) — run \`gitu models --provider ${spec.id}\``);
       }
       const generic = env['HERMES_API_KEY'] ?? env['OPENAI_API_KEY'];
       console.log(`${'custom'.padEnd(9)} ${generic ? 'ready (HERMES_API_KEY/OPENAI_API_KEY)' : 'no key'}`);
@@ -332,7 +369,7 @@ async function main(): Promise<void> {
       for (const spec of Object.values(PROVIDERS)) {
         await listProviderModels(spec, false);
       }
-      console.log('\nPick one for a run: hermes run "<goal>" --provider <name> --model <model-id>');
+      console.log('\nPick one for a run: gitu run "<goal>" --provider <name> --model <model-id>');
       return;
     }
 
@@ -340,9 +377,9 @@ async function main(): Promise<void> {
       const portRaw = flags.get('port');
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
       if (!Number.isFinite(port) || port < 1 || port > 65535) throw new Error('Invalid --port');
-      const server = new HermesServer({ cwd, port });
+      const server = new GituServer({ cwd, port });
       const bound = await server.start();
-      console.log(`Hermes Web UI running: http://localhost:${bound}`);
+      console.log(`Agent Gitu Web UI running: http://localhost:${bound}`);
       console.log('Project scope: detected from the current directory at request time.');
       console.log('Press Ctrl+C to stop.');
       const shutdown = (): void => {
@@ -360,7 +397,7 @@ async function main(): Promise<void> {
 
     case 'run': {
       const goal = positional[1];
-      if (!goal) throw new Error('Usage: hermes run "<goal>" [options]');
+      if (!goal) throw new Error('Usage: gitu run "<goal>" [options]');
 
       let resolved;
       try {
@@ -382,16 +419,33 @@ async function main(): Promise<void> {
         }
         throw err;
       }
-      console.error(`[hermes] llm: provider=${resolved.providerId} model=${resolved.model} base=${resolved.baseUrl}`);
       const llm = resolved.client;
       const catalog = await fetchModelCatalog();
       const modelMeta = modelMetadataFor(catalog, resolved.providerId, resolved.model);
       const contextWindowTokens = modelMeta?.contextTokens;
-      if (contextWindowTokens) console.error(`[hermes] context window: ${contextWindowTokens.toLocaleString()} tokens`);
       const modelCapability = modelCapabilityTier(modelMeta, resolved.model);
 
       const criteriaFlag = flags.get('criteria');
-      const criteria = typeof criteriaFlag === 'string' ? criteriaFlag.split('|').map((s) => s.trim()).filter(Boolean) : undefined;
+      const criteria =
+        typeof criteriaFlag === 'string'
+          ? criteriaFlag
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : undefined;
+      const runProject = ProjectGuard.detect(cwd).lock;
+      console.error(
+        presenter.runHeader({
+          project: runProject.name,
+          branch: runProject.branch,
+          provider: resolved.providerId,
+          model: resolved.model,
+          mode: flags.get('fast') ? 'fast' : 'standard',
+          goal,
+          criteriaCount: criteria?.length,
+        }),
+      );
+      if (contextWindowTokens) console.error(presenter.event(`context  ${contextWindowTokens.toLocaleString()} token model window`));
 
       const agentStore = new AgentStore();
       const subagents =
@@ -401,20 +455,23 @@ async function main(): Promise<void> {
               resolveLlm: (name) => {
                 const def = agentStore.get(name);
                 if (!def) {
-                  const available = agentStore.list().map((a) => `"${a.name}"`).join(', ');
+                  const available = agentStore
+                    .list()
+                    .map((a) => `"${a.name}"`)
+                    .join(', ');
                   throw new Error(
                     `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name, NOT a model/provider identifier.`,
                   );
                 }
                 return resolveLlm({ provider: def.provider, model: def.model, workingDirectory: cwd }).client;
               },
-                agentRole: (name) => agentStore.get(name)?.role,
-                agentEffort: (name) => agentStore.get(name)?.effort,
-                onEvent: (e) => console.error(`[hermes] ${e}`),
+              agentRole: (name) => agentStore.get(name)?.role,
+              agentEffort: (name) => agentStore.get(name)?.effort,
+              onEvent: (e) => console.error(presenter.event(e)),
             })
           : undefined;
 
-      const hermes = new Hermes({
+      const gitu = new Gitu({
         cwd,
         llm,
         mode: flags.get('fast') ? 'fast' : 'standard',
@@ -441,8 +498,7 @@ async function main(): Promise<void> {
           const note = await askLine('Describe the changes you want (sent back to the agent): ');
           return { approved: false, note };
         },
-        approvalHandler: async ({ tool, why, summary }) =>
-          askApproval(`\nAPPROVAL REQUIRED [${tool}] (${why})\n${summary}\nApprove? (y/N) `),
+        approvalHandler: async ({ tool, why, summary }) => askApproval(`\nAPPROVAL REQUIRED [${tool}] (${why})\n${summary}\nApprove? (y/N) `),
         askUserHandler: async (questions) => {
           const answers: string[] = [];
           for (const q of questions) {
@@ -453,13 +509,12 @@ async function main(): Promise<void> {
           }
           return answers.join('\n');
         },
-        onEvent: (e) => console.error(`[hermes] ${e.startsWith('browseshot ') ? 'browseshot <image attached to chat>' : e}`),
+        onEvent: (e) => console.error(presenter.event(e.startsWith('browseshot ') ? 'image  browser screenshot attached to the agent context' : e)),
       });
 
       try {
-        const { ledger, report } = await hermes.run(goal);
-        console.log('\n' + new Reporter().render(report));
-        console.log(`\nLedger: ${ledger.data.taskId}`);
+        const { report } = await gitu.run(goal);
+        console.log(`\n${presenter.completion(report)}\n\n${new Reporter().render(report)}`);
         process.exitCode = report.status === 'complete' ? 0 : 1;
       } catch (err) {
         if (err instanceof LlmError) {
@@ -484,13 +539,13 @@ async function main(): Promise<void> {
       console.log('\nWaiting up to five minutes for sign-in to complete…');
       const completed = started.loginId ? await waitForCodexSubscriptionLogin(started.loginId) : false;
       if (!completed) {
-        console.log('Sign-in was not completed. Run `hermes login` again when you are ready.');
+        console.log('Sign-in was not completed. Run `gitu login` again when you are ready.');
         process.exitCode = 2;
         return;
       }
       const status = await codexSubscriptionInfo(true);
       console.log(`Connected to ChatGPT${status.planType ? ` (${status.planType})` : ''}.`);
-      console.log('Use it with: hermes run "<goal>" --provider chatgpt');
+      console.log('Use it with: gitu run "<goal>" --provider chatgpt');
       return;
     }
 
@@ -509,6 +564,6 @@ main().catch((err: unknown) => {
     console.error(err instanceof ProjectGuardError ? `Project guard: ${err.message}` : err.message);
     process.exit(2);
   }
-  console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+  console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
   process.exit(1);
 });

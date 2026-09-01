@@ -11,7 +11,7 @@ import type { CriterionEvidenceType, EvidenceKind, TaskLedgerData } from '../typ
  * orchestrator's independent check: evidence existence, pass status, command
  * relevance, evidence type, workspace fingerprint, and criterion linkage.
  *
- * A specialist's report is evidence FOR Hermes to evaluate — never automatic
+ * A specialist's report is evidence FOR Gitu to evaluate — never automatic
  * proof of task completion. Only evidence that survives validation is mirrored
  * into the main ledger through the EvidenceEngine, and only then does the
  * acceptance gate treat the criterion as backed.

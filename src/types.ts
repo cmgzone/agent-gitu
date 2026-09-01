@@ -369,6 +369,8 @@ export interface CompletionReport {
   architectureDecisions?: ArchitectureDecision[];
   /** Where the run's tokens were spent. */
   tokenTelemetry?: TokenTelemetrySnapshot;
+  /** Evidence-based outcome quality and token efficiency for this run. */
+  qualityMetrics?: RunQualityMetrics;
   evidence: string[];
   remainingRisks: string[];
   followUps: string[];
@@ -385,6 +387,14 @@ export interface VerificationReportItem {
   outputExcerpt?: string;
   /** Evidence run against the final workspace state, or retained history. */
   authority?: 'latest' | 'historical';
+}
+
+export interface RunQualityMetrics {
+  score: number;
+  criteria: { total: number; satisfied: number; coverage: number };
+  verification: { authoritative: number; passing: number; failing: number; passRate: number };
+  tokensPerVerifiedCriterion?: number;
+  wastedCallRate?: number;
 }
 
 export interface BrowserActivity {
@@ -484,6 +494,14 @@ export interface TaskLedgerData {
   worktreePath?: string;
   activeSkills?: string[];
   usedSkills?: string[];
+  /** Exact loaded instructions governing the current logical task. */
+  selectedSkills?: SkillIdentity[];
+  /** Exact skills that were successfully loaded through use_skill. */
+  usedSkillIdentities?: SkillIdentity[];
+  /** Bounded lifecycle telemetry; detail stays out of the main UI. */
+  skillEvents?: SkillLifecycleEvent[];
+  /** Durable audit trail for prerequisite discovery/reuse/provisioning. */
+  prerequisiteRecoveries?: PrerequisiteRecoveryRecord[];
   acceptanceCriteria: AcceptanceCriterion[];
   constraints: string[];
   nonGoals: string[];
@@ -514,6 +532,101 @@ export interface TaskLedgerData {
   report?: CompletionReport;
   /** Per-run memory lifecycle stats for the report/telemetry panel. */
   memoryStats?: MemoryStatsSnapshot;
+}
+
+export type SkillLifecycleStage = 'discovered' | 'selected' | 'loaded' | 'applied' | 'verified' | 'rejected';
+
+export interface SkillLifecycleEvent {
+  stage: SkillLifecycleStage;
+  name: string;
+  version?: string;
+  contentHash?: string;
+  scope?: SkillIdentity['scope'];
+  selectionScore?: number;
+  reason?: string;
+  specialist?: string;
+  loadChars?: number;
+  failureCode?: string;
+  createdAt: string;
+}
+
+/** A concrete thing the task cannot safely continue without. */
+export type PrerequisiteKind =
+  | 'credential'
+  | 'connection'
+  | 'resource'
+  | 'configuration'
+  | 'dependency'
+  | 'service'
+  | 'target'
+  | 'permission';
+
+/** Safe, non-secret connection details Gitu learned from an official provider
+ * document or an existing saved profile. They prefill the secure form so the
+ * user can provide only a credential when no configuration choice remains. */
+export interface ConnectionSetupHint {
+  label?: string;
+  baseUrl?: string;
+  documentationUrl?: string;
+  validationPath?: string;
+  validationCapability?: string;
+}
+
+export interface MissingPrerequisite {
+  id: string;
+  kind: PrerequisiteKind;
+  description: string;
+  requiredFor: string;
+  /** Optional provider identifier such as "coolify" or "internal-cloud".
+   * It selects a user-saved connection without putting a URL or token in the
+   * model protocol. */
+  providerHint?: string;
+  /** Provider-neutral capabilities needed from the selected connection. */
+  capabilities?: string[];
+  /** Optional, host-validated non-secret defaults for the secure connection
+   * form. They never contain a header, token, or request body. */
+  connectionSetup?: ConnectionSetupHint;
+  hints?: string[];
+  riskIfWrong?: 'low' | 'medium' | 'high';
+}
+
+/** Provider-declared capability. The provider remains behind an adapter. */
+export interface Capability {
+  id: string;
+  provider: string;
+  actions: string[];
+  riskClass: 'read' | 'reversible-write' | 'destructive';
+}
+
+/** Separate recovery risk from ordinary command/tool tiers. */
+export enum RecoveryRisk {
+  READ_ONLY = 'READ_ONLY',
+  REVERSIBLE = 'REVERSIBLE',
+  DESTRUCTIVE = 'DESTRUCTIVE',
+  COSTLY = 'COSTLY',
+  PRODUCTION_CRITICAL = 'PRODUCTION_CRITICAL',
+}
+
+export type PrerequisiteRecoveryStatus =
+  | 'RESOLVING_PREREQUISITE'
+  | 'RESOURCE_DISCOVERY'
+  | 'RESOURCE_REUSED'
+  | 'RESOURCE_PROVISIONED'
+  | 'RECOVERY_EXHAUSTED'
+  | 'NEEDS_USER';
+
+/** No secret values are stored here: only source, policy and outcome facts. */
+export interface PrerequisiteRecoveryRecord {
+  prerequisiteId: string;
+  prerequisiteKind: PrerequisiteKind;
+  description: string;
+  requiredFor: string;
+  strategy: string;
+  status: PrerequisiteRecoveryStatus;
+  outcome: string;
+  risk: RecoveryRisk;
+  provider?: string;
+  createdAt: string;
 }
 
 /** Memory observability snapshot (review Phase 13/16). */
@@ -617,3 +730,4 @@ export interface ToolResult {
   /** Optional structured data that rides along in-memory (never serialized to the model). */
   payload?: unknown;
 }
+import type { SkillIdentity } from './skills/skills.js';

@@ -3,24 +3,7 @@ import os from 'node:os';
 import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
-import { fileURLToPath } from 'node:url';
-
-const VENDOR_THREE = nodePath.join(
-  nodePath.dirname(fileURLToPath(import.meta.url)),
-  '../../node_modules/three/build/three.module.min.js',
-);
-// Bundled UI fonts (Inter + JetBrains Mono, latin subset). Resolved relative
-// to the compiled file so it works from dist/, from tsx src/, and inside the
-// packaged app (assets/** is shipped by electron-builder).
-const FONTS_DIR = nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '../../assets/fonts');
-const FONT_FILES: Record<string, string> = {
-  'inter-latin-400-normal.woff2': 'font/woff2',
-  'inter-latin-500-normal.woff2': 'font/woff2',
-  'inter-latin-600-normal.woff2': 'font/woff2',
-  'jetbrains-mono-latin-400-normal.woff2': 'font/woff2',
-  'jetbrains-mono-latin-700-normal.woff2': 'font/woff2',
-};
-import { Hermes } from '../agent/gitu.js';
+import { Gitu } from '../agent/gitu.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -40,11 +23,13 @@ import { SessionStore, type SessionUsage, type StoredSessionFile } from './sessi
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
+import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionRequirement } from '../connections/connections.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
-import { createProject, ensureHermesHome, hermesHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
+import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
+import { BRAND_DIR, BRAND_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
 
 export interface PendingApproval {
   id: string;
@@ -67,6 +52,14 @@ export interface PendingQuestions {
   requestedAt: string;
 }
 
+/** A local-only credential request. It deliberately carries provider metadata
+ * only; submitted token values never enter session state or event history. */
+export interface PendingConnection {
+  id: string;
+  requirement: ConnectionRequirement;
+  requestedAt: string;
+}
+
 export interface SessionFileView {
   id: string;
   name: string;
@@ -81,6 +74,10 @@ export interface SessionFileView {
 
 interface QuestionsWaiter extends PendingQuestions {
   resolve: (answer: string) => void;
+}
+
+interface ConnectionWaiter extends PendingConnection {
+  resolve: (saved: boolean) => void;
 }
 
 interface PlanReviewWaiter extends PendingPlanReview {
@@ -112,6 +109,7 @@ export interface RunSessionView {
   pendingApprovals: PendingApproval[];
   pendingPlanReview?: PendingPlanReview;
   pendingQuestions?: PendingQuestions;
+  pendingConnection?: PendingConnection;
   report?: CompletionReport;
   error?: string;
   usage?: SessionUsage & { costUsd?: number };
@@ -145,7 +143,8 @@ interface RunSession {
   approvals: Map<string, ApprovalWaiter>;
   planReview?: PlanReviewWaiter;
   questions?: QuestionsWaiter;
-  hermes?: InstanceType<typeof Hermes>;
+  connection?: ConnectionWaiter;
+  gitu?: InstanceType<typeof Gitu>;
   /** LSP servers are kept alive for the whole session (across continuations). */
   lsp?: LspManager;
   report?: CompletionReport;
@@ -154,7 +153,7 @@ interface RunSession {
   files: StoredSessionFile[];
 }
 
-export interface HermesServerConfig {
+export interface GituServerConfig {
   cwd: string;
   port?: number;
   host?: string;
@@ -197,57 +196,12 @@ function dedupeMemoryPatternEvents<T extends { text: string }>(events: T[]): T[]
   });
 }
 
-const MIME_BY_EXTENSION: Record<string, string> = {
-  '.txt': 'text/plain; charset=utf-8',
-  '.md': 'text/markdown; charset=utf-8',
-  '.csv': 'text/csv; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.doc': 'application/msword',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.xls': 'application/vnd.ms-excel',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.ppt': 'application/vnd.ms-powerpoint',
-  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  '.zip': 'application/zip',
-};
-const BRAND_DIR = nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '../../assets');
-const BRAND_FILES: Record<string, string> = {
-  'agent-gitu-mark.svg': 'image/svg+xml',
-  'agent-gitu-logo.svg': 'image/svg+xml',
-};
-
-function safeFileName(input: string, fallback = 'file'): string {
-  const base = nodePath.basename(input || fallback).replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '-').trim();
-  return (base || fallback).slice(0, 180);
-}
-
-function mimeForFile(name: string, supplied?: string): string {
-  const known = MIME_BY_EXTENSION[nodePath.extname(name).toLowerCase()];
-  if (known) return known;
-  const clean = String(supplied ?? '').split(';')[0]!.trim().toLowerCase();
-  if (/^(text\/[a-z0-9.+-]+|image\/(png|jpeg|gif|webp)|application\/(pdf|json|zip))$/.test(clean)) return clean;
-  return 'application/octet-stream';
-}
-
-function isPreviewableMime(mime: string): boolean {
-  return /^(text\/plain|text\/markdown|text\/csv|application\/json|application\/pdf|image\/(png|jpeg|gif|webp))(;|$)/i.test(mime);
-}
-
-function isTextLikeFile(name: string, mime: string): boolean {
-  return /^text\//i.test(mime) || /application\/json/i.test(mime) || /\.(md|txt|csv|json|ya?ml|xml|log|js|jsx|ts|tsx|css|scss|html?|py|rb|go|rs|java|kt|sql)$/i.test(name);
-}
-
-export class HermesServer {
+export class GituServer {
   private readonly indexWatchers = new Map<string, CodeIndex>();
-  private readonly config: HermesServerConfig;
+  private readonly config: GituServerConfig;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
+  private readonly connections = new ConnectionRegistry();
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
   private store?: SessionStore;
@@ -273,7 +227,7 @@ export class HermesServer {
       return new Promise<Record<string, unknown>>((resolve, reject) => {
         const timer = setTimeout(() => {
           this.browserPending.delete(id);
-          reject(new Error('the in-app browser did not respond (is the Hermes window open?)'));
+          reject(new Error('the in-app browser did not respond (is the Agent Gitu window open?)'));
         }, 30000);
         this.browserPending.set(id, { resolve, timer });
         for (const sub of this.browserSubs) sub({ id, action, ...payload });
@@ -442,7 +396,7 @@ export class HermesServer {
     }
   }
 
-  constructor(config: HermesServerConfig) {
+  constructor(config: GituServerConfig) {
     this.config = config;
   }
 
@@ -477,10 +431,10 @@ export class HermesServer {
    * cannot authoritatively observe. */
   private sessionWorktreePath(repoRoot: string, taskId: string): string {
     const repoKey = sha256(nodePath.resolve(repoRoot).toLowerCase()).slice(0, 16);
-    return nodePath.join(ensureHermesHome().sessions, 'worktrees', repoKey, taskId);
+    return nodePath.join(ensureGituHome().sessions, 'worktrees', repoKey, taskId);
   }
 
-  private isPrivateHermesPath(repoRoot: string, candidate: string): boolean {
+  private isPrivateAgentStatePath(repoRoot: string, candidate: string): boolean {
     const privateRoot = nodePath.resolve(repoRoot, '.hermes').toLowerCase();
     const target = nodePath.resolve(candidate).toLowerCase();
     return target === privateRoot || target.startsWith(privateRoot + nodePath.sep);
@@ -542,7 +496,7 @@ export class HermesServer {
         // out once, so Git must move its registered worktree rather than add
         // a second checkout of the same branch.
         const legacyRoot = worktrees.find(
-          (entry) => entry.branch === `refs/heads/${branch}` && this.isPrivateHermesPath(repoRoot, entry.root),
+          (entry) => entry.branch === `refs/heads/${branch}` && this.isPrivateAgentStatePath(repoRoot, entry.root),
         );
         if (legacyRoot) {
           await gitExec(repoRoot, ['worktree', 'move', legacyRoot.root, wtDir]);
@@ -634,7 +588,7 @@ export class HermesServer {
   }
 
   async start(): Promise<number> {
-    ensureHermesHome();
+    ensureGituHome();
     const server = http.createServer((req, res) => {
       this.route(req, res).catch((err) => {
         const msg = (err as Error).message;
@@ -902,6 +856,9 @@ export class HermesServer {
       pendingQuestions: s.questions
         ? { id: s.questions.id, questions: s.questions.questions, requestedAt: s.questions.requestedAt }
         : undefined,
+      pendingConnection: s.connection
+        ? { id: s.connection.id, requirement: s.connection.requirement, requestedAt: s.connection.requestedAt }
+        : undefined,
       report: s.report,
       error: s.error,
       usage: s.usage
@@ -1098,7 +1055,7 @@ export class HermesServer {
     }
 
     if (method === 'GET' && path === '/api/home') {
-      const home = ensureHermesHome();
+      const home = ensureGituHome();
       const settings = loadWorkspaceSettings();
       this.sendJson(res, 200, {
         ...home,
@@ -1123,6 +1080,52 @@ export class HermesServer {
       updateWorkspaceSettings({ projectsPath });
       this.sendJson(res, 200, { ok: true, projectsPath: projectsDir() });
       return;
+    }
+
+    const connectionMatch = path.match(/^\/api\/connections(?:\/([a-z][a-z0-9-]{0,62}))?(?:\/(test))?$/);
+    if (connectionMatch) {
+      const connectionId = connectionMatch[1];
+      const action = connectionMatch[2];
+      if (method === 'GET' && !connectionId) {
+        this.sendJson(res, 200, { connections: this.connections.list() });
+        return;
+      }
+      if (method === 'POST' && !connectionId) {
+        const body = await this.readBody(req);
+        try {
+          const saved = this.connections.save({
+            ...(typeof body['id'] === 'string' ? { id: body['id'] } : {}),
+            label: String(body['label'] ?? ''),
+            provider: String(body['provider'] ?? ''),
+            baseUrl: String(body['baseUrl'] ?? ''),
+            ...(typeof body['documentationUrl'] === 'string' ? { documentationUrl: body['documentationUrl'] } : {}),
+            ...(Array.isArray(body['capabilities']) ? { capabilities: body['capabilities'].map(String) } : {}),
+            ...(Array.isArray(body['operations']) ? { operations: body['operations'] as never[] } : {}),
+            ...(typeof body['token'] === 'string' ? { token: body['token'] } : {}),
+          });
+          this.sendJson(res, 200, { ok: true, connection: saved });
+        } catch (error) {
+          this.sendJson(res, 400, { error: (error as Error).message });
+        }
+        return;
+      }
+      if (method === 'POST' && connectionId && action === 'test') {
+        try {
+          const result = await this.connections.validate(connectionId);
+          this.sendJson(res, 200, { ok: true, status: result.status, message: result.message });
+        } catch (error) {
+          this.sendJson(res, 400, { error: (error as Error).message });
+        }
+        return;
+      }
+      if (method === 'DELETE' && connectionId && !action) {
+        if (!this.connections.remove(connectionId)) {
+          this.sendJson(res, 404, { error: 'connection not found' });
+          return;
+        }
+        this.sendJson(res, 200, { ok: true });
+        return;
+      }
     }
 
     const providerProfileMatch = path.match(/^\/api\/provider-profiles(?:\/(custom-[a-z0-9-]+))?(?:\/(test))?$/);
@@ -1244,7 +1247,7 @@ export class HermesServer {
         if ((projectPath && s.projectPath === projectPath) || (name && s.project === name)) {
           // Stop before forgetting: a still-running executeRun would resurrect
           // the session row via its periodic persist calls.
-          s.hermes?.stop();
+          s.gitu?.stop();
           void s.lsp?.shutdown().catch(() => {});
           this.removeSessionFileStorage(s);
           this.sessions.delete(runId);
@@ -1909,7 +1912,7 @@ export class HermesServer {
         files: [],
       };
       this.sessions.set(session.runId, session);
-      let stored: ReturnType<HermesServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
+      let stored: ReturnType<GituServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
       try {
         stored = this.storeUserFiles(session, rawFiles, projectPath ?? this.projectRoot() ?? this.config.cwd);
       } catch (err) {
@@ -2045,6 +2048,49 @@ export class HermesServer {
       return;
     }
 
+    const runConnectionMatch = path.match(/^\/api\/runs\/([\w-]+)\/connection$/);
+    if (method === 'POST' && runConnectionMatch) {
+      const session = this.sessions.get(runConnectionMatch[1]!);
+      const waiter = session?.connection;
+      if (!session || !waiter) {
+        this.sendJson(res, 404, { error: 'connection request not found or already resolved' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const requirement = waiter.requirement;
+      const setup = requirement.setup ?? {};
+      const nonEmpty = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+      const requestedCapabilities = Array.isArray(body['capabilities']) ? body['capabilities'].map(String) : [];
+      const capabilities = [...new Set([...requirement.capabilities, ...requestedCapabilities, ...(setup.validationCapability ? [setup.validationCapability] : [])])];
+      const provider = requirement.providerHint || nonEmpty(body['provider']) || 'provider';
+      const validationPath = nonEmpty(body['validationPath']) ?? setup.validationPath ?? '/';
+      const validationCapability = setup.validationCapability && capabilities.includes(setup.validationCapability)
+        ? setup.validationCapability
+        : capabilities[0] ?? 'connection.discover';
+      try {
+        const saved = this.connections.save({
+          ...(typeof body['id'] === 'string' ? { id: body['id'] } : {}),
+          label: nonEmpty(body['label']) ?? setup.label ?? provider,
+          provider,
+          baseUrl: nonEmpty(body['baseUrl']) ?? setup.baseUrl ?? '',
+          ...(nonEmpty(body['documentationUrl']) ?? setup.documentationUrl ? { documentationUrl: nonEmpty(body['documentationUrl']) ?? setup.documentationUrl } : {}),
+          capabilities: capabilities.length ? capabilities : [validationCapability],
+          operations: [{ id: 'validate', label: 'Validate saved connection', capability: validationCapability, method: 'GET', path: validationPath, risk: 'read' }],
+          token: typeof body['token'] === 'string' ? body['token'] : undefined,
+        });
+        await this.connections.validate(saved.id);
+        session.connection = undefined;
+        this.pushEvent(session, 'connection validated by user — resuming prerequisite recovery');
+        waiter.resolve(true);
+        this.sendJson(res, 200, { ok: true, connection: { id: saved.id, label: saved.label, provider: saved.provider } });
+      } catch (error) {
+        // Errors are deliberately status-level only: never return request body
+        // data, response body data, or the submitted credential.
+        this.sendJson(res, 400, { error: (error as Error).message });
+      }
+      return;
+    }
+
     if (method === 'POST' && path === '/api/runs/delete-many') {
       const body = await this.readBody(req);
       const ids = Array.isArray(body['ids']) ? (body['ids'] as unknown[]).map(String) : [];
@@ -2054,7 +2100,7 @@ export class HermesServer {
         // pushEvent/persistSession calls silently resurrect the deleted row.
         const s = this.sessions.get(id);
         if (s) {
-          s.hermes?.stop();
+          s.gitu?.stop();
           void s.lsp?.shutdown().catch(() => {});
           this.removeSessionFileStorage(s);
         }
@@ -2070,7 +2116,7 @@ export class HermesServer {
       const id = runDeleteMatch[1]!;
       const s = this.sessions.get(id);
       if (s) {
-        s.hermes?.stop();
+        s.gitu?.stop();
         void s.lsp?.shutdown().catch(() => {});
         this.removeSessionFileStorage(s);
       }
@@ -2095,11 +2141,11 @@ export class HermesServer {
       // Detach the active execution before aborting it.  A provider can take
       // a moment to honour cancellation; without this, its late completion
       // can overwrite the user-visible stopped state or keep emitting output.
-      const hermes = session.hermes;
+      const gitu = session.gitu;
       const lsp = session.lsp;
-      session.hermes = undefined;
+      session.gitu = undefined;
       session.lsp = undefined;
-      hermes?.stop();
+      gitu?.stop();
       lsp?.shutdown().catch(() => {});
 
       // Stop must be terminal immediately.  Previously this route only wrote
@@ -2115,6 +2161,9 @@ export class HermesServer {
       const question = session.questions;
       session.questions = undefined;
       question?.resolve('(stopped by user)');
+      const connection = session.connection;
+      session.connection = undefined;
+      connection?.resolve(false);
       const planReview = session.planReview;
       session.planReview = undefined;
       planReview?.resolve({ approved: false, note: 'Stopped by user.' });
@@ -2136,7 +2185,7 @@ export class HermesServer {
       // Synchronously reserve the session BEFORE any await. The setup below
       // yields many times (body read, env validation, worktree checks, LLM
       // resolution); a second POST landing in that window used to observe the
-      // stale non-running status and start a second concurrent Hermes run on
+      // stale non-running status and start a second concurrent Gitu run on
       // the same session/ledger/worktree.
       const prevStatus = session.status;
       const wasRunning = prevStatus === 'running';
@@ -2157,7 +2206,7 @@ export class HermesServer {
             .filter((im) => im.dataUrl.startsWith('data:image/'))
             .slice(0, 4)
         : undefined;
-      let stored: ReturnType<HermesServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
+      let stored: ReturnType<GituServer['storeUserFiles']> = { files: [], attachments: [], images: [] };
       try {
         stored = this.storeUserFiles(
           session,
@@ -2187,7 +2236,7 @@ export class HermesServer {
       else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
       if (wasRunning) {
-        session.hermes?.queueMessage(text, this.attachmentContext(stored.attachments));
+        session.gitu?.queueMessage(text, this.attachmentContext(stored.attachments));
         this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
         for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
         this.sendJson(res, 200, { ok: true, queued: true });
@@ -2210,7 +2259,8 @@ export class HermesServer {
         this.sendJson(res, 404, { error: `Task ledger ${session.taskId} not found at ${taskRoot}` });
         return;
       }
-      // A task is bound to its own hermes/* branch, but the shared checkout can
+      // A task is bound to its own gitu/* branch (or an existing legacy
+      // hermes/* branch), but the shared checkout can
       // only hold one branch at a time: any newer run (or a manual switch)
       // moves it and would lock every older session out. Instead of stealing
       // the checkout back — which detaches whichever session owned it — resume
@@ -2218,7 +2268,7 @@ export class HermesServer {
       // shared checkout stays exactly where it is.
       let execRoot = taskRoot;
       if (ledger.data.worktreePath && existsSync(ledger.data.worktreePath)) {
-        if (this.isPrivateHermesPath(taskRoot, ledger.data.worktreePath)) {
+        if (this.isPrivateAgentStatePath(taskRoot, ledger.data.worktreePath)) {
           const wt = await this.ensureSessionWorktree(taskRoot, session.taskId, ledger.data.gitBranch ?? '');
           if (!wt) {
             session.status = prevStatus;
@@ -2440,11 +2490,11 @@ export class HermesServer {
       conversationHistory?: LlmMessage[];
     },
   ): Promise<void> {
-    // Only the Hermes instance currently attached to the session may change
+    // Only the Gitu instance currently attached to the session may change
     // its state.  This protects a fresh continuation from a late completion
     // of an earlier run that was stopped or superseded.
-    let activeHermes: InstanceType<typeof Hermes> | undefined;
-    const isCurrentExecution = (): boolean => session.hermes === activeHermes;
+    let activeGitu: InstanceType<typeof Gitu> | undefined;
+    const isCurrentExecution = (): boolean => session.gitu === activeGitu;
     let root: string;
     let ignorePaths: string[] | undefined;
     // Catalog modality is the source of truth for image support; warm the
@@ -2504,7 +2554,30 @@ export class HermesServer {
       autoInstall: this.config.autoInstallLsp !== false,
       onEvent: (text) => this.pushEvent(session, text),
     }));
-    const hermes = new Hermes({
+    // Provider writes always require an individual approval. This intentionally
+    // does not consult autoApprove: a model's ability to select a provider
+    // operation must never become blanket authority over user infrastructure.
+    const requestApproval = (request: { tool: string; why: string; summary: string }) =>
+      new Promise<boolean>((resolve) => {
+        const waiter: ApprovalWaiter = {
+          id: shortId('appr'),
+          tool: request.tool,
+          why: request.why,
+          summary: request.summary,
+          requestedAt: nowIso(),
+          resolve,
+        };
+        session.approvals.set(waiter.id, waiter);
+        this.pushEvent(session, `approval-required ${waiter.id} [${request.tool}] ${request.why}`);
+        setTimeout(() => {
+          if (session.approvals.has(waiter.id)) {
+            session.approvals.delete(waiter.id);
+            this.pushEvent(session, `approval ${waiter.id} timed out — denied`);
+            resolve(false);
+          }
+        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+      });
+    const gitu = new Gitu({
       cwd: opts.projectPath ?? this.config.cwd,
       index,
       llm: trackedLlm,
@@ -2537,6 +2610,66 @@ export class HermesServer {
       }),
       contextWindowTokens,
       modelCapability,
+      prerequisiteRecovery: { providers: [this.connections.asPrerequisiteProvider()] },
+      connectionContext: () => this.connections.renderForAgent(),
+      connectionActionHandler: async ({ connectionId, operationId }) => {
+        const result = await this.connections.invokeRead(connectionId, operationId);
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      },
+      connectionOperationHandler: async (proposal) => {
+        const profile = this.connections.get(proposal.connectionId);
+        const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
+        if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
+        const operation = normalizeConnectionOperation(proposal.operation);
+        if (!operation || operation.risk === 'read') throw new Error('Only a documented non-read provider operation can use the approval channel.');
+        if (!profile.capabilities.includes(operation.capability)) {
+          throw new Error(`Saved connection does not declare capability "${operation.capability}". Request that capability through secure connection setup before proposing this operation.`);
+        }
+        const existing = this.connections.operation(profile.id, operation.id);
+        if (existing && JSON.stringify(existing) !== JSON.stringify(operation)) {
+          throw new Error(`Operation id "${operation.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
+        }
+        const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
+        const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
+        const approved = await requestApproval({
+          tool: `connection:${profile.provider}`,
+          why: `External ${operation.risk} operation — ${proposal.reason}`,
+          summary: [
+            `Connection: ${profile.label} (${profile.id})`,
+            `Operation: ${operation.label}`,
+            `Request: ${operation.method} ${operation.path}`,
+            `Required capability: ${operation.capability}`,
+            `Risk: ${operation.risk}`,
+            `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
+            `Body:\n${bodyText}`,
+          ].join('\n'),
+        });
+        if (!approved) throw new Error('User denied the provider operation.');
+        // Registration happens only after approval. It makes the immutable
+        // documented operation discoverable in future tasks, but every write
+        // still returns through this approval path before invocation.
+        const registered = this.connections.registerApprovedOperation(profile.id, operation);
+        const result = await this.connections.invoke(profile.id, registered.id, body);
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      },
+      connectionRequestHandler: (prerequisite) =>
+        new Promise<boolean>((resolve) => {
+          const waiter: ConnectionWaiter = {
+            id: shortId('conn'),
+            requirement: this.connections.requirementFor(prerequisite),
+            requestedAt: nowIso(),
+            resolve,
+          };
+          session.connection = waiter;
+          this.pushEvent(session, `connection waiting for secure setup — ${waiter.requirement.description}`);
+          setTimeout(() => {
+            if (session.connection === waiter) {
+              session.connection = undefined;
+              this.pushEvent(session, 'connection setup timed out — prerequisite remains unresolved');
+              resolve(false);
+            }
+          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+        }),
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };
@@ -2570,26 +2703,7 @@ export class HermesServer {
             }
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
-      approvalHandler: ({ tool, why, summary }) =>
-        new Promise<boolean>((resolve) => {
-          const waiter: ApprovalWaiter = {
-            id: shortId('appr'),
-            tool,
-            why,
-            summary,
-            requestedAt: nowIso(),
-            resolve,
-          };
-          session.approvals.set(waiter.id, waiter);
-          this.pushEvent(session, `approval-required ${waiter.id} [${tool}] ${why}`);
-          setTimeout(() => {
-            if (session.approvals.has(waiter.id)) {
-              session.approvals.delete(waiter.id);
-              this.pushEvent(session, `approval ${waiter.id} timed out — denied`);
-              resolve(false);
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
+      approvalHandler: requestApproval,
       onEvent: (text) => {
         if (!isCurrentExecution()) return;
         const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
@@ -2605,11 +2719,11 @@ export class HermesServer {
         this.pushEvent(session, text, !text.startsWith('browseshot '));
       },
     });
-    activeHermes = hermes;
-    session.hermes = hermes;
+    activeGitu = gitu;
+    session.gitu = gitu;
 
     try {
-      const { ledger, report } = await hermes.run(opts.goal);
+      const { ledger, report } = await gitu.run(opts.goal);
       if (!isCurrentExecution()) return;
       session.status = report.status === 'complete' ? 'completed' : report.status === 'blocked' ? 'blocked' : 'failed';
       session.report = report;
@@ -2657,7 +2771,7 @@ export class HermesServer {
             );
             // Detach the old execution before starting the resume. Its finally
             // block then becomes a no-op and cannot overwrite the new state.
-            session.hermes = undefined;
+            session.gitu = undefined;
             void this.executeRun(session, next.client, {
               ...opts,
               projectPath: root,
@@ -2690,6 +2804,11 @@ export class HermesServer {
     }
   }
 }
+
+/** @deprecated Use GituServerConfig. */
+export type HermesServerConfig = GituServerConfig;
+/** @deprecated Use GituServer. Existing callers continue to work. */
+export { GituServer as HermesServer };
 
 export function renderReportText(report: CompletionReport): string {
   return new Reporter().render(report);

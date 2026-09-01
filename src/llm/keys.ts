@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureHermesHome } from '../workspace/home.js';
+import { ensureGituHome } from '../workspace/home.js';
 import { readJson, writeJson } from '../util.js';
 
 function keyFiles(): string[] {
-  return [path.join(ensureHermesHome().settings, 'keys.json'), path.join(os.homedir(), '.hermes', 'keys.json')];
+  return [path.join(ensureGituHome().settings, 'keys.json'), path.join(os.homedir(), '.hermes', 'keys.json')];
 }
 
 export function loadStoredKeys(): Record<string, string> {

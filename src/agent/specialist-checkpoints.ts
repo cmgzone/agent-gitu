@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getWorkspaceFingerprint, gitExec, isGitRepo } from '../git/git.js';
+import type { SkillIdentity, SkillStore } from '../skills/skills.js';
 
 /** Why a logical specialist attempt stopped. Infrastructure stops remain resumable. */
 export type SpecialistStopReason =
@@ -17,9 +18,14 @@ export type SpecialistStopReason =
 /** The only recovery claims the UI/orchestrator is allowed to make. */
 export type SpecialistResumeState =
   | 'RESUME_WITH_CHANGES'
+  /** Git found durable edits written after the last metadata checkpoint. */
+  | 'RESUME_WITH_UNCHECKPOINTED_CHANGES'
   | 'RESUME_CONTEXT_ONLY'
   | 'RESUME_CHECKPOINT_MISSING'
   | 'RESUME_CHECKPOINT_DIVERGED';
+
+/** Exact-instruction recovery outcome, kept distinct from Git/worktree truth. */
+export type SpecialistSkillState = 'SKILL_STATE_MATCH' | 'SKILL_STATE_CHANGED' | 'SKILL_STATE_MISSING';
 
 export interface SpecialistCheckpoint {
   /** Stable identity across retries. This is the ID accepted by delegate.resume. */
@@ -35,6 +41,8 @@ export interface SpecialistCheckpoint {
   branch: string;
   currentTurn: number;
   changedFiles: string[];
+  /** Loaded skill identities governing this specialist attempt. */
+  selectedSkills: SkillIdentity[];
   baseCommit?: string;
   headCommit?: string;
   workspaceFingerprint?: string;
@@ -48,8 +56,9 @@ export interface SpecialistCheckpoint {
   updatedAt: string;
 }
 
-interface CheckpointRow extends Omit<SpecialistCheckpoint, 'changedFiles' | 'resumable'> {
+interface CheckpointRow extends Omit<SpecialistCheckpoint, 'changedFiles' | 'selectedSkills' | 'resumable'> {
   changedFiles: string;
+  selectedSkills: string;
   resumable: number;
 }
 
@@ -63,6 +72,21 @@ function parseFiles(value: string | null | undefined): string[] {
   }
 }
 
+function parseSkills(value: string | null | undefined): SkillIdentity[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+          .map((entry): SkillIdentity => ({ name: String(entry['name'] ?? ''), version: String(entry['version'] ?? ''), contentHash: String(entry['contentHash'] ?? ''), scope: entry['scope'] === 'global' || entry['scope'] === 'builtin' ? entry['scope'] : 'project' }))
+          .filter((entry) => entry.name && entry.version && entry.contentHash)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function normalizeFiles(files: Iterable<string>): string[] {
   return [...new Set([...files].map((file) => file.replace(/\\/g, '/').trim()).filter(Boolean))].sort();
 }
@@ -71,6 +95,7 @@ function rowToCheckpoint(row: CheckpointRow): SpecialistCheckpoint {
   return {
     ...row,
     changedFiles: parseFiles(row.changedFiles),
+    selectedSkills: parseSkills(row.selectedSkills),
     resumable: Boolean(row.resumable),
     stopReason: row.stopReason || undefined,
     summary: row.summary || undefined,
@@ -128,18 +153,25 @@ export class SpecialistCheckpointStore {
        CREATE INDEX IF NOT EXISTS specialist_checkpoints_resumable
        ON specialist_checkpoints (resumable, updatedAt DESC);`,
     );
+    // Existing desktop installations have the original schema. SQLite has no
+    // portable ADD COLUMN IF NOT EXISTS, so a duplicate-column error is safe.
+    try {
+      this.db.exec(`ALTER TABLE specialist_checkpoints ADD COLUMN selectedSkills TEXT NOT NULL DEFAULT '[]';`);
+    } catch {
+      // Already migrated.
+    }
   }
 
   get(logicalJobId: string): SpecialistCheckpoint | undefined {
     const row = this.db
-      .prepare(`SELECT logicalJobId, executionJobId, executionAttempt, specialistType, delegatedTask, delegatedTaskHash, repositoryPath, worktreePath, branch, currentTurn, changedFiles, baseCommit, headCommit, workspaceFingerprint, checkpointedAt, lastSuccessfulAction, resumeStatus, stopReason, summary, resumable, createdAt, updatedAt FROM specialist_checkpoints WHERE logicalJobId = ?`)
+      .prepare(`SELECT logicalJobId, executionJobId, executionAttempt, specialistType, delegatedTask, delegatedTaskHash, repositoryPath, worktreePath, branch, currentTurn, changedFiles, selectedSkills, baseCommit, headCommit, workspaceFingerprint, checkpointedAt, lastSuccessfulAction, resumeStatus, stopReason, summary, resumable, createdAt, updatedAt FROM specialist_checkpoints WHERE logicalJobId = ?`)
       .get(logicalJobId) as CheckpointRow | undefined;
     return row ? rowToCheckpoint(row) : undefined;
   }
 
   listResumable(): SpecialistCheckpoint[] {
     const rows = this.db
-      .prepare(`SELECT logicalJobId, executionJobId, executionAttempt, specialistType, delegatedTask, delegatedTaskHash, repositoryPath, worktreePath, branch, currentTurn, changedFiles, baseCommit, headCommit, workspaceFingerprint, checkpointedAt, lastSuccessfulAction, resumeStatus, stopReason, summary, resumable, createdAt, updatedAt FROM specialist_checkpoints WHERE resumable = 1 ORDER BY updatedAt DESC`)
+      .prepare(`SELECT logicalJobId, executionJobId, executionAttempt, specialistType, delegatedTask, delegatedTaskHash, repositoryPath, worktreePath, branch, currentTurn, changedFiles, selectedSkills, baseCommit, headCommit, workspaceFingerprint, checkpointedAt, lastSuccessfulAction, resumeStatus, stopReason, summary, resumable, createdAt, updatedAt FROM specialist_checkpoints WHERE resumable = 1 ORDER BY updatedAt DESC`)
       .all() as unknown as CheckpointRow[];
     return rows.map(rowToCheckpoint);
   }
@@ -153,8 +185,8 @@ export class SpecialistCheckpointStore {
     };
     this.db
       .prepare(
-        `INSERT INTO specialist_checkpoints (logicalJobId, executionJobId, executionAttempt, specialistType, delegatedTask, delegatedTaskHash, repositoryPath, worktreePath, branch, currentTurn, changedFiles, baseCommit, headCommit, workspaceFingerprint, checkpointedAt, lastSuccessfulAction, resumeStatus, stopReason, summary, resumable, createdAt, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO specialist_checkpoints (logicalJobId, executionJobId, executionAttempt, specialistType, delegatedTask, delegatedTaskHash, repositoryPath, worktreePath, branch, currentTurn, changedFiles, selectedSkills, baseCommit, headCommit, workspaceFingerprint, checkpointedAt, lastSuccessfulAction, resumeStatus, stopReason, summary, resumable, createdAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(logicalJobId) DO UPDATE SET
            executionJobId = excluded.executionJobId,
            executionAttempt = excluded.executionAttempt,
@@ -166,6 +198,7 @@ export class SpecialistCheckpointStore {
            branch = excluded.branch,
            currentTurn = excluded.currentTurn,
            changedFiles = excluded.changedFiles,
+           selectedSkills = excluded.selectedSkills,
            baseCommit = excluded.baseCommit,
            headCommit = excluded.headCommit,
            workspaceFingerprint = excluded.workspaceFingerprint,
@@ -189,6 +222,7 @@ export class SpecialistCheckpointStore {
         normalized.branch,
         normalized.currentTurn,
         JSON.stringify(normalized.changedFiles),
+        JSON.stringify(normalized.selectedSkills),
         normalized.baseCommit ?? null,
         normalized.headCommit ?? null,
         normalized.workspaceFingerprint ?? null,
@@ -272,11 +306,28 @@ export async function reconcileSpecialistCheckpoint(checkpoint: SpecialistCheckp
   }
   const actual = await captureGitCheckpoint(checkpoint.worktreePath, checkpoint.baseCommit);
   if (checkpoint.changedFiles.length === 0) {
-    return actual.changedFiles.length === 0 ? 'RESUME_CONTEXT_ONLY' : 'RESUME_CHECKPOINT_DIVERGED';
+    // A process can stop after the editor wrote a file but before the next
+    // SQLite update completed. This is an isolated specialist worktree, so
+    // Git can truthfully identify those durable files. Recover them under a
+    // distinct state and require the resumed specialist to inspect them; do
+    // not discard valid work or silently pretend it was checkpointed.
+    if (actual.changedFiles.length === 0) return 'RESUME_CONTEXT_ONLY';
+    return actual.workspaceFingerprint ? 'RESUME_WITH_UNCHECKPOINTED_CHANGES' : 'RESUME_CHECKPOINT_DIVERGED';
   }
   const expectedFiles = normalizeFiles(checkpoint.changedFiles);
   const sameFiles = JSON.stringify(expectedFiles) === JSON.stringify(actual.changedFiles);
   const sameFingerprint = Boolean(checkpoint.workspaceFingerprint) && checkpoint.workspaceFingerprint === actual.workspaceFingerprint;
   if (sameFiles && sameFingerprint) return 'RESUME_WITH_CHANGES';
   return 'RESUME_CHECKPOINT_DIVERGED';
+}
+
+/** Verify exact selected-skill identities before a checkpoint is resumed. */
+export function reconcileSpecialistSkillState(checkpoint: SpecialistCheckpoint | undefined, skills: SkillStore): SpecialistSkillState {
+  if (!checkpoint || checkpoint.selectedSkills.length === 0) return 'SKILL_STATE_MATCH';
+  for (const expected of checkpoint.selectedSkills) {
+    const current = skills.identity(expected.name);
+    if (!current) return 'SKILL_STATE_MISSING';
+    if (current.version !== expected.version || current.contentHash !== expected.contentHash || current.scope !== expected.scope) return 'SKILL_STATE_CHANGED';
+  }
+  return 'SKILL_STATE_MATCH';
 }

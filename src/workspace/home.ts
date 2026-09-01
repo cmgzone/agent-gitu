@@ -4,7 +4,9 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { readJson, writeJson } from '../util.js';
 
-export interface HermesHome {
+/** Primary Agent Gitu home layout. The on-disk layout remains stable so an
+ * upgrade never strands existing projects, ledgers, or settings. */
+export interface GituHome {
   root: string;
   projects: string;
   workspace: string;
@@ -17,7 +19,7 @@ export function homeEnvOverride(): string | undefined {
   return process.env['AGENT_GITU_HOME'] ?? process.env['HERMES_HOME_DIR'];
 }
 
-export function hermesHomeRoot(): string {
+export function gituHomeRoot(): string {
   return homeEnvOverride() ?? path.join(os.homedir(), 'AgentGitu');
 }
 
@@ -67,8 +69,8 @@ function healPaths(d: DatabaseSync, legacy: string, root: string): void {
   }
 }
 
-export function ensureHermesHome(): HermesHome {
-  let root = hermesHomeRoot();
+export function ensureGituHome(): GituHome {
+  let root = gituHomeRoot();
   if (!homeEnvOverride()) {
     const legacies = [path.join(os.homedir(), 'Hermes'), process.env['HERMES_HOME']].filter(
       (c): c is string => Boolean(c && path.resolve(c) !== path.resolve(root)),
@@ -100,7 +102,7 @@ export function ensureHermesHome(): HermesHome {
       }
     }
   }
-  const home: HermesHome = {
+  const home: GituHome = {
     root,
     projects: path.join(root, 'Projects'),
     workspace: path.join(root, 'Workspace'),
@@ -155,7 +157,7 @@ export interface CustomProviderProfile {
 }
 
 function settingsFile(): string {
-  return path.join(ensureHermesHome().settings, 'settings.json');
+  return path.join(ensureGituHome().settings, 'settings.json');
 }
 
 function sanitizeFallbackModels(value: unknown): string[] | undefined {
@@ -251,7 +253,7 @@ export function projectsDir(): string {
     mkdirSync(custom, { recursive: true });
     return path.resolve(custom);
   }
-  return ensureHermesHome().projects;
+  return ensureGituHome().projects;
 }
 
 export function createProject(name: string): { path: string; name: string } {
@@ -277,3 +279,10 @@ export function createProject(name: string): { path: string; name: string } {
   );
   return { path: dir, name: path.basename(dir) };
 }
+
+/** @deprecated Use GituHome. Kept for extensions compiled against Hermes. */
+export type HermesHome = GituHome;
+/** @deprecated Use gituHomeRoot. The home directory itself is unchanged. */
+export const hermesHomeRoot = gituHomeRoot;
+/** @deprecated Use ensureGituHome. Existing workspace data remains in place. */
+export const ensureHermesHome = ensureGituHome;

@@ -32,6 +32,7 @@ import {
   toolRunCommand,
   toolSearchFiles,
   toolUseSkill,
+  toolUseSkillReference,
   toolWebFetch,
   toolWriteFile,
   validateToolParams,
@@ -56,6 +57,14 @@ export interface ExecuteOutcome {
   deniedByPolicy?: string;
 }
 
+/**
+ * Supplies host-owned runtime capabilities at the moment a tool runs.  This
+ * deliberately lives outside model input: a model cannot grant itself a
+ * capability by putting one in a tool call.  It lets a connection saved while
+ * a task is paused become available to a subsequent `use_skill` action.
+ */
+export type RuntimeCapabilitySupplier = () => Iterable<string>;
+
 export class Executor {
   constructor(
     private readonly guard: ProjectGuard,
@@ -70,6 +79,7 @@ export class Executor {
     private readonly delegate?: DelegateFn,
     private readonly delegateBackground?: BackgroundDelegateFn,
     private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
+    private readonly runtimeCapabilities?: RuntimeCapabilitySupplier,
   ) {}
 
   private emit(event: string): void {
@@ -81,6 +91,30 @@ export class Executor {
     const paramsHash = hashParams(req.tool, req.params);
     const summary = summarizeParams(req.tool, req.params);
     const stepId = req.stepId;
+
+    // Skill inventory/loading is context management, not product progress.
+    // Re-opening the identical metadata/body/reference repeatedly must not
+    // consume a specialist's turn budget indefinitely.
+    if (req.tool === 'list_skills' || req.tool === 'use_skill' || req.tool === 'use_skill_reference') {
+      const priorReads = this.ledger.data.actions.filter((action) => action.tool === req.tool && action.paramsHash === paramsHash && action.status === 'success');
+      if (priorReads.length >= 2) {
+        const message = `SKILL_OPERATION_REPEATED: ${req.tool} with the same arguments has already succeeded ${priorReads.length} times. Use the loaded information to make a different execution decision.`;
+        const record = this.ledger.recordAction({
+          stepId,
+          tool: req.tool,
+          paramsHash,
+          paramsSummary: summary,
+          status: 'blocked',
+          errorSignature: 'skill-operation-repeated',
+          reason: req.reason,
+          expected: req.expected,
+          observation: message,
+          durationMs: Date.now() - started,
+        });
+        this.emit(`blocked  ${summary} (repeated skill operation)`);
+        return { record, result: { ok: false, output: message, errorSignature: 'skill-operation-repeated' }, blockedByLoop: message };
+      }
+    }
 
     if (stepId) {
       const step = this.ledger.step(stepId);
@@ -177,6 +211,30 @@ export class Executor {
       guard: this.guard,
       cwd: this.guard.lock.repoRoot,
       skills: this.skills,
+      skillContext: {
+        // Every ordinary action protocol tool is available. Browser-only
+        // capabilities are intentionally omitted when no browser bridge was
+        // provisioned, so a required browser skill fails closed.
+        availableTools: [
+          'read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'web_fetch', 'run_command',
+          'delegate', 'list_skills', 'use_skill', 'use_skill_reference', 'create_skill',
+          ...(this.browser ? ['browser', 'screenshot'] : []),
+        ],
+        // Re-evaluate for every action.  Connection setup happens after an
+        // executor is constructed, so a construction-time snapshot would make
+        // a valid saved connection look unavailable until the task restarted.
+        ...(this.runtimeCapabilities
+          ? {
+              availableCapabilities: [
+                ...new Set(
+                  [...this.runtimeCapabilities()]
+                    .map((capability) => String(capability).trim().toLowerCase())
+                    .filter(Boolean),
+                ),
+              ],
+            }
+          : {}),
+      },
       mcp: this.mcp,
       browser: this.browser,
       lsp: this.lsp,
@@ -222,6 +280,9 @@ export class Executor {
           break;
         case 'use_skill':
           result = toolUseSkill(ctx, req.params);
+          break;
+        case 'use_skill_reference':
+          result = toolUseSkillReference(ctx, req.params);
           break;
         case 'run_command':
           result = await toolRunCommand(ctx, req.params);

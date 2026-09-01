@@ -1,6 +1,7 @@
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import type { CompletionReport, VerificationReportItem } from '../types.js';
 import { nowIso } from '../util.js';
+import { scoreRunQuality } from '../agent/quality-metrics.js';
 
 function isReportableFile(file: string): boolean {
   const normalized = file.replace(/\\/g, '/').replace(/^\.\//, '');
@@ -53,18 +54,12 @@ export class Reporter {
       exitCode: e.exitCode,
       command: e.command,
       outputExcerpt: e.outputExcerpt,
-      authority: finalWorkspaceFingerprint
-        ? latestAtFinal.get(e.command || `${e.kind}:${e.label}`) === e.id
-          ? 'latest'
-          : 'historical'
-        : 'latest',
+      authority: finalWorkspaceFingerprint ? (latestAtFinal.get(e.command || `${e.kind}:${e.label}`) === e.id ? 'latest' : 'historical') : 'latest',
     }));
     // Keep the plain-text report useful, but do not embed a duplicate raw
     // command in every line. The structured form retains it for disclosure.
     const verification = verificationDetails.map((e) => `${e.passed ? 'PASS' : 'FAIL'} [${e.kind}] ${e.label}`);
-    const changes = d.actions
-      .filter((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success')
-      .map((a) => a.paramsSummary);
+    const changes = d.actions.filter((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success').map((a) => a.paramsSummary);
     const browserActions = d.actions.filter((a) => a.tool === 'browse');
     const browserActivity = browserActions.length
       ? {
@@ -80,15 +75,24 @@ export class Reporter {
       stalled: 'failed',
     };
 
+    const status = statusMap[exitReason];
+    const qualityMetrics = scoreRunQuality({
+      status,
+      // Older persisted ledgers and lightweight integrations can predate
+      // acceptance criteria. Their report remains valid; it simply receives
+      // zero criterion coverage instead of crashing during metric rendering.
+      criteria: d.acceptanceCriteria ?? [],
+      verification: verificationDetails,
+      telemetry: d.tokenTelemetry,
+    });
+
     return {
       taskId: d.taskId,
       goal: d.goal,
-      status: statusMap[exitReason],
+      status,
       summary:
         completionInput?.summary ??
-        (exitReason === 'blocked'
-          ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}`
-          : `Task ended without completion (${exitReason}).`),
+        (exitReason === 'blocked' ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}` : `Task ended without completion (${exitReason}).`),
       changes,
       filesChanged: unique(d.filesChanged.filter(isReportableFile)),
       verification,
@@ -98,6 +102,7 @@ export class Reporter {
       findings: d.findings,
       architectureDecisions: d.architectureDecisions,
       tokenTelemetry: d.tokenTelemetry,
+      qualityMetrics,
       memoryStats: d.memoryStats,
       evidence: d.evidence.map((e) => `${e.id}: ${e.passed ? 'PASS' : 'FAIL'} ${e.label}`),
       remainingRisks: completionInput?.risks ?? (d.blockers.length > 0 ? [`Unresolved blockers: ${d.blockers.join('; ')}`] : []),
@@ -147,8 +152,27 @@ export class Reporter {
             '',
             'Memory telemetry:',
             `  - store: ${report.memoryStats.total} memor(y); retrieved=${report.memoryStats.retrieved} injected=${report.memoryStats.injected} superseded-skipped=${report.memoryStats.supersededSkipped} promotion(s)=${report.memoryStats.promotions}`,
-            `  - visibility: ${Object.entries(report.memoryStats.byVisibility).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
-            `  - lifecycle: ${Object.entries(report.memoryStats.byStatus).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
+            `  - visibility: ${
+              Object.entries(report.memoryStats.byVisibility)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(', ') || 'none'
+            }`,
+            `  - lifecycle: ${
+              Object.entries(report.memoryStats.byStatus)
+                .map(([k, v]) => `${k}=${v}`)
+                .join(', ') || 'none'
+            }`,
+          ]
+        : []),
+      ...(report.qualityMetrics
+        ? [
+            '',
+            'Outcome quality:',
+            `  - ${report.qualityMetrics.score}/100; criteria=${report.qualityMetrics.criteria.satisfied}/${report.qualityMetrics.criteria.total}; final verification=${report.qualityMetrics.verification.passing}/${report.qualityMetrics.verification.authoritative}`,
+            ...(report.qualityMetrics.tokensPerVerifiedCriterion !== undefined
+              ? [`  - ${report.qualityMetrics.tokensPerVerifiedCriterion} model token(s) per verified criterion`]
+              : []),
+            ...(report.qualityMetrics.wastedCallRate !== undefined ? [`  - ${(report.qualityMetrics.wastedCallRate * 100).toFixed(1)}% wasted model-call rate`] : []),
           ]
         : []),
       ...(report.browserActivity

@@ -286,6 +286,8 @@ Architecture decisions (record BEFORE implementing whenever the task involves a 
 
 Execution:
 {"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId records WHICH step you are working on — it does NOT complete the step)
+{"thought":"...","action":{"type":"connection_action","connectionId":"saved-connection-id","operationId":"registered-read-operation","reason":"why this provider discovery is needed"}}  (only registered read operations; never provide a URL, header, or credential)
+{"thought":"...","action":{"type":"connection_operation","connectionId":"saved-connection-id","operation":{"id":"create-resource","label":"Create resource","capability":"resources.create","method":"POST","path":"/api/v1/resources","risk":"reversible-write"},"body":{"name":"example"},"documentationUrl":"https://docs.provider.example/api/resources","reason":"documented operation needed for the approved plan"}}  (the host validates the static operation, shows the exact request for user approval, and only then runs it; never include credentials or unverified paths)
 {"thought":"...","action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}}  (check off a subtask as you complete it; checking the last one completes the step)
 {"thought":"...","action":{"type":"complete_step","stepId":"step-N","reason":"why it is done"}}  (explicitly finish a step once its work is done; a step also auto-completes when a run_command matching its verification passes)
 {"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","todos":["new subtask",...]}}  (dynamic replanning: update ONLY the affected step when reality diverges — API differs, reuse found, dependency missing)
@@ -312,7 +314,8 @@ Tools:
   - "what type is this / what does this API do?" → lsp_hover
   - after edits: an automatic LSP post-edit check reports diagnostics for the file you changed — fix what it surfaces BEFORE running the real verification commands
   - NEVER use LSP for whole-project search (search_files), and never treat "No diagnostics"/LSP as the task's verification (run the real test/typecheck/build commands)
-  - web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
+- web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
+  web_fetch is intentionally anonymous. For a saved provider connection, use connection_action with the exact connection id and registered read operation provided by the secure connection context; never put authorization headers or tokens in web_fetch. When a documented provider write is needed, first fetch its official documentation and use connection_operation with that HTTPS documentationUrl; it waits for the user's individual approval instead of treating an unregistered write as a provider failure.
   - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
 - browse       full human-like browser control:
                  {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"evidence"} | {"action":"back"|"forward"|"reload"}
@@ -327,6 +330,9 @@ Tools:
                  - "screenshot" = visual escalation, for criteria that genuinely need pixels (visual hierarchy, spacing, color/contrast judgment). Every result ends with a capability line so you know exactly what ran.
 - list_skills  {}
 - use_skill    {"name":"skill-name"}
+                 Use the registered skill name or alias only. Saved connections are matched by their host-provided capabilities; never include a connectionId or credential in this call.
+- use_skill_reference {"skill":"skill-name","path":"references/accessibility.md"}
+                 Skill references are loaded only on demand. Bundled skill scripts never run automatically; propose any script through run_command so normal policy and workspace checks apply.
 - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge","global":true}
                  global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
                  Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
@@ -335,7 +341,7 @@ Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
 {"thought":"...","action":{"type":"complete","summary":"...","risks":["..."],"followUps":["..."]}}
 {"thought":"...","action":{"type":"complete","summary":"<conversational reply>","chat":true}}  (chat-only close: answering a comment/question without doing work; allowed only when you took no actions this turn)
-{"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried"}}
+{"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried","prerequisite":{"id":"provider-access","kind":"credential","description":"provider API access","requiredFor":"discover deployment targets","providerHint":"provider-name","capabilities":["servers.read"],"connectionSetup":{"label":"Provider production","baseUrl":"https://api.provider.example","documentationUrl":"https://docs.provider.example/api","validationPath":"/api/v1/targets","validationCapability":"servers.read"},"hints":["PROVIDER_API_KEY"],"riskIfWrong":"high"}}}
 
 Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
 {"thought":"...","action":{"type":"ask_user","questions":[{"question":"...","header":"short label","options":["option A","option B"]}]}}
@@ -363,6 +369,8 @@ Rules for the protocol:
 - Evidence ids come from verification results reported to you (ev-...).
 - Use background agents only for work that cannot conflict with your own edits. Poll agent_status and incorporate completed results before claiming their work is done.
 - If the same action failed twice, you MUST propose a different action or request_block.
+- Before a missing credential, connection, resource, configuration, dependency, service, target, or permission becomes BLOCKED, use request_block with its structured prerequisite. For a remote provider, include providerHint and the exact capability ids needed. First use web_fetch on official documentation. If it gives a reliable HTTPS base URL and a read-only validation route, include connectionSetup (label, baseUrl, documentationUrl, validationPath, validationCapability) so the secure form can ask the user for only an API key; omit unknown fields rather than guessing. The orchestrator first tries authorized repository/environment discovery, connected-provider reuse, and safe provisioning. If no matching saved connection exists, it can show the USER a private connection form; never request or repeat a token in chat. It never exposes secret values, never guesses between ambiguous targets, and records every recovery attempt.
+- An unregistered provider write is not a terminal blocker. Research the official documentation, use saved read operations to discover concrete target IDs, then propose one exact connection_operation. The user must approve every non-read invocation. If the API contract or target remains ambiguous, ask the user a precise question rather than guessing or reporting a provider limitation.
 
 ARCHITECTURE DECISIONS:
 - When a task involves an important technology or architecture choice, do NOT blindly pick the most popular framework or your first idea. Evaluate reasonable alternatives against the ACTUAL repository and the task requirements, then record_decision BEFORE implementing.

@@ -257,21 +257,24 @@ describe('LSP manager lifecycle (fake server)', () => {
     const originalPath = process.env.PATH;
     const events: string[] = [];
     let installs = 0;
-    const manager = new LspManager(repoRoot, undefined, {
-      autoInstall: true,
-      onEvent: (event) => events.push(event),
-      runInstaller: async () => {
-        installs += 1;
-        if (process.platform === 'win32') writeFileSync(commandPath, '@echo off\r\nexit /b 0\r\n');
-        else {
-          writeFileSync(commandPath, '#!/bin/sh\nexit 0\n');
-          chmodSync(commandPath, 0o755);
-        }
-        return { ok: true, pathEntries: [bin] };
-      },
-    });
-    managers.push(manager);
     try {
+      // The test must start without the global TypeScript LSP, regardless of
+      // which developer tools happen to be installed on this machine.
+      process.env.PATH = bin;
+      const manager = new LspManager(repoRoot, undefined, {
+        autoInstall: true,
+        onEvent: (event) => events.push(event),
+        runInstaller: async () => {
+          installs += 1;
+          if (process.platform === 'win32') writeFileSync(commandPath, '@echo off\r\nexit /b 0\r\n');
+          else {
+            writeFileSync(commandPath, '#!/bin/sh\nexit 0\n');
+            chmodSync(commandPath, 0o755);
+          }
+          return { ok: true, pathEntries: [bin] };
+        },
+      });
+      managers.push(manager);
       const ready = (manager as unknown as { serverReadyFor(file: string): Promise<unknown> }).serverReadyFor.bind(manager);
       const [first, second] = await Promise.all([ready('src/main.ts'), ready('src/main.ts')]);
       expect(first).toBeDefined();

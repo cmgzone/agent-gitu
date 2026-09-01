@@ -40,15 +40,26 @@ export class CheckpointManager {
     if (!this.isGitRepo()) {
       return { ok: false, message: 'Not a git repository; checkpoints disabled. Changes are still tracked in the ledger.' };
     }
-    const branch = `hermes/${taskId}`;
+    const branch = `gitu/${taskId}`;
+    const legacyBranch = `hermes/${taskId}`;
     const current = this.gitSafe(['rev-parse', '--abbrev-ref', 'HEAD']);
     if (current === branch) return { ok: true, branch, message: `Already on ${branch}` };
+    // A resumed legacy task must stay on the branch recorded by earlier
+    // versions. New tasks use gitu/*; no existing work is silently forked.
+    if (current === legacyBranch) return { ok: true, branch: legacyBranch, message: `Already on legacy ${legacyBranch}` };
     const exists = this.gitSafe(['rev-parse', '--verify', branch]);
     if (exists) {
       if (this.gitSafe(['checkout', branch]) === undefined) {
         return { ok: false, message: `Failed to switch to existing branch ${branch}` };
       }
       return { ok: true, branch, message: `Switched to existing ${branch}` };
+    }
+    const legacyExists = this.gitSafe(['rev-parse', '--verify', legacyBranch]);
+    if (legacyExists) {
+      if (this.gitSafe(['checkout', legacyBranch]) === undefined) {
+        return { ok: false, message: `Failed to switch to legacy branch ${legacyBranch}` };
+      }
+      return { ok: true, branch: legacyBranch, message: `Switched to legacy ${legacyBranch}` };
     }
     const created = this.gitSafe(['checkout', '-b', branch]);
     if (created === undefined) {
@@ -82,7 +93,7 @@ export class CheckpointManager {
     // Inspect the index, not generic status. Untracked/private agent state is
     // intentionally ignored and must never create a checkpoint by itself.
     const dirty = this.gitSafe(['diff', '--cached', '--name-only']);
-    const message = `hermes(${ledger.data.taskId}): ${stepId} ${label}`.slice(0, 200);
+    const message = `gitu(${ledger.data.taskId}): ${stepId} ${label}`.slice(0, 200);
     if (!dirty) {
       const ref = this.gitSafe(['rev-parse', 'HEAD']);
       if (ref) ledger.addCheckpoint(stepId, ref);

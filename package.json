@@ -1,12 +1,13 @@
 {
   "name": "agent-gitu",
-  "version": "0.2.6",
+  "version": "0.2.10",
   "description": "Agent Gitu: an autonomous engineering agent with project guard, task ledger, evidence gates, specialist sub-agents, in-app browser and an animated voxel mascot",
   "type": "module",
   "main": "desktop/main.cjs",
   "types": "dist/index.d.ts",
   "bin": {
     "agent-gitu": "dist/cli.js",
+    "gitu": "dist/cli.js",
     "hermes": "dist/cli.js"
   },
   "scripts": {
@@ -15,9 +16,19 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "generate:brand-icons": "electron scripts/generate-brand-icons.cjs",
-    "test": "vitest run",
+    "test": "npm run test:full",
+    "test:fast": "vitest run --exclude tests/agent-evals/** --exclude tests/reliability-*.test.ts --exclude tests/hermes.test.ts --exclude tests/server.test.ts --exclude tests/subagent*.test.ts --exclude tests/browser.test.ts --exclude tests/lsp.test.ts",
+    "test:full": "vitest run",
+    "test:coverage": "vitest run --coverage.enabled=true",
     "test:watch": "vitest",
-    "hermes": "tsx src/cli.ts",
+    "lint": "eslint src tests scripts --max-warnings=0",
+    "format": "prettier --write package.json package-lock.json README.md eslint.config.mjs .prettierrc.json .github src/agent/quality-metrics.ts src/cli/presenter.ts src/cli.ts src/context/change-signals.ts src/context/code-index.ts src/context/context-engine.ts src/evaluation/metrics.ts src/report/reporter.ts src/server/static-assets.ts scripts/eval-summary.ts tests/change-signals.test.ts tests/cli-presenter.test.ts tests/code-index.test.ts tests/context-engine.test.ts tests/evaluation-metrics.test.ts tests/quality-metrics.test.ts tests/static-assets.test.ts",
+    "format:check": "prettier --check package.json package-lock.json README.md eslint.config.mjs .prettierrc.json .github src/agent/quality-metrics.ts src/cli/presenter.ts src/cli.ts src/context/change-signals.ts src/context/code-index.ts src/context/context-engine.ts src/evaluation/metrics.ts src/report/reporter.ts src/server/static-assets.ts scripts/eval-summary.ts tests/change-signals.test.ts tests/cli-presenter.test.ts tests/code-index.test.ts tests/context-engine.test.ts tests/evaluation-metrics.test.ts tests/quality-metrics.test.ts tests/static-assets.test.ts",
+    "quality": "npm run typecheck && npm run lint && npm run format:check && npm run test:fast && npm run build",
+    "benchmark:skills": "tsx scripts/benchmark-skills-v2.ts",
+    "eval:summary": "tsx scripts/eval-summary.ts",
+    "gitu": "tsx src/cli.ts",
+    "hermes": "npm run gitu",
     "app": "npm run build && electron desktop/main.cjs",
     "dist": "npm run generate:brand-icons && npm run build && electron-builder --win --publish never"
   },
@@ -71,11 +82,17 @@
     "url": "https://github.com/cmgzone/agent-gitu.git"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/node": "^24.0.0",
+    "@vitest/coverage-v8": "^3.2.7",
     "electron": "^43.4.0",
     "electron-builder": "^26.15.3",
+    "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.69.0",
     "vitest": "^3.0.0"
   },
   "dependencies": {

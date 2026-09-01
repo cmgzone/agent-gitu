@@ -62,7 +62,10 @@ describe('specialist pause / preserve / resume lifecycle', () => {
     });
     const [job] = runnerA.startMany([{ agent: 'worker', task: 'survive an app restart' }]);
 
-    for (let attempt = 0; attempt < 40 && !events.some((event) => event.includes('isolated in git worktree')); attempt++) {
+    // Worktree creation can include a cold Git process on a busy developer
+    // machine. This is a recovery-lifecycle assertion, not a 1s performance
+    // benchmark, so wait through the documented five-second setup window.
+    for (let attempt = 0; attempt < 200 && !events.some((event) => event.includes('isolated in git worktree')); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     expect(events.some((event) => event.includes('isolated in git worktree'))).toBe(true);

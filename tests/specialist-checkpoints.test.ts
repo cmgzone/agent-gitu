@@ -147,6 +147,25 @@ describe('durable specialist checkpoint recovery', () => {
     expect(recovered?.summary).not.toContain('DURABLE CHANGES VERIFIED');
   }, 30_000);
 
+  it('recovers Git-verified edits written after the last checkpoint instead of restarting', async () => {
+    const dir = makeProject();
+    await initGitRepo(dir);
+    const first = await runner(dir, llm([modelFailure])).runOne('api-worker', 'update API and application wiring');
+    const checkpoint = new SpecialistCheckpointStore(dir).get(first.resumableJobId!);
+    expect(checkpoint?.resumeStatus).toBe('RESUME_CONTEXT_ONLY');
+
+    // This represents an abrupt stop between an editor write and the next
+    // checkpoint. The worktree is isolated, so Git can identify the edit.
+    writeFileSync(path.join(checkpoint!.worktreePath, 'src', 'api.ts'), "export const api = 'recovered';\n");
+    const [recovered] = await runner(dir, llm([() => JSON.stringify({ action: { type: 'answer', summary: 'finished uncheckpointed work' } })])).runMany([
+      { agent: 'api-worker', task: 'update API and application wiring', resume: { jobId: first.resumableJobId! } },
+    ]);
+
+    expect(recovered?.ok).toBe(true);
+    expect(recovered?.resumeState).toBe('RESUME_WITH_UNCHECKPOINTED_CHANGES');
+    expect(readFileSync(path.join(dir, 'src', 'api.ts'), 'utf8')).toContain("'recovered'");
+  }, 30_000);
+
   it('records the edit before a live attempt can be interrupted', async () => {
     const dir = makeProject();
     await initGitRepo(dir);
@@ -166,6 +185,39 @@ describe('durable specialist checkpoint recovery', () => {
     expect(checkpoint?.resumeStatus).toBe('RESUME_WITH_CHANGES');
     active.stop('simulated process interruption');
     await active.waitFor([job!.id]);
+  }, 30_000);
+
+  it('preserves committed work in a recovery file when SQLite checkpoints fail mid-run', async () => {
+    const dir = makeProject();
+    await initGitRepo(dir);
+    const unstable = runner(dir, llm([writeApi, modelFailure]));
+    type RunnerInternals = { persistCheckpoint: (input: Record<string, unknown>) => Promise<unknown> };
+    const internal = unstable as unknown as RunnerInternals;
+    const persistNormally = internal.persistCheckpoint.bind(unstable);
+    let writes = 0;
+    internal.persistCheckpoint = async (input) => {
+      writes += 1;
+      // Let initial worktree registration succeed, then simulate a transient
+      // checkpoint database outage after the specialist has committed work.
+      if (writes > 1) throw new Error('simulated SQLite busy');
+      return persistNormally(input);
+    };
+
+    const paused = await unstable.runOne('api-worker', 'update API and application wiring');
+    expect(paused.resumableJobId).toBeTruthy();
+    expect(paused.resumeState).toBe('RESUME_WITH_CHANGES');
+    const fallbackDir = path.join(dir, '.hermes', 'specialist-recovery');
+    expect(existsSync(fallbackDir)).toBe(true);
+
+    // A fresh runner represents an application restart. It imports the
+    // emergency record even though an earlier SQLite row still exists.
+    const [resumed] = await runner(dir, llm([() => JSON.stringify({ action: { type: 'answer', summary: 'merged recovered API work' } })])).runMany([
+      { agent: 'api-worker', task: 'update API and application wiring', resume: { jobId: paused.resumableJobId! } },
+    ]);
+    expect(resumed?.ok).toBe(true);
+    expect(resumed?.resumeState).toBe('RESUME_WITH_CHANGES');
+    expect(readFileSync(path.join(dir, 'src', 'api.ts'), 'utf8')).toContain("'new'");
+    expect(existsSync(fallbackDir)).toBe(false);
   }, 30_000);
 
   it('reuses the logical specialist allocation when a recovered job is delegated again', async () => {

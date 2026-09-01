@@ -1,13 +1,13 @@
 # Agent Gitu
 
-A **bounded autonomous engineering agent**. Hermes is not a chatbot with shell
+A **bounded autonomous engineering agent**. Gitu is not a chatbot with shell
 access — it is a control plane for autonomous work: it locks a project, plans
 bounded actions, executes through policy-gated tools, verifies with evidence,
 prevents loops, and only claims completion when every acceptance criterion is
 backed by passing evidence.
 
-> Hermes must know the difference between *"I did something"* and
-> *"the task is actually complete."*
+> Gitu must know the difference between _"I did something"_ and
+> _"the task is actually complete."_
 
 ## Architecture
 
@@ -21,7 +21,7 @@ backed by passing evidence.
 ProjectGuard  TaskLedger                  LLM client
 (scope lock)  (persistent task state)     (OpenAI-compatible)
    │
-   ├── ContextEngine   ranked, role-labeled, budgeted context packs
+   ├── ContextEngine   ranked, role-labeled, budgeted packs + lexical/semantic/import-history signals
    ├── Executor        policy-gated tool dispatch + action log
    │     ├── PolicyEngine    safe / moderate / dangerous tiers, approvals
    │     └── LoopDetector    action hashes + normalized error signatures
@@ -42,32 +42,37 @@ Lock project → criteria → context pack → plan →
 
 ### The guarantees
 
-| Mechanism | What it prevents |
-|---|---|
-| **ProjectGuard** | Editing the wrong project / files outside scope |
-| **TaskLedger** | Forgetting what was tried; lost state between turns |
-| **EvidenceEngine + gate** | Saying "done" without proof |
-| **Workspace fingerprint** | Citing stale evidence as fresh (any later edit invalidates it) |
-| **LoopDetector** | Repeating the same failing action forever |
-| **MalformedCallTracker** | Burning turns on a spiral of schema-broken tool calls |
-| **PolicyEngine** | Unapproved destructive commands (fail-closed tiers) |
-| **CheckpointManager** | Irreversible damage (git branch + snapshot per step) |
-| **Specialist evidence gate** | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract |
-| **Adaptive effort planner** | Runaway cost on open-ended work: per-task budgets cap turns and specialist delegations by task complexity |
-| **Risk-based specialist selection** | Using the wrong specialist (or any specialist) for low-risk work: risk classifier → right-sized roster, with domain review gates for security/payments/data |
-| **Task↔session↔git binding** | Resuming a task in the wrong working tree or on the wrong branch |
-| **LSP intelligence layer** | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies |
+| Mechanism                           | What it prevents                                                                                                                                                        |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ProjectGuard**                    | Editing the wrong project / files outside scope                                                                                                                         |
+| **TaskLedger**                      | Forgetting what was tried; lost state between turns                                                                                                                     |
+| **EvidenceEngine + gate**           | Saying "done" without proof                                                                                                                                             |
+| **Workspace fingerprint**           | Citing stale evidence as fresh (any later edit invalidates it)                                                                                                          |
+| **LoopDetector**                    | Repeating the same failing action forever                                                                                                                               |
+| **MalformedCallTracker**            | Burning turns on a spiral of schema-broken tool calls                                                                                                                   |
+| **PolicyEngine**                    | Unapproved destructive commands (fail-closed tiers)                                                                                                                     |
+| **CheckpointManager**               | Irreversible damage (git branch + snapshot per step)                                                                                                                    |
+| **Specialist evidence gate**        | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract                                                                         |
+| **Adaptive effort planner**         | Runaway cost on open-ended work: per-task budgets cap turns and specialist delegations by task complexity                                                               |
+| **Risk-based specialist selection** | Using the wrong specialist (or any specialist) for low-risk work: risk classifier → right-sized roster, with domain review gates for security/payments/data             |
+| **Task↔session↔git binding**        | Resuming a task in the wrong working tree or on the wrong branch                                                                                                        |
+| **LSP intelligence layer**          | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies |
 
-Web UI runs and `hermes run` bootstrap missing built-in language servers on first
+Web UI runs and `gitu run` bootstrap missing built-in language servers on first
 LSP use (once per server); progress is streamed into the run (or printed by the
 CLI).
 The allowlist covers TypeScript/JavaScript, Python, Go, Rust, C#, and CSS using
 their native package managers. Custom `.hermes/lsp.json` commands and languages
 without a trusted installer remain opt-in and continue to use the normal
 `search_files`/`read_file` fallback. Set `autoInstallLsp: false` in
-`HermesServer` configuration to disable this behavior.
+`GituServer` configuration to disable this behavior.
 
 ## Quick start
+
+`gitu` is the primary command and public API name. `hermes` remains a
+compatibility command, and existing `.hermes` task state and `hermes/*` task
+branches are retained so upgrading never loses resumable work. New task
+branches use `gitu/*`.
 
 ```bash
 npm install
@@ -95,8 +100,8 @@ Environment for `run`:
 
 ```
 # ChatGPT subscription — no API key (provider: chatgpt)
-hermes login                     # opens Codex's secure ChatGPT sign-in
-hermes run "goal" --provider chatgpt
+gitu login                       # opens Codex's secure ChatGPT sign-in
+gitu run "goal" --provider chatgpt
 # Agent Gitu uses the local Codex runtime and its authenticated model list.
 # It never reads, writes, or sends your ChatGPT credentials itself.
 # Sign out with `codex logout` when needed.
@@ -130,20 +135,20 @@ node dist/cli.js run "goal" --provider alibaba --model qwen3.7-max
 The alibaba catalog is fetched live from `GET /models` on your workspace
 endpoint whenever an API key is configured, so new models appear
 automatically; a built-in fallback list (qwen3.7-max, qwen3.7-plus,
-qwen3.6-flash, qwen3-coder-*, deepseek-v4-*, kimi-k2.7-code, glm-5.2, ...)
+qwen3.6-flash, qwen3-coder-_, deepseek-v4-_, kimi-k2.7-code, glm-5.2, ...)
 is shown when offline or keyless.
 
 ### Sign in with ChatGPT
 
-`hermes login` opens the supported browser sign-in managed by the local Codex
+`gitu login` opens the supported browser sign-in managed by the local Codex
 runtime. Codex owns the authentication and requests; Agent Gitu does not read,
 write, or transmit your ChatGPT tokens. Your subscription is used without an
 OpenAI API key, subject to the limits of your ChatGPT plan:
 
 ```bash
-hermes login                                          # browser sign-in
-hermes providers                                      # shows ChatGPT plan readiness
-hermes run "Fix the flaky test" --provider chatgpt
+gitu login                                            # browser sign-in
+gitu providers                                        # shows ChatGPT plan readiness
+gitu run "Fix the flaky test" --provider chatgpt
 codex logout                                          # sign out when needed
 ```
 
@@ -155,9 +160,19 @@ to that plan's limits rather than API credits.
 ## Development
 
 ```bash
-npm run typecheck   # strict TS
-npm test            # vitest: 284 tests incl. end-to-end runs with a mock LLM
+npm run quality        # typecheck, lint, scoped format gate, fast tests, build
+npm run test:fast      # rapid feedback; skips long integration/reliability suites
+npm run test:full      # complete Vitest suite (also npm test)
+npm run test:coverage  # full suite with enforced coverage thresholds
+npm run benchmark:skills
+npm run eval:summary -- path/to/results.json
 ```
+
+`test:fast` is intended for the edit loop; `test:full` and coverage remain the
+release/CI contract. Completion reports include an evidence-based quality score,
+token cost per verified criterion, and wasted-call rate. Real-model evaluation
+outputs are local by default; summarize a reviewed results JSON instead of
+committing raw provider responses or logs.
 
 ### Layout
 
@@ -166,7 +181,7 @@ src/
   agent/      orchestrator + system/state prompts (strict JSON protocol)
   guard/      ProjectGuard — workspace detection, scope lock, boundary checks
   ledger/     TaskLedger — persistent task object (.hermes/tasks/<id>.json)
-  context/    ContextEngine — file roles, relevance scoring, budgets
+  context/    ContextEngine — lexical/IDF, semantic, import-graph, and recent-change retrieval
   executor/   Executor — dispatch, capture, action records
   policy/     PolicyEngine — risk tiers + command classifier (fail closed)
   loop/       LoopDetector — signature-based repeat prevention
@@ -192,12 +207,13 @@ tests/        unit + end-to-end (mock LLM) suites
 - [x] Phase 6 — Adaptive effort: per-task complexity → turn / specialist / context budgets, enforced in the orchestrator
 - [x] Phase 7 — Risk-based specialists: risk classifier + right-sized roster selection, steering, domain review gates
 - [x] Electron desktop shell (offline, in-app browser for visual verification)
-- [ ] Deeper context: import graphs, semantic search, edit history signals
-- [ ] Quality scoring, cost-per-success telemetry, benchmark vs OpenCode/Codex
+- [x] Deeper context: import graphs, semantic search, edit history signals
+- [x] Quality scoring and token cost-per-verified-criterion telemetry
+- [ ] External baseline benchmark vs OpenCode/Codex
 
 ## Web UI
 
-`hermes ui` starts a zero-dependency HTTP server (built-in `node:http`) that
+`gitu ui` starts a zero-dependency HTTP server (built-in `node:http`) that
 renders the agent's **state**, not a chat transcript:
 
 - current task, status, hypothesis
@@ -211,7 +227,7 @@ renders the agent's **state**, not a chat transcript:
 - **Browser panel**: the desktop app opens a real Chromium browser window
   (Chrome under the hood) that you can use like a normal browser. The agent
   drives it with the `browse` tool (navigate / screenshot / click / type /
-  back / forward / reload); while it does, a "Hermes is driving the browser"
+  back / forward / reload); while it does, a "Gitu is driving the browser"
   banner and an animated cursor with click ripples are injected into the page
   so you always notice what it is doing. The Browser tab in the side panel is
   a live view of that window with its own address bar and an Open/Focus
@@ -219,6 +235,19 @@ renders the agent's **state**, not a chat transcript:
 - **image attachments**: the composer accepts up to 4 images; they are sent to
   vision-capable models only (the model picker marks them, attach is disabled
   for text-only models)
+- **provider-neutral connections**: when a task needs a named provider and
+  capability, Gitu first checks saved connections, then pauses on a local
+  connection form instead of asking for a token in chat. A successful setup
+  creates a reusable global provider skill containing only documentation,
+  capabilities, and allowlisted operations. The credential remains in the
+  local key store and is never added to model context, task events, ledgers,
+  generated skills, or general `web_fetch` headers.
+
+Connections are intentionally generic: a profile has a provider identifier,
+base URL, documentation link, capabilities, and fixed operations. Models can
+request a capability but cannot construct arbitrary authenticated headers or
+endpoints. Read-only validation runs automatically; future write operations
+remain subject to Gitu's existing approval policy.
 
 The desktop shell (`npm run app`) is fully offline-capable: the server and UI
 run locally inside Electron; only LLM calls need network. If port 8321 is
@@ -226,7 +255,7 @@ taken it binds a free port automatically.
 
 ## Agent Gitu home
 
-On first launch Hermes creates its own workspace (never a drive root):
+On first launch Gitu creates its own workspace (never a drive root):
 
 ```
 C:\Users\<you>\AgentGitu\
@@ -239,9 +268,8 @@ C:\Users\<you>\AgentGitu\
 
 `New project` in the sidebar creates `<home>\Projects\<name>\` (with a
 `package.json` so the project guard detects it) and switches the session to
-it. Override the home with `HERMES_HOME_DIR` if needed.
+it. Override the home with `AGENT_GITU_HOME` if needed (`HERMES_HOME_DIR` is
+still accepted for compatibility).
 
 API: `GET /api/project|models|tasks|runs`, `POST /api/runs`,
 `GET /api/runs/:id/stream` (SSE), `POST /api/approvals/:id`.
-
-

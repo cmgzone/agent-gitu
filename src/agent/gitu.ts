@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { ensureHermesHome } from '../workspace/home.js';
+import { ensureGituHome } from '../workspace/home.js';
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine } from '../context/context-engine.js';
@@ -36,12 +36,14 @@ import type { McpManager } from '../mcp/client.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
-import { renderSkillContract, SkillStore } from '../skills/skills.js';
+import { normalizeConnectionDocumentationUrl, normalizeConnectionOperation, normalizeConnectionOperationBody, normalizeConnectionSetupHint, type ConnectionOperation, type ConnectionOperationProposal } from '../connections/connections.js';
+import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
+import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
 import { validateSpecialistEvidence } from './specialist-evidence.js';
 import { VERIFIER_AGENT, buildVerifierContract, verdictForFinding } from './findings.js';
-import type { CompletionReport, CriterionEvidenceType, CriterionSpec, DecisionBasis, EvidenceKind, MemoryRetrievalContext, PlanArea, TaskFinding, TaskLedgerData } from '../types.js';
+import { RecoveryRisk, type CompletionReport, type CriterionEvidenceType, type CriterionSpec, type DecisionBasis, type EvidenceKind, type MemoryRetrievalContext, type MissingPrerequisite, type PlanArea, type TaskFinding, type TaskLedgerData } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -59,7 +61,7 @@ import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
 import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestMaterial } from '../context/digest.js';
 
-export interface HermesConfig {
+export interface GituConfig {
   cwd: string;
   llm: LlmClient;
   /** Shared code index to reuse (e.g. a watched one owned by the server). */
@@ -70,6 +72,19 @@ export interface HermesConfig {
    *  unattended-but-cautious middle ground. */
   safeMode?: boolean;
   approvalHandler?: ApprovalHandler;
+  /** Generic capability-aware recovery before a task can become BLOCKED. */
+  prerequisiteRecovery?: PrerequisiteRecoveryOptions;
+  /** Host-owned secure connection form. The model only supplies a structured
+   * prerequisite; it never receives a credential value. */
+  connectionRequestHandler?: (prerequisite: MissingPrerequisite) => Promise<boolean>;
+  /** User-saved connection metadata that is safe to provide after recovery. */
+  connectionContext?: () => string;
+  /** Executes only a registered, read-only provider operation. URLs and
+   * authorization headers stay inside the host adapter. */
+  connectionActionHandler?: (input: { connectionId: string; operationId: string }) => Promise<{ message: string; data?: unknown }>;
+  /** Proposes one documented provider operation. The host validates it,
+   * requests user approval for writes, then invokes only the approved entry. */
+  connectionOperationHandler?: (input: ConnectionOperationProposal) => Promise<{ message: string; data?: unknown }>;
   criteria?: string[] | CriterionSpec[];
   requirePlanReview?: boolean;
   planReviewHandler?: PlanReviewHandler;
@@ -139,7 +154,7 @@ export interface PlanReviewDecision {
 
 export type PlanReviewHandler = (input: PlanReviewInput) => Promise<PlanReviewDecision>;
 
-export interface HermesRunResult {
+export interface GituRunResult {
   ledger: TaskLedger;
   report: CompletionReport;
 }
@@ -164,6 +179,44 @@ function parseSubtasks(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value.map((t) => String(t).trim().slice(0, 140)).filter(Boolean).slice(0, 8);
   return items.length > 0 ? items : undefined;
+}
+
+/** @deprecated Use Gitu. Kept so existing integrations can upgrade safely. */
+export { Gitu as Hermes };
+/** @deprecated Use GituConfig. */
+export type HermesConfig = GituConfig;
+/** @deprecated Use GituRunResult. */
+export type HermesRunResult = GituRunResult;
+
+function parseMissingPrerequisite(value: unknown, fallbackRequiredFor: string): MissingPrerequisite | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const kinds = new Set(['credential', 'connection', 'resource', 'configuration', 'dependency', 'service', 'target', 'permission']);
+  const kind = String(raw['kind'] ?? '').trim();
+  const description = String(raw['description'] ?? '').trim();
+  if (!kinds.has(kind) || !description) return undefined;
+  const id = String(raw['id'] ?? '').trim() || `model-${kind}-${description.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60)}`;
+  const requiredFor = String(raw['requiredFor'] ?? fallbackRequiredFor).trim() || fallbackRequiredFor;
+  const hints = Array.isArray(raw['hints']) ? raw['hints'].map(String).map((hint) => hint.trim()).filter(Boolean).slice(0, 8) : undefined;
+  const providerHint = typeof raw['providerHint'] === 'string'
+    ? raw['providerHint'].trim().toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 64)
+    : undefined;
+  const capabilities = Array.isArray(raw['capabilities'])
+    ? [...new Set(raw['capabilities'].map(String).map((capability) => capability.trim().toLowerCase()).filter((capability) => /^[a-z][a-z0-9._-]{0,80}$/.test(capability)))].slice(0, 24)
+    : undefined;
+  const connectionSetup = normalizeConnectionSetupHint(raw['connectionSetup']);
+  const riskIfWrong = raw['riskIfWrong'];
+  return {
+    id: id.slice(0, 100),
+    kind: kind as MissingPrerequisite['kind'],
+    description: description.slice(0, 240),
+    requiredFor: requiredFor.slice(0, 240),
+    ...(providerHint ? { providerHint } : {}),
+    ...(capabilities?.length ? { capabilities } : {}),
+    ...(connectionSetup ? { connectionSetup } : {}),
+    ...(hints?.length ? { hints } : {}),
+    ...(riskIfWrong === 'low' || riskIfWrong === 'medium' || riskIfWrong === 'high' ? { riskIfWrong } : {}),
+  };
 }
 
 type ParsedAction =
@@ -200,13 +253,15 @@ type ParsedAction =
       supersedes?: string;
     }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
+  | { type: 'connection_action'; connectionId: string; operationId: string; reason: string }
+  | { type: 'connection_operation'; connectionId: string; operation: ConnectionOperation; body?: unknown; documentationUrl?: string; reason: string }
   | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
     | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
-  | { type: 'request_block'; reason: string }
+  | { type: 'request_block'; reason: string; prerequisite?: MissingPrerequisite }
   | { type: 'ask_user'; questions: AskUserQuestion[] }
   | {
       type: 'delegate';
-      tasks: { agent: string; task: string; criteria?: (string | CriterionSpec)[]; resume?: { jobId: string; note?: string } }[];
+      tasks: { agent: string; task: string; criteria?: (string | CriterionSpec)[]; resume?: { jobId: string; note?: string; allowSkillRecovery?: boolean } }[];
       background?: boolean;
     }
   | {
@@ -245,6 +300,10 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
       const reason = clean(action.reason);
       return reason ? `Next: ${reason}` : `Next: I’m using ${action.tool} to make the next verified step.`;
     }
+    case 'connection_action':
+      return `I’m using the registered ${action.operationId} read operation on the saved ${action.connectionId} connection.`;
+    case 'connection_operation':
+      return `I found a documented ${action.operation.method} provider operation and I’m requesting approval before it can run.`;
     case 'parallel':
       return `I’m running ${action.calls.length} independent checks in parallel.`;
     case 'set_hypothesis':
@@ -385,6 +444,29 @@ function parseAction(raw: unknown): ParsedAction | undefined {
         stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
       };
     }
+    case 'connection_action': {
+      const connectionId = String(action['connectionId'] ?? '').trim().toLowerCase();
+      const operationId = String(action['operationId'] ?? '').trim().toLowerCase();
+      if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId) || !/^[a-z][a-z0-9-]{0,48}$/.test(operationId)) return undefined;
+      return { type, connectionId, operationId, reason: String(action['reason'] ?? '').trim().slice(0, 240) };
+    }
+    case 'connection_operation': {
+      const connectionId = String(action['connectionId'] ?? '').trim().toLowerCase();
+      if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) return undefined;
+      const operation = normalizeConnectionOperation(action['operation']);
+      if (!operation) return undefined;
+      const rawDocumentationUrl = action['documentationUrl'];
+      const documentationUrl = rawDocumentationUrl === undefined ? undefined : normalizeConnectionDocumentationUrl(rawDocumentationUrl);
+      if (rawDocumentationUrl !== undefined && !documentationUrl) return undefined;
+      try {
+        const body = action['body'] === undefined ? undefined : normalizeConnectionOperationBody(action['body']);
+        const reason = String(action['reason'] ?? '').replace(/\s+/g, ' ').trim().slice(0, 240);
+        if (!reason) return undefined;
+        return { type, connectionId, operation, ...(body !== undefined ? { body } : {}), ...(documentationUrl ? { documentationUrl } : {}), reason };
+      } catch {
+        return undefined;
+      }
+    }
     case 'claim_criterion':
       if (typeof action['criterionId'] !== 'string' || typeof action['evidenceId'] !== 'string') return undefined;
       return { type, criterionId: action['criterionId'], evidenceId: action['evidenceId'], justification: action['justification'] ? String(action['justification']) : undefined };
@@ -399,7 +481,7 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       };
     case 'request_block':
       if (typeof action['reason'] !== 'string') return undefined;
-      return { type, reason: action['reason'] };
+      return { type, reason: action['reason'], prerequisite: parseMissingPrerequisite(action['prerequisite'], action['reason']) };
     case 'delegate': {
       const tasks = action['tasks'];
       if (!Array.isArray(tasks) || tasks.length === 0) return undefined;
@@ -424,6 +506,7 @@ function parseAction(raw: unknown): ParsedAction | undefined {
             ? {
                 jobId: String((rawResume as Record<string, unknown>)['jobId']).trim(),
                 note: typeof (rawResume as Record<string, unknown>)['note'] === 'string' ? String((rawResume as Record<string, unknown>)['note']) : undefined,
+                allowSkillRecovery: (rawResume as Record<string, unknown>)['allowSkillRecovery'] === true,
               }
             : undefined;
           return { agent, task, criteria, ...(resume?.jobId ? { resume } : {}) };
@@ -489,6 +572,8 @@ const KNOWN_ACTION_TYPES = new Set([
   'complete_step',
   'show_plan',
   'tool_call',
+  'connection_action',
+  'connection_operation',
   'claim_criterion',
   'complete',
   'request_block',
@@ -659,11 +744,11 @@ export function findLastBrowserEvidence(data: TaskLedgerData): string | undefine
 }
 
 /**
- * Parse the reviewer's reply. Fail-open: anything without an explicit
- * `VERDICT: REVISE` counts as a pass so a flaky reviewer can never deadlock
- * completion.
+ * Parse the reviewer's reply. Only an explicit PASS counts as a successful
+ * second opinion; malformed/unavailable review output is reported as such so
+ * it cannot masquerade as verification.
  */
-export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise'; feedback: string } {
+export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise' | 'unavailable'; feedback: string } {
   const m = /VERDICT:\s*(REVISE|PASS|REJECT)/i.exec(reply);
   if (m && m[1] && /revise|reject/i.test(m[1])) {
     const fbIdx = reply.search(/FEEDBACK:/i);
@@ -673,7 +758,8 @@ export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise';
       .slice(0, 600);
     return { verdict: 'revise', feedback: feedback || 'Reviewer did not provide specifics — re-check the diff against the acceptance criteria.' };
   }
-  return { verdict: 'pass', feedback: '' };
+  if (m && m[1] && /pass/i.test(m[1])) return { verdict: 'pass', feedback: '' };
+  return { verdict: 'unavailable', feedback: 'Final quality reviewer returned no explicit PASS or REVISE verdict.' };
 }
 
 export interface QualityReviewInput {
@@ -691,6 +777,23 @@ export interface QualityReviewInput {
   frontendDesign?: string;
   /** Latest bounded DOM/accessibility/layout evidence for text-only review. */
   browserEvidence?: string;
+}
+
+/**
+ * Review the task's full delta since its first durable checkpoint. Individual
+ * steps are checkpointed as they complete, so `git diff HEAD` alone is often
+ * empty by the time final quality review runs.
+ */
+export async function collectQualityReviewDiff(
+  root: string,
+  checkpoints: { ref: string }[],
+  maxBodyChars = 8_000,
+): Promise<{ baseRef?: string; diffStat: string; diffBody?: string }> {
+  const baseRef = checkpoints.find((checkpoint) => checkpoint.ref.trim())?.ref.trim();
+  const args = baseRef ? ['diff', baseRef] : ['diff', 'HEAD'];
+  const diffStat = await gitExec(root, [...args, '--stat']).catch(() => '');
+  const diffBody = maxBodyChars > 0 ? (await gitExec(root, args).catch(() => '')).slice(0, maxBodyChars) : undefined;
+  return { baseRef, diffStat, ...(diffBody ? { diffBody } : {}) };
 }
 
 /** Build the strict-reviewer message list. UI tasks attach the final screenshot for vision judging. */
@@ -937,7 +1040,7 @@ export function classifyBadReply(reply: string | undefined | null): BadReplyKind
 /** Persist raw unparseable replies so stalls can be diagnosed from logs. */
 function logParseFailure(taskId: string, reply: string, reasoning?: string): void {
   try {
-    const logs = path.join(ensureHermesHome().root, 'logs');
+    const logs = path.join(ensureGituHome().root, 'logs');
     mkdirSync(logs, { recursive: true });
     const entry =
       `\n=== ${new Date().toISOString()} task=${taskId} ===\n--- reply ---\n${reply.slice(0, 4000)}\n` +
@@ -986,14 +1089,14 @@ function createProseStreamer(emitDelta: (chunk: string) => void): (delta: string
 
 
 
-export class Hermes {
-  private readonly config: HermesConfig;
+export class Gitu {
+  private readonly config: GituConfig;
   private readonly emit: (event: string) => void;
   private readonly inbox: { text: string; attachmentContext?: string }[] = [];
   private aborted = false;
   private abortController?: AbortController;
 
-  constructor(config: HermesConfig) {
+  constructor(config: GituConfig) {
     this.config = config;
     this.emit = config.onEvent ?? (() => {});
   }
@@ -1011,7 +1114,7 @@ export class Hermes {
     this.config.subagents?.stop('Parent task stopped by user.');
   }
 
-  async run(goal: string): Promise<HermesRunResult> {
+  async run(goal: string): Promise<GituRunResult> {
     const { cwd } = this.config;
     // Dynamic auto-retry: network blips and provider outages delay the run
     // (with visible events) instead of failing it.
@@ -1111,6 +1214,7 @@ export class Hermes {
     this.emit(`branch   ${branchInfo.message}`);
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
+    const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
     const loopDetector = new LoopDetector();
     const evidence = new EvidenceEngine();
     const skills = this.config.skills ?? SkillStore.forProject(guard.lock.repoRoot);
@@ -1133,10 +1237,21 @@ export class Hermes {
       this.config.subagents ? (specs) => this.config.subagents!.runMany(specs) : undefined,
       this.config.subagents ? (specs) => this.config.subagents!.startMany(specs) : undefined,
       this.config.subagents ? (ids) => this.config.subagents!.status(ids) : undefined,
+      // A connection can be securely saved after the executor is created.
+      // Supply its capabilities at action time so its generated skill alias is
+      // accepted immediately, while the host remains the sole authority that
+      // can grant those capabilities.
+      () => prerequisiteResolver.capabilities().map((capability) => capability.id),
     );
-    const context = new ContextEngine(guard, this.config.index ?? new CodeIndex(guard.lock.repoRoot));
+    // The server owns and reuses its index. A direct Gitu run owns the index
+    // it creates, so it must close it even when the run exits early or fails.
+    // Leaking this native SQLite handle kept a single-fork Vitest worker alive
+    // after the suite had finished.
+    const ownedIndex = this.config.index ? undefined : new CodeIndex(guard.lock.repoRoot);
+    const context = new ContextEngine(guard, this.config.index ?? ownedIndex);
     const reporter = new Reporter();
 
+    try {
     const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
     if (userCriteriaProvided) {
       const raw = this.config.criteria!;
@@ -1150,27 +1265,67 @@ export class Hermes {
       this.emit(`criteria provided by user (${raw.length})`);
     }
 
-    // Auto-resolve high-confidence skills based on user goal & follow-up
-    const skillResolution = skills.resolver().resolve(goal + (resumeNote ? ` ${resumeNote}` : ''));
+    // Discovery stays metadata-only. Loading a full procedure happens only
+    // after selection/explicit use_skill, never for the whole installed set.
+    const skillContext = {
+      task: goal,
+      repositorySignals: guard.lock.techStack,
+      activeSkills: ledger.data.activeSkills,
+      priorUsedSkills: ledger.data.usedSkills,
+      availableTools: [...KNOWN_TOOL_NAMES, ...(this.config.browser ? ['browser', 'screenshot'] : [])],
+      availableCapabilities: prerequisiteResolver.capabilities().map((capability) => capability.id),
+    };
+    const skillResolution = skills.resolver().resolve(goal + (resumeNote ? ` ${resumeNote}` : ''), skillContext);
+    for (const match of skillResolution.allMatches.slice(0, 12)) {
+      ledger.recordSkillEvent({ stage: 'discovered', name: match.skill.name, version: String(match.skill.version ?? '1'), scope: match.skill.scope, selectionScore: match.score, reason: match.reason });
+    }
     const activeSkills = new Set(ledger.data.activeSkills ?? []);
-    for (const match of skillResolution.highConfidence) {
-      if (!activeSkills.has(match.name)) {
-        activeSkills.add(match.name);
-        this.emit(`skill    auto-activated high-confidence skill "${match.name}" (${match.description})`);
+    const identities = new Map<string, SkillIdentity>();
+    const savedIdentities = new Map((ledger.data.selectedSkills ?? []).map((identity) => [identity.name.toLowerCase(), identity]));
+    for (const name of [...activeSkills]) {
+      const current = skills.identity(name);
+      const saved = savedIdentities.get(name.toLowerCase());
+      if (saved && (!current || current.version !== saved.version || current.contentHash !== saved.contentHash || current.scope !== saved.scope)) {
+        activeSkills.delete(name);
+        ledger.recordSkillEvent({ stage: 'rejected', name: saved.name, version: saved.version, contentHash: saved.contentHash, scope: saved.scope, failureCode: current ? 'SKILL_STATE_CHANGED' : 'SKILL_STATE_MISSING', reason: 'Persisted active skill identity no longer matches; it was not silently substituted.' });
+        this.emit(`skill    ${current ? 'SKILL_STATE_CHANGED' : 'SKILL_STATE_MISSING'} — "${saved.name}" requires explicit recovery`);
+      } else if (current) {
+        identities.set(current.name.toLowerCase(), current);
       }
+    }
+    for (const match of skillResolution.highConfidence) {
+      // Built-in investigation strategies remain owned by the existing
+      // LSP-first gate below. The generic selector must not bypass that gate
+      // merely because a bug-fix goal shares their descriptive keywords.
+      if (match.scope === 'builtin' && match.name.startsWith('strategy-')) continue;
+      if (activeSkills.size >= 6 || activeSkills.has(match.name)) continue;
+      const activation = skills.activate(match.name, skillContext);
+      if (!activation.ok || !activation.skill || !activation.identity) {
+        ledger.recordSkillEvent({ stage: 'rejected', name: match.name, version: String(match.version ?? '1'), scope: match.scope, selectionScore: skillResolution.allMatches.find((item) => item.skill.name === match.name)?.score, failureCode: activation.code, reason: activation.message });
+        this.emit(`skill    ${activation.code ?? 'rejected'} — "${match.name}" not activated`);
+        continue;
+      }
+      activeSkills.add(activation.skill.name);
+      identities.set(activation.identity.name.toLowerCase(), activation.identity);
+      ledger.recordSkillEvent({ stage: 'selected', name: activation.identity.name, version: activation.identity.version, contentHash: activation.identity.contentHash, scope: activation.identity.scope, selectionScore: skillResolution.allMatches.find((item) => item.skill.name === match.name)?.score, reason: 'contextual high-confidence selection', loadChars: activation.skill.instructions.length });
+      this.emit(`skill    auto-activated high-confidence skill "${activation.identity.name}" (${activation.skill.description})`);
     }
     // The frontend quality bar is a real active skill, not merely a large
     // system-prompt appendix. This gives it a durable contract every turn and
     // lets the full procedure be reloaded after compaction.
     if (isFrontendGoal(goal)) {
       const frontendSkill = skills.get('frontend-quality-bar');
-      if (frontendSkill && !activeSkills.has(frontendSkill.name)) {
-        activeSkills.add(frontendSkill.name);
-        this.emit(`skill    activated frontend-quality-bar for UI task`);
+      if (frontendSkill && !activeSkills.has(frontendSkill.name) && activeSkills.size < 6) {
+        const activation = skills.activate(frontendSkill.name, skillContext);
+        if (activation.ok && activation.identity) {
+          activeSkills.add(frontendSkill.name);
+          identities.set(activation.identity.name.toLowerCase(), activation.identity);
+          ledger.recordSkillEvent({ stage: 'selected', name: activation.identity.name, version: activation.identity.version, contentHash: activation.identity.contentHash, scope: activation.identity.scope, reason: 'frontend task quality bar', loadChars: activation.skill?.instructions.length });
+          this.emit(`skill    selected frontend-quality-bar for UI task`);
+        }
       }
     }
-    ledger.data.activeSkills = [...activeSkills];
-    ledger.save();
+    ledger.setSelectedSkills([...identities.values()].filter((identity) => activeSkills.has(identity.name)));
 
     const effortPlan = planEffort(goal, {
       scopeFiles: this.config.scopeFiles,
@@ -1210,14 +1365,18 @@ export class Hermes {
       // into a giant hidden prompt. The complete active set remains durable in
       // the ledger and can be inspected through list_skills.
       const visibleNames = names.slice(0, 6);
+      let loadedChars = 0;
       const parts = visibleNames.map((name) => {
         const s = skills.get(name);
         if (!s) return `✓ ${name}`;
-        const version = s.instructions;
+        const version = s.contentHash ?? s.instructions;
         const contract = renderSkillContract(s);
         if (deliveredSkillVersions.get(s.name) === version) return contract;
         deliveredSkillVersions.set(s.name, version);
-        return `${contract}\n  Full instructions (loaded now):\n  ${s.instructions}`;
+        const remaining = Math.max(0, 24_000 - loadedChars);
+        const body = s.instructions.slice(0, remaining);
+        loadedChars += body.length;
+        return `${contract}\n  ACTIVE SKILL ${s.name}@${String(s.version ?? '1')}\n  Full instructions (loaded now):\n  ${body}${body.length < s.instructions.length ? '\n  [instruction body clipped by task skill-context limit]' : ''}`;
       });
       if (names.length > visibleNames.length) {
         parts.push(`… ${names.length - visibleNames.length} additional active skill(s) are recorded in the task ledger; use list_skills to inspect or reload one.`);
@@ -1449,6 +1608,8 @@ export class Hermes {
     // their own trackers, so a weak reviewer cannot trip the parent breaker.
     let invalidStreak = 0;
     let loopBlocks = 0;
+    const connectionActionAttempts = new Map<string, number>();
+    const connectionOperationAttempts = new Map<string, number>();
     let followUpCriteriaAdded = false;
     let architectureAuditRejections = 0;
     let planningNudged = false;
@@ -2108,7 +2269,10 @@ export class Hermes {
           if (action.tool === 'use_skill' && outcome.result.ok) {
             const skillName = String(action.params['name'] ?? '').trim();
             if (skillName) {
-              ledger.addUsedSkill(skillName);
+              const identity = skills.identity(skillName);
+              ledger.addUsedSkill(skillName, identity);
+              if (identity) ledger.recordSkillEvent({ stage: 'loaded', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, reason: 'explicit use_skill', loadChars: skills.get(skillName)?.instructions.length });
+              if (identity) ledger.recordSkillEvent({ stage: 'applied', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, reason: 'use_skill tool completed' });
               this.emit(`skill    used "${skillName}"`);
             }
           }
@@ -2247,12 +2411,76 @@ export class Hermes {
           }
           break;
         }
+        case 'connection_action': {
+          const connectionActionKey = `${action.connectionId}:${action.operationId}`;
+          const connectionAttempts = (connectionActionAttempts.get(connectionActionKey) ?? 0) + 1;
+          connectionActionAttempts.set(connectionActionKey, connectionAttempts);
+          if (connectionAttempts > 3) {
+            const blocker = `Saved connection action ${connectionActionKey} was requested more than three times without a new operation.`;
+            ledger.addBlocker(blocker);
+            exitReason = 'stalled';
+            this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
+            observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
+            break mainLoop;
+          }
+          if (!this.config.connectionActionHandler) {
+            observe('No saved-connection adapter is available in this host. Use request_block with a structured provider prerequisite instead of constructing authenticated headers.');
+            break;
+          }
+          try {
+            const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
+            const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
+            this.emit(`connection ${action.connectionId}/${action.operationId} completed`);
+            observe(`CONNECTION ACTION RESULT: ${result.message}${rendered}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`);
+          } catch (error) {
+            this.emit(`connection ${action.connectionId}/${action.operationId} failed`);
+            observe(`CONNECTION ACTION FAILED: ${(error as Error).message}\nDo not retry by adding raw headers to web_fetch. Check the saved connection's registered read operation or request a corrected secure connection.`);
+          }
+          break;
+        }
+        case 'connection_operation': {
+          // The key intentionally omits body values. Bodies may contain user
+          // business data and must never become model-visible telemetry; a
+          // repeated documented operation is still bounded by its immutable
+          // connection/id/method/path identity.
+          const operationKey = `${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`;
+          const operationAttempts = (connectionOperationAttempts.get(operationKey) ?? 0) + 1;
+          connectionOperationAttempts.set(operationKey, operationAttempts);
+          if (operationAttempts > 3) {
+            this.emit(`connection proposal paused — repeated ${operationKey}`);
+            observe(`CONNECTION OPERATION PAUSED: ${action.operation.label} was proposed more than three times. Do not retry it unchanged; inspect the provider documentation, use read discovery, or ask the user for a different target.`);
+            break;
+          }
+          if (!this.config.connectionOperationHandler) {
+            observe('This host does not yet provide a provider-operation approval channel. Do not treat that as provider failure: gather documentation and request a user decision or a host update instead of claiming the task is complete.');
+            break;
+          }
+          try {
+            const result = await this.config.connectionOperationHandler({
+              connectionId: action.connectionId,
+              operation: action.operation,
+              ...(action.body !== undefined ? { body: action.body } : {}),
+              ...(action.documentationUrl ? { documentationUrl: action.documentationUrl } : {}),
+              reason: action.reason,
+            });
+            const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
+            this.emit(`connection operation ${action.connectionId}/${action.operation.id} completed`);
+            observe(`PROVIDER OPERATION RESULT: ${result.message}${rendered}\nContinue from the provider response. The operation was individually approved and is not blanket authorization for other writes.`);
+          } catch (error) {
+            this.emit(`connection operation ${action.connectionId}/${action.operation.id} not run`);
+            observe(`PROVIDER OPERATION NOT RUN: ${(error as Error).message}\nDo not claim this action happened. Revise the documented operation, use read discovery, or ask the user for clarification; do not put credentials in a tool call.`);
+          }
+          break;
+        }
         case 'claim_criterion': {
           const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
           const link = evidence.link(ledger.data, action.criterionId, action.evidenceId, currentFp);
           ledger.save();
           this.emit(`claim    ${action.criterionId} <- ${action.evidenceId}: ${link.ok ? 'accepted' : link.reason}`);
           if (link.ok) {
+            for (const identity of ledger.data.usedSkillIdentities ?? []) {
+              ledger.recordSkillEvent({ stage: 'verified', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, reason: `criterion ${action.criterionId} accepted` });
+            }
             const criterion = ledger.data.acceptanceCriteria.find((c) => c.id === action.criterionId);
             const evidenceRecord = ledger.data.evidence.find((e) => e.id === action.evidenceId);
             const weak =
@@ -2421,21 +2649,29 @@ export class Hermes {
             unresolvedQualityReview = undefined;
             this.emit('review   strict-risk quality warning explicitly accepted by user — recorded as a release risk');
           }
+          if (!riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
+            // Non-strict work may proceed after its bounded repair budget, but
+            // never silently: the final report must say the reviewer concern
+            // was not independently cleared.
+            action.risks = [
+              ...(action.risks ?? []),
+              `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${reviewWarning.slice(0, 600)}`,
+            ];
+            unresolvedQualityReview = undefined;
+            this.emit('review   quality warning unresolved after repair budget — recorded as a release risk');
+          }
           const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityReviewRejections < reviewRoundCap;
           if (wantsReview) {
             try {
               const deepReview = effortPlan?.complexity === 'high';
-              const diffStat = await gitExec(guard.activeWritableRoot, ['diff', 'HEAD', '--stat']).catch(() => '');
-              const diffBody = deepReview
-                ? (await gitExec(guard.activeWritableRoot, ['diff', 'HEAD']).catch(() => '')).slice(0, 8000)
-                : '';
+              const reviewDiff = await collectQualityReviewDiff(guard.activeWritableRoot, ledger.data.checkpoints, deepReview ? 8_000 : 4_000);
               const reviewingUi = isUiTask(ledger.data);
               const reviewMsgs = buildQualityReviewMessages({
                 goal,
                 criteria: ledger.data.acceptanceCriteria.map((c) => c.text),
                 filesChanged: ledger.data.filesChanged ?? [],
-                diffStat,
-                diffBody,
+                diffStat: reviewDiff.diffStat,
+                diffBody: reviewDiff.diffBody,
                 summary: action.summary,
                 uiTask: reviewingUi,
                 frontendDesign: reviewingUi ? ledger.data.planDesign?.frontend : undefined,
@@ -2449,6 +2685,20 @@ export class Hermes {
               );
               telemetry.recordCall(reviewMsgs, undefined, 0, 'planning');
               const review = parseReviewVerdict(reviewReply);
+              if (review.verdict === 'unavailable') {
+                const warning = `Final quality review was unavailable: ${review.feedback}`;
+                this.emit('review   quality reviewer returned no usable verdict');
+                if (riskPlan.strictVerification) {
+                  // Strict-risk work cannot claim the second opinion happened.
+                  // The next completion goes through the explicit approval
+                  // path above, rather than silently accepting this gap.
+                  qualityReviewRejections = reviewRoundCap;
+                  unresolvedQualityReview = warning;
+                  observe(`${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`);
+                  break;
+                }
+                action.risks = [...(action.risks ?? []), warning];
+              }
               if (review.verdict === 'revise') {
                 qualityReviewRejections += 1;
                 unresolvedQualityReview = review.feedback;
@@ -2462,8 +2712,16 @@ export class Hermes {
                 break;
               }
               unresolvedQualityReview = undefined;
-            } catch {
-              // Reviewer unavailable (no vision, provider error) → fail open.
+            } catch (err) {
+              const warning = `Final quality review could not run: ${(err as Error).message.slice(0, 300)}`;
+              this.emit('review   quality reviewer unavailable — review gap recorded');
+              if (riskPlan.strictVerification) {
+                qualityReviewRejections = reviewRoundCap;
+                unresolvedQualityReview = warning;
+                observe(`${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`);
+                break;
+              }
+              action.risks = [...(action.risks ?? []), warning];
             }
           }
           completionInput = {
@@ -2552,6 +2810,81 @@ export class Hermes {
           break;
         }
         case 'request_block': {
+          const prerequisite = action.prerequisite ?? inferMissingPrerequisite(action.reason, action.reason);
+          if (prerequisite) {
+            this.emit(`recovery RESOLVING_PREREQUISITE — ${prerequisite.description}`);
+            const resolution = await prerequisiteResolver.resolve(prerequisite, {
+              repoRoot: guard.activeWritableRoot,
+              goal,
+              ledger,
+              specialist: false,
+            });
+            for (const attempt of resolution.attempts) {
+              this.emit(`recovery ${attempt.status} — ${attempt.strategy}: ${attempt.outcome.slice(0, 180)}`);
+            }
+            if (resolution.status === 'resolved') {
+              const connectionContext = this.config.connectionContext?.();
+              observe(
+                `PREREQUISITE RESOLVED: ${prerequisite.description}. ${resolution.message} ` +
+                  `Continue the task; do not request_block for this prerequisite again. Values and provider references stay protected.` +
+                  (connectionContext ? `\nREGISTERED SAVED CONNECTIONS (metadata only):\n${connectionContext}` : ''),
+              );
+              break;
+            }
+            if (resolution.status === 'needs-user' && this.config.askUserHandler && resolution.question) {
+              this.emit(`ask-user prerequisite decision needed — ${prerequisite.description}`);
+              const answer = await this.config.askUserHandler([resolution.question]);
+              this.emit('ask-user answered prerequisite decision');
+              observe(`User chose how to resolve ${prerequisite.description}: ${answer}\nContinue with that decision; do not claim a provider action you did not execute.`);
+              break;
+            }
+            // A saved connection is user-owned input, so never ask the model
+            // to carry a token in conversation.  The host renders a secure
+            // form, stores the credential separately, validates it, then the
+            // resolver gets one fresh discovery pass.
+            if (resolution.status === 'exhausted' && this.config.connectionRequestHandler && (prerequisite.providerHint || prerequisite.capabilities?.length)) {
+              ledger.recordPrerequisiteRecovery({
+                prerequisiteId: prerequisite.id,
+                prerequisiteKind: prerequisite.kind,
+                description: prerequisite.description,
+                requiredFor: prerequisite.requiredFor,
+                strategy: 'secure-connection-request',
+                status: 'NEEDS_USER',
+                outcome: 'Waiting for the user to configure and validate a saved connection through the local secure form.',
+                risk: RecoveryRisk.READ_ONLY,
+              });
+              this.emit(`connection required — ${prerequisite.description}`);
+              const connected = await this.config.connectionRequestHandler(prerequisite);
+              if (connected) {
+                this.emit(`connection saved — retrying discovery for ${prerequisite.description}`);
+                const retried = await prerequisiteResolver.resolve(prerequisite, {
+                  repoRoot: guard.activeWritableRoot,
+                  goal,
+                  ledger,
+                  specialist: false,
+                  retry: true,
+                });
+                for (const attempt of retried.attempts) {
+                  this.emit(`recovery ${attempt.status} — ${attempt.strategy}: ${attempt.outcome.slice(0, 180)}`);
+                }
+                if (retried.status === 'resolved') {
+                  const connectionContext = this.config.connectionContext?.();
+                  observe(`PREREQUISITE RESOLVED after secure connection setup: ${prerequisite.description}. ${retried.message} Continue the task; values and provider references stay protected.` + (connectionContext ? `\nREGISTERED SAVED CONNECTIONS (metadata only):\n${connectionContext}` : ''));
+                  break;
+                }
+                const blocked = formatBlockedPrerequisite(retried);
+                ledger.addBlocker(blocked);
+                exitReason = 'blocked';
+                observe(`Saved connection did not resolve the prerequisite:\n${blocked}`);
+                break;
+              }
+            }
+            const blocked = formatBlockedPrerequisite(resolution);
+            ledger.addBlocker(blocked);
+            exitReason = 'blocked';
+            observe(`Recovery exhausted before block:\n${blocked}`);
+            break;
+          }
           ledger.addBlocker(action.reason);
           exitReason = 'blocked';
           observe(`Block recorded: ${action.reason}`);
@@ -2615,7 +2948,7 @@ export class Hermes {
           const results = payload.results ?? [];
 
           // P1.1 — Specialist Evidence Inheritance: a specialist's evidence is
-          // evidence for Hermes to evaluate, never automatic proof. Each report
+          // evidence for Gitu to evaluate, never automatic proof. Each report
           // is revalidated against the exact contract that was delegated; only
           // evidence that passes is mirrored into the MAIN ledger through the
           // EvidenceEngine so the acceptance gate keeps its authority.
@@ -2837,11 +3170,14 @@ export class Hermes {
     ledger.data.memoryStats = memory.stats();
 
     this.emit(`done     ${status} — ${report.summary.slice(0, 160)}`);
-    if (!this.config.lsp) {
-      // We created the LSP manager for this run — shut its servers down.
-      await lsp.shutdown().catch(() => {});
-    }
     return { ledger, report };
+    } finally {
+      // Only dispose resources created for this direct run. Server-owned
+      // indexes and session-scoped LSP managers must remain available for a
+      // continuation.
+      ownedIndex?.close();
+      if (!this.config.lsp) await lsp.shutdown().catch(() => {});
+    }
   }
 
   private async autoLearn(

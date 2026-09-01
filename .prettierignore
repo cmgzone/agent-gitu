@@ -1,0 +1,9 @@
+dist/
+release/
+coverage/
+node_modules/
+.hermes/
+.freebuff/
+tests/agent-evals/results/
+*.out
+*.out.txt

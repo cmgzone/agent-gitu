@@ -1,4 +1,0 @@
-[2m Test Files [22m [1m[32m56 passed[39m[22m[90m (56)[39m
-[2m      Tests [22m [1m[32m683 passed[39m[22m[90m (683)[39m
- M src/memory/memory-store.ts
- M tests/agent-evals/results/memory-eval-results.json

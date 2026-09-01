@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveSpawn } from '../lsp/server-registry.js';
-import { ensureHermesHome } from '../workspace/home.js';
+import { ensureGituHome } from '../workspace/home.js';
 
 export interface McpServerConfig {
   name: string;
@@ -188,7 +188,7 @@ export class McpManager {
 
   /** Workspace-wide MCP layer shared by every project. */
   static globalConfigFile(): string {
-    return path.join(ensureHermesHome().root, 'Mcp', 'mcp.json');
+    return path.join(ensureGituHome().root, 'Mcp', 'mcp.json');
   }
 
   private readLayered(): { config: McpServerConfig; global: boolean }[] | undefined {

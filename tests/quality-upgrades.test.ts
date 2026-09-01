@@ -7,12 +7,14 @@ import {
   buildQualityReviewMessages,
   braceBalance,
   classifyBadReply,
+  collectQualityReviewDiff,
   extractFailureDigest,
   findLastScreenshotUrl,
   parseReviewVerdict,
 } from '../src/agent/gitu.js';
 import { tokenize } from '../src/context/context-engine.js';
 import { CodeIndex } from '../src/context/code-index.js';
+import { gitExec } from '../src/git/git.js';
 import type { LlmMessage } from '../src/llm/llm.js';
 import { Executor } from '../src/executor/executor.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -65,7 +67,7 @@ describe('apply_edit replaceAll', () => {
   });
 });
 
-// ---- quality review verdict parsing (fail-open) --------------------------
+// ---- quality review verdict parsing --------------------------------------
 
 describe('parseReviewVerdict', () => {
   it('flags explicit REVISE with feedback', () => {
@@ -74,10 +76,10 @@ describe('parseReviewVerdict', () => {
     expect(r.feedback).toContain('z-index');
   });
 
-  it('passes on PASS and on garbage (fail-open)', () => {
+  it('passes only on an explicit PASS and reports malformed reviewer output', () => {
     expect(parseReviewVerdict('VERDICT: PASS').verdict).toBe('pass');
-    expect(parseReviewVerdict('the diff looks fine to me').verdict).toBe('pass');
-    expect(parseReviewVerdict('').verdict).toBe('pass');
+    expect(parseReviewVerdict('the diff looks fine to me').verdict).toBe('unavailable');
+    expect(parseReviewVerdict('').verdict).toBe('unavailable');
   });
 });
 
@@ -143,6 +145,21 @@ describe('buildQualityReviewMessages', () => {
     expect(text).toContain('UI LOGIC REVIEW');
     expect(text).toContain('located near the content or object it affects');
     expect(parts.every((p) => p.type !== 'image_url')).toBe(true);
+  });
+
+  it('reviews committed task changes instead of only the clean working-tree diff', async () => {
+    const dir = makeProject();
+    await gitExec(dir, ['init']);
+    await gitExec(dir, ['add', '-A']);
+    await gitExec(dir, ['-c', 'user.name=quality-test', '-c', 'user.email=quality@test.local', 'commit', '-m', 'baseline']);
+    const baseline = (await gitExec(dir, ['rev-parse', 'HEAD'])).trim();
+    writeFileSync(path.join(dir, 'reviewed.ts'), 'export const reviewed = true;\n');
+    await gitExec(dir, ['add', '-A']);
+    await gitExec(dir, ['-c', 'user.name=quality-test', '-c', 'user.email=quality@test.local', 'commit', '-m', 'checkpointed task work']);
+
+    const review = await collectQualityReviewDiff(dir, [{ ref: baseline }]);
+    expect(review.diffStat).toContain('reviewed.ts');
+    expect(review.diffBody).toContain('export const reviewed = true');
   });
 });
 

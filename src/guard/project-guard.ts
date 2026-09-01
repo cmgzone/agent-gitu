@@ -124,7 +124,7 @@ export class ProjectGuard {
     const located = findRepoRoot(cwd);
     if (!located) {
       throw new ProjectGuardError(
-        `No project marker found at or above ${cwd}. Hermes refuses to act without a locked project scope.`,
+        `No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`,
       );
     }
     const { root: locatedRoot, marker } = located;
@@ -241,7 +241,7 @@ export class ProjectGuard {
     const foldedRel = fold(rel);
     if (foldedRel === '.hermes' || foldedRel.startsWith(`.hermes${path.sep}`)) {
       throw new ProjectGuardError(
-        `Path ${absPath} is inside Hermes' private state directory (.hermes) and cannot be touched by tools.`,
+        `Path ${absPath} is inside Agent Gitu's legacy private state directory (.hermes) and cannot be touched by tools.`,
       );
     }
     const top = foldedRel.split(path.sep)[0];

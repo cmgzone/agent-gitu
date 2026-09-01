@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -66,17 +66,47 @@ function platformPackage(): { name: string; target: string } | undefined {
 
 /** Locate the Codex binary bundled by the official SDK. */
 export function codexExecutable(): string | undefined {
-  const configured = process.env['HERMES_CODEX_PATH'];
-  if (configured && existsSync(configured)) return configured;
+  // GITU_CODEX_PATH is the supported override.  Preserve the former Hermes
+  // name for existing installations, but never let an arbitrary existing file
+  // replace the bundled executable: Node otherwise reports a cryptic
+  // `spawn EFTYPE` only when the first model request is made.
+  const configured = process.env['GITU_CODEX_PATH'] ?? process.env['HERMES_CODEX_PATH'];
+  if (configured && isRunnableCodexExecutable(configured)) return configured;
+  return bundledCodexExecutable();
+}
+
+function bundledCodexExecutable(): string | undefined {
   const platform = platformPackage();
   if (!platform) return undefined;
   try {
     const packageRoot = dirname(moduleRequire.resolve(`${platform.name}/package.json`));
     const binary = join(packageRoot, 'vendor', platform.target, 'bin', process.platform === 'win32' ? 'codex.exe' : 'codex');
-    return existsSync(binary) ? binary : undefined;
+    return isRunnableCodexExecutable(binary) ? binary : undefined;
   } catch {
     return undefined;
   }
+}
+
+function isRunnableCodexExecutable(path: string): boolean {
+  try {
+    if (!existsSync(path) || !statSync(path).isFile()) return false;
+    if (process.platform !== 'win32') return true;
+    if (extname(path).toLowerCase() !== '.exe') return false;
+    const fd = openSync(path, 'r');
+    try {
+      const header = Buffer.alloc(2);
+      return readSync(fd, header, 0, header.length, 0) === 2 && header[0] === 0x4d && header[1] === 0x5a;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+function isRuntimeSpawnFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\bspawn (?:EFTYPE|ENOENT|EACCES|EPERM)\b/i.test(message);
 }
 
 class AppServerConnection {
@@ -367,7 +397,8 @@ export interface CodexSubscriptionClientConfig {
 export class CodexSubscriptionClient implements LlmClient {
   readonly name: string;
   lastReasoning?: string;
-  private readonly codex: Codex;
+  private codex: Codex;
+  private executable: string;
   private thread: ReturnType<Codex['startThread']> | undefined;
   private previousMessages: string[] | undefined;
   private previousResponse: string | undefined;
@@ -377,6 +408,7 @@ export class CodexSubscriptionClient implements LlmClient {
     const executable = codexExecutable();
     if (!executable) throw new LlmError('ChatGPT subscription access needs the local Codex runtime. Install or update Codex, then restart Agent Gitu.');
     this.codex = new Codex({ codexPathOverride: executable });
+    this.executable = executable;
     this.name = `chatgpt-subscription:${config.model}`;
   }
 
@@ -388,7 +420,7 @@ export class CodexSubscriptionClient implements LlmClient {
     return this.run(messages, opts, onDelta);
   }
 
-  private async run(messages: LlmMessage[], opts: LlmOptions, onDelta?: LlmDeltaHandler): Promise<string> {
+  private async run(messages: LlmMessage[], opts: LlmOptions, onDelta?: LlmDeltaHandler, allowBundledRuntimeRetry = true): Promise<string> {
     const effort = opts.effort ?? 'medium';
     let send = messages;
     const prior = this.previousMessages;
@@ -442,6 +474,15 @@ export class CodexSubscriptionClient implements LlmClient {
       this.thread = undefined;
       this.previousMessages = undefined;
       this.previousResponse = undefined;
+      const bundled = allowBundledRuntimeRetry && isRuntimeSpawnFailure(err) ? bundledCodexExecutable() : undefined;
+      if (bundled && bundled !== this.executable) {
+        this.codex = new Codex({ codexPathOverride: bundled });
+        this.executable = bundled;
+        return this.run(messages, opts, onDelta, false);
+      }
+      if (isRuntimeSpawnFailure(err)) {
+        throw new LlmError('ChatGPT subscription runtime could not start. Restart Agent Gitu. If it persists, repair or reinstall Agent Gitu (or update Codex); choosing another model will not fix this runtime error.');
+      }
       throw new LlmError(`ChatGPT subscription request failed: ${(err as Error).message}`);
     } finally {
       await prepared.cleanup();

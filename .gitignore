@@ -3,6 +3,16 @@ dist/
 release/
 coverage/
 *.log
+*.out
+*.out.txt
+*out.txt
+*.err.txt
+*-output.txt
+*.pid
+summary.txt
+diff-manifest.txt
 .env
 .hermes/
 .freebuff/
+tests/agent-evals/results/*
+!tests/agent-evals/results/README.md

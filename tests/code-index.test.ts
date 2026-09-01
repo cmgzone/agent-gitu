@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CodeIndex } from '../src/context/code-index.js';
+import { CodeIndex, localImportSpecifiers, resolveLocalImport } from '../src/context/code-index.js';
 
 function tempRepo(): { repo: string; db: string } {
   return {
@@ -138,5 +138,30 @@ describe('CodeIndex', () => {
     const idx2 = new CodeIndex(repo, db);
     expect(idx2.stats().files).toBe(0);
     idx2.close();
+  });
+
+  it('indexes local import edges and returns bounded dependency proximity', () => {
+    const { repo, db } = tempRepo();
+    mkdirSync(path.join(repo, 'src', 'shared'), { recursive: true });
+    writeFileSync(path.join(repo, 'src', 'feature.ts'), "import { helper } from './shared/helper.js';\nexport const feature = helper;");
+    writeFileSync(path.join(repo, 'src', 'shared', 'helper.ts'), "import { format } from './format';\nexport const helper = format;");
+    writeFileSync(path.join(repo, 'src', 'shared', 'format.ts'), 'export const format = 1;');
+
+    const idx = new CodeIndex(repo, db);
+    idx.refresh(repo, []);
+
+    expect(idx.stats().imports).toBe(2);
+    const scores = idx.dependencyScores(['src/feature.ts']);
+    expect(scores.get('src/shared/helper.ts')).toBe(1);
+    expect(scores.get('src/shared/format.ts')).toBeGreaterThan(0);
+    expect(scores.get('src/shared/format.ts')).toBeLessThan(scores.get('src/shared/helper.ts') ?? 1);
+    idx.close();
+  });
+
+  it('keeps import parsing local and resolves TypeScript runtime specifiers safely', () => {
+    expect(localImportSpecifiers("import lib from 'library'; import { x } from './local.js'; const y = require('../util');")).toEqual(['./local.js', '../util']);
+    const files = new Set(['src/local.ts', 'util.ts']);
+    expect(resolveLocalImport('src/main.ts', './local.js', files)).toBe('src/local.ts');
+    expect(resolveLocalImport('src/main.ts', '../../secret', files)).toBeUndefined();
   });
 });

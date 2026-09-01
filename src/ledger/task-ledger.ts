@@ -10,11 +10,14 @@ import type {
   PlanArea,
   PlanDesign,
   PlanStep,
+  PrerequisiteRecoveryRecord,
   ProjectLock,
   TaskFinding,
   TaskLedgerData,
   TaskStatus,
+  SkillLifecycleEvent,
 } from '../types.js';
+import type { SkillIdentity } from '../skills/skills.js';
 
 /** Raw step spec accepted by setPlan/appendPlan; bounded on ingest. */
 export interface PlanStepInput {
@@ -385,13 +388,46 @@ export class TaskLedger {
     this.save();
   }
 
-  addUsedSkill(skill: string): void {
+  /** Persist the exact selected instruction identities alongside legacy names. */
+  setSelectedSkills(skills: SkillIdentity[]): void {
+    const byName = new Map<string, SkillIdentity>();
+    for (const skill of skills) byName.set(skill.name.toLowerCase(), skill);
+    this.data.selectedSkills = [...byName.values()];
+    this.data.activeSkills = this.data.selectedSkills.map((skill) => skill.name);
+    this.save();
+  }
+
+  addUsedSkill(skill: string, identity?: SkillIdentity): void {
     const list = this.data.usedSkills ?? [];
     if (!list.includes(skill)) {
       list.push(skill);
       this.data.usedSkills = list;
-      this.save();
     }
+    if (identity) {
+      const identities = this.data.usedSkillIdentities ?? [];
+      if (!identities.some((entry) => entry.name === identity.name && entry.version === identity.version && entry.contentHash === identity.contentHash && entry.scope === identity.scope)) {
+        identities.push(identity);
+        this.data.usedSkillIdentities = identities;
+      }
+    }
+    this.save();
+  }
+
+  recordSkillEvent(event: Omit<SkillLifecycleEvent, 'createdAt'>): void {
+    const events = this.data.skillEvents ?? [];
+    events.push({ ...event, createdAt: nowIso() });
+    if (events.length > 200) events.splice(0, events.length - 200);
+    this.data.skillEvents = events;
+    this.save();
+  }
+
+  /** Persist prerequisite recovery attempts without ever retaining secret values. */
+  recordPrerequisiteRecovery(event: Omit<PrerequisiteRecoveryRecord, 'createdAt'>): void {
+    const records = this.data.prerequisiteRecoveries ?? [];
+    records.push({ ...event, createdAt: nowIso() });
+    if (records.length > 120) records.splice(0, records.length - 120);
+    this.data.prerequisiteRecoveries = records;
+    this.save();
   }
 
   /** Register a discovered problem. Dedupes on normalized claim text. */

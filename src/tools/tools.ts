@@ -5,7 +5,7 @@ import type { SubAgentJob } from '../agent/subagent.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
-import type { SkillStore } from '../skills/skills.js';
+import type { SkillSelectionContext, SkillStore } from '../skills/skills.js';
 import type { CriterionSpec, ToolResult } from '../types.js';
 import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
@@ -15,6 +15,8 @@ export interface ToolContext {
   guard: ProjectGuard;
   cwd: string;
   skills?: SkillStore;
+  /** Runtime capabilities available to skill requirement validation. */
+  skillContext?: SkillSelectionContext;
   mcp?: McpManager;
   browser?: BrowserBridge;
   lsp?: LspManager;
@@ -28,7 +30,7 @@ export interface DelegateSpec {
   task: string;
   criteria?: (string | CriterionSpec)[];
   /** Wake a paused specialist in its preserved worktree. */
-  resume?: { jobId: string; note?: string };
+  resume?: { jobId: string; note?: string; allowSkillRecovery?: boolean };
 }
 export type DelegateFn = (specs: DelegateSpec[]) => Promise<{ agent: string; task: string; ok: boolean; summary: string }[]>;
 export type BackgroundDelegateFn = (specs: DelegateSpec[]) => SubAgentJob[];
@@ -47,6 +49,7 @@ export const KNOWN_TOOL_NAMES = new Set([
   'list_skills',
   'create_skill',
   'use_skill',
+  'use_skill_reference',
   'run_command',
   'lsp_diagnostics',
   'lsp_definition',
@@ -258,6 +261,19 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
           error: nameErr,
           schema: `use_skill({ name: string })`,
           correction: `Provide the name of an existing skill to use.`,
+        };
+      }
+      return { valid: true };
+    }
+    case 'use_skill_reference': {
+      const skillErr = checkNonEmptyString('skill');
+      const pathErr = checkNonEmptyString('path');
+      if (skillErr || pathErr) {
+        return {
+          valid: false,
+          error: skillErr ?? pathErr ?? 'skill and path are required',
+          schema: `use_skill_reference({ skill: string, path: string })`,
+          correction: `Provide a loaded skill name and a relative path below its references directory.`,
         };
       }
       return { valid: true };
@@ -1025,7 +1041,10 @@ export function toolListSkills(ctx: ToolContext): ToolResult {
   if (!ctx.skills) return fail('skills not available');
   const skills = ctx.skills.list();
   if (skills.length === 0) return { ok: true, output: '(no skills yet)' };
-  return { ok: true, output: skills.map((s) => `${s.name} — ${s.description} (${s.createdBy}${s.scope ? `, ${s.scope}` : ''})`).join('\n') };
+  return {
+    ok: true,
+    output: skills.map((s) => `${s.name}@${String(s.version ?? '1')} — ${s.description} (${s.createdBy}${s.scope ? `, ${s.scope}` : ''}${s.specialists?.length ? `; specialists: ${s.specialists.join(', ')}` : ''})`).join('\n'),
+  };
 }
 
 export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -1050,9 +1069,19 @@ export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown
 
 export function toolUseSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   if (!ctx.skills) return fail('skills not available');
-  const skill = ctx.skills.get(String(params['name'] ?? ''));
-  if (!skill) return fail(`Unknown skill: ${params['name']}. Use list_skills to see existing ones, or create it yourself with create_skill (research with web_fetch first if needed).`);
-  return { ok: true, output: `SKILL ${skill.name}: ${skill.description}\n${skill.instructions}` };
+  const activation = ctx.skills.activate(String(params['name'] ?? ''), ctx.skillContext);
+  if (!activation.ok || !activation.skill || !activation.identity) {
+    return fail(activation.message ?? `Unknown skill: ${params['name']}. Use list_skills to see existing ones, or create it yourself with create_skill.`);
+  }
+  const { skill, identity } = activation;
+  return { ok: true, output: `SKILL ${skill.name}@${identity.version} [${identity.scope}, ${identity.contentHash.slice(0, 12)}]: ${skill.description}\n${skill.instructions}` };
+}
+
+export function toolUseSkillReference(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  if (!ctx.skills) return fail('skills not available');
+  const reference = ctx.skills.readReference(String(params['skill'] ?? ''), String(params['path'] ?? ''));
+  if (!reference.ok) return { ok: false, output: `${reference.code}: ${reference.message}`, errorSignature: 'skill-reference-denied' };
+  return { ok: true, output: `SKILL REFERENCE ${String(params['skill'])}/${String(params['path'])}\n${reference.content}` };
 }
 
 export async function toolWebFetch(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
@@ -1274,7 +1303,11 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
     if (!raw || typeof raw !== 'object') return undefined;
     const jobId = String((raw as Record<string, unknown>)['jobId'] ?? '').trim();
     if (!jobId) return undefined;
-    return { jobId, note: typeof (raw as Record<string, unknown>)['note'] === 'string' ? String((raw as Record<string, unknown>)['note']) : undefined };
+    return {
+      jobId,
+      note: typeof (raw as Record<string, unknown>)['note'] === 'string' ? String((raw as Record<string, unknown>)['note']) : undefined,
+      allowSkillRecovery: (raw as Record<string, unknown>)['allowSkillRecovery'] === true,
+    };
   };
   if (Array.isArray(params['tasks'])) {
     specs = (params['tasks'] as Record<string, unknown>[])

@@ -107,8 +107,8 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
 
     // The task ledger on disk is bound to the git branch.
     const ledgerOnDisk = TaskLedger.load(path.resolve(dir), finished.taskId);
-    expect(ledgerOnDisk?.data.gitBranch).toBe(`hermes/${finished.taskId}`);
-    expect(finished.branch).toBe(`hermes/${finished.taskId}`);
+    expect(ledgerOnDisk?.data.gitBranch).toBe(`gitu/${finished.taskId}`);
+    expect(finished.branch).toBe(`gitu/${finished.taskId}`);
 
     // Restart the server: the session is restored from the store, and the
     // branch is recovered from the ledger.
@@ -116,7 +116,7 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     const second = await startServer(dir, new ScriptedMockLlm([() => JSON.stringify({ action: { type: 'complete', summary: 'acknowledged', chat: true } })]));
     const restored = await fetch(`${second.base}/api/runs/${created.runId}`).then((r) => r.json());
     expect(restored.taskId).toBe(finished.taskId);
-    expect(restored.branch).toBe(`hermes/${finished.taskId}`);
+    expect(restored.branch).toBe(`gitu/${finished.taskId}`);
 
     // The continuation resumes the SAME task — no new task is created.
     const resumed = await fetch(`${second.base}/api/runs/${created.runId}/message`, {
@@ -133,7 +133,7 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     expect(done.status).toBe('completed');
     const afterContinue = await fetch(`${second.base}/api/tasks/${finished.taskId}`).then((r) => r.json());
     expect(afterContinue.taskId).toBe(finished.taskId);
-    expect(afterContinue.gitBranch).toBe(`hermes/${finished.taskId}`);
+    expect(afterContinue.gitBranch).toBe(`gitu/${finished.taskId}`);
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(1);
   }, 60000);
 

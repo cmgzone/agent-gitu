@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { CompletionReport } from '../types.js';
-import { ensureHermesHome, homeEnvOverride } from '../workspace/home.js';
+import { ensureGituHome, homeEnvOverride } from '../workspace/home.js';
 
 export interface SessionUsage {
   inputTokens: number;
@@ -58,7 +58,7 @@ export class SessionStore {
   private readonly db: DatabaseSync;
 
   constructor(file?: string) {
-    const home = ensureHermesHome();
+    const home = ensureGituHome();
     const primary = path.join(home.sessions, 'hermes.db');
     const legacy = path.join(os.homedir(), '.hermes', 'hermes.db');
     let target = file ?? primary;

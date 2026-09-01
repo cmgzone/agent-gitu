@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { ensureHermesHome } from '../workspace/home.js';
+import { ensureGituHome } from '../workspace/home.js';
 
 export interface AgentDef {
   id: string;
@@ -75,7 +75,7 @@ export class AgentStore {
   constructor(private readonly customFilePath?: string) {}
 
   private filePath(): string {
-    return this.customFilePath ?? path.join(ensureHermesHome().settings, 'agents.json');
+    return this.customFilePath ?? path.join(ensureGituHome().settings, 'agents.json');
   }
 
   /** Only the user-authored entries on disk (no built-ins). */

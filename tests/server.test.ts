@@ -34,6 +34,8 @@ describe('HermesServer', () => {
     expect(() => new Function(js)).not.toThrow();
     expect(UI_HTML).toContain("sess.chatish = session.mode === 'chat';");
     expect(UI_HTML).not.toContain('looksChat');
+    expect(UI_HTML).toContain('Save API key, validate, and resume');
+    expect(UI_HTML).toContain('Review or change connection details');
   });
 
   it('keeps event ids monotonic when non-persisted stream deltas leave gaps', () => {
@@ -300,7 +302,7 @@ describe('HermesServer', () => {
       return s.status !== 'running' ? s : undefined;
     });
     expect(done.status).toBe('completed');
-    const taskBranch = `hermes/${done.taskId}`;
+    const taskBranch = `gitu/${done.taskId}`;
     expect(g('rev-parse --abbrev-ref HEAD')).toBe(taskBranch);
 
     // Starting another task moves the shared checkout off this session's

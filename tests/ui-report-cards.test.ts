@@ -74,6 +74,8 @@ describe('UI — narration structuring & technical disclosures', () => {
   it('hides all technical evidence behind one collapsed disclosure', () => {
     expect(UI_HTML).toContain('<b>Technical evidence</b>');
     expect(UI_HTML).toContain('telemetryGridHtml(');
+    expect(UI_HTML).toContain('qualityMetricsHtml(');
+    expect(UI_HTML).toContain('tokens / verified criterion');
   });
 
   it('rephrases machine counters in the progress header', () => {

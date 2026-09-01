@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { FileRole } from '../types.js';
-import { ensureHermesHome } from '../workspace/home.js';
+import { ensureGituHome } from '../workspace/home.js';
 import { classifyRole, isContextConfigDotfile, tokenize } from './context-engine.js';
 import { EMBED_BATCH, EMBED_MAX_CHARS, cosineSimilarity, decodeVector, type Embedder } from './embeddings.js';
 
@@ -10,7 +10,38 @@ const MAX_INDEXED_FILE_BYTES = 200 * 1024;
 const MAX_WALK_DEPTH = 8;
 const MAX_INDEXED_FILES = 2000;
 /** Bump when tokenize() changes shape so existing indexes rebuild once. */
-const TOKENIZER_VERSION = 2;
+const TOKENIZER_VERSION = 3;
+const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go'];
+
+/** Extract only static, relative module specifiers. Package imports and
+ * dynamic expressions are deliberately not treated as repository edges. */
+export function localImportSpecifiers(source: string): string[] {
+  const specs = new Set<string>();
+  const add = (value: string): void => {
+    const spec = value.trim();
+    if (spec.startsWith('./') || spec.startsWith('../')) specs.add(spec);
+  };
+  const jsRe = /(?:\b(?:import|export)\s+(?:[^'";]*?\s+from\s+)?|\brequire\s*\(|\bimport\s*\()(['"])([^'"\r\n]+)\1/g;
+  for (const match of source.matchAll(jsRe)) add(match[2] ?? '');
+  const pyRe = /^\s*from\s+(\.{1,}[A-Za-z0-9_./]*)\s+import\b/gm;
+  for (const match of source.matchAll(pyRe)) add(match[1] ?? '');
+  return [...specs];
+}
+
+/** Resolve a relative import only when it maps to another indexed source. */
+export function resolveLocalImport(sourcePath: string, specifier: string, files: Set<string>): string | undefined {
+  if (!specifier.startsWith('.')) return undefined;
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(sourcePath), specifier));
+  if (!base || base === '.' || base === '..' || base.startsWith('../')) return undefined;
+  const candidates = new Set<string>([base]);
+  if (/\.(?:[cm]?js)$/i.test(base)) candidates.add(base.replace(/\.(?:[cm]?js)$/i, '.ts'));
+  for (const ext of SOURCE_EXTENSIONS) {
+    candidates.add(`${base}${ext}`);
+    candidates.add(`${base}/index${ext}`);
+  }
+  for (const candidate of candidates) if (files.has(candidate)) return candidate;
+  return undefined;
+}
 
 export interface IndexedFile {
   path: string;
@@ -27,7 +58,7 @@ export interface RefreshStats {
 }
 
 export function defaultIndexPath(): string {
-  return path.join(ensureHermesHome().cache, 'code-index.db');
+  return path.join(ensureGituHome().cache, 'code-index.db');
 }
 
 /**
@@ -83,21 +114,28 @@ export class CodeIndex {
         vec BLOB NOT NULL,
         PRIMARY KEY (repo, path)
       );
+      CREATE TABLE IF NOT EXISTS imports (
+        repo TEXT NOT NULL,
+        source TEXT NOT NULL,
+        target TEXT NOT NULL,
+        PRIMARY KEY (repo, source, target)
+      );
+      CREATE INDEX IF NOT EXISTS idx_imports_source ON imports(repo, source);
+      CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(repo, target);
     `);
     if (this.rebuildTerms) {
       // Clear legacy rows so queries never mix token schemes (after DDL so a
       // fresh database has the tables to clean).
       this.db.prepare('DELETE FROM terms WHERE repo = ?').run(this.repo);
       this.db.prepare('DELETE FROM files WHERE repo = ?').run(this.repo);
+      this.db.prepare('DELETE FROM imports WHERE repo = ?').run(this.repo);
     }
     this.pruneOrphans();
   }
 
   /** Drop rows for repos whose directory no longer exists (deleted projects, dead temp dirs). */
   private pruneOrphans(): void {
-    const repos = this.db
-      .prepare('SELECT DISTINCT repo FROM files')
-      .all() as { repo: string }[];
+    const repos = this.db.prepare('SELECT DISTINCT repo FROM files').all() as { repo: string }[];
     for (const { repo } of repos) {
       let exists = false;
       try {
@@ -109,6 +147,7 @@ export class CodeIndex {
       this.db.prepare('DELETE FROM terms WHERE repo = ?').run(repo);
       this.db.prepare('DELETE FROM files WHERE repo = ?').run(repo);
       this.db.prepare('DELETE FROM vectors WHERE repo = ?').run(repo);
+      this.db.prepare('DELETE FROM imports WHERE repo = ?').run(repo);
     }
   }
 
@@ -163,23 +202,21 @@ export class CodeIndex {
     walk(root, 0);
 
     const existing = new Map<string, { size: number; mtimeMs: number }>();
-    const rows = this.db
-      .prepare('SELECT path, size, mtime_ms FROM files WHERE repo = ?')
-      .all(this.repo) as { path: string; size: number; mtime_ms: number }[];
+    const rows = this.db.prepare('SELECT path, size, mtime_ms FROM files WHERE repo = ?').all(this.repo) as { path: string; size: number; mtime_ms: number }[];
     for (const r of rows) existing.set(r.path, { size: r.size, mtimeMs: r.mtime_ms });
 
     const stats: RefreshStats = { scanned: walked.length, added: 0, updated: 0, removed: 0 };
     const seen = new Set(walked.map((f) => f.rel));
 
-    const upsertFile = this.db.prepare(
-      'INSERT OR REPLACE INTO files (repo, path, role, size, mtime_ms) VALUES (?, ?, ?, ?, ?)',
-    );
+    const upsertFile = this.db.prepare('INSERT OR REPLACE INTO files (repo, path, role, size, mtime_ms) VALUES (?, ?, ?, ?, ?)');
     const deleteTerms = this.db.prepare('DELETE FROM terms WHERE repo = ? AND path = ?');
-    const insertTerm = this.db.prepare(
-      'INSERT OR REPLACE INTO terms (repo, term, path, count) VALUES (?, ?, ?, ?)',
-    );
+    const insertTerm = this.db.prepare('INSERT OR REPLACE INTO terms (repo, term, path, count) VALUES (?, ?, ?, ?)');
     const deleteFile = this.db.prepare('DELETE FROM files WHERE repo = ? AND path = ?');
     const deleteVector = this.db.prepare('DELETE FROM vectors WHERE repo = ? AND path = ?');
+    const deleteImportsForFile = this.db.prepare('DELETE FROM imports WHERE repo = ? AND (source = ? OR target = ?)');
+    const deleteImportsFrom = this.db.prepare('DELETE FROM imports WHERE repo = ? AND source = ?');
+    const insertImport = this.db.prepare('INSERT OR REPLACE INTO imports (repo, source, target) VALUES (?, ?, ?)');
+    const changedSources = new Map<string, string>();
 
     this.db.exec('BEGIN');
     try {
@@ -190,8 +227,10 @@ export class CodeIndex {
         if (!this.rebuildTerms && prev && prev.size === f.size && prev.mtimeMs === f.mtimeMs) continue;
 
         const counts = new Map<string, number>();
+        let content = '';
         try {
-          for (const t of tokenize(readFileSync(path.join(root, f.rel), 'utf8'))) {
+          content = readFileSync(path.join(root, f.rel), 'utf8');
+          for (const t of tokenize(content)) {
             counts.set(t, (counts.get(t) ?? 0) + 1);
           }
         } catch {
@@ -200,6 +239,7 @@ export class CodeIndex {
         deleteTerms.run(this.repo, f.rel);
         for (const [term, count] of counts) insertTerm.run(this.repo, term, f.rel, count);
         upsertFile.run(this.repo, f.rel, f.role, f.size, f.mtimeMs);
+        changedSources.set(f.rel, content);
         if (prev) stats.updated += 1;
         else stats.added += 1;
       }
@@ -209,7 +249,19 @@ export class CodeIndex {
         deleteTerms.run(this.repo, stale);
         deleteFile.run(this.repo, stale);
         deleteVector.run(this.repo, stale);
+        deleteImportsForFile.run(this.repo, stale, stale);
         stats.removed += 1;
+      }
+
+      // Graph edges are updated after the full current file set is known, so
+      // extensionless and TypeScript `.js` imports resolve even when their
+      // target was created in this same refresh.
+      for (const [source, content] of changedSources) {
+        deleteImportsFrom.run(this.repo, source);
+        for (const specifier of localImportSpecifiers(content)) {
+          const target = resolveLocalImport(source, specifier, seen);
+          if (target && target !== source) insertImport.run(this.repo, source, target);
+        }
       }
 
       this.db.exec('COMMIT');
@@ -228,9 +280,7 @@ export class CodeIndex {
 
   /** All indexed files for this repo (path, role, size, mtime). */
   fileList(): IndexedFile[] {
-    const rows = this.db
-      .prepare('SELECT path, role, size, mtime_ms FROM files WHERE repo = ?')
-      .all(this.repo) as { path: string; role: string; size: number; mtime_ms: number }[];
+    const rows = this.db.prepare('SELECT path, role, size, mtime_ms FROM files WHERE repo = ?').all(this.repo) as { path: string; role: string; size: number; mtime_ms: number }[];
     return rows.map((r) => ({ path: r.path, role: r.role as FileRole, size: r.size, mtimeMs: r.mtime_ms }));
   }
 
@@ -243,9 +293,7 @@ export class CodeIndex {
     const out = new Map<string, Set<string>>();
     if (terms.length === 0) return out;
     const placeholders = terms.map(() => '?').join(', ');
-    const rows = this.db
-      .prepare(`SELECT term, path FROM terms WHERE repo = ? AND term IN (${placeholders})`)
-      .all(this.repo, ...terms) as { term: string; path: string }[];
+    const rows = this.db.prepare(`SELECT term, path FROM terms WHERE repo = ? AND term IN (${placeholders})`).all(this.repo, ...terms) as { term: string; path: string }[];
     for (const row of rows) {
       let set = out.get(row.path);
       if (!set) {
@@ -271,9 +319,10 @@ export class CodeIndex {
     const total = Math.max(1, nRow.n);
     // Document frequency for the queried terms (others are unseen → max IDF).
     const ph = terms.map(() => '?').join(', ');
-    const dfRows = this.db
-      .prepare(`SELECT term, COUNT(DISTINCT path) AS df FROM terms WHERE repo = ? AND term IN (${ph}) GROUP BY term`)
-      .all(this.repo, ...terms) as { term: string; df: number }[];
+    const dfRows = this.db.prepare(`SELECT term, COUNT(DISTINCT path) AS df FROM terms WHERE repo = ? AND term IN (${ph}) GROUP BY term`).all(this.repo, ...terms) as {
+      term: string;
+      df: number;
+    }[];
     const idf = new Map<string, number>();
     let denom = 0;
     for (const t of terms) {
@@ -283,9 +332,7 @@ export class CodeIndex {
       denom += w;
     }
     if (denom <= 0) return out;
-    const rows = this.db
-      .prepare(`SELECT term, path FROM terms WHERE repo = ? AND term IN (${ph})`)
-      .all(this.repo, ...terms) as { term: string; path: string }[];
+    const rows = this.db.prepare(`SELECT term, path FROM terms WHERE repo = ? AND term IN (${ph})`).all(this.repo, ...terms) as { term: string; path: string }[];
     const weighted = new Map<string, number>();
     for (const row of rows) {
       weighted.set(row.path, (weighted.get(row.path) ?? 0) + (idf.get(row.term) ?? 0));
@@ -295,19 +342,54 @@ export class CodeIndex {
   }
 
   /**
+   * Score local source files connected to the given roots in the import graph.
+   * Direct callers/callees get the strongest signal and two-hop neighbours a
+   * smaller one. The result is a retrieval tie-breaker, never a substitute for
+   * lexical relevance.
+   */
+  dependencyScores(seedPaths: Iterable<string>, maxDepth = 2): Map<string, number> {
+    const depthLimit = Math.max(1, Math.min(3, maxDepth));
+    const roots = [...new Set(seedPaths)].filter(Boolean);
+    if (roots.length === 0) return new Map();
+    const out = new Map<string, number>();
+    const seenDepth = new Map<string, number>();
+    let frontier = roots;
+    for (const root of roots) seenDepth.set(root, 0);
+    for (let depth = 1; depth <= depthLimit && frontier.length > 0; depth += 1) {
+      const placeholders = frontier.map(() => '?').join(', ');
+      const forward = this.db.prepare(`SELECT source, target FROM imports WHERE repo = ? AND source IN (${placeholders})`).all(this.repo, ...frontier) as {
+        source: string;
+        target: string;
+      }[];
+      const reverse = this.db.prepare(`SELECT source, target FROM imports WHERE repo = ? AND target IN (${placeholders})`).all(this.repo, ...frontier) as {
+        source: string;
+        target: string;
+      }[];
+      const next = new Set<string>();
+      const add = (file: string, directionalWeight: number): void => {
+        if (seenDepth.has(file)) return;
+        seenDepth.set(file, depth);
+        next.add(file);
+        const distanceWeight = depth === 1 ? 1 : 0.55;
+        out.set(file, Math.max(out.get(file) ?? 0, directionalWeight * distanceWeight));
+      };
+      for (const edge of forward) add(edge.target, 1);
+      for (const edge of reverse) add(edge.source, 0.85);
+      frontier = [...next];
+    }
+    return out;
+  }
+
+  /**
    * Ensure every indexed file has a fresh embedding vector for this model.
    * Embeds at most `budget` files per call (the rest catch up on later runs)
    * so a first run never stalls on a huge repo. Returns how many were embedded.
    */
   async updateVectors(embedder: Embedder, budget = 24): Promise<number> {
-    const files = this.db
-      .prepare('SELECT path, mtime_ms FROM files WHERE repo = ?')
-      .all(this.repo) as { path: string; mtime_ms: number }[];
+    const files = this.db.prepare('SELECT path, mtime_ms FROM files WHERE repo = ?').all(this.repo) as { path: string; mtime_ms: number }[];
     if (files.length === 0) return 0;
     const existing = new Map<string, { mtimeMs: number; model: string }>();
-    const rows = this.db
-      .prepare('SELECT path, mtime_ms, model FROM vectors WHERE repo = ?')
-      .all(this.repo) as { path: string; mtime_ms: number; model: string }[];
+    const rows = this.db.prepare('SELECT path, mtime_ms, model FROM vectors WHERE repo = ?').all(this.repo) as { path: string; mtime_ms: number; model: string }[];
     for (const r of rows) existing.set(r.path, { mtimeMs: r.mtime_ms, model: r.model });
 
     const stale: { path: string; mtime_ms: number }[] = [];
@@ -330,9 +412,7 @@ export class CodeIndex {
         return `${f.path}\n${body}`;
       });
       const vectors = await embedder.embed(texts);
-      const upsert = this.db.prepare(
-        'INSERT OR REPLACE INTO vectors (repo, path, model, mtime_ms, vec) VALUES (?, ?, ?, ?, ?)',
-      );
+      const upsert = this.db.prepare('INSERT OR REPLACE INTO vectors (repo, path, model, mtime_ms, vec) VALUES (?, ?, ?, ?, ?)');
       this.db.exec('BEGIN');
       try {
         for (let j = 0; j < batch.length; j++) {
@@ -351,9 +431,7 @@ export class CodeIndex {
 
   /** Cosine similarity of the query against every stored vector, normalized to 0..1. */
   async semanticSearch(embedder: Embedder, query: string): Promise<Map<string, number>> {
-    const rows = this.db
-      .prepare('SELECT path, vec FROM vectors WHERE repo = ? AND model = ?')
-      .all(this.repo, embedder.model) as { path: string; vec: Uint8Array }[];
+    const rows = this.db.prepare('SELECT path, vec FROM vectors WHERE repo = ? AND model = ?').all(this.repo, embedder.model) as { path: string; vec: Uint8Array }[];
     const out = new Map<string, number>();
     if (rows.length === 0) return out;
     const [qv] = await embedder.embed([query]);
@@ -366,10 +444,11 @@ export class CodeIndex {
     return out;
   }
 
-  stats(): { files: number; terms: number } {
+  stats(): { files: number; terms: number; imports: number } {
     const f = this.db.prepare('SELECT COUNT(*) AS n FROM files WHERE repo = ?').get(this.repo) as { n: number };
     const t = this.db.prepare('SELECT COUNT(*) AS n FROM terms WHERE repo = ?').get(this.repo) as { n: number };
-    return { files: f.n, terms: t.n };
+    const i = this.db.prepare('SELECT COUNT(*) AS n FROM imports WHERE repo = ?').get(this.repo) as { n: number };
+    return { files: f.n, terms: t.n, imports: i.n };
   }
 
   /**

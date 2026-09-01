@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
@@ -18,11 +18,14 @@ import {
   captureGitCheckpoint,
   delegatedTaskHash,
   reconcileSpecialistCheckpoint,
+  reconcileSpecialistSkillState,
   SpecialistCheckpointStore,
   type SpecialistCheckpoint,
   type SpecialistResumeState,
+  type SpecialistSkillState,
   type SpecialistStopReason,
 } from './specialist-checkpoints.js';
+import { SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { AcceptanceCriterion, CriterionSpec, MemoryType } from '../types.js';
 
 export interface SubAgentSpec {
@@ -31,7 +34,7 @@ export interface SubAgentSpec {
   criteria?: (string | CriterionSpec)[];
   /** Continue a previously PAUSED specialist in its preserved worktree,
    *  picking up where it left off instead of starting over. */
-  resume?: { jobId: string; note?: string };
+  resume?: { jobId: string; note?: string; /** Explicit policy approval to continue after selected skill drift. */ allowSkillRecovery?: boolean };
 }
 
 export type SpecialistStatus = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BLOCKED' | 'FAILED' | 'CANCELLED';
@@ -61,6 +64,8 @@ export interface SubAgentResult {
   executionAttempt?: number;
   /** Truthful Git-verified recovery state, when this job was resumed or paused. */
   resumeState?: SpecialistResumeState;
+  /** Exact selected-skill identity check made during checkpoint recovery. */
+  skillState?: SpecialistSkillState;
   stopReason?: SpecialistStopReason;
 }
 
@@ -132,6 +137,7 @@ interface InternalSubAgentJob extends SubAgentJob {
 
 /** A paused specialist's preserved worktree, resumable by jobId. */
 interface RetainedWorktree {
+  logicalJobId?: string;
   root: string;
   branch: string;
   agent: string;
@@ -139,6 +145,14 @@ interface RetainedWorktree {
   summary: string;
   filesChanged: string[];
   createdAt: number;
+  /** Emergency records preserve the Git facts needed for restart recovery. */
+  baseCommit?: string;
+  headCommit?: string;
+  workspaceFingerprint?: string;
+  currentTurn?: number;
+  selectedSkills?: SkillIdentity[];
+  stopReason?: SpecialistStopReason;
+  resumeStatus?: SpecialistResumeState;
 }
 
 interface Worktree {
@@ -249,6 +263,9 @@ Tools:
 - apply_edit      {"path":"src/x.ts","oldString":"exact text","newString":"replacement"}
 - list_files      {"path":"src"}
 - search_files    {"pattern":"regex","path":"src"}
+- list_skills     {}
+- use_skill       {"name":"skill-name"}
+- use_skill_reference {"skill":"skill-name","path":"references/file.md"}
 - run_command     {"command":"npm test"}
 - claim_criterion {"criterionId":"ac-1","evidenceId":"ev-..."}
 
@@ -266,6 +283,8 @@ export class SubAgentRunner {
   private running = 0;
   private nextJob = 1;
   private readonly checkpointStores = new Map<string, SpecialistCheckpointStore>();
+  /** Jobs protected by the file-backed recovery path in this runner. */
+  private readonly emergencyRecoveries = new Set<string>();
 
   constructor(private readonly deps: SubAgentRunnerDeps) {}
 
@@ -315,7 +334,7 @@ export class SubAgentRunner {
     const live = [...this.jobs.values()]
       .filter((job) => !wanted || wanted.has(job.id))
       .map((job) => this.snapshot(job));
-    // A runner is intentionally short-lived (one Hermes execution), while a
+    // A runner is intentionally short-lived (one Gitu execution), while a
     // worktree can outlive an app restart. Expose durable paused/interrupted
     // attempts through agent_status so the next parent agent can resume them
     // instead of silently starting duplicate work.
@@ -394,40 +413,117 @@ export class SubAgentRunner {
     return Math.max(1, Math.min(MAX_CONCURRENT_SUBAGENTS, Math.floor(requested)));
   }
 
-  /** SQLite is the durable checkpoint authority. Import the legacy JSON index
-   * once so existing paused worktrees remain safely discoverable after upgrade. */
+  /** SQLite is the durable checkpoint authority. Import legacy and emergency
+   * file records once so a transient SQLite failure never strands a worktree. */
   private checkpointStore(repoRoot: string): SpecialistCheckpointStore {
     const existing = this.checkpointStores.get(repoRoot);
     if (existing) return existing;
     const store = new SpecialistCheckpointStore(repoRoot);
     this.checkpointStores.set(repoRoot, store);
-    for (const [logicalJobId, legacy] of Object.entries(this.loadPausedIndex(repoRoot))) {
-      if (store.get(logicalJobId)) continue;
+    const retained = { ...this.loadPausedIndex(repoRoot), ...this.loadEmergencyRecoveries(repoRoot) };
+    for (const [logicalJobId, legacy] of Object.entries(retained)) {
+      const prior = store.get(logicalJobId);
+      // A file-backed emergency record is created only after a database write
+      // failed. It must win over an older, incomplete database row.
+      const legacyIsNewer = (legacy.createdAt || 0) >= Date.parse(prior?.updatedAt ?? '') || Boolean(legacy.workspaceFingerprint);
+      if (prior && !legacyIsNewer) continue;
       const now = new Date(legacy.createdAt || Date.now()).toISOString();
-      // Legacy records never contained a Git fingerprint. Preserve them as
-      // context-only metadata; resume will fail closed if they claim files
-      // that Git cannot prove still exist.
       store.upsert({
         logicalJobId,
         executionJobId: logicalJobId,
-        executionAttempt: 1,
+        executionAttempt: prior?.executionAttempt ?? 1,
         specialistType: legacy.agent,
         delegatedTask: legacy.task,
         delegatedTaskHash: delegatedTaskHash(legacy.task),
         repositoryPath: repoRoot,
         worktreePath: legacy.root,
         branch: legacy.branch,
-        currentTurn: 0,
+        currentTurn: legacy.currentTurn ?? 0,
         changedFiles: legacy.filesChanged,
+        selectedSkills: legacy.selectedSkills ?? prior?.selectedSkills ?? [],
+        baseCommit: legacy.baseCommit,
+        headCommit: legacy.headCommit,
+        workspaceFingerprint: legacy.workspaceFingerprint,
         checkpointedAt: now,
-        resumeStatus: legacy.filesChanged.length ? 'RESUME_CHECKPOINT_DIVERGED' : 'RESUME_CONTEXT_ONLY',
+        resumeStatus: legacy.resumeStatus ?? (legacy.filesChanged.length ? 'RESUME_CHECKPOINT_DIVERGED' : 'RESUME_CONTEXT_ONLY'),
+        stopReason: legacy.stopReason,
         summary: legacy.summary,
         resumable: true,
-        createdAt: now,
+        createdAt: prior?.createdAt ?? now,
         updatedAt: now,
       });
     }
     return store;
+  }
+
+  /**
+   * SQLite is normally the checkpoint authority. If it is busy or damaged at
+   * the exact instant progress is recorded, put a complete per-job recovery
+   * record beside the repository instead of leaving an invisible worktree.
+   * The next healthy runner imports this record before a resume is attempted.
+   */
+  private async persistEmergencyRecovery(input: {
+    repoRoot: string;
+    job: InternalSubAgentJob;
+    wt: Worktree;
+    currentTurn: number;
+    filesChanged: Iterable<string>;
+    selectedSkills: SkillIdentity[];
+    summary: string;
+    stopReason?: SpecialistStopReason;
+  }): Promise<RetainedWorktree> {
+    const baseCommit = (await gitExec(input.repoRoot, ['merge-base', input.wt.branch, 'HEAD']).catch(() => '')).trim() || undefined;
+    const git = await captureGitCheckpoint(input.wt.root, baseCommit).catch(() => ({ baseCommit, headCommit: undefined, workspaceFingerprint: undefined, changedFiles: [] as string[] }));
+    const filesChanged = git.changedFiles.length > 0
+      ? git.changedFiles
+      : [...new Set([...input.filesChanged].map((file) => file.replace(/\\/g, '/').trim()).filter(Boolean))].sort();
+    const record: RetainedWorktree = {
+      logicalJobId: input.job.logicalJobId,
+      root: input.wt.root,
+      branch: input.wt.branch,
+      agent: input.job.agent,
+      task: input.job.task,
+      summary: input.summary,
+      filesChanged,
+      createdAt: Date.now(),
+      baseCommit: git.baseCommit ?? baseCommit,
+      headCommit: git.headCommit,
+      workspaceFingerprint: git.workspaceFingerprint,
+      currentTurn: input.currentTurn,
+      selectedSkills: input.selectedSkills,
+      stopReason: input.stopReason,
+      resumeStatus: filesChanged.length > 0 && git.workspaceFingerprint ? 'RESUME_WITH_CHANGES' : 'RESUME_CONTEXT_ONLY',
+    };
+    const target = this.emergencyRecoveryPath(input.repoRoot, input.job.logicalJobId!);
+    mkdirSync(path.dirname(target), { recursive: true });
+    const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(temporary, JSON.stringify(record), 'utf8');
+    renameSync(temporary, target);
+    this.emergencyRecoveries.add(input.job.logicalJobId!);
+    return record;
+  }
+
+  private async persistEmergencyRecoverySafely(
+    input: Parameters<SubAgentRunner['persistEmergencyRecovery']>[0],
+    emit: (text: string) => void,
+    name: string,
+    label: string,
+  ): Promise<RetainedWorktree | undefined> {
+    try {
+      return await this.persistEmergencyRecovery(input);
+    } catch (err) {
+      emit(`subagent ${name} — ${label} and emergency recovery both failed: ${(err as Error).message}`);
+      return undefined;
+    }
+  }
+
+  private hasResumableRecovery(repoRoot: string, logicalJobId: string): boolean {
+    if (this.emergencyRecoveries.has(logicalJobId)) return true;
+    try {
+      return Boolean(this.checkpointStore(repoRoot).get(logicalJobId)?.resumable);
+    } catch {
+      return false;
+    }
   }
 
   /** Capture Git facts and commit metadata together after every durable unit
@@ -443,38 +539,52 @@ export class SubAgentRunner {
     summary?: string;
     stopReason?: SpecialistStopReason;
     resumable: boolean;
+    selectedSkills?: SkillIdentity[];
   }): Promise<SpecialistCheckpoint> {
-    const store = this.checkpointStore(input.repoRoot);
-    const prior = store.get(input.job.logicalJobId!);
-    const git = await captureGitCheckpoint(input.wt.root, prior?.baseCommit);
-    const isIsolatedGit = isGitRepo(input.wt.root);
-    const changedFiles = isIsolatedGit ? git.changedFiles : [...input.filesChanged];
-    const hasVerifiedChanges = changedFiles.length > 0 && Boolean(git.workspaceFingerprint);
-    const now = new Date().toISOString();
-    return store.upsert({
-      logicalJobId: input.job.logicalJobId!,
-      executionJobId: input.job.id,
-      executionAttempt: input.job.executionAttempt ?? 1,
-      specialistType: input.job.agent,
-      delegatedTask: input.job.task,
-      delegatedTaskHash: delegatedTaskHash(input.job.task),
-      repositoryPath: input.repoRoot,
-      worktreePath: input.wt.root,
-      branch: input.wt.branch,
-      currentTurn: input.currentTurn,
-      changedFiles,
-      baseCommit: git.baseCommit ?? prior?.baseCommit,
-      headCommit: git.headCommit ?? prior?.headCommit,
-      workspaceFingerprint: git.workspaceFingerprint ?? prior?.workspaceFingerprint,
-      checkpointedAt: now,
-      lastSuccessfulAction: input.lastSuccessfulAction ?? prior?.lastSuccessfulAction,
-      resumeStatus: hasVerifiedChanges ? 'RESUME_WITH_CHANGES' : 'RESUME_CONTEXT_ONLY',
-      stopReason: input.stopReason,
-      summary: input.summary ?? prior?.summary,
-      resumable: input.resumable,
-      createdAt: prior?.createdAt ?? now,
-      updatedAt: now,
-    });
+    let failure: unknown;
+    // Database locks can occur while a previous desktop process is closing.
+    // Brief retries cover that ordinary race; the caller writes an emergency
+    // recovery record if all attempts still fail.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const store = this.checkpointStore(input.repoRoot);
+        const prior = store.get(input.job.logicalJobId!);
+        const git = await captureGitCheckpoint(input.wt.root, prior?.baseCommit);
+        const isIsolatedGit = isGitRepo(input.wt.root);
+        const changedFiles = isIsolatedGit ? git.changedFiles : [...input.filesChanged];
+        const hasVerifiedChanges = changedFiles.length > 0 && Boolean(git.workspaceFingerprint);
+        const now = new Date().toISOString();
+        return store.upsert({
+          logicalJobId: input.job.logicalJobId!,
+          executionJobId: input.job.id,
+          executionAttempt: input.job.executionAttempt ?? 1,
+          specialistType: input.job.agent,
+          delegatedTask: input.job.task,
+          delegatedTaskHash: delegatedTaskHash(input.job.task),
+          repositoryPath: input.repoRoot,
+          worktreePath: input.wt.root,
+          branch: input.wt.branch,
+          currentTurn: input.currentTurn,
+          changedFiles,
+          selectedSkills: input.selectedSkills ?? prior?.selectedSkills ?? [],
+          baseCommit: git.baseCommit ?? prior?.baseCommit,
+          headCommit: git.headCommit ?? prior?.headCommit,
+          workspaceFingerprint: git.workspaceFingerprint ?? prior?.workspaceFingerprint,
+          checkpointedAt: now,
+          lastSuccessfulAction: input.lastSuccessfulAction ?? prior?.lastSuccessfulAction,
+          resumeStatus: hasVerifiedChanges ? 'RESUME_WITH_CHANGES' : 'RESUME_CONTEXT_ONLY',
+          stopReason: input.stopReason,
+          summary: input.summary ?? prior?.summary,
+          resumable: input.resumable,
+          createdAt: prior?.createdAt ?? now,
+          updatedAt: now,
+        });
+      } catch (err) {
+        failure = err;
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+      }
+    }
+    throw failure instanceof Error ? failure : new Error(String(failure ?? 'checkpoint persistence failed'));
   }
 
   private classifyStopReason(err: unknown, cancelled: boolean): SpecialistStopReason {
@@ -585,6 +695,15 @@ export class SubAgentRunner {
     const repoRoot = ProjectGuard.detect(this.deps.cwd).lock.repoRoot;
     const logicalJobId = job.logicalJobId ?? job.id;
     const checkpointStore = this.checkpointStore(repoRoot);
+    const specialistSkillContext = {
+      task,
+      specialist: name,
+      // Specialist worktrees intentionally do not inherit browser-only
+      // capabilities. Skills that require them fail closed instead.
+      availableTools: [...KNOWN_TOOL_NAMES],
+    };
+    let selectedSkills: SkillIdentity[] = [];
+    let skillState: SpecialistSkillState | undefined;
     // Resume mode: adopt the paused attempt's preserved worktree instead of
     // starting from a fresh copy — nothing gets redone.
     const resumeKey = job.spec.resume?.jobId;
@@ -600,24 +719,62 @@ export class SubAgentRunner {
         const checkpoint = checkpointStore.get(resumeKey);
         const taskMatches = checkpoint?.delegatedTaskHash === delegatedTaskHash(task);
         const agentMatches = checkpoint?.specialistType === name;
+        if (checkpoint && taskMatches && agentMatches) {
+          skillState = reconcileSpecialistSkillState(checkpoint, SkillStore.forProject(checkpoint.worktreePath));
+          if (skillState !== 'SKILL_STATE_MATCH' && !job.spec.resume?.allowSkillRecovery) {
+            const message = `${skillState}: the checkpoint's selected skill instructions are no longer identical. Recovery requires explicit allowSkillRecovery policy and will not claim identical instructions.`;
+            checkpointStore.upsert({
+              ...checkpoint,
+              executionJobId: job.id,
+              executionAttempt: job.executionAttempt ?? checkpoint.executionAttempt + 1,
+              summary: message,
+              resumable: true,
+            });
+            emit(`subagent ${name} [blocked] ${job.id} — ${message}`);
+            return {
+              agent: name,
+              task,
+              ok: false,
+              status: 'BLOCKED',
+              summary: message,
+              turnsUsed: 0,
+              turnsBudgeted: this.deps.baseTurns ?? DEFAULT_BASE_TURNS,
+              filesInspected: [],
+              filesChanged: [],
+              evidenceIds: [],
+              blockers: [message],
+              recommendation: 'Restore the original selected skill files, or explicitly approve safe skill recovery for this specialist.',
+              resumableJobId: logicalJobId,
+              logicalJobId,
+              executionAttempt: job.executionAttempt,
+              skillState,
+              stopReason: 'process_interrupted',
+            };
+          }
+        }
         resumeState = checkpoint && taskMatches && agentMatches
           ? await reconcileSpecialistCheckpoint(checkpoint)
           : checkpoint
             ? 'RESUME_CHECKPOINT_DIVERGED'
             : 'RESUME_CHECKPOINT_MISSING';
-        if (resumeState === 'RESUME_WITH_CHANGES' || resumeState === 'RESUME_CONTEXT_ONLY') {
+        if (resumeState === 'RESUME_WITH_CHANGES' || resumeState === 'RESUME_WITH_UNCHECKPOINTED_CHANGES' || resumeState === 'RESUME_CONTEXT_ONLY') {
+          const recoveredFiles = resumeState === 'RESUME_WITH_UNCHECKPOINTED_CHANGES'
+            ? (await captureGitCheckpoint(checkpoint!.worktreePath, checkpoint!.baseCommit)).changedFiles
+            : checkpoint!.changedFiles;
           resumedFrom = {
             root: checkpoint!.worktreePath,
             branch: checkpoint!.branch,
             agent: checkpoint!.specialistType,
             task: checkpoint!.delegatedTask,
             summary: checkpoint!.summary ?? 'Recovered checkpoint.',
-            filesChanged: checkpoint!.changedFiles,
+            filesChanged: recoveredFiles,
             createdAt: Date.parse(checkpoint!.createdAt) || Date.now(),
           };
           emit(
             resumeState === 'RESUME_WITH_CHANGES'
               ? `subagent ${name} resuming ${resumeKey} — Git verified ${checkpoint!.changedFiles.length} durable changed file(s) on ${checkpoint!.branch}`
+              : resumeState === 'RESUME_WITH_UNCHECKPOINTED_CHANGES'
+                ? `subagent ${name} resuming ${resumeKey} — Git discovered ${recoveredFiles.length} durable change(s) written after the last checkpoint on ${checkpoint!.branch}`
               : `subagent ${name} resuming ${resumeKey} — checkpoint has context only; no durable edited files were verified`,
           );
         } else {
@@ -659,31 +816,93 @@ export class SubAgentRunner {
             logicalJobId,
             executionAttempt: job.executionAttempt,
             resumeState,
+            skillState,
             stopReason: 'process_interrupted',
           };
         }
       }
     }
+    // Keep the caller-facing recovery diagnosis stable. Later checkpoints can
+    // correctly upgrade the persisted branch to WITH_CHANGES, but that must
+    // not erase the fact that this execution recovered uncheckpointed work.
+    const recoveryState = resumeState;
     const wt = resumedFrom ? { root: resumedFrom.root, branch: resumedFrom.branch } : await this.createWorktree(job, repoRoot);
     const workRoot = wt ? wt.root : repoRoot;
-
-    // Register an isolated worktree before the first model request. A process
-    // restart cannot execute the normal finally block, so waiting until a
-    // partial result would otherwise leave this worktree orphaned and invisible
-    // to agent_status/resume.
-    if (wt) {
-      await this.persistCheckpoint({
-        repoRoot,
-        job,
-        wt,
-        currentTurn: resumedFrom ? checkpointStore.get(logicalJobId)?.currentTurn ?? 0 : 0,
-        filesChanged: resumedFrom?.filesChanged ?? [],
-        summary: resumedFrom ? 'Specialist resumed and is working.' : 'Specialist is working; its worktree is recoverable after a restart.',
-        resumable: true,
-      });
-      if (!resumedFrom) {
-        emit(`subagent ${name} isolated in git worktree ${wt.root} (branch ${wt.branch})`);
+    let specialistSkills: SkillStore;
+    let recoveredCheckpoint: SpecialistCheckpoint | undefined;
+    try {
+      specialistSkills = SkillStore.forProject(workRoot);
+      recoveredCheckpoint = resumedFrom ? checkpointStore.get(logicalJobId) : undefined;
+      if (recoveredCheckpoint && skillState === 'SKILL_STATE_MATCH') {
+        selectedSkills = recoveredCheckpoint.selectedSkills;
+      } else {
+        const selection = specialistSkills.resolver().resolve(task, specialistSkillContext);
+        for (const candidate of selection.highConfidence.slice(0, 3)) {
+          if (candidate.scope === 'builtin' && candidate.name.startsWith('strategy-')) continue;
+          const activation = specialistSkills.activate(candidate.name, specialistSkillContext);
+          if (activation.ok && activation.identity) selectedSkills.push(activation.identity);
+        }
       }
+
+      // Register an isolated worktree before the first model request. A process
+      // restart cannot execute the normal finally block, so waiting until a
+      // partial result would otherwise leave this worktree orphaned and invisible
+      // to agent_status/resume.
+      if (wt) {
+        await this.persistCheckpoint({
+          repoRoot,
+          job,
+          wt,
+          currentTurn: resumedFrom ? checkpointStore.get(logicalJobId)?.currentTurn ?? 0 : 0,
+          filesChanged: resumedFrom?.filesChanged ?? [],
+          selectedSkills,
+          summary: resumedFrom ? 'Specialist resumed and is working.' : 'Specialist is working; its worktree is recoverable after a restart.',
+          resumable: true,
+        });
+        if (!resumedFrom) {
+          emit(`subagent ${name} isolated in git worktree ${wt.root} (branch ${wt.branch})`);
+        }
+      }
+    } catch (err) {
+      const message = `Specialist setup stopped before its first model turn: ${(err as Error).message}`;
+      if (wt) {
+        try {
+          const emergency = await this.persistEmergencyRecovery({
+            repoRoot,
+            job,
+            wt,
+            currentTurn: resumedFrom ? recoveredCheckpoint?.currentTurn ?? 0 : 0,
+            filesChanged: resumedFrom?.filesChanged ?? [],
+            selectedSkills,
+            summary: message,
+            stopReason: 'process_interrupted',
+          });
+          emit(`subagent ${name} [paused] ${job.id} — checkpoint database unavailable; recovery file preserved on ${wt.branch}`);
+          return {
+            agent: name,
+            task,
+            ok: false,
+            status: 'BLOCKED',
+            summary: `${message}\n\nRECOVERY FILE PRESERVED on branch ${wt.branch}. Resume with delegate {"tasks":[{"agent":"${name}","task":"…","resume":{"jobId":"${logicalJobId}"}}]}.`,
+            turnsUsed: 0,
+            turnsBudgeted: this.deps.baseTurns ?? DEFAULT_BASE_TURNS,
+            filesInspected: [],
+            filesChanged: emergency.filesChanged,
+            evidenceIds: [],
+            blockers: [message],
+            recommendation: 'Resume the preserved specialist once the local checkpoint store is available.',
+            resumableJobId: logicalJobId,
+            logicalJobId,
+            executionAttempt: job.executionAttempt,
+            resumeState: emergency.resumeStatus,
+            skillState,
+            stopReason: 'process_interrupted',
+          };
+        } catch (recoveryErr) {
+          emit(`subagent ${name} — emergency checkpoint failed: ${(recoveryErr as Error).message}`);
+        }
+      }
+      throw err;
     }
 
     let summary = '';
@@ -720,7 +939,12 @@ export class SubAgentRunner {
         goal: `[subagent:${name}] ${task.slice(0, 120)}`,
         project: guard.lock,
         mode: 'fast',
+        activeSkills: selectedSkills.map((skill) => skill.name),
       });
+      ledger.setSelectedSkills(selectedSkills);
+      for (const identity of selectedSkills) {
+        ledger.recordSkillEvent({ stage: 'selected', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, specialist: name, reason: recoveredCheckpoint ? 'checkpoint skill state matched' : 'specialist contextual selection' });
+      }
       const evidenceEngine = new EvidenceEngine();
       if (rawCriteria && rawCriteria.length > 0) {
         const specs = EvidenceEngine.normalizeCriteria(rawCriteria);
@@ -728,7 +952,7 @@ export class SubAgentRunner {
       }
       ledger.setStatus('executing');
       const policy = new PolicyEngine(false);
-      const executor = new Executor(guard, ledger, policy, new LoopDetector(), (e) => emit(`subagent ${name}: ${e}`));
+      const executor = new Executor(guard, ledger, policy, new LoopDetector(), (e) => emit(`subagent ${name}: ${e}`), specialistSkills);
 
       const criteriaList = ledger.data.acceptanceCriteria;
       const criteriaPrompt = criteriaList.length > 0
@@ -747,6 +971,15 @@ export class SubAgentRunner {
         { role: 'system', content: this.specialistSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt), criteriaList, job.spec.agent, guard.lock.name) },
         { role: 'user', content: `TASK: ${task}${criteriaPrompt}` },
       ];
+      const activeSkillBodies = selectedSkills
+        .map((identity) => specialistSkills.get(identity.name))
+        .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
+        .map((skill) => `ACTIVE SKILL ${skill.name}@${String(skill.version ?? '1')}\n${skill.instructions}`)
+        .join('\n\n');
+      messages.push({
+        role: 'user',
+        content: `AVAILABLE SKILLS (metadata only)\n${specialistSkills.renderForPrompt(selectedSkills.map((skill) => skill.name), { maxSkills: 8 })}${activeSkillBodies ? `\n\n${activeSkillBodies}` : ''}`,
+      });
       if (resumedFrom) {
         // Wake-where-it-left-off briefing so the specialist does not redo or
         // clobber the earlier attempt's committed work.
@@ -758,6 +991,8 @@ export class SubAgentRunner {
           content:
             (resumeState === 'RESUME_WITH_CHANGES'
               ? `RESUME MODE: Git verified that a previous attempt's edits are present on the current branch.\nPreviously changed files:\n${priorFiles}\n`
+              : resumeState === 'RESUME_WITH_UNCHECKPOINTED_CHANGES'
+                ? `RESUME MODE: Git found edits written after the last checkpoint. They are durable in this isolated worktree but were not previously recorded; inspect them before continuing.\nDiscovered files:\n${priorFiles}\n`
               : `RESUME MODE: the previous attempt has durable task context, but Git verified NO edited files to recover. Do not claim otherwise.\n`) +
             `Previous attempt's last status:\n${resumedFrom.summary.slice(0, 1200)}\n` +
             (job.spec.resume?.note ? `Orchestrator note: ${job.spec.resume.note}\n` : '') +
@@ -791,6 +1026,7 @@ export class SubAgentRunner {
             wt,
             currentTurn: turnsUsed,
             filesChanged,
+            selectedSkills,
             lastSuccessfulAction,
             resumable: true,
           });
@@ -798,10 +1034,29 @@ export class SubAgentRunner {
           for (const file of saved.changedFiles) filesChanged.add(file);
           checkpointedFiles = filesChanged.size;
           resumeState = saved.resumeStatus;
-        } catch {
-          // A failed metadata commit must be visible rather than treated as a
-          // valid file recovery claim. The branch/worktree remains untouched.
-          emit(`subagent ${name} — checkpoint ${label} could not be durably recorded`);
+        } catch (err) {
+          // A failed database checkpoint must not leave a branch invisible.
+          // Preserve a per-job emergency record; it is imported by the next
+          // healthy runner before any resume claims are made.
+          try {
+            const emergency = await this.persistEmergencyRecovery({
+              repoRoot,
+              job,
+              wt,
+              currentTurn: turnsUsed,
+              filesChanged,
+              selectedSkills,
+              summary: `Checkpoint ${label} could not be written to SQLite: ${(err as Error).message}`,
+              stopReason,
+            });
+            filesChanged.clear();
+            for (const file of emergency.filesChanged) filesChanged.add(file);
+            checkpointedFiles = filesChanged.size;
+            resumeState = emergency.resumeStatus;
+            emit(`subagent ${name} — checkpoint ${label} saved to emergency recovery file`);
+          } catch (recoveryErr) {
+            emit(`subagent ${name} — checkpoint ${label} and emergency recovery both failed: ${(recoveryErr as Error).message}`);
+          }
         }
       };
 
@@ -857,6 +1112,9 @@ export class SubAgentRunner {
           ledger.save();
           emit(`subagent ${name} claim ${critId} <- ${evId}: ${link.ok ? 'accepted' : link.reason}`);
           if (link.ok) {
+            for (const identity of ledger.data.usedSkillIdentities ?? []) {
+              ledger.recordSkillEvent({ stage: 'verified', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, specialist: name, reason: `criterion ${critId} accepted` });
+            }
             consecutiveNoProgress = 0;
             consecutiveErrors = 0;
           } else {
@@ -912,6 +1170,15 @@ export class SubAgentRunner {
             }
             if (outcome.result.filesTouched) {
               for (const f of outcome.result.filesTouched) filesChanged.add(f);
+            }
+            if (toolName === 'use_skill') {
+              const skillName = String(params['name'] ?? '');
+              const identity = specialistSkills.identity(skillName);
+              if (identity) {
+                ledger.addUsedSkill(identity.name, identity);
+                ledger.recordSkillEvent({ stage: 'loaded', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, specialist: name, reason: 'explicit use_skill', loadChars: specialistSkills.get(skillName)?.instructions.length });
+                ledger.recordSkillEvent({ stage: 'applied', name: identity.name, version: identity.version, contentHash: identity.contentHash, scope: identity.scope, specialist: name, reason: 'use_skill tool completed' });
+              }
             }
             // New product files on disk → commit a checkpoint NOW so a later
             // timeout/stall can never lose this work.
@@ -1117,24 +1384,51 @@ export class SubAgentRunner {
           }
           if (reconciled.ok) {
             // Fully delivered → nothing to retain.
-            checkpointStore.markCompleted(logicalJobId, summary);
+            try {
+              checkpointStore.markCompleted(logicalJobId, summary);
+            } catch (err) {
+              // The product merge is already durable on the main branch. Do
+              // not report it as lost merely because cleanup metadata raced.
+              emit(`subagent ${name} — merge succeeded but completion checkpoint cleanup failed: ${(err as Error).message}`);
+            }
+            this.clearEmergencyRecovery(repoRoot, logicalJobId);
             await this.removeWorktree(wt, repoRoot);
           } else {
             // Merge conflict path already preserves the branch — register it
             // so the orchestrator can resume instead of losing the attempt.
-            const saved = await this.persistCheckpoint({
-              repoRoot,
-              job,
-              wt,
-              currentTurn: turnsUsed,
-              filesChanged,
-              summary,
-              stopReason,
-              resumable: true,
-            });
-            filesChanged.clear();
-            for (const file of saved.changedFiles) filesChanged.add(file);
-            resumeState = saved.resumeStatus;
+            try {
+              const saved = await this.persistCheckpoint({
+                repoRoot,
+                job,
+                wt,
+                currentTurn: turnsUsed,
+                filesChanged,
+                selectedSkills,
+                summary,
+                stopReason,
+                resumable: true,
+              });
+              filesChanged.clear();
+              for (const file of saved.changedFiles) filesChanged.add(file);
+              resumeState = saved.resumeStatus;
+            } catch (err) {
+              const emergency = await this.persistEmergencyRecoverySafely({
+                repoRoot,
+                job,
+                wt,
+                currentTurn: turnsUsed,
+                filesChanged,
+                selectedSkills,
+                summary: `${summary}\n\nSQLite checkpoint failed after merge rejection: ${(err as Error).message}`,
+                stopReason,
+              }, emit, name, 'merge-rejection checkpoint');
+              if (emergency) {
+                filesChanged.clear();
+                for (const file of emergency.filesChanged) filesChanged.add(file);
+                resumeState = emergency.resumeStatus;
+                summary += `\n\nRECOVERY FILE PRESERVED for branch ${wt.branch}; the worktree remains resumable.`;
+              }
+            }
           }
         } else {
           // Model/provider/process failures remain resumable even before the
@@ -1144,21 +1438,46 @@ export class SubAgentRunner {
           const hasProduct = filesChanged.size > 0;
           const shouldRetain = hasProduct || infrastructureStop;
           if (shouldRetain) {
-            const saved = await this.persistCheckpoint({
-              repoRoot,
-              job,
-              wt,
-              currentTurn: turnsUsed,
-              filesChanged,
-              summary: summary || 'stopped early',
-              stopReason,
-              resumable: true,
-            });
-            filesChanged.clear();
-            for (const file of saved.changedFiles) filesChanged.add(file);
-            resumeState = saved.resumeStatus;
-            const hint = saved.resumeStatus === 'RESUME_WITH_CHANGES'
-              ? `WORK PRESERVED: DURABLE CHANGES VERIFIED on branch ${wt.branch} (${saved.changedFiles.length} file(s)) — resume with delegate {"tasks":[{"agent":"${name}","task":"…","resume":{"jobId":"${logicalJobId}"}}]}`
+            let saved: Pick<SpecialistCheckpoint, 'changedFiles' | 'resumeStatus'> | undefined;
+            try {
+              saved = await this.persistCheckpoint({
+                repoRoot,
+                job,
+                wt,
+                currentTurn: turnsUsed,
+                filesChanged,
+                selectedSkills,
+                summary: summary || 'stopped early',
+                stopReason,
+                resumable: true,
+              });
+            } catch (err) {
+              const emergency = await this.persistEmergencyRecoverySafely({
+                repoRoot,
+                job,
+                wt,
+                currentTurn: turnsUsed,
+                filesChanged,
+                selectedSkills,
+                summary: `${summary || 'stopped early'}\n\nSQLite checkpoint failed: ${(err as Error).message}`,
+                stopReason,
+              }, emit, name, 'final checkpoint');
+              saved = emergency
+                ? { changedFiles: emergency.filesChanged, resumeStatus: emergency.resumeStatus ?? 'RESUME_CONTEXT_ONLY' }
+                : undefined;
+            }
+            if (saved) {
+              filesChanged.clear();
+              for (const file of saved.changedFiles) filesChanged.add(file);
+              resumeState = saved.resumeStatus;
+            }
+            // Do not turn tool bookkeeping into a durability claim when both
+            // checkpoint stores failed. The branch is still left untouched,
+            // but recovery must be described as context-only until Git facts
+            // can be recorded by a healthy process.
+            const recoveredState = saved?.resumeStatus ?? 'RESUME_CONTEXT_ONLY';
+            const hint = recoveredState === 'RESUME_WITH_CHANGES'
+              ? `WORK PRESERVED: DURABLE CHANGES VERIFIED on branch ${wt.branch} (${filesChanged.size} file(s)) — resume with delegate {"tasks":[{"agent":"${name}","task":"…","resume":{"jobId":"${logicalJobId}"}}]}`
               : `RESUME CONTEXT ONLY on branch ${wt.branch} — no durable edited files were verified; resume with delegate {"tasks":[{"agent":"${name}","task":"…","resume":{"jobId":"${logicalJobId}"}}]}`;
             emit(`subagent ${name} [paused] ${job.id} — ${hint}`);
             summary = `${summary}\n\nPAUSED AFTER ${turnsUsed}/${turnBudget} TURNS. ${hint}`;
@@ -1201,10 +1520,11 @@ export class SubAgentRunner {
       summary,
       turnsUsed,
       turnsBudgeted: turnBudget,
-      resumableJobId: checkpointStore.get(logicalJobId)?.resumable ? logicalJobId : undefined,
+      resumableJobId: this.hasResumableRecovery(repoRoot, logicalJobId) ? logicalJobId : undefined,
       logicalJobId,
       executionAttempt: job.executionAttempt,
-      resumeState,
+      resumeState: recoveryState ?? resumeState,
+      skillState,
       stopReason,
       filesInspected: [...filesInspected],
       filesChanged: [...filesChanged],
@@ -1355,12 +1675,51 @@ export class SubAgentRunner {
     return path.join(repoRoot, '.hermes', 'paused-specialists.json');
   }
 
+  private emergencyRecoveryPath(repoRoot: string, logicalJobId: string): string {
+    // Job IDs are generated internally, but normalize defensively before
+    // using one as a filename in the project's private recovery directory.
+    const safeId = logicalJobId.replace(/[^\w.-]/g, '_');
+    return path.join(repoRoot, '.hermes', 'specialist-recovery', `${safeId}.json`);
+  }
+
   private loadPausedIndex(repoRoot: string): Record<string, RetainedWorktree> {
     try {
       const raw = JSON.parse(readFileSync(this.pausedIndexPath(repoRoot), 'utf8')) as Record<string, RetainedWorktree>;
       return raw && typeof raw === 'object' ? raw : {};
     } catch {
       return {};
+    }
+  }
+
+  private loadEmergencyRecoveries(repoRoot: string): Record<string, RetainedWorktree> {
+    const directory = path.join(repoRoot, '.hermes', 'specialist-recovery');
+    let files: string[] = [];
+    try {
+      files = readdirSync(directory);
+    } catch {
+      return {};
+    }
+    const records: Record<string, RetainedWorktree> = {};
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const raw = JSON.parse(readFileSync(path.join(directory, file), 'utf8')) as RetainedWorktree;
+        if (!raw || typeof raw !== 'object' || !raw.root || !raw.branch || !raw.agent || !raw.task) continue;
+        const logicalJobId = raw.logicalJobId || path.basename(file, '.json');
+        records[logicalJobId] = raw;
+      } catch {
+        // One damaged emergency record must not hide other preserved work.
+      }
+    }
+    return records;
+  }
+
+  private clearEmergencyRecovery(repoRoot: string, logicalJobId: string): void {
+    this.emergencyRecoveries.delete(logicalJobId);
+    try {
+      unlinkSync(this.emergencyRecoveryPath(repoRoot, logicalJobId));
+    } catch {
+      /* Best effort only; an old recovery record is harmless and ignored once completed. */
     }
   }
 

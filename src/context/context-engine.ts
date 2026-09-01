@@ -1,13 +1,37 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { CodeIndex } from './code-index.js';
+import { recentChangeScores } from './change-signals.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { ContextPack, FileRef, FileRole } from '../types.js';
 import { EMBED_MAX_CHARS, type Embedder } from './embeddings.js';
 
 export const STOPWORDS = new Set([
-  'the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'with', 'fix', 'add',
-  'make', 'so', 'that', 'this', 'it', 'is', 'are', 'be', 'as', 'at', 'by', 'from',
+  'the',
+  'a',
+  'an',
+  'and',
+  'or',
+  'of',
+  'to',
+  'in',
+  'on',
+  'for',
+  'with',
+  'fix',
+  'add',
+  'make',
+  'so',
+  'that',
+  'this',
+  'it',
+  'is',
+  'are',
+  'be',
+  'as',
+  'at',
+  'by',
+  'from',
 ]);
 
 export interface ContextBudget {
@@ -64,10 +88,7 @@ export function tokenize(text: string): string[] {
 /** Dotfile configs that are useful to code context and safe to read. */
 export function isContextConfigDotfile(name: string): boolean {
   const base = path.basename(name).toLowerCase();
-  return (
-    base.startsWith('.eslintrc') || base.startsWith('.prettierrc') || base.startsWith('.stylelintrc') ||
-    base === '.editorconfig' || base === '.npmrc' || base === '.babelrc'
-  );
+  return base.startsWith('.eslintrc') || base.startsWith('.prettierrc') || base.startsWith('.stylelintrc') || base === '.editorconfig' || base === '.npmrc' || base === '.babelrc';
 }
 
 export function classifyRole(relPath: string): FileRole {
@@ -78,9 +99,12 @@ export function classifyRole(relPath: string): FileRole {
   if (/\.(test|spec)\.[a-z]+$/.test(base) || /(^|\/)(tests?|__tests__)\//.test(p)) return 'test';
   if (/\.(d\.ts)$/.test(base) || /(^|\/)(types?|interfaces?)\.[a-z]+$/.test(base)) return 'interface';
   if (
-    base === 'package.json' || base === 'tsconfig.json' || /\.(config|rc)\.[a-z]+$/.test(base) ||
+    base === 'package.json' ||
+    base === 'tsconfig.json' ||
+    /\.(config|rc)\.[a-z]+$/.test(base) ||
     isContextConfigDotfile(base) ||
-    base === 'vite.config.ts' || base === 'vitest.config.ts' ||
+    base === 'vite.config.ts' ||
+    base === 'vitest.config.ts' ||
     /\.(ya?ml|toml|ini)$/.test(p)
   ) {
     return 'config';
@@ -105,6 +129,10 @@ export class ContextEngine {
     const goalTokens = new Set(tokenize([goal, ...extraTexts].join('\n')));
     const files: FileRef[] = [];
     const ignores = new Set(this.guard.lock.ignorePaths);
+    // Recent local work helps disambiguate broad tasks, but contributes only a
+    // small tie-breaker so a stale or unrelated edit cannot outrank a direct
+    // goal/content match.
+    const changeScores = recentChangeScores(root);
 
     if (this.index) {
       // A watcher is an optimisation, not a consistency boundary. It may be
@@ -116,7 +144,8 @@ export class ContextEngine {
       for (const f of this.index.fileList()) {
         files.push({ path: f.path, role: f.role, score: this.score(f.path, f.role, goalTokens, undefined, contentScores.get(f.path)) });
       }
-    } else {      const walk = (dir: string, depth: number): void => {
+    } else {
+      const walk = (dir: string, depth: number): void => {
         if (depth > 8 || files.length > 2000) return;
         let entries: string[];
         try {
@@ -151,6 +180,31 @@ export class ContextEngine {
       };
 
       walk(root, 0);
+    }
+
+    if (this.index && files.length > 0) {
+      // Start from only the strongest lexical/content candidates. Following
+      // every import from every source would turn a graph boost into a noisy
+      // whole-repository expansion on ordinary tasks.
+      const roots = [...files]
+        .sort((a, b) => b.score - a.score)
+        .filter((f) => f.score >= 0.2)
+        .slice(0, 4)
+        .map((f) => f.path);
+      const dependencies = this.index.dependencyScores(roots);
+      for (const f of files) {
+        const graph = dependencies.get(f.path) ?? 0;
+        const recent = changeScores.get(f.path) ?? 0;
+        // These caps preserve lexical/IDF dominance while still allowing a
+        // directly imported helper or actively edited neighbour into the
+        // bounded sample.
+        f.score = Math.round((f.score + graph * 0.14 + recent * 0.06) * 100) / 100;
+      }
+    } else if (changeScores.size > 0) {
+      for (const f of files) {
+        const recent = changeScores.get(f.path) ?? 0;
+        f.score = Math.round((f.score + recent * 0.06) * 100) / 100;
+      }
     }
 
     const entrypoints = new Set(this.guard.lock.entrypoints);
@@ -226,12 +280,7 @@ export class ContextEngine {
     const pathMatch = goalTokens.size > 0 ? overlap / goalTokens.size : 0;
     // Content recall: prefer the IDF-weighted score from the index when
     // available; fall back to raw matched-term fraction for legacy callers.
-    const contentMatch =
-      contentScore !== undefined
-        ? contentScore
-        : contentTerms
-          ? contentTerms.size / Math.max(1, goalTokens.size)
-          : 0;
+    const contentMatch = contentScore !== undefined ? contentScore : contentTerms ? contentTerms.size / Math.max(1, goalTokens.size) : 0;
     const roleBonus: Record<FileRole, number> = {
       entrypoint: 0.15,
       implementation: 0.1,
@@ -251,12 +300,7 @@ export class ContextEngine {
   renderPack(pack: ContextPack): string {
     const section = (title: string, refs: FileRef[]): string =>
       refs.length === 0 ? '' : `${title}:\n${refs.map((r) => `  - ${r.path} [${r.role}] (score ${r.score})`).join('\n')}`;
-    return [
-      section('Primary files', pack.primaryFiles),
-      section('Tests', pack.testFiles),
-      section('Related', pack.relatedFiles),
-      section('Config', pack.configFiles),
-    ]
+    return [section('Primary files', pack.primaryFiles), section('Tests', pack.testFiles), section('Related', pack.relatedFiles), section('Config', pack.configFiles)]
       .filter(Boolean)
       .join('\n');
   }

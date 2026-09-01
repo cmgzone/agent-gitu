@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/gitu.js';
 import { buildTaskStrategySection, classifyTaskKind } from '../src/agent/task-strategy.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
+import { LspManager } from '../src/lsp/manager.js';
+import { ServerRegistry } from '../src/lsp/server-registry.js';
 
 const FAKE_SERVER = fileURLToPath(new URL('./helpers/fake-lsp-server.mjs', import.meta.url));
 const tmpDirs: string[] = [];
@@ -29,6 +31,19 @@ function makeProject(withFakeLsp: boolean): string {
     );
   }
   return dir;
+}
+
+/**
+ * A registry with no runnable executable. Injecting it keeps the negative
+ * strategy test independent of globally installed language servers.
+ */
+function unavailableLsp(repoRoot: string): LspManager {
+  const registry = {
+    serversList: () => [{ name: 'unavailable', languageIds: ['typescript'], command: 'definitely-not-a-real-binary-xyz' }],
+    serverForLanguage: () => undefined,
+    configuredCount: () => 1,
+  } as unknown as ServerRegistry;
+  return new LspManager(repoRoot, registry);
 }
 
 describe('classifyTaskKind', () => {
@@ -116,12 +131,6 @@ describe('Hermes task-strategy injection', () => {
 
   it('does not inject a strategy when no LSP servers are available', async () => {
     const dir = makeProject(false);
-    // Guarantee hasServers() === false regardless of what is on PATH.
-    mkdirSync(path.join(dir, '.hermes'), { recursive: true });
-    writeFileSync(
-      path.join(dir, '.hermes', 'lsp.json'),
-      JSON.stringify({ servers: [{ name: 'rust', languageIds: ['rust'], command: 'definitely-not-a-real-binary-xyz' }] }),
-    );
     const seen: string[] = [];
     const llm = new ScriptedMockLlm([
       (_n, messages) => {
@@ -142,7 +151,7 @@ describe('Hermes task-strategy injection', () => {
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }),
     ]);
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', lsp: unavailableLsp(dir) });
     const { report } = await hermes.run('Fix the crash in the login flow');
 
     expect(report.status).toBe('complete');

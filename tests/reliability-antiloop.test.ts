@@ -161,6 +161,45 @@ describe('Hermes — malformed-call spiral protection', () => {
     // alternate between prose and schema-invalid actions.
     expect(ledger.data.blockers[0]).toContain('Main execution lane');
   }, 30000);
+
+  it('diagnoses a reasoning-only reply instead of giving generic malformed advice', async () => {
+    const dir = makeProject('thinking-only');
+    const events: string[] = [];
+    const seenMessages: LlmMessage[][] = [];
+    const reasoningOnlyTurn = () => ({
+      kind: 'empty' as const,
+      metadata: { reasoning: 'Deliberating at length; the entire output budget went to thinking and no content was produced.' },
+    });
+    const llm: LlmClient = {
+      name: 'reasoning-only-mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn() {
+        return reasoningOnlyTurn();
+      },
+      async completeTurnStream(messages: LlmMessage[]) {
+        seenMessages.push(messages);
+        return reasoningOnlyTurn();
+      },
+    };
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+
+    const { report } = await hermes.run('think forever');
+
+    // Three thinking-only replies trip the same lane breaker as other spirals…
+    expect(report.status).toBe('blocked');
+    expect(events.some((e) => e.includes('only reasoning with no final content'))).toBe(true);
+    // …but the recovery guidance names the actual cause (thinking consumed the
+    // output budget) and the generic "reply with JSON" advice never appears.
+    expect(
+      seenMessages[1]!.some((m) => typeof m.content === 'string' && m.content.includes('the thinking phase likely consumed the entire output budget')),
+    ).toBe(true);
+    expect(seenMessages.flat().some((m) => typeof m.content === 'string' && m.content.includes('describing intentions is not enough'))).toBe(false);
+  }, 30000);
 });
 
 describe('SubAgentRunner — malformed-call protection', () => {

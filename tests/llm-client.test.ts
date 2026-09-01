@@ -94,6 +94,25 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(calls()).toBe(1);
   });
 
+  it('parses the final event when the stream ends without a trailing newline', async () => {
+    mockFetch(async () => {
+      const body =
+        'data: ' +
+        JSON.stringify({ choices: [{ delta: { reasoning_content: 'thinking...' } }] }) +
+        '\n\n' +
+        'data: ' +
+        JSON.stringify({ choices: [{ delta: { content: 'Hello' } }] }) +
+        '\n\n' +
+        // Some proxies close the connection right after the last data line,
+        // with no blank-line terminator. Its bytes are still part of the reply.
+        'data: ' +
+        JSON.stringify({ choices: [{ delta: { content: ' world' } }] });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    const out = await client().completeStream(msg, {}, () => {});
+    expect(out).toBe('Hello world');
+  });
+
   it('falls back to a single completion only when the stream is broken or unsupported', async () => {
     const calls = mockFetch(async () => {
       if (calls() === 1) return new Response('not an sse stream at all', { status: 200, headers: { 'content-type': 'text/html' } });

@@ -592,6 +592,38 @@ export class OpenAiCompatClient implements LlmClient {
     let sawEvent = false;
     let streamFailed = false;
     let forwardedAnyDelta = false;
+    // One SSE line = one `data:` event. Shared by the chunked loop and the
+    // end-of-stream flush so the FINAL event is parsed even when the stream
+    // closes without a trailing newline (proxies do this) — its bytes are the
+    // tail of the response, e.g. the closing braces of a JSON action.
+    const handleLine = (rawLine: string): void => {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') {
+        sawEvent = true;
+        return;
+      }
+      try {
+        const json = JSON.parse(payload) as {
+          choices?: { delta?: { content?: string; reasoning_content?: string }; message?: { content?: string } }[];
+          usage?: unknown;
+        };
+        sawEvent = true;
+        const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
+        if (delta) {
+          full += delta;
+          onDelta(delta);
+          forwardedAnyDelta = true;
+        }
+        const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
+        if (reasonDelta) reasoning += reasonDelta;
+        const chunkUsage = parseUsage(json.usage);
+        if (chunkUsage) streamUsage = chunkUsage;
+      } catch {
+        /* partial line */
+      }
+    };
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -599,35 +631,15 @@ export class OpenAiCompatClient implements LlmClient {
         buffer += decoder.decode(value, { stream: true });
         let newline: number;
         while ((newline = buffer.indexOf('\n')) >= 0) {
-          const line = buffer.slice(0, newline).trim();
+          const line = buffer.slice(0, newline);
           buffer = buffer.slice(newline + 1);
-          if (!line.startsWith('data:')) continue;
-          const payload = line.slice(5).trim();
-          if (payload === '[DONE]') {
-            sawEvent = true;
-            continue;
-          }
-          try {
-            const json = JSON.parse(payload) as {
-              choices?: { delta?: { content?: string; reasoning_content?: string }; message?: { content?: string } }[];
-              usage?: unknown;
-            };
-            sawEvent = true;
-            const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
-            if (delta) {
-              full += delta;
-              onDelta(delta);
-              forwardedAnyDelta = true;
-            }
-            const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
-            if (reasonDelta) reasoning += reasonDelta;
-            const chunkUsage = parseUsage(json.usage);
-            if (chunkUsage) streamUsage = chunkUsage;
-          } catch {
-            /* partial line */
-          }
+          handleLine(line);
         }
       }
+      // Flush the decoder's pending multi-byte sequence, then the final
+      // unterminated line if any.
+      buffer += decoder.decode();
+      if (buffer.trim()) handleLine(buffer);
     } catch {
       // The connection died mid-stream; the content we already forwarded is
       // unreliable, so retry as a single completion instead of returning a

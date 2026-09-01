@@ -1935,6 +1935,11 @@ export class Gitu {
       // This counter belongs only to the main execution lane. Specialists have
       // their own trackers, so a weak reviewer cannot trip the parent breaker.
       let invalidStreak = 0;
+      // Set when the rejected reply was an EMPTY turn that still carried a
+      // reasoning trace: the thinking phase consumed the whole output budget.
+      // Recovery advice differs from generic malformed replies (provider-neutral:
+      // any model that reports reasoning_content/reasoning).
+      let thinkingOnlyNoAction = false;
       let loopBlocks = 0;
       const connectionActionAttempts = new Map<string, number>();
       const connectionOperationAttempts = new Map<string, number>();
@@ -2115,6 +2120,7 @@ export class Gitu {
         }
         let reply = actionReplyFromTurn(turn);
         let parsed = finishParse(reply);
+        thinkingOnlyNoAction = !parsed && turn.kind === 'empty' && Boolean(turn.metadata.reasoning);
         const cutAt = proseCutIndex(reply);
         const prose = (cutAt >= 0 ? reply.slice(0, cutAt) : '').trim();
         if (prose) this.emit(`say ${prose}`);
@@ -2128,7 +2134,11 @@ export class Gitu {
           telemetry.noteWastedCall();
           const verdict = malformed.note('unparseable');
           logParseFailure(ledger.data.taskId, reply, llm.lastReasoning);
-          this.emit(`warn    response had no executable action (streak ${invalidStreak}) — raw reply saved to logs/parse-failures.log`);
+          this.emit(
+            thinkingOnlyNoAction
+              ? `warn    reply contained only reasoning with no final content (streak ${invalidStreak}) — thinking likely consumed the entire output budget`
+              : `warn    response had no executable action (streak ${invalidStreak}) — raw reply saved to logs/parse-failures.log`,
+          );
           if (verdict.halt) {
             actionLaneHalted = true;
             ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
@@ -2305,12 +2315,16 @@ export class Gitu {
               break;
             }
             observe(
-              invalidStreak >= 3
-                ? `STILL no executable action (${invalidStreak} replies in a row). Stop writing prose. Reply with exactly ONE JSON object and nothing else. ` +
-                    'If you truly cannot proceed, {"thought":"...","action":{"type":"request_block","reason":"what is blocking you"}} is a valid action.'
-                : 'Your last response contained no executable JSON action — describing intentions is not enough. ' +
-                    'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
-                    '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
+              thinkingOnlyNoAction
+                ? `Your reply streamed only reasoning and produced no final content — the thinking phase likely consumed the entire output budget. ` +
+                    'Do not restate your analysis: your entire visible reply must be exactly one short JSON action object, e.g. ' +
+                    '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}.'
+                : invalidStreak >= 3
+                  ? `STILL no executable action (${invalidStreak} replies in a row). Stop writing prose. Reply with exactly ONE JSON object and nothing else. ` +
+                      'If you truly cannot proceed, {"thought":"...","action":{"type":"request_block","reason":"what is blocking you"}} is a valid action.'
+                  : 'Your last response contained no executable JSON action — describing intentions is not enough. ' +
+                      'Reply with one short sentence followed by exactly one JSON object on a new line, e.g. ' +
+                      '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}',
             );
             continue;
           }

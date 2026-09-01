@@ -57,6 +57,47 @@ export {
   type ConnectionProfileView,
   type ConnectionRequirement,
 } from './connections/connections.js';
+export {
+  UniversalConnectionRuntime,
+  type ExecuteOptions,
+  type IntrospectionResult,
+  type IntrospectionSource,
+  type MutationPlan,
+  type RuntimeOptions,
+} from './connections/runtime/orchestrator.js';
+export { SemanticCapabilityGraph, type GraphNode } from './connections/runtime/graph/capability-graph.js';
+export { aggregateRelationships, type AggregatedRelationship } from './connections/runtime/graph/relationships.js';
+export { PrerequisiteResolver } from './connections/runtime/resolution/prerequisite-resolver.js';
+export type { PlanStep, ResolutionPlan } from './connections/runtime/resolution/resolution-plan.js';
+export { RemoteStateDiscoverer, type ObservedInstance, type StateSnapshot } from './connections/runtime/discovery/state-discovery.js';
+export { UniversalExecutor, type ExecutorOptions, type McpTransport } from './connections/runtime/execution/executor.js';
+export { operationFingerprint, type FingerprintContext } from './connections/runtime/execution/fingerprint.js';
+export { RetryGuard, type FailureRecord, type RetryAssessment } from './connections/runtime/execution/retry-guard.js';
+export { ResultVerifier } from './connections/runtime/verification/verifier.js';
+export { CapabilityCache, type CachedConnectionKnowledge } from './connections/runtime/cache/capability-cache.js';
+export { VaultCredentialBroker, scrub, type AuthMaterial, type CredentialBroker } from './connections/runtime/credentials/credential-broker.js';
+export { normalizeOperations, identifierStem } from './connections/runtime/semantics/inference.js';
+export { inferSemanticRole } from './connections/runtime/semantics/roles.js';
+export { inferSemanticTarget, singularize } from './connections/runtime/semantics/targets.js';
+export { introspectOpenApi } from './connections/runtime/interpreters/openapi.js';
+export { introspectGraphQl, type GraphQlIntrospection } from './connections/runtime/interpreters/graphql.js';
+export { introspectMcpTools, type McpToolDefinition } from './connections/runtime/interpreters/mcp.js';
+export type {
+  Capability,
+  CapabilityAction,
+  CapabilityInput,
+  CapabilityOutput,
+  CapabilityRelationship,
+  InputResolution,
+  ParameterLocation,
+  SemanticConcept,
+  SemanticRoleBinding,
+  SideEffect,
+  SchemaType,
+} from './connections/runtime/model/capability.js';
+export type { ExternalOperation, GraphQlOperation, McpOperation, RawOperation, RestOperation } from './connections/runtime/model/operation.js';
+export type { ExecutionOutcome, VerificationResult, VerificationStatus, VerificationStrategy } from './connections/runtime/model/verification.js';
+export { normalizeHttpFailure, normalizeTransportError, type ErrorCategory, type SemanticError } from './connections/runtime/model/errors.js';
 export { PolicyEngine, classifyCommand, type ApprovalHandler, type PolicyDecision } from './policy/policy.js';
 export {
   CapabilityAwareResolver,

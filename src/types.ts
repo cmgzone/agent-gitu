@@ -291,6 +291,25 @@ export interface ContextPack {
   budget: { maxFiles: number; maxBytes: number };
 }
 
+/**
+ * Bounded parent-to-specialist briefing.  A delegated model has no access to
+ * the parent agent's conversation, plan, or retrieval state, so this carries
+ * the small amount of concrete context it needs to begin work without first
+ * rediscovering the repository.
+ */
+export interface SpecialistHandoff {
+  /** The user's overall objective, kept separate from the specialist's task. */
+  parentGoal: string;
+  /** Ranked files the parent selected for this exact delegated task. */
+  startingFiles: FileRef[];
+  /** Small source excerpts from the starting files; never a repository dump. */
+  excerpts: { path: string; content: string }[];
+  /** Relevant parent-plan steps, including their intended verification. */
+  planSteps: { description: string; verification: string }[];
+  /** Acceptance/verification targets the specialist should preserve. */
+  verificationTargets: string[];
+}
+
 export type TaskComplexity = 'low' | 'medium' | 'high';
 
 export interface EffortPlan {

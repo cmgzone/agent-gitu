@@ -354,8 +354,9 @@ Parallel independent work (only for tools that do not depend on each other, max 
 {"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
 
 Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once, each returns a summary):
-{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"self-contained sub-task with enough context to work alone"}]}}
+{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"one concrete outcome; name the file/symbol boundary, what to change or verify, what is out of scope, and the expected verification"}]}}
 IMPORTANT: \`agent\` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
+The runtime adds a bounded WORK HANDOFF with ranked files, excerpts, plan targets, and verification targets. It does NOT give a specialist your conversation. Make the task line precise enough to be an ownership contract; never delegate vague work such as "look into it" or "check the repo".
 For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
 {"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<registered specialist name>","task":"self-contained non-conflicting task"}]}}
 RESUMING PAUSED SPECIALISTS: a specialist that stops because of a model/provider/process failure may have either verified durable edits or context only. Never say its files were recovered unless its checkpoint reports "DURABLE CHANGES VERIFIED". To wake the SAME logical specialist job, delegate the SAME agent with the SAME task and its resume field; this reuses its specialist allocation rather than creating a second worker:

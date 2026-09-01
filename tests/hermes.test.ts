@@ -599,8 +599,15 @@ describe('Hermes end-to-end (mock LLM)', () => {
   it('delegates parallel sub-tasks to named sub-agents', async () => {
     const dir = makeProject('delegate');
     let sawDelegate = false;
+    let specialistBriefing = '';
     const workerLlm = new ScriptedMockLlm([
-      () => JSON.stringify({ action: { type: 'answer', summary: 'worker done: implemented X' } }),
+      (_n, messages: LlmMessage[]) => {
+        specialistBriefing = messages
+          .filter((message) => message.role === 'user')
+          .map((message) => String(message.content))
+          .join('\n');
+        return JSON.stringify({ action: { type: 'answer', summary: 'worker done: implemented X' } });
+      },
     ]);
     const runner = new SubAgentRunner({
       cwd: dir,
@@ -619,6 +626,10 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', subagents: runner });
     await hermes.run('delegate test');
     expect(sawDelegate).toBe(true);
+    expect(specialistBriefing).toContain('WORK HANDOFF — START HERE');
+    expect(specialistBriefing).toContain('PARENT GOAL:\ndelegate test');
+    expect(specialistBriefing).toContain('EXPLORATION LIMIT:');
+    expect(specialistBriefing).toContain('package.json');
   }, 30000);
 
   it('starts independent specialist work in the background and exposes its status', async () => {

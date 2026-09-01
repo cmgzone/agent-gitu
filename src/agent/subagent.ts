@@ -26,12 +26,15 @@ import {
   type SpecialistStopReason,
 } from './specialist-checkpoints.js';
 import { SkillStore, type SkillIdentity } from '../skills/skills.js';
-import type { AcceptanceCriterion, CriterionSpec, MemoryType } from '../types.js';
+import type { AcceptanceCriterion, CriterionSpec, MemoryType, SpecialistHandoff } from '../types.js';
 
 export interface SubAgentSpec {
   agent: string;
   task: string;
   criteria?: (string | CriterionSpec)[];
+  /** Bounded parent context so a new worker can start from assigned files
+   * instead of rediscovering the whole repository. */
+  handoff?: SpecialistHandoff;
   /** Continue a previously PAUSED specialist in its preserved worktree,
    *  picking up where it left off instead of starting over. */
   resume?: { jobId: string; note?: string; /** Explicit policy approval to continue after selected skill drift. */ allowSkillRecovery?: boolean };
@@ -254,6 +257,7 @@ RULES:
 3. When criteria are specified, run the exact verification command and claim it with claim_criterion. Your work WILL BE REJECTED and discarded if the evidence gate is closed.
 4. Never claim success without evidence from a command or a file you actually wrote.
 5. Stay inside the task you were given. Do not expand scope.
+6. When a WORK HANDOFF is supplied, it is your starting map. First read its listed files in the worktree (the excerpts are orientation only), then use targeted symbol/import searches only when the assigned change requires them. Do NOT list the repository root or perform a broad repository scan unless the handoff has no usable starting file.
 
 PROTOCOL — respond each turn with EXACTLY ONE JSON object:
 {"action":{"type":"tool_call","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}
@@ -275,6 +279,32 @@ The finding is shared with the mission as a CANDIDATE (unverified) — publishin
 
 When the task is finished and all criteria are verified, respond with:
 {"action":{"type":"answer","summary":"what you did, files touched, verification results, open issues"}}`;
+}
+
+/** Render the parent briefing for a new specialist. It is intentionally small:
+ * enough concrete context to avoid rediscovery, never a repository dump. */
+function renderSpecialistHandoff(handoff: SpecialistHandoff): string {
+  const files = handoff.startingFiles.length > 0
+    ? handoff.startingFiles.map((file) => `  - ${file.path} [${file.role}]${file.note ? ` — ${file.note}` : ''}`).join('\n')
+    : '  (No ranked source file was available; use a narrow task-named search instead of scanning the repository.)';
+  const plan = handoff.planSteps.length > 0
+    ? handoff.planSteps.map((step) => `  - ${step.description}${step.verification ? `\n    Verification target: ${step.verification}` : ''}`).join('\n')
+    : '  (No matching parent plan step was recorded.)';
+  const verification = handoff.verificationTargets.length > 0
+    ? handoff.verificationTargets.map((target) => `  - ${target}`).join('\n')
+    : '  (Use task-appropriate verification for the changed code.)';
+  const excerpts = handoff.excerpts.length > 0
+    ? `\n\nSOURCE EXCERPTS (orientation only; read the actual file before editing):\n${handoff.excerpts.map((excerpt) => `--- ${excerpt.path} ---\n${excerpt.content}`).join('\n\n')}`
+    : '';
+  return [
+    'WORK HANDOFF — START HERE',
+    `PARENT GOAL:\n${handoff.parentGoal}`,
+    "YOUR ASSIGNMENT is the TASK message. Keep ownership limited to that assignment; do not redo the parent's investigation.",
+    `STARTING FILES (ranked for your assignment):\n${files}`,
+    `RELEVANT PARENT PLAN:\n${plan}`,
+    `VERIFICATION TARGETS:\n${verification}`,
+    'EXPLORATION LIMIT:\n- Begin with read_file on a listed starting file in this worktree.\n- Do not call list_files on the repository root and do not inventory unrelated directories.\n- Expand with a targeted search only for a symbol, import, caller, or test directly needed by the assigned change.',
+  ].join('\n\n') + excerpts;
 }
 
 export class SubAgentRunner {
@@ -684,6 +714,7 @@ export class SubAgentRunner {
 
   private async executeOne(job: InternalSubAgentJob): Promise<SubAgentResult> {
     const { agent: name, task, criteria: rawCriteria } = job;
+    const handoff = job.spec.handoff;
     const emit = this.deps.onEvent ?? (() => {});
     const role = this.deps.agentRole(name) ?? 'general-purpose engineer';
     const llm = resilientLlm(this.deps.resolveLlm(name), {
@@ -971,6 +1002,9 @@ export class SubAgentRunner {
         { role: 'system', content: this.specialistSystemPrompt(name, role, guard.lock.repoRoot, Boolean(wt), criteriaList, job.spec.agent, guard.lock.name) },
         { role: 'user', content: `TASK: ${task}${criteriaPrompt}` },
       ];
+      if (handoff) {
+        messages.push({ role: 'user', content: renderSpecialistHandoff(handoff) });
+      }
       const activeSkillBodies = selectedSkills
         .map((identity) => specialistSkills.get(identity.name))
         .filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))

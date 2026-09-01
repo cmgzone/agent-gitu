@@ -6,7 +6,7 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { SkillSelectionContext, SkillStore } from '../skills/skills.js';
-import type { CriterionSpec, ToolResult } from '../types.js';
+import type { CriterionSpec, SpecialistHandoff, ToolResult } from '../types.js';
 import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
@@ -29,6 +29,8 @@ export interface DelegateSpec {
   agent: string;
   task: string;
   criteria?: (string | CriterionSpec)[];
+  /** Parent-generated, bounded starting context for a specialist. */
+  handoff?: SpecialistHandoff;
   /** Wake a paused specialist in its preserved worktree. */
   resume?: { jobId: string; note?: string; allowSkillRecovery?: boolean };
 }
@@ -1309,12 +1311,49 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
       allowSkillRecovery: (raw as Record<string, unknown>)['allowSkillRecovery'] === true,
     };
   };
+  const parseHandoff = (raw: unknown): SpecialistHandoff | undefined => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const source = raw as Record<string, unknown>;
+    const parentGoal = typeof source['parentGoal'] === 'string' ? source['parentGoal'].trim().slice(0, 1_200) : '';
+    if (!parentGoal) return undefined;
+    const startingFiles = Array.isArray(source['startingFiles'])
+      ? source['startingFiles']
+          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+          .map((item) => ({
+            path: String(item['path'] ?? '').trim().slice(0, 320),
+            role: String(item['role'] ?? 'unknown').trim().slice(0, 32) as SpecialistHandoff['startingFiles'][number]['role'],
+            score: Number.isFinite(Number(item['score'])) ? Number(item['score']) : 0,
+            ...(typeof item['note'] === 'string' && item['note'].trim() ? { note: item['note'].trim().slice(0, 240) } : {}),
+          }))
+          .filter((item) => Boolean(item.path))
+          .slice(0, 6)
+      : [];
+    const excerpts = Array.isArray(source['excerpts'])
+      ? source['excerpts']
+          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+          .map((item) => ({ path: String(item['path'] ?? '').trim().slice(0, 320), content: String(item['content'] ?? '').slice(0, 3_000) }))
+          .filter((item) => Boolean(item.path) && Boolean(item.content))
+          .slice(0, 3)
+      : [];
+    const planSteps = Array.isArray(source['planSteps'])
+      ? source['planSteps']
+          .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+          .map((item) => ({ description: String(item['description'] ?? '').trim().slice(0, 280), verification: String(item['verification'] ?? '').trim().slice(0, 240) }))
+          .filter((item) => Boolean(item.description))
+          .slice(0, 3)
+      : [];
+    const verificationTargets = Array.isArray(source['verificationTargets'])
+      ? source['verificationTargets'].map((item) => String(item).trim().slice(0, 280)).filter(Boolean).slice(0, 5)
+      : [];
+    return { parentGoal, startingFiles, excerpts, planSteps, verificationTargets };
+  };
   if (Array.isArray(params['tasks'])) {
     specs = (params['tasks'] as Record<string, unknown>[])
       .map((t) => ({
         agent: String(t['agent'] ?? ''),
         task: String(t['task'] ?? ''),
         criteria: Array.isArray(t['criteria']) ? (t['criteria'] as DelegateSpec['criteria']) : undefined,
+        handoff: parseHandoff(t['handoff']),
         resume: parseResume(t['resume']),
       }))
       .filter((t) => t.agent && t.task);
@@ -1323,6 +1362,7 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
       agent: String(params['agent']),
       task: String(params['task']),
       criteria: Array.isArray(params['criteria']) ? (params['criteria'] as DelegateSpec['criteria']) : undefined,
+      handoff: parseHandoff(params['handoff']),
       resume: parseResume(params['resume']),
     }];
   }

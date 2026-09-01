@@ -43,7 +43,7 @@ import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
 import { validateSpecialistEvidence } from './specialist-evidence.js';
 import { VERIFIER_AGENT, buildVerifierContract, verdictForFinding } from './findings.js';
-import { RecoveryRisk, type CompletionReport, type CriterionEvidenceType, type CriterionSpec, type DecisionBasis, type EvidenceKind, type MemoryRetrievalContext, type MissingPrerequisite, type PlanArea, type TaskFinding, type TaskLedgerData } from '../types.js';
+import { RecoveryRisk, type CompletionReport, type ContextPack, type CriterionEvidenceType, type CriterionSpec, type DecisionBasis, type EvidenceKind, type MemoryRetrievalContext, type MissingPrerequisite, type PlanArea, type PlanStep, type SpecialistHandoff, type TaskFinding, type TaskLedgerData } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -179,6 +179,110 @@ function parseSubtasks(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value.map((t) => String(t).trim().slice(0, 140)).filter(Boolean).slice(0, 8);
   return items.length > 0 ? items : undefined;
+}
+
+function specialistHandoffTerms(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9_./-]+/)
+      .map((term) => term.replace(/[_./-]+/g, ''))
+      .filter((term) => term.length >= 3),
+  );
+}
+
+function specialistHandoffOverlap(terms: Set<string>, text: string): number {
+  if (terms.size === 0) return 0;
+  const target = specialistHandoffTerms(text);
+  let count = 0;
+  for (const term of terms) if (target.has(term)) count += 1;
+  return count;
+}
+
+/**
+ * Build a small, task-specific briefing for one delegated specialist. The
+ * parent has already read and indexed the project; passing its useful output
+ * prevents every fresh worker from paying to rediscover the same codebase.
+ */
+export function buildSpecialistHandoff(
+  task: string,
+  parentGoal: string,
+  context: ContextEngine,
+  parentPack: ContextPack | undefined,
+  parentPlan: PlanStep[],
+  delegatedCriteria: (string | CriterionSpec)[] | undefined,
+): SpecialistHandoff {
+  const criteria = (delegatedCriteria ?? []).map((criterion) =>
+    typeof criterion === 'string' ? { text: criterion } : criterion,
+  );
+  const criterionText = criteria.flatMap((criterion) => [criterion.text, criterion.verification ?? '']).filter(Boolean);
+  let scopedPack: ContextPack | undefined;
+  try {
+    // Keep this local and lexical. Semantic embedding calls can be expensive;
+    // the worker needs an immediate starting map, not another broad analysis.
+    scopedPack = context.buildPack(task, { maxFiles: 6, maxBytes: 7_500 }, criterionText);
+  } catch {
+    // A handoff is an optimisation, never a reason to reject delegation.
+  }
+
+  const startingFiles: SpecialistHandoff['startingFiles'] = [];
+  const seen = new Set<string>();
+  const addFiles = (refs: SpecialistHandoff['startingFiles'], limit: number): void => {
+    for (const ref of refs) {
+      if (startingFiles.length >= 6 || seen.has(ref.path)) continue;
+      seen.add(ref.path);
+      startingFiles.push(ref);
+      if (startingFiles.length >= limit) break;
+    }
+  };
+  const source = scopedPack ?? parentPack;
+  if (source) {
+    addFiles(source.primaryFiles, 3);
+    addFiles(source.testFiles, 4);
+    addFiles(source.relatedFiles, 5);
+    addFiles(source.configFiles, 6);
+  }
+  // A very sparse task can have no lexical matches. Fall back to the parent
+  // retrieval pack rather than making the specialist inventory the project.
+  if (startingFiles.length === 0 && parentPack && parentPack !== source) {
+    addFiles(parentPack.primaryFiles, 3);
+    addFiles(parentPack.testFiles, 4);
+    addFiles(parentPack.relatedFiles, 5);
+    addFiles(parentPack.configFiles, 6);
+  }
+
+  const excerpts: SpecialistHandoff['excerpts'] = [];
+  let sourceCharsLeft = 6_000;
+  for (const file of startingFiles) {
+    if (excerpts.length >= 3 || sourceCharsLeft <= 0) break;
+    const content = context.peekFile(file.path, Math.min(2_400, sourceCharsLeft));
+    if (!content) continue;
+    excerpts.push({ path: file.path, content });
+    sourceCharsLeft -= content.length;
+  }
+
+  const taskTerms = specialistHandoffTerms([task, ...criterionText].join('\n'));
+  const planSteps = parentPlan
+    .filter((step) => step.status !== 'done')
+    .map((step) => ({ step, score: specialistHandoffOverlap(taskTerms, `${step.description}\n${step.verification}`) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map(({ step }) => ({ description: step.description, verification: step.verification }));
+  const verificationTargets = [
+    ...criteria.map((criterion) =>
+      criterion.verification ? `${criterion.text} — verify: ${criterion.verification}` : criterion.text,
+    ),
+    ...planSteps.map((step) => step.verification).filter((verification) => verification && !/^n\/?a$|^manual check$/i.test(verification)),
+  ].filter(Boolean).slice(0, 5);
+
+  return {
+    parentGoal: parentGoal.slice(0, 1_200),
+    startingFiles,
+    excerpts,
+    planSteps,
+    verificationTargets,
+  };
 }
 
 /** @deprecated Use Gitu. Kept so existing integrations can upgrade safely. */
@@ -2937,9 +3041,29 @@ export class Gitu {
               );
             }
           }
+          const delegatedTasks = runTasks.map((task) => {
+            const handoffCriteria = task.criteria && task.criteria.length > 0
+              ? task.criteria
+              : ledger.data.acceptanceCriteria.slice(0, 5).map((criterion) => ({ text: criterion.text, verification: criterion.verification }));
+            return {
+              ...task,
+              handoff: buildSpecialistHandoff(
+                task.task,
+                goal,
+                context,
+                ledger.data.contextPack,
+                ledger.data.plan,
+                handoffCriteria,
+              ),
+            };
+          });
+          this.emit(
+            `delegate handoff prepared for ${delegatedTasks.length} specialist(s): ` +
+              delegatedTasks.map((task) => `${task.agent} (${task.handoff.startingFiles.length} files, ${task.handoff.excerpts.length} excerpts)`).join(', '),
+          );
           const outcome = await executor.execute({
             tool: 'delegate',
-            params: { tasks: runTasks, background: action.background },
+            params: { tasks: delegatedTasks, background: action.background },
             reason: action.background ? 'background specialist sub-tasks' : 'parallel specialist sub-tasks',
             expected: action.background ? 'tracked background agent jobs' : 'summaries from each agent',
           });

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EvidenceEngine, classifyEvidenceKind } from '../evidence/evidence.js';
@@ -1750,10 +1750,19 @@ export class SubAgentRunner {
 
   private clearEmergencyRecovery(repoRoot: string, logicalJobId: string): void {
     this.emergencyRecoveries.delete(logicalJobId);
+    const recoveryPath = this.emergencyRecoveryPath(repoRoot, logicalJobId);
     try {
-      unlinkSync(this.emergencyRecoveryPath(repoRoot, logicalJobId));
+      unlinkSync(recoveryPath);
     } catch {
       /* Best effort only; an old recovery record is harmless and ignored once completed. */
+    }
+    // A fully delivered specialist must leave no private state behind: when
+    // this was the last record, prune the now-empty recovery directory too.
+    // Other paused specialists keep theirs (rmdir fails on a non-empty dir).
+    try {
+      rmdirSync(path.dirname(recoveryPath));
+    } catch {
+      /* Directory still holds other records or is already gone. */
     }
   }
 

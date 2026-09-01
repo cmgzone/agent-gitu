@@ -179,6 +179,8 @@ describe('Gitu prerequisite blocking flow', () => {
         return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: match?.[1] ?? 'ev-missing' } });
       }),
       capture(() => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } })),
+      // Strict-risk completion triggers the final quality review, which needs an explicit verdict.
+      capture(() => 'VERDICT: PASS\nFEEDBACK: nothing to flag.'),
     ]);
     const gitu = new Gitu({
       cwd: root,
@@ -266,6 +268,8 @@ describe('Gitu prerequisite blocking flow', () => {
         return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: match?.[1] ?? 'ev-missing' } });
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'provider task complete', risks: [], followUps: [] } }),
+      // Strict-risk completion triggers the final quality review, which needs an explicit verdict.
+      () => 'VERDICT: PASS\nFEEDBACK: nothing to flag.',
     ]);
 
     const { report, ledger } = await new Gitu({

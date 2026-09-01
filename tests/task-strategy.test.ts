@@ -23,6 +23,10 @@ function makeProject(withFakeLsp: boolean): string {
   tmpDirs.push(dir);
   writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'e2e', scripts: { test: 'node --version' } }, null, 2));
   mkdirSync(path.join(dir, 'src'), { recursive: true });
+  // Regression-proof fixture for the bug-fix rigor gate: the command fails
+  // until the scripted agent writes fix.marker, giving the run a real
+  // FAIL -> edit -> PASS causality chain to record.
+  writeFileSync(path.join(dir, 'check.js'), "process.exit(require('fs').existsSync('fix.marker') ? 0 : 1);\n");
   if (withFakeLsp) {
     mkdirSync(path.join(dir, '.hermes'), { recursive: true });
     writeFileSync(
@@ -106,18 +110,29 @@ describe('Hermes task-strategy injection', () => {
     };
     const llm = new ScriptedMockLlm([
       capture(() => JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } })),
-      capture(() => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'node --version' }] } })),
+      capture(() => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'node check.js' }] } })),
+      // Watch the reproduction fail, apply the fix, then run the SAME command
+      // green — the bug-fix rigor gate requires exactly this causality chain.
       capture(() =>
-        JSON.stringify({
-          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
-        }),
+        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'watch the reproduction fail', expected: 'exit 1 before the fix' } }),
+      ),
+      capture(() =>
+        JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'fix.marker', content: 'fixed\n' }, reason: 'apply the fix', expected: 'marker created' } }),
+      ),
+      capture(() =>
+        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'prove the fix', expected: 'exit 0 after the fix' } }),
+      ),
+      capture(() =>
+        JSON.stringify({ action: { type: 'set_hypothesis', text: 'The reproduction failed because fix.marker was missing; creating it makes check.js pass.' } }),
       ),
       capture((_n, messages) => {
         const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
-        const match = text.match(/(ev-\d{8}-[0-9a-f]{6})/);
-        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: match?.[1] ?? 'ev-missing' } });
+        const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } });
       }),
       capture(() => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } })),
+      // Final quality review (bug fixes always get one) must return an explicit verdict.
+      capture(() => 'VERDICT: PASS\nFEEDBACK: nothing to flag.'),
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
     const { report } = await hermes.run('Fix the crash in the login flow');
@@ -139,17 +154,22 @@ describe('Hermes task-strategy injection', () => {
         }
         return JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } });
       },
-      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'node --version' }] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'node check.js' }] } }),
       () =>
-        JSON.stringify({
-          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
-        }),
+        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'watch the reproduction fail', expected: 'exit 1 before the fix' } }),
+      () =>
+        JSON.stringify({ action: { type: 'tool_call', tool: 'write_file', params: { path: 'fix.marker', content: 'fixed\n' }, reason: 'apply the fix', expected: 'marker created' } }),
+      () =>
+        JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node check.js' }, reason: 'prove the fix', expected: 'exit 0 after the fix' } }),
+      () =>
+        JSON.stringify({ action: { type: 'set_hypothesis', text: 'The reproduction failed because fix.marker was missing; creating it makes check.js pass.' } }),
       (_n, messages) => {
         const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
-        const match = text.match(/(ev-\d{8}-[0-9a-f]{6})/);
-        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: match?.[1] ?? 'ev-missing' } });
+        const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } });
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }),
+      () => 'VERDICT: PASS\nFEEDBACK: nothing to flag.',
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', lsp: unavailableLsp(dir) });
     const { report } = await hermes.run('Fix the crash in the login flow');

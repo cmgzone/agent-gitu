@@ -24,6 +24,7 @@ import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionRequirement } from '../connections/connections.js';
+import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
@@ -2625,9 +2626,18 @@ export class GituServer {
         if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
         const operation = normalizeConnectionOperation(proposal.operation);
         if (!operation || operation.risk === 'read') throw new Error('Only a documented non-read provider operation can use the approval channel.');
-        if (!profile.capabilities.includes(operation.capability)) {
-          throw new Error(`Saved connection does not declare capability "${operation.capability}". Request that capability through secure connection setup before proposing this operation.`);
+        const capabilityDeclared = profile.capabilities.includes(operation.capability);
+        // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
+        // connection resolves from verified official documentation (the catalog)
+        // or the proposal's claimed documentationUrl — it never requires the
+        // user to re-enter a credential.
+        if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, operation.capability) && !proposal.documentationUrl) {
+          throw new Error(
+            `Saved connection "${profile.label}" does not declare capability "${operation.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
+              `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
+          );
         }
+        const documentedCapability = !capabilityDeclared;
         const existing = this.connections.operation(profile.id, operation.id);
         if (existing && JSON.stringify(existing) !== JSON.stringify(operation)) {
           throw new Error(`Operation id "${operation.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
@@ -2651,20 +2661,28 @@ export class GituServer {
         // Registration happens only after approval. It makes the immutable
         // documented operation discoverable in future tasks, but every write
         // still returns through this approval path before invocation.
-        const registered = this.connections.registerApprovedOperation(profile.id, operation);
+        const registered = this.connections.registerApprovedOperation(profile.id, operation, documentedCapability);
         const result = await this.connections.invoke(profile.id, registered.id, body);
         return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
       },
+      // The secure form is framed by WHAT the user is being asked to change:
+      // 'reauth' only after a positively classified authentication failure,
+      // 'setup' for a genuinely first-time connection.
+      connectionRecoveryCheck: (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite),
       connectionRequestHandler: (prerequisite) =>
         new Promise<boolean>((resolve) => {
+          const decision = this.connections.connectionRecoveryDecision(prerequisite);
           const waiter: ConnectionWaiter = {
             id: shortId('conn'),
-            requirement: this.connections.requirementFor(prerequisite),
+            requirement: {
+              ...this.connections.requirementFor(prerequisite),
+              requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
+            },
             requestedAt: nowIso(),
             resolve,
           };
           session.connection = waiter;
-          this.pushEvent(session, `connection waiting for secure setup — ${waiter.requirement.description}`);
+          this.pushEvent(session, `connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
           setTimeout(() => {
             if (session.connection === waiter) {
               session.connection = undefined;

@@ -20,6 +20,13 @@ export interface PrerequisiteProvider {
   capabilities: Capability[];
   /** Read-only discovery: find a reusable connection/resource/configuration. */
   discover?(input: ProviderRecoveryInput): Promise<ProviderRecoveryResult>;
+  /**
+   * Capability-level resolution: a valid saved connection that lacks a
+   * capability/operation. Resolvers are expected to FIX the gap under the
+   * existing credential (safe reads via documented catalogs) and to report
+   * anything needing an operation-level approval — never a credential.
+   */
+  resolveCapability?(input: { providerHint?: string; capabilities: string[] }): Promise<ProviderCapabilityResult>;
   /** Optional creation/provisioning. This is never called until policy allows it. */
   provision?(input: ProviderRecoveryInput): Promise<ProviderRecoveryResult>;
   /** Verify a newly provisioned resource before claiming it usable. */
@@ -28,6 +35,17 @@ export interface PrerequisiteProvider {
   rollback?(input: ProviderRecoveryInput, result: ProviderRecoveryResult): Promise<void>;
   /** Provisioning defaults to COSTLY unless the adapter explicitly declares otherwise. */
   provisionRisk?: RecoveryRisk;
+}
+
+export interface ProviderCapabilityResult {
+  status: 'resolved' | 'unresolved' | 'needs-user';
+  /** Saved connection validated and its credential reused. */
+  healthyConnection?: boolean;
+  /** How many safe-read operations were registered under the existing credential. */
+  registeredReads: number;
+  /** Capabilities whose operation needs host/user approval (writes). */
+  awaitingApproval: string[];
+  summary: string;
 }
 
 export interface ProviderRecoveryInput {
@@ -266,6 +284,51 @@ class ResourceProvisioningStrategy implements RecoveryStrategy {
   }
 }
 
+/**
+ * Capability-level recovery for a VALID saved connection that lacks a
+ * capability/operation. Missing capability is NOT invalid auth: the resolver
+ * reuses the existing credential, registers safe reads from documented
+ * catalogs, reports writes as needing operation approval, and NEVER requests
+ * a credential. Only positive authentication failure returns 'needs-user'
+ * with a reauth summary.
+ */
+class ConnectionCapabilityResolutionStrategy implements RecoveryStrategy {
+  readonly id = 'connection-capability-resolution';
+  canHandle(prerequisite: MissingPrerequisite, context: RecoveryContext): boolean {
+    return context.providers.some((provider) => Boolean(provider.resolveCapability))
+      && Boolean(prerequisite.providerHint || prerequisite.capabilities?.length);
+  }
+
+  async resolve(prerequisite: MissingPrerequisite, context: RecoveryContext): Promise<RecoveryStrategyResult> {
+    const seen: string[] = [];
+    for (const provider of context.providers) {
+      if (!provider.resolveCapability) continue;
+      try {
+        const outcome = await provider.resolveCapability({
+          ...(prerequisite.providerHint ? { providerHint: prerequisite.providerHint } : {}),
+          capabilities: prerequisite.capabilities ?? [],
+        });
+        // 'needs-user' here would dead-end recovery without a question (the
+        // host routes credential needs through the exhausted recovery path),
+        // so ambiguity is reported as unresolved with its summary.
+        if (outcome.healthyConnection && (outcome.registeredReads > 0 || outcome.awaitingApproval.length > 0)) {
+          return {
+            status: 'resolved',
+            source: 'existing-resource',
+            summary: outcome.summary,
+            provider: provider.id,
+            risk: RecoveryRisk.READ_ONLY,
+          };
+        }
+        seen.push(`${provider.id}: ${outcome.summary}`);
+      } catch {
+        seen.push(`${provider.id}: capability resolution failed safely`);
+      }
+    }
+    return { status: 'unresolved', summary: seen.join('; ') || 'No connected provider could resolve the requested capability.', risk: RecoveryRisk.READ_ONLY };
+  }
+}
+
 /** Infer a structured prerequisite from legacy free-text request_block reasons. */
 export function inferMissingPrerequisite(reason: string, requiredFor = 'continue the task'): MissingPrerequisite | undefined {
   const text = reason.replace(/\s+/g, ' ').trim();
@@ -320,6 +383,7 @@ export class CapabilityAwareResolver {
     this.policy = new RecoveryPolicy(options);
     this.strategies = options.strategies ?? [
       new RepoConfigDiscoveryStrategy(),
+      new ConnectionCapabilityResolutionStrategy(),
       new EnvironmentDiscoveryStrategy(),
       new ConnectedServiceDiscoveryStrategy(),
       new ResourceProvisioningStrategy(),

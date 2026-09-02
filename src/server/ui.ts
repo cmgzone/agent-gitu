@@ -3218,6 +3218,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var olds = stream.querySelectorAll('.connection-card');
     for (var i = 0; i < olds.length; i++) olds[i].remove();
     var req = pending.requirement || {};
+    var isReauth = req.requestType === 'reauth';
     var provider = req.providerHint || 'provider';
     var caps = req.capabilities || [];
     var setup = req.setup || {};
@@ -3241,8 +3242,10 @@ export const UI_HTML = String.raw`<!doctype html>
         '<div class="hint">If you only have an API key, ask Gitu to find the provider’s official API documentation first; it can prefill safe endpoint details when they are verified.</div>';
     var div = document.createElement('div');
     div.className = 'qcard connection-card';
-    div.innerHTML = '<h3>secure connection required</h3>' +
-      '<div class="meta-line">Agent Gitu needs ' + esc(req.description || 'provider access') + ' for ' + esc(req.requiredFor || 'this task') + '. Your credential is validated locally and is never shown to the model, task history, generated skill, or logs.</div>' +
+    div.innerHTML = '<h3>' + (isReauth ? 'reauthorize saved connection' : 'secure connection setup') + '</h3>' +
+      '<div class="meta-line">' + (isReauth
+        ? 'The saved credential for "' + esc(label) + '" was positively rejected or expired (' + esc(req.requestType || 'reauth') + ' auth evidence). Replacing it is the only required action — endpoint, documentation, and registered operations are kept. <strong>A missing capability is never a reason to re-enter a credential.</strong>'
+        : 'Agent Gitu needs ' + esc(req.description || 'provider access') + ' for ' + esc(req.requiredFor || 'this task') + '. Your credential is validated locally and is never shown to the model, task history, generated skill, or logs.') + '</div>' +
       '<div style="display:grid;gap:8px;margin-top:10px">' + formFields + '</div>' +
       (caps.length ? '<div class="hint" style="margin-top:8px">Required capabilities: ' + esc(caps.join(', ')) + '</div>' : '') +
       '<div class="actions"><button class="btn dark" data-saveconnection>' + (apiKeyOnly ? 'Save API key, validate, and resume' : 'Save, validate, and resume') + '</button></div>';

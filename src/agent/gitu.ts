@@ -45,6 +45,7 @@ import {
   normalizeConnectionSetupHint,
   type ConnectionOperation,
   type ConnectionOperationProposal,
+  type ConnectionRecoveryDecision,
 } from '../connections/connections.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
@@ -104,6 +105,13 @@ export interface GituConfig {
   /** Host-owned secure connection form. The model only supplies a structured
    * prerequisite; it never receives a credential value. */
   connectionRequestHandler?: (prerequisite: MissingPrerequisite) => Promise<boolean>;
+  /**
+   * Host-side recovery routing decision for an exhausted prerequisite:
+   * 'reauth' (positive auth failure — secure reauthorization), 
+   * 'capability-resolution' (valid saved connection, missing operation — NEVER
+   * prompt for a credential), or 'setup-new' (no saved connection yet).
+   */
+  connectionRecoveryCheck?: (prerequisite: MissingPrerequisite) => Promise<ConnectionRecoveryDecision> | ConnectionRecoveryDecision;
   /** User-saved connection metadata that is safe to provide after recovery. */
   connectionContext?: () => string;
   /** Executes only a registered, read-only provider operation. URLs and
@@ -2064,7 +2072,10 @@ export class Gitu {
       let loopBlocks = 0;
       const connectionActionAttempts = new Map<string, number>();
       const connectionOperationAttempts = new Map<string, number>();
-      let followUpCriteriaAdded = false;
+      // Capability-resolution must be followed by a concrete action; a model
+      // that re-requests the same missing capability instead of proposing the
+      // documented operation gets blocked rather than looping forever.
+      const capabilityResolutionNotes = new Map<string, number>();      let followUpCriteriaAdded = false;
       let followUpPlanReviewHandled = false;
       let architectureAuditRejections = 0;
       let planningNudged = false;
@@ -3091,7 +3102,7 @@ export class Gitu {
                     : '';
                 this.emit(`connection ${action.connectionId}/${action.operationId} failed — ${reason}`);
                 observe(
-                  `CONNECTION ACTION FAILED: ${(error as Error).message}${exampleEcho}\nDo not retry by adding raw headers to web_fetch. Check the saved connection's registered read operation or request a corrected secure connection.`,
+                  `CONNECTION ACTION FAILED: ${(error as Error).message}${exampleEcho}\nDo not retry by adding raw headers to web_fetch. The saved connection and its credential stay valid; resolve the missing operation (registered read for discovery, or documented connection_operation for writes) or, only when the provider positively rejected authentication, use secure reauthorization.`,
                 );
               }
               break;
@@ -3597,21 +3608,72 @@ export class Gitu {
                   break;
                 }
                 // A saved connection is user-owned input, so never ask the model
-                // to carry a token in conversation.  The host renders a secure
+                // to carry a token in conversation. The host renders a secure
                 // form, stores the credential separately, validates it, then the
-                // resolver gets one fresh discovery pass.
+                // resolver gets one fresh discovery pass. BUT a saved connection
+                // with a valid credential is NOT one of these cases: when only an
+                // operation/capability is missing, MISSING_OPERATION !==
+                // INVALID_CONNECTION — the model resolves the capability under the
+                // existing credential instead of prompting the user again.
                 if (resolution.status === 'exhausted' && this.config.connectionRequestHandler && (prerequisite.providerHint || prerequisite.capabilities?.length)) {
-                  ledger.recordPrerequisiteRecovery({
-                    prerequisiteId: prerequisite.id,
-                    prerequisiteKind: prerequisite.kind,
-                    description: prerequisite.description,
-                    requiredFor: prerequisite.requiredFor,
-                    strategy: 'secure-connection-request',
-                    status: 'NEEDS_USER',
-                    outcome: 'Waiting for the user to configure and validate a saved connection through the local secure form.',
-                    risk: RecoveryRisk.READ_ONLY,
-                  });
-                  this.emit(`connection required — ${prerequisite.description}`);
+                  const decision: ConnectionRecoveryDecision = (await this.config.connectionRecoveryCheck?.(prerequisite)) ?? {
+                    action: 'setup-new',
+                    reason: 'The host has no capability-aware recovery routing.',
+                  };
+                  if (decision.action === 'capability-resolution') {
+                    const noteCount = (capabilityResolutionNotes.get(prerequisite.id) ?? 0) + 1;
+                    capabilityResolutionNotes.set(prerequisite.id, noteCount);
+                    if (noteCount > 2) {
+                      const blocked = `${decision.reason}\nRepeatedly re-requested a resolvable capability instead of using the saved connection (registered reads / documented connection_operation).`;
+                      ledger.addBlocker(blocked);
+                      exitReason = 'blocked';
+                      observe(`Recovery stopped after repeated capability-resolution requests:\n${blocked}`);
+                      break;
+                    }
+                    ledger.recordPrerequisiteRecovery({
+                      prerequisiteId: prerequisite.id,
+                      prerequisiteKind: prerequisite.kind,
+                      description: prerequisite.description,
+                      requiredFor: prerequisite.requiredFor,
+                      strategy: 'capability-resolution',
+                      status: 'CAPABILITY_RESOLUTION',
+                      outcome: decision.reason,
+                      risk: RecoveryRisk.READ_ONLY,
+                    });
+                    this.emit(`capability resolution required — ${decision.reason}`);
+                    observe(
+                      `CAPABILITY RESOLUTION REQUIRED: ${decision.reason}\n` +
+                        'Use the saved connection — it is valid and its credential remains private. Propose the exact operation: ' +
+                        'safe reads come from registered read operations; documented writes go through connection_operation with a documentationUrl (the host shows the exact request for approval and registers it). ' +
+                        'Do NOT ask the user to re-enter the API key, token, or base URL. Continue the task. The connection state and operation availability are tracked separately.',
+                    );
+                    break;
+                  }
+                  if (decision.action === 'reauth') {
+                    ledger.recordPrerequisiteRecovery({
+                      prerequisiteId: prerequisite.id,
+                      prerequisiteKind: prerequisite.kind,
+                      description: prerequisite.description,
+                      requiredFor: prerequisite.requiredFor,
+                      strategy: 'secure-connection-request',
+                      status: 'CONNECTION_REAUTH',
+                      outcome: `${decision.reason} Secure reauthorization is the appropriate recovery; do not treat connection setup as a capability gap.`,
+                      risk: RecoveryRisk.READ_ONLY,
+                    });
+                    this.emit(`connection reauthorization required — ${decision.reason}`);
+                  } else {
+                    ledger.recordPrerequisiteRecovery({
+                      prerequisiteId: prerequisite.id,
+                      prerequisiteKind: prerequisite.kind,
+                      description: prerequisite.description,
+                      requiredFor: prerequisite.requiredFor,
+                      strategy: 'secure-connection-request',
+                      status: 'NEEDS_USER',
+                      outcome: 'Waiting for the user to configure and validate a saved connection through the local secure form.',
+                      risk: RecoveryRisk.READ_ONLY,
+                    });
+                    this.emit(`connection setup required — ${prerequisite.description}`);
+                  }
                   const connected = await this.config.connectionRequestHandler(prerequisite);
                   if (connected) {
                     this.emit(`connection saved — retrying discovery for ${prerequisite.description}`);
@@ -3639,6 +3701,20 @@ export class Gitu {
                     observe(`Saved connection did not resolve the prerequisite:\n${blocked}`);
                     break;
                   }
+                } else if (resolution.status === 'exhausted' && (prerequisite.providerHint || prerequisite.capabilities?.length)) {
+                  // No host connection form exists (e.g. plain CLI run): explain
+                  // the distinction so the model never fabricates a credential.
+                  ledger.recordPrerequisiteRecovery({
+                    prerequisiteId: prerequisite.id,
+                    prerequisiteKind: prerequisite.kind,
+                    description: prerequisite.description,
+                    requiredFor: prerequisite.requiredFor,
+                    strategy: 'capability-resolution',
+                    status: 'CAPABILITY_RESOLUTION',
+                    outcome: 'No host connection form; the missing need is capability-level. A saved connection (if any) must be reused, never re-created.',
+                    risk: RecoveryRisk.READ_ONLY,
+                  });
+                  this.emit(`capability resolution required — no saved-connection host form is available`);
                 }
                 const blocked = formatBlockedPrerequisite(resolution);
                 ledger.addBlocker(blocked);

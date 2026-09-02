@@ -604,7 +604,18 @@ export enum RecoveryRisk {
   PRODUCTION_CRITICAL = 'PRODUCTION_CRITICAL',
 }
 
-export type PrerequisiteRecoveryStatus = 'RESOLVING_PREREQUISITE' | 'RESOURCE_DISCOVERY' | 'RESOURCE_REUSED' | 'RESOURCE_PROVISIONED' | 'RECOVERY_EXHAUSTED' | 'NEEDS_USER';
+export type PrerequisiteRecoveryStatus =
+  | 'RESOLVING_PREREQUISITE'
+  | 'RESOURCE_DISCOVERY'
+  | 'RESOURCE_REUSED'
+  | 'RESOURCE_PROVISIONED'
+  | 'RECOVERY_EXHAUSTED'
+  | 'NEEDS_USER'
+  /** A capability is missing from a VALID saved connection: never a
+   * credential prompt — resolve the documented operation instead. */
+  | 'CAPABILITY_RESOLUTION'
+  /** Only reached after positively confirmed authentication failure. */
+  | 'CONNECTION_REAUTH';
 
 /** No secret values are stored here: only source, policy and outcome facts. */
 export interface PrerequisiteRecoveryRecord {

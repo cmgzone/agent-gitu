@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
-import type { PrerequisiteProvider, ProviderRecoveryInput, ProviderRecoveryResult } from '../recovery/prerequisites.js';
+import type { PrerequisiteProvider, ProviderCapabilityResult, ProviderRecoveryInput, ProviderRecoveryResult } from '../recovery/prerequisites.js';
 import { SkillStore } from '../skills/skills.js';
 import type { Capability, ConnectionSetupHint, MissingPrerequisite } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
 import { ensureGituHome } from '../workspace/home.js';
+import { catalogCapabilityDeclared, catalogOperationFor } from './catalog.js';
 
 /**
  * A connection is deliberately not a model tool.  It is a user-owned,
@@ -52,10 +53,99 @@ export interface ConnectionProfile {
   updatedAt: string;
   lastValidatedAt?: string;
   lastValidationStatus?: 'ok' | 'failed';
+  /**
+   * Auth validity of the SAVED credential, persisted separately from what the
+   * connection can execute. Missing-credential and HTTP-401/expired-revoked
+   * responses are the only positive authentication signals. NEVER derived
+   * from capability state: a missing operation does not invalidate auth.
+   */
+  authState?: ConnectionAuthStateRecord;
+  /**
+   * What the saved connection can and cannot execute, persisted separately
+   * from auth validity. NEVER derived from auth state: an invalid credential
+   * does not prove a capability was never granted.
+   */
+  capabilityState?: ConnectionCapabilityStateRecord;
+}
+
+/** Credential validity, evaluated only from authentication evidence. */
+export interface ConnectionAuthStateRecord {
+  status: 'valid' | 'invalid' | 'expired' | 'unknown';
+  reason?: string;
+  checkedAt?: string;
+}
+
+/** Operation availability, evaluated independently of credential validity. */
+export interface ConnectionCapabilityStateRecord {
+  /** Capability ids positively rejected by the provider (typically HTTP 403 —
+   * insufficient scope, NOT invalid credentials). */
+  denied: string[];
+  /** Capability ids the provider reported as missing (HTTP 404 / unknown). */
+  missing: string[];
+  /** When the last capability discovery/registration ran. */
+  discoveredAt?: string;
 }
 
 export interface ConnectionProfileView extends ConnectionProfile {
   hasCredential: boolean;
+}
+
+/** Explicit connection lifecycle states for recovery routing. */
+export type ConnectionState =
+  | 'CONNECTED'
+  | 'CONNECTED_MISSING_OPERATION'
+  | 'CONNECTED_INSUFFICIENT_SCOPE'
+  | 'AUTH_INVALID'
+  | 'AUTH_EXPIRED'
+  | 'PROVIDER_UNREACHABLE'
+  | 'CONFIG_INVALID'
+  | 'DISCOVERY_FAILED';
+
+/** Result of the provider-neutral capability resolver. */
+export type ConnectionResolution = 'existing' | 'discovered' | 'requires_approval' | 'insufficient_scope' | 'discovery_failed';
+
+export interface ResolveConnectionOperationInput {
+  /** Exact saved connection id. Required except when resolving a prerequisite
+   * by providerHint — then the host picks the matching credentialed profile. */
+  connectionId?: string;
+  /** Matches the saved profile's provider slug when no connection id is given. */
+  providerHint?: string;
+  /** Documented operation proposal from official API documentation. */
+  operation?: ConnectionOperation;
+  /** Capability-only resolution (e.g. a prerequisite's declared capability). */
+  capability?: string;
+  /** Desired risk class when no concrete operation is supplied. */
+  riskLevel?: 'read' | 'reversible-write' | 'destructive';
+}
+
+export interface ResolveConnectionOperationResult {
+  connectionId: string;
+  connectionValid: boolean;
+  operationAvailable: boolean;
+  state: ConnectionState;
+  resolution: ConnectionResolution;
+  /** The operation that exists, was discovered, or needs approval. */
+  operation?: ConnectionOperation;
+  capability?: string;
+  reason: string;
+}
+
+/** Routing decision a host makes for exhausted prerequisite recovery. */
+export interface ConnectionRecoveryDecision {
+  action: 'reauth' | 'capability-resolution' | 'setup-new';
+  state?: ConnectionState;
+  reason: string;
+}
+
+export interface ConnectionRequirement {
+  prerequisiteId: string;
+  description: string;
+  requiredFor: string;
+  providerHint?: string;
+  capabilities: string[];
+  setup?: ConnectionSetupHint;
+  /** How the secure connection form should be framed. */
+  requestType: 'reauth' | 'setup';
 }
 
 export interface ConnectionDraft {
@@ -77,6 +167,8 @@ export interface ConnectionRequirement {
   providerHint?: string;
   capabilities: string[];
   setup?: ConnectionSetupHint;
+  /** How the secure connection form should be framed. */
+  requestType: 'reauth' | 'setup';
 }
 
 export interface ConnectionInvocationResult {
@@ -115,6 +207,26 @@ function compactText(value: unknown, limit: number): string {
 function normalizeCapabilities(value: unknown): string[] {
   const raw = Array.isArray(value) ? value : [];
   return [...new Set(raw.map((item) => String(item).trim().toLowerCase()).filter((item) => CAPABILITY_RE.test(item)))].slice(0, 24);
+}
+
+function normalizeAuthState(value: unknown): ConnectionAuthStateRecord | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const status = raw['status'];
+  if (status !== 'valid' && status !== 'invalid' && status !== 'expired' && status !== 'unknown') return undefined;
+  const reason = typeof raw['reason'] === 'string' ? compactText(raw['reason'], 300) : undefined;
+  const checkedAt = typeof raw['checkedAt'] === 'string' ? raw['checkedAt'].slice(0, 80) : undefined;
+  return { status, ...(reason ? { reason } : {}), ...(checkedAt ? { checkedAt } : {}) };
+}
+
+function normalizeCapabilityState(value: unknown): ConnectionCapabilityStateRecord | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const denied = normalizeCapabilities(raw['denied']);
+  const missing = normalizeCapabilities(raw['missing']);
+  const discoveredAt = typeof raw['discoveredAt'] === 'string' ? raw['discoveredAt'].slice(0, 80) : undefined;
+  if (denied.length === 0 && missing.length === 0 && !discoveredAt) return undefined;
+  return { denied, missing, ...(discoveredAt ? { discoveredAt } : {}) };
 }
 
 function isLocalHttp(url: URL): boolean {
@@ -257,11 +369,28 @@ export type ConnectionInvocationOutcome = 'not-run' | 'sent-rejected' | 'sent-un
 
 export class ConnectionInvocationError extends Error {
   readonly outcome: ConnectionInvocationOutcome;
+  /**
+   * Explicit connection state at failure time. MISSING_OPERATION is not
+   * INVALID_CONNECTION: a 404/unknown operation never downgrades the saved
+   * credential to "needs re-entry".
+   */
+  readonly state: ConnectionState;
+  /** True only when the failure is POSITIVELY an authentication failure
+   * (HTTP 401, expired/revoked credential, missing credential). HTTP 403 is
+   * scope-related and is never auth evidence. */
+  readonly authEvident: boolean;
 
-  constructor(outcome: ConnectionInvocationOutcome, message: string) {
+  constructor(
+    outcome: ConnectionInvocationOutcome,
+    message: string,
+    state: ConnectionState = 'CONFIG_INVALID',
+    authEvident = false,
+  ) {
     super(message);
     this.name = 'ConnectionInvocationError';
     this.outcome = outcome;
+    this.state = state;
+    this.authEvident = authEvident;
   }
 }
 
@@ -324,12 +453,16 @@ function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
   const documentationUrl = normalizeConnectionDocumentationUrl(raw['documentationUrl']);
   const lastValidatedAt = typeof raw['lastValidatedAt'] === 'string' ? raw['lastValidatedAt'].slice(0, 80) : undefined;
   const lastValidationStatus = raw['lastValidationStatus'] === 'ok' || raw['lastValidationStatus'] === 'failed' ? raw['lastValidationStatus'] : undefined;
+  const authState = normalizeAuthState(raw['authState']);
+  const capabilityState = normalizeCapabilityState(raw['capabilityState']);
   if (!id || !label || !provider || !baseUrl || operations.length === 0) return undefined;
   return {
     id, label, provider, baseUrl, capabilities, operations, createdAt, updatedAt,
     ...(documentationUrl ? { documentationUrl } : {}),
     ...(lastValidatedAt ? { lastValidatedAt } : {}),
     ...(lastValidationStatus ? { lastValidationStatus } : {}),
+    ...(authState ? { authState } : {}),
+    ...(capabilityState ? { capabilityState } : {}),
   };
 }
 
@@ -337,6 +470,15 @@ function profileMatches(profile: ConnectionProfile, requirement: ConnectionRequi
   const hint = slug(requirement.providerHint, '');
   if (hint && ![profile.id, profile.provider, slug(profile.label, '')].includes(hint)) return false;
   return requirement.capabilities.every((capability) => profile.capabilities.includes(capability));
+}
+
+/** Looser match for RECOVERY ROUTING: a saved connection for the same
+ * provider already proves the user connected it once — missing capabilities
+ * must not present as "no connection at all". */
+function profilePlausiblyMatches(profile: ConnectionProfile, requirement: ConnectionRequirement): boolean {
+  const hint = slug(requirement.providerHint, '');
+  if (hint) return [profile.id, profile.provider, slug(profile.label, '')].includes(hint);
+  return requirement.capabilities.some((capability) => profile.capabilities.includes(capability));
 }
 
 function requirementFrom(prerequisite: MissingPrerequisite): ConnectionRequirement {
@@ -348,6 +490,7 @@ function requirementFrom(prerequisite: MissingPrerequisite): ConnectionRequireme
     ...(prerequisite.providerHint ? { providerHint: prerequisite.providerHint } : {}),
     capabilities: prerequisite.capabilities ?? [],
     ...(setup ? { setup } : {}),
+    requestType: 'setup',
   };
 }
 
@@ -471,6 +614,8 @@ export class ConnectionRegistry {
       ...(documentationUrl ? { documentationUrl } : {}),
       ...(existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
       ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
+      ...(existing?.authState ? { authState: existing.authState } : {}),
+      ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
     };
     const next = [...this.profiles().filter((candidate) => candidate.id !== id), profile];
     this.saveProfiles(next);
@@ -534,18 +679,77 @@ export class ConnectionRegistry {
     }
   }
 
+  private withProfile(id: string, mutate: (profile: ConnectionProfile) => void): void {
+    try {
+      const profiles = this.profiles();
+      const current = profiles.find((profile) => profile.id === id);
+      if (!current) return;
+      mutate(current);
+      current.updatedAt = nowIso();
+      this.saveProfiles(profiles);
+    } catch {
+      /* state recording is best-effort; an invocation result is never amended */
+    }
+  }
+
+  /**
+   * Record POSITIVE auth evidence only. `invalid`/`expired` are reserved for
+   * HTTP 401 / provider-declared broken credentials and a missing credential;
+   * nothing else ever downgrades auth state.
+   */
+  private recordAuth(id: string, status: 'valid' | 'invalid' | 'expired' | 'unknown', reason?: string): void {
+    this.withProfile(id, (profile) => {
+      profile.authState = { status, ...(reason ? { reason: compactText(reason, 300) } : {}), checkedAt: nowIso() };
+    });
+  }
+
+  private recordCapability(id: string, patch: { deny?: string[]; miss?: string[]; discovered?: boolean }): void {
+    this.withProfile(id, (profile) => {
+      const current = profile.capabilityState ?? { denied: [], missing: [] };
+      const denied = [...new Set([...current.denied, ...(patch.deny ?? [])])].slice(0, 24);
+      const missing = [...new Set([...current.missing, ...(patch.miss ?? [])])].filter((item) => !denied.includes(item)).slice(0, 24);
+      profile.capabilityState = {
+        denied, missing,
+        ...(patch.discovered || current.discoveredAt ? { discoveredAt: current.discoveredAt ?? nowIso() } : {}),
+      };
+    });
+  }
+
+  /** Credential validity is stored separately from operation availability. */
+  authStateOf(id: string): ConnectionAuthStateRecord {
+    return this.get(id)?.authState ?? { status: 'unknown' };
+  }
+
+  /** Operation availability is stored separately from credential validity. */
+  capabilityStateOf(id: string): ConnectionCapabilityStateRecord {
+    return this.get(id)?.capabilityState ?? { denied: [], missing: [] };
+  }
+
+  private credentialPresent(id: string): boolean {
+    return Boolean(loadStoredKeys()[keyRef(id)]?.trim());
+  }
+
   async invoke(id: string, operationId: string, body?: unknown): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
-    if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.');
+    if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
     const operation = profile.operations.find((candidate) => candidate.id === operationId);
-    if (!operation) throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.');
+    if (!operation) {
+      // A missing REGISTERED operation is a capability gap, never invalidation.
+      // The saved credential is untouched; discovery may register the op.
+      this.recordCapability(profile.id, { miss: [operationId] });
+      throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.', 'CONNECTED_MISSING_OPERATION');
+    }
     const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
-    if (!token) throw new ConnectionInvocationError('not-run', 'Saved connection needs its credential added again.');
-    if (body !== undefined && operation.method === 'GET') throw new ConnectionInvocationError('not-run', 'A read-only GET operation cannot include a request body.');
+    if (!token) {
+      // Explicitly deleted/missing credential IS positive auth evidence.
+      this.recordAuth(profile.id, 'invalid', 'The saved credential is missing.');
+      throw new ConnectionInvocationError('not-run', 'Saved connection needs its credential added again.', 'AUTH_INVALID', true);
+    }
+    if (body !== undefined && operation.method === 'GET') throw new ConnectionInvocationError('not-run', 'A read-only GET operation cannot include a request body.', 'CONFIG_INVALID');
     let encoded: string | undefined;
     if (body !== undefined) {
       encoded = JSON.stringify(normalizeConnectionOperationBody(body));
-      if (encoded.length > 64 * 1024) throw new ConnectionInvocationError('not-run', 'Connection request body is too large.');
+      if (encoded.length > 64 * 1024) throw new ConnectionInvocationError('not-run', 'Connection request body is too large.', 'CONFIG_INVALID');
     }
     let response: Response;
     try {
@@ -560,10 +764,12 @@ export class ConnectionRegistry {
       this.updateValidation(profile.id, 'failed');
       // The transport failed mid-flight (network, timeout, redirect refusal):
       // for a POST the provider may or may not have received the request, so
-      // the honest classification is UNKNOWN, never "not run".
+      // the honest classification is UNKNOWN, never "not run". The credential
+      // was never evaluated, so auth state is untouched.
       throw new ConnectionInvocationError(
         'sent-unknown',
         'Connection request did not complete (network, timeout, or redirect). The provider may or may not have received it — verify provider state before any retry.',
+        'PROVIDER_UNREACHABLE',
       );
     }
     if (!response.ok) {
@@ -575,9 +781,34 @@ export class ConnectionRegistry {
       // The provider error body is THE evidence the brain needs (missing
       // fields, wrong ids, permission scope) — keep up to 4k of it.
       const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 4_000)}`;
-      throw new ConnectionInvocationError('sent-rejected', `${safeErrorStatus(response.status)} (HTTP ${response.status}).${detailText}`);
+      // ── Connection-state classification ────────────────────────────────
+      // MISSING_OPERATION !== INVALID_CONNECTION. Only 401 (or an explicit
+      // invalid/expired/revoked credential signal) is auth evidence; 403 is
+      // scope-related and NEVER downgrades the saved credential.
+      if (response.status === 401) {
+        const expired = /expired|revoked/i.test(detailText.toLowerCase());
+        const state = expired ? 'AUTH_EXPIRED' : 'AUTH_INVALID';
+        const statusLabel = expired ? 'Authentication or token is expired/revoked' : 'Authentication was rejected';
+        this.recordAuth(profile.id, expired ? 'expired' : 'invalid', `HTTP 401${detailText}`.slice(0, 300));
+        throw new ConnectionInvocationError('sent-rejected', `${statusLabel} (HTTP 401).${detailText}`, state, true);
+      }
+      if (response.status === 403) {
+        // Insufficient scope on a VALID credential: keep auth state, mark the
+        // capability denied so resolution can explain which scope is missing.
+        this.recordCapability(profile.id, { deny: [operation.capability] });
+        throw new ConnectionInvocationError('sent-rejected', `Permission or scope for "${operation.capability}" was denied (HTTP 403) — the credential itself is valid; the token lacks the required scope.${detailText}`, 'CONNECTED_INSUFFICIENT_SCOPE');
+      }
+      if (response.status === 404) {
+        this.recordCapability(profile.id, { miss: [operation.capability] });
+        throw new ConnectionInvocationError('sent-rejected', `The provider does not expose "${operation.path}" (HTTP 404) — the connection is valid; the endpoint may be wrong or capability-specific.${detailText}`, 'CONNECTED_MISSING_OPERATION');
+      }
+      if (response.status === 429 || response.status >= 500) {
+        throw new ConnectionInvocationError('sent-rejected', safeErrorStatus(response.status) + ` (HTTP ${response.status}).${detailText}`, 'PROVIDER_UNREACHABLE');
+      }
+      throw new ConnectionInvocationError('sent-rejected', `${safeErrorStatus(response.status)} (HTTP ${response.status}).${detailText}`, 'CONFIG_INVALID');
     }
     this.updateValidation(profile.id, 'ok');
+    this.recordAuth(profile.id, 'valid');
     let data: unknown;
     try {
       data = await boundedResponseData(response);
@@ -585,6 +816,7 @@ export class ConnectionRegistry {
       throw new ConnectionInvocationError(
         'sent-unknown',
         `The provider accepted the operation (HTTP ${response.status}) but its response could not be read. Treat the operation as POSSIBLY completed — verify provider state before re-running anything non-idempotent.`,
+        'PROVIDER_UNREACHABLE',
       );
     }
     return { ok: true, status: response.status, message: `${operation.label} succeeded (HTTP ${response.status}).`, ...(data !== undefined ? { data } : {}) };
@@ -617,14 +849,21 @@ export class ConnectionRegistry {
   }
 
   /** Add an operation only after a host-level approval. Existing operation
-   * ids are immutable so a later model turn cannot silently retarget one. */
-  registerApprovedOperation(id: string, candidate: ConnectionOperation): ConnectionOperation {
+   * ids are immutable so a later model turn cannot silently retarget one.
+   * `documentedCapability` permits extending the profile's capability set
+   * from verified official API documentation (the catalog) or a proposal that
+   * the user explicitly approved — this is how capability additions persist
+   * for future tasks without touching the credential. */
+  registerApprovedOperation(id: string, candidate: ConnectionOperation, documentedCapability = false): ConnectionOperation {
     const profile = this.get(id);
     if (!profile) throw new Error('Saved connection not found.');
     const operation = normalizeConnectionOperation(candidate);
     if (!operation) throw new Error('Connection operation is malformed or has an unsafe method/risk combination.');
-    if (!profile.capabilities.includes(operation.capability)) {
-      throw new Error(`Saved connection does not declare capability "${operation.capability}".`);
+    const capabilityKnown = profile.capabilities.includes(operation.capability)
+      || documentedCapability
+      || catalogCapabilityDeclared(profile.provider, operation.capability);
+    if (!capabilityKnown) {
+      throw new Error(`Saved connection does not declare capability "${operation.capability}", and no documented provider catalog entry or verified documentation supports adding it. Add the capability through a documented connection_operation proposal or secure connection setup.`);
     }
     const existing = profile.operations.find((item) => item.id === operation.id);
     if (existing) {
@@ -633,16 +872,240 @@ export class ConnectionRegistry {
       }
       return existing;
     }
+    const capabilities = [...new Set([...profile.capabilities, operation.capability])];
     this.save({
       id: profile.id,
       label: profile.label,
       provider: profile.provider,
       baseUrl: profile.baseUrl,
       ...(profile.documentationUrl ? { documentationUrl: profile.documentationUrl } : {}),
-      capabilities: profile.capabilities,
+      capabilities,
       operations: [...profile.operations, operation],
     });
+    this.recordCapability(profile.id, { discovered: true });
     return operation;
+  }
+
+  /**
+   * Provider-neutral capability resolver. THE invariant: auth validity and
+   * operation availability are evaluated and stored separately, and
+   * MISSING_OPERATION never downgrades a valid credential. Resolution never
+   * asks for a credential — it only exists, discovers (safe reads), proposes
+   * writes for approval, or reports the capability as unknown.
+   */
+  resolveConnectionOperation(input: ResolveConnectionOperationInput): ResolveConnectionOperationResult {
+    const profile = this.pickConnection(input);
+    if (!profile) {
+      return {
+        connectionId: input.connectionId ?? 'unknown',
+        connectionValid: false,
+        operationAvailable: false,
+        state: 'CONFIG_INVALID',
+        resolution: 'discovery_failed',
+        reason: 'No saved connection matched; the connection profile does not exist.',
+      };
+    }
+    if (!this.credentialPresent(profile.id)) {
+      // Explicitly missing credential = positive auth failure.
+      this.recordAuth(profile.id, 'invalid', 'The saved credential is missing.');
+      return {
+        connectionId: profile.id,
+        connectionValid: false,
+        operationAvailable: false,
+        state: 'AUTH_INVALID',
+        resolution: 'discovery_failed',
+        reason: 'The saved credential is missing — reauthenticate to restore this connection.',
+      };
+    }
+    const auth = this.authStateOf(profile.id);
+    if (auth.status === 'invalid' || auth.status === 'expired') {
+      return {
+        connectionId: profile.id,
+        connectionValid: false,
+        operationAvailable: false,
+        state: auth.status === 'expired' ? 'AUTH_EXPIRED' : 'AUTH_INVALID',
+        resolution: 'discovery_failed',
+        reason: auth.reason ?? 'Authentication was positively rejected or expired — reauthorize to restore this connection.',
+      };
+    }
+
+    // Scope denial from a 403: the credential is VALID, only the scope is bad.
+    const capability = input.capability ?? input.operation?.capability;
+    const denied = this.capabilityStateOf(profile.id).denied;
+    if (capability && denied.includes(capability)) {
+      return {
+        connectionId: profile.id,
+        connectionValid: true,
+        operationAvailable: false,
+        state: 'CONNECTED_INSUFFICIENT_SCOPE',
+        resolution: 'insufficient_scope',
+        capability,
+        reason: `The credential is valid but the token lacks scope for "${capability}". Expand authorization once; do not recreate the connection.`,
+      };
+    }
+
+    if (input.operation) {
+      const registered = this.operation(profile.id, input.operation.id);
+      if (registered) {
+        if (JSON.stringify(registered) !== JSON.stringify(normalizeConnectionOperation(input.operation))) {
+          return {
+            connectionId: profile.id,
+            connectionValid: true,
+            operationAvailable: false,
+            state: 'CONNECTED_MISSING_OPERATION',
+            resolution: 'discovery_failed',
+            reason: `An operation with id "${input.operation.id}" exists with different details. Use the registered operation exactly.`,
+          };
+        }
+        return {
+          connectionId: profile.id,
+          connectionValid: true,
+          operationAvailable: true,
+          state: 'CONNECTED',
+          resolution: 'existing',
+          operation: registered,
+          capability: registered.capability,
+          reason: 'The operation is already registered on the saved connection.',
+        };
+      }
+      return this.operateOn(profile, input.operation as ConnectionOperation, 'documented proposal');
+    }
+
+    if (capability) {
+      const risk = input.riskLevel ?? 'read';
+      const known = this.operationForCapability(profile.id, capability);
+      if (known) {
+        return {
+          connectionId: profile.id,
+          connectionValid: true,
+          operationAvailable: true,
+          state: 'CONNECTED',
+          resolution: 'existing',
+          operation: known,
+          capability,
+          reason: 'A registered operation already covers the requested capability.',
+        };
+      }
+      const catalogOp = catalogOperationFor(profile.provider, capability, risk);
+      if (catalogOp) return this.operateOn(profile, catalogOp as ConnectionOperation, 'registered provider catalog');
+      return {
+        connectionId: profile.id,
+        connectionValid: true,
+        operationAvailable: false,
+        state: 'DISCOVERY_FAILED',
+        resolution: 'discovery_failed',
+        capability,
+        reason: `Capability "${capability}" is not registered and no verified-documentation catalog entry exists for provider "${profile.provider}". The saved credential is still valid.`,
+      };
+    }
+
+    return {
+      connectionId: profile.id,
+      connectionValid: true,
+      operationAvailable: false,
+      state: 'DISCOVERY_FAILED',
+      resolution: 'discovery_failed',
+      reason: 'No concrete operation or capability was supplied for resolution.',
+    };
+  }
+
+  private pickConnection(input: ResolveConnectionOperationInput): ConnectionProfile | undefined {
+    if (input.connectionId) return this.get(input.connectionId);
+    if (input.providerHint) {
+      const hint = slug(input.providerHint, '');
+      const matches = this.list().filter((profile) => profile.hasCredential && [profile.id, profile.provider, slug(profile.label, '')].includes(hint));
+      return matches.length === 1 ? matches[0] : matches.length > 1 ? matches[0] : undefined;
+    }
+    return undefined;
+  }
+
+  private operationForCapability(id: string, capability: string): ConnectionOperation | undefined {
+    // Safer resolution order: an exact riskless GET for the capability wins;
+    // otherwise the first REGISTERED operation carrying it.
+    const candidates = this.get(id)?.operations ?? [];
+    return candidates.find((operation) => operation.capability === capability && operation.risk === 'read' && operation.method === 'GET')
+      ?? candidates.find((operation) => operation.capability === capability);
+  }
+
+  private operateOn(profile: ConnectionProfile, operation: ConnectionOperation, source: string): ResolveConnectionOperationResult {
+    if (operation.risk === 'read' && operation.method === 'GET') {
+      // Safe reads auto-register under the existing credential — policy allows
+      // it, no user approval needed, no credential prompt.
+      if (!profile.capabilities.includes(operation.capability) && !catalogCapabilityDeclared(profile.provider, operation.capability)) {
+        return {
+          connectionId: profile.id,
+          connectionValid: true,
+          operationAvailable: false,
+          state: 'DISCOVERY_FAILED',
+          resolution: 'discovery_failed',
+          operation,
+          capability: operation.capability,
+          reason: `The documented read operation "${operation.id}" is known, but capability "${operation.capability}" is not declared for this connection.`,
+        };
+      }
+      const registered = this.registerApprovedOperation(profile.id, operation, true);
+      return {
+        connectionId: profile.id,
+        connectionValid: true,
+        operationAvailable: true,
+        state: 'CONNECTED',
+        resolution: 'discovered',
+        operation: registered,
+        capability: registered.capability,
+        reason: `Registered ${source} read operation "${registered.id}" on the existing connection; the saved credential was reused.`,
+      };
+    }
+    // Writes and destructive operations: operation-level approval, never a
+    // credential prompt. The registration happens after the host approves.
+    return {
+      connectionId: profile.id,
+      connectionValid: true,
+      operationAvailable: false,
+      state: 'CONNECTED_MISSING_OPERATION',
+      resolution: 'requires_approval',
+      operation,
+      capability: operation.capability,
+      reason: `Operation-ready proposal for "write/destructive" action "${operation.id}" from ${source}; it needs operation-level approval and will then be registered. No credential re-entry is required.`,
+    };
+  }
+
+  /**
+   * Recovery-routing decision: given an exhausted prerequisite, decide whether
+   * the secure credential form is LEGITIMATE (no connection exists yet, or the
+   * saved credential was positively rejected) or whether this is plain
+   * missing-capability resolution that must NEVER prompt for a credential.
+   */
+  connectionRecoveryDecision(prerequisite: MissingPrerequisite): ConnectionRecoveryDecision {
+    const requirement = this.requirementFor(prerequisite);
+    const matching = this.list().filter((profile) => profile.hasCredential && profilePlausiblyMatches(profile, requirement));
+    if (matching.length === 0) {
+      return { action: 'setup-new', reason: 'No saved connection matches this prerequisite yet; first-time secure setup is legitimate.' };
+    }
+    // Only a POSITIVELY classified authentication failure (401 / expired /
+    // revoked / missing credential) on the single matching connection routes
+    // to secure reauthorization. Everything else stays capability-level.
+    const invalid = matching
+      .filter((profile) => {
+        const auth = this.authStateOf(profile.id);
+        return auth.status === 'invalid' || auth.status === 'expired';
+      })
+      .length;
+    if (matching.length === 1 && invalid === 1) {
+      const auth = this.authStateOf(matching[0]!.id);
+      return {
+        action: 'reauth',
+        state: auth.status === 'expired' ? 'AUTH_EXPIRED' : 'AUTH_INVALID',
+        reason: auth.reason ?? 'The saved credential was positively rejected (or expired) by the provider.',
+      };
+    }
+    const missing = requirement.capabilities.filter((capability) => !matching.some((profile) => profile.capabilities.includes(capability)));
+    return {
+      action: 'capability-resolution',
+      state: missing.length > 0 ? 'CONNECTED_MISSING_OPERATION' : 'DISCOVERY_FAILED',
+      reason: missing.length > 0
+        ? `A saved connection matches, but capability${missing.length > 1 ? 'ies' : ''} ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not registered. Resolve the operation (safe reads auto-register; writes need operation approval) — do NOT re-enter the credential.`
+        : 'A saved connection matches and validates; the unresolved need is capability-level. Resolve the documented operation — do NOT re-enter the credential.',
+    };
   }
 
   async validate(id: string): Promise<ConnectionInvocationResult> {
@@ -664,6 +1127,45 @@ export class ConnectionRegistry {
           actions: ['discover'],
           riskClass: 'read' as const,
         })));
+      },
+      async resolveCapability(input: { providerHint?: string; capabilities: string[] }): Promise<ProviderCapabilityResult> {
+        if (input.capabilities.length === 0) {
+          return { status: 'unresolved', registeredReads: 0, awaitingApproval: [], summary: 'No capability was requested for resolution.' };
+        }
+        const hint = slug(input.providerHint ?? '', '');
+        const candidates = registry.list().filter((profile) =>
+          profile.hasCredential
+          && (hint ? [profile.id, profile.provider, slug(profile.label, '')].includes(hint) : input.capabilities.some((capability) => profile.capabilities.includes(capability))));
+        if (candidates.length === 0) {
+          return { status: 'unresolved', registeredReads: 0, awaitingApproval: [], summary: 'No saved connection with a credential matches these capabilities.' };
+        }
+        if (candidates.length > 1) {
+          return { status: 'needs-user', registeredReads: 0, awaitingApproval: [], summary: 'Multiple saved connections can meet this capability; the host routes the choice.' };
+        }
+        const profile = candidates[0]!;
+        const check = registry.resolveConnectionOperation({
+          connectionId: profile.id,
+          capability: input.capabilities[0],
+          riskLevel: 'read',
+        });
+        if (check.connectionValid === false && (check.state === 'AUTH_INVALID' || check.state === 'AUTH_EXPIRED')) {
+          return { status: 'unresolved', registeredReads: 0, awaitingApproval: [], healthyConnection: false, summary: `Saved connection "${profile.label}" was positively rejected by the provider — reauthorization is required.` };
+        }
+        let registeredReads = 0;
+        const awaitingApproval: string[] = [];
+        for (const capability of input.capabilities) {
+          const outcome = check.capability === capability ? check : registry.resolveConnectionOperation({ connectionId: profile.id, capability, riskLevel: 'read' });
+          if (outcome.resolution === 'discovered') registeredReads += 1;
+          if (outcome.resolution === 'requires_approval') awaitingApproval.push(capability);
+          if (outcome.resolution === 'insufficient_scope') awaitingApproval.push(`${capability}:insufficient-scope` as string);
+        }
+        return {
+          status: 'resolved',
+          healthyConnection: true,
+          registeredReads,
+          awaitingApproval,
+          summary: `Validated saved connection "${profile.label}" for ${input.capabilities.join(', ')}${registeredReads > 0 ? `; registered ${registeredReads} documented read operation(s) under the existing credential.` : ''}${awaitingApproval.length > 0 ? `; ${awaitingApproval.length} write capability(ies) still need operation approval.` : ''} Its credential remains private.`,
+        };
       },
       async discover(input: ProviderRecoveryInput): Promise<ProviderRecoveryResult> {
         const requirement = registry.requirementFor(input.prerequisite);

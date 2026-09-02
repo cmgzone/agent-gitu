@@ -74,6 +74,7 @@ import {
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
 import { applyFollowUpToLedger, classifyFollowUp, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
+import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
 import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './effort-planner.js';
 import { uiVisualGate, isUiTask } from './ui-gate.js';
@@ -1706,6 +1707,21 @@ export class Gitu {
     const isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
     const activeGoal = isFollowUpPhase ? activeWorkPhase.goal : goal;
 
+    // Durable visual-reference rehydration: active user-reference images
+    // persisted under .hermes/task-assets/ ride along on every run — newly
+    // attached images and rehydrated durable ones are merged. A missing or
+    // corrupt asset is marked unavailable and surfaced to the model, never
+    // silently dropped.
+    const rehydratedVisuals = rehydrateVisualReferences(ledger, guard.lock.repoRoot);
+    if (rehydratedVisuals.unavailable.length > 0) {
+      markUnavailableVisualReferences(ledger, rehydratedVisuals.unavailable);
+      this.emit(`visual-ref ${rehydratedVisuals.unavailable.length} durable visual reference(s) unavailable: ${rehydratedVisuals.unavailable.map((u) => `${u.path} (${u.reason})`).join('; ')}`);
+    }
+    const effectiveImages = [...rehydratedVisuals.images, ...(this.config.images ?? [])];
+    if (rehydratedVisuals.images.length > 0) {
+      this.emit(`images   rehydrated ${rehydratedVisuals.images.length} durable visual reference(s) from .hermes/task-assets/${ledger.data.taskId}/`);
+    }
+
     const durableVisualRefs = persistVisualAssets(this.config.images ?? [], ledger, guard.lock.repoRoot, this.emit);
     applyFollowUpToLedger(
       ledger,
@@ -2086,7 +2102,7 @@ export class Gitu {
         protectedMemory: protectedSection,
         contextPack: contextNote || undefined,
         conversationHistory: isFollowUpPhase ? compactFollowUpConversation(this.config.conversationHistory) : this.config.conversationHistory,
-        images: this.config.images,
+        images: effectiveImages,
         attachments: this.config.attachments,
         supportsImages: this.config.supportsImages,
         followUp: followUpSection,
@@ -2564,6 +2580,12 @@ export class Gitu {
         };
         if (compactHistory(messages, (t) => this.emit(t), compactionOpts)) {
           telemetry.noteCompaction();
+          // Durable user-reference images must survive compaction: if the
+          // image-bearing message was digested away, splice the active visual
+          // references back in so the model never loses what the user showed it.
+          if (restoreVisualReferencesAfterCompaction(messages, rehydratedVisuals, this.config.supportsImages ?? false)) {
+            this.emit('visual-ref durable user-reference image(s) restored into model context after compaction');
+          }
           // A compact state message is always authoritative; make full skill
           // instructions available again on the next turn if their one-time
           // copy was absorbed into the digest.

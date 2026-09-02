@@ -508,7 +508,7 @@ export interface UserInstruction {
 }
 
 export type VisualReferenceKind = 'user-reference' | 'browser-screenshot';
-export type VisualReferenceStatus = 'active' | 'superseded' | 'expired';
+export type VisualReferenceStatus = 'active' | 'superseded' | 'expired' | 'unavailable';
 
 export interface VisualReference {
   id: string;

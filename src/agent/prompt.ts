@@ -454,6 +454,12 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   if (visualReferences.length > 0) {
     authorityParts.push(`ACTIVE VISUAL REFERENCES:\n${visualReferences.map((v) => `- [${v.id}] ${v.kind}: ${v.path}${v.pinned ? ' (pinned)' : ''}`).join('\n')}`);
   }
+  const unavailableVisualRefs = auth?.visualReferences.filter((v) => v.status === 'unavailable') ?? [];
+  if (unavailableVisualRefs.length > 0) {
+    authorityParts.push(
+      `UNAVAILABLE VISUAL REFERENCES (the saved image files could not be read — do NOT pretend to know their content; ask the user to re-attach if the visual is essential):\n${unavailableVisualRefs.map((v) => `- [${v.id}] ${v.path}`).join('\n')}`,
+    );
+  }
   if (supersededInstructions.length > 0) {
     authorityParts.push(`SUPERSEDED INSTRUCTIONS (DO NOT FOLLOW):\n${supersededInstructions.map((i) => `- [SUPERSEDED] ${i.text}`).join('\n')}`);
   }

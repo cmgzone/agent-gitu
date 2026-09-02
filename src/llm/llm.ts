@@ -3,6 +3,19 @@ import { outputCapabilityFor, resolveOutputBudgetTokens, type OutputBudgetCapabi
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | LlmContentPart[];
+  /**
+   * Provider-native reasoning trace that accompanied THIS assistant message.
+   * DeepSeek's thinking mode (and several OpenAI-compatible reasoning
+   * providers) require the original `reasoning_content` to be echoed back on
+   * every subsequent request that carries `tools`; suppressing it makes the
+   * provider return HTTP 400. Adapters translate it to their own wire field
+   * (e.g. `reasoning_content`) and only send it when the provider actually
+   * supplied it — generic endpoints never see it.
+   */
+  reasoningContent?: string;
+  /** Normalized native tool calls issued by THIS assistant message. Echoed
+   *  back on the wire so the model can continue its own loop across turns. */
+  toolCalls?: LlmToolCall[];
 }
 
 export type LlmContentPart =
@@ -108,6 +121,7 @@ export type LlmErrorKind =
   | 'streaming_incompatible'
   | 'network'
   | 'tool_protocol_incompatible'
+  | 'protocol_error'
   | 'aborted'
   | 'unknown';
 
@@ -304,6 +318,17 @@ export function classifyLlmHttpError(status: number, text: string, headers?: Hea
     return new LlmError(`LLM HTTP ${status} (model not available to you): ${message} — switch to a model your plan includes (free ones are marked "free")`, {
       ...details,
       kind: 'access',
+    });
+  }
+  // Reasoning-state 400s (e.g. DeepSeek's thinking mode requires the previous
+  // reasoning_content to be echoed when tools are carried) are NOT "tools are
+  // unsupported": they mean the request state is wrong, not the protocol.
+  // Classify them distinctly so the agent keeps native tool calling and
+  // surfaces the fixable error instead of silently downgrading to JSON text.
+  if (status === 400 && /reasoning_content|chain[- ]of[- ]thought/.test(lower)) {
+    return new LlmError(`LLM protocol error (HTTP 400): ${message} — the provider rejected the thinking/tool state, not the tool protocol`, {
+      ...details,
+      kind: 'protocol_error',
     });
   }
   if (status === 400 && /(?:tool|function|schema|response_format|json schema|tool_choice)/.test(lower)) {
@@ -524,7 +549,7 @@ export class OpenAiCompatClient implements LlmClient {
   private buildBody(messages: LlmMessage[], opts: LlmOptions, stream: boolean): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: this.model,
-      messages,
+      messages: messages.map((message) => this.toWireMessage(message)),
       temperature: opts.temperature ?? 0.2,
     };
     if (stream) {
@@ -567,6 +592,29 @@ export class OpenAiCompatClient implements LlmClient {
       body[this.outputCapability.field] = budgetTokens;
     }
     return body;
+  }
+
+  /**
+   * Translate internal message records into the provider's wire shape. The
+   * internal carrier fields (reasoningContent / toolCalls) are NOT valid chat
+   * fields — without this mapping the raw objects would leak camelCase keys
+   * onto the wire and get rejected. Assistant history keeps its reasoning
+   * trace and tool calls so provider thinking loops (DeepSeek thinking + tools)
+   * receive the state they require across turns.
+   */
+  private toWireMessage(message: LlmMessage): Record<string, unknown> {
+    const wire: Record<string, unknown> = { role: message.role, content: message.content };
+    if (message.role === 'assistant') {
+      if (message.reasoningContent) wire['reasoning_content'] = message.reasoningContent;
+      if (message.toolCalls?.length) {
+        wire['tool_calls'] = message.toolCalls.map((call) => ({
+          id: call.id ?? `call_${Math.random().toString(36).slice(2, 10)}`,
+          type: 'function',
+          function: { name: call.name, arguments: JSON.stringify(call.arguments) },
+        }));
+      }
+    }
+    return wire;
   }
 
   async completeStream(

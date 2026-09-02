@@ -218,6 +218,110 @@ describe('OpenAiCompatClient retry behavior', () => {
     const error = classifyLlmHttpError(400, JSON.stringify({ error: { message: 'tools are not supported for this model' } }));
     expect(error.details.kind).toBe('tool_protocol_incompatible');
   });
+
+  it('classifies a missing-reasoning-echo 400 as a protocol error, NOT tool incompatibility', () => {
+    const error = classifyLlmHttpError(
+      400,
+      JSON.stringify({ error: { message: "Invalid 'reasoning_content': reasoning content must be passed back for tool-call turns" } }),
+    );
+    expect(error.details.kind).toBe('protocol_error');
+    expect(error.message).toContain('thinking/tool state');
+  });
+
+  it('echoes assistant reasoning and native tool calls back on the wire for thinking+tool loops', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch;
+      const deepseek = new OpenAiCompatClient({ apiKey: 'ds-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' });
+      const messages = [
+        { role: 'user' as const, content: 'read the source' },
+        {
+          role: 'assistant' as const,
+          content: 'I will inspect the files.',
+          reasoningContent: 'First I need file.txt.',
+          toolCalls: [
+            {
+              id: 'call-1',
+              name: 'agent_gitu_action',
+              arguments: { action: { type: 'tool_call', tool: 'read_file', params: { path: 'file.txt' } } },
+            },
+          ],
+        },
+      ];
+      await expect(deepseek.completeTurn(messages, { retries: 0 })).resolves.toMatchObject({ kind: 'text' });
+      const wireMessages = requestBody?.['messages'] as Record<string, unknown>[];
+      expect(wireMessages).toEqual([
+        { role: 'user', content: 'read the source' },
+        {
+          role: 'assistant',
+          content: 'I will inspect the files.',
+          reasoning_content: 'First I need file.txt.',
+          tool_calls: [
+            {
+              id: 'call-1',
+              type: 'function',
+              function: {
+                name: 'agent_gitu_action',
+                arguments: '{"action":{"type":"tool_call","tool":"read_file","params":{"path":"file.txt"}}}',
+              },
+            },
+          ],
+        },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('normalizes a DeepSeek-style tool-call turn with its reasoning trace', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        return new Response(
+          JSON.stringify({
+            id: 'req-ds',
+            usage: { prompt_tokens: 40, completion_tokens: 12 },
+            choices: [
+              {
+                message: {
+                  content: '',
+                  reasoning_content: 'The user wants the weather; I must call the tool first.',
+                  tool_calls: [{ id: 'call_ab1', function: { name: 'agent_gitu_action', arguments: '{"action":{"type":"tool_call","tool":"read_file","params":{"path":"src/App.tsx"}}}' } }],
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as typeof fetch;
+      const deepseek = new OpenAiCompatClient({ apiKey: 'ds-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' });
+      const turn = await deepseek.completeTurn([{ role: 'user', content: 'hi' }], {
+        protocolMode: 'native',
+        tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+        toolChoice: 'required',
+        retries: 0,
+      });
+      expect(turn.kind).toBe('tool_calls');
+      expect(deepseek.lastReasoning).toContain('must call the tool first');
+      if (turn.kind === 'tool_calls') {
+        expect(turn.calls[0]).toEqual({
+          id: 'call_ab1',
+          name: 'agent_gitu_action',
+          arguments: { action: { type: 'tool_call', tool: 'read_file', params: { path: 'src/App.tsx' } } },
+        });
+      }
+      expect(turn.metadata.reasoning).toContain('must call the tool first');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 describe('effort semantics', () => {

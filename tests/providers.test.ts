@@ -171,6 +171,15 @@ describe('resolveLlm', () => {
     expect(deepseek.keyEnvVar).toBe('DEEPSEEK_API_KEY');
   });
 
+  it('declares native tool calling for official DeepSeek (never routes it to text-JSON compatibility)', () => {
+    const spec = PROVIDERS['deepseek'];
+    expect(spec.toolMode).toBe('auto');
+    expect(spec.baseUrl).toBe('https://api.deepseek.com');
+    const flash = resolveLlm({ provider: 'deepseek', model: 'deepseek-v4-flash', env: { DEEPSEEK_API_KEY: 'ds-x' } });
+    expect(flash.model).toBe('deepseek-v4-flash');
+    expect(flash.toolMode).toBe('auto');
+  });
+
   it('auto-detects DeepSeek when only its namespaced key is present', () => {
     const deepseek = resolveLlm({ env: { HERMES_DEEPSEEK_API_KEY: 'ds-x' } });
     expect(deepseek.providerId).toBe('deepseek');

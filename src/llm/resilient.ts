@@ -54,7 +54,7 @@ export function clearCooldownsForTest(): void {
 /** Errors that will NEVER succeed by waiting. */
 function isFatalLlmError(err: Error): boolean {
   if (err instanceof LlmError) {
-    return ['auth', 'access', 'billing', 'quota_exhausted', 'tool_protocol_incompatible', 'aborted'].includes(err.details.kind);
+    return ['auth', 'access', 'billing', 'quota_exhausted', 'tool_protocol_incompatible', 'protocol_error', 'aborted'].includes(err.details.kind);
   }
   return (
     /abort/i.test(err.message) ||

@@ -117,6 +117,13 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // DeepSeek accepts medium for compatibility but maps it to high internally.
     effortLabels: { medium: 'medium (= high)' },
     maxEffort: 'distinct',
+    // Capability table (official docs): OpenAI-compatible chat completions:
+    // YES; native function calling: YES (with tool_choice auto/required and
+    // structured tool_calls); thinking + tools: YES (starting V3.2); streaming:
+    // YES. Never route official DeepSeek into the text-JSON compatibility
+    // protocol — always start native, and only downgrade when the server
+    // itself rejects the tool protocol.
+    toolMode: 'auto',
   },
   chatgpt: {
     id: 'chatgpt',

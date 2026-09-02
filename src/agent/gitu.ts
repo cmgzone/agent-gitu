@@ -2300,6 +2300,7 @@ export class Gitu {
               this.emit('repair  recovered an executable action from the repair call');
               reply = repairedReply;
               parsed = repaired;
+              turn = repairTurn;
             }
           } catch {
             /* repair is best-effort — the reply counts as malformed below */
@@ -2312,7 +2313,17 @@ export class Gitu {
           const summary = visibleActionSummary(parsed);
           if (summary) this.emit(`say ${summary}`);
         }
-        messages.push({ role: 'assistant', content: reply });
+        // Assistant history is echoed verbatim on the wire. Reasoning-provider
+        // loops (DeepSeek thinking + tools, etc.) REQUIRE the prior reasoning
+        // trace and tool-call state to be sent back on every tools-carrying
+        // request — dropping them makes the provider reject the request with
+        // HTTP 400 and look like "native tools unsupported". Carry both.
+        messages.push({
+          role: 'assistant',
+          content: reply,
+          ...(turn.kind === 'tool_calls' && turn.calls.length ? { toolCalls: turn.calls } : {}),
+          ...(turn.metadata.reasoning ? { reasoningContent: turn.metadata.reasoning } : {}),
+        });
         if (!parsed) {
           invalidStreak += 1;
           telemetry.noteWastedCall();

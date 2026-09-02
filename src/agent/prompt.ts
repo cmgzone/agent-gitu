@@ -254,7 +254,7 @@ PROJECT LOCK (do not violate):
 
 OPERATING RULES:
 1. Project boundary: only touch files inside repo_root. Never edit unrelated code.
-2. Read before you plan, and read before you write. Ground every plan and every edit in the actual code you have read — never in file names or assumptions. Small reversible changes. One focused action per turn.
+2. Read before modifying a file. Read the minimum code necessary to establish a confident hypothesis. Do not perform broad repository exploration when the user supplied a concrete file, symbol, error, stack trace, test failure, screenshot, or previous task context. Expand investigation progressively only when local evidence is insufficient. Ground every plan and edit in actual code read. Small reversible changes. One focused action per turn.
 3. Every action needs a reason and an expected outcome.
 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
 5. Never claim success without evidence. Run verification commands (tests, typecheck, build, lint).
@@ -263,9 +263,14 @@ OPERATING RULES:
 ${learnRule}
 
 AUTHORITY ORDER (how conflicts are decided):
-1. GOAL — highest authority: the user's request and the accepted acceptance criteria define WHAT must ultimately be true.
-2. CONSTRAINTS — never violated by anything: the project boundary, security, user approvals, the evidence gates, and the destructive-action policy.
-3. STRATEGY — lowest authority: the plan steps are the CURRENT approach, not the goal. When runtime evidence disproves the strategy (an API rejects the request, a resource differs from assumptions, a hostname does not resolve where you assumed), ADAPT: use revise_step / append_plan to change the implementation or verification path, then continue toward the goal. Adapting after evidence is EXPECTED behavior — the only wrong move is re-running a disproven strategy unchanged.
+1. SAFETY & BOUNDARY — never violated by anything: repository boundary, security, user approvals, destructive policy.
+2. CURRENT EXPLICIT USER INSTRUCTIONS — highest runtime authority: if the user explicitly instructs or forbids something (e.g. "don't use specialists", "only edit file X", "no npm install"), user instructions strictly override all agent defaults, strategies, and assumptions.
+3. CURRENT USER GOAL & INTENT — what must ultimately be achieved.
+4. ACCEPTANCE CRITERIA — verifiable proofs required for completion.
+5. ACTIVE VISUAL REFERENCES — designs, mockups, or screenshots provided for visual fidelity.
+6. ARCHITECTURE DECISIONS — documented technical choices.
+7. CURRENT PLAN & SUBTASKS — dynamic execution path (adapt when evidence disproves).
+8. AGENT DEFAULTS & RECOMMENDATIONS — lowest priority; superseded by any user directive.
 
 ${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}\n`}
 ${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
@@ -415,10 +420,46 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const scopedEvidence = scope ? d.evidence.slice(scope.evidenceStartIndex) : d.evidence;
   const detail: 'full' | 'compact' = isPlanningPhase(d) && scopedPlan.length <= STATE_FULL_PLAN_MAX_STEPS ? 'full' : 'compact';
   const stateGoal = scope?.goal ?? d.goal;
+  const auth = d.taskAuthority;
+  const currentGoal = scope?.goal ?? auth?.currentGoal ?? stateGoal;
   const taskGoal =
-    stateGoal.length <= STATE_GOAL_MAX_CHARS
-      ? stateGoal
-      : `${stateGoal.slice(0, 3_000)}\n… [${stateGoal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${stateGoal.slice(-700)}`;
+    currentGoal.length <= STATE_GOAL_MAX_CHARS
+      ? currentGoal
+      : `${currentGoal.slice(0, 3_000)}\n… [${currentGoal.length - 3_700} characters omitted from this live state. The complete original request is durable in .hermes/tasks/${d.taskId}.json; read it if a missing requirement matters.]\n${currentGoal.slice(-700)}`;
+
+  const hardInstructions = auth?.instructions.filter((i) => i.status === 'active' && i.enforcement === 'hard') ?? [];
+  const activeRequirements = auth?.instructions.filter((i) => i.status === 'active' && i.type === 'requirement') ?? [];
+  const userPreferences = auth?.instructions.filter((i) => i.status === 'active' && i.type === 'preference') ?? [];
+  const supersededInstructions = auth?.instructions.filter((i) => i.status === 'superseded') ?? [];
+  const visualReferences = auth?.visualReferences.filter((v) => v.status === 'active') ?? [];
+  const latestFollowUp = auth?.followUps.length ? auth.followUps[auth.followUps.length - 1] : undefined;
+
+  const authorityParts: string[] = [
+    'TASK AUTHORITY (Precedence: 1. Safety > 2. Hard Instructions > 3. User Goal > 4. Criteria > 5. Visual References > 6. Decisions > 7. Plan)',
+    `TASK: ${taskGoal}`,
+    `CURRENT USER INTENT:\n${taskGoal}`,
+  ];
+  if (latestFollowUp && latestFollowUp.kind !== 'CONTINUE') {
+    authorityParts.push(`LATEST DIRECTION (${latestFollowUp.kind}):\n${latestFollowUp.rawMessage}`);
+  }
+  if (hardInstructions.length > 0) {
+    authorityParts.push(`ACTIVE HARD INSTRUCTIONS (MANDATORY ENFORCEMENT):\n${hardInstructions.map((i) => `- ${i.text}`).join('\n')}`);
+  }
+  if (activeRequirements.length > 0) {
+    authorityParts.push(`ACTIVE REQUIREMENTS:\n${activeRequirements.map((i) => `- ${i.text}`).join('\n')}`);
+  }
+  if (userPreferences.length > 0) {
+    authorityParts.push(`USER PREFERENCES:\n${userPreferences.map((i) => `- ${i.text}`).join('\n')}`);
+  }
+  if (visualReferences.length > 0) {
+    authorityParts.push(`ACTIVE VISUAL REFERENCES:\n${visualReferences.map((v) => `- [${v.id}] ${v.kind}: ${v.path}${v.pinned ? ' (pinned)' : ''}`).join('\n')}`);
+  }
+  if (supersededInstructions.length > 0) {
+    authorityParts.push(`SUPERSEDED INSTRUCTIONS (DO NOT FOLLOW):\n${supersededInstructions.map((i) => `- [SUPERSEDED] ${i.text}`).join('\n')}`);
+  }
+
+  const authorityBlock = authorityParts.join('\n\n');
+
   const criteria = scopedCriteria
     .map(
       (c) =>
@@ -449,7 +490,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     phaseFiles.length > STATE_FILES_CAP ? `… (+${phaseFiles.length - STATE_FILES_CAP} earlier) ${phaseFiles.slice(-STATE_FILES_CAP).join(', ')}` : phaseFiles.join(', ');
 
   return [
-    `TASK: ${taskGoal}`,
+    authorityBlock,
     `STATUS: ${d.status} | mode: ${d.mode}`,
     effortLine,
     riskLine,

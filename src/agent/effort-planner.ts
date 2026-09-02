@@ -115,6 +115,15 @@ export function classifyTaskComplexity(
     return { complexity: 'low', reason: 'focused single-file scope with concise goal' };
   }
 
+  // Known single-file target with specific bug/issue
+  const singleFileMatch = /(?:^|\s)([a-zA-Z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|py|json|css|html|go|rs))\b/i.exec(goal);
+  if (singleFileMatch && !HIGH_PATTERNS.some((re) => re.test(goal))) {
+    const isBuildOrLargeFeature = /\b(build|create|implement|scaffold|architect|redesign)\b/i.test(goal);
+    if (!isBuildOrLargeFeature) {
+      return { complexity: 'low', reason: `focused target in known file: ${singleFileMatch[1]}` };
+    }
+  }
+
   return { complexity: 'medium', reason: 'standard task complexity' };
 }
 

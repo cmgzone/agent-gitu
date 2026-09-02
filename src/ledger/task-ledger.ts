@@ -7,15 +7,20 @@ import type {
   BudgetExtensionRecord,
   CriterionSpec,
   DecisionBasis,
+  FollowUpRecord,
   PlanArea,
   PlanDesign,
   PlanStep,
   PrerequisiteRecoveryRecord,
   ProjectLock,
+  TargetHints,
+  TaskAuthority,
   TaskFinding,
   TaskLedgerData,
   TaskStatus,
   SkillLifecycleEvent,
+  UserInstruction,
+  VisualReference,
   WorkPhase,
   WorkPhaseKind,
 } from '../types.js';
@@ -60,6 +65,7 @@ export class TaskLedger {
     private readonly file: string,
   ) {
     this.data = data;
+    this.ensureTaskAuthority();
   }
 
   static create(input: {
@@ -77,6 +83,18 @@ export class TaskLedger {
       schemaVersion: 1,
       taskId,
       goal: input.goal,
+      taskAuthority: {
+        originalGoal: input.goal,
+        currentGoal: input.goal,
+        instructions: [],
+        followUps: [],
+        visualReferences: [],
+        targetHints: {
+          files: [],
+          symbols: [],
+          errors: [],
+        },
+      },
       status: 'intake',
       mode: input.mode,
       project: input.project,
@@ -125,6 +143,138 @@ export class TaskLedger {
   save(): void {
     this.data.updatedAt = nowIso();
     writeJson(this.file, this.data);
+  }
+
+  ensureTaskAuthority(): TaskAuthority {
+    if (!this.data.taskAuthority) {
+      this.data.taskAuthority = {
+        originalGoal: this.data.goal,
+        currentGoal: this.data.goal,
+        instructions: [],
+        followUps: [],
+        visualReferences: [],
+        targetHints: {
+          files: [],
+          symbols: [],
+          errors: [],
+        },
+      };
+    }
+    return this.data.taskAuthority;
+  }
+
+  setCurrentGoal(goal: string, _basis?: string): void {
+    const auth = this.ensureTaskAuthority();
+    auth.currentGoal = goal;
+    this.save();
+  }
+
+  addInstruction(input: Omit<UserInstruction, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): UserInstruction {
+    const auth = this.ensureTaskAuthority();
+    const id = input.id ?? shortId('inst');
+    const now = input.createdAt ?? nowIso();
+    const instruction: UserInstruction = {
+      id,
+      text: input.text,
+      type: input.type,
+      enforcement: input.enforcement,
+      status: input.status ?? 'active',
+      source: input.source ?? 'follow-up',
+      supersedes: input.supersedes,
+      createdAt: now,
+    };
+    if (instruction.supersedes?.length) {
+      for (const supId of instruction.supersedes) {
+        this.supersedeInstruction(supId, `Superseded by ${id}: "${instruction.text}"`);
+      }
+    }
+    auth.instructions.push(instruction);
+    this.save();
+    return instruction;
+  }
+
+  supersedeInstruction(targetId: string, reason?: string): void {
+    const auth = this.ensureTaskAuthority();
+    const inst = auth.instructions.find((i) => i.id === targetId);
+    if (inst) {
+      inst.status = 'superseded';
+      this.save();
+    }
+  }
+
+  activeInstructions(): UserInstruction[] {
+    const auth = this.ensureTaskAuthority();
+    return auth.instructions.filter((i) => i.status === 'active');
+  }
+
+  hardInstructions(): UserInstruction[] {
+    return this.activeInstructions().filter((i) => i.enforcement === 'hard');
+  }
+
+  recordFollowUp(followUp: Omit<FollowUpRecord, 'id' | 'timestamp'> & { id?: string; timestamp?: string }): FollowUpRecord {
+    const auth = this.ensureTaskAuthority();
+    const record: FollowUpRecord = {
+      id: followUp.id ?? shortId('fu'),
+      kind: followUp.kind,
+      rawMessage: followUp.rawMessage,
+      extractedGoalDelta: followUp.extractedGoalDelta,
+      addedInstructions: followUp.addedInstructions ?? [],
+      supersededInstructions: followUp.supersededInstructions ?? [],
+      timestamp: followUp.timestamp ?? nowIso(),
+    };
+    auth.followUps.push(record);
+    this.save();
+    return record;
+  }
+
+  addVisualReference(ref: Omit<VisualReference, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): VisualReference {
+    const auth = this.ensureTaskAuthority();
+    const visualRef: VisualReference = {
+      id: ref.id ?? shortId('vref'),
+      path: ref.path,
+      sourceMessageId: ref.sourceMessageId,
+      kind: ref.kind,
+      status: ref.status ?? 'active',
+      createdAt: ref.createdAt ?? nowIso(),
+      pinned: ref.pinned,
+    };
+    auth.visualReferences.push(visualRef);
+    this.save();
+    return visualRef;
+  }
+
+  replaceVisualReference(oldId: string, newRef: Omit<VisualReference, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): VisualReference {
+    const auth = this.ensureTaskAuthority();
+    const old = auth.visualReferences.find((v) => v.id === oldId);
+    if (old) {
+      old.status = 'superseded';
+    }
+    return this.addVisualReference(newRef);
+  }
+
+  activeVisualReferences(): VisualReference[] {
+    const auth = this.ensureTaskAuthority();
+    return auth.visualReferences.filter((v) => v.status === 'active');
+  }
+
+  setTargetHints(hints: Partial<TargetHints>): void {
+    const auth = this.ensureTaskAuthority();
+    if (hints.files) {
+      const existing = new Set(auth.targetHints.files);
+      for (const f of hints.files) existing.add(f);
+      auth.targetHints.files = Array.from(existing);
+    }
+    if (hints.symbols) {
+      const existing = new Set(auth.targetHints.symbols);
+      for (const s of hints.symbols) existing.add(s);
+      auth.targetHints.symbols = Array.from(existing);
+    }
+    if (hints.errors) {
+      const existing = new Set(auth.targetHints.errors);
+      for (const e of hints.errors) existing.add(e);
+      auth.targetHints.errors = Array.from(existing);
+    }
+    this.save();
   }
 
   setStatus(status: TaskStatus): void {

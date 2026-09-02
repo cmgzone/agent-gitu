@@ -73,12 +73,13 @@ import {
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
+import { applyFollowUpToLedger, classifyFollowUp, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { analyzeChangeImpact } from './impact.js';
 import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './effort-planner.js';
 import { uiVisualGate, isUiTask } from './ui-gate.js';
 import { buildPlanNote, planRisk } from './risk-planner.js';
 import { auditArchitecture, decisionConflicts, detectExplicitTechnologies, normalizeDecisionDraft } from './architecture.js';
-import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry } from './telemetry.js';
+import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry, computeBehaviorMetrics } from './telemetry.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
 import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestMaterial } from '../context/digest.js';
@@ -1705,6 +1706,14 @@ export class Gitu {
     const isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
     const activeGoal = isFollowUpPhase ? activeWorkPhase.goal : goal;
 
+    const durableVisualRefs = persistVisualAssets(this.config.images ?? [], ledger, guard.lock.repoRoot, this.emit);
+    applyFollowUpToLedger(
+      ledger,
+      activeGoal,
+      Boolean(durableVisualRefs.length || this.config.images?.length),
+      durableVisualRefs,
+    );
+
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
     const loopDetector = new LoopDetector();
@@ -2257,6 +2266,7 @@ export class Gitu {
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
       let visualGateRejections = 0;
+      let instructionGateRejections = 0;
       let qualityReviewRejections = 0;
       let completionAttempts = 0;
       let specialistOrVerificationUncertain = false;
@@ -3455,6 +3465,49 @@ export class Gitu {
                 this.emit('visual-gate screenshot requirement unmet — overriding after repeated rejections');
                 action.risks = [...(action.risks ?? []), 'Final UI state was never verified with a screenshot'];
               }
+
+              // Active visual reference validation
+              const activeVisualRefs = typeof ledger.activeVisualReferences === 'function' ? ledger.activeVisualReferences() : [];
+              if (!chatOnly && activeVisualRefs.length > 0) {
+                const hasRecentScreenshot = activePhaseData().actions.some((a) => (a.tool === 'browse' || a.tool === 'screenshot') && a.status === 'success');
+                if (!hasRecentScreenshot && visualGateRejections < 2) {
+                  visualGateRejections += 1;
+                  observe(
+                    `COMPLETION REJECTED by visual reference gate — task has active visual reference(s) (${activeVisualRefs.map((v) => v.id).join(', ')}), but no screenshot or visual inspection was recorded after changes.\n` +
+                      `Use browse (screenshot/navigate) to inspect the result visually before completing.`,
+                  );
+                  break;
+                }
+              }
+              // Instruction-aware completion gate: user requirements issued during
+              // the task must show work after they were created, and a blocked
+              // instruction violation must be followed by compliant work. Soft-capped
+              // like the other judgment gates so it can never deadlock a task.
+              if (!chatOnly && typeof ledger.activeInstructions === 'function') {
+                const gateFinding = evaluateInstructionGate(
+                  ledger.activeInstructions().map((i) => ({ text: i.text, enforcement: i.enforcement, status: i.status, createdAt: i.createdAt })),
+                  activePhaseData().actions.map((a) => ({ status: a.status, createdAt: a.createdAt, observation: a.observation })),
+                );
+                const gateBlocked = gateFinding.unmetRequirements.length > 0 || gateFinding.denialUnrecovered;
+                if (gateBlocked && instructionGateRejections < 2) {
+                  instructionGateRejections += 1;
+                  const lines = [
+                    ...gateFinding.unmetRequirements.map((t) => `  - requirement never worked on after it was issued: "${t}"`),
+                    ...(gateFinding.denialUnrecovered
+                      ? ['  - the latest action violated a hard user instruction and was blocked; no compliant action has been recorded since']
+                      : []),
+                  ];
+                  observe(
+                    `COMPLETION REJECTED by instruction gate — active user instructions are not yet satisfied:\n${lines.join('\n')}\n` +
+                      `Do the required work (respecting every hard instruction), then complete again.`,
+                  );
+                  break;
+                }
+                if (gateBlocked) {
+                  this.emit('instruction gate findings noted but overridden after repeated rejections — recorded as a risk');
+                  action.risks = [...(action.risks ?? []), `Unverified user instruction(s): ${gateFinding.unmetRequirements[0]?.slice(0, 200) ?? 'blocked instruction not re-attempted compliantly'}`];
+                }
+              }
               // Architecture audit: verify the implementation actually follows the
               // recorded decisions. A soft gate — after two rejections the agent's
               // judgment wins so this can never deadlock a legitimate task.
@@ -4173,7 +4226,32 @@ export class Gitu {
           while (this.inbox.length > 0) {
             const queued = this.inbox.shift()!;
             this.emit(`user-msg ${queued.text}`);
-            observe(`USER MESSAGE (sent while you were working — take it into account now): ${queued.text}` + (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''));
+            const steered = classifyFollowUp(queued.text);
+            observe(
+              `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
+                (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
+            );
+            // A steered message is real follow-up work, not just a nudge: record
+            // its goal delta, constraints, and target hints in the task authority
+            // so the instruction policy enforces it from the very next action.
+            applyFollowUpToLedger(ledger, queued.text);
+            if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
+              // Meaningful follow-ups re-arm the turn budget: remaining turns are
+              // measured from now, not from run start.
+              const extraTurns = Math.max(budgetExtensionTurns, 10);
+              budgetCap = turns + extraTurns;
+              ledger.addBudgetExtension({
+                turn: turns,
+                reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
+                filesChanged: ledger.data.filesChanged?.length ?? 0,
+                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
+                evidenceCount: ledger.data.evidence.length,
+                extraTurns,
+                extraSpecialists: 0,
+                specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
+              });
+              this.emit(`effort  follow-up ${steered.kind} — turn budget re-armed: ${extraTurns} fresh turns (cap now ${budgetCap})`);
+            }
           }
 
           if (exitReason === 'complete' || exitReason === 'blocked') break;
@@ -4234,7 +4312,14 @@ export class Gitu {
       // Persist token telemetry so spend can be attributed after the fact.
       const snap = telemetry.snapshot();
       const artifacts = estimatePlanningArtifactTokens(ledger.data);
-      ledger.data.tokenTelemetry = { ...snap, ...artifacts };
+      ledger.data.tokenTelemetry = {
+        ...snap,
+        ...artifacts,
+        behavior: computeBehaviorMetrics(
+          ledger.data.actions.map((a) => ({ tool: a.tool, status: a.status, paramsSummary: a.paramsSummary, observation: a.observation })),
+          typeof ledger.activeVisualReferences === 'function' ? ledger.activeVisualReferences().length : 0,
+        ),
+      };
       ledger.save();
       this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
 

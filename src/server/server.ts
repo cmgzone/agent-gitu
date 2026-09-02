@@ -152,6 +152,8 @@ interface RunSession {
   error?: string;
   usage?: SessionUsage;
   files: StoredSessionFile[];
+  /** Messages sent with delivery:'queue' while a run was active; delivered as a continuation when the run completes. */
+  queuedUserMessages?: { text: string; attachmentContext?: string }[];
 }
 
 export interface GituServerConfig {
@@ -2237,10 +2239,20 @@ export class GituServer {
       else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
       if (wasRunning) {
-        session.gitu?.queueMessage(text, this.attachmentContext(stored.attachments));
-        this.pushEvent(session, `queued  "${text}" — will be delivered to the agent at the next step`);
+        // delivery:'steer' (default) injects the message into the live run so
+        // the agent takes it into account at the next step. delivery:'queue'
+        // holds it until the run finishes, then it starts a fresh continuation.
+        const delivery = body['delivery'] === 'queue' ? 'queue' : 'steer';
         for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
-        this.sendJson(res, 200, { ok: true, queued: true });
+        if (delivery === 'queue') {
+          (session.queuedUserMessages ??= []).push({ text, attachmentContext: this.attachmentContext(stored.attachments) });
+          this.pushEvent(session, `queued  "${text}" — will be delivered when the current run completes`);
+          this.sendJson(res, 200, { ok: true, queued: true, delivery });
+        } else {
+          session.gitu?.queueMessage(text, this.attachmentContext(stored.attachments));
+          this.pushEvent(session, `steered  "${text}" — will be delivered to the agent at the next step`);
+          this.sendJson(res, 200, { ok: true, steered: true, delivery });
+        }
         return;
       }
       if (!session.taskId) {
@@ -2772,6 +2784,31 @@ export class GituServer {
         session.error =
           blocker ||
           (session.status === 'failed' ? 'Task ended without completion (stalled): the effort budget ran out without verified progress.' : undefined);
+      }
+      // Queued user messages (delivery:'queue') are held until a run finishes.
+      // On a completed run they immediately start a fresh continuation so the
+      // agent processes them with the task's durable authority state; on a
+      // blocked/failed run they stay queued for the user's next resume.
+      const queued = session.queuedUserMessages ?? [];
+      if (queued.length > 0 && session.status === 'completed' && session.approvals.size === 0 && !session.planReview && !session.questions) {
+        session.queuedUserMessages = [];
+        const combined = queued.map((m) => m.text).join('\n\n');
+        const attachmentContext = queued.map((m) => m.attachmentContext).filter(Boolean).join('\n\n');
+        const message = attachmentContext ? `${combined}\n\n${attachmentContext}` : combined;
+        this.pushEvent(session, `user-msg ${combined}`);
+        this.pushEvent(session, `continue — delivering ${queued.length} queued message(s) as a new follow-up`);
+        void this.executeRun(session, llm, {
+          goal: session.goal,
+          mode: session.mode ?? 'standard',
+          review: false,
+          projectPath: root,
+          resume: { taskId: session.taskId!, message },
+          conversationHistory: this.conversationHistory(session),
+          attachments: [],
+          model: session.activeModel ?? session.model,
+          actionProtocolMode: session.actionProtocolMode,
+          autoApprove: session.autoApprove,
+        }).catch(() => {});
       }
     } catch (err) {
       if (!isCurrentExecution()) return;

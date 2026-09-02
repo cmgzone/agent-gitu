@@ -67,7 +67,7 @@ export type ContextSections = Record<ContextSection, number>;
 export function sectionOfMessage(m: LlmMessage): ContextSection {
   if (m.role === 'system') return 'system';
   const text = typeof m.content === 'string' ? m.content : (m.content.find((p) => p.type === 'text')?.text ?? '');
-  if (text.startsWith('TASK:')) return 'taskState';
+  if (text.startsWith('TASK:') || text.startsWith('TASK AUTHORITY')) return 'taskState';
   if (text.startsWith('COMPACTED HISTORY')) return 'digest';
   if (text.startsWith('CONTEXT PACK') || text.startsWith('CONTEXT SAMPLE')) return 'contextPack';
   if (text.startsWith('RELEVANT MEMORY') || text.startsWith('PRE-FLIGHT FAILURE LESSONS')) return 'memory';
@@ -226,13 +226,43 @@ export class RunTelemetry {
 /** Compact human-readable summary for events/reports. */
 export function renderTelemetry(t: TokenTelemetrySnapshot): string {
   const src = t.estimatedBySource;
-  return (
+  const base =
     `calls=${t.calls} input=${t.inputTokens} cached=${t.cachedTokens} output=${t.outputTokens} ` +
     `~estInput=${t.estimatedInputTokens} (system=${src.system} contextPack=${src.contextPack} taskState=${src.state} ` +
     `digest=${src.digest} strategy=${src.strategy} conversation=${src.conversation} images=${src.images}) ` +
     `planning=${t.planningCalls}c/~${t.estimatedPlanningInput}t execution=${t.executionCalls}c/~${t.estimatedExecutionInput}t ` +
-    `compactions=${t.compactions} toolCalls=${t.toolCalls} screenshots=${t.screenshots} wasted=${t.wastedCalls}`
+    `compactions=${t.compactions} toolCalls=${t.toolCalls} screenshots=${t.screenshots} wasted=${t.wastedCalls}`;
+  if (!t.behavior) return base;
+  const b = t.behavior;
+  return (
+    base +
+    ` reads-before-edit=${b.filesReadBeforeFirstEdit ?? '-'} turns-before-edit=${b.turnsBeforeFirstEdit ?? '-'}` +
+    ` specialists-before-edit=${b.specialistsBeforeFirstEdit ?? '-'} instruction-blocks=${b.instructionViolationsBlocked ?? 0}` +
+    ` images-retained=${b.imagesRetained ?? 0}`
   );
+}
+
+/**
+ * End-of-run behavior metrics for the target-first & instruction-reliability
+ * model: how much was read before the first edit (investigation focus), and
+ * how often the deterministic instruction policy blocked a violating tool call.
+ */
+export function computeBehaviorMetrics(
+  actions: { tool: string; status: string; paramsSummary?: string; observation?: string }[],
+  activeVisualRefCount: number,
+): NonNullable<TokenTelemetrySnapshot['behavior']> {
+  const firstEditIndex = actions.findIndex((a) => (a.tool === 'write_file' || a.tool === 'apply_edit') && a.status === 'success');
+  const before = firstEditIndex >= 0 ? actions.slice(0, firstEditIndex) : [];
+  return {
+    filesReadBeforeFirstEdit:
+      firstEditIndex >= 0
+        ? new Set(before.filter((a) => a.tool === 'read_file' && a.status === 'success').map((a) => a.paramsSummary ?? '')).size
+        : undefined,
+    turnsBeforeFirstEdit: firstEditIndex >= 0 ? firstEditIndex : undefined,
+    specialistsBeforeFirstEdit: firstEditIndex >= 0 ? before.filter((a) => a.tool === 'delegate' && a.status === 'success').length : undefined,
+    instructionViolationsBlocked: actions.filter((a) => a.status === 'denied' && (a.observation ?? '').includes('user instruction policy')).length,
+    imagesRetained: activeVisualRefCount,
+  };
 }
 
 /**

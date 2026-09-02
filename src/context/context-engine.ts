@@ -207,9 +207,25 @@ export class ContextEngine {
       }
     }
 
+    // Extract explicit file targets from goal text
+    const explicitTargets = new Set<string>();
+    const fileRegex = /(?:[a-zA-Z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|json|py|go|rs|css|html|md))\b/gi;
+    let match: RegExpExecArray | null;
+    while ((match = fileRegex.exec(goal)) !== null) {
+      explicitTargets.add(match[0].replace(/\\/g, '/').toLowerCase());
+    }
+
+    const hasStrongTarget = explicitTargets.size > 0;
     const entrypoints = new Set(this.guard.lock.entrypoints);
     for (const f of files) {
-      if (entrypoints.has(f.path)) f.score += 0.3;
+      const normalizedPath = f.path.replace(/\\/g, '/').toLowerCase();
+      const isExplicitTarget = explicitTargets.has(normalizedPath) || Array.from(explicitTargets).some((t) => normalizedPath.endsWith('/' + t) || t.endsWith('/' + normalizedPath));
+      if (isExplicitTarget) {
+        f.score += 2.0;
+      } else if (entrypoints.has(f.path)) {
+        // Boost entrypoints moderately only when no strong target was explicitly specified
+        f.score += hasStrongTarget ? 0.05 : 0.3;
+      }
     }
 
     files.sort((a, b) => b.score - a.score);

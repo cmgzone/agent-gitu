@@ -440,6 +440,16 @@ export interface TokenTelemetrySnapshot {
   /** Model calls that produced no executable action (wasted spend). */
   wastedCalls: number;
   filesInContextPack: number;
+  /** Behavior metrics for the target-first & instruction-reliability model
+   *  (computed end-of-run from the ledger; `turnsBeforeFirstEdit` is undefined
+   *  when the run never successfully edited a file). */
+  behavior?: {
+    filesReadBeforeFirstEdit?: number;
+    turnsBeforeFirstEdit?: number;
+    specialistsBeforeFirstEdit?: number;
+    instructionViolationsBlocked?: number;
+    imagesRetained?: number;
+  };
 }
 
 /** A bounded unit of work inside one durable task. A new user follow-up starts
@@ -481,6 +491,76 @@ export interface VerifiedDiffSnapshot {
   attempt: number;
 }
 
+export type InstructionType = 'requirement' | 'constraint' | 'preference' | 'correction';
+export type InstructionEnforcement = 'hard' | 'completion' | 'advisory';
+export type InstructionStatus = 'active' | 'superseded' | 'completed';
+export type InstructionSource = 'initial' | 'follow-up' | 'attachment';
+
+export interface UserInstruction {
+  id: string;
+  text: string;
+  type: InstructionType;
+  enforcement: InstructionEnforcement;
+  status: InstructionStatus;
+  source: InstructionSource;
+  supersedes?: string[];
+  createdAt: string;
+}
+
+export type VisualReferenceKind = 'user-reference' | 'browser-screenshot';
+export type VisualReferenceStatus = 'active' | 'superseded' | 'expired';
+
+export interface VisualReference {
+  id: string;
+  path: string;
+  sourceMessageId?: string;
+  kind: VisualReferenceKind;
+  status: VisualReferenceStatus;
+  createdAt: string;
+  pinned?: boolean;
+}
+
+export type FollowUpClassificationKind =
+  | 'CONTINUE'
+  | 'REFINE'
+  | 'CORRECT'
+  | 'CONSTRAIN'
+  | 'EXTEND'
+  | 'VISUAL_REFERENCE'
+  | 'NEW_TASK';
+
+export interface FollowUpRecord {
+  id: string;
+  kind: FollowUpClassificationKind;
+  rawMessage: string;
+  extractedGoalDelta?: string;
+  addedInstructions?: string[];
+  supersededInstructions?: string[];
+  timestamp: string;
+}
+
+export interface TargetHints {
+  files: string[];
+  symbols: string[];
+  errors: string[];
+}
+
+export interface TaskAuthority {
+  originalGoal: string;
+  currentGoal: string;
+  instructions: UserInstruction[];
+  followUps: FollowUpRecord[];
+  visualReferences: VisualReference[];
+  targetHints: TargetHints;
+}
+
+export type InvestigationDepth =
+  | 'direct'
+  | 'local'
+  | 'dependency'
+  | 'subsystem'
+  | 'repository';
+
 export interface TaskLedgerData {
   schemaVersion: 1;
   taskId: string;
@@ -500,6 +580,7 @@ export interface TaskLedgerData {
   skillEvents?: SkillLifecycleEvent[];
   /** Durable audit trail for prerequisite discovery/reuse/provisioning. */
   prerequisiteRecoveries?: PrerequisiteRecoveryRecord[];
+  taskAuthority?: TaskAuthority;
   acceptanceCriteria: AcceptanceCriterion[];
   constraints: string[];
   nonGoals: string[];

@@ -8,6 +8,7 @@
  */
 import { builtinSkillByName } from '../skills/builtin.js';
 import type { Skill } from '../skills/skills.js';
+import type { InvestigationDepth, TargetHints } from '../types.js';
 
 export type TaskKind = 'bug-fix' | 'refactor' | 'test-failure' | 'explore' | 'feature';
 
@@ -40,6 +41,51 @@ const KIND_PATTERNS: { kind: TaskKind; patterns: RegExp[] }[] = [
     ],
   },
 ];
+
+/** Determine investigation depth from concrete evidence and target hints. */
+export function determineInvestigationDepth(goal: string, targetHints?: TargetHints): InvestigationDepth {
+  const lower = goal.toLowerCase();
+
+  // Explicit repository-wide scan / audit
+  if (
+    lower.includes('entire repo') ||
+    lower.includes('whole repo') ||
+    lower.includes('all files') ||
+    lower.includes('security audit') ||
+    lower.includes('architecture review') ||
+    lower.includes('scan repository')
+  ) {
+    return 'repository';
+  }
+
+  // Explicit file target present in hints or goal
+  if (targetHints && targetHints.files && targetHints.files.length > 0) {
+    return 'direct';
+  }
+
+  const hasFileInGoal = /(?:[a-zA-Z0-9_\-./\\]+\.(?:ts|tsx|js|jsx|json|py|go|rs|css|html|md))\b/i.test(goal);
+  if (hasFileInGoal) {
+    return 'direct';
+  }
+
+  // Symbol or exact error in hints or goal
+  if ((targetHints?.symbols && targetHints.symbols.length > 0) || (targetHints?.errors && targetHints.errors.length > 0)) {
+    return 'local';
+  }
+
+  const kind = classifyTaskKind(goal);
+  if (kind === 'refactor') {
+    return 'dependency';
+  }
+  if (kind === 'explore') {
+    return 'subsystem';
+  }
+  if (kind === 'bug-fix' || kind === 'test-failure') {
+    return 'local';
+  }
+
+  return 'local';
+}
 
 /** Classify a task goal into a task kind (heuristic, no LLM round-trip). */
 export function classifyTaskKind(goal: string): TaskKind {
@@ -78,3 +124,4 @@ export function buildTaskStrategySection(goal: string, lspAvailable: boolean, st
   if (!lspAvailable || !goal.trim()) return undefined;
   return strategySkillFor(classifyTaskKind(goal), store).instructions;
 }
+

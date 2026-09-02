@@ -4,6 +4,7 @@ import { LoopDetector } from '../loop/loop-detector.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { PolicyEngine } from '../policy/policy.js';
+import { InstructionPolicyEngine } from '../policy/instruction-policy.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { ActionRecord, ToolResult } from '../types.js';
@@ -66,6 +67,8 @@ export interface ExecuteOutcome {
 export type RuntimeCapabilitySupplier = () => Iterable<string>;
 
 export class Executor {
+  private readonly instructionPolicy = new InstructionPolicyEngine();
+
   constructor(
     private readonly guard: ProjectGuard,
     private readonly ledger: TaskLedger,
@@ -186,6 +189,25 @@ export class Executor {
           return { record, result: { ok: false, output: message }, blockedByLoop: message };
         }
       }
+    }
+
+    const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
+    const instructionVerdict = this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions);
+    if (!instructionVerdict.allowed) {
+      const message = instructionVerdict.reason ?? 'DENIED by user instruction policy';
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'denied',
+        reason: req.reason,
+        expected: req.expected,
+        observation: message,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`denied   ${summary} (${message})`);
+      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
     const decision = await this.policy.evaluate(req.tool, req.params);

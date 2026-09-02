@@ -496,6 +496,28 @@ export type InstructionEnforcement = 'hard' | 'completion' | 'advisory';
 export type InstructionStatus = 'active' | 'superseded' | 'completed';
 export type InstructionSource = 'initial' | 'follow-up' | 'attachment';
 
+/** Machine-readable form of a hard user constraint. Parsed ONCE at
+ *  admission time from the user's wording; execution evaluates this
+ *  structured form instead of re-guessing natural language per call. */
+export interface InstructionConstraint {
+  kind:
+    | 'file_scope'
+    | 'deny_paths'
+    | 'delegate'
+    | 'network'
+    | 'package_install'
+    | 'file_delete'
+    | 'command';
+  /** For file_scope: the only paths (prefixes/basenames) that may be touched. */
+  allow?: string[];
+  /** For deny_paths: paths or conventional module roots that must not be touched. */
+  deny?: string[];
+  /** For 'command': the exact command prefix the constraint governs. */
+  command?: string;
+  /** Disabled constraints stay recorded but are not enforced. */
+  enabled?: boolean;
+}
+
 export interface UserInstruction {
   id: string;
   text: string;
@@ -504,6 +526,10 @@ export interface UserInstruction {
   status: InstructionStatus;
   source: InstructionSource;
   supersedes?: string[];
+  /** Structured form when the wording resolved cleanly at admission time. */
+  constraint?: InstructionConstraint;
+  /** The Task Authority epoch this instruction became active in. */
+  instructionEpoch?: number;
   createdAt: string;
 }
 
@@ -548,6 +574,11 @@ export interface TargetHints {
 export interface TaskAuthority {
   originalGoal: string;
   currentGoal: string;
+  /** Bumped whenever a meaningful user correction/refinement/constraint
+   *  changes active authority. Results produced under an older epoch are
+   *  stale: they may be kept as history/evidence but cannot drive the
+   *  current plan, criteria, or completion state. */
+  instructionEpoch: number;
   instructions: UserInstruction[];
   followUps: FollowUpRecord[];
   visualReferences: VisualReference[];

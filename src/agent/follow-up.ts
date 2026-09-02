@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   FollowUpClassificationKind,
   FollowUpRecord,
+  InstructionConstraint,
   TargetHints,
   UserInstruction,
 } from '../types.js';
@@ -93,31 +94,89 @@ export function extractTargetHints(message: string): TargetHints {
   };
 }
 
+/**
+ * Admission-time structured constraint parsing. Runs ONCE when a follow-up
+ * arrives — never per tool execution. Returns the machine-readable constraint
+ * when the wording resolves cleanly; `undefined` leaves the instruction on the
+ * conservative legacy path rather than guessing broad semantics.
+ */
+export function parseStructuredConstraint(text: string): InstructionConstraint | undefined {
+  const t = text.trim();
+
+  // "only edit src/llm/llm.ts" / "only modify X and Y" → file_scope allow list.
+  const onlyMatch = /^(?:only edit|only modify|restricted to|limit edits to)\s+(.+)$/i.exec(t);
+  if (onlyMatch) {
+    const allow = onlyMatch[1]!
+      .split(/,|\band\b/)
+      .map((s) => s.trim().replace(/['"`]/g, '').replace(/\\/g, '/'))
+      .filter((s) => s.length > 1 && /[.\w]/.test(s));
+    if (allow.length > 0) return { kind: 'file_scope', allow };
+    return undefined;
+  }
+
+  // "don't modify X" / "do not touch X" / "don't change X" → deny_paths.
+  const forbidMatch = /(?:don't|do not|never)\s+(?:modify|edit|touch|change)\s+([^\n,;]+)/i.exec(t);
+  if (forbidMatch) {
+    const raw = forbidMatch[1]!.trim()
+      .replace(/^(?:the|a|an|our|your)\s+/i, '')
+      .replace(/[.!]+$/, '')
+      .replace(/['"`]/g, '')
+      .replace(/\\/g, '/')
+      .toLowerCase();
+    const deny = new Set<string>();
+    if (/^backend\b|backend code/.test(raw)) ['backend/', 'server/', 'api/'].forEach((d) => deny.add(d));
+    else if (/^database\b|^db\b/.test(raw)) ['db/', 'database/', 'migrations/', 'prisma/', 'schema.prisma', '.sql'].forEach((d) => deny.add(d));
+    else if (/[\w/]+\.\w{1,6}$|[\w-]+\//.test(raw)) deny.add(raw);
+    else deny.add(raw); // conservative: the user's own token, nothing broader
+    return { kind: 'deny_paths', deny: [...deny] };
+  }
+
+  const lower = t.toLowerCase();
+  if (/\b(?:don't|do not|never|no)\s+(?:use\s+)?(?:specialists|subagents|delegat)/.test(lower) || /\bno (?:specialists|subagents|delegation)\b/.test(lower)) {
+    return { kind: 'delegate' };
+  }
+  if (/\b(?:don't|do not|never)\s+(?:browse|fetch|use the web)|\bno web (?:search|browsing)|\bno external requests\b/.test(lower)) {
+    return { kind: 'network' };
+  }
+  if (/\b(?:don't|do not|never)\s+install\b|\bno (?:npm |package )?install\b|\bdo not add dependencies\b/.test(lower)) {
+    return { kind: 'package_install' };
+  }
+  if (/\b(?:don't|do not|never)\s+(?:delete|remove)\b|\bno file deletion\b/.test(lower)) {
+    return { kind: 'file_delete' };
+  }
+  return undefined;
+}
+
 export function extractInstructionsFromFollowUp(message: string): Array<Omit<UserInstruction, 'id' | 'createdAt'>> {
   const instructions: Array<Omit<UserInstruction, 'id' | 'createdAt'>> = [];
   const lines = message.split(/(?<=[.!?])\s+|\n+|;\s*/).map((l) => l.trim().replace(/[.!?]+$/, '')).filter(Boolean);
 
   for (const line of lines) {
-    // Check hard constraint
+    // Check hard constraint — parse the structured form once, here.
     if (CONSTRAIN_PATTERNS.some((p) => p.test(line))) {
+      const constraint = parseStructuredConstraint(line);
       instructions.push({
         text: line,
         type: 'constraint',
         enforcement: 'hard',
         status: 'active',
         source: 'follow-up',
+        ...(constraint ? { constraint } : {}),
       });
       continue;
     }
 
-    // Check correction
+    // Check correction — corrections often carry implicit constraints ("the
+    // problem is frontend only" → deny backend); parse the structured form.
     if (CORRECT_PATTERNS.some((p) => p.test(line))) {
+      const constraint = parseStructuredConstraint(line);
       instructions.push({
         text: line,
         type: 'correction',
         enforcement: 'hard',
         status: 'active',
         source: 'follow-up',
+        ...(constraint ? { constraint } : {}),
       });
       continue;
     }
@@ -244,6 +303,22 @@ export function applyFollowUpToLedger(
 
   const addedInstructions: string[] = [];
   const supersededInstructions: string[] = [];
+
+  // A meaningful authority change (correction, refinement, constraint, scope
+  // extension, or a new binding visual) bumps the instruction epoch BEFORE the
+  // new instructions are stamped, so they carry the epoch they became active
+  // in. Specialist results launched under an older epoch become stale history,
+  // not current direction.
+  const epochBumping =
+    classification.extractedInstructions.length > 0 ||
+    classification.kind === 'CORRECT' ||
+    classification.kind === 'CONSTRAIN' ||
+    classification.kind === 'EXTEND' ||
+    classification.kind === 'REFINE' ||
+    classification.kind === 'VISUAL_REFERENCE';
+  if (epochBumping) {
+    ledger.bumpInstructionEpoch(`follow-up ${classification.kind}: "${rawMessage.slice(0, 120)}"`);
+  }
 
   // If correction or constraint, add extracted instructions
   for (const inst of classification.extractedInstructions) {

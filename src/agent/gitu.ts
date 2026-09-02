@@ -4107,6 +4107,11 @@ export class Gitu {
                 `delegate handoff prepared for ${delegatedTasks.length} specialist(s): ` +
                   delegatedTasks.map((task) => `${task.agent} (${task.handoff.startingFiles.length} files, ${task.handoff.excerpts.length} excerpts)`).join(', '),
               );
+              // Stale-result protection: a specialist launched under one
+              // instruction epoch must not silently steer a task the user has
+              // since corrected. Capture the epoch at launch; results that
+              // come back stale stay history-only.
+              const launchedInstructionEpoch = ledger.instructionEpoch;
               const outcome = await executor.execute({
                 tool: 'delegate',
                 params: { tasks: delegatedTasks, background: action.background },
@@ -4137,6 +4142,17 @@ export class Gitu {
               // evidence that passes is mirrored into the MAIN ledger through the
               // EvidenceEngine so the acceptance gate keeps its authority.
               const validationLines: string[] = [];
+              const specialistEpochStale = ledger.instructionEpoch > launchedInstructionEpoch;
+              if (specialistEpochStale) {
+                const staleNote =
+                  `SPECIALIST RESULTS STALE — launched under instruction epoch ${launchedInstructionEpoch}, but the task is now at epoch ${ledger.instructionEpoch} ` +
+                  `(a user correction/refinement arrived mid-flight). These results are preserved as history ONLY: they MUST NOT update the plan, criteria, ` +
+                  `or completion state. Re-check them against the newest user intent before acting on any of their content.`;
+                this.emit('delegate results marked stale by instruction epoch — history only, no automatic application');
+                validationLines.push(`  ⚠ ${staleNote}`);
+                observe(`${action.background ? 'BACKGROUND AGENTS' : 'DELEGATE RESULTS'} [stale — history only]\n${output.slice(0, 5000)}\n${staleNote}`);
+                break;
+              }
               if (results.length > 0) {
                 // P — formal parent re-verification. A specialist's self-report is
                 // NEVER sufficient. Runnable criteria are re-executed through the

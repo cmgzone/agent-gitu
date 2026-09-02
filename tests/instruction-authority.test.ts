@@ -4,7 +4,8 @@ import { InstructionPolicyEngine } from '../src/policy/instruction-policy.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { buildStateMessage } from '../src/agent/prompt.js';
 import { computeBehaviorMetrics } from '../src/agent/telemetry.js';
-import type { ProjectLock } from '../src/types.js';
+import { parseStructuredConstraint, extractInstructionsFromFollowUp, applyFollowUpToLedger } from '../src/agent/follow-up.js';
+import type { ProjectLock, UserInstruction } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -232,5 +233,81 @@ describe('Instruction Authority & Policy Enforcement', () => {
     const noEdit = computeBehaviorMetrics([{ tool: 'read_file', status: 'success', paramsSummary: 'src/a.ts' }], 0);
     expect(noEdit.turnsBeforeFirstEdit).toBeUndefined();
     expect(noEdit.instructionViolationsBlocked).toBe(0);
+  });
+
+  it('parses structured constraints once at admission time', () => {
+    expect(parseStructuredConstraint('Only edit src/llm/llm.ts')).toEqual({ kind: 'file_scope', allow: ['src/llm/llm.ts'] });
+    expect(parseStructuredConstraint("Don't touch server.ts")).toEqual({ kind: 'deny_paths', deny: ['server.ts'] });
+    expect(parseStructuredConstraint("don't change the backend")).toEqual({ kind: 'deny_paths', deny: ['backend/', 'server/', 'api/'] });
+    expect(parseStructuredConstraint("don't use specialists")).toEqual({ kind: 'delegate' });
+    expect(parseStructuredConstraint('no web search')).toEqual({ kind: 'network' });
+    expect(parseStructuredConstraint('no npm install')).toEqual({ kind: 'package_install' });
+    expect(parseStructuredConstraint("don't delete files")).toEqual({ kind: 'file_delete' });
+    // Ambiguous wording resolves to nothing structured — conservative.
+    expect(parseStructuredConstraint('please be careful with the design')).toBeUndefined();
+
+    // Admission-time parsing flows into extracted instructions (no regex
+    // guessing at execution time).
+    const extracted = extractInstructionsFromFollowUp("Only edit src/llm/llm.ts. Don't use specialists.");
+    expect(extracted[0]!.constraint).toEqual({ kind: 'file_scope', allow: ['src/llm/llm.ts'] });
+    expect(extracted[1]!.constraint).toEqual({ kind: 'delegate' });
+  });
+
+  it('enforces structured constraints deterministically and fails closed on unknown kinds', () => {
+    const policy = new InstructionPolicyEngine();
+    const fileScope: UserInstruction = {
+      id: 'i1',
+      text: 'Only edit src/llm/llm.ts',
+      type: 'constraint',
+      enforcement: 'hard',
+      status: 'active',
+      source: 'follow-up',
+      constraint: { kind: 'file_scope', allow: ['src/llm/llm.ts'] },
+      createdAt: new Date().toISOString(),
+    };
+
+    expect(policy.evaluate('write_file', { path: 'src/other.ts', content: 'x' }, [fileScope]).allowed).toBe(false);
+    expect(policy.evaluate('apply_edit', { path: 'src/llm/llm.ts' }, [fileScope]).allowed).toBe(true);
+    // Reads are not edits: a file scope governs mutation, not inspection.
+    expect(policy.evaluate('read_file', { path: 'src/other.ts' }, [fileScope]).allowed).toBe(true);
+
+    const disabled: UserInstruction = { ...fileScope, id: 'i2', constraint: { kind: 'file_scope', allow: ['src/llm/llm.ts'], enabled: false } };
+    expect(policy.evaluate('write_file', { path: 'src/other.ts', content: 'x' }, [disabled]).allowed).toBe(true);
+
+    const unknown: UserInstruction = {
+      ...fileScope,
+      id: 'i3',
+      // Cast: simulates a future/foreign constraint kind arriving in a ledger.
+      constraint: { kind: 'teleport' as unknown as 'command' },
+    };
+    const unknownVerdict = policy.evaluate('write_file', { path: 'anything.ts', content: 'x' }, [unknown]);
+    expect(unknownVerdict.allowed).toBe(false);
+    expect(unknownVerdict.reason).toContain('unrecognized constraint form');
+  });
+
+  it('bumps instructionEpoch on meaningful follow-ups and stamps instructions', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Initial', project, mode: 'standard' });
+      expect(ledger.instructionEpoch).toBe(0);
+
+      applyFollowUpToLedger(ledger, 'continue');
+      expect(ledger.instructionEpoch).toBe(0);
+
+      applyFollowUpToLedger(ledger, 'make the cards smaller');
+      expect(ledger.instructionEpoch).toBe(1);
+
+      applyFollowUpToLedger(ledger, 'no npm install');
+      expect(ledger.instructionEpoch).toBe(2);
+      const inst = ledger.hardInstructions()[0]!;
+      expect(inst.constraint).toEqual({ kind: 'package_install' });
+      expect(inst.instructionEpoch).toBe(2);
+
+      // A CONTINUE after that changes nothing.
+      applyFollowUpToLedger(ledger, 'go ahead');
+      expect(ledger.instructionEpoch).toBe(2);
+    } finally {
+      cleanup();
+    }
   });
 });

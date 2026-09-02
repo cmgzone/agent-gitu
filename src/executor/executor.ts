@@ -184,28 +184,9 @@ export class Executor {
       return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
-    const decision = await this.policy.evaluate(req.tool, req.params);
-    if (!decision.allowed) {
-      const message = `DENIED by policy [${decision.tier}]: ${decision.reason}`;
-      const record = this.ledger.recordAction({
-        stepId,
-        tool: req.tool,
-        paramsHash,
-        paramsSummary: summary,
-        status: 'denied',
-        reason: req.reason,
-        expected: req.expected,
-        observation: message,
-        durationMs: Date.now() - started,
-      });
-      this.emit(`denied   ${summary} (${decision.reason})`);
-      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
-    }
-
-    // Loop protection runs LAST before execution: an action that survived
-    // schema, boundary, instruction, and policy judgment is only blocked here
-    // when repeating it would waste the run (same failing call, skill
-    // re-reading, edit pressure without evidence).
+    // Loop protection runs after the authority gates but BEFORE the normal
+    // safety/approval policy: repeating a failing call must be caught by
+    // heuristics before it can burn another approval round-trip.
     if (req.tool === 'list_skills' || req.tool === 'use_skill' || req.tool === 'use_skill_reference') {
       const priorReads = this.ledger.data.actions.filter((action) => action.tool === req.tool && action.paramsHash === paramsHash && action.status === 'success');
       if (priorReads.length >= 2) {
@@ -269,6 +250,26 @@ export class Executor {
           return { record, result: { ok: false, output: message }, blockedByLoop: message };
         }
       }
+    }
+
+    // Normal safety/approval policy runs AFTER user authority and loop
+    // protection: agent defaults are the lowest-precedence gate.
+    const decision = await this.policy.evaluate(req.tool, req.params);
+    if (!decision.allowed) {
+      const message = `DENIED by policy [${decision.tier}]: ${decision.reason}`;
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'denied',
+        reason: req.reason,
+        expected: req.expected,
+        observation: message,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`denied   ${summary} (${decision.reason})`);
+      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);

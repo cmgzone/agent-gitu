@@ -271,6 +271,31 @@ describe('Executor enforcement pipeline order', () => {
     expect(outcome.blockedByLoop).toBeTruthy();
     expect(ledger.data.actions.at(-1)?.status).toBe('blocked');
   });
+
+  it('runs the loop guard BEFORE the normal safety/approval policy', async () => {
+    // Real LoopDetector + counting policy: a repeated failing call must be
+    // blocked by loop heuristics without ever reaching the approval policy.
+    const dir = makeProject();
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: 'loop before policy', project: guard.lock, mode: 'fast' });
+    let policyCalls = 0;
+    const countingPolicy = {
+      evaluate: async () => {
+        policyCalls += 1;
+        return { tier: 'safe' as const, allowed: true, requiresApproval: false, reason: 'stub' };
+      },
+    } as unknown as PolicyEngine;
+    const executor = new Executor(guard, ledger, countingPolicy, new LoopDetector());
+
+    await executor.execute({ tool: 'read_file', params: { path: 'src/missing.ts' }, reason: 'test', expected: 'content' });
+    await executor.execute({ tool: 'read_file', params: { path: 'src/missing.ts' }, reason: 'test', expected: 'content' });
+    const outcome = await executor.execute({ tool: 'read_file', params: { path: 'src/missing.ts' }, reason: 'test', expected: 'content' });
+
+    expect(outcome.blockedByLoop).toBeTruthy();
+    // Only the two earlier (loop-allowed) calls consulted the policy — the
+    // blocked third call never reached the approval layer.
+    expect(policyCalls).toBe(2);
+  });
 });
 
 describe('toolSearchFiles — language-agnostic search engine', () => {

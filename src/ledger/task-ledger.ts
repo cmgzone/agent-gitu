@@ -86,6 +86,7 @@ export class TaskLedger {
       taskAuthority: {
         originalGoal: input.goal,
         currentGoal: input.goal,
+        instructionEpoch: 0,
         instructions: [],
         followUps: [],
         visualReferences: [],
@@ -150,6 +151,7 @@ export class TaskLedger {
       this.data.taskAuthority = {
         originalGoal: this.data.goal,
         currentGoal: this.data.goal,
+        instructionEpoch: 0,
         instructions: [],
         followUps: [],
         visualReferences: [],
@@ -160,7 +162,25 @@ export class TaskLedger {
         },
       };
     }
+    // Hydrate ledgers created before the epoch field existed.
+    if (typeof this.data.taskAuthority.instructionEpoch !== 'number') {
+      this.data.taskAuthority.instructionEpoch = 0;
+    }
     return this.data.taskAuthority;
+  }
+
+  get instructionEpoch(): number {
+    return this.ensureTaskAuthority().instructionEpoch;
+  }
+
+  /** Bump when a meaningful user correction/refinement/constraint changes
+   *  active authority. In-flight specialist results launched under an older
+   *  epoch become stale (history/evidence only). */
+  bumpInstructionEpoch(reason: string): number {
+    const auth = this.ensureTaskAuthority();
+    auth.instructionEpoch += 1;
+    this.save();
+    return auth.instructionEpoch;
   }
 
   setCurrentGoal(goal: string, _basis?: string): void {
@@ -181,6 +201,8 @@ export class TaskLedger {
       status: input.status ?? 'active',
       source: input.source ?? 'follow-up',
       supersedes: input.supersedes,
+      ...(input.constraint ? { constraint: input.constraint } : {}),
+      instructionEpoch: auth.instructionEpoch,
       createdAt: now,
     };
     if (instruction.supersedes?.length) {

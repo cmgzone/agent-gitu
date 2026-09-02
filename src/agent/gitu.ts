@@ -47,6 +47,7 @@ import {
   type ConnectionOperationProposal,
   type ConnectionRecoveryDecision,
 } from '../connections/connections.js';
+import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
@@ -85,12 +86,7 @@ import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestM
 export interface GituConfig {
   cwd: string;
   llm: LlmClient;
-  /**
-   * Optional second model used ONLY for protocol-repair calls after malformed
-   * replies (formatting one executable action from the drifted reply). Never
-   * used for primary reasoning; repair output passes every gate a normal
-   * action would.
-   */
+  /** Constrained model used exclusively for protocol repair calls. */
   protocolRepairLlm?: LlmClient;
   /** Shared code index to reuse (e.g. a watched one owned by the server). */
   index?: CodeIndex;
@@ -117,6 +113,8 @@ export interface GituConfig {
   /** Executes only a registered, read-only provider operation. URLs and
    * authorization headers stay inside the host adapter. */
   connectionActionHandler?: (input: { connectionId: string; operationId: string }) => Promise<{ message: string; data?: unknown }>;
+  /** Executes a multi-intent bounded discovery graph across a saved connection. */
+  connectionDiscoveryHandler?: (request: DiscoveryRequest) => Promise<DiscoveryResult>;
   /** Selects the safest information-gathering action for the recovery
    * controller: a registered read-only operation, preferring the connection
    * named by the caller (usually the one that just failed). */
@@ -428,6 +426,15 @@ type ParsedAction =
     }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
   | { type: 'connection_action'; connectionId: string; operationId: string; reason: string }
+  | {
+      type: 'connection_discovery';
+      connectionId: string;
+      intents: DiscoveryIntent[];
+      resourceType?: string;
+      resourceIdOrName?: string;
+      filters?: Record<string, string>;
+      reason: string;
+    }
   | { type: 'connection_operation'; connectionId: string; operation: ConnectionOperation; body?: unknown; documentationUrl?: string; reason: string }
   | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
   | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
@@ -506,6 +513,10 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
     }
     case 'connection_action':
       return `I’m using the registered ${action.operationId} read operation on the saved ${action.connectionId} connection.`;
+    case 'connection_discovery': {
+      const target = action.resourceIdOrName ? ` for "${action.resourceIdOrName}"` : '';
+      return `I’m discovering ${action.connectionId} ${action.intents.join(', ')}${target} via the Universal Discovery Engine.`;
+    }
     case 'connection_operation': {
       // Safe reads auto-register under the existing credential and run
       // immediately — they never wait for approval. Only non-read operations
@@ -544,28 +555,39 @@ function parseAction(raw: unknown): ParsedAction | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const root = raw as Record<string, unknown>;
   const action = (root['action'] ?? root) as Record<string, unknown>;
-  const type = action['type'];
-  // Some models emit dots-style JSON where the tool name is the action type
-  // ({"type":"run_command",...}) instead of {"type":"tool_call","tool":...}.
-  if (typeof type === 'string' && !KNOWN_ACTION_TYPES.has(type) && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
-    const nested = action['params'];
+  const rawType = action['type'] ?? action['tool'] ?? action['tool_name'] ?? action['name'];
+  const type = typeof rawType === 'string' ? rawType.trim() : undefined;
+  if (!type) return undefined;
+
+  // Models that emit direct tool names as action type (e.g. {"type":"run_command",...})
+  if (!KNOWN_ACTION_TYPES.has(type) && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
+    const rawNested = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
     const params: Record<string, unknown> = {};
-    if (nested && typeof nested === 'object') {
-      Object.assign(params, nested as Record<string, unknown>);
+    if (rawNested && typeof rawNested === 'object' && !Array.isArray(rawNested)) {
+      Object.assign(params, rawNested as Record<string, unknown>);
     } else {
       for (const [key, value] of Object.entries(action)) {
-        if (key !== 'type' && key !== 'thought' && key !== 'reason' && key !== 'expected' && key !== 'stepId') params[key] = value;
+        if (key !== 'type' && key !== 'tool' && key !== 'tool_name' && key !== 'name' && key !== 'thought' && key !== 'reason' && key !== 'expected' && key !== 'stepId') {
+          params[key] = value;
+        }
       }
     }
+    // Alias normalization for common tool parameters
+    if (params['file_path'] !== undefined && params['path'] === undefined) params['path'] = params['file_path'];
+    if (params['filePath'] !== undefined && params['path'] === undefined) params['path'] = params['filePath'];
+    if (params['file'] !== undefined && params['path'] === undefined && typeof params['file'] === 'string') params['path'] = params['file'];
+    if (params['cmd'] !== undefined && params['command'] === undefined) params['command'] = params['cmd'];
+
     return {
       type: 'tool_call',
       tool: type,
       params,
-      reason: String(action['reason'] ?? ''),
+      reason: String(action['reason'] ?? action['thought'] ?? ''),
       expected: String(action['expected'] ?? ''),
       stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
     };
   }
+
   switch (type) {
     case 'set_criteria':
     case 'add_criteria': {
@@ -644,52 +666,104 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       return { type, ...draft, basis: draft.basis ?? 'recommendation' };
     }
     case 'tool_call': {
-      if (typeof action['tool'] !== 'string') return undefined;
-      const params = action['params'];
-      if (!params || typeof params !== 'object') return undefined;
+      const tool = String(action['tool'] ?? action['tool_name'] ?? action['name'] ?? '');
+      if (!tool) return undefined;
+      const rawParams = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
+      const params: Record<string, unknown> = (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)) ? { ...(rawParams as Record<string, unknown>) } : {};
+      if (Object.keys(params).length === 0) {
+        for (const [k, v] of Object.entries(action)) {
+          if (k !== 'type' && k !== 'tool' && k !== 'tool_name' && k !== 'name' && k !== 'reason' && k !== 'thought' && k !== 'expected' && k !== 'stepId') {
+            params[k] = v;
+          }
+        }
+      }
+      if (params['file_path'] !== undefined && params['path'] === undefined) params['path'] = params['file_path'];
+      if (params['filePath'] !== undefined && params['path'] === undefined) params['path'] = params['filePath'];
+      if (params['file'] !== undefined && params['path'] === undefined && typeof params['file'] === 'string') params['path'] = params['file'];
+      if (params['cmd'] !== undefined && params['command'] === undefined) params['command'] = params['cmd'];
       return {
         type,
-        tool: action['tool'],
-        params: params as Record<string, unknown>,
-        reason: String(action['reason'] ?? ''),
+        tool,
+        params,
+        reason: String(action['reason'] ?? action['thought'] ?? ''),
         expected: String(action['expected'] ?? ''),
         stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
       };
     }
     case 'connection_action': {
-      const connectionId = String(action['connectionId'] ?? '')
-        .trim()
-        .toLowerCase();
-      const operationId = String(action['operationId'] ?? '')
-        .trim()
-        .toLowerCase();
-      // operationId may arrive provider-qualified ("coolify/list-applications");
-      // the registry normalizes it to ONE canonical id at lookup time.
-      if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) return undefined;
-      const composite = /^[a-z][a-z0-9-]{0,62}\/[a-z][a-z0-9-]{0,48}$/.test(operationId);
-      if (!composite && !/^[a-z][a-z0-9-]{0,48}$/.test(operationId)) return undefined;
+      const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
+      const rawOp = action['operationId'] ?? action['operation_id'] ?? (typeof action['operation'] === 'string' ? action['operation'] : (action['operation'] as Record<string, unknown>)?.['id']) ?? action['op'];
+      const connectionId = String(rawConn ?? '').trim().toLowerCase();
+      const operationId = String(rawOp ?? '').trim().toLowerCase();
+      if (!connectionId) return undefined;
+      // Auto-promote to connection_discovery if intents array is provided
+      if (action['intents'] || action['intent']) {
+        const rawIntents = action['intents'] ?? action['intent'];
+        const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents])
+          .map((i) => String(i).trim())
+          .filter(Boolean) as DiscoveryIntent[];
+        if (intentsArray.length > 0) {
+          const resourceType = action['resourceType'] ? String(action['resourceType']).trim() : undefined;
+          const resourceIdOrName = action['resourceIdOrName'] ? String(action['resourceIdOrName']).trim() : (action['resource'] ? String(action['resource']).trim() : (action['name'] ? String(action['name']).trim() : undefined));
+          return {
+            type: 'connection_discovery',
+            connectionId,
+            intents: intentsArray,
+            ...(resourceType ? { resourceType } : {}),
+            ...(resourceIdOrName ? { resourceIdOrName } : {}),
+            reason: String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240),
+          };
+        }
+      }
+      if (!operationId) return undefined;
+      // Tolerant identifier check: allow alphanumeric, dashes, underscores, and provider slashes
+      if (!/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
+      if (!/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(operationId)) return undefined;
       return {
         type,
         connectionId,
         operationId,
-        reason: String(action['reason'] ?? '')
+        reason: String(action['reason'] ?? action['thought'] ?? '')
           .trim()
           .slice(0, 240),
       };
     }
+    case 'connection_discovery': {
+      const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
+      const connectionId = String(rawConn ?? '').trim().toLowerCase();
+      if (!connectionId || !/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
+      const rawIntents = action['intents'] ?? action['intent'] ?? ['list_resources'];
+      const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents])
+        .map((i) => String(i).trim())
+        .filter(Boolean) as DiscoveryIntent[];
+      if (intentsArray.length === 0) return undefined;
+      const resourceType = action['resourceType'] ? String(action['resourceType']).trim() : undefined;
+      const resourceIdOrName = action['resourceIdOrName'] ? String(action['resourceIdOrName']).trim() : (action['resource'] ? String(action['resource']).trim() : (action['name'] ? String(action['name']).trim() : undefined));
+      const filters = action['filters'] && typeof action['filters'] === 'object' && !Array.isArray(action['filters']) ? (action['filters'] as Record<string, string>) : undefined;
+      const reason = String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240);
+      return {
+        type: 'connection_discovery',
+        connectionId,
+        intents: intentsArray,
+        ...(resourceType ? { resourceType } : {}),
+        ...(resourceIdOrName ? { resourceIdOrName } : {}),
+        ...(filters ? { filters } : {}),
+        reason,
+      };
+    }
     case 'connection_operation': {
-      const connectionId = String(action['connectionId'] ?? '')
-        .trim()
-        .toLowerCase();
-      if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) return undefined;
-      const operation = normalizeConnectionOperation(action['operation']);
+      const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
+      const connectionId = String(rawConn ?? '').trim().toLowerCase();
+      if (!connectionId || !/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
+      const rawOp = action['operation'] ?? action['op'];
+      const operation = normalizeConnectionOperation(rawOp);
       if (!operation) return undefined;
-      const rawDocumentationUrl = action['documentationUrl'];
+      const rawDocumentationUrl = action['documentationUrl'] ?? action['documentation_url'] ?? action['docUrl'] ?? action['docs'];
       const documentationUrl = rawDocumentationUrl === undefined ? undefined : normalizeConnectionDocumentationUrl(rawDocumentationUrl);
       if (rawDocumentationUrl !== undefined && !documentationUrl) return undefined;
       try {
-        const body = action['body'] === undefined ? undefined : normalizeConnectionOperationBody(action['body']);
-        const reason = String(action['reason'] ?? '')
+        const body = action['body'] === undefined ? undefined : normalizeConnectionOperationBody(action['body'] ?? action['params'] ?? action['payload']);
+        const reason = String(action['reason'] ?? action['thought'] ?? '')
           .replace(/\s+/g, ' ')
           .trim()
           .slice(0, 240);
@@ -798,6 +872,7 @@ const KNOWN_ACTION_TYPES = new Set([
   'show_plan',
   'tool_call',
   'connection_action',
+  'connection_discovery',
   'connection_operation',
   'claim_criterion',
   'complete',
@@ -840,12 +915,25 @@ function actionReplyFromTurn(turn: LlmTurnResult): string {
     case 'empty':
       return '';
     case 'tool_calls': {
-      // Unknown/provider-hosted calls are never executed directly. They are
-      // represented as an invalid response, so normal malformed-call recovery
-      // can coach or stop the agent without bypassing policy checks.
-      const call = turn.calls.find((candidate) => candidate.name === GITU_ACTION_TOOL.name);
-      if (!call) return '';
-      return JSON.stringify({ action: call.arguments['action'] ?? call.arguments });
+      if (turn.calls.length === 0) return '';
+      const explicitActionCall = turn.calls.find((candidate) =>
+        candidate.name === GITU_ACTION_TOOL.name ||
+        candidate.name === 'agent_gitu_action' ||
+        candidate.name === 'gitu_action' ||
+        candidate.name === 'agent_action',
+      );
+      if (explicitActionCall) {
+        const actionObj = explicitActionCall.arguments['action'] ?? explicitActionCall.arguments;
+        return JSON.stringify({ action: actionObj });
+      }
+      const first = turn.calls[0]!;
+      if (KNOWN_ACTION_TYPES.has(first.name)) {
+        return JSON.stringify({ action: { type: first.name, ...first.arguments } });
+      }
+      if (KNOWN_TOOL_NAMES.has(first.name) || first.name.startsWith('mcp:')) {
+        return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: String(first.arguments['reason'] ?? ''), expected: String(first.arguments['expected'] ?? '') } });
+      }
+      return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: '', expected: '' } });
     }
   }
 }
@@ -3163,6 +3251,64 @@ export class Gitu {
                 observe(
                   `CONNECTION ACTION FAILED: ${(error as Error).message}${exampleEcho}\nDo not retry by adding raw headers to web_fetch. The saved connection and its credential stay valid; resolve the missing operation (registered read for discovery, or documented connection_operation for writes) or, only when the provider positively rejected authentication, use secure reauthorization.`,
                 );
+              }
+              break;
+            }
+            case 'connection_discovery': {
+              const discoveryKey = `${action.connectionId}:${action.intents.join(',')}:${action.resourceIdOrName ?? '*'}`;
+              const discoveryAttempts = (connectionActionAttempts.get(discoveryKey) ?? 0) + 1;
+              connectionActionAttempts.set(discoveryKey, discoveryAttempts);
+              if (discoveryAttempts > 3) {
+                const blocker = `Saved connection discovery for ${action.connectionId} was requested more than three times without new results.`;
+                ledger.addBlocker(blocker);
+                exitReason = 'stalled';
+                this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
+                observe(`${blocker} Use existing discovery evidence, choose a different target, or revise the plan.`);
+                break mainLoop;
+              }
+              if (!this.config.connectionDiscoveryHandler && !this.config.connectionActionHandler) {
+                observe(
+                  'No saved-connection discovery adapter is available in this host. Use request_block with a structured provider prerequisite.',
+                );
+                break;
+              }
+              try {
+                const handler = this.config.connectionDiscoveryHandler;
+                let result: DiscoveryResult;
+                if (handler) {
+                  result = await handler({
+                    connectionId: action.connectionId,
+                    intents: action.intents,
+                    resourceType: action.resourceType,
+                    resourceIdOrName: action.resourceIdOrName,
+                    filters: action.filters,
+                  });
+                } else {
+                  const fallbackOp = action.intents.includes('get_environment') ? 'get-application-envs' : 'list-applications';
+                  const res = await this.config.connectionActionHandler!({ connectionId: action.connectionId, operationId: fallbackOp });
+                  result = {
+                    ok: true,
+                    connectionId: action.connectionId,
+                    requestedIntents: action.intents,
+                    completedIntents: action.intents,
+                    data: (res.data as Record<string, unknown>) ?? {},
+                    summary: res.message,
+                    operationsExecuted: [fallbackOp],
+                    stopReason: 'complete',
+                    truncated: false,
+                  };
+                }
+                const disclosure = connectionResultDisclosure(result.data);
+                const rendered = disclosure.text ? `\nDISCOVERY DATA (bounded and secret-redacted):\n${disclosure.text}` : '';
+                concreteActionSinceLastAsk = true;
+                this.emit(`connection ${action.connectionId} discovery ${result.stopReason} (${result.operationsExecuted.length} op(s))`);
+                observe(
+                  `CONNECTION DISCOVERY RESULT (${result.stopReason}): ${result.summary}${rendered}${result.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this verified discovery state as evidence for planning and decisions.`,
+                );
+              } catch (error) {
+                const reason = connectionEventReason((error as Error).message);
+                this.emit(`connection ${action.connectionId} discovery failed — ${reason}`);
+                observe(`CONNECTION DISCOVERY FAILED: ${(error as Error).message}`);
               }
               break;
             }

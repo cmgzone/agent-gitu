@@ -40,6 +40,23 @@ export function resolveEmbedder(): Embedder | undefined {
   }
 }
 
+export interface ProviderCapabilities {
+  /** Supports native function / tool calling on chat completions. */
+  nativeTools?: boolean;
+  /** Supports strict schema validation for tools. */
+  strictTools?: boolean;
+  /** Supports parallel tool calling. */
+  parallelTools?: boolean;
+  /** Supports streaming SSE deltas during tool calls. */
+  streamingTools?: boolean;
+  /** Supports structured output (json_object / json_schema). */
+  structuredOutput?: boolean;
+  /** Supports tool_choice: "required" without dropping reasoning tokens. */
+  toolChoiceRequired?: boolean;
+  /** Requires previous reasoning_content to be echoed back when tools are carried. */
+  requiresReasoningEcho?: boolean;
+}
+
 export interface ProviderSpec {
   id: string;
   label: string;
@@ -60,6 +77,8 @@ export interface ProviderSpec {
   custom?: boolean;
   /** Hint for the first action protocol attempt. `auto` starts native. */
   toolMode?: 'auto' | 'native' | 'structured_text' | 'text';
+  /** Specific capability flags for this provider. */
+  capabilities?: ProviderCapabilities;
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {

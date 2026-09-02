@@ -717,4 +717,71 @@ describe('Gitu recovery routing — no loop into secure setup without proven aut
     expect(connectionRequests).toBe(1);
     expect(events.some((event) => event.includes('connection reauthorization required'))).toBe(true);
   }, 30000);
+
+  it('resolves connection alias and underscore-formatted operationId deterministically', async () => {
+    home();
+    const root = project('alias-test');
+    const registry = new ConnectionRegistry();
+    // Saved connection ID is 'coolify-production'
+    saveConnection(registry, { id: 'coolify-production', provider: 'coolify', capabilities: ['servers.read', 'applications.read'] });
+
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/api/v1/applications')) {
+        return okResponse([{ id: 'app-1', name: 'my-app' }]);
+      }
+      return okResponse([]);
+    };
+
+    let invocations = 0;
+    const events: string[] = [];
+    let turn = 0;
+    const llm: LlmClient = {
+      name: 'alias-mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          // Model emits connectionId: "coolify" (alias) and operation: "list_applications" (with underscore)
+          return {
+            kind: 'text',
+            text: JSON.stringify({
+              action: {
+                type: 'connection_action',
+                connection_id: 'coolify',
+                operation: 'list_applications',
+                reason: 'inspect coolify applications',
+              },
+            }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (text) => events.push(text),
+      connectionActionHandler: async ({ connectionId, operationId }) => {
+        invocations += 1;
+        const res = await registry.resolveAndExecuteRead({ connectionId, operationId });
+        return { message: res.message, data: res.data };
+      },
+    });
+
+    await gitu.run('Check coolify');
+    expect(invocations).toBe(1);
+    expect(events.some((event) => event.includes('completed'))).toBe(true);
+  }, 30000);
 });
+

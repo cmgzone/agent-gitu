@@ -141,6 +141,8 @@ export function createCliPresenter(options: CliPresenterOptions = {}) {
       findings: { title: 'FINDINGS', tone: 'blue' },
       image: { title: 'IMAGE', tone: 'blue' },
       lsp: { title: 'LSP', tone: 'dim' },
+      repair: { title: 'REPAIR', tone: 'dim' },
+      protocol: { title: 'PROTOCOL', tone: 'dim' },
     };
     const presentation = labels[key] ?? { title: key.toUpperCase(), tone: 'dim' as const };
     return `${paint(statusSymbol(key), presentation.tone)} ${paint(presentation.title.padEnd(9), presentation.tone)} ${truncate(message, width - 14)}`;

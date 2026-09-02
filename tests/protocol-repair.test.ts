@@ -166,4 +166,70 @@ describe('Gitu protocol-repair layer', () => {
     expect(events.some((e) => /context\s+compacted/.test(e))).toBe(true);
     expect(report.status).toBe('blocked');
   }, 30000);
+
+  it('normalizes direct native tool calls without invoking protocol repair', async () => {
+    const root = project('native-direct');
+    const events: string[] = [];
+    let call = 0;
+    const llm: LlmClient = {
+      name: 'native-tool-mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return 'VERDICT: PASS\nFEEDBACK: nothing to flag.';
+      },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        const n = call++;
+        if (n === 0) {
+          // Emits direct native tool call named "set_criteria" instead of agent_gitu_action
+          return {
+            kind: 'tool_calls',
+            calls: [{ id: 'call-1', name: 'set_criteria', arguments: { criteria: ['runtime is verified'] } }],
+            metadata: {},
+          };
+        }
+        if (n === 1) {
+          // Emits direct native tool call named "set_plan"
+          return {
+            kind: 'tool_calls',
+            calls: [{ id: 'call-2', name: 'set_plan', arguments: { steps: [{ description: 'verify runtime', verification: 'node --version' }] } }],
+            metadata: {},
+          };
+        }
+        if (n === 2) {
+          // Emits direct tool call "run_command" with parameter alias "cmd"
+          return {
+            kind: 'tool_calls',
+            calls: [{ id: 'call-3', name: 'run_command', arguments: { cmd: 'node --version', reason: 'verify', expected: 'exit 0', stepId: 'step-1' } }],
+            metadata: {},
+          };
+        }
+        if (n === 3) {
+          const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return {
+            kind: 'tool_calls',
+            calls: [{ id: 'call-4', name: 'claim_criterion', arguments: { criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }],
+            metadata: {},
+          };
+        }
+        return {
+          kind: 'tool_calls',
+          calls: [{ id: 'call-5', name: 'complete', arguments: { summary: 'done', risks: [], followUps: [] } }],
+          metadata: {},
+        };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const { report } = await new Gitu({ cwd: root, llm, mode: 'fast', onEvent: (e) => events.push(e) }).run(GOAL);
+
+    expect(report.status).toBe('complete');
+    // Direct native tool calls must NOT trigger protocol-repair
+    expect(events.some((e) => e.includes('protocol-repair call'))).toBe(false);
+  }, 30000);
 });
+

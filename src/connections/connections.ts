@@ -5,7 +5,17 @@ import { SkillStore } from '../skills/skills.js';
 import type { Capability, ConnectionSetupHint, MissingPrerequisite } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
 import { ensureGituHome } from '../workspace/home.js';
-import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor } from './catalog.js';
+import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor, catalogProvider } from './catalog.js';
+import {
+  UniversalDiscoveryEngine,
+  DiscoveryFactCache,
+  DiscoveryTelemetryAccumulator,
+  type DiscoveryRequest,
+  type DiscoveryResult,
+  type DiscoveryTelemetry,
+  type DiscoveryIntent,
+  type AnnotatedCatalogOperation,
+} from './discovery-engine.js';
 
 /**
  * A connection is deliberately not a model tool.  It is a user-owned,
@@ -530,6 +540,17 @@ function profileSkillInstructions(profile: ConnectionProfile): string {
 /** Persistent provider-neutral connection registry. Profile metadata and the
  * credential are intentionally kept in separate local files. */
 export class ConnectionRegistry {
+  private discoveryCache = new DiscoveryFactCache();
+  private discoveryTelemetry = new DiscoveryTelemetryAccumulator();
+
+  getDiscoveryTelemetry(): DiscoveryTelemetry {
+    return this.discoveryTelemetry.snapshot();
+  }
+
+  getDiscoveryCache(): DiscoveryFactCache {
+    return this.discoveryCache;
+  }
+
   private profiles(): ConnectionProfile[] {
     const raw = readJson<unknown>(connectionFile());
     const values: unknown[] = Array.isArray(raw)
@@ -562,9 +583,52 @@ export class ConnectionRegistry {
     return normalized ? this.profiles().find((profile) => profile.id === normalized) : undefined;
   }
 
+  /**
+   * Resiliently resolve a connection profile by exact ID, provider slug,
+   * label, or alias prefix. Prioritizes credentialed profiles when multiple match.
+   */
+  resolveConnectionProfile(ref?: string): ConnectionProfile | undefined {
+    if (!ref) return undefined;
+    const raw = String(ref).trim();
+    const normalized = slug(raw, '');
+    const profiles = this.profiles();
+    const exact = profiles.find((p) => p.id === raw || (normalized && p.id === normalized));
+    if (exact) return exact;
+    if (!normalized) return undefined;
+    const byProvider = profiles.filter((p) => p.provider === normalized || slug(p.provider, '') === normalized || slug(p.label, '') === normalized);
+    if (byProvider.length > 0) {
+      const credentialed = byProvider.find((p) => this.credentialPresent(p.id));
+      return credentialed ?? byProvider[0];
+    }
+    const byFuzzy = profiles.filter((p) =>
+      p.id.includes(normalized) ||
+      normalized.includes(p.id) ||
+      p.provider.includes(normalized) ||
+      normalized.includes(p.provider) ||
+      slug(p.label, '').includes(normalized),
+    );
+    if (byFuzzy.length > 0) {
+      const credentialed = byFuzzy.find((p) => this.credentialPresent(p.id));
+      return credentialed ?? byFuzzy[0];
+    }
+    return undefined;
+  }
+
   operation(id: string, operationId: string): ConnectionOperation | undefined {
     const canonical = canonicalOperationId(operationId);
-    return canonical ? this.get(id)?.operations.find((operation) => operation.id === canonical) : undefined;
+    if (!canonical) return undefined;
+    const profile = this.get(id) ?? this.resolveConnectionProfile(id);
+    if (!profile) return undefined;
+    const ops = profile.operations;
+    const exact = ops.find((operation) => operation.id === canonical);
+    if (exact) return exact;
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = norm(canonical);
+    const providerTarget = norm(`${profile.provider}${canonical}`);
+    return ops.find((operation) => {
+      const opNorm = norm(operation.id);
+      return opNorm === target || norm(`${profile.provider}${operation.id}`) === target || opNorm === providerTarget;
+    });
   }
 
   renderForAgent(): string {
@@ -842,7 +906,60 @@ export class ConnectionRegistry {
         'PROVIDER_UNREACHABLE',
       );
     }
+    if (operation.risk !== 'read') {
+      this.discoveryCache.invalidateForWrite(profile.id);
+    }
     return { ok: true, status: response.status, message: `${operation.label} succeeded (HTTP ${response.status}).`, ...(data !== undefined ? { data } : {}) };
+  }
+
+  async discover(request: DiscoveryRequest): Promise<DiscoveryResult> {
+    const profile = this.get(request.connectionId) ?? this.resolveConnectionProfile(request.connectionId);
+    if (!profile) {
+      return {
+        ok: false,
+        connectionId: request.connectionId,
+        requestedIntents: request.intents,
+        completedIntents: [],
+        data: {},
+        summary: `Connection "${request.connectionId}" not found.`,
+        operationsExecuted: [],
+        stopReason: 'not_found',
+        truncated: false,
+      };
+    }
+    const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
+    const catalogOps = (catalogProvider(profile.provider)?.operations ?? []) as AnnotatedCatalogOperation[];
+    const headers: Record<string, string> = {
+      accept: 'application/json',
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    };
+    const fetcher = async ({ baseUrl, path, method, headers: reqHeaders }: { baseUrl: string; path: string; method: string; headers: Record<string, string> }) => {
+      const url = new URL(path, `${baseUrl}/`);
+      const response = await fetch(url, {
+        method,
+        headers: reqHeaders,
+        redirect: 'error',
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await boundedResponseData(response).catch(() => undefined);
+      return {
+        ok: response.ok,
+        status: response.status,
+        data: data ?? {},
+        message: response.ok ? 'ok' : `HTTP ${response.status}`,
+      };
+    };
+
+    const engine = new UniversalDiscoveryEngine(
+      catalogOps,
+      this.discoveryCache,
+      this.discoveryTelemetry,
+      fetcher,
+      profile.baseUrl,
+      headers,
+    );
+
+    return engine.discover({ ...request, connectionId: profile.id });
   }
 
   async invokeRead(id: string, operationId: string): Promise<ConnectionInvocationResult> {
@@ -1052,6 +1169,12 @@ export class ConnectionRegistry {
       }
       const catalogOp = catalogOperation(profile.provider, canonical);
       if (catalogOp) return this.operateOn(profile, catalogOp as ConnectionOperation, 'registered provider catalog');
+      // Normalized catalog lookup (hyphen, underscore, case, prefix tolerant)
+      const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const target = norm(canonical);
+      const catalogEntries = (catalogProvider(profile.provider)?.operations ?? []) as ConnectionOperation[];
+      const fuzzyCatalogOp = catalogEntries.find((op) => norm(op.id) === target || norm(`${profile.provider}${op.id}`) === target);
+      if (fuzzyCatalogOp) return this.operateOn(profile, fuzzyCatalogOp, 'registered provider catalog');
       return {
         connectionId: profile.id,
         connectionValid: true,
@@ -1102,10 +1225,13 @@ export class ConnectionRegistry {
   }
 
   private pickConnection(input: ResolveConnectionOperationInput): ConnectionProfile | undefined {
-    if (input.connectionId) return this.get(input.connectionId);
+    if (input.connectionId) {
+      const resolved = this.resolveConnectionProfile(input.connectionId);
+      if (resolved) return resolved;
+    }
     if (input.providerHint) {
       const hint = slug(input.providerHint, '');
-      const matches = this.list().filter((profile) => profile.hasCredential && [profile.id, profile.provider, slug(profile.label, '')].includes(hint));
+      const matches = this.list().filter((profile) => profile.hasCredential && [profile.id, profile.provider, slug(profile.provider, ''), slug(profile.label, '')].includes(hint));
       return matches.length === 1 ? matches[0] : matches.length > 1 ? matches[0] : undefined;
     }
     return undefined;

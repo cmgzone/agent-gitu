@@ -8,6 +8,7 @@ import type {
   CriterionSpec,
   DecisionBasis,
   FollowUpRecord,
+  InvestigationDepth,
   PlanArea,
   PlanDesign,
   PlanStep,
@@ -187,6 +188,24 @@ export class TaskLedger {
     const auth = this.ensureTaskAuthority();
     auth.currentGoal = goal;
     this.save();
+  }
+
+  setInvestigationDepth(depth: InvestigationDepth): void {
+    this.data.investigationDepth = depth;
+    this.save();
+  }
+
+  /** Escalate investigation ONE level (direct → local → dependency →
+   *  subsystem → repository). Returns the new depth, or undefined when the
+   *  ladder is already at the top. */
+  escalateInvestigationDepth(): InvestigationDepth | undefined {
+    const ladder: InvestigationDepth[] = ['direct', 'local', 'dependency', 'subsystem', 'repository'];
+    const current = this.data.investigationDepth ?? 'local';
+    const next = ladder[Math.min(ladder.length - 1, ladder.indexOf(current) + 1)];
+    if (next === current) return undefined;
+    this.data.investigationDepth = next;
+    this.save();
+    return next;
   }
 
   addInstruction(input: Omit<UserInstruction, 'id' | 'createdAt'> & { id?: string; createdAt?: string }): UserInstruction {

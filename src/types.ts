@@ -618,6 +618,10 @@ export interface TaskLedgerData {
   contextPack?: ContextPack;
   effortPlan?: EffortPlan;
   riskPlan?: RiskPlan;
+  /** Computed once at intake from the goal + Task Authority target hints.
+   *  Escalation is explicit and one level at a time, never a jump to
+   *  repository-wide exploration because one local hypothesis failed. */
+  investigationDepth?: InvestigationDepth;
   findings?: TaskFinding[];
   architectureDecisions?: ArchitectureDecision[];
   tokenTelemetry?: TokenTelemetrySnapshot;

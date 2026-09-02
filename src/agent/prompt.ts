@@ -479,6 +479,9 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const effortLine = d.effortPlan
     ? `EFFORT: ${d.effortPlan.complexity} — ${d.effortPlan.reason} (budget: ${d.effortPlan.maxTurns} turns, ${d.effortPlan.maxSpecialists} specialists, ${d.effortPlan.contextBudget.maxBytes} bytes)`
     : '';
+  const depthLine = d.investigationDepth
+    ? `INVESTIGATION DEPTH: ${d.investigationDepth.toUpperCase()} — start from the strongest evidence and the named targets; widen ONLY when local evidence is insufficient, one ladder level at a time (direct → local → dependency → subsystem → repository).`
+    : '';
   const riskLine = d.riskPlan
     ? `RISK: ${d.riskPlan.risk} — ${d.riskPlan.reason}${d.riskPlan.recommendedSpecialists.length > 0 ? ` | suggested: ${d.riskPlan.recommendedSpecialists.map((r) => r.agent).join(', ')}` : ''}`
     : '';
@@ -499,6 +502,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     authorityBlock,
     `STATUS: ${d.status} | mode: ${d.mode}`,
     effortLine,
+    depthLine,
     riskLine,
     d.currentHypothesis ? `CURRENT HYPOTHESIS: ${d.currentHypothesis}` : '',
     activeSkillsSection ? `ACTIVE SKILLS IN TASK:\n${activeSkillsSection}` : '',

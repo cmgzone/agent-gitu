@@ -72,7 +72,7 @@ import {
   type VerifiedDiffSnapshot,
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
-import { buildTaskStrategySection, classifyTaskKind } from './task-strategy.js';
+import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { applyFollowUpToLedger, classifyFollowUp, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -1707,6 +1707,13 @@ export class Gitu {
     const isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
     const activeGoal = isFollowUpPhase ? activeWorkPhase.goal : goal;
 
+    // Investigation depth is computed ONCE at intake from the goal plus the
+    // Task Authority target hints, and recorded in the ledger. Escalation is
+    // explicit and evidence-driven — one ladder level at a time.
+    const investigationDepth = determineInvestigationDepth(activeGoal, ledger.data.taskAuthority?.targetHints);
+    ledger.setInvestigationDepth(investigationDepth);
+    this.emit(`depth    investigation depth: ${investigationDepth}${investigationDepth === 'direct' ? ' — targeted context fast path active' : ''}`);
+
     // Durable visual-reference rehydration: active user-reference images
     // persisted under .hermes/task-assets/ ride along on every run — newly
     // attached images and rehydrated durable ones are merged. A missing or
@@ -1982,10 +1989,27 @@ export class Gitu {
         // wording often omits.
         const retrievalTexts = [...ledger.data.acceptanceCriteria.map((c) => c.text), ...ledger.data.acceptanceCriteria.map((c) => c.verification ?? '')].filter(Boolean);
         // Hybrid retrieval: lexical/IDF + embedding cosine when an embeddings
-        // endpoint is configured; silent fallback otherwise.
-        const { pack, semantic } = await context.buildPackHybrid(activeGoal, contextBudget, retrievalTexts, resolveEmbedder());
+        // endpoint is configured; silent fallback otherwise. DIRECT-depth
+        // tasks with concrete file hints skip repository-wide scoring entirely:
+        // the targeted pack reads the hinted file(s) plus their nearest test.
+        const hintFiles = ledger.data.taskAuthority?.targetHints.files ?? [];
+        let pack: import('../types.js').ContextPack | undefined;
+        let semantic = false;
+        if (investigationDepth === 'direct' && hintFiles.length > 0) {
+          pack = context.buildTargetedPack(activeGoal, hintFiles, contextBudget);
+          if (pack) {
+            this.emit(
+              `context  targeted fast path: reading ${pack.primaryFiles.length} hinted target file(s)` +
+                `${pack.testFiles.length ? ` + ${pack.testFiles.length} nearest test` : ''} — repository-wide scoring skipped`,
+            );
+          }
+        }
+        if (!pack) {
+          const hybrid = await context.buildPackHybrid(activeGoal, contextBudget, retrievalTexts, resolveEmbedder());
+          pack = hybrid.pack;
+          semantic = hybrid.semantic;
+        }
         if (semantic) this.emit('context  semantic retrieval active (embeddings + lexical blend)');
-        ledger.data.contextPack = pack;
         ledger.data.contextPack = pack;
         contextNote = `CONTEXT PACK (ranked, role-labeled, budgeted):\n${context.renderPackWithContent(pack)}`;
         this.emit(
@@ -2655,6 +2679,13 @@ export class Gitu {
               });
               const extraTurns = escalation?.extraTurns ?? 0;
               budgetCap = turns + budgetExtensionTurns + extraTurns;
+              // Explicit, evidence-driven investigation escalation: discovered
+              // scope exceeding the initial depth widens the search ONE ladder
+              // level — never a jump straight to repository exploration.
+              const escalatedDepth = ledger.escalateInvestigationDepth();
+              if (escalatedDepth) {
+                this.emit(`depth    investigation depth escalated to ${escalatedDepth} — discovered scope exceeded the initial depth (one ladder level, evidence-driven)`);
+              }
               if (escalation && Number.isFinite(effortMaxSpecialists) && effortMaxSpecialists < 6) {
                 effortMaxSpecialists = Math.min(6, effortMaxSpecialists + escalation.extraSpecialists);
               }

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { CodeIndex } from './code-index.js';
 import { recentChangeScores } from './change-signals.js';
@@ -319,6 +319,111 @@ export class ContextEngine {
     return [section('Primary files', pack.primaryFiles), section('Tests', pack.testFiles), section('Related', pack.relatedFiles), section('Config', pack.configFiles)]
       .filter(Boolean)
       .join('\n');
+  }
+
+  /** Resolve a user/model hint ("llm.ts", "src/llm/llm.ts", partial path) to a
+   *  real in-repo file. Direct hit first, then a bounded basename walk. */
+  private resolveHintedFile(hint: string): string | undefined {
+    const cleaned = hint.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+    if (!cleaned || cleaned.length < 2) return undefined;
+    const tryPath = (rel: string): string | undefined => {
+      try {
+        const abs = this.guard.resolve(rel);
+        this.guard.assertInside(abs);
+        if (existsSync(abs) && statSync(abs).isFile()) return this.guard.toRelative(abs).replace(/\\/g, '/');
+      } catch {
+        /* outside the repo or unreadable */
+      }
+      return undefined;
+    };
+    const direct = tryPath(cleaned);
+    if (direct) return direct;
+    const lower = cleaned.toLowerCase();
+    try {
+      const ignores = new Set(this.guard.lock.ignorePaths);
+      const stack = [this.guard.lock.repoRoot];
+      while (stack.length > 0 && stack.length < 200) {
+        const dir = stack.pop()!;
+        let entries: string[];
+        try {
+          entries = readdirSync(dir);
+        } catch {
+          continue;
+        }
+        for (const name of entries) {
+          if (ignores.has(name) || name === '.git' || name === '.hermes') continue;
+          const full = path.join(dir, name);
+          let st;
+          try {
+            st = statSync(full);
+          } catch {
+            continue;
+          }
+          if (st.isDirectory()) {
+            stack.push(full);
+            continue;
+          }
+          const rel = this.guard.toRelative(full).replace(/\\/g, '/');
+          const relLower = rel.toLowerCase();
+          if (relLower === lower || relLower.endsWith('/' + lower)) return rel;
+        }
+      }
+    } catch {
+      /* filesystem errors simply yield no fast path */
+    }
+    return undefined;
+  }
+
+  /** Nearest plausible test for a target: sibling test/spec file or a tests/ twin. */
+  private nearestTestFor(relPath: string): string | undefined {
+    const ext = path.extname(relPath);
+    const base = relPath.slice(0, relPath.length - ext.length);
+    const baseName = path.basename(base);
+    const candidates = [`${base}.test${ext}`, `${base}.spec${ext}`, `tests/${baseName}.test${ext}`, `test/${baseName}.test${ext}`, `src/${baseName}.test${ext}`];
+    for (const c of candidates) {
+      try {
+        const abs = this.guard.resolve(c);
+        if (existsSync(abs)) return this.guard.toRelative(abs).replace(/\\/g, '/');
+      } catch {
+        continue;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Targeted fast path for DIRECT-depth tasks: read the explicitly hinted
+   * target file(s) (plus their nearest test) and skip repository-wide
+   * scoring entirely. Returns undefined when no hint resolves to a real
+   * file, so the caller falls back to the ranked repository pack.
+   */
+  buildTargetedPack(goal: string, targetFiles: string[], budget: ContextBudget = DEFAULT_CONTEXT_BUDGET): ContextPack | undefined {
+    const primary: FileRef[] = [];
+    const seen = new Set<string>();
+    for (const hint of targetFiles.slice(0, budget.maxFiles)) {
+      const resolved = this.resolveHintedFile(hint);
+      if (!resolved || seen.has(resolved)) continue;
+      seen.add(resolved);
+      primary.push({ path: resolved, role: classifyRole(resolved), score: 1 });
+    }
+    if (primary.length === 0) return undefined;
+    const testFiles: FileRef[] = [];
+    for (const p of primary) {
+      const test = this.nearestTestFor(p.path);
+      if (test && !seen.has(test)) {
+        seen.add(test);
+        testFiles.push({ path: test, role: 'test', score: 0.9 });
+      }
+    }
+    return {
+      taskSummary: goal,
+      primaryFiles: primary,
+      relatedFiles: [],
+      testFiles,
+      configFiles: [],
+      excludedPaths: [],
+      budget,
+    };
   }
 
   renderPackWithContent(pack: ContextPack): string {

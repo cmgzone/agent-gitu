@@ -4,6 +4,8 @@ import { classifyTaskComplexity, planEffort } from '../src/agent/effort-planner.
 import { planRisk } from '../src/agent/risk-planner.js';
 import { ContextEngine } from '../src/context/context-engine.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
+import { TaskLedger } from '../src/ledger/task-ledger.js';
+import { buildStateMessage } from '../src/agent/prompt.js';
 import type { ProjectLock } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -70,6 +72,59 @@ describe('Target-First Investigation & Evidence-First Planning', () => {
       const pack = engine.buildPack('Fix stream error in src/llm/llm.ts');
       expect(pack.primaryFiles.length).toBeGreaterThan(0);
       expect(pack.primaryFiles[0]!.path).toBe('src/llm/llm.ts');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('buildTargetedPack reads hinted targets directly and skips repository scoring', () => {
+    const { guard, cleanup } = createMockProject();
+    try {
+      fs.writeFileSync(path.join(guard.lock.repoRoot, 'src', 'llm', 'llm.test.ts'), 'it("stream")\n');
+      const engine = new ContextEngine(guard);
+
+      // Basename hint resolves; nearest test attaches; unrelated files absent.
+      const pack = engine.buildTargetedPack('Fix llm.ts streaming', ['llm.ts'], { maxFiles: 6, maxBytes: 20_000 });
+      expect(pack).toBeDefined();
+      expect(pack!.primaryFiles.map((f) => f.path)).toEqual(['src/llm/llm.ts']);
+      expect(pack!.testFiles[0]!.path).toBe('src/llm/llm.test.ts');
+      expect(pack!.relatedFiles).toEqual([]);
+
+      // Unresolvable hint → no fast path, caller falls back to ranked pack.
+      const miss = engine.buildTargetedPack('Fix something', ['does-not-exist.ts'], { maxFiles: 6, maxBytes: 20_000 });
+      expect(miss).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('investigation depth is recorded once and escalates one ladder level at a time', () => {
+    const { repoRoot, guard, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Fix llm.ts bug', project: guard.lock, mode: 'standard' });
+      ledger.setInvestigationDepth('direct');
+      expect(ledger.data.investigationDepth).toBe('direct');
+
+      expect(ledger.escalateInvestigationDepth()).toBe('local');
+      expect(ledger.escalateInvestigationDepth()).toBe('dependency');
+      expect(ledger.escalateInvestigationDepth()).toBe('subsystem');
+      expect(ledger.escalateInvestigationDepth()).toBe('repository');
+      // Top of the ladder: no further escalation exists.
+      expect(ledger.escalateInvestigationDepth()).toBeUndefined();
+      expect(ledger.data.investigationDepth).toBe('repository');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('state message renders the investigation depth with the escalation ladder', () => {
+    const { repoRoot, guard, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Fix llm.ts bug', project: guard.lock, mode: 'standard' });
+      ledger.setInvestigationDepth('direct');
+      const state = buildStateMessage(ledger);
+      expect(state).toContain('INVESTIGATION DEPTH: DIRECT');
+      expect(state).toContain('direct → local → dependency → subsystem → repository');
     } finally {
       cleanup();
     }

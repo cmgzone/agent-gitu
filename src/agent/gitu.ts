@@ -457,6 +457,36 @@ type ParsedAction =
  * by tool output with no readable agent update. Build a short status from the
  * executable action itself instead of exposing hidden model reasoning.
  */
+const PROVIDER_TRUNCATED_MARKER = '[response omitted: exceeds safe connection output limit]';
+const PROVIDER_TRUNCATED_CHARS = 32_000;
+const PROVIDER_TRUNCATED_GUIDANCE =
+  'PROVIDER RESULT TRUNCATED/INCOMPLETE — do NOT ask the user for resource ids or identifiers yet. ' +
+  'Run deterministic provider discovery first with narrower saved-connection reads: list/locate the resource, ' +
+  'resolve its UUID, then fetch the exact resource (get(id) → status → environment). ' +
+  'Only ask the user after those reads are exhausted or genuinely unavailable.';
+
+/** Render a bounded, redacted provider result for model context and flag when
+ * the payload was truncated/incomplete. A truncated list is a signal to do a
+ * NARROWER read (get-by-id), never a reason to ask the user for identifiers. */
+export function connectionResultDisclosure(data: unknown): { text: string; truncated: boolean } {
+  if (data === undefined) return { text: '', truncated: false };
+  const raw = JSON.stringify(data);
+  const truncated = raw.length >= PROVIDER_TRUNCATED_CHARS || raw.includes(PROVIDER_TRUNCATED_MARKER);
+  const text = truncated ? `${raw.slice(0, 48_000)}\n…(provider result truncated)` : raw;
+  return { text, truncated };
+}
+
+/** A user question that asks for a provider-resolvable resource identifier
+ * (app/deployment/project id, uuid, ...). The host holds such questions once
+ * so the model performs narrower provider reads before disturbing the user. */
+export function asksForResourceIdentifier(questions: AskUserQuestion[]): boolean {
+  return questions.some((question) =>
+    /(?:^|[^a-z])(?:ids?|uuids?|identifiers?)\b|(?:app|application|deployment|project|server|machine|service|workspace|environment|resource|database|volume|domain)\s+(?:id|uuid|identifier)\b/i.test(
+      `${question.question} ${question.header ?? ''}`,
+    ),
+  );
+}
+
 function visibleActionSummary(action: ParsedAction): string | undefined {
   const clean = (value: string, limit = 280): string => value.replace(/\s+/g, ' ').trim().slice(0, limit);
   switch (action.type) {
@@ -476,8 +506,16 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
     }
     case 'connection_action':
       return `I’m using the registered ${action.operationId} read operation on the saved ${action.connectionId} connection.`;
-    case 'connection_operation':
+    case 'connection_operation': {
+      // Safe reads auto-register under the existing credential and run
+      // immediately — they never wait for approval. Only non-read operations
+      // go through the approval channel, so the narration must not claim a
+      // GET is "awaiting approval".
+      if (action.operation.risk === 'read' && action.operation.method === 'GET') {
+        return `I found a documented GET provider operation and I’m running it on the saved ${action.connectionId} connection — safe reads auto-register and run without approval.`;
+      }
       return `I found a documented ${action.operation.method} provider operation and I’m requesting approval before it can run.`;
+    }
     case 'parallel':
       return `I’m running ${action.calls.length} independent checks in parallel.`;
     case 'set_hypothesis':
@@ -2079,7 +2117,14 @@ export class Gitu {
       // Capability-resolution must be followed by a concrete action; a model
       // that re-requests the same missing capability instead of proposing the
       // documented operation gets blocked rather than looping forever.
-      const capabilityResolutionNotes = new Map<string, number>();      let followUpCriteriaAdded = false;
+      const capabilityResolutionNotes = new Map<string, number>();
+      // Resource-id questions are held once while provider discovery is
+      // available, so the model tries narrower reads before asking the user.
+      const heldResourceIdQuestions = new Map<string, number>();
+      // A successful provider read proves the connection works; allow the
+      // reasoning-only recovery to fire again after real progress instead of
+      // once per entire run.
+      let concreteActionSinceLastAsk = false;      let followUpCriteriaAdded = false;
       let followUpPlanReviewHandled = false;
       let architectureAuditRejections = 0;
       let planningNudged = false;
@@ -2449,6 +2494,14 @@ export class Gitu {
             ledger.addBlocker('Stopped by user.');
             exitReason = 'blocked';
             break;
+          }
+          // Reasoning-only recovery is once-per-run to bound cost, but a
+          // successful concrete action (e.g. a provider read) proves the run is
+          // progressing — re-arm the recovery so a reasoning-only blip right
+          // after real work gets corrected instead of consuming the turn.
+          if (concreteActionSinceLastAsk) {
+            thinkingRecoveryUsed = false;
+            concreteActionSinceLastAsk = false;
           }
 
           // Adaptive effort: the turn budget is a floor, not a cliff. Keep going
@@ -3093,10 +3146,12 @@ export class Gitu {
               }
               try {
                 const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
-                const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
+                const disclosure = connectionResultDisclosure(result.data);
+                const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
+                concreteActionSinceLastAsk = true;
                 this.emit(`connection ${action.connectionId}/${action.operationId} completed`);
                 observe(
-                  `CONNECTION ACTION RESULT: ${result.message}${rendered}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
+                  `CONNECTION ACTION RESULT: ${result.message}${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
                 );
               } catch (error) {
                 const reason = connectionEventReason((error as Error).message);
@@ -3140,10 +3195,12 @@ export class Gitu {
                   ...(action.documentationUrl ? { documentationUrl: action.documentationUrl } : {}),
                   reason: action.reason,
                 });
-                const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 48_000)}`;
+                const disclosure = connectionResultDisclosure(result.data);
+                const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
+                concreteActionSinceLastAsk = true;
                 this.emit(`connection operation ${action.connectionId}/${action.operation.id} completed`);
                 observe(
-                  `PROVIDER OPERATION RESULT: ${result.message}${rendered}\nContinue from the provider response. The operation was individually approved and is not blanket authorization for other writes.`,
+                  `PROVIDER OPERATION RESULT: ${result.message}${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nContinue from the provider response. The operation was individually approved and is not blanket authorization for other writes.`,
                 );
               } catch (error) {
                 const message = (error as Error).message;
@@ -3506,6 +3563,26 @@ export class Gitu {
               break;
             }
             case 'ask_user': {
+              // Discovery-first: if saved connections exist and the question
+              // asks for a resource identifier the provider could resolve, hold
+              // the question ONCE so the model performs narrower provider reads
+              // (list → get(id) → status → environment) before disturbing the
+              // user. Re-asking the identical question delivers it.
+              const connectionContext = this.config.connectionContext?.();
+              if (connectionContext?.trim() && asksForResourceIdentifier(action.questions)) {
+                const signature = action.questions.map((q) => `${q.header ?? ''}:${q.question}`).join('|').slice(0, 240);
+                const held = (heldResourceIdQuestions.get(signature) ?? 0) + 1;
+                heldResourceIdQuestions.set(signature, held);
+                if (held <= 1) {
+                  this.emit('ask-user held once — provider discovery first');
+                  observe(
+                    `HOLDING YOUR QUESTION (one turn): saved provider connections exist and this question asks for a resource identifier the provider can resolve. ` +
+                      `Run narrower provider reads first (list → locate the resource → get(id) → status → environment) using the saved connection. ` +
+                      `If provider discovery genuinely cannot resolve it, ask the SAME question again and it will be delivered to the user.`,
+                  );
+                  break;
+                }
+              }
               if (this.config.askUserHandler) {
                 this.emit(`ask-user ${action.questions.length} question(s) for you`);
                 const answer = await this.config.askUserHandler(action.questions);

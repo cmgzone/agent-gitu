@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConnectionRegistry, canonicalOperationId, type ConnectionState } from '../src/connections/connections.js';
 import { CONNECTION_CATALOG } from '../src/connections/catalog.js';
-import { Gitu } from '../src/agent/gitu.js';
+import { Gitu, asksForResourceIdentifier, connectionResultDisclosure } from '../src/agent/gitu.js';
 import type { LlmClient, LlmMessage, LlmTurnResult } from '../src/llm/llm.js';
 
 /**
@@ -472,6 +472,111 @@ describe('live read execution path — Coolify list-applications (regression)', 
     expect(events.some((event) => event.includes('not run'))).toBe(false);
     expect(registry.operation('coolify', 'list-applications')).toBeDefined();
   }, 30000);
+
+  it('narrates safe GET reads as running without approval, never "requesting approval"', async () => {
+    const root = project('narration');
+    home();
+    const registry = new ConnectionRegistry();
+    saveConnection(registry, { provider: 'coolify', capabilities: ['servers.read'] });
+    globalThis.fetch = (async () => okResponse({ applications: [] })) as typeof fetch;
+    const events: string[] = [];
+    let turn = 0;
+    const llm: LlmClient = {
+      name: 'narration-mock',
+      async complete() { return ''; },
+      async completeStream() { return ''; },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_operation', connectionId: 'coolify', operation: { id: 'list-applications', label: 'List applications', capability: 'applications.read', method: 'GET', path: '/api/v1/applications', risk: 'read' }, documentationUrl: 'https://coolify.io/docs/api-reference', reason: 'inspect' } }), metadata: {} };
+        }
+        if (turn === 2) return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } }), metadata: {} };
+        if (turn === 3) return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } }), metadata: {} };
+        if (turn === 4) {
+          const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }), metadata: {} };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> { return llm.completeTurn!(messages); },
+    };
+    const { report } = await new Gitu({
+      cwd: root, llm, mode: 'fast', onEvent: (e) => events.push(e),
+      approvalHandler: async () => true,
+      connectionRecoveryCheck: (p) => registry.connectionRecoveryDecision(p),
+      connectionRequestHandler: async () => false,
+      connectionActionHandler: async ({ connectionId, operationId }) => { const r = await registry.resolveAndExecuteRead({ connectionId, operationId }); return { message: r.message }; },
+      connectionOperationHandler: async (proposal) => { const r = await registry.resolveAndExecuteRead({ connectionId: proposal.connectionId, operation: proposal.operation, capability: proposal.operation.capability, documented: true }); return { message: r.message }; },
+    }).run('inspect');
+    expect(report.status).toBe('complete');
+    expect(events.some((event) => event.startsWith('say') && event.includes('without approval'))).toBe(true);
+    expect(events.some((event) => event.includes('requesting approval'))).toBe(false);
+  }, 30000);
+
+  it('holds a resource-id question once so provider discovery runs first, then delivers it', async () => {
+    const root = project('held-question');
+    home();
+    const registry = new ConnectionRegistry();
+    saveConnection(registry, { provider: 'coolify', capabilities: ['servers.read'] });
+    globalThis.fetch = (async () => okResponse({ applications: [] })) as typeof fetch;
+    const events: string[] = [];
+    let delivered = 0;
+    let turn = 0;
+    const llm: LlmClient = {
+      name: 'held-question-mock',
+      async complete() { return ''; },
+      async completeStream() { return ''; },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'ask_user', questions: [{ question: 'What is the Coolify app id for gitu-marketing?', header: 'app id' }] } }), metadata: {} };
+        }
+        // Model retries discovery after the hold, then asks the SAME question.
+        if (turn === 2) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'ask_user', questions: [{ question: 'What is the Coolify app id for gitu-marketing?', header: 'app id' }] } }), metadata: {} };
+        }
+        if (turn === 3) return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } }), metadata: {} };
+        if (turn === 4) return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } }), metadata: {} };
+        if (turn === 5) {
+          const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }), metadata: {} };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> { return llm.completeTurn!(messages); },
+    };
+    const { report } = await new Gitu({
+      cwd: root, llm, mode: 'fast', onEvent: (e) => events.push(e),
+      approvalHandler: async () => true,
+      askUserHandler: async () => { delivered += 1; return 'app-42'; },
+      connectionRecoveryCheck: (p) => registry.connectionRecoveryDecision(p),
+      connectionRequestHandler: async () => false,
+      connectionContext: () => registry.renderForAgent(),
+      connectionActionHandler: async ({ connectionId, operationId }) => { const r = await registry.resolveAndExecuteRead({ connectionId, operationId }); return { message: r.message }; },
+      connectionOperationHandler: async (proposal) => { const r = await registry.resolveAndExecuteRead({ connectionId: proposal.connectionId, operation: proposal.operation, capability: proposal.operation.capability, documented: true }); return { message: r.message }; },
+    }).run('find the app');
+    expect(report.status).toBe('complete');
+    // Held exactly once: the identical question was delivered on the second ask.
+    expect(delivered).toBe(1);
+    expect(events.some((event) => event.includes('ask-user held once'))).toBe(true);
+  }, 30000);
+
+  it('flags truncated provider results for narrower follow-up reads', () => {
+    expect(connectionResultDisclosure({ ok: true }).truncated).toBe(false);
+    const marker = connectionResultDisclosure('[response omitted: exceeds safe connection output limit]');
+    expect(marker.truncated).toBe(true);
+    expect(marker.text).toContain('(provider result truncated)');
+    const big = connectionResultDisclosure({ list: 'x'.repeat(50_000) });
+    expect(big.truncated).toBe(true);
+  });
+
+  it('holds resource-id questions once, but lets genuinely ambiguous questions through immediately', () => {
+    expect(asksForResourceIdentifier([{ question: 'What is the app id / status for the deployment?', header: 'resource id' }])).toBe(true);
+    expect(asksForResourceIdentifier([{ question: 'Provide the application uuid.', header: 'id' }])).toBe(true);
+    expect(asksForResourceIdentifier([{ question: 'Do you want a local .env or a Coolify deployment environment?', header: 'intent' }])).toBe(false);
+  });
 });
 
 describe('Gitu recovery routing — no loop into secure setup without proven auth failure', () => {

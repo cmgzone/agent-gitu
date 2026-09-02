@@ -25,8 +25,15 @@ const claimLastEvidence = (_n: number, messages: LlmMessage[]) => {
   return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1)?.[1] ?? 'ev-x' } });
 };
 
+/** Per-turn rebuilt state messages lead with the task-authority block (which
+ *  itself opens with `TASK AUTHORITY`) or the legacy `TASK:` header. */
+const isTaskStateMessage = (m: LlmMessage): boolean => {
+  const text = String(m.content);
+  return m.role === 'user' && (text.startsWith('TASK AUTHORITY') || text.startsWith('TASK:'));
+};
+
 const captureStateMessages = (sink: LlmMessage[]) => (_n: number, messages: LlmMessage[]) => {
-  sink.push(...messages.filter((m) => m.role === 'user' && String(m.content).startsWith('TASK:')));
+  sink.push(...messages.filter(isTaskStateMessage));
   return JSON.stringify({ action: { type: 'tool_call', tool: 'list_files', params: { path: '.' }, reason: 'survey', expected: 'listing' } });
 };
 
@@ -70,7 +77,7 @@ describe('agent-eval: context loss over a long run', () => {
         // Last script item = clamped for every remaining call, so the loop and
         // the exit live here: reads until call 26, then a clean request_block.
         (_n, messages) => {
-          states.push(...messages.filter((m) => m.role === 'user' && String(m.content).startsWith('TASK:')));
+          states.push(...messages.filter(isTaskStateMessage));
           if (_n >= 26) {
             return JSON.stringify({ action: { type: 'request_block', reason: 'survey wrapped up' } });
           }
@@ -101,12 +108,12 @@ describe('agent-eval: compaction trap (huge outputs push history out)', () => {
           JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'bundle.js', offset: i + 1 }, reason: 'inspect bundle', expected: 'content' } }),
         ),
         (_n, messages) => {
-          states.push(...messages.filter((m) => m.role === 'user' && String(m.content).startsWith('TASK:')));
+          states.push(...messages.filter(isTaskStateMessage));
           return JSON.stringify({ action: { type: 'tool_call', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } });
         },
         claimLastEvidence,
         (_n, messages) => {
-          states.push(...messages.filter((m) => m.role === 'user' && String(m.content).startsWith('TASK:')));
+          states.push(...messages.filter(isTaskStateMessage));
           return 'VERDICT: PASS';
         },
         () => JSON.stringify({ action: { type: 'complete', summary: 'inspected and verified', risks: [], followUps: [] } }),

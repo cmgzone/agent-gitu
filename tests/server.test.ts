@@ -576,7 +576,10 @@ describe('HermesServer', () => {
     });
     expect(finished.mode).toBe('standard');
     expect(finished.taskId).toBeTruthy();
-    expect(secondPrompt).toContain('FOLLOW-UP MESSAGE');
+    // The follow-up section (follow-up phase or continuation) must carry the
+    // user's new request into the resumed run's context.
+    expect(secondPrompt).toMatch(/ACTIVE (FOLLOW-UP WORK PHASE|CONTINUATION)/);
+    expect(secondPrompt).toContain('now build it');
     expect(secondPrompt).not.toContain('chat mode — answer directly');
   }, 30000);
 
@@ -622,7 +625,7 @@ describe('HermesServer', () => {
       () => JSON.stringify({ action: { type: 'request_block', reason: 'paused for a follow-up' } }),
       (_n, messages) => {
         const transcript = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
-        sawContinuationInstruction = transcript.includes('FOLLOW-UP MESSAGE') && transcript.includes('"continue working"');
+        sawContinuationInstruction = transcript.includes('ACTIVE CONTINUATION') && transcript.includes('continue working');
         return JSON.stringify({ action: { type: 'request_block', reason: 'paused again' } });
       },
     ]);

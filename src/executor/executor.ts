@@ -89,35 +89,29 @@ export class Executor {
     this.onEvent?.(event);
   }
 
+  /**
+   * Pre-dispatch project boundary for path-carrying calls. Uses the same
+   * resolve + assertInside rule the tool handlers enforce at execution entry
+   * (Windows case-folding, symlink escape), so an out-of-boundary call is
+   * rejected before any policy or loop judgment. Handlers keep the final
+   * assertion — defense in depth, not a replacement.
+   */
+  private boundaryViolation(params: Record<string, unknown>): string | undefined {
+    const rel = params['path'];
+    if (typeof rel !== 'string' || !rel.trim()) return undefined;
+    try {
+      this.guard.assertInside(this.guard.resolve(rel));
+    } catch (err) {
+      return `DENIED by project boundary: ${(err as Error).message}`;
+    }
+    return undefined;
+  }
+
   async execute(req: ExecuteRequest): Promise<ExecuteOutcome> {
     const started = Date.now();
     const paramsHash = hashParams(req.tool, req.params);
     const summary = summarizeParams(req.tool, req.params);
     const stepId = req.stepId;
-
-    // Skill inventory/loading is context management, not product progress.
-    // Re-opening the identical metadata/body/reference repeatedly must not
-    // consume a specialist's turn budget indefinitely.
-    if (req.tool === 'list_skills' || req.tool === 'use_skill' || req.tool === 'use_skill_reference') {
-      const priorReads = this.ledger.data.actions.filter((action) => action.tool === req.tool && action.paramsHash === paramsHash && action.status === 'success');
-      if (priorReads.length >= 2) {
-        const message = `SKILL_OPERATION_REPEATED: ${req.tool} with the same arguments has already succeeded ${priorReads.length} times. Use the loaded information to make a different execution decision.`;
-        const record = this.ledger.recordAction({
-          stepId,
-          tool: req.tool,
-          paramsHash,
-          paramsSummary: summary,
-          status: 'blocked',
-          errorSignature: 'skill-operation-repeated',
-          reason: req.reason,
-          expected: req.expected,
-          observation: message,
-          durationMs: Date.now() - started,
-        });
-        this.emit(`blocked  ${summary} (repeated skill operation)`);
-        return { record, result: { ok: false, output: message, errorSignature: 'skill-operation-repeated' }, blockedByLoop: message };
-      }
-    }
 
     if (stepId) {
       const step = this.ledger.step(stepId);
@@ -145,6 +139,92 @@ export class Executor {
       });
       this.emit(`error    ${summary} (invalid tool call schema: ${validation.error})`);
       return { record, result: { ok: false, output: message, errorSignature: 'invalid-tool-params' } };
+    }
+
+    // Project boundary: a path-carrying call may not name anything outside the
+    // locked workspace. Same resolve + assertInside rule the tool handlers
+    // enforce at execution entry (Windows case-folding, symlink escape), but
+    // applied BEFORE any policy/loop judgment so the model never receives a
+    // policy verdict on a call the harness would never execute.
+    const boundaryMessage = this.boundaryViolation(req.params);
+    if (boundaryMessage) {
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'denied',
+        reason: req.reason,
+        expected: req.expected,
+        observation: boundaryMessage,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`denied   ${summary} (${boundaryMessage})`);
+      return { record, result: { ok: false, output: boundaryMessage }, deniedByPolicy: boundaryMessage };
+    }
+
+    // User instruction policy: explicit user instructions outrank agent
+    // defaults and are enforced deterministically before any other judgment.
+    const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
+    const instructionVerdict = this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions);
+    if (!instructionVerdict.allowed) {
+      const message = instructionVerdict.reason ?? 'DENIED by user instruction policy';
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'denied',
+        reason: req.reason,
+        expected: req.expected,
+        observation: message,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`denied   ${summary} (${message})`);
+      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
+    }
+
+    const decision = await this.policy.evaluate(req.tool, req.params);
+    if (!decision.allowed) {
+      const message = `DENIED by policy [${decision.tier}]: ${decision.reason}`;
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'denied',
+        reason: req.reason,
+        expected: req.expected,
+        observation: message,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`denied   ${summary} (${decision.reason})`);
+      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
+    }
+
+    // Loop protection runs LAST before execution: an action that survived
+    // schema, boundary, instruction, and policy judgment is only blocked here
+    // when repeating it would waste the run (same failing call, skill
+    // re-reading, edit pressure without evidence).
+    if (req.tool === 'list_skills' || req.tool === 'use_skill' || req.tool === 'use_skill_reference') {
+      const priorReads = this.ledger.data.actions.filter((action) => action.tool === req.tool && action.paramsHash === paramsHash && action.status === 'success');
+      if (priorReads.length >= 2) {
+        const message = `SKILL_OPERATION_REPEATED: ${req.tool} with the same arguments has already succeeded ${priorReads.length} times. Use the loaded information to make a different execution decision.`;
+        const record = this.ledger.recordAction({
+          stepId,
+          tool: req.tool,
+          paramsHash,
+          paramsSummary: summary,
+          status: 'blocked',
+          errorSignature: 'skill-operation-repeated',
+          reason: req.reason,
+          expected: req.expected,
+          observation: message,
+          durationMs: Date.now() - started,
+        });
+        this.emit(`blocked  ${summary} (repeated skill operation)`);
+        return { record, result: { ok: false, output: message, errorSignature: 'skill-operation-repeated' }, blockedByLoop: message };
+      }
     }
 
     const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined);
@@ -189,43 +269,6 @@ export class Executor {
           return { record, result: { ok: false, output: message }, blockedByLoop: message };
         }
       }
-    }
-
-    const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
-    const instructionVerdict = this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions);
-    if (!instructionVerdict.allowed) {
-      const message = instructionVerdict.reason ?? 'DENIED by user instruction policy';
-      const record = this.ledger.recordAction({
-        stepId,
-        tool: req.tool,
-        paramsHash,
-        paramsSummary: summary,
-        status: 'denied',
-        reason: req.reason,
-        expected: req.expected,
-        observation: message,
-        durationMs: Date.now() - started,
-      });
-      this.emit(`denied   ${summary} (${message})`);
-      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
-    }
-
-    const decision = await this.policy.evaluate(req.tool, req.params);
-    if (!decision.allowed) {
-      const message = `DENIED by policy [${decision.tier}]: ${decision.reason}`;
-      const record = this.ledger.recordAction({
-        stepId,
-        tool: req.tool,
-        paramsHash,
-        paramsSummary: summary,
-        status: 'denied',
-        reason: req.reason,
-        expected: req.expected,
-        observation: message,
-        durationMs: Date.now() - started,
-      });
-      this.emit(`denied   ${summary} (${decision.reason})`);
-      return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);

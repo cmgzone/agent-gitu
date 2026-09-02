@@ -211,6 +211,68 @@ describe('Executor schema boundary — validation before guard/policy', () => {
   });
 });
 
+describe('Executor enforcement pipeline order', () => {
+  it('enforces the project boundary BEFORE instruction, policy, and loop judgment', async () => {
+    const { executor, guard, ledger, policyCalls, loopCalls } = makeExecutor();
+    // Even a hard instruction that would forbid the write must not win over
+    // the boundary — the boundary gate runs first.
+    ledger.addInstruction({ text: 'only edit inside.ts', type: 'constraint', enforcement: 'hard', status: 'active', source: 'follow-up' });
+
+    const outcome = await executor.execute({
+      tool: 'write_file',
+      params: { path: '../escaped.ts', content: 'x' },
+      reason: 'test',
+      expected: 'file written',
+    });
+
+    expect(outcome.result.ok).toBe(false);
+    expect(outcome.deniedByPolicy).toContain('DENIED by project boundary');
+    expect(outcome.blockedByLoop).toBeUndefined();
+    expect(ledger.data.actions.at(-1)?.status).toBe('denied');
+    expect(policyCalls()).toBe(0);
+    expect(loopCalls()).toBe(0);
+    expect(existsSync(path.join(guard.lock.repoRoot, '..', 'escaped.ts'))).toBe(false);
+  });
+
+  it('runs the user InstructionPolicy BEFORE the normal policy and loop protection', async () => {
+    const { executor, ledger, policyCalls, loopCalls } = makeExecutor();
+    ledger.addInstruction({ text: 'no npm install', type: 'constraint', enforcement: 'hard', status: 'active', source: 'follow-up' });
+
+    const outcome = await executor.execute({
+      tool: 'run_command',
+      params: { command: 'npm install left-pad' },
+      reason: 'test',
+      expected: 'installed',
+    });
+
+    expect(outcome.result.ok).toBe(false);
+    expect(outcome.deniedByPolicy).toContain('USER INSTRUCTION VIOLATION');
+    expect(outcome.blockedByLoop).toBeUndefined();
+    expect(ledger.data.actions.at(-1)?.status).toBe('denied');
+    // Under the pipeline order schema > boundary > instruction > policy > loop,
+    // neither the safety policy nor the loop detector is consulted on an
+    // instruction denial.
+    expect(policyCalls()).toBe(0);
+    expect(loopCalls()).toBe(0);
+  });
+
+  it('still blocks repeated identical failing calls — loop protection survives the reorder', async () => {
+    // Real LoopDetector: the shared helper's stub never blocks.
+    const dir = makeProject();
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: path.resolve(dir), goal: 'loop reorder', project: guard.lock, mode: 'fast' });
+    const executor = new Executor(guard, ledger, new PolicyEngine(true), new LoopDetector());
+
+    await executor.execute({ tool: 'read_file', params: { path: 'src/missing.ts' }, reason: 'test', expected: 'content' });
+    await executor.execute({ tool: 'read_file', params: { path: 'src/missing.ts' }, reason: 'test', expected: 'content' });
+    const outcome = await executor.execute({ tool: 'read_file', params: { path: 'src/missing.ts' }, reason: 'test', expected: 'content' });
+
+    expect(outcome.result.ok).toBe(false);
+    expect(outcome.blockedByLoop).toBeTruthy();
+    expect(ledger.data.actions.at(-1)?.status).toBe('blocked');
+  });
+});
+
 describe('toolSearchFiles — language-agnostic search engine', () => {
   function searchProject(): string {
     const dir = mkdtempSync(path.join(tmpdir(), 'hermes-search-'));

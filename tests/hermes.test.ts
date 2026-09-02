@@ -385,7 +385,10 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const second = new ScriptedMockLlm([
       (_n, messages) => {
         const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
-        sawFollowUp = text.includes('FOLLOW-UP MESSAGE');
+        // The resumed run must deliver the user's new request through the
+        // active follow-up work-phase section (rendered since the follow-up
+        // phase model replaced the older FOLLOW-UP MESSAGE block).
+        sawFollowUp = text.includes('ACTIVE FOLLOW-UP WORK PHASE') && text.includes('now build it');
         sawChatPrompt = text.includes('chat mode — answer directly');
         return JSON.stringify({ action: { type: 'request_block', reason: 'paused' } });
       },
@@ -901,8 +904,17 @@ describe('Hermes end-to-end (mock LLM)', () => {
       },
       () => JSON.stringify({ action: { type: 'complete', summary: 'recovered and completed', risks: [], followUps: [] } }),
     ]);
+    // The protocol-repair layer shares the main script unless given its own
+    // model — a repair model that also drifts into prose keeps the run on the
+    // halt path this test pins: 3 unparseable replies with failed repairs.
+    const repairLlm = new ScriptedMockLlm([
+      () => 'I still think I should look around.',
+      () => 'Let me check the listing again.',
+      () => 'Perhaps the answer is in src.',
+      () => 'One more moment.',
+    ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', protocolRepairLlm: repairLlm, onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('say something useful');
 
     expect(report.status).toBe('blocked');

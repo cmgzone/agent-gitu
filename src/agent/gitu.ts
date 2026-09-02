@@ -2060,11 +2060,13 @@ export class Gitu {
       const strategySection = ledger.data.mode !== 'chat' ? buildTaskStrategySection(activeGoal, lsp.hasServers(), skills) : undefined;
       const followUpSection =
         resumeNote && ledger.data.mode !== 'chat'
-          ? `ACTIVE ${isFollowUpPhase ? 'FOLLOW-UP WORK PHASE' : 'CONTINUATION'} — user request:\n"${activeGoal}"\n` +
-            (isFollowUpPhase
-              ? `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. Add only the needed criteria and append only the needed plan steps. `
-              : `The task is unfinished. Continue from the durable ledger and take the next useful action; do not restart discovery or planning unless the evidence requires it. `) +
-            `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
+          ? isFollowUpPhase
+            ? `ACTIVE FOLLOW-UP WORK PHASE — user request:\n"${activeGoal}"\n` +
+              `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. Add only the needed criteria and append only the needed plan steps. ` +
+              `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
+            : `ACTIVE CONTINUATION — the user wrote:\n"${resumeNote}"\n` +
+              `The task is unfinished. Continue from the durable ledger and take the next useful action; do not restart discovery or planning unless the evidence requires it. ` +
+              `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
           : undefined;
       // Unified context authority: EVERYTHING that reaches the model before
       // the per-turn loop is assembled by buildModelContext — one priority

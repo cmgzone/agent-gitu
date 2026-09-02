@@ -3540,8 +3540,15 @@ export class Gitu {
               // like the other judgment gates so it can never deadlock a task.
               if (!chatOnly && typeof ledger.activeInstructions === 'function') {
                 const gateFinding = evaluateInstructionGate(
-                  ledger.activeInstructions().map((i) => ({ text: i.text, enforcement: i.enforcement, status: i.status, createdAt: i.createdAt })),
-                  activePhaseData().actions.map((a) => ({ status: a.status, createdAt: a.createdAt, observation: a.observation })),
+                  ledger.activeInstructions().map((i) => ({
+                    text: i.text,
+                    enforcement: i.enforcement,
+                    status: i.status,
+                    createdAt: i.createdAt,
+                    verification: i.verification,
+                  })),
+                  activePhaseData().actions.map((a) => ({ tool: a.tool, status: a.status, createdAt: a.createdAt, observation: a.observation })),
+                  ledger.data.evidence.map((e) => ({ kind: e.kind, command: e.command, passed: e.passed, createdAt: e.createdAt, stale: e.stale })),
                 );
                 const gateBlocked = gateFinding.unmetRequirements.length > 0 || gateFinding.denialUnrecovered;
                 if (gateBlocked && instructionGateRejections < 2) {

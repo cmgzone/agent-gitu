@@ -4,6 +4,7 @@ import type {
   FollowUpClassificationKind,
   FollowUpRecord,
   InstructionConstraint,
+  InstructionVerification,
   TargetHints,
   UserInstruction,
 } from '../types.js';
@@ -183,12 +184,14 @@ export function extractInstructionsFromFollowUp(message: string): Array<Omit<Use
 
     // Check requirement
     if (/\b(?:must|ensure|make sure|always|needs to|require)\b/i.test(line)) {
+      const verification = parseRequirementVerification(line);
       instructions.push({
         text: line,
         type: 'requirement',
         enforcement: 'completion',
         status: 'active',
         source: 'follow-up',
+        ...(verification ? { verification } : {}),
       });
       continue;
     }
@@ -206,6 +209,31 @@ export function extractInstructionsFromFollowUp(message: string): Array<Omit<Use
   }
 
   return instructions;
+}
+
+/**
+ * Admission-time verification parsing for completion requirements. "You must
+ * run `npm test`" becomes a command verification the completion gate can
+ * actually check; vague wording stays unstructured (conservative legacy
+ * behavior) instead of inventing proof semantics.
+ */
+export function parseRequirementVerification(text: string): InstructionVerification | undefined {
+  // Explicit backticked command: the most precise form.
+  const backtick = /`([^`]+)`/.exec(text);
+  if (backtick?.[1]) return { type: 'command', command: backtick[1].trim() };
+
+  // Common concrete runner commands named inline.
+  const runner =
+    /\b((?:npm|pnpm|yarn|bun)\s+(?:test|run\s+[\w:@/.-]+)|(?:pytest|python\s+-m\s+pytest|go\s+test|cargo\s+test|vitest|jest|node\s+--test)(?:\s+[\w:@/.=-]+)*)\b/i.exec(
+      text,
+    );
+  if (runner?.[1]) return { type: 'command', command: runner[1].trim() };
+
+  // A test-suite demand without a concrete command: any passing test/command
+  // evidence after the instruction's epoch qualifies (still far stronger than
+  // "any successful action").
+  if (/\b(?:full\s+)?(?:test\s+suite|tests|test\s+run)\b/i.test(text)) return { type: 'command' };
+  return undefined;
 }
 
 export function classifyFollowUp(message: string, hasImages = false): FollowUpClassificationResult {
@@ -326,9 +354,13 @@ export function applyFollowUpToLedger(
     addedInstructions.push(created.id);
   }
 
-  // If correction, invalidate previous hypothesis
+  // If correction, invalidate previous hypothesis and supersede conflicting
+  // authority (instructions and plan steps targeting the negated area). The
+  // instructions this same message just added are exempt — a user may negate
+  // an area and re-state a constraint in one breath.
   if (classification.supersedePreviousHypothesis) {
     ledger.data.currentHypothesis = undefined;
+    supersededInstructions.push(...supersedeConflictingAuthority(ledger, rawMessage, addedInstructions));
   }
 
   // Update goal delta if relevant
@@ -365,27 +397,94 @@ export function applyFollowUpToLedger(
 }
 
 export interface InstructionGateFinding {
-  /** Completion-type requirements with no successful work recorded after they were issued. */
+  /** Completion-type requirements whose proof has not been produced since
+   *  they were issued. */
   unmetRequirements: string[];
   /** True when the latest action was blocked by the instruction policy and no compliant action followed. */
   denialUnrecovered: boolean;
 }
 
+interface GateAction {
+  tool?: string;
+  status: string;
+  createdAt: string;
+  observation?: string;
+}
+
+interface GateEvidence {
+  kind: string;
+  command?: string;
+  passed: boolean;
+  createdAt: string;
+  stale?: boolean;
+}
+
+function commandMatches(required: string, actual: string | undefined): boolean {
+  if (!actual) return false;
+  const a = actual.trim().toLowerCase();
+  const b = required.trim().toLowerCase();
+  return a === b || a.startsWith(b) || a.includes(b);
+}
+
 /**
- * Instruction-aware completion gate: a task may not conclude while a
- * completion-type requirement shows no work since it was issued, or while the
- * most recent action was a blocked instruction violation with no compliant
- * action after it. Hard constraints are enforced at execution time, so the
- * only completion-time check they need is the unrecovered-denial case.
+ * Instruction-aware completion gate. A task may not conclude while:
+ *  - a completion-type requirement lacks the proof its verification semantics
+ *    demand, produced AFTER the instruction was issued ("must run `npm test`"
+ *    needs a passing `npm test` evidence record, not a read_file); or
+ *  - the most recent action was a blocked instruction violation with no
+ *    compliant action after it.
+ * Hard constraints are enforced at execution time, so the only completion-time
+ * check they need is the unrecovered-denial case.
  */
 export function evaluateInstructionGate(
-  instructions: { text: string; enforcement: string; status: string; createdAt: string }[],
-  actions: { status: string; createdAt: string; observation?: string }[],
+  instructions: { text: string; enforcement: string; status: string; createdAt: string; verification?: { type: string; command?: string } }[],
+  actions: GateAction[],
+  evidence: GateEvidence[] = [],
 ): InstructionGateFinding {
   const findings: InstructionGateFinding = { unmetRequirements: [], denialUnrecovered: false };
 
   for (const inst of instructions) {
     if (inst.status !== 'active' || inst.enforcement !== 'completion') continue;
+
+    const verification = inst.verification;
+    if (verification?.type === 'command') {
+      const matching = evidence.some(
+        (e) =>
+          e.passed &&
+          !e.stale &&
+          e.createdAt > inst.createdAt &&
+          ['test', 'command', 'build', 'lint', 'typecheck'].includes(e.kind) &&
+          (verification.command ? commandMatches(verification.command, e.command) : true),
+      );
+      if (!matching) findings.unmetRequirements.push(inst.text);
+      continue;
+    }
+    if (verification?.type === 'file_change') {
+      if (!actions.some((a) => a.status === 'success' && ['write_file', 'apply_edit'].includes(a.tool ?? '') && a.createdAt > inst.createdAt)) {
+        findings.unmetRequirements.push(inst.text);
+      }
+      continue;
+    }
+    if (verification?.type === 'browser' || verification?.type === 'visual') {
+      if (!actions.some((a) => a.status === 'success' && ['browse', 'screenshot'].includes(a.tool ?? '') && a.createdAt > inst.createdAt)) {
+        findings.unmetRequirements.push(inst.text);
+      }
+      continue;
+    }
+    if (verification?.type === 'specialist') {
+      if (!actions.some((a) => a.status === 'success' && (a.tool ?? '').startsWith('delegate') && a.createdAt > inst.createdAt)) {
+        findings.unmetRequirements.push(inst.text);
+      }
+      continue;
+    }
+    if (verification?.type === 'user_approval') {
+      // Never auto-satisfiable: the user must approve explicitly.
+      findings.unmetRequirements.push(inst.text);
+      continue;
+    }
+
+    // Legacy requirement (no structured verification): any successful action
+    // after issuance counts as work toward it.
     const workedAfter = actions.some((a) => a.status === 'success' && a.createdAt > inst.createdAt);
     if (!workedAfter) findings.unmetRequirements.push(inst.text);
   }
@@ -399,6 +498,60 @@ export function evaluateInstructionGate(
   }
 
   return findings;
+}
+
+/**
+ * CORRECT-follow-up supersession: when a correction negates an area ("backend
+ * is fine", "not the backend", "instead of the backend"), the instructions and
+ * plan steps that targeted that area become superseded history. Instructions
+ * added by the SAME correction message are excluded — the user may negate an
+ * area and simultaneously re-state a constraint. Returns the ids of superseded
+ * instructions.
+ */
+export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText: string, excludeIds: string[] = []): string[] {
+  const negated = new Set<string>();
+  const fine = /([a-z][\w-]*)\s+is\s+(?:fine|good|correct|ok)\b/gi;
+  const notThe = /\bnot\s+(?:the\s+)?([a-z][\w-]*)/gi;
+  const instead = /\b(?:instead of|rather than)\s+(?:the\s+)?([a-z][\w-]*)/gi;
+  for (const re of [fine, notThe, instead]) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(correctionText)) !== null) {
+      const token = m[1]!.toLowerCase();
+      if (!['the', 'a', 'an', 'this', 'that', 'it', 'is', 'was'].includes(token)) negated.add(token);
+    }
+  }
+  if (negated.size === 0) return [];
+
+  // Conventional module roots a negated noun may stand for ("backend" covers
+  // server/, "database" covers migrations/ ...).
+  const roots = new Set<string>(negated);
+  if (negated.has('backend')) ['server', 'api'].forEach((r) => roots.add(r));
+  if (negated.has('database') || negated.has('db')) ['migrations', 'prisma', 'schema'].forEach((r) => roots.add(r));
+
+  const textHits = (text: string): boolean => {
+    const lower = text.toLowerCase();
+    return [...roots].some((r) => lower.includes(r));
+  };
+
+  const superseded: string[] = [];
+  const excluded = new Set(excludeIds);
+  const auth = ledger.ensureTaskAuthority();
+  for (const inst of auth.instructions) {
+    if (inst.status !== 'active' || excluded.has(inst.id)) continue;
+    if (textHits(inst.text) || (inst.constraint?.deny ?? []).some((d) => textHits(d)) || (inst.constraint?.allow ?? []).some((d) => textHits(d))) {
+      ledger.supersedeInstruction(inst.id, `Superseded by correction: "${correctionText.slice(0, 120)}"`);
+      superseded.push(inst.id);
+    }
+  }
+  for (const step of ledger.data.plan) {
+    if (step.status === 'done' || step.status === 'blocked') continue;
+    if (textHits(step.description)) {
+      step.status = 'blocked';
+      if (!step.description.startsWith('[SUPERSEDED]')) step.description = `[SUPERSEDED] ${step.description}`;
+    }
+  }
+  if (superseded.length > 0) ledger.save();
+  return superseded;
 }
 
 /**

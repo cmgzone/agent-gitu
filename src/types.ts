@@ -496,6 +496,14 @@ export type InstructionEnforcement = 'hard' | 'completion' | 'advisory';
 export type InstructionStatus = 'active' | 'superseded' | 'completed';
 export type InstructionSource = 'initial' | 'follow-up' | 'attachment';
 
+/** Verification semantics for a completion-enforced requirement: what counts
+ *  as proof. Parsed at admission time when the wording is concrete. */
+export interface InstructionVerification {
+  type: 'command' | 'file_change' | 'browser' | 'visual' | 'specialist' | 'user_approval';
+  /** For type 'command': the exact command that must pass after the instruction's epoch. */
+  command?: string;
+}
+
 /** Machine-readable form of a hard user constraint. Parsed ONCE at
  *  admission time from the user's wording; execution evaluates this
  *  structured form instead of re-guessing natural language per call. */
@@ -528,6 +536,8 @@ export interface UserInstruction {
   supersedes?: string[];
   /** Structured form when the wording resolved cleanly at admission time. */
   constraint?: InstructionConstraint;
+  /** Completion proof requirements for enforcement:'completion' instructions. */
+  verification?: InstructionVerification;
   /** The Task Authority epoch this instruction became active in. */
   instructionEpoch?: number;
   createdAt: string;

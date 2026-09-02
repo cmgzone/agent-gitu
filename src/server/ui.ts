@@ -737,6 +737,7 @@ export const UI_HTML = String.raw`<!doctype html>
     sel: { wf: 'review', model: '', effort: 'high' },
     settings: { review: true, autoApprove: false, autoLearn: true, projectPath: '' },
     setSection: 'general',
+    delivery: 'steer',
     pendingFiles: []
   };
   try {
@@ -754,6 +755,18 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  // Attachments are per-composer, never global: a screenshot staged on the
+  // home composer or in Session A must not ride along when you switch to
+  // Session B and send there.
+  function pendingFor() {
+    if (S.active === 'home') {
+      if (!S.homePendingFiles) S.homePendingFiles = [];
+      return S.homePendingFiles;
+    }
+    var sess = S.sessions[S.active] || (S.sessions[S.active] = { events: [], ledger: null, session: null, side: 'state', nodes: {}, pendingFiles: [] });
+    if (!sess.pendingFiles) sess.pendingFiles = [];
+    return sess.pendingFiles;
+  }
   function mascotState(mode) {
     if (window.__mascot) window.__mascot.setMode(mode);
     if (S.mascotTimer) clearTimeout(S.mascotTimer);
@@ -1167,9 +1180,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var s = sess && sess.session;
     var running = Boolean(s && s.status === 'running');
     var waiting = waitingFor(s);
-    // Typing yields the button back to Send so you can queue a follow-up.
+    // Typing yields the button back to Send so you can steer or queue a follow-up.
     var f = $('follow');
-    var typing = Boolean((f && f.value.trim()) || S.pendingFiles.length);
+    var typing = Boolean((f && f.value.trim()) || pendingFor().length);
     var stopMode = running && !typing;
     b.classList.toggle('stop', stopMode);
     b.title = stopMode ? 'Stop the agent' : 'send (Enter)';
@@ -1189,6 +1202,35 @@ export const UI_HTML = String.raw`<!doctype html>
         chip.textContent = '⏸ waiting for you — ' + waiting;
         chip.title = 'the agent is blocked and needs your input in the stream';
       } else if (chip) chip.remove();
+      // Explicit delivery choice for messages sent mid-run: STEER injects the
+      // text into the live run at the next step; QUEUE holds it until the run
+      // completes, then it starts a fresh follow-up. The label always states
+      // what actually happens — it used to say "queue" while steering.
+      var toggle = bar.querySelector('#deliveryToggle');
+      if (running && typing) {
+        if (!toggle) {
+          toggle = document.createElement('span');
+          toggle.id = 'deliveryToggle';
+          toggle.style.cssText = 'display:inline-flex;gap:0;margin-left:6px;flex:none';
+          toggle.innerHTML =
+            '<button type="button" data-del="steer" class="btn ghost" style="border-radius:8px 0 0 8px;padding:4px 9px;font-size:11px"></button>' +
+            '<button type="button" data-del="queue" class="btn ghost" style="border-radius:0 8px 8px 0;padding:4px 9px;font-size:11px"></button>';
+          toggle.querySelectorAll('[data-del]').forEach(function (btn) {
+            btn.onclick = function () { S.delivery = btn.getAttribute('data-del'); updateSendState(); };
+          });
+          bar.insertBefore(toggle, b);
+        }
+        var steerBtn = toggle.querySelector('[data-del="steer"]');
+        var queueBtn = toggle.querySelector('[data-del="queue"]');
+        steerBtn.textContent = '⚡ Steer';
+        queueBtn.textContent = '⏳ Queue';
+        steerBtn.title = 'Send into the running task now — the agent takes it into account at the next step';
+        queueBtn.title = 'Hold the message until the current run finishes, then it starts a fresh follow-up';
+        steerBtn.style.opacity = S.delivery === 'steer' ? '1' : '0.45';
+        queueBtn.style.opacity = S.delivery === 'queue' ? '1' : '0.45';
+        steerBtn.style.fontWeight = S.delivery === 'steer' ? '700' : '400';
+        queueBtn.style.fontWeight = S.delivery === 'queue' ? '700' : '400';
+      } else if (toggle) toggle.remove();
     }
   }
 
@@ -1509,9 +1551,9 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderThumbs() {
     var wrap = $('thumbs');
     if (!wrap) return;
-    if (!S.pendingFiles.length) { wrap.hidden = true; wrap.innerHTML = ''; updateSendState(); return; }
+    if (!pendingFor().length) { wrap.hidden = true; wrap.innerHTML = ''; updateSendState(); return; }
     wrap.hidden = false;
-    wrap.innerHTML = S.pendingFiles.map(function (file, i) {
+    wrap.innerHTML = pendingFor().map(function (file, i) {
       var isImage = String(file.type || '').indexOf('image/') === 0;
       var content = isImage
         ? '<img src="' + file.dataUrl + '" alt="' + esc(file.name) + '" title="' + esc(file.name) + '">'
@@ -1519,7 +1561,7 @@ export const UI_HTML = String.raw`<!doctype html>
       return '<span class="th' + (isImage ? '' : ' th-file') + '">' + content + '<button class="rm" data-rm="' + i + '" title="Remove attachment" aria-label="Remove ' + esc(file.name) + '">&#10005;</button></span>';
     }).join('');
     wrap.querySelectorAll('[data-rm]').forEach(function (el) {
-      el.onclick = function () { S.pendingFiles.splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
+      el.onclick = function () { pendingFor().splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
     });
     updateSendState();
   }
@@ -1538,14 +1580,14 @@ export const UI_HTML = String.raw`<!doctype html>
     return Math.max(0, Math.floor((dataUrl.length - comma - 1) * 3 / 4));
   }
   function pendingFileBytes() {
-    return S.pendingFiles.reduce(function (sum, file) { return sum + (Number(file.size) || dataUrlBytes(file.dataUrl)); }, 0);
+    return pendingFor().reduce(function (sum, file) { return sum + (Number(file.size) || dataUrlBytes(file.dataUrl)); }, 0);
   }
   function addPendingFile(file, dataUrl) {
-    if (S.pendingFiles.length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
+    if (pendingFor().length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
     var size = Number(file.size) || dataUrlBytes(dataUrl);
     if (size > MAX_PENDING_FILE_BYTES) { toast(file.name + ' is larger than 8 MB', true); return; }
     if (pendingFileBytes() + size > MAX_PENDING_TOTAL_BYTES) { toast('Attachments exceed the 20 MB combined limit', true); return; }
-    S.pendingFiles.push({ name: file.name || 'attachment', type: file.type || 'application/octet-stream', size: size, dataUrl: dataUrl });
+    pendingFor().push({ name: file.name || 'attachment', type: file.type || 'application/octet-stream', size: size, dataUrl: dataUrl });
     renderThumbs();
   }
   function downscaleImage(dataUrl, cb) {
@@ -1573,7 +1615,10 @@ export const UI_HTML = String.raw`<!doctype html>
       for (var i = 0; i < cd.items.length; i++) {
         var it = cd.items[i];
         if (it.type && it.type.indexOf('image/') === 0) {
-          var file = it.getAsFile();
+          // let, not var: reader.onload fires asynchronously AFTER the loop has
+          // advanced, and a shared var-file binding made every pasted image
+          // inherit the last file's name/type.
+          let file = it.getAsFile();
           if (!file) continue;
           e.preventDefault();
           var reader = new FileReader();
@@ -1591,7 +1636,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function onAttachFiles(files) {
     Array.prototype.slice.call(files).forEach(function (f) {
-      if (S.pendingFiles.length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
+      if (pendingFor().length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
       if (f.size > MAX_PENDING_FILE_BYTES) { toast(f.name + ' is larger than 8 MB', true); return; }
       if (pendingFileBytes() + f.size > MAX_PENDING_TOTAL_BYTES) { toast('Attachments exceed the 20 MB combined limit', true); return; }
       var reader = new FileReader();
@@ -1638,7 +1683,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function startRun() {
     if (S.starting) return;
     var goal = $('goal') ? $('goal').value.trim() : '';
-    if (!goal && S.pendingFiles.length) goal = 'Please review the attached file or document.';
+    if (!goal && pendingFor().length) goal = 'Please review the attached file or document.';
     if (!goal) { if ($('goal')) $('goal').focus(); return; }
     if (!S.modelsLoaded) { toast('Models are still loading — try again in a moment'); return; }
     // First-run funnel: a keyless install can only produce a failing run.
@@ -1671,12 +1716,12 @@ export const UI_HTML = String.raw`<!doctype html>
         projectPath: effectiveProjectPath() || undefined,
         scope: S.settings.scope || [],
         constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
-        files: S.pendingFiles.length ? S.pendingFiles : undefined
+        files: pendingFor().length ? pendingFor() : undefined
       })
     }).then(function (r) {
       unlock();
       S.draft = ''; persist();
-      S.pendingFiles = [];
+      pendingFor().length = 0;
       openRun(r.runId, { chatish: chatish, goal: goal });
       renderSidebar();
     }, function (e) {
@@ -1691,9 +1736,12 @@ export const UI_HTML = String.raw`<!doctype html>
     toggleMobileNav(false);
     if ($('sideFab')) $('sideFab').hidden = false;
     stopStreams();
-    var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {} });
+    var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {}, pendingFiles: [] });
     sess.nodes = {};
     sess.justOpened = true;
+    // Attachments are per-composer: switching sessions must show THAT
+    // session's staged files (or none), never the previous one's.
+    renderThumbs();
     if (opts && opts.chatish !== undefined) sess.chatish = opts.chatish;
     // Reflect the session's real mode in the workflow dropdown so changing it
     // and sending is an explicit switch (chat -> plan/build, or the reverse).
@@ -1723,7 +1771,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (e.key !== 'Enter' || e.shiftKey) return;
       e.preventDefault();
       var g = $('follow').value.trim();
-      if (!g && S.pendingFiles.length) g = 'Please review the attached file or document.';
+      if (!g && pendingFor().length) g = 'Please review the attached file or document.';
       if (!g) return;
       sendFollow(g);
     });
@@ -1812,10 +1860,15 @@ export const UI_HTML = String.raw`<!doctype html>
     };
   }
 
-  function userBubble(text, runId) {
+  var UB_SEQ = 0;
+  function userBubble(text, runId, ubId) {
+    // Unique per-send identity: edit/retry/failure/removal must never target
+    // the wrong copy when the user sends the exact same text twice.
+    var id = ubId || 'ub-' + Date.now().toString(36) + '-' + (++UB_SEQ);
     var div = document.createElement('div');
     div.className = 'usermsg';
     div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
+    div.setAttribute('data-ubid', id);
     div.setAttribute('data-ubtext', text);
     div.innerHTML = '<div style="max-width:75%;background:rgba(91,168,255,.1);border:1px solid rgba(91,168,255,.32);border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
       '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) +
@@ -1905,13 +1958,15 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.nodes.thought = null;
   }
 
-  function removeUserBubble(runId, text) {
+  function removeUserBubble(runId, text, ubId) {
     var stream = $('stream');
     if (!stream) return;
-    var target = null;
-    stream.querySelectorAll('div[data-ubtext]').forEach(function (b) {
-      if (b.getAttribute('data-ubtext') === text) target = b;
-    });
+    var target = ubId ? stream.querySelector('div[data-ubid="' + ubId + '"]') : null;
+    if (!target) {
+      stream.querySelectorAll('div[data-ubtext]').forEach(function (b) {
+        if (b.getAttribute('data-ubtext') === text) target = b;
+      });
+    }
     if (target) target.remove();
   }
 
@@ -1968,12 +2023,12 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.chatish = sess.session.mode === 'chat';
       renderRunSide(runId);
     }
-    var attached = S.pendingFiles.length ? S.pendingFiles : undefined;
+    var attached = pendingFor().length ? pendingFor() : undefined;
     var mc = (S.sel.model || '').split('::');
     var useSelectedModel = Boolean(sess && (sess.modelOverride || !sess.session || !sess.session.provider || !sess.session.model));
     // Show the outgoing message immediately. The server will replace this
     // pending display with its durable user-msg event once it is recorded.
-    appendPendingUserMessage(runId, text);
+    var sentBubbleId = appendPendingUserMessage(runId, text);
     var follow = $('follow');
     if (follow) follow.value = '';
     var send2 = $('send2');
@@ -1982,6 +2037,7 @@ export const UI_HTML = String.raw`<!doctype html>
     updateSendState();
     api('/api/runs/' + runId + '/message', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
       text: text, files: attached,
+      delivery: running ? S.delivery : undefined,
       provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
       // The workflow dropdown drives continuations too: an explicit selection
       // switches an existing session's mode (chat <-> plan/build).
@@ -1991,7 +2047,7 @@ export const UI_HTML = String.raw`<!doctype html>
       autoApprove: S.settings.autoApprove
     }) })
       .then(function () {
-        S.pendingFiles = [];
+        pendingFor().length = 0;
         renderThumbs();
         setWorking('Thinking…');
         // Terminal sessions intentionally close their SSE stream. A follow-up
@@ -2016,9 +2072,9 @@ export const UI_HTML = String.raw`<!doctype html>
               projectPath: effectiveProjectPath() || undefined,
               files: attached
             })
-          }).then(function (r) { openRun(r.runId, { chatish: r.mode === 'chat' }); }).catch(function (e2) { failUserBubble(runId, text, e2.message); toast(e2.message, true); });
+          }).then(function (r) { openRun(r.runId, { chatish: r.mode === 'chat' }); }).catch(function (e2) { failUserBubble(runId, text, e2.message, sentBubbleId); toast(e2.message, true); });
         } else {
-          failUserBubble(runId, text, msg);
+          failUserBubble(runId, text, msg, sentBubbleId);
           toast(msg, true);
         }
       })
@@ -2028,19 +2084,22 @@ export const UI_HTML = String.raw`<!doctype html>
   function appendPendingUserMessage(runId, text) {
     var stream = $('stream');
     var sess = S.sessions[runId];
-    if (!stream || !sess) return;
+    if (!stream || !sess) return null;
     if (!sess.pendingUserMessages) sess.pendingUserMessages = [];
     sess.pendingUserMessages.push(text);
     retireAbubble(sess);
     closeThought(runId);
-    appendLive(stream, userBubble(text, runId));
+    var bubble = userBubble(text, runId);
+    var ubId = bubble.getAttribute('data-ubid');
+    appendLive(stream, bubble);
     stickScroll(stream, true);
+    return ubId;
   }
 
   // A failed send previously left an optimistic bubble that looked DELIVERED
   // (cleanup ran only on the success path). Mark it failed, surface the
   // reason inline, and offer one-click retry.
-  function failUserBubble(runId, text, errMsg) {
+  function failUserBubble(runId, text, errMsg, ubId) {
     var stream = $('stream');
     var sess = S.sessions[runId];
     if (!stream || !sess) return;
@@ -2048,10 +2107,14 @@ export const UI_HTML = String.raw`<!doctype html>
       var idx = sess.pendingUserMessages.indexOf(text);
       if (idx >= 0) sess.pendingUserMessages.splice(idx, 1);
     }
-    var target = null;
-    stream.querySelectorAll('div[data-ubtext]').forEach(function (b) {
-      if (b.getAttribute('data-ubtext') === text) target = b;
-    });
+    // Prefer the unique bubble id: two identical texts must not fail/retry
+    // each other's bubbles.
+    var target = ubId ? stream.querySelector('div[data-ubid="' + ubId + '"]') : null;
+    if (!target) {
+      stream.querySelectorAll('div[data-ubtext]').forEach(function (b) {
+        if (b.getAttribute('data-ubtext') === text) target = b;
+      });
+    }
     if (!target) { toast(errMsg || 'send failed', true); return; }
     if (target.querySelector('.sendfail')) return;
     target.classList.add('failed');
@@ -4378,6 +4441,9 @@ export const UI_HTML = String.raw`<!doctype html>
               if (hl) pickProvModel(hl.getAttribute('data-val'));
               e.preventDefault();
             } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              // A filtered-empty list has no rows to highlight — navigating
+              // must not crash on items[-1].
+              if (!items.length) { e.preventDefault(); return; }
               var dir = e.key === 'ArrowDown' ? 1 : -1;
               var at = -1;
               for (var k = 0; k < items.length; k++) if (items[k].classList.contains('hl')) { at = k; break; }
@@ -4781,7 +4847,8 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (d.atRoot) html += '<div class="empty" style="padding:6px 10px">This computer — pick a drive</div>';
     html += (d.dirs || []).map(function (n) {
-      return '<div class="frow" data-dir="' + esc(n) + '"><span class="ico">' + icon('folder') + '</span>' + esc(n) + '</div>';
+      var leaf = String(n).split(/[\\/]/).filter(Boolean).pop() || n;
+      return '<div class="frow" data-dir="' + esc(n) + '" title="' + esc(n) + '"><span class="ico">' + icon('folder') + '</span>' + esc(leaf) + '</div>';
     }).join('');
     if (!d.atRoot && !(d.dirs || []).length) html += '<div class="empty" style="padding:6px 10px">no subfolders</div>';
     box.innerHTML = html;
@@ -4789,9 +4856,9 @@ export const UI_HTML = String.raw`<!doctype html>
     $('browseProjChip').style.display = d.isProject ? '' : 'none';
     box.querySelectorAll('[data-dir]').forEach(function (el) {
       el.onclick = function () {
-        var name = el.getAttribute('data-dir');
-        var base = d.atRoot ? '' : String(d.path).replace(/[\\/]$/, '');
-        browseTo(base ? base + '\\' + name : name);
+        // The server returns fully-joined native paths — navigate with them
+        // as-is; never hand-concatenate separators here.
+        browseTo(el.getAttribute('data-dir'));
       };
     });
     var up = box.querySelector('[data-up]');
@@ -4979,8 +5046,40 @@ import * as THREE from '/vendor/three.module.js';
   };
 
   var clock = new THREE.Clock();
+  // Render gating: an endless rAF that draws every frame wastes CPU/GPU when
+  // the mascot is hidden (small screens hide #mascotWrap via CSS) or the tab
+  // is in the background. The loop fully STOPS while hidden and restarts on
+  // visibility/resize so typing and streaming stay smooth.
+  var rafId = 0;
+  var mascotVisible = true;
+  var mascotMq = window.matchMedia ? window.matchMedia('(max-width: 720px)') : null;
+  function mascotIsHidden() {
+    if (document.hidden) return true;
+    if (mascotMq && mascotMq.matches) return true;
+    var w = document.getElementById('mascotWrap');
+    return !w || w.style.display === 'none';
+  }
+  function updateMascotVisibility() {
+    var hidden = mascotIsHidden();
+    if (hidden === mascotVisible) return;
+    mascotVisible = !hidden;
+    if (mascotVisible) {
+      clock.getDelta(); // drop the time accumulated while hidden
+      rafId = requestAnimationFrame(tick);
+    } else if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+  }
+  if (mascotMq) {
+    if (mascotMq.addEventListener) mascotMq.addEventListener('change', updateMascotVisibility);
+    else if (mascotMq.addListener) mascotMq.addListener(updateMascotVisibility);
+  }
+  document.addEventListener('visibilitychange', updateMascotVisibility);
+  window.addEventListener('resize', updateMascotVisibility);
   function tick() {
-    requestAnimationFrame(tick);
+    rafId = requestAnimationFrame(tick);
+    if (!mascotVisible) return;
     var dt = Math.min(0.05, clock.getDelta());
     t += dt;
     modeT += dt;
@@ -5055,7 +5154,8 @@ import * as THREE from '/vendor/three.module.js';
     }
     renderer.render(scene, cam);
   }
-  tick();
+  mascotVisible = !mascotIsHidden();
+  if (mascotVisible) rafId = requestAnimationFrame(tick);
 })();
 </script>
 </body>

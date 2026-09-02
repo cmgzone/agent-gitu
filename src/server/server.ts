@@ -1755,9 +1755,12 @@ export class GituServer {
           return;
         }
         const entries = readdirSync(abs, { withFileTypes: true });
+        // Full child paths, joined platform-natively server-side. The client
+        // must never concatenate separators itself: '\' is not a separator on
+        // POSIX, and hand-built paths would break non-Windows machines.
         const dirs = entries
           .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
-          .map((d) => d.name)
+          .map((d) => nodePath.join(abs, d.name))
           .sort((a, b) => a.localeCompare(b));
         const parent = nodePath.dirname(abs);
         const markers = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', '.git'];

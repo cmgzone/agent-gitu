@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
@@ -71,6 +71,31 @@ describe('HermesServer', () => {
     expect(html).toContain('AGENT GITU');
     const project = await fetch(`${base}/api/project`).then((r) => r.json());
     expect(project.name).toBe('web-ui');
+  });
+
+  it('returns fully-joined native child paths so POSIX clients never concatenate separators', async () => {
+    const dir = makeProject('browse-paths');
+    mkdirSync(path.join(dir, 'subdir with space'), { recursive: true });
+    mkdirSync(path.join(dir, 'nested', 'deep'), { recursive: true });
+    const { base } = await startServer(dir, new ScriptedMockLlm([]));
+
+    const root = await fetch(`${base}/api/browse?path=${encodeURIComponent(dir)}`).then((r) => r.json());
+    expect(root.isProject).toBe(true);
+    for (const child of root.dirs as string[]) {
+      // The whole point: the client can use these values verbatim — every
+      // entry must already be an absolute, platform-native path.
+      expect(path.isAbsolute(child)).toBe(true);
+      expect(existsSync(child)).toBe(true);
+    }
+    expect(root.dirs.some((d: string) => d.endsWith(path.join('nested', 'deep')) || d === path.join(dir, 'nested'))).toBe(true);
+
+    // Navigating into a returned child path must work as-is (the old UI built
+    // 'dir\child', which POSIX treated as one bogus filename and the server
+    // rejected as non-absolute).
+    const child = (root.dirs as string[]).find((d) => d.endsWith('nested'))!;
+    const nested = await fetch(`${base}/api/browse?path=${encodeURIComponent(child)}`).then((r) => r.json());
+    expect(nested.path).toBe(child);
+    expect((nested.dirs as string[]).some((d) => d.endsWith('deep'))).toBe(true);
   });
 
   it('serves the Agent Gitu SVG mark as a bundled brand asset', async () => {

@@ -5,7 +5,7 @@ import { SkillStore } from '../skills/skills.js';
 import type { Capability, ConnectionSetupHint, MissingPrerequisite } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
 import { ensureGituHome } from '../workspace/home.js';
-import { catalogCapabilityDeclared, catalogOperationFor } from './catalog.js';
+import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor } from './catalog.js';
 
 /**
  * A connection is deliberately not a model tool.  It is a user-owned,
@@ -112,10 +112,16 @@ export interface ResolveConnectionOperationInput {
   providerHint?: string;
   /** Documented operation proposal from official API documentation. */
   operation?: ConnectionOperation;
+  /** Canonical operation id (accepts "provider/id" composite forms). */
+  operationId?: string;
   /** Capability-only resolution (e.g. a prerequisite's declared capability). */
   capability?: string;
   /** Desired risk class when no concrete operation is supplied. */
   riskLevel?: 'read' | 'reversible-write' | 'destructive';
+  /** The proposal was derived from verified official API documentation (a
+   * documentationUrl). Lets safe documented GETs auto-register even when the
+   * provider has no catalog entry; writes still require approval. */
+  documented?: boolean;
 }
 
 export interface ResolveConnectionOperationResult {
@@ -127,6 +133,7 @@ export interface ResolveConnectionOperationResult {
   /** The operation that exists, was discovered, or needs approval. */
   operation?: ConnectionOperation;
   capability?: string;
+  operationId?: string;
   reason: string;
 }
 
@@ -309,6 +316,20 @@ function normalizeOperations(value: unknown): ConnectionOperation[] {
     if (out.length >= 24) break;
   }
   return out;
+}
+
+/**
+ * ONE canonical operation id everywhere: discovery, persistence, lookup,
+ * approval, and invocation all key on the operation's own `id`. The runtime
+ * sometimes sees composite forms ("coolify/list-applications") when the model
+ * copies a provider-qualified label; those are accepted at LOOKUP time only,
+ * and the canonical id is always read from the registered/returned operation.
+ */
+export function canonicalOperationId(ref: string): string {
+  const trimmed = String(ref ?? '').trim();
+  if (!trimmed) return '';
+  const lastSegment = trimmed.slice(trimmed.lastIndexOf('/') + 1);
+  return lastSegment.trim();
 }
 
 const SECRET_BODY_FIELD_RE = /(?:token|secret|password|authorization|api[_-]?key|credential|cookie|private[_-]?key)/i;
@@ -542,7 +563,8 @@ export class ConnectionRegistry {
   }
 
   operation(id: string, operationId: string): ConnectionOperation | undefined {
-    return this.get(id)?.operations.find((operation) => operation.id === operationId);
+    const canonical = canonicalOperationId(operationId);
+    return canonical ? this.get(id)?.operations.find((operation) => operation.id === canonical) : undefined;
   }
 
   renderForAgent(): string {
@@ -732,11 +754,12 @@ export class ConnectionRegistry {
   async invoke(id: string, operationId: string, body?: unknown): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
-    const operation = profile.operations.find((candidate) => candidate.id === operationId);
+    const canonical = canonicalOperationId(operationId);
+    const operation = profile.operations.find((candidate) => candidate.id === canonical);
     if (!operation) {
       // A missing REGISTERED operation is a capability gap, never invalidation.
       // The saved credential is untouched; discovery may register the op.
-      this.recordCapability(profile.id, { miss: [operationId] });
+      this.recordCapability(profile.id, { miss: [canonical] });
       throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.', 'CONNECTED_MISSING_OPERATION');
     }
     const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
@@ -824,10 +847,38 @@ export class ConnectionRegistry {
 
   async invokeRead(id: string, operationId: string): Promise<ConnectionInvocationResult> {
     const operation = this.operation(id, operationId);
-    if (!operation || operation.risk !== 'read' || operation.method !== 'GET') {
+    if (!operation) {
+      this.recordCapability(id, { miss: [canonicalOperationId(operationId)] });
+      throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.', 'CONNECTED_MISSING_OPERATION');
+    }
+    if (operation.risk !== 'read' || operation.method !== 'GET') {
       throw new Error('Only registered read-only GET connection operations may be used by an agent.');
     }
-    return this.invoke(id, operationId);
+    return this.invoke(id, operation.id);
+  }
+
+  /**
+   * THE single live-execution path for safe reads. Every missing connection
+   * operation resolved here goes through resolveConnectionOperation() FIRST —
+   * existing → execute, catalog-backed/documented safe GET → register on the
+   * existing connection, persist, execute. Reads NEVER enter the approval
+   * channel, NEVER prompt for a credential, and NEVER ask the user to
+   * manually register a catalog-backed operation.
+   */
+  async resolveAndExecuteRead(input: ResolveConnectionOperationInput): Promise<ConnectionInvocationResult> {
+    const resolution = this.resolveConnectionOperation(input);
+    if (resolution.resolution === 'insufficient_scope') {
+      throw new ConnectionInvocationError('not-run', resolution.reason, 'CONNECTED_INSUFFICIENT_SCOPE');
+    }
+    if (resolution.resolution === 'requires_approval') {
+      // A read that resolved to the write-approval channel is a config error,
+      // never an approval request for a safe read.
+      throw new ConnectionInvocationError('not-run', 'Safe reads never use the approval channel; the operation was classified as a write. Use the exact registered GET operation.', 'CONFIG_INVALID');
+    }
+    if (resolution.resolution === 'discovery_failed' || !resolution.operation) {
+      throw new ConnectionInvocationError('not-run', resolution.reason, 'DISCOVERY_FAILED');
+    }
+    return this.invokeRead(resolution.connectionId, resolution.operation.id);
   }
 
   /**
@@ -945,16 +996,27 @@ export class ConnectionRegistry {
     }
 
     if (input.operation) {
-      const registered = this.operation(profile.id, input.operation.id);
+      const wanted = normalizeConnectionOperation(input.operation);
+      if (!wanted) {
+        return {
+          connectionId: profile.id,
+          connectionValid: true,
+          operationAvailable: false,
+          state: 'CONFIG_INVALID',
+          resolution: 'discovery_failed',
+          reason: 'The proposed operation is malformed or has an unsafe method/risk combination.',
+        };
+      }
+      const registered = this.operation(profile.id, wanted.id);
       if (registered) {
-        if (JSON.stringify(registered) !== JSON.stringify(normalizeConnectionOperation(input.operation))) {
+        if (JSON.stringify(registered) !== JSON.stringify(wanted)) {
           return {
             connectionId: profile.id,
             connectionValid: true,
             operationAvailable: false,
             state: 'CONNECTED_MISSING_OPERATION',
             resolution: 'discovery_failed',
-            reason: `An operation with id "${input.operation.id}" exists with different details. Use the registered operation exactly.`,
+            reason: `An operation with id "${wanted.id}" exists with different details. Use the registered operation exactly.`,
           };
         }
         return {
@@ -968,7 +1030,37 @@ export class ConnectionRegistry {
           reason: 'The operation is already registered on the saved connection.',
         };
       }
-      return this.operateOn(profile, input.operation as ConnectionOperation, 'documented proposal');
+      return this.operateOn(profile, wanted, 'documented proposal', Boolean(input.documented));
+    }
+
+    // Operation-id-only resolution (the live `connection_action` path carries
+    // just connectionId + operationId, possibly "provider/id" composite).
+    if (input.operationId) {
+      const canonical = canonicalOperationId(input.operationId);
+      const registered = this.operation(profile.id, canonical);
+      if (registered) {
+        return {
+          connectionId: profile.id,
+          connectionValid: true,
+          operationAvailable: true,
+          state: 'CONNECTED',
+          resolution: 'existing',
+          operation: registered,
+          capability: registered.capability,
+          reason: 'The operation is already registered.',
+        };
+      }
+      const catalogOp = catalogOperation(profile.provider, canonical);
+      if (catalogOp) return this.operateOn(profile, catalogOp as ConnectionOperation, 'registered provider catalog');
+      return {
+        connectionId: profile.id,
+        connectionValid: true,
+        operationAvailable: false,
+        state: 'DISCOVERY_FAILED',
+        resolution: 'discovery_failed',
+        operationId: canonical,
+        reason: `Operation "${canonical}" is not registered on this connection and no verified-documentation catalog entry matches. The saved credential is still valid.`,
+      };
     }
 
     if (capability) {
@@ -1027,11 +1119,18 @@ export class ConnectionRegistry {
       ?? candidates.find((operation) => operation.capability === capability);
   }
 
-  private operateOn(profile: ConnectionProfile, operation: ConnectionOperation, source: string): ResolveConnectionOperationResult {
+  private operateOn(
+    profile: ConnectionProfile,
+    operation: ConnectionOperation,
+    source: string,
+    documented = false,
+  ): ResolveConnectionOperationResult {
     if (operation.risk === 'read' && operation.method === 'GET') {
       // Safe reads auto-register under the existing credential — policy allows
-      // it, no user approval needed, no credential prompt.
-      if (!profile.capabilities.includes(operation.capability) && !catalogCapabilityDeclared(profile.provider, operation.capability)) {
+      // it, no user approval needed, no credential prompt, no manual
+      // registration step. Acceptable sources: declared capability, the
+      // verified-documentation catalog, or an officially documented proposal.
+      if (!profile.capabilities.includes(operation.capability) && !catalogCapabilityDeclared(profile.provider, operation.capability) && !documented) {
         return {
           connectionId: profile.id,
           connectionValid: true,
@@ -1040,7 +1139,7 @@ export class ConnectionRegistry {
           resolution: 'discovery_failed',
           operation,
           capability: operation.capability,
-          reason: `The documented read operation "${operation.id}" is known, but capability "${operation.capability}" is not declared for this connection.`,
+          reason: `The documented read operation "${operation.id}" is known, but capability "${operation.capability}" is not declared for this connection and no verified documentation or catalog entry supports adding it.`,
         };
       }
       const registered = this.registerApprovedOperation(profile.id, operation, true);

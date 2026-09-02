@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ConnectionRegistry, type ConnectionState } from '../src/connections/connections.js';
+import { ConnectionRegistry, canonicalOperationId, type ConnectionState } from '../src/connections/connections.js';
 import { CONNECTION_CATALOG } from '../src/connections/catalog.js';
 import { Gitu } from '../src/agent/gitu.js';
 import type { LlmClient, LlmMessage, LlmTurnResult } from '../src/llm/llm.js';
@@ -305,6 +305,98 @@ describe('connection recovery — routing decisions', () => {
       expect(entry!.operations.some((operation) => operation.risk === 'read' && operation.method === 'GET'), `${provider} read`).toBe(true);
       expect(entry!.operations.some((operation) => operation.risk !== 'read'), `${provider} write`).toBe(true);
     }
+  });
+});
+
+describe('live read execution path — Coolify list-applications (regression)', () => {
+  it('canonical operation ids unify "coolify/list-applications" and "list-applications"', () => {
+    expect(canonicalOperationId('coolify/list-applications')).toBe('list-applications');
+    expect(canonicalOperationId('list-applications')).toBe('list-applications');
+    expect(canonicalOperationId('')).toBe('');
+  });
+
+  it('missing documented read => discovers, persists, executes; no approval, no prompt, no reauth; subsequent resolves as existing', async () => {
+    home();
+    const registry = new ConnectionRegistry();
+    const id = saveConnection(registry, { provider: 'coolify', capabilities: ['servers.read'] });
+    const requests: { url: string; method?: string; authorization: string | null }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      requests.push({
+        url: String(input),
+        method: init?.method,
+        authorization: new Headers(init?.headers).get('authorization'),
+      });
+      return okResponse({ applications: [{ id: 'app-1' }] });
+    }) as typeof fetch;
+
+    // Step 1+2: agent proposes the documented safe GET through the resolver
+    // (the path the server connectionOperationHandler/connectionActionHandler
+    // now execute before any "registered only" guard).
+    const resolution = registry.resolveConnectionOperation({
+      connectionId: id,
+      operation: { id: 'list-applications', label: 'List applications', capability: 'applications.read', method: 'GET', path: '/api/v1/applications', risk: 'read' },
+      capability: 'applications.read',
+      documented: true,
+    });
+    expect(resolution).toMatchObject({
+      connectionValid: true,
+      operationAvailable: true,
+      resolution: 'discovered',
+      state: 'CONNECTED',
+    });
+
+    // Step 2b: persisted before execution; auth integrity untouched.
+    const persisted = registry.operation(id, 'list-applications');
+    expect(persisted).toBeDefined();
+    expect(registry.authStateOf(id).status).not.toBe('invalid');
+
+    // Step 3: the live read path executes under the existing credential.
+    const invocation = await registry.resolveAndExecuteRead({ connectionId: id, operationId: 'coolify/list-applications' });
+    expect(invocation.ok).toBe(true);
+    expect(invocation.data).toEqual({ applications: [{ id: 'app-1' }] });
+    expect(requests.at(-1)).toEqual({
+      url: 'https://coolify.example.test/api/v1/applications',
+      method: 'GET',
+      authorization: 'Bearer private-token-coolify',
+    });
+
+    // No approval was possible at the registry level (reads never reach
+    // requestApproval), and recovery does not route to reauth for this need.
+    const decision = registry.connectionRecoveryDecision(prereq('coolify', ['applications.read']));
+    expect(decision.action).not.toBe('reauth');
+
+    // Step 4: subsequent resolution is 'existing' — no re-registration.
+    const again = registry.resolveConnectionOperation({ connectionId: id, operationId: 'list-applications' });
+    expect(again.resolution).toBe('existing');
+    const againPrefixed = registry.resolveConnectionOperation({ connectionId: id, operationId: 'coolify/list-applications' });
+    expect(againPrefixed).toMatchObject({ resolution: 'existing', operationAvailable: true, connectionValid: true });
+  });
+
+  it('unknown operation id never enters approval/reauth: DISCOVERY_FAILED with the credential intact', async () => {
+    home();
+    const registry = new ConnectionRegistry();
+    const id = saveConnection(registry, { provider: 'coolify' });
+    globalThis.fetch = (async () => okResponse({})) as typeof fetch;
+
+    const resolution = registry.resolveConnectionOperation({ connectionId: id, operationId: 'coolify/not-a-real-endpoint' });
+    expect(resolution).toMatchObject({ connectionValid: true, resolution: 'discovery_failed', state: 'DISCOVERY_FAILED' });
+    await expect(registry.resolveAndExecuteRead({ connectionId: id, operationId: 'coolify/not-a-real-endpoint' })).rejects.toThrow(/not registered/);
+    expect(registry.authStateOf(id).status).not.toBe('invalid');
+    expect(registry.list().find((profile) => profile.id === id)?.hasCredential).toBe(true);
+  });
+
+  it('connection_action path for a catalog-backed id auto-registers and executes (handler-equivalent)', async () => {
+    home();
+    const registry = new ConnectionRegistry();
+    const id = saveConnection(registry, { provider: 'coolify', capabilities: ['servers.read'] });
+    globalThis.fetch = (async () => okResponse({ applications: [] })) as typeof fetch;
+
+    // connectionActionHandler only carries connectionId + operationId — the
+    // documented id resolves through the catalog and auto-registers.
+    const result = await registry.resolveAndExecuteRead({ connectionId: id, operationId: 'list-applications' });
+    expect(result.ok).toBe(true);
+    expect(registry.operation(id, 'list-applications')).toBeDefined();
+    expect(registry.authStateOf(id).status).not.toBe('invalid');
   });
 });
 

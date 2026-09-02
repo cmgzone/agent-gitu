@@ -398,6 +398,80 @@ describe('live read execution path — Coolify list-applications (regression)', 
     expect(registry.operation(id, 'list-applications')).toBeDefined();
     expect(registry.authStateOf(id).status).not.toBe('invalid');
   });
+
+  it('live agent accepts provider-qualified operation ids and executes the canonical operation', async () => {
+    const root = project('qualified-id');
+    home();
+    const registry = new ConnectionRegistry();
+    saveConnection(registry, { provider: 'coolify', capabilities: ['servers.read'] });
+    globalThis.fetch = (async () => okResponse({ applications: [] })) as typeof fetch;
+
+    const events: string[] = [];
+    const requests: string[] = [];
+    let approvals = 0;
+    let turn = 0;
+    const llm: LlmClient = {
+      name: 'qualified-mock',
+      async complete() { return ''; },
+      async completeStream() { return ''; },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        turn += 1;
+        // First: propose the documented read (auto-registers + executes).
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_operation', connectionId: 'coolify', operation: { id: 'list-applications', label: 'List applications', capability: 'applications.read', method: 'GET', path: '/api/v1/applications', risk: 'read' }, documentationUrl: 'https://coolify.io/docs/api-reference', reason: 'inspect applications' } }), metadata: {} };
+        }
+        // Second: provider-qualified id — must parse, resolve as existing, execute.
+        if (turn === 2) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'coolify/list-applications', reason: 'list again' } }), metadata: {} };
+        }
+        if (turn === 3) return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['applications listed'] } }), metadata: {} };
+        if (turn === 4) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } }), metadata: {} };
+        }
+        if (turn === 5) {
+          const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }), metadata: {} };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> { return llm.completeTurn!(messages); },
+    };
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      requests.push(String(input));
+      return okResponse({ applications: [] });
+    }) as typeof fetch;
+
+    const { report } = await new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (text) => events.push(text),
+      approvalHandler: async () => { approvals += 1; return true; },
+      connectionRecoveryCheck: (prerequisite) => registry.connectionRecoveryDecision(prerequisite),
+      connectionRequestHandler: async () => false,
+      connectionActionHandler: async ({ connectionId, operationId }) => {
+        const result = await registry.resolveAndExecuteRead({ connectionId, operationId });
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      },
+      connectionOperationHandler: async (proposal) => {
+        const result = await registry.resolveAndExecuteRead({ connectionId: proposal.connectionId, operation: proposal.operation, capability: proposal.operation.capability, documented: Boolean(proposal.documentationUrl) });
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      },
+    }).run('Inspect Coolify applications');
+
+    expect(report.status).toBe('complete');
+    expect(approvals).toBe(0);
+    // Both calls executed exactly the canonical operation; the qualified id
+    // resolved to the registered operation.
+    expect(requests).toEqual([
+      'https://coolify.example.test/api/v1/applications',
+      'https://coolify.example.test/api/v1/applications',
+    ]);
+    expect(events.filter((event) => event.includes('completed')).length).toBeGreaterThanOrEqual(2);
+    expect(events.some((event) => event.includes('not run'))).toBe(false);
+    expect(registry.operation('coolify', 'list-applications')).toBeDefined();
+  }, 30000);
 });
 
 describe('Gitu recovery routing — no loop into secure setup without proven auth failure', () => {

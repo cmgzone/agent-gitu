@@ -625,7 +625,11 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       const operationId = String(action['operationId'] ?? '')
         .trim()
         .toLowerCase();
-      if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId) || !/^[a-z][a-z0-9-]{0,48}$/.test(operationId)) return undefined;
+      // operationId may arrive provider-qualified ("coolify/list-applications");
+      // the registry normalizes it to ONE canonical id at lookup time.
+      if (!/^[a-z][a-z0-9-]{0,62}$/.test(connectionId)) return undefined;
+      const composite = /^[a-z][a-z0-9-]{0,62}\/[a-z][a-z0-9-]{0,48}$/.test(operationId);
+      if (!composite && !/^[a-z][a-z0-9-]{0,48}$/.test(operationId)) return undefined;
       return {
         type,
         connectionId,

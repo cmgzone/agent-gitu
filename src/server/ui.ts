@@ -735,7 +735,7 @@ export const UI_HTML = String.raw`<!doctype html>
     modelsLoaded: false,
     draft: '',
     sel: { wf: 'review', model: '', effort: 'high' },
-    settings: { review: true, autoApprove: false, autoLearn: true, projectPath: '' },
+    settings: { review: true, autoApprove: false, autoLearn: true, projectPath: '', devMode: false },
     setSection: 'general',
     delivery: 'steer',
     pendingFiles: []
@@ -755,6 +755,14 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+  // Users see what Gitu is doing and why it matters — not the internal agent
+  // protocol. Raw diagnostics (protocol repairs, recovery ladders, internal
+  // bookkeeping, unknown event tags) render only in Developer mode.
+  function devMode() { return Boolean(S.settings.devMode); }
+  function humanTokenCount(n) {
+    if (!isFinite(n) || n <= 0) return '';
+    return n >= 1000 ? (Math.round(n / 100) / 10) + 'K' : String(n);
+  }
   // Attachments are per-composer, never global: a screenshot staged on the
   // home composer or in Session A must not ride along when you switch to
   // Session B and send there.
@@ -2208,9 +2216,11 @@ export const UI_HTML = String.raw`<!doctype html>
     var clean = stripJsonLeak(raw);
     var trimmed = clean.trim();
     // The WHOLE node is a leaked action object: never show schema noise as
-    // conversation — collapse behind an "Execution details" disclosure.
+    // conversation. Normal mode drops it entirely; Developer mode keeps the
+    // old collapsed disclosure.
     if (JSON_LEAK_RE.test(trimmed)) {
       txt.textContent = '';
+      if (!devMode()) return;
       var d = document.createElement('details');
       d.className = 'exec-details';
       d.innerHTML = '<summary><b>Raw model output</b><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre>';
@@ -2262,6 +2272,17 @@ export const UI_HTML = String.raw`<!doctype html>
     if (summary.indexOf('$ ') === 0) return 'shell';
     if (summary.indexOf('browse') === 0) return 'browser';
     return 'tool';
+  }
+  // Human tool labels: what Gitu is doing, not the wire format. The raw
+  // summary stays on dataset.toolKey for run/ok/error correlation.
+  function humanToolSummary(kind, summary) {
+    if (kind === 'read') return '\uD83D\uDCD6 Reading ' + summary.slice(5);
+    if (kind === 'edit') return '\u270F\uFE0F Editing ' + summary.slice(summary.indexOf(' ') + 1);
+    if (kind === 'list') return '\uD83D\uDCC2 Listing ' + summary.slice(5);
+    if (kind === 'search') return '\uD83D\uDD0D Searching ' + summary.slice(7);
+    if (kind === 'browser') return '\uD83C\uDF10 Checking in browser';
+    if (kind === 'shell') return '\uD83E\uDDEA Running ' + summary.slice(2);
+    return summary;
   }
   function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
   function splitReason(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(d + 3) : ''; }
@@ -2396,12 +2417,14 @@ export const UI_HTML = String.raw`<!doctype html>
   // latest line so you can see what the specialist is doing right now.
   function applySpecCollapse(st) {
     if (!st.log) return;
-    st.log.hidden = !st.open;
-    st.el.classList.toggle('open', Boolean(st.open));
+    // The raw per-specialist activity rail (protocol lines, job internals)
+    // is Developer-only. Normal users see the card plus its one-line preview.
+    st.log.hidden = !st.open || !devMode();
+    st.el.classList.toggle('open', Boolean(st.open && devMode()));
     var head = st.headEl;
     if (head) {
-      head.setAttribute('aria-expanded', st.open ? 'true' : 'false');
-      head.title = st.open ? 'click to collapse' : 'click to expand activity';
+      head.setAttribute('aria-expanded', st.open && devMode() ? 'true' : 'false');
+      head.title = st.open && devMode() ? 'click to collapse' : 'click to expand activity';
     }
     if (st.open) renderSpecLog(st);
     updateSpecPreview(st);
@@ -2540,19 +2563,25 @@ export const UI_HTML = String.raw`<!doctype html>
         '</span>' +
         '<div class="intake-rows"></div></div>';
       el.querySelector('.intake-head').addEventListener('click', function () {
+        // Nothing to expand in normal mode (rows are Developer-only).
+        if (!devMode()) return;
         el.classList.toggle('open');
       });
       st = sess.nodes.intake = { el: el, seen: {}, digest: {} };
       insert(el);
     }
-    // Dedupe identical tag+body pairs on replays/retries.
+    // Dedupe identical tag+body pairs on replays/retries. The collapsed rows
+    // (Project:/Ledger:/Branch:/…) are Developer detail: normal users get the
+    // quiet digest line only ("Session started · project · high effort · 3 files").
     var rowKey = tag + '::' + body;
     if (!st.seen[rowKey]) {
       st.seen[rowKey] = 1;
-      var row = document.createElement('div');
-      row.className = 'intake-row';
-      row.textContent = tag.charAt(0).toUpperCase() + tag.slice(1) + ': ' + body;
-      st.el.querySelector('.intake-rows').appendChild(row);
+      if (devMode()) {
+        var row = document.createElement('div');
+        row.className = 'intake-row';
+        row.textContent = tag.charAt(0).toUpperCase() + tag.slice(1) + ': ' + body;
+        st.el.querySelector('.intake-rows').appendChild(row);
+      }
       var part = intakeDigestPart(tag, body);
       if (part) st.digest[tag] = part;
     }
@@ -2629,10 +2658,12 @@ export const UI_HTML = String.raw`<!doctype html>
       if (!sess.nodes.thought) {
         var t = document.createElement('div');
         // The model sometimes leaks its raw JSON action object into the
-        // prose stream (truncated output retried mid-JSON). If the VERY
-        // FIRST chunk is that leak, open a collapsed technical row instead
-        // of a normal narration row so schema noise never shows as prose.
+        // prose stream (truncated output retried mid-JSON). Normal mode
+        // never renders it — not even collapsed: the leak is protocol
+        // garbage, and the working indicator already says what matters.
+        // Developer mode keeps the old collapsed technical row.
         if (JSON_LEAK_RE.test(chunk)) {
+          if (!devMode()) { setWorking('Thinking…'); return; }
           t.className = 'tl-row tl-meta';
           t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><details class="exec-details"><summary><b>Raw model output</b><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre></details></div>';
         } else {
@@ -2648,6 +2679,10 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
     if (text.indexOf('reason ') === 0) {
+      // Internal reasoning traces never render for users — a narration row
+      // reads "Checking the streaming handler", not the raw reason stream.
+      // Developer mode still exposes the trace.
+      if (!devMode()) return;
       if (sess && sess.chatish) return;
       if (!sess.nodes.thought) {
         var t3 = document.createElement('div');
@@ -2748,10 +2783,22 @@ export const UI_HTML = String.raw`<!doctype html>
     }
 
     // Token telemetry arrives once per run as "telemetry <renderTelemetry()>".
-    // It is machine output, not conversation: render as a collapsed
-    // "Execution details" disclosure with the counters in a parsed grid.
+    // Normal users get one quiet human line ("8 tool actions · 87K tokens");
+    // the full counter grid (compactions, planning calls, wasted calls, …)
+    // is Developer-mode detail.
     if (text.indexOf('telemetry ') === 0) {
       closeThought(runId);
+      var trow = document.createElement('div');
+      trow.className = 'tl-row tl-meta';
+      if (!devMode()) {
+        var mTools = /toolCalls=(\d+)/.exec(text);
+        var mIn = /input=(\d+)/.exec(text);
+        var tok = mIn ? humanTokenCount(parseInt(mIn[1], 10)) : '';
+        var bits = [];
+        if (mTools) bits.push(mTools[1] + ' tool actions');
+        if (tok) bits.push(tok + ' tokens used');
+        trow.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>Run stats</b> ' + esc(bits.join(' · ') || 'completed') + '</div>';
+      } else {
       var LABELS = { calls: 'Calls', toolCalls: 'Tool calls', compactions: 'Compactions',
         planning: 'Planning calls', execution: 'Execution calls', screenshots: 'Screenshots',
         wasted: 'Wasted calls', input: 'Input tokens', cached: 'Cached tokens', output: 'Output tokens' };
@@ -2764,8 +2811,6 @@ export const UI_HTML = String.raw`<!doctype html>
       var sum = '';
       var mcalls = /calls=(\d+)/.exec(text);
       if (mcalls) sum = mcalls[1] + ' model calls';
-      var trow = document.createElement('div');
-      trow.className = 'tl-row tl-meta';
       var thtml = '<details class="exec-details"><summary><b>Execution details</b>' +
         (sum ? ' <span class="exec-sum">' + esc(sum) + '</span>' : '') +
         '<span class="chev">\u25B8</span></summary><div class="exec-grid">';
@@ -2775,6 +2820,7 @@ export const UI_HTML = String.raw`<!doctype html>
       }
       thtml += '</div></details>';
       trow.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body">' + thtml + '</div>';
+      }
       appendLive(stream, trow);
       stickScroll(stream);
       return;
@@ -2783,8 +2829,23 @@ export const UI_HTML = String.raw`<!doctype html>
     // Consecutive recovery rows (the same discovery strategy repeating across
     // strategies/attempts) collapse into one row with a repeat chip — the
     // recovery ladder is noise-dense by design, but rarely worth N lines.
+    // Normal users get ONE calm human line with no ladder detail or counts;
+    // the full ladder is Developer-mode diagnostic.
     if (text.indexOf('recovery ') === 0) {
       closeThought(runId);
+      if (!devMode()) {
+        if (sess.nodes.lastRecovery && sess.nodes.lastRecovery.el && sess.nodes.lastRecovery.el.isConnected) {
+          stickScroll(stream);
+          return;
+        }
+        var rHuman = document.createElement('div');
+        rHuman.className = 'tl-row tl-meta';
+        rHuman.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body">Retrying the model&hellip;</div>';
+        sess.nodes.lastRecovery = { key: 'human', count: 1, el: rHuman };
+        insert(rHuman);
+        stickScroll(stream);
+        return;
+      }
       var rKey = text.slice(9).split(' — ')[0].split(':')[0].trim();
       var lastR = sess.nodes.lastRecovery;
       if (lastR && lastR.key === rKey && lastR.el && lastR.el.isConnected) {
@@ -2804,9 +2865,11 @@ export const UI_HTML = String.raw`<!doctype html>
     }
 
     // Machine bookkeeping (diff snapshots, specialist checkpoints) accumulates
-    // into ONE collapsed group instead of narrating over the agent's work.
+    // into ONE collapsed group instead of narrating over the agent's work —
+    // and is Developer-only: normal users never see internal activity.
     if (text.indexOf('report ') === 0 || text.indexOf('checkpoint ') === 0) {
       closeThought(runId);
+      if (!devMode()) return;
       if (!sess.nodes.internal) {
         var ig = document.createElement('div');
         ig.className = 'tl-row tl-meta';
@@ -2924,7 +2987,7 @@ export const UI_HTML = String.raw`<!doctype html>
         '<span class="tl-dot dot-run"></span>' +
         '<div class="tl-body">' +
           '<div class="tl-cmd">' +
-            '<span class="cmd">' + (summary.indexOf('$ ') === 0 ? '' : '$ ') + esc(summary) + '</span>' +
+            '<span class="cmd">' + esc(humanToolSummary(kind, summary)) + '</span>' +
             (reason ? '<span class="why">— ' + esc(reason) + '</span>' : '') +
             '<span class="st st-run">&#8943; working</span>' +
           '</div>' +
@@ -3004,6 +3067,10 @@ export const UI_HTML = String.raw`<!doctype html>
       meta.className = 'tl-row tl-meta';
       meta.innerHTML = '<span class="tl-dot dot-ok"></span><div class="tl-body"><b>🎉 ' + esc(dDash >= 0 ? body.slice(0, dDash) : 'done') + '</b> — ' + esc(shortText(reportLede(dParsed.lede), 220)) + '</div>';
     } else if (tag === 'warn') {
+      // warn rows are model-health diagnostics (reasoning-only replies,
+      // malformed streaks). Actionable failures surface through the error
+      // card, so normal users never see them; Developer mode does.
+      if (!devMode()) { closeThought(runId); return; }
       var warnKey = body.replace(/\s*\(streak \d+\)/i, '').replace(/^\d+ replies in a row /i, 'replies in a row ').trim();
       var previousWarn = sess.nodes.lastWarn;
       if (previousWarn && previousWarn.el && previousWarn.el.isConnected && previousWarn.key === warnKey) {
@@ -3019,6 +3086,11 @@ export const UI_HTML = String.raw`<!doctype html>
     } else {
       sess.nodes.lastWarn = null;
       sess.nodes.lastRecovery = null;
+      // ARCHITECTURAL RULE — the timeline is allowlisted. The tags above are
+      // explicitly designed UI; ANY other (future, internal) event tag is
+      // hidden for normal users and shown only in Developer mode. A newly
+      // added server event can never accidentally become user-facing.
+      if (!devMode()) { closeThought(runId); return; }
       meta.className = 'tl-row tl-meta';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>' + esc(tag) + '</b> ' + esc(body) + '</div>';
     }
@@ -3645,7 +3717,8 @@ export const UI_HTML = String.raw`<!doctype html>
     // not in the way.
     var evHtml = verificationSection(checks);
     var rawHtml = '<div class="sec"><h4>Raw summary</h4><pre class="exec-pre" style="max-height:240px">' + esc(readableSummary(r.summary)) + '</pre></div>';
-    var teleHtml = r.tokenTelemetry ? telemetryGridHtml(r.tokenTelemetry) : '';
+    // Token machinery inside the report card is Developer detail too.
+    var teleHtml = r.tokenTelemetry && devMode() ? telemetryGridHtml(r.tokenTelemetry) : '';
     var qualityHtml = qualityMetricsHtml(r.qualityMetrics);
     if (evHtml || rawHtml || teleHtml || qualityHtml) {
       html += '<details class="exec-details" style="margin-top:16px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + qualityHtml + evHtml + rawHtml + teleHtml + '</details>';
@@ -4134,7 +4207,8 @@ export const UI_HTML = String.raw`<!doctype html>
       ['agents', 'plug', 'Specialist agents'],
       ['skills', 'bolt', 'Skills'],
       ['mcp', 'plug', 'MCP servers'],
-      ['cron', 'clock', 'Scheduled / heartbeat']
+      ['cron', 'clock', 'Scheduled / heartbeat'],
+      ['developer', 'gear', 'Developer']
     ];
     $('setnav').innerHTML =
       '<button class="back" id="setBack">' + icon('back') + ' Back to app</button>' +
@@ -4163,6 +4237,18 @@ export const UI_HTML = String.raw`<!doctype html>
       $('gEffort').value = S.sel.effort;
       $('gWf').onchange = function () { S.sel.wf = $('gWf').value; persist(); };
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
+    } else if (S.setSection === 'developer') {
+      b.innerHTML = '<h1>Developer</h1>' +
+        '<div class="setcard">' +
+        '<div class="setrow"><div class="grow"><div class="t">Show agent diagnostics</div>' +
+        '<div class="d">Renders the raw agent protocol in the timeline: model protocol repairs, recovery ladders, malformed-reply streaks, internal activity (checkpoints, diff snapshots), full token telemetry, and internal events that are hidden by default. Normal users should leave this off.</div></div>' +
+        '<label style="display:flex;align-items:center;gap:8px;flex:none"><input type="checkbox" id="gDevMode" ' + (S.settings.devMode ? 'checked' : '') + ' style="width:18px;height:18px"><span style="font-size:12.5px">' + (S.settings.devMode ? 'on' : 'off') + '</span></label></div>' +
+        '</div>';
+      $('gDevMode').onchange = function () {
+        S.settings.devMode = $('gDevMode').checked;
+        persist();
+        renderSettings();
+      };
     } else if (S.setSection === 'connections') {
       b.innerHTML = '<h1>Connections</h1>' +
         '<p style="color:var(--muted);font-size:12.5px">Save a provider connection once, then let tasks reuse its documented capabilities. Credentials stay separate from global skills, task history, and model context.</p>' +

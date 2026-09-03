@@ -4,7 +4,13 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ConnectionRegistry, ConnectionInvocationError } from '../src/connections/connections.js';
 import { ProviderReadCache } from '../src/connections/runtime/provider-cache.js';
-import { UniversalCapabilityRegistry, classifyCapabilityRisk } from '../src/connections/runtime/universal-registry.js';
+import {
+  UniversalCapabilityRegistry,
+  classifyCapabilityRisk,
+  validateCapabilityArguments,
+  fingerprintInvocation,
+  type CapabilityInvocationRequest,
+} from '../src/connections/runtime/universal-registry.js';
 import { Gitu } from '../src/agent/gitu.js';
 import { extractDigestMaterial, buildDigestContent, compressDigest } from '../src/context/digest.js';
 import type { LlmClient, LlmMessage, LlmTurnResult } from '../src/llm/llm.js';
@@ -461,5 +467,156 @@ describe('Milestone 2 & 3 — Universal Registry & ProviderReadCache', () => {
     const compressed = compressDigest(digest, 1000);
     expect(compressed).toContain('REJECTED OPERATION: GET /api/v1/databases');
     expect(compressed).toContain('[pe-42]');
+  });
+});
+
+describe('Universal Argument Layer & Invocation Runtime', () => {
+  it('validates structured capability arguments against schema', () => {
+    const schema = {
+      type: 'object',
+      required: ['applicationId', 'environment'],
+      properties: {
+        applicationId: { type: 'string' },
+        environment: { type: 'string' },
+        limit: { type: 'number' },
+      },
+    };
+
+    // Valid arguments
+    const res1 = validateCapabilityArguments(schema, { applicationId: 'app-1', environment: 'production', limit: 10 });
+    expect(res1.valid).toBe(true);
+    expect(res1.errors).toHaveLength(0);
+
+    // Missing required field
+    const res2 = validateCapabilityArguments(schema, { applicationId: 'app-1' });
+    expect(res2.valid).toBe(false);
+    expect(res2.errors).toContain('Missing required field: "environment"');
+
+    // Type mismatch
+    const res3 = validateCapabilityArguments(schema, { applicationId: 'app-1', environment: 'production', limit: 'not-a-number' as unknown as number });
+    expect(res3.valid).toBe(false);
+    expect(res3.errors.some((e) => e.includes('expected number'))).toBe(true);
+  });
+
+  it('computes deterministic fingerprints for duplicate call and anti-loop detection', () => {
+    const req1: CapabilityInvocationRequest = {
+      capability: 'applications.environment.read',
+      arguments: { applicationId: 'sv7' },
+      source: 'connection',
+    };
+
+    const req2: CapabilityInvocationRequest = {
+      capability: 'applications.environment.read',
+      arguments: { applicationId: 'sv7' },
+      source: 'connection',
+    };
+
+    const reqDiffArgs: CapabilityInvocationRequest = {
+      capability: 'applications.environment.read',
+      arguments: { applicationId: 'sv8' },
+      source: 'connection',
+    };
+
+    const fp1 = fingerprintInvocation(req1, 1);
+    const fp2 = fingerprintInvocation(req2, 1);
+    const fpDiff = fingerprintInvocation(reqDiffArgs, 1);
+    const fpEpoch2 = fingerprintInvocation(req1, 2);
+
+    expect(fp1).toBe(fp2); // identical request = identical fingerprint
+    expect(fp1).not.toBe(fpDiff); // different arguments = different fingerprint
+    expect(fp1).not.toBe(fpEpoch2); // different state epoch = different fingerprint
+  });
+
+  it('executes normalized request through UniversalCapabilityRegistry with retrieval-before-fetch and policy gating', async () => {
+    const registry = new UniversalCapabilityRegistry();
+    const cache = new ProviderReadCache();
+    let networkCalls = 0;
+
+    // Register a native connection
+    registry.registerConnection(
+      'coolify-main',
+      [
+        { id: 'get-envs', label: 'Get Envs', capability: 'applications.environment.read', method: 'GET', path: '/api/v1/applications/{id}/envs', risk: 'read' },
+        { id: 'set-env', label: 'Set Env', capability: 'applications.environment.write', method: 'POST', path: '/api/v1/applications/{id}/envs', risk: 'reversible-write' },
+      ],
+      async (op, body) => {
+        networkCalls += 1;
+        if (op.id === 'get-envs') {
+          return { envs: [{ key: 'NODE_ENV', value: 'production' }] };
+        }
+        return { success: true, updated: body };
+      },
+      'coolify',
+    );
+
+    // Call 1: fresh read -> hits invoker, returns ok, caches result
+    const res1 = await registry.invoke(
+      {
+        capability: 'applications.environment.read',
+        arguments: { applicationId: 'sv7' },
+        source: 'connection',
+      },
+      { cache },
+    );
+
+    expect(res1.status).toBe('ok');
+    expect(res1.cacheHit).toBe(false);
+    expect(res1.evidenceId).toBeDefined();
+    expect(networkCalls).toBe(1);
+
+    // Call 2: second read with same arguments under current epoch -> hits cache!
+    const res2 = await registry.invoke(
+      {
+        capability: 'applications.environment.read',
+        arguments: { applicationId: 'sv7' },
+        source: 'connection',
+      },
+      { cache },
+    );
+
+    expect(res2.status).toBe('cached');
+    expect(res2.cacheHit).toBe(true);
+    expect(networkCalls).toBe(1); // Zero new network calls!
+
+    // Call 3: mutating write without approval handler -> rejected
+    const resRejected = await registry.invoke(
+      {
+        capability: 'applications.environment.write',
+        arguments: { applicationId: 'sv7', key: 'DEBUG', value: 'true' },
+        source: 'connection',
+      },
+      { cache, approvalHandler: async () => false },
+    );
+
+    expect(resRejected.status).toBe('rejected');
+    expect(resRejected.errorClass).toBe('USER_REJECTED');
+    expect(networkCalls).toBe(1);
+
+    // Call 4: mutating write with approval -> succeeds and invalidates cache
+    const resWrite = await registry.invoke(
+      {
+        capability: 'applications.environment.write',
+        arguments: { applicationId: 'sv7', key: 'DEBUG', value: 'true' },
+        source: 'connection',
+      },
+      { cache, approvalHandler: async () => true },
+    );
+
+    expect(resWrite.status).toBe('ok');
+    expect(networkCalls).toBe(2);
+
+    // Call 5: read after write -> cache was invalidated, hits invoker again!
+    const res3 = await registry.invoke(
+      {
+        capability: 'applications.environment.read',
+        arguments: { applicationId: 'sv7' },
+        source: 'connection',
+      },
+      { cache },
+    );
+
+    expect(res3.status).toBe('ok');
+    expect(res3.cacheHit).toBe(false);
+    expect(networkCalls).toBe(3);
   });
 });

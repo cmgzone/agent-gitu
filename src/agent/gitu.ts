@@ -3454,6 +3454,32 @@ export class Gitu {
                 } catch {
                   /* non-blocking memory store recording */
                 }
+                // Adaptive reasoning escalation: on the 2nd+ consecutive failure
+                // for this connection, retrieve all negative memory for the
+                // provider and inject a STRATEGY ESCALATION signal that forces a
+                // new hypothesis before the model is allowed to retry.
+                if (tracker.consecutiveFailures >= 2) {
+                  let negativeContext = '';
+                  try {
+                    const priorFailures = memory
+                      .query({ type: 'failure', scope: action.connectionId })
+                      .slice(-5)
+                      .map((m) => `• ${m.claim}`)
+                      .join('\n');
+                    const priorPatterns = memory
+                      .query({ type: 'pattern', scope: action.connectionId })
+                      .slice(-3)
+                      .map((m) => `• ${m.claim}`)
+                      .join('\n');
+                    negativeContext = [priorFailures, priorPatterns].filter(Boolean).join('\n');
+                  } catch {
+                    /* non-critical */
+                  }
+                  const memSection = negativeContext ? `\nKNOWN NEGATIVE MEMORY FOR ${action.connectionId}:\n${negativeContext}` : '';
+                  observe(
+                    `STRATEGY ESCALATION (failure ${tracker.consecutiveFailures} for ${connectionActionKey}):\nThe same operation has failed ${tracker.consecutiveFailures} times in a row.${memSection}\nYou MUST:\n1. Call set_hypothesis with a NEW root-cause theory that differs from the previous attempt — do not restate the last hypothesis.\n2. Identify a DIFFERENT registered read operation or a completely different approach.\n3. Do NOT repeat the operation that just failed without first recording the new hypothesis.\nIf no alternative exists and the cause is not authentication failure, revise the plan rather than looping.`,
+                  );
+                }
                 observe(
                   `CONNECTION ACTION FAILED: ${(error as Error).message}${exampleEcho}\nDo not retry by adding raw headers to web_fetch. The saved connection and its credential stay valid; resolve the missing operation (registered read for discovery, or documented connection_operation for writes) or, only when the provider positively rejected authentication, use secure reauthorization.`,
                 );
@@ -3555,6 +3581,30 @@ export class Gitu {
                 }
                 const reason = connectionEventReason((error as Error).message);
                 this.emit(`connection ${action.connectionId} discovery failed — ${reason}`);
+                // Adaptive reasoning escalation: on 2nd+ consecutive failure
+                // surface prior negative memory and demand a new strategy.
+                if (tracker.consecutiveFailures >= 2) {
+                  let negativeContext = '';
+                  try {
+                    const priorFailures = memory
+                      .query({ type: 'failure', scope: action.connectionId })
+                      .slice(-5)
+                      .map((m) => `• ${m.claim}`)
+                      .join('\n');
+                    const priorPatterns = memory
+                      .query({ type: 'pattern', scope: action.connectionId })
+                      .slice(-3)
+                      .map((m) => `• ${m.claim}`)
+                      .join('\n');
+                    negativeContext = [priorFailures, priorPatterns].filter(Boolean).join('\n');
+                  } catch {
+                    /* non-critical */
+                  }
+                  const memSection = negativeContext ? `\nKNOWN NEGATIVE MEMORY FOR ${action.connectionId}:\n${negativeContext}` : '';
+                  observe(
+                    `STRATEGY ESCALATION (discovery failure ${tracker.consecutiveFailures} for ${action.connectionId}):\nDiscovery has failed ${tracker.consecutiveFailures} consecutive times.${memSection}\nYou MUST:\n1. Call set_hypothesis with a NEW root-cause theory that differs from the previous attempt.\n2. Try a different set of discovery intents or a narrower resourceId.\n3. Do NOT restart discovery with the same intents without first recording the new hypothesis.\nIf authentication is genuinely suspect, use secure reauthorization; otherwise revise the plan.`,
+                  );
+                }
                 observe(`CONNECTION DISCOVERY FAILED: ${(error as Error).message}`);
               }
               break;

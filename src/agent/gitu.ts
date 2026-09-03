@@ -85,10 +85,16 @@ import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry, computeB
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
 import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestMaterial } from '../context/digest.js';
+import { ProviderReadCache } from '../connections/runtime/provider-cache.js';
+import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 
 export interface GituConfig {
   cwd: string;
   llm: LlmClient;
+  /** Read cache for provider evidence, remote state epochs, and retrieval-before-fetch. */
+  providerCache?: ProviderReadCache;
+  /** Universal capability registry across Native connections, MCP tools, and plugins. */
+  universalRegistry?: UniversalCapabilityRegistry;
   /** Constrained model used exclusively for protocol repair calls. */
   protocolRepairLlm?: LlmClient;
   /** Shared code index to reuse (e.g. a watched one owned by the server). */
@@ -1567,6 +1573,8 @@ function compactFollowUpConversation(history: LlmMessage[] | undefined, maxChars
 
 export class Gitu {
   private readonly config: GituConfig;
+  public readonly providerCache: ProviderReadCache;
+  public readonly universalRegistry: UniversalCapabilityRegistry;
   private readonly emit: (event: string) => void;
   private readonly inbox: { text: string; attachmentContext?: string }[] = [];
   private aborted = false;
@@ -1574,6 +1582,8 @@ export class Gitu {
 
   constructor(config: GituConfig) {
     this.config = config;
+    this.providerCache = config.providerCache ?? new ProviderReadCache();
+    this.universalRegistry = config.universalRegistry ?? new UniversalCapabilityRegistry();
     this.emit = config.onEvent ?? (() => {});
   }
 
@@ -3353,8 +3363,29 @@ export class Gitu {
                 );
                 break;
               }
+              // Milestone 3: Retrieval-before-fetch from ProviderReadCache if explicitly provided in config
+              if (this.config.providerCache) {
+                const cachedFact = this.config.providerCache.get(action.connectionId, action.operationId);
+                if (cachedFact) {
+                  concreteActionSinceLastAsk = true;
+                  tracker.consecutiveFailures = 0;
+                  this.emit(`connection ${action.connectionId}/${action.operationId} completed (cache hit)`);
+                  const disclosure = connectionResultDisclosure(cachedFact.data);
+                  const rendered = disclosure.text ? `\nDATA (cached fact from epoch ${cachedFact.stateEpoch}):\n${disclosure.text}` : '';
+                  observe(
+                    `PROVIDER EVIDENCE (CACHED [${cachedFact.id}]): Reused fresh provider observation from current state epoch.${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
+                  );
+                  break;
+                }
+              }
               try {
                 const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
+                const evidence = this.providerCache.record({
+                  connectionId: action.connectionId,
+                  capability: action.operationId,
+                  operationId: action.operationId,
+                  data: result.data,
+                });
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
@@ -3519,6 +3550,7 @@ export class Gitu {
                   reason: action.reason,
                 });
                 connectionOperationAttempts.delete(operationKey);
+                this.providerCache.advanceStateEpoch(action.connectionId);
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;

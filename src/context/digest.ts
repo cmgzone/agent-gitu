@@ -107,14 +107,19 @@ export function extractDigestMaterial(old: LlmMessage[]): DigestMaterial {
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li]!;
       if (DECISION_LINE_RE.test(line.trim())) decisions.push(line.trim().slice(0, 200));
-      else if (line.startsWith('RESULT [error]')) {
-        // The RESULT line names the failed action; the NEXT line usually
-        // carries the actual cause. Keep both — a failure without its
-        // diagnostic core is a failure half-remembered.
+      else if (
+        line.startsWith('RESULT [error]') ||
+        line.startsWith('REJECTED OPERATION:') ||
+        line.startsWith('PROVIDER OPERATION REJECTED:') ||
+        line.startsWith('CONNECTION ACTION FAILED:')
+      ) {
+        // Keep failure with diagnostic core — failures without diagnostic cores are half-remembered.
         const cause = (lines[li + 1] ?? '').trim();
         failures.push(`${line.slice(0, 160)}${cause ? ` | ${cause.slice(0, 120)}` : ''}`);
-        li += 1; // the cause line is consumed
-      } else if (line.startsWith('EVIDENCE RECORDED:')) evidenceLines.push(line.slice(0, 160));
+        if (line.startsWith('RESULT [error]')) li += 1;
+      } else if (line.startsWith('EVIDENCE RECORDED:') || line.startsWith('PROVIDER EVIDENCE:') || line.startsWith('PROVIDER EVIDENCE (CACHED')) {
+        evidenceLines.push(line.slice(0, 180));
+      }
     }
   }
   return { excerptLines, decisions, failures, evidenceLines, carriedMessages };

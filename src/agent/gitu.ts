@@ -423,7 +423,18 @@ type ParsedAction =
   | { type: 'toggle_todo'; stepId: string; index: number; done?: boolean }
   | { type: 'complete_step'; stepId: string; reason: string }
   | { type: 'show_plan' }
-  | { type: 'set_hypothesis'; text: string }
+  | { type: 'set_hypothesis'; text: string; target?: string; confidence?: number }
+  | {
+      type: 'propose_repair';
+      targetKind: string;
+      targetDescription?: string;
+      resourceId?: string;
+      capability?: string;
+      intendedEffect: string;
+      reversible?: boolean;
+      requiresApproval?: boolean;
+      evidenceBasis?: string[];
+    }
   | {
       type: 'record_decision';
       decision: string;
@@ -435,7 +446,21 @@ type ParsedAction =
       basis: DecisionBasis;
       supersedes?: string;
     }
-  | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
+  | {
+      type: 'tool_call';
+      tool: string;
+      params: Record<string, unknown>;
+      reason: string;
+      expected: string;
+      stepId?: string;
+      intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other';
+      capability?: { intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other'; mutatesState?: boolean; repairIntent?: boolean; riskClass?: 'read' | 'reversible-write' | 'destructive' | 'costly' | 'production-critical'; resourceScope?: string };
+      resourceScope?: string;
+      expectation?: { description: string; assertions?: { kind: string; target: string; expected?: unknown; value?: unknown }[]; blocksOnFailure?: boolean; criterionIds?: string[] };
+      observation?: { transportOk: boolean; fields: Record<string, unknown>; rawDigest?: string; stateChanged?: boolean };
+      semanticVerdict?: { verdict: 'expected_achieved' | 'progress' | 'neutral' | 'contradiction' | 'regression' | 'blocker'; explanation?: string; blocking?: boolean };
+      investigationIntent?: { decisionQuestion: string; alternatives: string[]; expectedInformationGain: string; affectedRepairDecision?: string; changesHypothesis?: boolean; changesRepairTarget?: boolean; changesRepairAction?: boolean; changesSafetyOrApproval?: boolean; changesVerification?: boolean };
+    }
   | { type: 'connection_action'; connectionId: string; operationId: string; reason: string }
   | {
       type: 'connection_discovery';
@@ -466,7 +491,7 @@ type ParsedAction =
     }
   | {
       type: 'parallel';
-      calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
+      calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string; intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other'; resourceScope?: string }[];
     };
 
 /**
@@ -542,6 +567,8 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
       return `I’m running ${action.calls.length} independent checks in parallel.`;
     case 'set_hypothesis':
       return 'I’m recording the current diagnosis before testing it.';
+    case 'propose_repair':
+      return `I’ve decided on the repair and I’m acting now on ${clean(action.targetKind, 60)}. `;
     case 'record_decision':
       return 'I’m recording the design decision and the evidence behind it.';
     case 'revise_step':
@@ -668,9 +695,32 @@ function parseAction(raw: unknown): ParsedAction | undefined {
     }
     case 'show_plan':
       return { type: 'show_plan' };
-    case 'set_hypothesis':
+    case 'set_hypothesis': {
       if (typeof action['text'] !== 'string') return undefined;
-      return { type, text: action['text'] };
+      const target = typeof action['target'] === 'string' ? action['target'] : undefined;
+      const confidence = typeof action['confidence'] === 'number' ? action['confidence'] : undefined;
+      return { type, text: action['text'], ...(target ? { target } : {}), ...(confidence !== undefined ? { confidence } : {}) };
+    }
+    case 'propose_repair': {
+      const targetKind = typeof action['targetKind'] === 'string' ? action['targetKind'].trim() : '';
+      const intendedEffect = typeof action['intendedEffect'] === 'string' ? action['intendedEffect'].trim() : '';
+      if (!targetKind || !intendedEffect) return undefined;
+      const targetDescription = typeof action['targetDescription'] === 'string' ? action['targetDescription'] : undefined;
+      const resourceId = typeof action['resourceId'] === 'string' ? action['resourceId'] : undefined;
+      const capability = typeof action['capability'] === 'string' ? action['capability'] : undefined;
+      const evidenceBasis = Array.isArray(action['evidenceBasis']) ? (action['evidenceBasis'] as unknown[]).map(String).slice(0, 20) : undefined;
+      return {
+        type,
+        targetKind: targetKind.slice(0, 80),
+        ...(targetDescription ? { targetDescription: targetDescription.slice(0, 240) } : {}),
+        ...(resourceId ? { resourceId: resourceId.slice(0, 160) } : {}),
+        ...(capability ? { capability: capability.slice(0, 120) } : {}),
+        intendedEffect: intendedEffect.slice(0, 240),
+        ...(typeof action['reversible'] === 'boolean' ? { reversible: action['reversible'] } : {}),
+        ...(typeof action['requiresApproval'] === 'boolean' ? { requiresApproval: action['requiresApproval'] } : {}),
+        ...(evidenceBasis ? { evidenceBasis } : {}),
+      };
+    }
     case 'record_decision': {
       const draft = normalizeDecisionDraft(action);
       if (!draft) return undefined;
@@ -692,6 +742,15 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       if (params['filePath'] !== undefined && params['path'] === undefined) params['path'] = params['filePath'];
       if (params['file'] !== undefined && params['path'] === undefined && typeof params['file'] === 'string') params['path'] = params['file'];
       if (params['cmd'] !== undefined && params['command'] === undefined) params['command'] = params['cmd'];
+      const intentRaw = typeof action['intent'] === 'string' ? action['intent'] : undefined;
+      const intent = intentRaw === 'inspect' || intentRaw === 'diagnose' || intentRaw === 'repair' || intentRaw === 'verify' || intentRaw === 'navigate' || intentRaw === 'other' ? intentRaw : undefined;
+      const capRaw = action['capability'];
+      const capability = capRaw && typeof capRaw === 'object' && !Array.isArray(capRaw) ? (capRaw as Record<string, unknown>) : undefined;
+      const resourceScope = typeof action['resourceScope'] === 'string' ? (action['resourceScope'] as string) : undefined;
+      const expectation = action['expectation'] && typeof action['expectation'] === 'object' ? (action['expectation'] as { description: string; assertions?: { kind: string; target: string; expected?: unknown; value?: unknown }[]; blocksOnFailure?: boolean; criterionIds?: string[] }) : undefined;
+      const observation = action['observation'] && typeof action['observation'] === 'object' ? (action['observation'] as { transportOk: boolean; fields: Record<string, unknown>; rawDigest?: string; stateChanged?: boolean }) : undefined;
+      const semanticVerdict = action['semanticVerdict'] && typeof action['semanticVerdict'] === 'object' ? (action['semanticVerdict'] as { verdict: 'expected_achieved' | 'progress' | 'neutral' | 'contradiction' | 'regression' | 'blocker'; explanation?: string; blocking?: boolean }) : undefined;
+      const investigationIntent = action['investigationIntent'] && typeof action['investigationIntent'] === 'object' ? (action['investigationIntent'] as { decisionQuestion: string; alternatives: string[]; expectedInformationGain: string; affectedRepairDecision?: string; changesHypothesis?: boolean; changesRepairTarget?: boolean; changesRepairAction?: boolean; changesSafetyOrApproval?: boolean; changesVerification?: boolean }) : undefined;
       return {
         type,
         tool,
@@ -699,6 +758,13 @@ function parseAction(raw: unknown): ParsedAction | undefined {
         reason: String(action['reason'] ?? action['thought'] ?? ''),
         expected: String(action['expected'] ?? ''),
         stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
+        ...(intent ? { intent } : {}),
+        ...(capability ? { capability: capability as { intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other'; mutatesState?: boolean; repairIntent?: boolean; riskClass?: 'read' | 'reversible-write' | 'destructive' | 'costly' | 'production-critical'; resourceScope?: string } } : {}),
+        ...(resourceScope ? { resourceScope } : {}),
+        ...(expectation ? { expectation } : {}),
+        ...(observation ? { observation } : {}),
+        ...(semanticVerdict ? { semanticVerdict } : {}),
+        ...(investigationIntent ? { investigationIntent } : {}),
       };
     }
     case 'connection_action': {
@@ -853,13 +919,21 @@ function parseAction(raw: unknown): ParsedAction | undefined {
     case 'parallel': {
       const calls = action['calls'];
       if (!Array.isArray(calls)) return undefined;
-      const parsedCalls = (calls as Record<string, unknown>[])
-        .map((c) => ({
-          tool: String(c['tool'] ?? ''),
-          params: (c['params'] && typeof c['params'] === 'object' ? c['params'] : {}) as Record<string, unknown>,
-          reason: String(c['reason'] ?? ''),
-          expected: String(c['expected'] ?? ''),
-        }))
+      type ParallelCall = { tool: string; params: Record<string, unknown>; reason: string; expected: string; intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other'; resourceScope?: string };
+      const parsedCalls: ParallelCall[] = (calls as Record<string, unknown>[])
+        .map((c) => {
+          const iRaw = typeof c['intent'] === 'string' ? c['intent'] : undefined;
+          const callIntent: ParallelCall['intent'] = iRaw === 'inspect' || iRaw === 'diagnose' || iRaw === 'repair' || iRaw === 'verify' || iRaw === 'navigate' || iRaw === 'other' ? iRaw : undefined;
+          const call: ParallelCall = {
+            tool: String(c['tool'] ?? ''),
+            params: (c['params'] && typeof c['params'] === 'object' ? c['params'] : {}) as Record<string, unknown>,
+            reason: String(c['reason'] ?? ''),
+            expected: String(c['expected'] ?? ''),
+          };
+          if (callIntent) call.intent = callIntent;
+          if (typeof c['resourceScope'] === 'string') call.resourceScope = c['resourceScope'] as string;
+          return call;
+        })
         .filter((c) => c.tool);
       if (parsedCalls.length < 2) return undefined;
       return { type, calls: parsedCalls.slice(0, 6) };
@@ -875,6 +949,7 @@ const KNOWN_ACTION_TYPES = new Set([
   'add_criteria',
   'append_plan',
   'set_hypothesis',
+  'propose_repair',
   'record_decision',
   'set_design',
   'revise_step',
@@ -1593,6 +1668,54 @@ export class Gitu {
 
   queueMessage(text: string, attachmentContext?: string): void {
     this.inbox.push({ text, attachmentContext });
+  }
+
+  /** Copy the full hardened-runtime telemetry (legacy + AC-20+ counters). */
+  private syncRecoveryTelemetry(telemetry: {
+    problemsDetected: number;
+    planInterruptions: number;
+    recoveryAttempts: number;
+    strategyRepeatsPrevented: number;
+    redundantInvestigationsPrevented: number;
+    successfulRecoveries: number;
+    failedRecoveries: number;
+    resumedMissions: number;
+    materialEvidenceChanges?: number;
+    nonMaterialEvidenceIgnored?: number;
+    actionsAfterDiagnosisBeforeRepair?: number;
+    readsAfterDiagnosisBeforeRepair?: number;
+    investigationActionsSinceProgress?: number;
+    strategySemanticDuplicatesPrevented?: number;
+    staleParallelActionsCancelled?: number;
+    interruptEpochChanges?: number;
+    nestedProblemsCreated?: number;
+    nestedProblemsResolved?: number;
+    actNowTransitions?: number;
+    verificationContractFailures?: number;
+    verificationContractPasses?: number;
+  }): void {
+    const r = this.recoveryOrchestrator;
+    telemetry.problemsDetected = r.problemsDetected;
+    telemetry.planInterruptions = r.planInterruptions;
+    telemetry.recoveryAttempts = r.recoveryAttempts;
+    telemetry.strategyRepeatsPrevented = r.strategyRepeatsPrevented;
+    telemetry.redundantInvestigationsPrevented = r.redundantInvestigationsPrevented;
+    telemetry.successfulRecoveries = r.successfulRecoveries;
+    telemetry.failedRecoveries = r.failedRecoveries;
+    telemetry.resumedMissions = r.resumedMissions;
+    telemetry.materialEvidenceChanges = r.materialEvidenceChanges;
+    telemetry.nonMaterialEvidenceIgnored = r.nonMaterialEvidenceIgnored;
+    telemetry.actionsAfterDiagnosisBeforeRepair = r.actionsAfterDiagnosisBeforeRepair;
+    telemetry.readsAfterDiagnosisBeforeRepair = r.readsAfterDiagnosisBeforeRepair;
+    telemetry.investigationActionsSinceProgress = r.investigationActionsSinceProgress;
+    telemetry.strategySemanticDuplicatesPrevented = r.strategySemanticDuplicatesPrevented;
+    telemetry.staleParallelActionsCancelled = r.staleParallelActionsCancelled;
+    telemetry.interruptEpochChanges = r.interruptEpochChanges;
+    telemetry.nestedProblemsCreated = r.nestedProblemsCreated;
+    telemetry.nestedProblemsResolved = r.nestedProblemsResolved;
+    telemetry.actNowTransitions = r.actNowTransitions;
+    telemetry.verificationContractFailures = r.verificationContractFailures;
+    telemetry.verificationContractPasses = r.verificationContractPasses;
   }
 
   stop(): void {
@@ -2724,11 +2847,14 @@ export class Gitu {
             break;
           }
 
-          // AC-12: Drain inbox at turn start so urgent user messages immediately
+          // AC-12 + AC-30: Drain inbox at turn start so urgent user messages immediately
           // reprioritize the active goal/recovery direction before the next action is planned.
+          // Every drained message is TRUE PREEMPTION: the interrupt epoch advances so
+          // stale scheduled/parallel follow-ups are cancelled before they run.
           while (this.inbox.length > 0) {
             const queued = this.inbox.shift()!;
             this.emit(`user-msg ${queued.text}`);
+            this.recoveryOrchestrator.notifyInterrupt('user_message');
             const steered = classifyFollowUp(queued.text);
             observe(
               `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
@@ -3058,9 +3184,51 @@ export class Gitu {
             case 'set_hypothesis': {
               ledger.data.currentHypothesis = action.text;
               ledger.save();
-              this.recoveryOrchestrator.onSetHypothesis(action.text);
+              this.recoveryOrchestrator.onSetHypothesis(action.text, action.target, action.confidence);
               this.emit(`hypothesis ${action.text.slice(0, 120)}`);
               observe('Hypothesis recorded. Proceed with the next action.');
+              break;
+            }
+            case 'propose_repair': {
+              const active = this.recoveryOrchestrator.getActiveProblem();
+              if (!active) {
+                observe('No active problem — there is nothing to repair. Continue with the mission plan.');
+                break;
+              }
+              const now = Date.now();
+              const proposalId = `rp-${active.id}-${active.attempts.length + 1}`;
+              const result = this.recoveryOrchestrator.proposeRepair(
+                {
+                  id: proposalId,
+                  problemId: active.id,
+                  intendedEffect: action.intendedEffect,
+                  target: {
+                    kind: action.targetKind,
+                    ...(action.capability ? { capability: action.capability } : {}),
+                    ...(action.resourceId ? { resourceId: action.resourceId } : {}),
+                    description: action.targetDescription ?? `Repair ${action.targetKind}: ${action.intendedEffect}`,
+                  },
+                  actions: [],
+                  evidenceBasis: action.evidenceBasis ?? [...active.evidenceIds],
+                  reversible: action.reversible ?? true,
+                  requiresApproval: action.requiresApproval ?? false,
+                  verificationContract: active.verificationContract ?? {
+                    description: `Verify contradiction resolved: ${active.expectation?.description ?? active.expected ?? 'expected outcome'}`,
+                    originalObserved: active.observed,
+                    expectedOutcome: active.expectation?.description ?? active.expected ?? 'Success',
+                  },
+                  createdAt: now,
+                } as unknown as import('../recovery/problem-state.js').RepairProposal,
+                {},
+              );
+              this.syncRecoveryTelemetry(telemetry);
+              if (result.actNow) {
+                observe(
+                  `ACT_NOW (${active.id}): ${result.reason}\nExecute the repair IMMEDIATELY with the next action (approval gates still apply — ACT_NOW never bypasses approval). Generic exploration is now suppressed.`,
+                );
+              } else {
+                observe(`REPAIR PROPOSAL NOT SUFFICIENT: ${result.reason}\nGather only the decision-changing evidence named above, then propose again.`);
+              }
               break;
             }
             case 'set_design': {
@@ -3169,8 +3337,22 @@ export class Gitu {
                 break;
               }
 
-              // AC-9/AC-10/AC-19: Problem recovery pre-action check (StrategyGuard + Value-of-Information)
-              const preCheck = this.recoveryOrchestrator.checkPreAction(action, ledger.data.evidence.length);
+              // AC-9/AC-10/AC-19 + AC-24/AC-25/AC-30: hardened pre-action check
+              // (semantic StrategyGuard + structured VOI + ACT_NOW + interrupt-epoch staleness).
+              const preCheck = this.recoveryOrchestrator.checkPreAction(
+                {
+                  tool: action.tool,
+                  params: action.params,
+                  reason: action.reason,
+                  expected: action.expected,
+                  ...(action.intent ? { intent: action.intent } : {}),
+                  ...(action.capability ? { capability: action.capability } : {}),
+                  ...(action.resourceScope ? { resourceScope: action.resourceScope } : {}),
+                  ...(action.investigationIntent ? { investigationIntent: action.investigationIntent } : {}),
+                  ...(action.expectation ? { expectation: action.expectation as { description: string; assertions?: never; blocksOnFailure?: boolean; criterionIds?: string[] } } : {}),
+                },
+                ledger.data.evidence.length,
+              );
               if (!preCheck.allowed) {
                 observe(preCheck.reason!);
                 break;
@@ -3292,9 +3474,22 @@ export class Gitu {
                 const step = ledger.step(action.stepId);
                 const cmd = String(action.params['command'] ?? '');
                 if (step && step.status !== 'done' && step.verification && commandsMatch(step.verification, cmd)) {
+                  // NOTE: the executor marks the step in_progress on entry, so the
+                  // ledger status cannot tell suspension. The problem's own
+                  // blockedStepIds is the authoritative suspension record.
+                  const wasSuspended = this.recoveryOrchestrator.getActiveProblem()?.blockedStepIds.includes(step.id) === true;
                   ledger.updateStep(step.id, { status: 'done' });
                   checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
                   this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
+                  if (wasSuspended) {
+                    // The suspended step completed through its own verification:
+                    // interruptions blocking only finished work are moot (not
+                    // verified repairs — recorded as inconclusive, never as
+                    // successful recoveries).
+                    const openCriteria = new Set(ledger.data.acceptanceCriteria.filter((c) => !c.satisfied).map((c) => c.id));
+                    this.recoveryOrchestrator.supersedeMootProblems(new Set([step.id]), openCriteria);
+                    this.syncRecoveryTelemetry(telemetry);
+                  }
                 }
               } else if (!action.stepId && action.tool === 'run_command' && outcome.result.ok) {
                 // Models frequently omit stepId. When a verification command passes,
@@ -3371,13 +3566,21 @@ export class Gitu {
                   `  Next: form a new hypothesis about this specific error, make a targeted fix, then re-verify.`;
               }
 
-              // AC-1/AC-2/AC-3/AC-4/AC-19: Autonomous Problem Recovery Outcome Evaluation
+              // AC-1/AC-2/AC-3/AC-4/AC-19 + AC-20/AC-28/AC-32: generalized outcome
+              // evaluation (structured expectations, intent-declared repairs,
+              // contract-gated verification). Execution success ≠ goal success.
               const recoveryOutcome = this.recoveryOrchestrator.onActionOutcome(
                 {
                   tool: action.tool,
                   params: action.params,
                   reason: action.reason,
                   expected: action.expected,
+                  ...(action.expectation ? { expectation: action.expectation as { description: string } } : {}),
+                  ...(action.observation ? { observation: action.observation } : {}),
+                  ...(action.semanticVerdict ? { semanticVerdict: action.semanticVerdict } : {}),
+                  ...(action.intent ? { intent: action.intent } : {}),
+                  ...(action.capability ? { capability: action.capability } : {}),
+                  ...(action.resourceScope ? { resourceScope: action.resourceScope } : {}),
                   stepId: action.stepId,
                   toolOk: outcome.result.ok,
                   output: outcome.result.output,
@@ -3389,14 +3592,7 @@ export class Gitu {
               if (recoveryOutcome.guidance) {
                 observedResult += `\n${recoveryOutcome.guidance}`;
               }
-              telemetry.problemsDetected = this.recoveryOrchestrator.problemsDetected;
-              telemetry.planInterruptions = this.recoveryOrchestrator.planInterruptions;
-              telemetry.recoveryAttempts = this.recoveryOrchestrator.recoveryAttempts;
-              telemetry.strategyRepeatsPrevented = this.recoveryOrchestrator.strategyRepeatsPrevented;
-              telemetry.redundantInvestigationsPrevented = this.recoveryOrchestrator.redundantInvestigationsPrevented;
-              telemetry.successfulRecoveries = this.recoveryOrchestrator.successfulRecoveries;
-              telemetry.failedRecoveries = this.recoveryOrchestrator.failedRecoveries;
-              telemetry.resumedMissions = this.recoveryOrchestrator.resumedMissions;
+              this.syncRecoveryTelemetry(telemetry);
               // Plan-order drift: the agent is working a different step than the
               // one the state message points at. Left unremarked, models tend to
               // obey the stale NEXT pointer and jump back and forth.
@@ -4279,17 +4475,27 @@ export class Gitu {
             }
             case 'parallel': {
               this.emit(`parallel ${action.calls.length} concurrent tool calls`);
-              // The in-app browser is stateful: only one state-changing browser
-              // operation may run at a time.  Non-browser tools stay parallel;
-              // browser calls are serialized afterwards so a click/type/screenshot
-              // sequence never races against itself.
-              const browserCalls: { call: (typeof action.calls)[number]; index: number }[] = [];
-              const otherCalls: { call: (typeof action.calls)[number]; index: number }[] = [];
-              action.calls.forEach((call, index) => {
+              // AC-31: blocker-aware parallel execution. Pre-filter stale work
+              // scheduled before the current interrupt epoch.
+              const batchEpoch = this.recoveryOrchestrator.getInterruptEpoch();
+              const batch = this.recoveryOrchestrator.filterParallelBatch(
+                action.calls.map((c) => ({ tool: c.tool, params: c.params, reason: c.reason, expected: c.expected, capturedInterruptEpoch: batchEpoch })),
+              );
+              if (batch.cancelled.length > 0) {
+                this.emit(`parallel stale pruned — ${batch.cancelled.length} action(s) dropped before execution`);
+              }
+              // All calls share the current epoch at schedule time, so the batch
+              // above only prunes when an interrupt landed between scheduling and
+              // execution. Post-batch, siblings after the first blocker are
+              // marked stale (see below).
+              const activeCalls = action.calls;
+              const browserCalls: { call: (typeof activeCalls)[number]; index: number }[] = [];
+              const otherCalls: { call: (typeof activeCalls)[number]; index: number }[] = [];
+              activeCalls.forEach((call, index) => {
                 (call.tool === 'browse' ? browserCalls : otherCalls).push({ call, index });
               });
-              const outcomes: (Awaited<ReturnType<typeof executor.execute>> | undefined)[] = new Array(action.calls.length);
-              const runOne = async (call: (typeof action.calls)[number], index: number): Promise<void> => {
+              const outcomes: (Awaited<ReturnType<typeof executor.execute>> | undefined)[] = new Array(activeCalls.length);
+              const runOne = async (call: (typeof activeCalls)[number], index: number): Promise<void> => {
                 // Batched calls are real tool executions too; without this every
                 // parallel turn undercounts tokenTelemetry.toolCalls.
                 telemetry.noteToolCall();
@@ -4306,14 +4512,46 @@ export class Gitu {
                 this.emit(`browser action serialized — one state-changing operation at a time`);
               }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              // AC-31: evaluate each sibling through the recovery runtime IN ORDER.
+              // The first blocking contradiction bumps the interrupt epoch; later
+              // siblings are preserved as evidence but flagged stale so they
+              // cannot advance plan state.
+              let blockerSeen = false;
+              const recoveryNotes: string[] = [];
+              for (let i = 0; i < outcomes.length; i++) {
+                const o = outcomes[i];
+                if (!o) continue;
+                const sibling = activeCalls[i]!;
+                const res = this.recoveryOrchestrator.onActionOutcome(
+                  {
+                    tool: sibling.tool,
+                    params: sibling.params,
+                    reason: sibling.reason,
+                    expected: sibling.expected,
+                    toolOk: o.result.ok,
+                    output: o.result.output,
+                    exitCode: o.result.exitCode,
+                    errorSignature: o.result.errorSignature,
+                  },
+                  ledger,
+                );
+                if (res.evaluation.detectedContradiction?.isBlocking && !blockerSeen) {
+                  blockerSeen = true;
+                } else if (blockerSeen) {
+                  this.recoveryOrchestrator.staleParallelActionsCancelled += 1;
+                  recoveryNotes.push(`sibling [${i + 1}] result preserved as evidence but marked stale after blocker — it cannot advance plan state`);
+                }
+                if (res.guidance) recoveryNotes.push(res.guidance);
+              }
+              this.syncRecoveryTelemetry(telemetry);
               const parts = outcomes.map((o, i) => {
                 if (!o) return `[${i + 1}] (not executed)`;
                 if (o.record.tool === 'run_command') {
-                  const kind = classifyEvidenceKind(String(action.calls[i]?.params['command'] ?? ''));
+                  const kind = classifyEvidenceKind(String(activeCalls[i]?.params['command'] ?? ''));
                   const ev = evidence.record(ledger.data, {
                     kind,
                     label: o.record.paramsSummary,
-                    command: String(action.calls[i]?.params['command'] ?? ''),
+                    command: String(activeCalls[i]?.params['command'] ?? ''),
                     exitCode: o.result.exitCode,
                     passed: o.result.ok,
                     output: o.result.output,
@@ -4324,7 +4562,7 @@ export class Gitu {
                 }
                 return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}`;
               });
-              observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
+              observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}${recoveryNotes.length ? `\n${recoveryNotes.join('\n')}` : ''}`);
               break;
             }
             case 'report_finding': {

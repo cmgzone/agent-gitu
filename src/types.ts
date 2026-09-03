@@ -449,6 +449,20 @@ export interface TokenTelemetrySnapshot {
   successfulRecoveries?: number;
   failedRecoveries?: number;
   resumedMissions?: number;
+  /** Hardened runtime telemetry (AC-20+): decision sufficiency, ACT_NOW, drift, nesting. */
+  materialEvidenceChanges?: number;
+  nonMaterialEvidenceIgnored?: number;
+  actionsAfterDiagnosisBeforeRepair?: number;
+  readsAfterDiagnosisBeforeRepair?: number;
+  investigationActionsSinceProgress?: number;
+  strategySemanticDuplicatesPrevented?: number;
+  staleParallelActionsCancelled?: number;
+  interruptEpochChanges?: number;
+  nestedProblemsCreated?: number;
+  nestedProblemsResolved?: number;
+  actNowTransitions?: number;
+  verificationContractFailures?: number;
+  verificationContractPasses?: number;
   /** Model calls that produced no executable action (wasted spend). */
   wastedCalls: number;
   filesInContextPack: number;

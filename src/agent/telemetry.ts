@@ -231,6 +231,19 @@ export class RunTelemetry {
       successfulRecoveries: this.successfulRecoveries,
       failedRecoveries: this.failedRecoveries,
       resumedMissions: this.resumedMissions,
+      materialEvidenceChanges: this.materialEvidenceChanges,
+      nonMaterialEvidenceIgnored: this.nonMaterialEvidenceIgnored,
+      actionsAfterDiagnosisBeforeRepair: this.actionsAfterDiagnosisBeforeRepair,
+      readsAfterDiagnosisBeforeRepair: this.readsAfterDiagnosisBeforeRepair,
+      investigationActionsSinceProgress: this.investigationActionsSinceProgress,
+      strategySemanticDuplicatesPrevented: this.strategySemanticDuplicatesPrevented,
+      staleParallelActionsCancelled: this.staleParallelActionsCancelled,
+      interruptEpochChanges: this.interruptEpochChanges,
+      nestedProblemsCreated: this.nestedProblemsCreated,
+      nestedProblemsResolved: this.nestedProblemsResolved,
+      actNowTransitions: this.actNowTransitions,
+      verificationContractFailures: this.verificationContractFailures,
+      verificationContractPasses: this.verificationContractPasses,
       wastedCalls: this.wastedCalls,
       filesInContextPack: this.filesInContextPack,
     };
@@ -244,6 +257,19 @@ export class RunTelemetry {
   successfulRecoveries = 0;
   failedRecoveries = 0;
   resumedMissions = 0;
+  materialEvidenceChanges = 0;
+  nonMaterialEvidenceIgnored = 0;
+  actionsAfterDiagnosisBeforeRepair = 0;
+  readsAfterDiagnosisBeforeRepair = 0;
+  investigationActionsSinceProgress = 0;
+  strategySemanticDuplicatesPrevented = 0;
+  staleParallelActionsCancelled = 0;
+  interruptEpochChanges = 0;
+  nestedProblemsCreated = 0;
+  nestedProblemsResolved = 0;
+  actNowTransitions = 0;
+  verificationContractFailures = 0;
+  verificationContractPasses = 0;
 }
 
 /** Compact human-readable summary for events/reports. */

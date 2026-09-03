@@ -410,7 +410,13 @@ export interface TaskStateScope {
   files?: string[];
 }
 
-export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string, scope?: TaskStateScope): string {
+export function buildStateMessage(
+  ledger: TaskLedger,
+  extra?: string,
+  activeSkillsSection?: string,
+  scope?: TaskStateScope,
+  recoverySection?: string,
+): string {
   const d = ledger.data;
   // A full 30-step plan can exceed the useful working-memory budget on every
   // planning turn. Small plans remain rich for review; larger ones use the
@@ -504,6 +510,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     effortLine,
     depthLine,
     riskLine,
+    recoverySection ? recoverySection : '',
     d.currentHypothesis ? `CURRENT HYPOTHESIS: ${d.currentHypothesis}` : '',
     activeSkillsSection ? `ACTIVE SKILLS IN TASK:\n${activeSkillsSection}` : '',
     `ACCEPTANCE CRITERIA:\n${criteria || '  (none set yet — use set_criteria)'}`,

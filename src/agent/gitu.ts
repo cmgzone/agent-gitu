@@ -51,6 +51,7 @@ import {
 import { catalogOperation, findCatalogOperation } from '../connections/catalog.js';
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
+import { RecoveryOrchestrator } from '../recovery/recovery-orchestrator.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
@@ -1576,6 +1577,7 @@ export class Gitu {
   private readonly config: GituConfig;
   public readonly providerCache: ProviderReadCache;
   public readonly universalRegistry: UniversalCapabilityRegistry;
+  public recoveryOrchestrator: RecoveryOrchestrator;
   private readonly emit: (event: string) => void;
   private readonly inbox: { text: string; attachmentContext?: string }[] = [];
   private aborted = false;
@@ -1586,6 +1588,7 @@ export class Gitu {
     this.providerCache = config.providerCache ?? new ProviderReadCache();
     this.universalRegistry = config.universalRegistry ?? new UniversalCapabilityRegistry();
     this.emit = config.onEvent ?? (() => {});
+    this.recoveryOrchestrator = new RecoveryOrchestrator(this.emit);
   }
 
   queueMessage(text: string, attachmentContext?: string): void {
@@ -1603,6 +1606,7 @@ export class Gitu {
 
   async run(goal: string): Promise<GituRunResult> {
     const { cwd } = this.config;
+    this.recoveryOrchestrator = new RecoveryOrchestrator(this.emit);
     // Dynamic auto-retry: network blips and provider outages delay the run
     // (with visible events) instead of failing it.
     const llm = resilientLlm(this.config.llm, {
@@ -2373,7 +2377,16 @@ export class Gitu {
       });
 
       const ask = async (note?: string): Promise<ParsedAction | undefined> => {
-        messages.push({ role: 'user', content: buildStateMessage(ledger, note, activeSkillsSection(), activePhaseStateScope()) });
+        messages.push({
+          role: 'user',
+          content: buildStateMessage(
+            ledger,
+            note,
+            activeSkillsSection(),
+            activePhaseStateScope(),
+            this.recoveryOrchestrator.renderPromptSection(),
+          ),
+        });
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
@@ -2421,6 +2434,9 @@ export class Gitu {
             if (maxFailures >= 2) {
               activeEffort = baseEffort === 'high' ? 'max' : 'high';
               this.emit(`effort escalated to ${activeEffort} — repeated connection failure`);
+            } else if (this.recoveryOrchestrator.shouldEscalateEffort()) {
+              activeEffort = baseEffort === 'high' ? 'max' : 'high';
+              this.emit(`effort escalated to ${activeEffort} — repeated problem recovery failure`);
             } else {
               activeEffort = baseEffort;
             }
@@ -2706,6 +2722,33 @@ export class Gitu {
             ledger.addBlocker('Stopped by user.');
             exitReason = 'blocked';
             break;
+          }
+
+          // AC-12: Drain inbox at turn start so urgent user messages immediately
+          // reprioritize the active goal/recovery direction before the next action is planned.
+          while (this.inbox.length > 0) {
+            const queued = this.inbox.shift()!;
+            this.emit(`user-msg ${queued.text}`);
+            const steered = classifyFollowUp(queued.text);
+            observe(
+              `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
+                (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
+            );
+            applyFollowUpToLedger(ledger, queued.text);
+            if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
+              const extraTurns = Math.max(budgetExtensionTurns, 10);
+              budgetCap = turns + extraTurns;
+              ledger.addBudgetExtension({
+                turn: turns,
+                reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
+                filesChanged: ledger.data.filesChanged?.length ?? 0,
+                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
+                evidenceCount: ledger.data.evidence.length,
+                extraTurns,
+                extraSpecialists: 0,
+                specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
+              });
+            }
           }
           // Reasoning-only recovery is once-per-run to bound cost, but a
           // successful concrete action (e.g. a provider read) proves the run is
@@ -3015,6 +3058,7 @@ export class Gitu {
             case 'set_hypothesis': {
               ledger.data.currentHypothesis = action.text;
               ledger.save();
+              this.recoveryOrchestrator.onSetHypothesis(action.text);
               this.emit(`hypothesis ${action.text.slice(0, 120)}`);
               observe('Hypothesis recorded. Proceed with the next action.');
               break;
@@ -3048,6 +3092,13 @@ export class Gitu {
               break;
             }
             case 'toggle_todo': {
+              if (this.recoveryOrchestrator.hasActiveProblem()) {
+                const activeProblem = this.recoveryOrchestrator.getActiveProblem()!;
+                if (activeProblem.blockedStepIds.includes(action.stepId)) {
+                  observe(`TODO BLOCKED: Step ${action.stepId} is currently suspended due to active problem ${activeProblem.id} ("${activeProblem.observed.slice(0, 100)}"). Repair the problem and verify before completing todos on this step.`);
+                  break;
+                }
+              }
               const ok = ledger.toggleSubtask(action.stepId, action.index, action.done);
               if (!ok) {
                 observe(`Cannot update todo #${action.index} of ${action.stepId}: out of range. Use show_plan if unsure.`);
@@ -3064,6 +3115,13 @@ export class Gitu {
               break;
             }
             case 'complete_step': {
+              if (this.recoveryOrchestrator.hasActiveProblem()) {
+                const activeProblem = this.recoveryOrchestrator.getActiveProblem()!;
+                if (activeProblem.blockedStepIds.includes(action.stepId)) {
+                  observe(`STEP COMPLETION BLOCKED: Step ${action.stepId} is currently suspended due to active problem ${activeProblem.id} ("${activeProblem.observed.slice(0, 100)}"). Repair the root cause and verify resolution before completing this step.`);
+                  break;
+                }
+              }
               const step = ledger.step(action.stepId);
               if (!step) {
                 observe(`Cannot complete: unknown step "${action.stepId}". Use show_plan to see current step ids.`);
@@ -3110,6 +3168,14 @@ export class Gitu {
                 observe('No acceptance criteria exist yet. Use set_criteria first.');
                 break;
               }
+
+              // AC-9/AC-10/AC-19: Problem recovery pre-action check (StrategyGuard + Value-of-Information)
+              const preCheck = this.recoveryOrchestrator.checkPreAction(action, ledger.data.evidence.length);
+              if (!preCheck.allowed) {
+                observe(preCheck.reason!);
+                break;
+              }
+
               const outcome = await executor.execute({
                 tool: action.tool,
                 params: action.params,
@@ -3239,7 +3305,10 @@ export class Gitu {
                 if (cmd.trim()) {
                   for (const step of ledger.data.plan) {
                     if (step.status === 'done' || !step.verification) continue;
-                    if (commandsMatch(step.verification, cmd)) {
+                    if (
+                      commandsMatch(step.verification, cmd) &&
+                      (!this.recoveryOrchestrator.hasActiveProblem() || !this.recoveryOrchestrator.getActiveProblem()!.blockedStepIds.includes(step.id))
+                    ) {
                       ledger.updateStep(step.id, { status: 'done' });
                       checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
                       this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
@@ -3301,6 +3370,33 @@ export class Gitu {
                   (recentFiles.length ? `  files in play: ${recentFiles.join(', ')}\n` : '') +
                   `  Next: form a new hypothesis about this specific error, make a targeted fix, then re-verify.`;
               }
+
+              // AC-1/AC-2/AC-3/AC-4/AC-19: Autonomous Problem Recovery Outcome Evaluation
+              const recoveryOutcome = this.recoveryOrchestrator.onActionOutcome(
+                {
+                  tool: action.tool,
+                  params: action.params,
+                  reason: action.reason,
+                  expected: action.expected,
+                  stepId: action.stepId,
+                  toolOk: outcome.result.ok,
+                  output: outcome.result.output,
+                  exitCode: outcome.result.exitCode,
+                  errorSignature: outcome.result.errorSignature,
+                },
+                ledger,
+              );
+              if (recoveryOutcome.guidance) {
+                observedResult += `\n${recoveryOutcome.guidance}`;
+              }
+              telemetry.problemsDetected = this.recoveryOrchestrator.problemsDetected;
+              telemetry.planInterruptions = this.recoveryOrchestrator.planInterruptions;
+              telemetry.recoveryAttempts = this.recoveryOrchestrator.recoveryAttempts;
+              telemetry.strategyRepeatsPrevented = this.recoveryOrchestrator.strategyRepeatsPrevented;
+              telemetry.redundantInvestigationsPrevented = this.recoveryOrchestrator.redundantInvestigationsPrevented;
+              telemetry.successfulRecoveries = this.recoveryOrchestrator.successfulRecoveries;
+              telemetry.failedRecoveries = this.recoveryOrchestrator.failedRecoveries;
+              telemetry.resumedMissions = this.recoveryOrchestrator.resumedMissions;
               // Plan-order drift: the agent is working a different step than the
               // one the state message points at. Left unremarked, models tend to
               // obey the stale NEXT pointer and jump back and forth.
@@ -3741,6 +3837,16 @@ export class Gitu {
               break;
             }
             case 'claim_criterion': {
+              if (this.recoveryOrchestrator.hasActiveProblem()) {
+                const active = this.recoveryOrchestrator.getActiveProblem()!;
+                if (active.blockedCriterionIds?.includes(action.criterionId)) {
+                  observe(
+                    `CLAIM REJECTED: Criterion ${action.criterionId} is blocked by active unresolved problem ${active.id}. ` +
+                    `Repair the underlying contradiction before claiming this criterion.`,
+                  );
+                  break;
+                }
+              }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const link = evidence.link(ledger.data, action.criterionId, action.evidenceId, currentFp);
               ledger.save();
@@ -3769,6 +3875,15 @@ export class Gitu {
               break;
             }
             case 'complete': {
+              if (this.recoveryOrchestrator.hasActiveProblem()) {
+                const active = this.recoveryOrchestrator.getActiveProblem()!;
+                observe(
+                  `COMPLETION REJECTED by problem recovery gate — active unresolved problem ${active.id} must be verified resolved before task completion.\n` +
+                  `Contradiction: Expected "${active.expected ?? 'Success'}" vs Observed "${active.observed.slice(0, 160)}".\n` +
+                  `Verify that the original failure is resolved, then complete again.`,
+                );
+                break;
+              }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const gate = evidence.gate(ledger.data, currentFp);
               const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;

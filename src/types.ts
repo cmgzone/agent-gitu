@@ -439,6 +439,16 @@ export interface TokenTelemetrySnapshot {
   toolCalls: number;
   /** Provider network calls prevented via retrieval-before-fetch caching. */
   preventedNetworkCalls?: number;
+  /** Problem recovery runtime metrics. */
+  problemsDetected?: number;
+  planInterruptions?: number;
+  hypothesesTested?: number;
+  recoveryAttempts?: number;
+  strategyRepeatsPrevented?: number;
+  redundantInvestigationsPrevented?: number;
+  successfulRecoveries?: number;
+  failedRecoveries?: number;
+  resumedMissions?: number;
   /** Model calls that produced no executable action (wasted spend). */
   wastedCalls: number;
   filesInContextPack: number;
@@ -861,3 +871,16 @@ export interface ToolResult {
   payload?: unknown;
 }
 import type { SkillIdentity } from './skills/skills.js';
+export type {
+  ProblemState,
+  ProblemStatus,
+  RepairSurface,
+  Hypothesis,
+  RecoveryAttempt,
+  DiagnosisDecision,
+  VerificationContract,
+  OutcomeVerdict,
+  OutcomeEvaluation,
+  DetectedContradiction,
+} from './recovery/problem-state.js';
+

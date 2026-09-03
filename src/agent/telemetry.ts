@@ -223,10 +223,27 @@ export class RunTelemetry {
       screenshotBytes: this.screenshotBytes,
       toolCalls: this.toolCalls,
       preventedNetworkCalls: this.preventedNetworkCalls,
+      problemsDetected: this.problemsDetected,
+      planInterruptions: this.planInterruptions,
+      recoveryAttempts: this.recoveryAttempts,
+      strategyRepeatsPrevented: this.strategyRepeatsPrevented,
+      redundantInvestigationsPrevented: this.redundantInvestigationsPrevented,
+      successfulRecoveries: this.successfulRecoveries,
+      failedRecoveries: this.failedRecoveries,
+      resumedMissions: this.resumedMissions,
       wastedCalls: this.wastedCalls,
       filesInContextPack: this.filesInContextPack,
     };
   }
+
+  problemsDetected = 0;
+  planInterruptions = 0;
+  recoveryAttempts = 0;
+  strategyRepeatsPrevented = 0;
+  redundantInvestigationsPrevented = 0;
+  successfulRecoveries = 0;
+  failedRecoveries = 0;
+  resumedMissions = 0;
 }
 
 /** Compact human-readable summary for events/reports. */

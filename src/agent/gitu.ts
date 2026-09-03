@@ -2377,17 +2377,28 @@ export class Gitu {
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
-        const flush = (): void => {
+        let flushTimer: ReturnType<typeof setTimeout> | undefined;
+        const flushNow = (): void => {
+          if (flushTimer !== undefined) { clearTimeout(flushTimer); flushTimer = undefined; }
           if (pending) this.emit(`tdelta ${pending}`);
           pending = '';
           lastFlush = Date.now();
         };
+        const flush = flushNow;
         const sink = (chunk: string): void => {
           pending += chunk;
-          if (pending.length >= 32 || Date.now() - lastFlush > 50) flush();
+          if (pending.length >= 24) { flushNow(); return; }
+          // Schedule a real timer so the buffer drains even when the provider
+          // pauses (e.g. DeepSeek reasoning delay before first content token).
+          // Without this, elapsed-time was only checked on the NEXT incoming
+          // chunk, which never fires during a pause.
+          if (flushTimer === undefined) {
+            flushTimer = setTimeout(flushNow, 25);
+          }
         };
         let streamer = createProseStreamer(sink);
         const resetProse = (): void => {
+          if (flushTimer !== undefined) { clearTimeout(flushTimer); flushTimer = undefined; }
           pending = '';
           streamer = createProseStreamer(sink);
         };

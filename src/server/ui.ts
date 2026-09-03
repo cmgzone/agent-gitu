@@ -2657,6 +2657,11 @@ export const UI_HTML = String.raw`<!doctype html>
         stickScroll(stream);
         return;
       }
+      // Never create the prose row for a whitespace-only opening chunk.
+      // Providers (especially reasoning models) frequently lead with "\n" or
+      // " " before real content; without this guard those empty deltas produce
+      // a visible bullet row with no text.
+      if (!sess.nodes.thought && !chunk.trim()) return;
       if (!sess.nodes.thought) {
         var t = document.createElement('div');
         // The model sometimes leaks its raw JSON action object into the
@@ -2715,9 +2720,18 @@ export const UI_HTML = String.raw`<!doctype html>
         }
         return;
       }
-      var cur = sess.nodes.thought ? sess.nodes.thought.querySelector('.txt').textContent : '';
-      cur = (cur || '').trim();
-      if (!cur || (prose.indexOf(cur) !== 0 && cur.indexOf(prose) !== 0)) {
+      if (sess.nodes.thought) {
+        // A streaming row already exists — patch it to the authoritative final
+        // text and close it. Never insert a second row; the streaming node IS
+        // the narration node. This eliminates the "BOOM whole sentence"
+        // teleport when the final prose diverges from the partial stream.
+        var txt = sess.nodes.thought.querySelector('.txt');
+        if (txt && txt.textContent !== prose) {
+          txt.textContent = '';
+          txt.appendChild(document.createTextNode(prose));
+        }
+      } else {
+        // No streaming happened — insert a static row as before.
         var pp = document.createElement('div');
         pp.className = 'tl-row tl-note-row';
         pp.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><span class="txt">' + esc(prose) + '</span></div>';

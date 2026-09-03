@@ -437,6 +437,8 @@ export interface TokenTelemetrySnapshot {
   /** Total base64 payload size of screenshots attached to model context. */
   screenshotBytes: number;
   toolCalls: number;
+  /** Provider network calls prevented via retrieval-before-fetch caching. */
+  preventedNetworkCalls?: number;
   /** Model calls that produced no executable action (wasted spend). */
   wastedCalls: number;
   filesInContextPack: number;

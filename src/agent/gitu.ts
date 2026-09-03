@@ -3376,6 +3376,7 @@ export class Gitu {
               if (cachedFact) {
                 concreteActionSinceLastAsk = true;
                 tracker.consecutiveFailures = 0;
+                telemetry.notePreventedNetworkCall();
                 this.emit(`connection ${action.connectionId}/${action.operationId} completed (cache hit)`);
                 const disclosure = connectionResultDisclosure(cachedFact.data);
                 const rendered = disclosure.text ? `\nDATA (cached fact from epoch ${cachedFact.stateEpoch}):\n${disclosure.text}` : '';

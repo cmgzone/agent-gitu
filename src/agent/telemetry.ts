@@ -135,6 +135,7 @@ export class RunTelemetry {
   private screenshotBytes = 0;
   private toolCalls = 0;
   private wastedCalls = 0;
+  private preventedNetworkCalls = 0;
   filesInContextPack = 0;
 
   /** Record one model call. `prefixEnd` splits stable prefix from live history;
@@ -189,6 +190,10 @@ export class RunTelemetry {
     this.wastedCalls += 1;
   }
 
+  notePreventedNetworkCall(): void {
+    this.preventedNetworkCalls += 1;
+  }
+
   snapshot(): TokenTelemetrySnapshot {
     return {
       calls: this.calls,
@@ -217,6 +222,7 @@ export class RunTelemetry {
       screenshots: this.screenshots,
       screenshotBytes: this.screenshotBytes,
       toolCalls: this.toolCalls,
+      preventedNetworkCalls: this.preventedNetworkCalls,
       wastedCalls: this.wastedCalls,
       filesInContextPack: this.filesInContextPack,
     };
@@ -226,8 +232,9 @@ export class RunTelemetry {
 /** Compact human-readable summary for events/reports. */
 export function renderTelemetry(t: TokenTelemetrySnapshot): string {
   const src = t.estimatedBySource;
+  const preventedStr = t.preventedNetworkCalls && t.preventedNetworkCalls > 0 ? ` prevented=${t.preventedNetworkCalls}` : '';
   const base =
-    `calls=${t.calls} input=${t.inputTokens} cached=${t.cachedTokens} output=${t.outputTokens} ` +
+    `calls=${t.calls} input=${t.inputTokens} cached=${t.cachedTokens} output=${t.outputTokens}${preventedStr} ` +
     `~estInput=${t.estimatedInputTokens} (system=${src.system} contextPack=${src.contextPack} taskState=${src.state} ` +
     `digest=${src.digest} strategy=${src.strategy} conversation=${src.conversation} images=${src.images}) ` +
     `planning=${t.planningCalls}c/~${t.estimatedPlanningInput}t execution=${t.executionCalls}c/~${t.estimatedExecutionInput}t ` +

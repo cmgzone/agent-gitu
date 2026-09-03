@@ -1,4 +1,4 @@
-import { sha256 } from '../../util.js';
+import { canonicalJson, sha256 } from '../../util.js';
 import type { CapabilitySource, ExecutionResult, ExecutionStatus } from './execution-result.js';
 import type { ProviderReadCache, ProviderEvidence } from './provider-cache.js';
 import type { ConnectionOperation } from '../connections.js';
@@ -22,6 +22,7 @@ export interface ExecutionContext {
   approvalHandler?: (proposal: { id: string; label: string; risk: CapabilityRisk; params?: unknown }) => Promise<boolean>;
   cache?: ProviderReadCache;
   resourceId?: string;
+  resourceType?: string;
 }
 
 export interface UniversalCapability {
@@ -36,6 +37,26 @@ export interface UniversalCapability {
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
   execute: (params: Record<string, unknown>, context: ExecutionContext) => Promise<ExecutionResult>;
+}
+
+/**
+ * Extract standard resource ID from capability arguments or execution context.
+ */
+export function extractResourceId(params: Record<string, unknown>, context?: ExecutionContext): string | undefined {
+  if (context?.resourceId) return context.resourceId;
+  const candidates = [
+    params.resourceId,
+    params.id,
+    params.applicationId,
+    params.serviceId,
+    params.databaseId,
+    params.projectId,
+    params.name,
+  ];
+  for (const c of candidates) {
+    if (typeof c === 'string' && c.trim()) return c.trim();
+  }
+  return undefined;
 }
 
 /**
@@ -75,10 +96,16 @@ export class UniversalCapabilityRegistry {
     return this.capabilities.get(id);
   }
 
-  findForCapability(capabilityName: string, risk?: CapabilityRisk): UniversalCapability | undefined {
+  findForCapability(
+    capabilityName: string,
+    filter?: { risk?: CapabilityRisk; source?: CapabilitySource; connectionId?: string },
+  ): UniversalCapability | undefined {
     for (const cap of this.capabilities.values()) {
       if (cap.capability.toLowerCase() === capabilityName.toLowerCase()) {
-        if (!risk || cap.risk === risk) return cap;
+        if (filter?.risk && cap.risk !== filter.risk) continue;
+        if (filter?.source && cap.source !== filter.source) continue;
+        if (filter?.connectionId && cap.connectionId?.toLowerCase() !== filter.connectionId.toLowerCase()) continue;
+        return cap;
       }
     }
     return undefined;
@@ -118,8 +145,10 @@ export class UniversalCapabilityRegistry {
         inputSchema: tool.inputSchema,
         execute: async (params, ctx) => {
           const executionId = `conn-exec-${Date.now()}-${sha256(capId).slice(0, 6)}`;
+          const resourceId = extractResourceId(params, ctx);
+          const resourceType = (params.resourceType as string | undefined) ?? ctx.resourceType;
 
-          // Approval check for non-read operations
+          // Fail-closed approval check for non-read operations
           if (risk !== 'read') {
             if (!ctx.approvalHandler) {
               return {
@@ -130,7 +159,7 @@ export class UniversalCapabilityRegistry {
                 operationId: tool.name,
                 status: 'rejected',
                 message: `MCP operation "${tool.name}" requires user approval channel.`,
-                stateEpoch: ctx.cache?.getStateEpoch(provider) ?? 1,
+                stateEpoch: ctx.cache?.getStateEpoch(provider, resourceType, resourceId) ?? 1,
                 cacheHit: false,
                 errorClass: 'APPROVAL_REQUIRED',
               };
@@ -145,7 +174,7 @@ export class UniversalCapabilityRegistry {
                 operationId: tool.name,
                 status: 'rejected',
                 message: `MCP operation "${tool.name}" was rejected by user policy.`,
-                stateEpoch: ctx.cache?.getStateEpoch(provider) ?? 1,
+                stateEpoch: ctx.cache?.getStateEpoch(provider, resourceType, resourceId) ?? 1,
                 cacheHit: false,
                 errorClass: 'USER_REJECTED',
               };
@@ -164,15 +193,15 @@ export class UniversalCapabilityRegistry {
                 status: 'failed',
                 data: res.content,
                 message: `MCP tool execution failed.`,
-                stateEpoch: ctx.cache?.getStateEpoch(provider) ?? 1,
+                stateEpoch: ctx.cache?.getStateEpoch(provider, resourceType, resourceId) ?? 1,
                 cacheHit: false,
                 errorClass: 'MCP_TOOL_ERROR',
               };
             }
 
-            // On successful write, invalidate cache
+            // On successful write, invalidate scoped cache
             if (risk !== 'read' && ctx.cache) {
-              ctx.cache.invalidateForWrite(provider);
+              ctx.cache.invalidateForWrite(provider, resourceType, resourceId);
             }
 
             // On successful read, record evidence in cache
@@ -183,6 +212,7 @@ export class UniversalCapabilityRegistry {
                 provider,
                 capability: capabilityName,
                 operationId: tool.name,
+                resourceId,
                 params,
                 data: res.content,
               });
@@ -199,7 +229,7 @@ export class UniversalCapabilityRegistry {
               data: res.content,
               message: `MCP tool "${tool.name}" succeeded.`,
               evidenceId,
-              stateEpoch: ctx.cache?.getStateEpoch(provider) ?? 1,
+              stateEpoch: ctx.cache?.getStateEpoch(provider, resourceType, resourceId) ?? 1,
               cacheHit: false,
             };
           } catch (error) {
@@ -211,7 +241,7 @@ export class UniversalCapabilityRegistry {
               operationId: tool.name,
               status: 'failed',
               message: (error as Error).message,
-              stateEpoch: ctx.cache?.getStateEpoch(provider) ?? 1,
+              stateEpoch: ctx.cache?.getStateEpoch(provider, resourceType, resourceId) ?? 1,
               cacheHit: false,
               errorClass: 'MCP_TRANSPORT_ERROR',
             };
@@ -244,7 +274,26 @@ export class UniversalCapabilityRegistry {
         risk,
         execute: async (params, ctx) => {
           const executionId = `conn-exec-${Date.now()}-${sha256(capId).slice(0, 6)}`;
-          if (risk !== 'read' && ctx.approvalHandler) {
+          const resourceId = extractResourceId(params, ctx);
+          const resourceType = (params.resourceType as string | undefined) ?? ctx.resourceType;
+
+          // Fail-closed approval check for non-read operations
+          if (risk !== 'read') {
+            if (!ctx.approvalHandler) {
+              return {
+                executionId,
+                source: 'connection',
+                provider: provider ?? connectionId,
+                connectionId,
+                capability: op.capability,
+                operationId: op.id,
+                status: 'rejected',
+                message: `Connection operation "${op.label}" requires approval channel.`,
+                stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
+                cacheHit: false,
+                errorClass: 'APPROVAL_REQUIRED',
+              };
+            }
             const approved = await ctx.approvalHandler({ id: capId, label: op.label, risk, params });
             if (!approved) {
               return {
@@ -256,7 +305,7 @@ export class UniversalCapabilityRegistry {
                 operationId: op.id,
                 status: 'rejected',
                 message: `Connection operation "${op.label}" was rejected by policy.`,
-                stateEpoch: ctx.cache?.getStateEpoch(connectionId) ?? 1,
+                stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
                 cacheHit: false,
                 errorClass: 'USER_REJECTED',
               };
@@ -266,7 +315,7 @@ export class UniversalCapabilityRegistry {
           try {
             const data = await invoker(op, params);
             if (risk !== 'read' && ctx.cache) {
-              ctx.cache.invalidateForWrite(connectionId);
+              ctx.cache.invalidateForWrite(connectionId, resourceType, resourceId);
             }
             let evidenceId: string | undefined;
             if (risk === 'read' && ctx.cache) {
@@ -275,6 +324,7 @@ export class UniversalCapabilityRegistry {
                 provider: provider ?? connectionId,
                 capability: op.capability,
                 operationId: op.id,
+                resourceId,
                 params,
                 data,
               });
@@ -292,7 +342,7 @@ export class UniversalCapabilityRegistry {
               data,
               message: `Operation "${op.label}" succeeded.`,
               evidenceId,
-              stateEpoch: ctx.cache?.getStateEpoch(connectionId) ?? 1,
+              stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
               cacheHit: false,
             };
           } catch (error) {
@@ -305,7 +355,7 @@ export class UniversalCapabilityRegistry {
               operationId: op.id,
               status: 'failed',
               message: (error as Error).message,
-              stateEpoch: ctx.cache?.getStateEpoch(connectionId) ?? 1,
+              stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
               cacheHit: false,
               errorClass: 'INVOCATION_ERROR',
             };
@@ -326,7 +376,10 @@ export class UniversalCapabilityRegistry {
   async invoke(request: CapabilityInvocationRequest, context: ExecutionContext = {}): Promise<ExecutionResult> {
     const capability =
       this.get(request.capability) ??
-      this.findForCapability(request.capability);
+      this.findForCapability(request.capability, {
+        source: request.source,
+        connectionId: request.connectionId,
+      });
 
     const executionId = `conn-exec-${Date.now()}-${sha256(request.capability).slice(0, 6)}`;
 
@@ -363,10 +416,12 @@ export class UniversalCapabilityRegistry {
 
     // 2. Retrieval-before-fetch cache check
     const connKey = capability.connectionId ?? capability.provider ?? 'default';
-    const stateEpoch = context.cache?.getStateEpoch(connKey) ?? 1;
+    const resourceId = extractResourceId(request.arguments ?? {}, context);
+    const resourceType = (request.arguments?.['resourceType'] as string | undefined) ?? context.resourceType;
+    const stateEpoch = context.cache?.getStateEpoch(connKey, resourceType, resourceId) ?? 1;
+
     if (capability.risk === 'read' && request.freshness !== 'force-refresh' && context.cache) {
-      const resourceId = context.resourceId ?? (request.arguments?.['resourceId'] as string | undefined) ?? (request.arguments?.['id'] as string | undefined);
-      const paramsDigest = request.arguments ? sha256(JSON.stringify(request.arguments)) : undefined;
+      const paramsDigest = request.arguments ? sha256(canonicalJson(request.arguments)) : undefined;
       const cached = context.cache.get(connKey, capability.capability, resourceId, paramsDigest);
       if (cached) {
         return {
@@ -445,6 +500,6 @@ export function fingerprintInvocation(request: CapabilityInvocationRequest, stat
     operationId: request.operationId?.toLowerCase(),
     stateEpoch,
   };
-  return sha256(JSON.stringify(normalized));
+  return sha256(canonicalJson(normalized));
 }
 

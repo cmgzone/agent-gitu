@@ -713,4 +713,103 @@ describe('Universal Argument Layer & Invocation Runtime', () => {
     expect(gitu2.providerCache.listEvidence().length).toBeGreaterThan(0);
     expect(gitu2.providerCache.listEvidence()[0].id).toBe('pe-1');
   });
+
+  it('fails closed on mutating connection write when no approval channel exists', async () => {
+    const registry = new UniversalCapabilityRegistry();
+    registry.registerConnection(
+      'coolify-prod',
+      [{ id: 'deploy-app', label: 'Deploy App', capability: 'applications.deploy', method: 'POST', path: '/api/v1/deploy', risk: 'reversible-write' }],
+      async () => ({ success: true }),
+    );
+
+    // Call without approvalHandler in context
+    const res = await registry.invoke({
+      capability: 'applications.deploy',
+      arguments: { applicationId: 'sv7' },
+      source: 'connection',
+    });
+
+    expect(res.status).toBe('rejected');
+    expect(res.errorClass).toBe('APPROVAL_REQUIRED');
+  });
+
+  it('computes identical fingerprints regardless of argument key ordering (canonical JSON)', () => {
+    const req1: CapabilityInvocationRequest = {
+      capability: 'applications.environment.write',
+      arguments: { key: 'PORT', value: '3000', environment: 'production' },
+    };
+    const req2: CapabilityInvocationRequest = {
+      capability: 'applications.environment.write',
+      arguments: { environment: 'production', value: '3000', key: 'PORT' },
+    };
+
+    const fp1 = fingerprintInvocation(req1, 1);
+    const fp2 = fingerprintInvocation(req2, 1);
+    expect(fp1).toBe(fp2);
+  });
+
+  it('disambiguates capabilities by connectionId and source deterministically', async () => {
+    const registry = new UniversalCapabilityRegistry();
+    registry.registerConnection('coolify-staging', [{ id: 'get-apps', label: 'Get Staging Apps', capability: 'applications.read', method: 'GET', path: '/api/v1/apps', risk: 'read' }], async () => ({ env: 'staging' }));
+    registry.registerConnection('coolify-prod', [{ id: 'get-apps', label: 'Get Prod Apps', capability: 'applications.read', method: 'GET', path: '/api/v1/apps', risk: 'read' }], async () => ({ env: 'prod' }));
+
+    const resStaging = await registry.invoke({
+      capability: 'applications.read',
+      connectionId: 'coolify-staging',
+    });
+    expect(resStaging.data).toEqual({ env: 'staging' });
+
+    const resProd = await registry.invoke({
+      capability: 'applications.read',
+      connectionId: 'coolify-prod',
+    });
+    expect(resProd.data).toEqual({ env: 'prod' });
+  });
+
+  it('scopes remote-state invalidation to the exact resourceId modified', async () => {
+    const registry = new UniversalCapabilityRegistry();
+    const cache = new ProviderReadCache();
+    let sv7Reads = 0;
+    let sv8Reads = 0;
+
+    registry.registerConnection(
+      'coolify-main',
+      [
+        { id: 'get-env', label: 'Get Env', capability: 'applications.environment.read', method: 'GET', path: '/api/v1/apps/{id}/env', risk: 'read' },
+        { id: 'set-env', label: 'Set Env', capability: 'applications.environment.write', method: 'POST', path: '/api/v1/apps/{id}/env', risk: 'reversible-write' },
+      ],
+      async (op, params) => {
+        const p = params as { applicationId: string };
+        if (op.id === 'get-env') {
+          if (p.applicationId === 'sv7') sv7Reads += 1;
+          if (p.applicationId === 'sv8') sv8Reads += 1;
+          return { app: p.applicationId, env: 'ok' };
+        }
+        return { updated: true };
+      },
+    );
+
+    // Initial reads for sv7 and sv8
+    await registry.invoke({ capability: 'applications.environment.read', arguments: { applicationId: 'sv7' } }, { cache });
+    await registry.invoke({ capability: 'applications.environment.read', arguments: { applicationId: 'sv8' } }, { cache });
+    expect(sv7Reads).toBe(1);
+    expect(sv8Reads).toBe(1);
+
+    // Mutate only sv7 with approval
+    await registry.invoke(
+      { capability: 'applications.environment.write', arguments: { applicationId: 'sv7', key: 'DEBUG', value: '1' } },
+      { cache, approvalHandler: async () => true },
+    );
+
+    // Second read for sv8 -> still cached under epoch 1, zero new reads!
+    const resSv8 = await registry.invoke({ capability: 'applications.environment.read', arguments: { applicationId: 'sv8' } }, { cache });
+    expect(resSv8.status).toBe('cached');
+    expect(sv8Reads).toBe(1);
+
+    // Second read for sv7 -> invalidated, refetches from provider!
+    const resSv7 = await registry.invoke({ capability: 'applications.environment.read', arguments: { applicationId: 'sv7' } }, { cache });
+    expect(resSv7.status).toBe('ok');
+    expect(resSv7.cacheHit).toBe(false);
+    expect(sv7Reads).toBe(2);
+  });
 });

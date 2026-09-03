@@ -3395,6 +3395,25 @@ export class Gitu {
                 });
                 ledger.recordProviderEvidence(evidence);
                 ledger.syncProviderState(this.providerCache.getEpochs());
+                try {
+                  if (
+                    action.operationId.includes('architecture') ||
+                    action.operationId.includes('profile') ||
+                    action.operationId.includes('stack') ||
+                    action.operationId.includes('config')
+                  ) {
+                    const summary = typeof result.data === 'object' && result.data !== null ? JSON.stringify(result.data).slice(0, 160) : String(result.data).slice(0, 160);
+                    memory.add({
+                      type: 'fact',
+                      scope: action.connectionId,
+                      claim: `Confirmed provider ${action.connectionId} capability ${action.operationId}: ${summary}`,
+                      importance: 3,
+                      confidence: 0.9,
+                    });
+                  }
+                } catch {
+                  /* non-blocking memory promotion */
+                }
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
@@ -3424,6 +3443,17 @@ export class Gitu {
                     ? ' The connection id you used is the documentation EXAMPLE — use a real id from REGISTERED SAVED CONNECTIONS in TASK STATE.'
                     : '';
                 this.emit(`connection ${action.connectionId}/${action.operationId} failed — ${reason}`);
+                try {
+                  memory.add({
+                    type: 'failure',
+                    scope: action.connectionId,
+                    claim: `Saved connection read ${action.connectionId}:${action.operationId} failed: ${(error as Error).message.slice(0, 160)}`,
+                    confidence: 0.9,
+                    importance: 3,
+                  });
+                } catch {
+                  /* non-blocking memory store recording */
+                }
                 observe(
                   `CONNECTION ACTION FAILED: ${(error as Error).message}${exampleEcho}\nDo not retry by adding raw headers to web_fetch. The saved connection and its credential stay valid; resolve the missing operation (registered read for discovery, or documented connection_operation for writes) or, only when the provider positively rejected authentication, use secure reauthorization.`,
                 );
@@ -3591,6 +3621,17 @@ export class Gitu {
                     : '';
                 if (outcome === 'sent-rejected') {
                   this.emit(`connection operation ${action.connectionId}/${action.operation.id} rejected — ${reason}`);
+                  try {
+                    memory.add({
+                      type: 'failure',
+                      scope: action.connectionId,
+                      claim: `Provider operation ${action.connectionId}:${action.operation.id} (${action.operation.method} ${action.operation.path}) rejected: ${message.slice(0, 160)}`,
+                      confidence: 0.95,
+                      importance: 4,
+                    });
+                  } catch {
+                    /* non-blocking memory store recording */
+                  }
                   const sentBody =
                     action.body === undefined ? '(no request body)' : JSON.stringify(action.body).slice(0, 2_000);
                   observe(
@@ -3975,6 +4016,31 @@ export class Gitu {
                 risks: action.risks ?? [],
                 followUps: action.followUps ?? [],
               };
+              // Promote confirmed provider architecture facts into long-term project memory
+              try {
+                if (ledger.data.providerEvidence) {
+                  for (const ev of ledger.data.providerEvidence) {
+                    if (
+                      ev.capability.includes('architecture') ||
+                      ev.capability.includes('profile') ||
+                      ev.capability.includes('stack') ||
+                      ev.capability.includes('list') ||
+                      ev.capability.includes('status')
+                    ) {
+                      const summary = typeof ev.data === 'object' && ev.data !== null ? JSON.stringify(ev.data).slice(0, 160) : String(ev.data).slice(0, 160);
+                      memory.add({
+                        type: 'fact',
+                        scope: ev.connectionId,
+                        claim: `Confirmed provider ${ev.connectionId} capability ${ev.capability}: ${summary}`,
+                        importance: 3,
+                        confidence: 0.9,
+                      });
+                    }
+                  }
+                }
+              } catch {
+                /* non-blocking memory promotion */
+              }
               exitReason = 'complete';
               break;
             }

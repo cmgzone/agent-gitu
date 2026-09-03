@@ -12,6 +12,7 @@ import {
   type CapabilityInvocationRequest,
 } from '../src/connections/runtime/universal-registry.js';
 import { Gitu } from '../src/agent/gitu.js';
+import { MemoryStore } from '../src/memory/memory-store.js';
 import { extractDigestMaterial, buildDigestContent, compressDigest } from '../src/context/digest.js';
 import type { LlmClient, LlmMessage, LlmTurnResult } from '../src/llm/llm.js';
 
@@ -811,5 +812,72 @@ describe('Universal Argument Layer & Invocation Runtime', () => {
     expect(resSv7.status).toBe('ok');
     expect(resSv7.cacheHit).toBe(false);
     expect(sv7Reads).toBe(2);
+  });
+
+  it('promotes negative memory and stable provider facts to project MemoryStore across distinct tasks', async () => {
+    const root = project('cross-task-memory-promotion');
+    home();
+    let turn = 0;
+
+    const taskALlm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['learn stack'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          // Read a stable architecture/stack capability
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-architecture', reason: 'learn stack' } }),
+            metadata: {},
+          };
+        }
+        if (turn === 3) {
+          // Trigger a rejected connection action
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'invalid-nonexistent-op', reason: 'probe bad endpoint' } }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'task A done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return taskALlm.completeTurn!(messages);
+      },
+    };
+
+    const gituTaskA = new Gitu({
+      cwd: root,
+      llm: taskALlm,
+      mode: 'fast',
+      connectionActionHandler: async (req) => {
+        if (req.operationId === 'get-app-architecture') {
+          return { message: 'stack confirmed', data: { framework: 'nodejs', database: 'postgres' } };
+        }
+        throw new Error('HTTP 404 endpoint not found');
+      },
+    });
+
+    await gituTaskA.run('Task A: Learn infrastructure');
+
+    // Verify MemoryStore for project received both the stable fact and negative failure pattern
+    const memory = MemoryStore.forProject(root);
+    const failureMemories = memory.query({ type: 'failure', scope: 'coolify' });
+    const factMemories = memory.query({ type: 'fact', scope: 'coolify' });
+
+    expect(failureMemories.length).toBeGreaterThan(0);
+    expect(failureMemories.some((m) => m.claim.includes('invalid-nonexistent-op'))).toBe(true);
+
+    expect(factMemories.length).toBeGreaterThan(0);
+    expect(factMemories.some((m) => m.claim.includes('get-app-architecture'))).toBe(true);
   });
 });

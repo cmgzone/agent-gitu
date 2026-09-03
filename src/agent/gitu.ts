@@ -48,6 +48,7 @@ import {
   type ConnectionOperationProposal,
   type ConnectionRecoveryDecision,
 } from '../connections/connections.js';
+import { catalogOperation, findCatalogOperation } from '../connections/catalog.js';
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
@@ -121,7 +122,7 @@ export interface GituConfig {
   connectionContext?: () => string;
   /** Executes only a registered, read-only provider operation. URLs and
    * authorization headers stay inside the host adapter. */
-  connectionActionHandler?: (input: { connectionId: string; operationId: string }) => Promise<{ message: string; data?: unknown }>;
+  connectionActionHandler?: (input: { connectionId: string; operationId: string }) => Promise<{ message: string; data?: unknown; operation?: ConnectionOperation }>;
   /** Executes a multi-intent bounded discovery graph across a saved connection. */
   connectionDiscoveryHandler?: (request: DiscoveryRequest) => Promise<DiscoveryResult>;
   /** Selects the safest information-gathering action for the recovery
@@ -2398,29 +2399,45 @@ export class Gitu {
           protocolMode: 'native' | 'structured_text' | 'text',
           maxTransportAttempts: number,
           override?: { effort?: EffortLevel; outputBudgetTokens?: number },
-        ) => ({
-          effort: override?.effort ?? effortPlan.llmEffort ?? this.config.effort,
-          signal: this.abortController!.signal,
-          logicalRequestId,
-          maxTransportAttempts,
-          protocolMode,
-          ...(override?.outputBudgetTokens !== undefined ? { outputBudgetTokens: override.outputBudgetTokens } : {}),
-          ...(protocolMode === 'native' ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const } : protocolMode === 'structured_text' ? { json: true } : {}),
-          onUsage: (u: LlmUsage) => {
-            callUsage = u;
-          },
-          onActivity: (activity: LlmActivityEvent) => {
-            if (activity.type === 'reasoning') this.emit('activity reasoning');
-            else if (activity.type === 'content') this.emit('activity content');
-            else if (activity.type === 'tool') this.emit('activity tool');
-          },
-          onStreamReset: () => {
-            // The connection died after partial deltas went out and the LLM
-            // client fell back to a full completion. Discard streamed state so
-            // the authoritative final text is not overlaid on stale fragments.
-            resetProse();
-          },
-        });
+        ) => {
+          const baseEffort = effortPlan.llmEffort ?? this.config.effort;
+          let activeEffort = override?.effort;
+          if (!activeEffort) {
+            let maxFailures = 0;
+            for (const tracker of connectionCallTracker.values()) {
+              if (tracker.consecutiveFailures > maxFailures) maxFailures = tracker.consecutiveFailures;
+            }
+            if (maxFailures >= 2) {
+              activeEffort = baseEffort === 'high' ? 'max' : 'high';
+              this.emit(`effort escalated to ${activeEffort} — repeated connection failure`);
+            } else {
+              activeEffort = baseEffort;
+            }
+          }
+          return {
+            effort: activeEffort,
+            signal: this.abortController!.signal,
+            logicalRequestId,
+            maxTransportAttempts,
+            protocolMode,
+            ...(override?.outputBudgetTokens !== undefined ? { outputBudgetTokens: override.outputBudgetTokens } : {}),
+            ...(protocolMode === 'native' ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const } : protocolMode === 'structured_text' ? { json: true } : {}),
+            onUsage: (u: LlmUsage) => {
+              callUsage = u;
+            },
+            onActivity: (activity: LlmActivityEvent) => {
+              if (activity.type === 'reasoning') this.emit('activity reasoning');
+              else if (activity.type === 'content') this.emit('activity content');
+              else if (activity.type === 'tool') this.emit('activity tool');
+            },
+            onStreamReset: () => {
+              // The connection died after partial deltas went out and the LLM
+              // client fell back to a full completion. Discard streamed state so
+              // the authoritative final text is not overlaid on stale fragments.
+              resetProse();
+            },
+          };
+        };
         const callOnce = async (
           protocolMode: 'native' | 'structured_text' | 'text',
           maxTransportAttempts: number,
@@ -3387,21 +3404,28 @@ export class Gitu {
               }
               try {
                 const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
+                // Resolve memory policy: from result.operation, catalog, or fallback heuristic
+                const catalogOp = catalogOperation(action.connectionId, action.operationId) ?? findCatalogOperation(action.operationId, action.connectionId);
+                const memoryPolicy = result.operation?.memoryPolicy ?? catalogOp?.memoryPolicy;
                 const evidence = this.providerCache.record({
                   connectionId: action.connectionId,
                   capability: action.operationId,
                   operationId: action.operationId,
                   data: result.data,
+                  ...(memoryPolicy ? { memoryPolicy } : {}),
                 });
                 ledger.recordProviderEvidence(evidence);
                 ledger.syncProviderState(this.providerCache.getEpochs());
                 try {
-                  if (
-                    action.operationId.includes('architecture') ||
-                    action.operationId.includes('profile') ||
-                    action.operationId.includes('stack') ||
-                    action.operationId.includes('config')
-                  ) {
+                  const isPromotable = memoryPolicy
+                    ? (memoryPolicy.promotable && memoryPolicy.stability === 'stable')
+                    : (
+                        action.operationId.includes('architecture') ||
+                        action.operationId.includes('profile') ||
+                        action.operationId.includes('stack') ||
+                        action.operationId.includes('config')
+                      );
+                  if (isPromotable) {
                     const summary = typeof result.data === 'object' && result.data !== null ? JSON.stringify(result.data).slice(0, 160) : String(result.data).slice(0, 160);
                     memory.add({
                       type: 'fact',
@@ -4070,13 +4094,15 @@ export class Gitu {
               try {
                 if (ledger.data.providerEvidence) {
                   for (const ev of ledger.data.providerEvidence) {
-                    if (
-                      ev.capability.includes('architecture') ||
-                      ev.capability.includes('profile') ||
-                      ev.capability.includes('stack') ||
-                      ev.capability.includes('list') ||
-                      ev.capability.includes('status')
-                    ) {
+                    const isPromotable = ev.memoryPolicy
+                      ? (ev.memoryPolicy.promotable && ev.memoryPolicy.stability === 'stable')
+                      : (
+                          ev.capability.includes('architecture') ||
+                          ev.capability.includes('profile') ||
+                          ev.capability.includes('stack') ||
+                          ev.capability.includes('config')
+                        );
+                    if (isPromotable) {
                       const summary = typeof ev.data === 'object' && ev.data !== null ? JSON.stringify(ev.data).slice(0, 160) : String(ev.data).slice(0, 160);
                       memory.add({
                         type: 'fact',

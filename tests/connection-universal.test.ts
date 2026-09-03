@@ -880,4 +880,266 @@ describe('Universal Argument Layer & Invocation Runtime', () => {
     expect(factMemories.length).toBeGreaterThan(0);
     expect(factMemories.some((m) => m.claim.includes('get-app-architecture'))).toBe(true);
   });
+
+  it('respects metadata-driven memoryPolicy: promotes stable facts and suppresses volatile or session reads', async () => {
+    const root = project('metadata-memory-policy');
+    home();
+    let turn = 0;
+
+    const taskLlm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['check policies'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          // Read stable operation: get-application (explicit promotable: true, stability: 'stable')
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-application', reason: 'read app detail' } }),
+            metadata: {},
+          };
+        }
+        if (turn === 3) {
+          // Read volatile operation: get-application-envs (explicit promotable: false, stability: 'volatile')
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-application-envs', reason: 'read env vars' } }),
+            metadata: {},
+          };
+        }
+        if (turn === 4) {
+          // Read session operation: list-applications (explicit promotable: false, stability: 'session')
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'list-applications', reason: 'list apps' } }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'policy check done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return taskLlm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm: taskLlm,
+      mode: 'fast',
+      connectionActionHandler: async (req) => {
+        if (req.operationId === 'get-application') {
+          return {
+            message: 'app details',
+            data: { id: 'sv7', name: 'my-app', fqdn: 'https://app.example.com' },
+            operation: {
+              id: 'get-application',
+              label: 'Get application detail',
+              capability: 'applications.read',
+              method: 'GET',
+              path: '/api/v1/applications/:id',
+              risk: 'read',
+              memoryPolicy: { promotable: true, stability: 'stable' },
+            },
+          };
+        }
+        if (req.operationId === 'get-application-envs') {
+          return {
+            message: 'envs',
+            data: [{ key: 'SECRET_TOKEN', value: 'xyz' }],
+            operation: {
+              id: 'get-application-envs',
+              label: 'Get application envs',
+              capability: 'applications.read',
+              method: 'GET',
+              path: '/api/v1/applications/:id/envs',
+              risk: 'read',
+              memoryPolicy: { promotable: false, stability: 'volatile' },
+            },
+          };
+        }
+        if (req.operationId === 'list-applications') {
+          return {
+            message: 'apps list',
+            data: [{ id: 'sv7', name: 'my-app' }],
+            operation: {
+              id: 'list-applications',
+              label: 'List applications',
+              capability: 'applications.read',
+              method: 'GET',
+              path: '/api/v1/applications',
+              risk: 'read',
+              memoryPolicy: { promotable: false, stability: 'session' },
+            },
+          };
+        }
+        throw new Error('unknown');
+      },
+    });
+
+    await gitu.run('Check memory policies');
+
+    const memory = MemoryStore.forProject(root);
+    const factMemories = memory.query({ type: 'fact', scope: 'coolify' });
+
+    // The stable operation 'get-application' MUST be promoted
+    expect(factMemories.some((m) => m.claim.includes('get-application'))).toBe(true);
+
+    // The volatile operation 'get-application-envs' MUST NOT be promoted
+    expect(factMemories.some((m) => m.claim.includes('get-application-envs'))).toBe(false);
+
+    // The session operation 'list-applications' MUST NOT be promoted
+    expect(factMemories.some((m) => m.claim.includes('list-applications'))).toBe(false);
+  });
+
+  it('resolves memoryPolicy from verified catalog when handler returns plain data without operation field', async () => {
+    const root = project('catalog-memory-policy-fallback');
+    home();
+    let turn = 0;
+
+    const taskLlm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['catalog fallback'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          // get-application is in catalog with promotable: true, stability: 'stable'
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-application', reason: 'read app' } }),
+            metadata: {},
+          };
+        }
+        if (turn === 3) {
+          // get-application-envs is in catalog with promotable: false, stability: 'volatile'
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-application-envs', reason: 'read envs' } }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'catalog fallback done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return taskLlm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm: taskLlm,
+      mode: 'fast',
+      // Plain handler returning ONLY message & data, no operation object
+      connectionActionHandler: async (req) => {
+        if (req.operationId === 'get-application') {
+          return { message: 'ok', data: { id: 'sv7', fqdn: 'https://coolify.app' } };
+        }
+        if (req.operationId === 'get-application-envs') {
+          return { message: 'ok', data: [{ key: 'FOO', value: 'BAR' }] };
+        }
+        throw new Error('unknown');
+      },
+    });
+
+    await gitu.run('Catalog fallback test');
+
+    const memory = MemoryStore.forProject(root);
+    const factMemories = memory.query({ type: 'fact', scope: 'coolify' });
+
+    // get-application should be resolved from catalog as stable fact
+    expect(factMemories.some((m) => m.claim.includes('get-application'))).toBe(true);
+
+    // get-application-envs should be resolved from catalog as volatile and NOT promoted
+    expect(factMemories.some((m) => m.claim.includes('get-application-envs'))).toBe(false);
+  });
+
+  it('dynamically escalates provider reasoning effort to high on repeated connection failures', async () => {
+    const root = project('effort-escalation-test');
+    home();
+    let turn = 0;
+    const recordedEfforts: (string | undefined)[] = [];
+
+    const taskLlm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(_messages, opts): Promise<LlmTurnResult> {
+        turn += 1;
+        recordedEfforts.push(opts?.effort);
+
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['test effort'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          // Failure 1: probe non-existent endpoint
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'fail-op', reason: 'first try' } }),
+            metadata: {},
+          };
+        }
+        if (turn === 3) {
+          // Failure 2: repeat non-existent endpoint -> consecutiveFailures becomes 2
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'fail-op', reason: 'second try' } }),
+            metadata: {},
+          };
+        }
+        if (turn === 4) {
+          // Turn 4 runs with escalated reasoning effort!
+          // Provide new hypothesis and finish
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'set_hypothesis', text: 'Endpoint requires different path' } }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages, opts): Promise<LlmTurnResult> {
+        return taskLlm.completeTurn!(messages, opts);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm: taskLlm,
+      mode: 'fast',
+      effort: 'low',
+      connectionActionHandler: async () => {
+        throw new Error('HTTP 404 endpoint not found');
+      },
+    });
+
+    await gitu.run('Test dynamic reasoning effort escalation');
+
+    // Turn 1: base effort 'low'
+    expect(recordedEfforts[0]).toBe('low');
+    // Turn 2: after criteria, still 'low'
+    expect(recordedEfforts[1]).toBe('low');
+    // Turn 3: after 1st failure (consecutiveFailures=1), still 'low'
+    expect(recordedEfforts[2]).toBe('low');
+    // Turn 4: after 2nd failure (consecutiveFailures=2), escalated to 'high'!
+    expect(recordedEfforts[3]).toBe('high');
+  });
 });

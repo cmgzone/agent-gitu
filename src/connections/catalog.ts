@@ -18,6 +18,23 @@
 
 import type { DiscoveryOperationMetadata } from './discovery-engine.js';
 
+/**
+ * Declares how results from this operation should be handled by the memory
+ * promotion layer. When absent, the runtime falls back to keyword heuristics.
+ *
+ * - `stable`: The result represents durable provider architecture / topology
+ *   that rarely changes (e.g. registered operations, resource identifiers).
+ *   Promote to `MemoryStore` as a cross-task `fact`.
+ * - `session`: The result is meaningful for the current task but should not
+ *   outlive it (e.g. list of resources). Keep in `ProviderReadCache` only.
+ * - `volatile`: The result changes frequently (e.g. deployment status, env
+ *   vars). Cache only for the current state epoch; never promote.
+ */
+export interface MemoryPolicy {
+  promotable: boolean;
+  stability: 'stable' | 'session' | 'volatile';
+}
+
 export interface CatalogOperation {
   id: string;
   label: string;
@@ -33,6 +50,8 @@ export interface CatalogOperation {
    * eligible for auto-chaining.
    */
   discovery?: DiscoveryOperationMetadata;
+  /** Explicit memory promotion policy. Overrides keyword-based heuristics. */
+  memoryPolicy?: MemoryPolicy;
 }
 
 export interface CatalogProvider {
@@ -62,6 +81,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/api/v1/servers',
         risk: 'read',
+        // List of servers is routing-useful but servers are added/removed; session only.
+        memoryPolicy: { promotable: false, stability: 'session' },
         discovery: {
           intent: 'list_resources',
           role: 'list',
@@ -79,6 +100,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/api/v1/applications',
         risk: 'read',
+        // Application list is session-useful (routing) but membership changes; not stable.
+        memoryPolicy: { promotable: false, stability: 'session' },
         discovery: {
           intent: 'list_resources',
           role: 'list',
@@ -96,6 +119,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/api/v1/applications/:id',
         risk: 'read',
+        // Resource identity (id, name, fqdn, git_repository) is stable architecture.
+        memoryPolicy: { promotable: true, stability: 'stable' },
         discovery: {
           intent: 'get_resource',
           role: 'detail',
@@ -114,6 +139,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/api/v1/applications/:id/envs',
         risk: 'read',
+        // Env vars change frequently with every deploy/config change; volatile.
+        memoryPolicy: { promotable: false, stability: 'volatile' },
         discovery: {
           intent: 'get_environment',
           role: 'environment',
@@ -125,8 +152,9 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
           catalogVerification: 'verified',
         },
       },
-      { id: 'deploy-application', label: 'Deploy application', capability: 'deployments.write', method: 'POST', path: '/api/v1/deploy', risk: 'reversible-write' },
-      { id: 'create-database', label: 'Create database', capability: 'databases.create', method: 'POST', path: '/api/v1/databases', risk: 'reversible-write' },
+      { id: 'deploy-application', label: 'Deploy application', capability: 'deployments.write', method: 'POST', path: '/api/v1/deploy', risk: 'reversible-write', memoryPolicy: { promotable: false, stability: 'volatile' } },
+      { id: 'create-database', label: 'Create database', capability: 'databases.create', method: 'POST', path: '/api/v1/databases', risk: 'reversible-write', memoryPolicy: { promotable: false, stability: 'volatile' } },
+
     ],
   },
   {
@@ -145,6 +173,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/user/repos',
         risk: 'read',
+        // Repo list changes as repos are created/archived; session only.
+        memoryPolicy: { promotable: false, stability: 'session' },
         discovery: {
           intent: 'list_resources',
           role: 'list',
@@ -162,6 +192,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/repos/:id/actions/runs',
         risk: 'read',
+        // CI run results are live status — volatile.
+        memoryPolicy: { promotable: false, stability: 'volatile' },
         discovery: {
           intent: 'get_status',
           role: 'status',
@@ -173,7 +205,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
           catalogVerification: 'verified',
         },
       },
-      { id: 'create-deployment', label: 'Create deployment', capability: 'deployments.write', method: 'POST', path: '/deployments', risk: 'reversible-write' },
+      { id: 'create-deployment', label: 'Create deployment', capability: 'deployments.write', method: 'POST', path: '/deployments', risk: 'reversible-write', memoryPolicy: { promotable: false, stability: 'volatile' } },
     ],
   },
   {
@@ -191,6 +223,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/api/v4/projects',
         risk: 'read',
+        // Project list is session-useful routing data; membership changes.
+        memoryPolicy: { promotable: false, stability: 'session' },
         discovery: {
           intent: 'list_resources',
           role: 'list',
@@ -208,6 +242,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/api/v4/projects/:id/pipelines',
         risk: 'read',
+        // Pipeline status is live — volatile.
+        memoryPolicy: { promotable: false, stability: 'volatile' },
         discovery: {
           intent: 'get_status',
           role: 'status',
@@ -219,7 +255,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
           catalogVerification: 'verified',
         },
       },
-      { id: 'create-deployment', label: 'Create deployment', capability: 'replacements.write', method: 'POST', path: '/api/v4/projects/deployments', risk: 'reversible-write' },
+      { id: 'create-deployment', label: 'Create deployment', capability: 'replacements.write', method: 'POST', path: '/api/v4/projects/deployments', risk: 'reversible-write', memoryPolicy: { promotable: false, stability: 'volatile' } },
     ],
   },
   {
@@ -237,6 +273,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/v9/projects',
         risk: 'read',
+        // Project list — session routing data; projects are created/deleted.
+        memoryPolicy: { promotable: false, stability: 'session' },
         discovery: {
           intent: 'list_resources',
           role: 'list',
@@ -254,6 +292,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/v9/projects/:id/env',
         risk: 'read',
+        // Env vars change with every config update — volatile.
+        memoryPolicy: { promotable: false, stability: 'volatile' },
         discovery: {
           intent: 'get_environment',
           role: 'environment',
@@ -272,6 +312,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/v6/deployments',
         risk: 'read',
+        // Deployment state is live status — volatile.
+        memoryPolicy: { promotable: false, stability: 'volatile' },
         discovery: {
           intent: 'get_status',
           role: 'status',
@@ -282,7 +324,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
           catalogVerification: 'verified',
         },
       },
-      { id: 'create-deployment', label: 'Create deployment from source', capability: 'deployments.write', method: 'POST', path: '/v13/deployments', risk: 'reversible-write' },
+      { id: 'create-deployment', label: 'Create deployment from source', capability: 'deployments.write', method: 'POST', path: '/v13/deployments', risk: 'reversible-write', memoryPolicy: { promotable: false, stability: 'volatile' } },
     ],
   },
   {
@@ -300,6 +342,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/v1/apps',
         risk: 'read',
+        // App list is session routing data; membership changes.
+        memoryPolicy: { promotable: false, stability: 'session' },
         discovery: {
           intent: 'list_resources',
           role: 'list',
@@ -317,6 +361,8 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
         method: 'GET',
         path: '/v1/apps/:id',
         risk: 'read',
+        // App identity (name, hostname) is stable architecture.
+        memoryPolicy: { promotable: true, stability: 'stable' },
         discovery: {
           intent: 'get_resource',
           role: 'detail',
@@ -328,7 +374,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
           catalogVerification: 'verified',
         },
       },
-      { id: 'create-machine', label: 'Create machine', capability: 'apps.write', method: 'POST', path: '/v1/apps/machines', risk: 'reversible-write' },
+      { id: 'create-machine', label: 'Create machine', capability: 'apps.write', method: 'POST', path: '/v1/apps/machines', risk: 'reversible-write', memoryPolicy: { promotable: false, stability: 'volatile' } },
     ],
   },
 ];
@@ -345,6 +391,22 @@ export function catalogCapabilityDeclared(provider: string, capability: string):
 
 export function catalogOperation(provider: string, operationId: string): CatalogOperation | undefined {
   return catalogProvider(provider)?.operations.find((operation) => operation.id === operationId);
+}
+
+/**
+ * Searches across catalog providers for an operation by ID, optionally
+ * prioritizing a provider hint.
+ */
+export function findCatalogOperation(operationId: string, providerHint?: string): CatalogOperation | undefined {
+  if (providerHint) {
+    const direct = catalogOperation(providerHint, operationId);
+    if (direct) return direct;
+  }
+  for (const p of CONNECTION_CATALOG) {
+    const op = p.operations.find((candidate) => candidate.id === operationId);
+    if (op) return op;
+  }
+  return undefined;
 }
 
 /** First documented operation matching a capability and risk class, if any.

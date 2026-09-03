@@ -34,6 +34,14 @@ export interface ConnectionOperation {
   /** Static path relative to the provider origin. Query strings are not allowed. */
   path: string;
   risk: ConnectionOperationRisk;
+  /**
+   * Explicit memory promotion policy. When present, overrides the runtime's
+   * keyword-based heuristic for deciding whether to promote an observation to
+   * cross-task MemoryStore. Populated from CatalogOperation.memoryPolicy when
+   * an operation is registered from the catalog, or set explicitly on
+   * dynamically-discovered operations where stability is known.
+   */
+  memoryPolicy?: { promotable: boolean; stability: 'stable' | 'session' | 'volatile' };
 }
 
 /**
@@ -212,6 +220,8 @@ export interface ConnectionInvocationResult {
   message: string;
   /** Bounded provider output with secret-like fields removed. */
   data?: unknown;
+  /** Resolved operation definition when known */
+  operation?: ConnectionOperation;
 }
 
 const PROFILE_FILE = 'connections.json';
@@ -354,7 +364,23 @@ export function normalizeConnectionOperation(value: unknown): ConnectionOperatio
   // GET operations are discovery only. Every provider mutation must carry an
   // explicit non-read risk, so it cannot slip through the read path.
   if ((method === 'GET' && risk !== 'read') || (method !== 'GET' && risk === 'read')) return undefined;
-  return { id, label, capability, method, path: operationPath, risk: risk as ConnectionOperationRisk };
+  let memoryPolicy: { promotable: boolean; stability: 'stable' | 'session' | 'volatile' } | undefined;
+  if (raw['memoryPolicy'] && typeof raw['memoryPolicy'] === 'object') {
+    const mp = raw['memoryPolicy'] as Record<string, unknown>;
+    const stability = mp['stability'];
+    if (typeof mp['promotable'] === 'boolean' && (stability === 'stable' || stability === 'session' || stability === 'volatile')) {
+      memoryPolicy = { promotable: mp['promotable'], stability };
+    }
+  }
+  return {
+    id,
+    label,
+    capability,
+    method,
+    path: operationPath,
+    risk: risk as ConnectionOperationRisk,
+    ...(memoryPolicy ? { memoryPolicy } : {}),
+  };
 }
 
 function normalizeOperations(value: unknown): ConnectionOperation[] {
@@ -1010,7 +1036,13 @@ export class ConnectionRegistry {
       this.discoveryCache.invalidateForWrite(profile.id);
     }
 
-    return { ok: true, status: response.status, message: `${operation.label} succeeded (HTTP ${response.status}).`, ...(data !== undefined ? { data } : {}) };
+    return {
+      ok: true,
+      status: response.status,
+      message: `${operation.label} succeeded (HTTP ${response.status}).`,
+      ...(data !== undefined ? { data } : {}),
+      operation,
+    };
   }
 
   async invoke(id: string, operationId: string, body?: unknown): Promise<ConnectionInvocationResult> {

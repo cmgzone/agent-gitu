@@ -2633,7 +2633,11 @@ export class GituServer {
         // safe GET auto-registers and persists), then execute. No approval
         // channel, no credential prompt, no manual registration request.
         const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
-        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+        return {
+          message: result.message,
+          ...(result.data !== undefined ? { data: result.data } : {}),
+          ...(result.operation ? { operation: result.operation } : {}),
+        };
       },
       // The recovery controller may run ONE read-only operation on its own
       // when the model spirals — never a write: approval stays mandatory.

@@ -1,5 +1,10 @@
 import { canonicalJson, nowIso, sha256 } from '../../util.js';
 
+export interface MemoryPolicy {
+  promotable: boolean;
+  stability: 'stable' | 'session' | 'volatile';
+}
+
 /**
  * Durable task evidence recorded from external provider reads.
  * Correlates observed provider state with state epochs so the model
@@ -18,6 +23,7 @@ export interface ProviderEvidence {
   resultDigest: string;
   observedAt: string;
   stateEpoch: number;
+  memoryPolicy?: MemoryPolicy;
 }
 
 export interface CachedDocRecord {
@@ -117,6 +123,7 @@ export class ProviderReadCache {
     resourceId?: string;
     params?: unknown;
     data: unknown;
+    memoryPolicy?: MemoryPolicy;
   }): ProviderEvidence {
     this.evidenceCounter += 1;
     const evidenceId = `pe-${this.evidenceCounter}`;
@@ -136,6 +143,7 @@ export class ProviderReadCache {
       resultDigest,
       observedAt: nowIso(),
       stateEpoch,
+      ...(params.memoryPolicy ? { memoryPolicy: params.memoryPolicy } : {}),
     };
 
     const key = this.cacheKey(params.connectionId, params.capability, params.resourceId, paramsDigest);

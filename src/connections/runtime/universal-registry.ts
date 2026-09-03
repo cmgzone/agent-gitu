@@ -1,5 +1,5 @@
 import { canonicalJson, sha256 } from '../../util.js';
-import type { CapabilitySource, ExecutionResult, ExecutionStatus } from './execution-result.js';
+import type { CapabilitySource, ExecutionResult, ExecutionStatus, MemoryPolicy } from './execution-result.js';
 import type { ProviderReadCache, ProviderEvidence } from './provider-cache.js';
 import type { ConnectionOperation } from '../connections.js';
 
@@ -36,6 +36,7 @@ export interface UniversalCapability {
   risk: CapabilityRisk;
   inputSchema?: Record<string, unknown>;
   outputSchema?: Record<string, unknown>;
+  memoryPolicy?: MemoryPolicy;
   execute: (params: Record<string, unknown>, context: ExecutionContext) => Promise<ExecutionResult>;
 }
 
@@ -215,6 +216,7 @@ export class UniversalCapabilityRegistry {
                 resourceId,
                 params,
                 data: res.content,
+                memoryPolicy: { promotable: false, stability: 'session' },
               });
               evidenceId = ev.id;
             }
@@ -231,6 +233,7 @@ export class UniversalCapabilityRegistry {
               evidenceId,
               stateEpoch: ctx.cache?.getStateEpoch(provider, resourceType, resourceId) ?? 1,
               cacheHit: false,
+              memoryPolicy: { promotable: false, stability: 'session' },
             };
           } catch (error) {
             return {
@@ -272,6 +275,7 @@ export class UniversalCapabilityRegistry {
         capability: op.capability,
         label: op.label,
         risk,
+        memoryPolicy: op.memoryPolicy,
         execute: async (params, ctx) => {
           const executionId = `conn-exec-${Date.now()}-${sha256(capId).slice(0, 6)}`;
           const resourceId = extractResourceId(params, ctx);
@@ -292,6 +296,7 @@ export class UniversalCapabilityRegistry {
                 stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
                 cacheHit: false,
                 errorClass: 'APPROVAL_REQUIRED',
+                memoryPolicy: op.memoryPolicy,
               };
             }
             const approved = await ctx.approvalHandler({ id: capId, label: op.label, risk, params });
@@ -308,6 +313,7 @@ export class UniversalCapabilityRegistry {
                 stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
                 cacheHit: false,
                 errorClass: 'USER_REJECTED',
+                memoryPolicy: op.memoryPolicy,
               };
             }
           }
@@ -327,6 +333,7 @@ export class UniversalCapabilityRegistry {
                 resourceId,
                 params,
                 data,
+                memoryPolicy: op.memoryPolicy,
               });
               evidenceId = ev.id;
             }
@@ -344,6 +351,7 @@ export class UniversalCapabilityRegistry {
               evidenceId,
               stateEpoch: ctx.cache?.getStateEpoch(connectionId, resourceType, resourceId) ?? 1,
               cacheHit: false,
+              memoryPolicy: op.memoryPolicy,
             };
           } catch (error) {
             return {

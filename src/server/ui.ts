@@ -2602,7 +2602,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
-    if (text.indexOf('think') === 0 || text.indexOf('plan ') === 0) mascotState('thinking');
+    if (text.indexOf('think') === 0 || text.indexOf('plan ') === 0 || text.indexOf('activity reasoning') === 0) mascotState('thinking');
+    else if (text.indexOf('activity content') === 0 || text.indexOf('activity tool') === 0) mascotState('thinking');
     else if (text.indexOf('run write') === 0 || text.indexOf('run edit') === 0) mascotState('coding');
     else if (text.indexOf('run $') === 0 || text.indexOf('run ') === 0) mascotState('testing');
     else if (text.indexOf('evidence') === 0 && text.indexOf('PASS') >= 0) mascotState('celebrate');
@@ -2644,6 +2645,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('tdelta ') === 0 || text.indexOf('thought ') === 0) {
       var chunk = text.indexOf('tdelta ') === 0 ? text.slice(7) : text.slice(8);
       if (sess && sess.chatish) {
+        setWorking(null);
         if (!sess.nodes.abubble) {
           var ab = document.createElement('div');
           ab.className = 'abubble';
@@ -2723,6 +2725,15 @@ export const UI_HTML = String.raw`<!doctype html>
         insert(pp);
       }
       closeThought(runId);
+      return;
+    }
+    if (text.indexOf('activity reasoning') === 0) { setWorking('Reasoning…'); return; }
+    if (text.indexOf('activity content') === 0) {
+      if (!sess || !sess.chatish) setWorking('Responding…');
+      return;
+    }
+    if (text.indexOf('activity tool') === 0) {
+      if (!sess || !sess.chatish) setWorking('Preparing tool action…');
       return;
     }
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
@@ -4170,7 +4181,7 @@ export const UI_HTML = String.raw`<!doctype html>
         '<span><i style="background:#9ca3af"></i>Other ' + pct(counts.other) + '%</span></div>';
     }
     html += '<div class="section-h">Raw events</div><div class="raw">';
-    var evs = (sess.events || []).filter(function (e) { return String(e.text).indexOf('tdelta') !== 0; }).slice(-60).reverse();
+    var evs = (sess.events || []).filter(function (e) { return String(e.text).indexOf('tdelta') !== 0 && String(e.text).indexOf('activity') !== 0; }).slice(-60).reverse();
     if (!evs.length) html += '<div class="row"><span>no events yet</span></div>';
     evs.forEach(function (ev) {
       html += '<div class="row"><span>' + esc(String(ev.text).slice(0, 90)) + '</span><span class="t">' + esc(new Date(ev.t).toLocaleTimeString()) + '</span></div>';

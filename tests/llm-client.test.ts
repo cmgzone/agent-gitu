@@ -9,6 +9,7 @@ import {
   findXmlCallStart,
   parseXmlFunctionCall,
   xmlMarkerHoldBack,
+  type LlmActivityEvent,
 } from '../src/llm/llm.js';
 
 describe('OpenAiCompatClient retry behavior', () => {
@@ -318,6 +319,270 @@ describe('OpenAiCompatClient retry behavior', () => {
         });
       }
       expect(turn.metadata.reasoning).toContain('must call the tool first');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('emits onActivity reasoning and content events during streaming', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        const body =
+          'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: 'thinking step 1' } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: 'thinking step 2' } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: 'Hello' } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: ' world' } }] }) + '\n\n' +
+          'data: [DONE]\n\n';
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+
+      const activities: LlmActivityEvent[] = [];
+      const client = new OpenAiCompatClient({ apiKey: 'sk-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' });
+      const out = await client.completeStream(
+        [{ role: 'user', content: 'hi' }],
+        { onActivity: (act) => activities.push(act) },
+        () => {},
+      );
+      expect(out).toBe('Hello world');
+      expect(activities).toEqual([
+        { type: 'reasoning' },
+        { type: 'reasoning' },
+        { type: 'content' },
+        { type: 'content' },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('emits onActivity reasoning when starting completeTurn', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'done' } }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      const activities: LlmActivityEvent[] = [];
+      const client = new OpenAiCompatClient({ apiKey: 'sk-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-pro' });
+      await client.completeTurn([{ role: 'user', content: 'hi' }], {
+        onActivity: (act) => activities.push(act),
+      });
+      expect(activities).toEqual([{ type: 'reasoning' }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('streams native tool calls with reasoning, chunked arguments, and preamble', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        const body =
+          'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: 'Deciding to run tool' } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: 'Calling ' } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { content: 'the tool now.' } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'agent_gitu_action', arguments: '{"action":' } }] } }] }) + '\n\n' +
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"type":"show_plan"}}' } }] } }] }) + '\n\n' +
+          'data: [DONE]';
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+
+      const activities: LlmActivityEvent[] = [];
+      const deltas: string[] = [];
+      const client = new OpenAiCompatClient({
+        apiKey: 'sk-x',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        capabilities: { streamingTools: true },
+      });
+
+      const turn = await client.completeTurnStream(
+        [{ role: 'user', content: 'show me plan' }],
+        {
+          protocolMode: 'native',
+          tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+          toolChoice: 'required',
+          onActivity: (act) => activities.push(act),
+        },
+        (delta) => deltas.push(delta),
+      );
+
+      expect(turn.kind).toBe('tool_calls');
+      if (turn.kind === 'tool_calls') {
+        expect(turn.calls).toEqual([
+          { id: 'call_1', name: 'agent_gitu_action', arguments: { action: { type: 'show_plan' } } },
+        ]);
+        expect(turn.preamble).toBe('Calling the tool now.');
+        expect(turn.metadata.reasoning).toBe('Deciding to run tool');
+      }
+      expect(deltas.join('')).toBe('Calling the tool now.');
+      expect(activities).toEqual([
+        { type: 'reasoning' },
+        { type: 'content' },
+        { type: 'content' },
+        { type: 'tool' },
+        { type: 'tool' },
+      ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('falls back to non-streaming completeTurn when streamingTools capability is disabled', async () => {
+    let calledStreaming = false;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        if (body['stream']) calledStreaming = true;
+        return new Response(JSON.stringify({
+          choices: [{ message: { tool_calls: [{ id: 'call_2', function: { name: 'agent_gitu_action', arguments: '{"action":{"type":"run"}}' } }] } }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+
+      const client = new OpenAiCompatClient({
+        apiKey: 'sk-x',
+        baseUrl: 'https://api.deepseek.com',
+        model: 'deepseek-v4-pro',
+        capabilities: { streamingTools: false },
+      });
+
+      const turn = await client.completeTurnStream(
+        [{ role: 'user', content: 'act' }],
+        {
+          protocolMode: 'native',
+          tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+          toolChoice: 'required',
+        },
+        () => {},
+      );
+
+      expect(calledStreaming).toBe(false);
+      expect(turn.kind).toBe('tool_calls');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('handles tool arguments split across many small chunks and missing trailing newline', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        const chunks = [
+          'data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: 'step 1' } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_99', function: { name: 'agent_gitu_action', arguments: '{' } }] } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"action":' } }] } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{"type":' } }] } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"run_command",' } }] } }] }) + '\n\n',
+          'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"command":"git status"}}' } }] } }] }) + '\n\n',
+          // Trailing line without trailing newline
+          'data: [DONE]',
+        ];
+        const stream = new ReadableStream({
+          start(controller) {
+            for (const chunk of chunks) {
+              controller.enqueue(new TextEncoder().encode(chunk));
+            }
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+
+      const client = new OpenAiCompatClient({
+        apiKey: 'sk-x',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        capabilities: { streamingTools: true },
+      });
+
+      const turn = await client.completeTurnStream(
+        [{ role: 'user', content: 'run git status' }],
+        {
+          protocolMode: 'native',
+          tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+          toolChoice: 'required',
+        },
+        () => {},
+      );
+
+      expect(turn.kind).toBe('tool_calls');
+      if (turn.kind === 'tool_calls') {
+        expect(turn.calls).toEqual([
+          { id: 'call_99', name: 'agent_gitu_action', arguments: { action: { type: 'run_command', command: 'git status' } } },
+        ]);
+        expect(turn.metadata.reasoning).toBe('step 1');
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('handles multi-byte UTF-8 split across SSE byte chunks in streamed tool calls', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        const fullPayload =
+          'data: ' +
+          JSON.stringify({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_utf8',
+                      function: { name: 'agent_gitu_action', arguments: JSON.stringify({ action: { type: 'say', text: 'hello 🌟 world' } }) },
+                    },
+                  ],
+                },
+              },
+            ],
+          }) +
+          '\n\ndata: [DONE]\n\n';
+
+        const encoded = new TextEncoder().encode(fullPayload);
+        const mid = Math.floor(encoded.length / 2);
+        const chunk1 = encoded.slice(0, mid);
+        const chunk2 = encoded.slice(mid);
+
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(chunk1);
+            controller.enqueue(chunk2);
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      }) as typeof fetch;
+
+      const client = new OpenAiCompatClient({
+        apiKey: 'sk-x',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        capabilities: { streamingTools: true },
+      });
+
+      const turn = await client.completeTurnStream(
+        [{ role: 'user', content: 'say star' }],
+        {
+          protocolMode: 'native',
+          tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+          toolChoice: 'required',
+        },
+        () => {},
+      );
+
+      expect(turn.kind).toBe('tool_calls');
+      if (turn.kind === 'tool_calls') {
+        expect(turn.calls[0]?.arguments).toEqual({
+          action: { type: 'say', text: 'hello 🌟 world' },
+        });
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }

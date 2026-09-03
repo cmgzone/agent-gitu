@@ -122,6 +122,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     defaultModel: 'gpt-4.1-mini',
     models: ['gpt-4.1-mini', 'gpt-4.1', 'gpt-4o'],
     effortLevels: ['low', 'medium', 'high'],
+    capabilities: { streamingTools: true },
   },
   deepseek: {
     id: 'deepseek',
@@ -143,6 +144,7 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // protocol — always start native, and only downgrade when the server
     // itself rejects the tool protocol.
     toolMode: 'auto',
+    capabilities: { streamingTools: false },
   },
   chatgpt: {
     id: 'chatgpt',
@@ -767,7 +769,7 @@ export interface ResolvedLlm {
 
 function build(
   providerId: string,
-  spec: { baseUrl: string; defaultModel: string; toolMode?: ProviderSpec['toolMode'] } | undefined,
+  spec: { baseUrl: string; defaultModel: string; toolMode?: ProviderSpec['toolMode']; capabilities?: ProviderCapabilities } | undefined,
   apiKey: string,
   keyEnvVar: string,
   opts: ResolveOptions,
@@ -782,7 +784,14 @@ function build(
   // backoff on failure, so warming is deliberately left to existing callers.
   const modelMaxOutputTokens = modelMetadataFor(peekModelCatalog(), providerId, model)?.outputTokens;
   return {
-    client: new OpenAiCompatClient({ apiKey, baseUrl, model, rateLimitKey: `${providerId}:${keyEnvVar}:chat`, modelMaxOutputTokens }),
+    client: new OpenAiCompatClient({
+      apiKey,
+      baseUrl,
+      model,
+      rateLimitKey: `${providerId}:${keyEnvVar}:chat`,
+      modelMaxOutputTokens,
+      capabilities: spec?.capabilities,
+    }),
     providerId,
     baseUrl,
     model,

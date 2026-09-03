@@ -39,7 +39,13 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   if (previousHome === undefined) delete process.env.AGENT_GITU_HOME;
   else process.env.AGENT_GITU_HOME = previousHome;
-  for (const root of homes.splice(0)) rmSync(root, { recursive: true, force: true });
+  for (const root of homes.splice(0)) {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      /* temp cleanup */
+    }
+  }
   for (const dir of dirs.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true });
@@ -782,6 +788,240 @@ describe('Gitu recovery routing — no loop into secure setup without proven aut
     await gitu.run('Check coolify');
     expect(invocations).toBe(1);
     expect(events.some((event) => event.includes('completed'))).toBe(true);
+  }, 30000);
+});
+
+describe('connection anti-loop progress awareness (regression)', () => {
+  it('allows the same successful provider read more than three times when progress occurs between reads', async () => {
+    const root = project('repeated-read-progress');
+    home();
+    const events: string[] = [];
+    let turn = 0;
+    let readCount = 0;
+    const llm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['configured and verified'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'read env 1' } }), metadata: {} };
+        }
+        if (turn === 3) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify node', expected: 'exit 0' } }), metadata: {} };
+        }
+        if (turn === 4) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'read env 2' } }), metadata: {} };
+        }
+        if (turn === 5) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-2', tool: 'run_command', params: { command: 'node -e "process.exit(0)"' }, reason: 'check node', expected: 'exit 0' } }), metadata: {} };
+        }
+        if (turn === 6) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'read env 3' } }), metadata: {} };
+        }
+        if (turn === 7) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-3', tool: 'run_command', params: { command: 'npm --version' }, reason: 'verify npm', expected: 'exit 0' } }), metadata: {} };
+        }
+        if (turn === 8) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'read env 4' } }), metadata: {} };
+        }
+        if (turn === 9) {
+          const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }), metadata: {} };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (text) => events.push(text),
+      connectionActionHandler: async () => {
+        readCount += 1;
+        return { message: 'env variables retrieved', data: { envs: [{ key: 'PORT', value: '3000' }] } };
+      },
+    });
+
+    const { ledger } = await gitu.run('Configure coolify app');
+    expect(readCount).toBe(4);
+    expect(events.some((e) => e.includes('repeated saved connection action stopped'))).toBe(false);
+    expect(ledger.data.status).not.toBe('stalled');
+    expect(ledger.data.blockers.some((b) => b.includes('requested more than three times'))).toBe(false);
+  }, 30000);
+
+  it('allows a provider read again after a write changes remote state', async () => {
+    const root = project('read-after-mutation');
+    home();
+    let envValue = 'initial';
+    let readCount = 0;
+    let writeCount = 0;
+    const events: string[] = [];
+    let turn = 0;
+    const llm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return JSON.stringify({ verdict: 'pass', feedback: 'ok' });
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['env updated'] } }), metadata: {} };
+        if (turn === 2) return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-envs', reason: 'read env initial' } }), metadata: {} };
+        if (turn === 3) {
+          return {
+            kind: 'text',
+            text: JSON.stringify({
+              thought: 'update environment',
+              action: {
+                type: 'connection_operation',
+                connectionId: 'coolify',
+                operation: { id: 'set-app-envs', label: 'Update envs', capability: 'servers.read', method: 'POST', path: '/api/v1/envs', risk: 'reversible-write' },
+                body: { value: 'updated' },
+                documentationUrl: 'https://coolify.io/docs/api-reference',
+                reason: 'update environment',
+              },
+            }),
+            metadata: {},
+          };
+        }
+        if (turn === 4) return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-envs', reason: 'read env updated' } }), metadata: {} };
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (text) => events.push(text),
+      approvalHandler: async () => true,
+      connectionActionHandler: async () => {
+        readCount += 1;
+        return { message: 'read env', data: { value: envValue } };
+      },
+      connectionOperationHandler: async () => {
+        writeCount += 1;
+        envValue = 'updated';
+        return { message: 'updated env', data: { ok: true } };
+      },
+    });
+
+    const { ledger } = await gitu.run('Update env');
+    expect(readCount).toBe(2);
+    expect(writeCount).toBe(1);
+    expect(ledger.data.blockers.some((b) => b.includes('requested more than three times'))).toBe(false);
+  }, 30000);
+
+  it('blocks repeated identical provider reads only when no new state/evidence is produced', async () => {
+    const root = project('block-stalled-reads');
+    home();
+    let readCount = 0;
+    const events: string[] = [];
+    const llm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        return {
+          kind: 'text',
+          text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'loop read' } }),
+          metadata: {},
+        };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (text) => events.push(text),
+      connectionActionHandler: async () => {
+        readCount += 1;
+        return { message: 'env unchanged', data: { key: 'STATIC_VALUE' } };
+      },
+    });
+
+    const { ledger } = await gitu.run('Loop read test');
+    expect(readCount).toBe(3);
+    expect(events.some((e) => e.includes('repeated saved connection action stopped — coolify:get-app-sv7-envs'))).toBe(true);
+    expect(ledger.data.blockers.some((b) => b.includes('was requested more than three times without a new operation'))).toBe(true);
+  }, 30000);
+
+  it('does not add a stalled blocker after successful verification reads', async () => {
+    const root = project('verification-reads-no-blocker');
+    home();
+    let readCount = 0;
+    const events: string[] = [];
+    let turn = 0;
+    const llm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return JSON.stringify({ verdict: 'pass', feedback: 'ok' });
+      },
+      async completeTurn(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['service verified'] } }), metadata: {} };
+        if (turn === 2) return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-status', reason: 'initial status' } }), metadata: {} };
+        if (turn === 3) return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 's1', tool: 'run_command', params: { command: 'node --version' }, reason: 'cmd', expected: 'exit 0' } }), metadata: {} };
+        if (turn === 4) return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-status', reason: 'pre-verification' } }), metadata: {} };
+        if (turn === 5) return { kind: 'text', text: JSON.stringify({ action: { type: 'tool_call', stepId: 's2', tool: 'run_command', params: { command: 'node -e "process.exit(0)"' }, reason: 'cmd2', expected: 'exit 0' } }), metadata: {} };
+        if (turn === 6) return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-status', reason: 'post-verification' } }), metadata: {} };
+        if (turn === 7) {
+          const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+          const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }), metadata: {} };
+        }
+        if (turn === 8) return { kind: 'text', text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-status', reason: 'final-verification' } }), metadata: {} };
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'all verified' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      onEvent: (text) => events.push(text),
+      connectionActionHandler: async () => {
+        readCount += 1;
+        return { message: 'status ok', data: { status: 'running' } };
+      },
+    });
+
+    const { ledger } = await gitu.run('Verification test');
+    expect(readCount).toBe(4);
+    expect(ledger.data.blockers.length).toBe(0);
+    expect(ledger.data.status).toBe('completed');
   }, 30000);
 });
 

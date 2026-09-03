@@ -884,7 +884,7 @@ export class GituServer {
     // monotonic from the highest known id instead.
     const ev = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text };
     s.events.push(ev);
-    if (persistDb && !text.startsWith('tdelta')) {
+    if (persistDb && !text.startsWith('tdelta') && !text.startsWith('activity')) {
       try {
         this.db().addEvent(s.runId, ev);
         this.persistSession(s);

@@ -21,6 +21,7 @@ import {
   parseXmlFunctionCall,
   requestLlmTurn,
   xmlMarkerHoldBack,
+  type LlmActivityEvent,
   type LlmClient,
   type LlmContentPart,
   type LlmMessage,
@@ -2176,7 +2177,13 @@ export class Gitu {
         });
         const reply = await llm.completeStream(
           messages,
-          { effort: effortPlan.llmEffort ?? this.config.effort },
+          {
+            effort: effortPlan.llmEffort ?? this.config.effort,
+            onActivity: (activity: LlmActivityEvent) => {
+              if (activity.type === 'reasoning') this.emit('activity reasoning');
+              else if (activity.type === 'content') this.emit('activity content');
+            },
+          },
           createProseStreamer((chunk) => this.emit(`tdelta ${chunk}`)),
         );
         const parsedReply = parseReplyAction(reply);
@@ -2251,8 +2258,15 @@ export class Gitu {
       // protocol drift), regardless of the normal compaction triggers.
       let driftCompactionRequested = false;
       let loopBlocks = 0;
-      const connectionActionAttempts = new Map<string, number>();
+      interface ConnectionCallRecord {
+        consecutiveCalls: number;
+        consecutiveFailures: number;
+        lastDataDigest?: string;
+        lastProgressAt: { evidence: number; files: number; actions: number };
+      }
+      const connectionCallTracker = new Map<string, ConnectionCallRecord>();
       const connectionOperationAttempts = new Map<string, number>();
+      let lastExecutedActionTag: string | undefined;
       // Capability-resolution must be followed by a concrete action; a model
       // that re-requests the same missing capability instead of proposing the
       // documented operation gets blocked rather than looping forever.
@@ -2377,6 +2391,11 @@ export class Gitu {
           onUsage: (u: LlmUsage) => {
             callUsage = u;
           },
+          onActivity: (activity: LlmActivityEvent) => {
+            if (activity.type === 'reasoning') this.emit('activity reasoning');
+            else if (activity.type === 'content') this.emit('activity content');
+            else if (activity.type === 'tool') this.emit('activity tool');
+          },
           onStreamReset: () => {
             // The connection died after partial deltas went out and the LLM
             // client fell back to a full completion. Discard streamed state so
@@ -2389,6 +2408,7 @@ export class Gitu {
           maxTransportAttempts: number,
           override?: { effort?: EffortLevel; outputBudgetTokens?: number },
         ): Promise<LlmTurnResult> => {
+          this.emit('activity reasoning');
           let r: LlmTurnResult;
           try {
             r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts, override), (delta) => streamer(delta));
@@ -2790,6 +2810,16 @@ export class Gitu {
             }
             continue;
           }
+
+          const currentActionTag = action.type === 'tool_call'
+            ? `tool:${action.tool}:${action.stepId ?? ''}`
+            : action.type === 'connection_action'
+              ? `connection:${action.connectionId}:${action.operationId}`
+              : action.type === 'connection_discovery'
+                ? `discovery:${action.connectionId}:${action.intents.join(',')}:${action.resourceIdOrName ?? '*'}`
+                : action.type === 'connection_operation'
+                  ? `operation:${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`
+                  : action.type;
 
           switch (action.type) {
             case 'set_criteria': {
@@ -3281,9 +3311,35 @@ export class Gitu {
             }
             case 'connection_action': {
               const connectionActionKey = `${action.connectionId}:${action.operationId}`;
-              const connectionAttempts = (connectionActionAttempts.get(connectionActionKey) ?? 0) + 1;
-              connectionActionAttempts.set(connectionActionKey, connectionAttempts);
-              if (connectionAttempts > 3) {
+              const progressNow = {
+                evidence: ledger.data.evidence.length,
+                files: ledger.data.filesChanged?.length ?? 0,
+                actions: ledger.data.actions.length,
+              };
+              const prior = connectionCallTracker.get(connectionActionKey);
+              const isConsecutive = lastExecutedActionTag === currentActionTag;
+              const hadInterveningWork = !prior ||
+                progressNow.evidence > prior.lastProgressAt.evidence ||
+                progressNow.files > prior.lastProgressAt.files ||
+                progressNow.actions > prior.lastProgressAt.actions ||
+                !isConsecutive;
+
+              const tracker: ConnectionCallRecord = hadInterveningWork
+                ? {
+                    consecutiveCalls: 1,
+                    consecutiveFailures: prior?.consecutiveFailures ?? 0,
+                    lastDataDigest: prior?.lastDataDigest,
+                    lastProgressAt: progressNow,
+                  }
+                : {
+                    consecutiveCalls: (prior?.consecutiveCalls ?? 0) + 1,
+                    consecutiveFailures: prior?.consecutiveFailures ?? 0,
+                    lastDataDigest: prior?.lastDataDigest,
+                    lastProgressAt: progressNow,
+                  };
+              connectionCallTracker.set(connectionActionKey, tracker);
+
+              if (tracker.consecutiveCalls > 3) {
                 const blocker = `Saved connection action ${connectionActionKey} was requested more than three times without a new operation.`;
                 ledger.addBlocker(blocker);
                 exitReason = 'stalled';
@@ -3302,11 +3358,26 @@ export class Gitu {
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
+                tracker.consecutiveFailures = 0;
+                const dataDigest = result.data !== undefined ? JSON.stringify(result.data) : undefined;
+                if (tracker.lastDataDigest !== undefined && dataDigest !== undefined && tracker.lastDataDigest !== dataDigest) {
+                  tracker.consecutiveCalls = 1;
+                }
+                tracker.lastDataDigest = dataDigest;
                 this.emit(`connection ${action.connectionId}/${action.operationId} completed`);
                 observe(
                   `CONNECTION ACTION RESULT: ${result.message}${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
                 );
               } catch (error) {
+                tracker.consecutiveFailures += 1;
+                if (tracker.consecutiveFailures > 3) {
+                  const blocker = `Saved connection action ${connectionActionKey} failed repeatedly.`;
+                  ledger.addBlocker(blocker);
+                  exitReason = 'stalled';
+                  this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
+                  observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
+                  break mainLoop;
+                }
                 const reason = connectionEventReason((error as Error).message);
                 const exampleEcho =
                   action.connectionId === 'saved-connection-id'
@@ -3321,9 +3392,35 @@ export class Gitu {
             }
             case 'connection_discovery': {
               const discoveryKey = `${action.connectionId}:${action.intents.join(',')}:${action.resourceIdOrName ?? '*'}`;
-              const discoveryAttempts = (connectionActionAttempts.get(discoveryKey) ?? 0) + 1;
-              connectionActionAttempts.set(discoveryKey, discoveryAttempts);
-              if (discoveryAttempts > 3) {
+              const progressNow = {
+                evidence: ledger.data.evidence.length,
+                files: ledger.data.filesChanged?.length ?? 0,
+                actions: ledger.data.actions.length,
+              };
+              const prior = connectionCallTracker.get(discoveryKey);
+              const isConsecutive = lastExecutedActionTag === currentActionTag;
+              const hadInterveningWork = !prior ||
+                progressNow.evidence > prior.lastProgressAt.evidence ||
+                progressNow.files > prior.lastProgressAt.files ||
+                progressNow.actions > prior.lastProgressAt.actions ||
+                !isConsecutive;
+
+              const tracker: ConnectionCallRecord = hadInterveningWork
+                ? {
+                    consecutiveCalls: 1,
+                    consecutiveFailures: prior?.consecutiveFailures ?? 0,
+                    lastDataDigest: prior?.lastDataDigest,
+                    lastProgressAt: progressNow,
+                  }
+                : {
+                    consecutiveCalls: (prior?.consecutiveCalls ?? 0) + 1,
+                    consecutiveFailures: prior?.consecutiveFailures ?? 0,
+                    lastDataDigest: prior?.lastDataDigest,
+                    lastProgressAt: progressNow,
+                  };
+              connectionCallTracker.set(discoveryKey, tracker);
+
+              if (tracker.consecutiveCalls > 3) {
                 const blocker = `Saved connection discovery for ${action.connectionId} was requested more than three times without new results.`;
                 ledger.addBlocker(blocker);
                 exitReason = 'stalled';
@@ -3366,11 +3463,26 @@ export class Gitu {
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDISCOVERY DATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
+                tracker.consecutiveFailures = 0;
+                const dataDigest = result.data !== undefined ? JSON.stringify(result.data) : undefined;
+                if (tracker.lastDataDigest !== undefined && dataDigest !== undefined && tracker.lastDataDigest !== dataDigest) {
+                  tracker.consecutiveCalls = 1;
+                }
+                tracker.lastDataDigest = dataDigest;
                 this.emit(`connection ${action.connectionId} discovery ${result.stopReason} (${result.operationsExecuted.length} op(s))`);
                 observe(
                   `CONNECTION DISCOVERY RESULT (${result.stopReason}): ${result.summary}${rendered}${result.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this verified discovery state as evidence for planning and decisions.`,
                 );
               } catch (error) {
+                tracker.consecutiveFailures += 1;
+                if (tracker.consecutiveFailures > 3) {
+                  const blocker = `Saved connection discovery for ${action.connectionId} failed repeatedly.`;
+                  ledger.addBlocker(blocker);
+                  exitReason = 'stalled';
+                  this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
+                  observe(`${blocker} Resolve the connection error or revise the plan.`);
+                  break mainLoop;
+                }
                 const reason = connectionEventReason((error as Error).message);
                 this.emit(`connection ${action.connectionId} discovery failed — ${reason}`);
                 observe(`CONNECTION DISCOVERY FAILED: ${(error as Error).message}`);
@@ -3406,6 +3518,7 @@ export class Gitu {
                   ...(action.documentationUrl ? { documentationUrl: action.documentationUrl } : {}),
                   reason: action.reason,
                 });
+                connectionOperationAttempts.delete(operationKey);
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
@@ -4300,6 +4413,8 @@ export class Gitu {
               break;
             }
           }
+
+          lastExecutedActionTag = currentActionTag;
 
           while (this.inbox.length > 0) {
             const queued = this.inbox.shift()!;

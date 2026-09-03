@@ -1,4 +1,5 @@
 import { outputCapabilityFor, resolveOutputBudgetTokens, type OutputBudgetCapability } from './output-budget.js';
+import type { ProviderCapabilities } from './providers.js';
 
 export interface LlmMessage {
   role: 'system' | 'user' | 'assistant';
@@ -22,6 +23,13 @@ export type LlmContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string } };
 
+export type LlmActivityEvent =
+  | { type: 'reasoning' }
+  | { type: 'content' }
+  | { type: 'tool' };
+
+export type LlmActivityHandler = (event: LlmActivityEvent) => void;
+
 export interface LlmOptions {
   temperature?: number;
   json?: boolean;
@@ -37,6 +45,8 @@ export interface LlmOptions {
   retryDelayMs?: number;
   /** Called once per request with provider-reported token usage, when available. */
   onUsage?: (usage: LlmUsage) => void;
+  /** Called when transport activity transitions (reasoning vs content vs tool deltas). */
+  onActivity?: LlmActivityHandler;
   /** Called before a mid-stream fallback to complete(): earlier partial deltas
    *  are void and the caller should reset any streamed-prose state. */
   onStreamReset?: () => void;
@@ -435,6 +445,7 @@ export interface OpenAiCompatConfig {
   rateLimitKey?: string;
   /** The model's known maximum output tokens (e.g. from the model catalog). */
   modelMaxOutputTokens?: number;
+  capabilities?: ProviderCapabilities;
 }
 
 type CompatMessage = {
@@ -491,6 +502,7 @@ export class OpenAiCompatClient implements LlmClient {
   private readonly model: string;
   private readonly modelMaxOutputTokens: number | undefined;
   private readonly outputCapability: OutputBudgetCapability;
+  private readonly capabilities?: ProviderCapabilities;
 
   constructor(config: OpenAiCompatConfig) {
     this.apiKey = config.apiKey;
@@ -500,6 +512,7 @@ export class OpenAiCompatClient implements LlmClient {
     this.rateLimitKey = config.rateLimitKey;
     this.modelMaxOutputTokens = config.modelMaxOutputTokens;
     this.outputCapability = outputCapabilityFor(effortStyleFor(this.baseUrl), this.model);
+    this.capabilities = config.capabilities;
   }
 
   static fromEnv(env: NodeJS.ProcessEnv = process.env): OpenAiCompatClient | undefined {
@@ -513,6 +526,7 @@ export class OpenAiCompatClient implements LlmClient {
   }
 
   async completeTurn(messages: LlmMessage[], opts: LlmOptions = {}): Promise<LlmTurnResult> {
+    opts.onActivity?.({ type: 'reasoning' });
     const body = this.buildBody(messages, opts, false);
     let res: Response;
     try {
@@ -687,11 +701,15 @@ export class OpenAiCompatClient implements LlmClient {
         const delta = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.message?.content ?? '';
         if (delta) {
           full += delta;
+          opts.onActivity?.({ type: 'content' });
           onDelta(delta);
           forwardedAnyDelta = true;
         }
         const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
-        if (reasonDelta) reasoning += reasonDelta;
+        if (reasonDelta) {
+          reasoning += reasonDelta;
+          opts.onActivity?.({ type: 'reasoning' });
+        }
         const chunkUsage = parseUsage(json.usage);
         if (chunkUsage) streamUsage = chunkUsage;
       } catch {
@@ -741,15 +759,207 @@ export class OpenAiCompatClient implements LlmClient {
     return full;
   }
 
+  private async completeTurnStreamNative(
+    messages: LlmMessage[],
+    opts: LlmOptions = {},
+    onDelta: LlmDeltaHandler,
+  ): Promise<LlmTurnResult> {
+    const body = this.buildBody(messages, opts, true);
+    let res: Response;
+    try {
+      res = await postChatCompletion({
+        baseUrl: this.baseUrl,
+        apiKey: this.apiKey,
+        body,
+        signal: opts.signal,
+        retries: opts.retries,
+        retryDelayMs: opts.retryDelayMs,
+      });
+    } catch (err) {
+      const aborted = opts.signal?.aborted || /abort/i.test((err as Error).message);
+      throw new LlmError(`LLM request failed: ${(err as Error).message}`, { kind: aborted ? 'aborted' : 'network', logicalRequestId: opts.logicalRequestId });
+    }
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      if (!res.ok) {
+        const error = classifyLlmHttpError(res.status, text, res.headers);
+        throw new LlmError(error.message, { ...error.details, logicalRequestId: opts.logicalRequestId, providerRequestId: res.headers.get('x-request-id') ?? undefined });
+      }
+      if (opts.logicalRequestId) {
+        throw new LlmError('LLM streaming is not supported by this endpoint', {
+          kind: 'streaming_incompatible',
+          logicalRequestId: opts.logicalRequestId,
+        });
+      }
+      return this.completeTurn(messages, opts);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let full = '';
+    let reasoning = '';
+    let refusal = '';
+    let streamUsage: LlmUsage | undefined;
+    let sawEvent = false;
+    let streamFailed = false;
+    let forwardedAnyDelta = false;
+    let providerRequestId = res.headers.get('x-request-id') ?? undefined;
+    const toolCallsMap = new Map<number, { id?: string; name?: string; arguments: string }>();
+
+    const handleLine = (rawLine: string): void => {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:')) return;
+      const payload = line.slice(5).trim();
+      if (payload === '[DONE]') {
+        sawEvent = true;
+        return;
+      }
+      try {
+        const json = JSON.parse(payload) as {
+          id?: string;
+          choices?: {
+            delta?: {
+              content?: string | null;
+              reasoning_content?: string;
+              refusal?: string;
+              tool_calls?: {
+                index?: number;
+                id?: string;
+                type?: string;
+                function?: { name?: string; arguments?: string };
+              }[];
+            };
+            message?: {
+              content?: string | null;
+              refusal?: string;
+              tool_calls?: {
+                index?: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }[];
+            };
+          }[];
+          usage?: unknown;
+        };
+        sawEvent = true;
+        if (typeof json.id === 'string') providerRequestId = json.id;
+        const choice = json.choices?.[0];
+        const reasonDelta = choice?.delta?.reasoning_content;
+        if (reasonDelta) {
+          reasoning += reasonDelta;
+          opts.onActivity?.({ type: 'reasoning' });
+        }
+        const textDelta = choice?.delta?.content ?? choice?.message?.content ?? '';
+        if (textDelta) {
+          full += textDelta;
+          opts.onActivity?.({ type: 'content' });
+          onDelta(textDelta);
+          forwardedAnyDelta = true;
+        }
+        const refusalDelta = (choice?.delta as { refusal?: string })?.refusal ?? (choice?.message as { refusal?: string })?.refusal;
+        if (refusalDelta) refusal += refusalDelta;
+
+        const toolCalls = choice?.delta?.tool_calls ?? choice?.message?.tool_calls;
+        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+          opts.onActivity?.({ type: 'tool' });
+          for (let i = 0; i < toolCalls.length; i++) {
+            const tc = toolCalls[i]!;
+            const idx = tc.index ?? i;
+            let current = toolCallsMap.get(idx);
+            if (!current) {
+              current = { id: tc.id, name: tc.function?.name, arguments: tc.function?.arguments ?? '' };
+              toolCallsMap.set(idx, current);
+            } else {
+              if (tc.id) current.id = tc.id;
+              if (tc.function?.name) current.name = (current.name ?? '') + tc.function.name;
+              if (tc.function?.arguments) current.arguments += tc.function.arguments;
+            }
+          }
+        }
+        const chunkUsage = parseUsage(json.usage);
+        if (chunkUsage) streamUsage = chunkUsage;
+      } catch {
+        /* partial line */
+      }
+    };
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          handleLine(line);
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) handleLine(buffer);
+    } catch {
+      streamFailed = true;
+    }
+
+    if (streamFailed || !sawEvent) {
+      if (forwardedAnyDelta) opts.onStreamReset?.();
+      if (opts.logicalRequestId) {
+        throw new LlmError('LLM streaming response was incomplete or unsupported', {
+          kind: 'streaming_incompatible',
+          logicalRequestId: opts.logicalRequestId,
+        });
+      }
+      return this.completeTurn(messages, opts);
+    }
+
+    this.lastReasoning = reasoning || undefined;
+    if (streamUsage && opts.onUsage) opts.onUsage(streamUsage);
+
+    const metadata: LlmTurnMetadata = {
+      logicalRequestId: opts.logicalRequestId,
+      providerRequestId,
+      usage: streamUsage,
+      reasoning: this.lastReasoning,
+    };
+
+    const sortedIndices = Array.from(toolCallsMap.keys()).sort((a, b) => a - b);
+    const calls: LlmToolCall[] = [];
+    for (const idx of sortedIndices) {
+      const item = toolCallsMap.get(idx);
+      if (item && item.name) {
+        calls.push({
+          ...(item.id ? { id: item.id } : {}),
+          name: item.name,
+          arguments: objectArguments(item.arguments),
+        });
+      }
+    }
+
+    if (calls.length > 0) {
+      const preamble = full.trim() ? full : undefined;
+      return { kind: 'tool_calls', calls, metadata, ...(preamble ? { preamble } : {}) };
+    }
+    if (refusal.trim()) return { kind: 'refusal', reason: refusal, metadata };
+    if (full.trim()) return { kind: 'text', text: full, metadata };
+    return { kind: 'empty', metadata };
+  }
+
   async completeTurnStream(
     messages: LlmMessage[],
     opts: LlmOptions = {},
     onDelta: LlmDeltaHandler,
   ): Promise<LlmTurnResult> {
     // Chat-completions tool-call deltas vary materially between compatible
-    // providers. A single non-stream native request gives the normalizer a
-    // complete call object; text/JSON compatibility retains live prose.
-    if (opts.protocolMode === 'native' && opts.tools?.length) return this.completeTurn(messages, opts);
+    // providers. When streamingTools capability is set, we stream native deltas.
+    // Otherwise, a single non-stream native request gives the normalizer a
+    // complete call object.
+    if (opts.protocolMode === 'native' && opts.tools?.length) {
+      if (this.capabilities?.streamingTools) {
+        return this.completeTurnStreamNative(messages, opts, onDelta);
+      }
+      return this.completeTurn(messages, opts);
+    }
     const text = await this.completeStream(messages, opts, onDelta);
     return text.trim()
       ? { kind: 'text', text, metadata: { logicalRequestId: opts.logicalRequestId, reasoning: this.lastReasoning } }

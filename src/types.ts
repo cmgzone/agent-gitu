@@ -653,6 +653,10 @@ export interface TaskLedgerData {
   currentHypothesis?: string;
   actions: ActionRecord[];
   evidence: Evidence[];
+  /** Durable provider evidence observed across connections / MCP / capabilities. */
+  providerEvidence?: import('./connections/runtime/provider-cache.js').ProviderEvidence[];
+  /** Remote state epochs per connection/provider. */
+  remoteStateEpochs?: Record<string, number>;
   filesChanged: string[];
   checkpoints: { stepId: string; ref: string; createdAt: string }[];
   blockers: string[];

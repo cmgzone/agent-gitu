@@ -619,4 +619,98 @@ describe('Universal Argument Layer & Invocation Runtime', () => {
     expect(res3.cacheHit).toBe(false);
     expect(networkCalls).toBe(3);
   });
+
+  it('persists provider evidence and remote state epochs through ledger and restores across restart', async () => {
+    const root = project('ledger-provider-persistence');
+    home();
+    let networkCalls = 0;
+    let turn = 0;
+
+    const llm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['get info'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'read env 1' } }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return llm.completeTurn!(messages);
+      },
+    };
+
+    // Run 1: initial task performs read
+    const gitu1 = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      connectionActionHandler: async () => {
+        networkCalls += 1;
+        return { message: 'env data', data: { envs: [{ key: 'NODE_ENV', value: 'production' }] } };
+      },
+    });
+
+    const run1 = await gitu1.run('Initial run');
+    expect(networkCalls).toBe(1);
+    expect(run1.ledger.data.providerEvidence).toBeDefined();
+    expect(run1.ledger.data.providerEvidence!.length).toBeGreaterThan(0);
+    expect(run1.ledger.data.providerEvidence![0].id).toBe('pe-1');
+
+    // Run 2: resume task in fresh Gitu instance (simulating process restart)
+    let resumeTurn = 0;
+    const resumeLlm: LlmClient = {
+      name: 'mock',
+      async complete() {
+        return '';
+      },
+      async completeStream() {
+        return '';
+      },
+      async completeTurn(): Promise<LlmTurnResult> {
+        resumeTurn += 1;
+        if (resumeTurn === 1) {
+          return {
+            kind: 'text',
+            text: JSON.stringify({ action: { type: 'connection_action', connectionId: 'coolify', operationId: 'get-app-sv7-envs', reason: 'read env again' } }),
+            metadata: {},
+          };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'resumed done' } }), metadata: {} };
+      },
+      async completeTurnStream(messages: LlmMessage[]): Promise<LlmTurnResult> {
+        return resumeLlm.completeTurn!(messages);
+      },
+    };
+
+    const gitu2 = new Gitu({
+      cwd: root,
+      llm: resumeLlm,
+      mode: 'fast',
+      resume: { taskId: run1.ledger.data.taskId, message: 'Check again' },
+      connectionActionHandler: async () => {
+        networkCalls += 1;
+        return { message: 'should not be called' };
+      },
+    });
+
+    await gitu2.run('Followup run');
+    // Fresh Gitu instance successfully restored provider evidence from ledger -> zero network calls!
+    expect(networkCalls).toBe(1);
+    expect(gitu2.providerCache.listEvidence().length).toBeGreaterThan(0);
+    expect(gitu2.providerCache.listEvidence()[0].id).toBe('pe-1');
+  });
 });

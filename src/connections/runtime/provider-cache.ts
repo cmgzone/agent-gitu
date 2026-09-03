@@ -170,4 +170,38 @@ export class ProviderReadCache {
   getDoc(url: string): CachedDocRecord | undefined {
     return this.docCache.get(url.toLowerCase());
   }
+
+  // ── Snapshot / Persistence Serialization ────────────────────────────────
+
+  getEpochs(): Record<string, number> {
+    return Object.fromEntries(this.remoteStateEpochs.entries());
+  }
+
+  snapshot(): { evidence: ProviderEvidence[]; epochs: Record<string, number>; counter: number } {
+    return {
+      evidence: [...this.evidence.values()],
+      epochs: this.getEpochs(),
+      counter: this.evidenceCounter,
+    };
+  }
+
+  restore(data?: { evidence?: ProviderEvidence[]; epochs?: Record<string, number>; counter?: number }): void {
+    if (!data) return;
+    if (Array.isArray(data.evidence)) {
+      for (const ev of data.evidence) {
+        const key = this.cacheKey(ev.connectionId, ev.capability, ev.resourceId, ev.paramsDigest);
+        this.evidence.set(key, ev);
+      }
+    }
+    if (data.epochs && typeof data.epochs === 'object') {
+      for (const [key, epoch] of Object.entries(data.epochs)) {
+        if (typeof epoch === 'number') {
+          this.remoteStateEpochs.set(key, epoch);
+        }
+      }
+    }
+    if (typeof data.counter === 'number' && data.counter > this.evidenceCounter) {
+      this.evidenceCounter = data.counter;
+    }
+  }
 }

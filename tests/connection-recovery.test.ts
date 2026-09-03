@@ -856,7 +856,8 @@ describe('connection anti-loop progress awareness (regression)', () => {
     });
 
     const { ledger } = await gitu.run('Configure coolify app');
-    expect(readCount).toBe(4);
+    const readInvocations = events.filter((e) => e.includes('coolify/get-app-sv7-envs completed')).length;
+    expect(readInvocations).toBe(4);
     expect(events.some((e) => e.includes('repeated saved connection action stopped'))).toBe(false);
     expect(ledger.data.status).not.toBe('stalled');
     expect(ledger.data.blockers.some((b) => b.includes('requested more than three times'))).toBe(false);
@@ -967,7 +968,8 @@ describe('connection anti-loop progress awareness (regression)', () => {
     });
 
     const { ledger } = await gitu.run('Loop read test');
-    expect(readCount).toBe(3);
+    const readInvocations = events.filter((e) => e.includes('coolify/get-app-sv7-envs completed')).length;
+    expect(readInvocations).toBe(3);
     expect(events.some((e) => e.includes('repeated saved connection action stopped — coolify:get-app-sv7-envs'))).toBe(true);
     expect(ledger.data.blockers.some((b) => b.includes('was requested more than three times without a new operation'))).toBe(true);
   }, 30000);
@@ -1019,7 +1021,8 @@ describe('connection anti-loop progress awareness (regression)', () => {
     });
 
     const { ledger } = await gitu.run('Verification test');
-    expect(readCount).toBe(4);
+    const readInvocations = events.filter((e) => e.includes('coolify/get-app-status completed')).length;
+    expect(readInvocations).toBe(4);
     expect(ledger.data.blockers.length).toBe(0);
     expect(ledger.data.status).toBe('completed');
   }, 30000);

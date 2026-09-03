@@ -641,6 +641,28 @@ export class TaskLedger {
     return record;
   }
 
+  recordProviderEvidence(evidence: import('../connections/runtime/provider-cache.js').ProviderEvidence): void {
+    this.data.providerEvidence ??= [];
+    const idx = this.data.providerEvidence.findIndex((e) => e.id === evidence.id);
+    if (idx >= 0) {
+      this.data.providerEvidence[idx] = evidence;
+    } else {
+      this.data.providerEvidence.push(evidence);
+    }
+    if (this.data.providerEvidence.length > 100) {
+      this.data.providerEvidence.splice(0, this.data.providerEvidence.length - 100);
+    }
+    this.save();
+  }
+
+  syncProviderState(epochs: Record<string, number>, evidence?: import('../connections/runtime/provider-cache.js').ProviderEvidence[]): void {
+    this.data.remoteStateEpochs = { ...(this.data.remoteStateEpochs ?? {}), ...epochs };
+    if (evidence) {
+      this.data.providerEvidence = evidence.slice(-100);
+    }
+    this.save();
+  }
+
   trackFile(relPath: string): void {
     if (!this.data.filesChanged.includes(relPath)) {
       this.data.filesChanged.push(relPath);

@@ -1693,6 +1693,14 @@ export class Gitu {
       this.emit(`ledger   created: ${ledger.data.taskId}`);
     }
 
+    // Milestone 3/4: Restore ProviderReadCache from durable ledger state
+    if (ledger.data.providerEvidence || ledger.data.remoteStateEpochs) {
+      this.providerCache.restore({
+        evidence: ledger.data.providerEvidence,
+        epochs: ledger.data.remoteStateEpochs,
+      });
+    }
+
     const checkpoints = new CheckpointManager(guard);
     const branchInfo = checkpoints.ensureTaskBranch(ledger.data.taskId);
     if (branchInfo.branch) {
@@ -3363,20 +3371,18 @@ export class Gitu {
                 );
                 break;
               }
-              // Milestone 3: Retrieval-before-fetch from ProviderReadCache if explicitly provided in config
-              if (this.config.providerCache) {
-                const cachedFact = this.config.providerCache.get(action.connectionId, action.operationId);
-                if (cachedFact) {
-                  concreteActionSinceLastAsk = true;
-                  tracker.consecutiveFailures = 0;
-                  this.emit(`connection ${action.connectionId}/${action.operationId} completed (cache hit)`);
-                  const disclosure = connectionResultDisclosure(cachedFact.data);
-                  const rendered = disclosure.text ? `\nDATA (cached fact from epoch ${cachedFact.stateEpoch}):\n${disclosure.text}` : '';
-                  observe(
-                    `PROVIDER EVIDENCE (CACHED [${cachedFact.id}]): Reused fresh provider observation from current state epoch.${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
-                  );
-                  break;
-                }
+              // Milestone 3: Retrieval-before-fetch from ProviderReadCache
+              const cachedFact = this.providerCache.get(action.connectionId, action.operationId);
+              if (cachedFact) {
+                concreteActionSinceLastAsk = true;
+                tracker.consecutiveFailures = 0;
+                this.emit(`connection ${action.connectionId}/${action.operationId} completed (cache hit)`);
+                const disclosure = connectionResultDisclosure(cachedFact.data);
+                const rendered = disclosure.text ? `\nDATA (cached fact from epoch ${cachedFact.stateEpoch}):\n${disclosure.text}` : '';
+                observe(
+                  `PROVIDER EVIDENCE (CACHED [${cachedFact.id}]): Reused fresh provider observation from current state epoch.${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
+                );
+                break;
               }
               try {
                 const result = await this.config.connectionActionHandler({ connectionId: action.connectionId, operationId: action.operationId });
@@ -3386,6 +3392,8 @@ export class Gitu {
                   operationId: action.operationId,
                   data: result.data,
                 });
+                ledger.recordProviderEvidence(evidence);
+                ledger.syncProviderState(this.providerCache.getEpochs());
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
@@ -3551,6 +3559,7 @@ export class Gitu {
                 });
                 connectionOperationAttempts.delete(operationKey);
                 this.providerCache.advanceStateEpoch(action.connectionId);
+                ledger.syncProviderState(this.providerCache.getEpochs(), this.providerCache.listEvidence());
                 const disclosure = connectionResultDisclosure(result.data);
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;

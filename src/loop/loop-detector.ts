@@ -11,13 +11,101 @@ export interface LoopPolicy {
   maxSameActionSameError: number;
   maxSameActionFailures: number;
   maxFileEditsWithoutEvidence: number;
+  /** Successful investigation calls against unchanged evidence are useful
+   * once or twice; beyond that they are usually context drift, not progress. */
+  maxSameSuccessfulRead: number;
+  /** Bound unique investigation after one still-unresolved failing command.
+   * This is deliberately generous enough for real diagnosis but prevents one
+   * failure from funding dozens of unrelated reads. */
+  maxInvestigationReadsPerFailureEpisode: number;
 }
 
 export const DEFAULT_LOOP_POLICY: LoopPolicy = {
   maxSameActionSameError: 2,
   maxSameActionFailures: 3,
   maxFileEditsWithoutEvidence: 3,
+  maxSameSuccessfulRead: 2,
+  maxInvestigationReadsPerFailureEpisode: 10,
 };
+
+/** Prefix used on the one host-side cached replay of unchanged investigation
+ * evidence. A second request after the replay is hard-blocked as drift. */
+export const CACHED_INVESTIGATION_PREFIX = 'CACHED INVESTIGATION OBSERVATION';
+
+const INVESTIGATION_READ_TOOLS = new Set([
+  'read_file',
+  'search_files',
+  'list_files',
+  'lsp_diagnostics',
+  'lsp_definition',
+  'lsp_references',
+  'lsp_hover',
+  'lsp_symbols',
+]);
+
+function isSuccessfulMutation(action: ActionRecord): boolean {
+  return action.status === 'success' && (action.tool === 'write_file' || action.tool === 'apply_edit');
+}
+
+function isCachedInvestigation(action: ActionRecord): boolean {
+  return action.status === 'success' && Boolean(action.observation?.startsWith(CACHED_INVESTIGATION_PREFIX));
+}
+
+/**
+ * Find the newest command failure that still has no later PASS for the exact
+ * same command identity. A successful diagnostic command with a different hash
+ * does NOT resolve the failing test/build command. If source was edited after
+ * the failure, begin the investigation count after that edit so a repair gets a
+ * fresh local-inspection allowance before re-verification.
+ */
+function unresolvedFailureEpisodeStart(actions: ActionRecord[]): number | undefined {
+  for (let failureIndex = actions.length - 1; failureIndex >= 0; failureIndex -= 1) {
+    const failure = actions[failureIndex]!;
+    if (failure.tool !== 'run_command' || failure.status !== 'error') continue;
+
+    const resolvedLater = actions
+      .slice(failureIndex + 1)
+      .some((candidate) => candidate.tool === 'run_command' && candidate.paramsHash === failure.paramsHash && candidate.status === 'success');
+    if (resolvedLater) continue;
+
+    let start = failureIndex;
+    for (let i = failureIndex + 1; i < actions.length; i += 1) {
+      if (isSuccessfulMutation(actions[i]!)) start = i;
+    }
+    return start;
+  }
+  return undefined;
+}
+
+/**
+ * Investigation evidence becomes stale after a relevant edit. For read_file,
+ * reset only when that file changed; for broader search/LSP/list evidence,
+ * conservatively reset after any successful source edit.
+ */
+function evidenceWindow(actions: ActionRecord[], tool: string, paramsHash: string): ActionRecord[] {
+  if (!INVESTIGATION_READ_TOOLS.has(tool)) return actions;
+
+  const priorSame = actions.filter((action) => action.tool === tool && action.paramsHash === paramsHash);
+  if (tool === 'read_file' && priorSame.length > 0) {
+    const summary = priorSame.at(-1)?.paramsSummary ?? '';
+    const file = summary.startsWith('read ') ? summary.slice('read '.length) : '';
+    if (file) {
+      for (let i = actions.length - 1; i >= 0; i -= 1) {
+        const action = actions[i]!;
+        if (!isSuccessfulMutation(action)) continue;
+        if (action.paramsSummary === `write ${file}` || action.paramsSummary === `edit ${file}`) {
+          return actions.slice(i + 1);
+        }
+      }
+      return actions;
+    }
+  }
+
+  for (let i = actions.length - 1; i >= 0; i -= 1) {
+    if (isSuccessfulMutation(actions[i]!)) return actions.slice(i + 1);
+  }
+  return actions;
+}
 
 export class LoopDetector {
   private readonly policy: LoopPolicy;
@@ -26,12 +114,66 @@ export class LoopDetector {
     this.policy = { ...DEFAULT_LOOP_POLICY, ...policy };
   }
 
+  /**
+   * Return the most recent real successful observation when the model has
+   * already gathered the same unchanged investigation evidence enough times.
+   * The executor may replay this observation ONCE without touching the
+   * filesystem/LSP again. Once such a cached replay is recorded, this method
+   * returns undefined and evaluate() hard-blocks further repetition.
+   */
+  reusableSuccessfulRead(actions: ActionRecord[], tool: string, paramsHash: string): ActionRecord | undefined {
+    if (!INVESTIGATION_READ_TOOLS.has(tool)) return undefined;
+    const sameAction = evidenceWindow(actions, tool, paramsHash).filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+    const cachedReplayExists = sameAction.some(isCachedInvestigation);
+    if (cachedReplayExists) return undefined;
+    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a));
+    return realSuccesses.length >= this.policy.maxSameSuccessfulRead ? realSuccesses.at(-1) : undefined;
+  }
+
+  /** Number of successful investigation reads spent on the newest unresolved
+   * command failure since its last source edit. Undefined means no unresolved
+   * failing command currently owns the investigation lane. */
+  investigationPressure(actions: ActionRecord[]): { reads: number; failure?: ActionRecord } | undefined {
+    const start = unresolvedFailureEpisodeStart(actions);
+    if (start === undefined) return undefined;
+    const failure = [...actions.slice(0, start + 1)].reverse().find((action) => action.tool === 'run_command' && action.status === 'error');
+    const reads = actions.slice(start + 1).filter((action) => INVESTIGATION_READ_TOOLS.has(action.tool) && action.status === 'success').length;
+    return { reads, failure };
+  }
+
   evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined): LoopVerdict {
-    const sameAction = actions.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+    const relevantActions = evidenceWindow(actions, tool, paramsHash);
+    const sameAction = relevantActions.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
     const failures = sameAction.filter((a) => a.status === 'error' || a.status === 'blocked');
     const priorFailures = failures.map(
       (a) => `- ${a.paramsSummary} → ${a.observation ? a.observation.slice(0, 200) : a.status}`,
     );
+
+    if (INVESTIGATION_READ_TOOLS.has(tool)) {
+      const pressure = this.investigationPressure(actions);
+      if (pressure && pressure.reads >= this.policy.maxInvestigationReadsPerFailureEpisode) {
+        return {
+          allowed: false,
+          attempts: sameAction.length,
+          priorFailures,
+          reason:
+            `Investigation has already consumed ${pressure.reads} successful reads since the current verification failure${pressure.failure ? ` (${pressure.failure.paramsSummary})` : ''}. ` +
+            `Further reading is blocked until you act on the evidence: make the targeted repair, re-run the failing verification, or explicitly change the plan/hypothesis instead of widening the search.`,
+        };
+      }
+
+      const successfulReads = sameAction.filter((a) => a.status === 'success');
+      if (successfulReads.length >= this.policy.maxSameSuccessfulRead) {
+        return {
+          allowed: false,
+          attempts: sameAction.length,
+          priorFailures,
+          reason:
+            `The same investigation evidence already succeeded ${successfulReads.length}× without a relevant source change. ` +
+            `Use the existing observation, inspect a genuinely different region/question, or edit/verify before rereading it.`,
+        };
+      }
+    }
 
     if (errorSig) {
       const sameError = failures.filter((a) => a.errorSignature === errorSig);

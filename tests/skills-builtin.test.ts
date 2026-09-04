@@ -45,7 +45,7 @@ describe('built-in skill tier', () => {
     expect(buildTaskStrategySection('Fix the crash', true, store)).toContain('TEAM CUSTOM STRATEGY');
 
     // Without a store, the built-in content is used.
-    expect(buildTaskStrategySection('Fix the crash', true)).toContain('REPRODUCE FIRST');
+    expect(buildTaskStrategySection('Fix the crash', true)).toContain('shortest evidence path');
 
     // Removing the user copy reveals the built-in again.
     expect(store.remove('strategy-bug-fix')).toBe(true);

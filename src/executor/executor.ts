@@ -1,6 +1,6 @@
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
-import { LoopDetector } from '../loop/loop-detector.js';
+import { CACHED_INVESTIGATION_PREFIX, LoopDetector } from '../loop/loop-detector.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { PolicyEngine } from '../policy/policy.js';
@@ -206,6 +206,33 @@ export class Executor {
         this.emit(`blocked  ${summary} (repeated skill operation)`);
         return { record, result: { ok: false, output: message, errorSignature: 'skill-operation-repeated' }, blockedByLoop: message };
       }
+    }
+
+    // One cached replay is cheaper and safer than doing the same successful
+    // investigation read again. It also preserves continuity after compaction:
+    // the model gets the prior observation without a new filesystem/LSP read.
+    // If it asks for the same unchanged evidence yet again, the normal loop
+    // verdict below hard-blocks the repetition.
+    const reusableRead = this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash);
+    if (reusableRead) {
+      const cached =
+        `${CACHED_INVESTIGATION_PREFIX}: ${summary}\n` +
+        `Reused action ${reusableRead.id}; no tool or filesystem read was executed.\n` +
+        `${reusableRead.observation ?? '(the prior read succeeded but its compact observation is unavailable)'}\n` +
+        `Use this unchanged evidence. Read a genuinely different region/question, or change the source before requesting this evidence again.`;
+      const record = this.ledger.recordAction({
+        stepId,
+        tool: req.tool,
+        paramsHash,
+        paramsSummary: summary,
+        status: 'success',
+        reason: req.reason,
+        expected: req.expected,
+        observation: cached,
+        durationMs: Date.now() - started,
+      });
+      this.emit(`cache    ${summary} (reused unchanged investigation observation)`);
+      return { record, result: { ok: true, output: cached } };
     }
 
     const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined);

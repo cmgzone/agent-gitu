@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   classifyTaskComplexity,
+  escalationFor,
   planEffort,
 } from '../src/agent/effort-planner.js';
 
@@ -65,28 +66,40 @@ describe('planEffort', () => {
     expect(large.contextBudget.maxFiles).toBeGreaterThanOrEqual(small.contextBudget.maxFiles);
   });
 });
-describe('planEffort — model-capability turn scaling', () => {
-  it('scales the turn budget up for lower-capability models, leaving llmEffort untouched', () => {
+
+describe('planEffort â€” v0.2.1-style bounded autonomy', () => {
+  it('does not silently inflate turn budgets for lower-capability models', () => {
     const base = planEffort('Something ordinary');
-    expect(base.maxTurns).toBe(35);
-    expect(base.llmEffort).toBe('medium');
-
     const lowCap = planEffort('Something ordinary', { modelCapability: 'low' });
-    expect(lowCap.maxTurns).toBe(53); // 35 * 1.5
-    expect(lowCap.llmEffort).toBe('medium'); // provider effort dial unchanged
-    expect(lowCap.reason).toContain('lower-capability model');
-
     const lowQuick = planEffort('Fix the typo in the README', { modelCapability: 'low' });
-    expect(lowQuick.maxTurns).toBe(30); // 20 * 1.5
-
     const lowHigh = planEffort('Redesign the auth subsystem', { modelCapability: 'low' });
-    expect(lowHigh.maxTurns).toBe(90); // 60 * 1.5
+
+    expect(base.maxTurns).toBe(35);
+    expect(lowCap.maxTurns).toBe(35);
+    expect(lowCap.llmEffort).toBe('medium');
+    expect(lowCap.reason).not.toContain('lower-capability model');
+    expect(lowQuick.maxTurns).toBe(20);
+    expect(lowHigh.maxTurns).toBe(60);
   });
 
-  it('leaves standard/high tiers and chat mode untouched', () => {
+  it('keeps standard/high tiers and chat mode on the same task budgets', () => {
     expect(planEffort('Something ordinary', { modelCapability: 'standard' }).maxTurns).toBe(35);
     expect(planEffort('Something ordinary', { modelCapability: 'high' }).maxTurns).toBe(35);
-    const chat = planEffort('hello', { mode: 'chat', modelCapability: 'low' });
-    expect(chat.maxTurns).toBe(10);
+    expect(planEffort('hello', { mode: 'chat', modelCapability: 'low' }).maxTurns).toBe(10);
+  });
+
+  it('does not reward repeated failures alone with a larger autonomous budget', () => {
+    expect(escalationFor({ filesChanged: 2, distinctFailures: 9 })).toBeUndefined();
+  });
+
+  it('allows one bounded extension when the actual change surface becomes wide', () => {
+    expect(escalationFor({ filesChanged: 8, distinctFailures: 1 })).toMatchObject({
+      extraTurns: 8,
+      extraSpecialists: 1,
+    });
+    expect(escalationFor({ filesChanged: 10, distinctFailures: 7 })).toMatchObject({
+      extraTurns: 8,
+      extraSpecialists: 1,
+    });
   });
 });

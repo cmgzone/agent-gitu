@@ -1,5 +1,5 @@
 import type { AcceptanceCriterion, CriterionEvidenceType, CriterionSpec, Evidence, EvidenceKind, TaskLedgerData } from '../types.js';
-import { excerpt, nowIso, shortId } from '../util.js';
+import { errorSignature, excerpt, normalizeErrorText, nowIso, shortId } from '../util.js';
 
 /**
  * Mapping from structured criterion evidence types to the EvidenceKind
@@ -86,6 +86,36 @@ export function classifyEvidenceKind(command: string): EvidenceKind {
   return 'command';
 }
 
+/**
+ * A verification failure identity should survive harmless value drift. Exact
+ * assertion numbers, timings, ports, ids and line numbers can change between
+ * runs while the underlying failure is the same. Normalize those values before
+ * hashing so a genuinely NEW failure message supersedes an old diagnosis, while
+ * a numerically different instance of the same assertion does not.
+ */
+export function verificationFailureSignature(output: string): string {
+  const normalized = normalizeErrorText(output)
+    .replace(/[-+]?\b\d+(?:\.\d+)?\b/g, '<num>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return errorSignature(normalized);
+}
+
+/**
+ * A current hypothesis belongs to the failure it was formed against. Retire it
+ * only when the SAME verification command produces a materially different
+ * failure signature. A later PASS keeps the diagnosed root cause available for
+ * the bug-rigor completion gate and final report; it is resolved knowledge, not
+ * an active reason to keep investigating.
+ */
+export function verificationSupersedesHypothesis(
+  previousFailure: Pick<Evidence, 'passed' | 'outputExcerpt'> | undefined,
+  next: { passed: boolean; output: string },
+): boolean {
+  if (!previousFailure || previousFailure.passed || next.passed) return false;
+  return verificationFailureSignature(previousFailure.outputExcerpt) !== verificationFailureSignature(next.output);
+}
+
 /** Structural slice of the ledger needed to prove a bug fix causally. */
 export interface RegressionProofInput {
   evidence: { command?: string; passed: boolean; createdAt: string }[];
@@ -159,6 +189,19 @@ export class EvidenceEngine {
       workspaceFingerprint?: string;
     },
   ): Evidence {
+    // A hypothesis is scoped to the most recent failure of the same
+    // verification command. If that command now fails in a materially
+    // different way, retire the old hypothesis BEFORE the new evidence becomes
+    // current state. A PASS intentionally preserves the diagnosed root cause.
+    if (ledger.currentHypothesis && input.command) {
+      const previousFailure = [...ledger.evidence]
+        .reverse()
+        .find((candidate) => !candidate.passed && candidate.command && commandsMatch(candidate.command, input.command));
+      if (verificationSupersedesHypothesis(previousFailure, input)) {
+        ledger.currentHypothesis = undefined;
+      }
+    }
+
     const evidence: Evidence = {
       id: shortId('ev'),
       kind: input.kind,
@@ -308,4 +351,3 @@ export class EvidenceEngine {
     );
   }
 }
-

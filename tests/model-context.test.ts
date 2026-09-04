@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildModelContext, DEFAULT_CONTEXT_MAX_CHARS } from '../src/context/model-context.js';
+import {
+  buildModelContext,
+  DEFAULT_CONTEXT_MAX_CHARS,
+  MIN_RECENT_HISTORY_MESSAGES,
+} from '../src/context/model-context.js';
 import type { LlmMessage } from '../src/llm/llm.js';
 
 const SYSTEM = 'You are Agent Gitu. ' + 'x'.repeat(500);
@@ -88,32 +92,55 @@ describe('buildModelContext — unified context authority', () => {
     expect(result.messages.some((m) => String(m.content).startsWith('CONTEXT SAMPLE') && m.content.includes('trimmed'))).toBe(true);
   });
 
-  it('drops OLDEST history first and always keeps the recent end', () => {
+  it('trims supplementary memory before sacrificing recent conversation', () => {
+    const recent: LlmMessage[] = Array.from({ length: MIN_RECENT_HISTORY_MESSAGES }, (_x, i) => ({
+      role: i % 2 ? 'assistant' : 'user',
+      content: `recent ${i} ${'h'.repeat(220)}`,
+    })) as LlmMessage[];
     const result = buildModelContext({
       system: SYSTEM,
-      conversationHistory: HISTORY,
-      budget: { maxChars: 2000 },
+      memory: `RELEVANT MEMORY\n${'m'.repeat(5000)}`,
+      conversationHistory: recent,
+      budget: { maxChars: 4000 },
     });
-    expect(result.trims.filter((t) => t.section === 'conversation').length).toBeGreaterThan(0);
-    const lastHistory = String(result.messages.filter((m) => String(m.content).startsWith('turn')).at(-1)?.content ?? '');
-    expect(lastHistory).toContain('turn 5'); // most recent survives
-    expect(result.messages.length).toBeGreaterThanOrEqual(3); // system + >=2 history
+    expect(result.trims.some((t) => t.section === 'memory')).toBe(true);
+    expect(result.trims.some((t) => t.section === 'conversation')).toBe(false);
+    expect(result.messages.filter((m) => String(m.content).startsWith('recent '))).toHaveLength(MIN_RECENT_HISTORY_MESSAGES);
   });
 
-  it('never trims below the floor even when the budget is impossible', () => {
+  it('drops OLDEST history first but preserves the v0.2.1-style 12-message recent tail', () => {
+    const longHistory: LlmMessage[] = Array.from({ length: 20 }, (_x, i) => ({
+      role: i % 2 ? 'assistant' : 'user',
+      content: `turn ${i} ${'h'.repeat(800)}`,
+    })) as LlmMessage[];
+    const result = buildModelContext({
+      system: SYSTEM,
+      conversationHistory: longHistory,
+      budget: { maxChars: 3000 },
+    });
+    expect(result.trims.filter((t) => t.section === 'conversation').length).toBeGreaterThan(0);
+    const retained = result.messages.filter((m) => String(m.content).startsWith('turn '));
+    expect(retained).toHaveLength(MIN_RECENT_HISTORY_MESSAGES);
+    expect(String(retained[0]!.content)).toContain('turn 8');
+    expect(String(retained.at(-1)!.content)).toContain('turn 19');
+  });
+
+  it('never trims below the continuity floor even when the budget is impossible', () => {
     const result = buildModelContext({
       system: SYSTEM,
       strategy: STRATEGY,
       contextPack: PACK,
       conversationHistory: HISTORY,
-      budget: { maxChars: 100 }, // below the 10K floor
+      budget: { maxChars: 100 }, // clamped to the minimum advisory budget
     });
     expect(result.totalChars).toBeGreaterThan(100); // advisory, not destructive
     expect(result.messages[0]!.content).toBe(SYSTEM);
+    expect(result.messages.filter((m) => String(m.content).startsWith('turn '))).toHaveLength(HISTORY.length);
   });
 
   it('defaults to the documented budget constant', () => {
     expect(DEFAULT_CONTEXT_MAX_CHARS).toBe(48_000);
+    expect(MIN_RECENT_HISTORY_MESSAGES).toBe(12);
   });
 });
 
@@ -121,7 +148,7 @@ describe('digest-before-trim invariant (never lose uncompacted history)', () => 
   it('condenses dropped history into a digest instead of silently forgetting it', () => {
     const decisionTurns: LlmMessage[] = [
       { role: 'user', content: 'DECISION: use Zustand for state management, agreed with the team.' },
-      ...Array.from({ length: 6 }, (_x, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'h'.repeat(800)}` })),
+      ...Array.from({ length: 18 }, (_x, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'h'.repeat(800)}` })),
     ] as LlmMessage[];
     const result = buildModelContext({ system: SYSTEM, conversationHistory: decisionTurns, budget: { maxChars: 2000 } });
     const digest = result.messages.find((m) => String(m.content).startsWith('COMPACTED HISTORY'));
@@ -138,7 +165,7 @@ describe('digest-before-trim invariant (never lose uncompacted history)', () => 
     const prior = 'COMPACTED HISTORY - 9 earlier messages were condensed.\nuser: earlier critical finding about the payment flow\nKEY FAILURES (do not repeat blindly):\nRESULT [error] $ npm test';
     const history: LlmMessage[] = [
       { role: 'user', content: prior },
-      ...Array.from({ length: 6 }, (_x, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'h'.repeat(900)}` })),
+      ...Array.from({ length: 18 }, (_x, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${'h'.repeat(900)}` })),
     ] as LlmMessage[];
     const result = buildModelContext({ system: SYSTEM, conversationHistory: history, budget: { maxChars: 2200 } });
     const digests = result.messages.filter((m) => String(m.content).startsWith('COMPACTED HISTORY'));
@@ -149,12 +176,13 @@ describe('digest-before-trim invariant (never lose uncompacted history)', () => 
   });
 
   it('never trims the digest, even under an extreme budget', () => {
-    const history: LlmMessage[] = Array.from({ length: 8 }, (_x, i) => ({
+    const history: LlmMessage[] = Array.from({ length: 20 }, (_x, i) => ({
       role: i % 2 ? 'assistant' : 'user',
       content: `turn ${i} ${'h'.repeat(1200)}`,
     })) as LlmMessage[];
     const result = buildModelContext({ system: SYSTEM, conversationHistory: history, budget: { maxChars: 1500 } });
     expect(result.messages.some((m) => String(m.content).startsWith('COMPACTED HISTORY'))).toBe(true);
+    expect(result.messages.filter((m) => String(m.content).startsWith('turn '))).toHaveLength(MIN_RECENT_HISTORY_MESSAGES);
   });
 });
 

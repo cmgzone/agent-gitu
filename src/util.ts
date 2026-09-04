@@ -37,8 +37,64 @@ export function canonicalJson(value: unknown): string {
   return `{${parts.join(',')}}`;
 }
 
+function normalizeToolPath(value: unknown, fallback = ''): string {
+  const raw = String(value ?? fallback).trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+  return raw.startsWith('./') ? raw.slice(2) : raw;
+}
+
+/**
+ * Collapse presentation-only variations of investigation calls before hashing.
+ * The loop detector should reason about the evidence question, not whether the
+ * model asked for 120 vs 160 lines or a slightly larger search excerpt.
+ *
+ * read_file is bucketed into 200-line semantic regions. This keeps genuinely
+ * different parts of a large file distinct while making overlapping rereads of
+ * the same area share one action identity.
+ */
+export function canonicalToolParams(tool: string, params: unknown): unknown {
+  if (!params || typeof params !== 'object' || Array.isArray(params)) return params;
+  const p = params as Record<string, unknown>;
+
+  if (tool === 'read_file') {
+    const rawOffset = Number(p['offset'] ?? 1);
+    const offset = Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1;
+    const regionSize = 200;
+    const regionStart = Math.floor((offset - 1) / regionSize) * regionSize + 1;
+    return {
+      path: normalizeToolPath(p['path']),
+      regionStart,
+    };
+  }
+
+  if (tool === 'search_files') {
+    const normalizeGlobs = (value: unknown): string[] =>
+      Array.isArray(value)
+        ? value
+            .map(String)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .sort()
+        : [];
+    const flags = String(p['flags'] ?? 'i')
+      .split('')
+      .filter((flag) => flag === 'i' || flag === 'm' || flag === 's')
+      .sort()
+      .join('');
+    return {
+      pattern: String(p['pattern'] ?? ''),
+      mode: p['mode'] === 'literal' ? 'literal' : 'regex',
+      flags,
+      path: normalizeToolPath(p['path'], '.'),
+      include: normalizeGlobs(p['include']),
+      exclude: normalizeGlobs(p['exclude']),
+    };
+  }
+
+  return params;
+}
+
 export function hashParams(tool: string, params: unknown): string {
-  return sha256(`${tool}::${canonicalJson(params)}`);
+  return sha256(`${tool}::${canonicalJson(canonicalToolParams(tool, params))}`);
 }
 
 const PATH_RE = /(?:[A-Za-z]:[\\/][^\s:'"`]+)|(?:\/[\w.@-]+(?:\/[\w.@-]+)+)/g;

@@ -314,8 +314,11 @@ export interface CompletionReport {
   /** Present when this report covers a scoped continuation, rather than the
    * entire historical task. */
   phase?: { id: string; kind: WorkPhaseKind; startedAt: string };
-  status: 'complete' | 'blocked' | 'failed';
+  status: 'complete' | 'blocked' | 'failed' | 'aborted';
   summary: string;
+  /** Deterministic runtime stop cause for failed runs. Unlike blockers, this
+   * does not imply that the user must provide anything. */
+  failureReason?: string;
   changes: string[];
   filesChanged: string[];
   verification: string[];
@@ -463,6 +466,27 @@ export interface TokenTelemetrySnapshot {
   actNowTransitions?: number;
   verificationContractFailures?: number;
   verificationContractPasses?: number;
+  /** Recovery-control telemetry: failure episodes, read dedup, state replay. */
+  problemEpisodes?: number;
+  episodeSupersessions?: number;
+  staleHypothesisReopens?: number;
+  investigationDriftBlocks?: number;
+  noDecisionImpactRejections?: number;
+  mootProblemSupersessions?: number;
+  semanticDuplicateReadsPrevented?: number;
+  cachedObservationHits?: number;
+  /** Chars of superseded TASK STATE messages removed before they could accumulate. */
+  stateReplayCharsAvoided?: number;
+  /** Prompt-architecture composition: core system contract vs capability contracts. */
+  coreSystemChars?: number;
+  capabilityContractChars?: number;
+  /** Largest single model-call prompt size (chars). */
+  maxPromptChars?: number;
+  /** Auto-learn reflection: LLM calls spent vs skipped by the eligibility gate. */
+  autoLearnCalls?: number;
+  autoLearnSkipped?: number;
+  /** Queued user messages drained and applied at an action boundary. */
+  userSteersHandled?: number;
   /** Model calls that produced no executable action (wasted spend). */
   wastedCalls: number;
   filesInContextPack: number;
@@ -897,4 +921,3 @@ export type {
   OutcomeEvaluation,
   DetectedContradiction,
 } from './recovery/problem-state.js';
-

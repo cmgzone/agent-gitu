@@ -722,11 +722,13 @@ describe('HermesServer', () => {
       const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
       return s.status !== 'running' ? s : undefined;
     });
-    expect(finished.status).toBe('blocked');
+    expect(finished.status).toBe('failed');
+    expect(finished.error).toMatch(/internal agent stop|not a user blocker/i);
+    expect(finished.error).not.toContain('effort budget ran out');
 
     const ledger = await fetch(`${base}/api/tasks/${finished.taskId}`).then((r) => r.json());
-    const deniedActions = ledger.actions.filter((a: { status: string }) => a.status === 'denied');
-    expect(deniedActions.length).toBe(1);
+    const policyDeniedActions = ledger.actions.filter((a: { status: string; errorSignature?: string }) => a.status === 'denied' && a.errorSignature !== 'invalid-block-request');
+    expect(policyDeniedActions.length).toBe(1);
   }, 30000);
 
   it('pauses for plan review over HTTP and builds after approval', async () => {
@@ -812,15 +814,15 @@ describe('HermesServer', () => {
     // Stop is reflected synchronously so the UI drops its running spinner and
     // a later message starts a continuation rather than being silently queued.
     const stoppedImmediately = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
-    expect(stoppedImmediately.status).toBe('blocked');
+    expect(stoppedImmediately.status).toBe('aborted');
     expect(stoppedImmediately.error).toBe('Stopped by user.');
     expect(stoppedImmediately.finishedAt).toBeTruthy();
 
     const stoppedLedger = await waitFor(async () => {
       const ledger = await fetch(`${base}/api/tasks/${running.taskId}`).then((r) => r.json());
-      return ledger.blockers.join(' ').includes('Stopped by user') ? ledger : undefined;
+      return ledger.status === 'aborted' ? ledger : undefined;
     });
-    expect(stoppedLedger.blockers.join(' ')).toContain('Stopped by user');
+    expect(stoppedLedger.blockers).toEqual([]);
 
     const resumed = await fetch(`${base}/api/runs/${created.runId}/message`, {
       method: 'POST',
@@ -837,7 +839,7 @@ describe('HermesServer', () => {
       const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
       return s.status !== 'running' ? s : undefined;
     });
-    expect(finished.status).toBe('blocked');
+    expect(finished.status).toBe('aborted');
   }, 60000);
 
   it('stores attached documents, includes text in model context, and serves guarded downloads', async () => {

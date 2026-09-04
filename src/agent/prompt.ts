@@ -2,7 +2,9 @@ import type { ProjectGuard } from '../guard/project-guard.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
 import type { MemoryStore } from '../memory/memory-store.js';
 import type { PlanArea, PlanDesign, PlanStep, TaskLedgerData } from '../types.js';
+import { commandsMatch } from '../evidence/evidence.js';
 import { builtinSkillByName } from '../skills/builtin.js';
+import { buildCapabilityContracts, contractIdsFor, type PromptCapabilityContext } from './prompt-capabilities.js';
 import { renderDecisions } from './architecture.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
@@ -196,48 +198,39 @@ export function buildSystemPrompt(
     /** Compact, durable frontend skill contract. Prefer this in long-running
      *  agent sessions; full instructions are delivered only on skill activation. */
     uiQualityContract?: string;
+    /** Explicit capability selection (layer 2). When omitted, a conservative
+     *  context is derived from the other opts so legacy callers keep working. */
+    capabilityContext?: Partial<PromptCapabilityContext>;
+    /** Receives the measured split between core and capability chars (telemetry). */
+    onMetrics?: (metrics: { coreChars: number; capabilityChars: number; contracts: string[] }) => void;
   } = {},
 ): string {
   const lock = guard.lock;
   const autoLearn = opts.autoLearn ?? true;
-  const lspSection = opts.lspSection
-    ? `\nLSP CODE INTELLIGENCE (optional, read-only; language servers keep the project indexed, so prefer these over blind text search for symbol facts):\n${opts.lspSection}\n`
-    : '';
+
+  // ── Dynamic, run-relevant context (small by design) ─────────────────────
   const scopeSection =
     opts.scopeFiles && opts.scopeFiles.length > 0
       ? `\nUSER-SELECTED SCOPE (the user chose these files to work on — prefer them, avoid everything else):\n${opts.scopeFiles.map((f) => `  - ${f}`).join('\n')}\n`
       : '';
   const constraintSection = opts.extraConstraints && opts.extraConstraints.length > 0 ? `\nUSER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}\n` : '';
   const skillsSection = opts.skillsSection
-    ? `\nREUSABLE SKILLS (apply them with use_skill${
-        autoLearn
-          ? '; you MUST create new ones with create_skill whenever you learn a repeatable pattern or the user asks for a skill that does not exist yet — research with web_fetch first if the skill needs external knowledge'
-          : '; you MAY create skills with create_skill only when the user explicitly asks for one'
-      }):\n${opts.skillsSection}\n`
+    ? `\nACTIVE SKILLS IN TASK (apply their knowledge; full instructions arrive on activation):\n${opts.skillsSection}\n`
     : '';
   const mcpSection = opts.mcpSection ? `\nCONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool>; they require approval):\n${opts.mcpSection}\n` : '';
   const agentsSection = opts.agentsSection
-    ? `\nDELEGATABLE SPECIALIST AGENTS (named workers you can run IN PARALLEL with the delegate tool — use them on big projects by splitting independent sub-tasks):\n${opts.agentsSection}\n`
+    ? `\nDELEGATABLE SPECIALIST AGENTS (named workers you can run IN PARALLEL with the delegate tool):\n${opts.agentsSection}\n`
     : '';
-  const browserSection = opts.hasBrowser
-    ? `\nIN-APP BROWSER (visual verification): a real Chromium browser is embedded in the desktop app and you control it with the browse tool. WHENEVER the task touches UI, frontend, styling, or anything visual, you MUST verify visually: start the app/dev server with run_command if needed, browse navigate to it (e.g. http://localhost:PORT), take a screenshot, and actually LOOK at it before claiming the work is done. Use click/type to exercise interactions (forms, buttons, navigation) and screenshot again to confirm the effect. This is ENFORCED: for tasks that change user-facing UI, completion is rejected until a screenshot exists AFTER your last file edit — always end frontend work with a fresh look at every changed view.${
-        opts.vision
-          ? ' You CAN see screenshots — ground every visual claim in what they show.'
-          : ' The current model cannot see images; screenshots are captured for the user but not delivered to you — rely on DOM/tests or ask for a vision-capable model.'
-      }\n`
+  const lspNote = opts.lspSection
+    ? `\nLANGUAGE SERVERS ONLINE: ${opts.lspSection.replace(/\n/g, ' ')}\n`
     : '';
-  const learnRule = autoLearn
-    ? '8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Never answer "I don\'t have that skill" without creating it. Also create skills proactively after any repeatable multi-step pattern (deploy flows, design conventions, checklists).'
-    : '8. Skills: if the user explicitly asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge), THEN apply it with use_skill. Do NOT create skills proactively — auto-learn is disabled by the user.';
-  // Frontend work gets a fixed quality bar so output quality does not depend
-  // on the model's taste that day. The CONTENT is expertise and lives in the
-  // skill layer (frontend-quality-bar builtin, shadowable by user skills);
-  // WHEN it applies stays a core mechanism. Bounded like every other
-  // injected section — it taxes every model call.
   const frontendSection = opts.uiTask ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n` : '';
-  return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
-${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
 
+  // ── Layer 1: the CORE SYSTEM CONTRACT ────────────────────────────────────
+  // Only rules that must apply on (almost) every model call. Capability
+  // manuals live in prompt-capabilities.ts and are injected per relevance.
+  const core = `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
+${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${lspNote}${frontendSection}
 PROJECT LOCK (do not violate):
   name: ${lock.name}
   repo_root: ${lock.repoRoot}
@@ -252,155 +245,47 @@ PROJECT LOCK (do not violate):
   lint_command: ${lock.lintCommand ?? 'unknown'}
   typecheck_command: ${lock.typecheckCommand ?? 'unknown'}
 
-OPERATING RULES:
-1. Project boundary: only touch files inside repo_root. Never edit unrelated code.
-2. Read before modifying a file. Read the minimum code necessary to establish a confident hypothesis. Do not perform broad repository exploration when the user supplied a concrete file, symbol, error, stack trace, test failure, screenshot, or previous task context. Expand investigation progressively only when local evidence is insufficient. Ground every plan and edit in actual code read. Small reversible changes. One focused action per turn.
-3. Every action needs a reason and an expected outcome.
-4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
-5. Never claim success without evidence. Run verification commands (tests, typecheck, build, lint).
-6. A task is complete ONLY when every acceptance criterion is linked to passing evidence.
-7. "I changed something" is not "the task is complete".
-${learnRule}
+AUTHORITY ORDER (conflicts resolve downward; nothing overrides tier 1):
+1. SAFETY & BOUNDARY — repository boundary, security, user approvals, destructive policy: never violated.
+2. CURRENT EXPLICIT USER INSTRUCTIONS — strictly outrank every agent default, strategy, and assumption.
+3. CURRENT USER GOAL & INTENT — 4. ACCEPTANCE CRITERIA — 5. ACTIVE VISUAL REFERENCES — 6. ARCHITECTURE DECISIONS — 7. CURRENT PLAN & SUBTASKS — 8. AGENT DEFAULTS.
 
-AUTHORITY ORDER (how conflicts are decided):
-1. SAFETY & BOUNDARY — never violated by anything: repository boundary, security, user approvals, destructive policy.
-2. CURRENT EXPLICIT USER INSTRUCTIONS — highest runtime authority: if the user explicitly instructs or forbids something (e.g. "don't use specialists", "only edit file X", "no npm install"), user instructions strictly override all agent defaults, strategies, and assumptions.
-3. CURRENT USER GOAL & INTENT — what must ultimately be achieved.
-4. ACCEPTANCE CRITERIA — verifiable proofs required for completion.
-5. ACTIVE VISUAL REFERENCES — designs, mockups, or screenshots provided for visual fidelity.
-6. ARCHITECTURE DECISIONS — documented technical choices.
-7. CURRENT PLAN & SUBTASKS — dynamic execution path (adapt when evidence disproves).
-8. AGENT DEFAULTS & RECOMMENDATIONS — lowest priority; superseded by any user directive.
+CORE RULES:
+1. Only touch files inside repo_root; never edit unrelated code. Read before modifying.
+2. Ground every edit in code you actually read. Small, reversible changes. Exactly ONE executable action per turn.
+3. Every action carries a reason and an expected outcome.
+4. Do not repeat failed or already-answered work without materially new information — the runtime blocks duplicates and returns the cached answer instead.
+5. Success requires evidence: run the real verification commands (tests/typecheck/build/lint). "I changed something" is not success.
+6. A task is complete ONLY when every acceptance criterion is linked to passing evidence. The TASK STATE message (re-sent every turn) is authoritative for goal, criteria, evidence, plan, and the active problem — trust it over remembered history.
+7. The recovery lifecycle is runtime-enforced: contradiction -> hypothesis (set_hypothesis) -> MINIMUM decision-changing evidence -> repair proposal -> ACT_NOW -> verify the ORIGINAL failure with POSITIVE proof -> resume. A user message preempts everything; stale queued work is dropped.
 
 ${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}\n`}
 ${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
+RESPOND each turn with 1-3 sentences of plain progress for the user, then EXACTLY ONE JSON action object (the action vocabulary and shapes are in the capability contracts below).`;
 
-PROTOCOL — each turn you MUST respond in this exact shape:
-1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
-2. Then, on a new line, EXACTLY ONE JSON object describing your action.
+  // ── Layer 2: ACTIVE CAPABILITY CONTRACTS ─────────────────────────────────
+  const capabilityContext: PromptCapabilityContext = {
+    protocolMode: opts.capabilityContext?.protocolMode ?? 'native',
+    planningRelevant: opts.capabilityContext?.planningRelevant ?? true,
+    uiTask: opts.uiTask ?? opts.capabilityContext?.uiTask ?? false,
+    hasBrowser: opts.hasBrowser ?? opts.capabilityContext?.hasBrowser ?? false,
+    vision: opts.vision ?? opts.capabilityContext?.vision ?? false,
+    lspAvailable: opts.capabilityContext?.lspAvailable ?? Boolean(opts.lspSection),
+    skillsAvailable: opts.capabilityContext?.skillsAvailable ?? true,
+    autoLearn,
+    mcpAvailable: opts.capabilityContext?.mcpAvailable ?? Boolean(opts.mcpSection),
+    connectionsRelevant: opts.capabilityContext?.connectionsRelevant ?? false,
+    delegationAvailable: opts.capabilityContext?.delegationAvailable ?? Boolean(opts.agentsSection),
+    testCommand: opts.capabilityContext?.testCommand ?? lock.testCommand,
+  };
+  const capabilities = buildCapabilityContracts(capabilityContext);
+  opts.onMetrics?.({
+    coreChars: core.length,
+    capabilityChars: capabilities.length,
+    contracts: contractIdsFor(capabilityContext),
+  });
 
-Intake/planning actions:
-{"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
-{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
-{"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
-{"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
-{"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
-{"thought":"...","action":{"type":"set_hypothesis","text":"current hypothesis about the problem/solution","target":"open repair-target kind when known (e.g. deployment_runtime)","confidence":0.8}}  (confidence is telemetry only — it NEVER authorizes repair; decision sufficiency does)
-
-{"thought":"...","action":{"type":"propose_repair","targetKind":"open repair-target kind (e.g. deployment_runtime, filesystem, unknown future capability)","targetDescription":"what will be repaired","resourceId":"concrete resource id when known","capability":"required capability when known","intendedEffect":"the state change this repair will produce","reversible":true,"requiresApproval":false,"evidenceBasis":["ev-..."]}}  (first-class repair proposal: on decision sufficiency the runtime transitions to ACT_NOW — then execute immediately when authorized)
-Architecture decisions (record BEFORE implementing whenever the task involves a significant technology or architecture choice):
-{"thought":"...","action":{"type":"record_decision","decision":"the chosen approach, one line","alternatives":["evaluated alternative",...],"repoEvidence":"what in THIS repo supports the choice","requirements":["explicit requirement or repo constraint considered",...],"rejected":[{"alternative":"...","reason":"why it lost"}],"reconsiderIf":"conditions that would justify revisiting","basis":"explicit-requirement|repository-constraint|recommendation|preference","supersedes":"ad-..."}}
-
-Execution:
-{"thought":"...","action":{"type":"tool_call","stepId":"step-N","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}  (stepId records WHICH step you are working on — it does NOT complete the step)
-  Optional structured fields (preferred for recovery): "intent":"inspect|diagnose|repair|verify|navigate|other" (declare repair intent explicitly — ANY tool may repair, not just file writes), "resourceScope":"workspace:path|deployment:id|..." (resource-scoped state), "expectation":{"description":"...","assertions":[{"kind":"equals|not_equals|contains|not_contains|state_changed|exists|absent","target":"field","expected":"value"}]} (EXPECTED STATE), "observation":{"transportOk":true,"fields":{...}} (OBSERVED STATE from the adapter), "semanticVerdict":{"verdict":"contradiction|blocker|expected_achieved","explanation":"..."} (your structured verdict when no machine expectation exists — YOU reason about meaning, the runtime enforces discipline), "investigationIntent":{"decisionQuestion":"...","alternatives":["A","B"],"expectedInformationGain":"...","changesRepairAction":true} (REQUIRED for any investigation in ACT_NOW mode — state what decision the answer changes, or the read is suppressed)
-{"thought":"...","action":{"type":"connection_action","connectionId":"saved-connection-id","operationId":"registered-read-operation","reason":"why this provider discovery is needed"}}  (only registered read operations; never provide a URL, header, or credential)
-{"thought":"...","action":{"type":"connection_operation","connectionId":"saved-connection-id","operation":{"id":"create-resource","label":"Create resource","capability":"resources.create","method":"POST","path":"/api/v1/resources","risk":"reversible-write"},"body":{"name":"example"},"documentationUrl":"https://docs.provider.example/api/resources","reason":"documented operation needed for the approved plan"}}  (SAFE GET/read proposals auto-register on the saved connection and execute immediately with NO approval. Only non-read proposals (writes) are shown to the user for approval. Never include credentials or unverified paths)
-{"thought":"...","action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}}  (check off a subtask as you complete it; checking the last one completes the step)
-{"thought":"...","action":{"type":"complete_step","stepId":"step-N","reason":"why it is done"}}  (explicitly finish a step once its work is done; a step also auto-completes when a run_command matching its verification passes)
-{"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","todos":["new subtask",...]}}  (dynamic replanning: update ONLY the affected step when reality diverges — API differs, reuse found, dependency missing)
-{"thought":"...","action":{"type":"show_plan"}}  (prints the FULL plan + design once — use when you need details no longer shown in compact state)
-
-Tools:
-- read_file    {"path":"src/x.ts","offset":1,"limit":200}
-- write_file   {"path":"src/x.ts","content":"full file content"}
-- apply_edit   {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
-- list_files   {"path":"src"}
-- search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2}
-    language-agnostic whole-file search (any language, any text file). Regex mode scans full file content, so patterns match ACROSS lines: use \\n, \\s or [\\s\\S] spans, or flags "s"/"m". Use mode "literal" for plain text with no regex escaping. Every result ends with a capability line (mode/flags/multiline/matches) telling you exactly what ran.
-- run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
-- lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
-- lsp_definition {"path":"src/auth.ts","line":42,"column":17}  (1-based; where the symbol at that position is defined)
-- lsp_references {"path":"src/auth.ts","line":42,"column":17}  (every place the symbol is used)
-- lsp_hover {"path":"src/auth.ts","line":42,"column":17}  (type + documentation at the position)
-- lsp_symbols {"path":"src/auth.ts"}  (classes, functions, interfaces... in a file)
-  (LSP is optional: when it reports "unavailable", fall back to search_files/read_file — never treat LSP failure as a task failure)
-  WHEN TO USE LSP (prefer it over blind text search for symbol facts):
-  - unfamiliar file → lsp_symbols first to see its structure, then read_file the symbols that matter
-  - "where is this defined/declared?" → lsp_definition at the use site
-  - "what else touches this?" → lsp_references before any refactor (all call sites)
-  - "what type is this / what does this API do?" → lsp_hover
-  - after edits: an automatic LSP post-edit check reports diagnostics for the file you changed — fix what it surfaces BEFORE running the real verification commands
-  - NEVER use LSP for whole-project search (search_files), and never treat "No diagnostics"/LSP as the task's verification (run the real test/typecheck/build commands)
-- web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
-  web_fetch is intentionally anonymous. For a saved provider connection, use connection_action with the exact connection id and registered read operation provided by the secure connection context; never put authorization headers or tokens in web_fetch. When a documented provider write is needed, first fetch its official documentation and use connection_operation with that HTTPS documentationUrl; it waits for the user's individual approval instead of treating an unregistered write as a provider failure.
-  - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
-- browse       full human-like browser control:
-                 {"action":"navigate","url":"http://localhost:3000"} | {"action":"screenshot"} | {"action":"evidence"} | {"action":"back"|"forward"|"reload"}
-                 {"action":"click","selector":"#submit"} (preferred) or {"action":"click","x":120,"y":340}
-                 {"action":"hover","x":10,"y":20} | {"action":"scroll","x":640,"y":450,"deltaY":400} (positive = down)
-                 {"action":"fill","selector":"input[name=email]","text":"value"} (forms; works with React/Vue inputs)
-                 {"action":"select","selector":"#country","value":"France"} | {"action":"press","key":"Enter|Tab|Escape|Backspace|Down…"}
-                 {"action":"type","text":"..."} (types into the focused element) | {"action":"wait","ms":1000}
-                 Interact like a human: act → verify. VERIFY with the CHEAPEST evidence that proves the criterion:
-                 - "evidence" = structured non-visual pass (DOM counts, accessibility, layout overflow, clipped text, invisible/covered controls, console errors) — the DEFAULT look after navigate and after edits; it proves functionality, structure, a11y and layout bugs WITHOUT vision.
-                 - "evidence" + "viewports":["mobile","tablet","desktop"] = responsive verification: the page is re-probed at each size (or explicit "375x812") and every finding is labeled with the viewport that produced it. Use for any responsive/layout criterion.
-                 - "screenshot" = visual escalation, for criteria that genuinely need pixels (visual hierarchy, spacing, color/contrast judgment). Every result ends with a capability line so you know exactly what ran.
-- list_skills  {}
-- use_skill    {"name":"skill-name"}
-                 Use the registered skill name or alias only. Saved connections are matched by their host-provided capabilities; never include a connectionId or credential in this call.
-- use_skill_reference {"skill":"skill-name","path":"references/accessibility.md"}
-                 Skill references are loaded only on demand. Bundled skill scripts never run automatically; propose any script through run_command so normal policy and workspace checks apply.
-- create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge","global":true}
-                 global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
-                 Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
-
-Completion/escalation:
-{"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
-{"thought":"...","action":{"type":"complete","summary":"...","risks":["..."],"followUps":["..."]}}
-{"thought":"...","action":{"type":"complete","summary":"<conversational reply>","chat":true}}  (chat-only close: answering a comment/question without doing work; allowed only when you took no actions this turn)
-{"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried","prerequisite":{"id":"provider-access","kind":"credential","description":"provider API access","requiredFor":"discover deployment targets","providerHint":"provider-name","capabilities":["servers.read"],"connectionSetup":{"label":"Provider production","baseUrl":"https://api.provider.example","documentationUrl":"https://docs.provider.example/api","validationPath":"/api/v1/targets","validationCapability":"servers.read"},"hints":["PROVIDER_API_KEY"],"riskIfWrong":"high"}}}
-
-Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
-{"thought":"...","action":{"type":"ask_user","questions":[{"question":"...","header":"short label","options":["option A","option B"]}]}}
-
-Reporting a discovered problem (vulnerability, bug, data risk — use the moment you NOTICE it, do not wait for completion):
-{"thought":"...","action":{"type":"report_finding","claim":"what is wrong and why it matters","kind":"security|bug|performance|data|other","severity":"low|medium|high|critical","location":"path/file.ts:42","reproductionCommand":"the exact command that demonstrates it"}}
-Every finding is handed to an independent verifier that tries to REPRODUCE it; only reproduced findings are reported as confirmed.
-
-Parallel independent work (only for tools that do not depend on each other, max 6 — always batch independent reads/searches/commands together instead of one per turn):
-{"thought":"...","action":{"type":"parallel","calls":[{"tool":"read_file","params":{"path":"a.ts"},"reason":"...","expected":"..."},{"tool":"read_file","params":{"path":"b.ts"},"reason":"...","expected":"..."}]}}
-
-Delegate independent sub-tasks to specialist agents (max 6; up to 5 run at once, each returns a summary):
-{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"one concrete outcome; name the file/symbol boundary, what to change or verify, what is out of scope, and the expected verification"}]}}
-IMPORTANT: \`agent\` MUST be the registered specialist name (e.g. "explore"), NOT the model/provider string (e.g. do NOT use "opencode-zen/hy3-free").
-The runtime adds a bounded WORK HANDOFF with ranked files, excerpts, plan targets, and verification targets. It does NOT give a specialist your conversation. Make the task line precise enough to be an ownership contract; never delegate vague work such as "look into it" or "check the repo".
-For independent research or checks that can continue while you work, set "background":true. Poll agent_status before using a background result or making a completion claim:
-{"thought":"...","action":{"type":"delegate","background":true,"tasks":[{"agent":"<registered specialist name>","task":"self-contained non-conflicting task"}]}}
-RESUMING PAUSED SPECIALISTS: a specialist that stops because of a model/provider/process failure may have either verified durable edits or context only. Never say its files were recovered unless its checkpoint reports "DURABLE CHANGES VERIFIED". To wake the SAME logical specialist job, delegate the SAME agent with the SAME task and its resume field; this reuses its specialist allocation rather than creating a second worker:
-{"thought":"...","action":{"type":"delegate","tasks":[{"agent":"<same specialist>","task":"<same task>","resume":{"jobId":"<resumableJobId>","note":"finish AC-2 only"}}]}}
-
-Rules for the protocol:
-- The streamed prose must describe what you are doing or learning right now, in user language.
-- BEFORE set_plan on a project with existing code: study the CURRENT CODE context, then read_file/search_files every file you intend to change. Your plan steps must name the concrete files and functions that actually exist in this codebase and describe real edits to them. If the context is not enough to plan confidently, read more first — do not plan from file names or guess at the implementation.
-- When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: use add_criteria, then append_plan. Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
-- Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
-- In a complete action, write a plain-language outcome summary in one or two sentences: what the user can now do and the important result. Do not dump tool calls, JSON, headings, or a file list; the host builds the polished delivery report from the ledger.
-- Evidence ids come from verification results reported to you (ev-...).
-- Use background agents only for work that cannot conflict with your own edits. Poll agent_status and incorporate completed results before claiming their work is done.
-- If the same action failed twice, you MUST propose a different action or request_block. Rewording the same strategy does NOT bypass loop protection (semantic identity); only MATERIAL change unlocks retry: relevant state changed, hypothesis materially changed, decision-changing evidence, a repair applied, user instruction changed, or a new capability.
-- PROBLEM RECOVERY LIFECYCLE (unknown problems welcome — the runtime knows no technologies, you reason about meaning): EXPECTED vs OBSERVED → CONTRADICTION (plan interrupts, step suspends) → HYPOTHESIS (set_hypothesis) → MINIMUM decision-changing evidence → REPAIR PROPOSAL (target kind is open-ended: unknown stays unknown until evidence supports it; never mutate source because classification failed) → ACT_NOW (execute immediately WHEN AUTHORIZED — approval gates still apply; generic exploration is suppressed) → VERIFY the ORIGINAL contradiction with POSITIVE proof (absence of an old error string alone proves nothing) → RESUME. A new blocker mid-recovery nests as a child problem (solve child, resume parent). A user message preempts everything: stale queued work is dropped.
-- Before a missing credential, connection, resource, configuration, dependency, service, target, or permission becomes BLOCKED, use request_block with its structured prerequisite. For a remote provider, include providerHint and the exact capability ids needed. First use web_fetch on official documentation. If it gives a reliable HTTPS base URL and a read-only validation route, include connectionSetup (label, baseUrl, documentationUrl, validationPath, validationCapability) so the secure form can ask the user for only an API key; omit unknown fields rather than guessing. The orchestrator first tries authorized repository/environment discovery, connected-provider reuse, and safe provisioning. The host shows the USER a private connection form ONLY when no saved connection exists yet or the saved credential was positively rejected (401/expired/revoked) — never for a missing operation. A missing operation on a valid saved connection is CAPABILITY_RESOLUTION: use registered read operations, or propose one documented connection_operation; never request or repeat a token in chat. It never exposes secret values, never guesses between ambiguous targets, and records every recovery attempt.
-- An unregistered provider operation is not a terminal blocker. Safe reads: propose connection_operation with the documented GET — the host auto-registers it under the existing credential and executes immediately (no approval, no credential prompt). Writes: research the official documentation, use saved read operations to discover concrete target IDs, then propose one exact connection_operation; the user must approve every non-read invocation. If the API contract or target remains ambiguous, ask the user a precise question rather than guessing or reporting a provider limitation.
-- RESOURCE FOLLOW-UP DISCOVERY: when a provider result is truncated/incomplete or you lack a resource id, do NOT ask the user. Chain narrower reads automatically on the saved connection: list → locate the resource by name → get(id) → status → environment. Ask the user only after these deterministic provider reads are exhausted or genuinely unavailable. The host holds resource-id questions for one turn to enforce this.
-
-ARCHITECTURE DECISIONS:
-- When a task involves an important technology or architecture choice, do NOT blindly pick the most popular framework or your first idea. Evaluate reasonable alternatives against the ACTUAL repository and the task requirements, then record_decision BEFORE implementing.
-- Separate the kinds of inputs: explicit task requirements, existing repository constraints, recommended technologies, and optional preferences. Weigh them in that order.
-- If the user explicitly requires a technology (e.g. "use React"), you MUST use it — do not reject it merely because something simpler exists. If nothing is required, you MAY choose a simpler option (e.g. vanilla JS, or the repo's existing architecture) when the evidence supports it.
-- Keep the decision compact; it is stored in the ledger and shown to you every turn. Record alternatives, repository evidence, why alternatives were rejected, and what would justify reconsidering.
-- If you later change an architecture decision, record a NEW decision with "supersedes" and a reason — never silently drift from a recorded decision.
-
-PLANNING QUALITY (adaptive depth — match ceremony to complexity):
-- Low-complexity tasks: short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.
-- Medium/high complexity, and anything spanning UI + server: FIRST set_design with BOUNDED sections, THEN set_plan.
-  - frontend section: pages/views, layout & components, each control's user intent and placement, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
-  - backend section: API routes & request/response contracts, schema/DB changes, authn/authz, validation, business logic, integrations, error handling, tests.
-  - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
-- Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
-- Plans answer: what are we building, how will it work, which files/surfaces are involved, how is each part verified.
-- DYNAMIC REPLANNING: when execution reveals the plan is wrong (API differs from assumption, reusable component found, missing dependency, test exposes an architectural problem), revise_step ONLY the affected step with a reason instead of blindly continuing or regenerating everything. Check off toggle_todo as you complete each subtask.
-- The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.`;
+  return `${core}\n\n${capabilities}\n\nRESPOND WITH EXACTLY ONE JSON ACTION.`;
 }
 
 export interface TaskStateScope {
@@ -443,11 +328,20 @@ export function buildStateMessage(
   const visualReferences = auth?.visualReferences.filter((v) => v.status === 'active') ?? [];
   const latestFollowUp = auth?.followUps.length ? auth.followUps[auth.followUps.length - 1] : undefined;
 
-  const authorityParts: string[] = [
+  // ── TASK (top of the state; the authority header must stay first) ────────
+  // The goal is stated ONCE. The original request is shown only when a
+  // follow-up phase has moved the current goal away from it.
+  const taskParts: string[] = [
     'TASK AUTHORITY (Precedence: 1. Safety > 2. Hard Instructions > 3. User Goal > 4. Criteria > 5. Visual References > 6. Decisions > 7. Plan)',
     `TASK: ${taskGoal}`,
-    `CURRENT USER INTENT:\n${taskGoal}`,
   ];
+  if (!scope && currentGoal.trim() !== stateGoal.trim()) {
+    taskParts.push(`ORIGINAL REQUEST:\n${stateGoal}`);
+  }
+  const taskBlock = taskParts.join('\n');
+
+  // ── USER AUTHORITY (explicit user constraints outrank everything below) ──
+  const authorityParts: string[] = [];
   if (latestFollowUp && latestFollowUp.kind !== 'CONTINUE') {
     authorityParts.push(`LATEST DIRECTION (${latestFollowUp.kind}):\n${latestFollowUp.rawMessage}`);
   }
@@ -472,19 +366,56 @@ export function buildStateMessage(
   if (supersededInstructions.length > 0) {
     authorityParts.push(`SUPERSEDED INSTRUCTIONS (DO NOT FOLLOW):\n${supersededInstructions.map((i) => `- [SUPERSEDED] ${i.text}`).join('\n')}`);
   }
+  const userAuthorityBlock = authorityParts.length > 0 ? `USER AUTHORITY:\n${authorityParts.join('\n')}` : '';
 
-  const authorityBlock = authorityParts.join('\n\n');
-
+  // ── ACCEPTANCE (formal vs observed progress) ─────────────────────────────
   const criteria = scopedCriteria
     .map(
       (c) =>
         `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`,
     )
     .join('\n');
+  const satisfiedCount = scopedCriteria.filter((c) => c.satisfied).length;
+  const citedEvidenceIds = new Set(scopedCriteria.flatMap((c) => c.evidenceIds));
+  const unclaimedPassing = scopedEvidence.filter((e) => e.passed && !citedEvidenceIds.has(e.id)).length;
+  const criteriaHeader =
+    `ACCEPTANCE (formally satisfied: ${satisfiedCount}/${scopedCriteria.length}` +
+    (unclaimedPassing > 0
+      ? ` · ${unclaimedPassing} passing evidence record(s) NOT yet linked — unlinked evidence NEVER satisfies a criterion; link it with claim_criterion`
+      : '') +
+    ')';
+
+  // ── PLAN (current step + next relevant steps; no history dump) ───────────
+  const next = scopedPlan.find((step) => step.status === 'in_progress') ?? scopedPlan.find((step) => step.status === 'pending');
+  const counts = stepCounts(scopedPlan);
+  const verifiedOpenCount = scopedPlan.filter(
+    (s) => s.status !== 'done' && s.verification && scopedEvidence.some((e) => e.passed && !e.stale && e.command && commandsMatch(s.verification!, e.command)),
+  ).length;
+  const verifiedOpenLine = verifiedOpenCount > 0 ? ` · ${verifiedOpenCount} step(s) verified-but-uncounted` : '';
+  const planBlock =
+    scopedPlan.length === 0
+      ? 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
+      : `PLAN: ${counts.done}/${scopedPlan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos${verifiedOpenLine}${renderPlanBody(scopedPlan, detail) ? `\n${renderPlanBody(scopedPlan, detail)}` : ''}`;
+  const designBlock = renderDesign(d.planDesign, detail);
+
+  // ── EVIDENCE (recent/current only) ────────────────────────────────────────
   const evidence = scopedEvidence
     .slice(-STATE_EVIDENCE_CAP)
     .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${trunc(`${e.label}${e.command ? ` — ${e.command}` : ''}`, STATE_EVIDENCE_MAX_CHARS)}`)
     .join('\n');
+
+  // ── KNOWN FACTS (hypothesis + historical failures; never live state) ─────
+  const failures = ledger.failureSummary();
+  const knownFacts: string[] = [];
+  if (d.currentHypothesis) knownFacts.push(`CURRENT HYPOTHESIS: ${d.currentHypothesis}`);
+  if (failures.length) knownFacts.push(`RECENT FAILURES (history — the ACTIVE PROBLEM above is authoritative):\n${failures.map((f) => `  ${f}`).join('\n')}`);
+  const knownFactsBlock = knownFacts.length > 0 ? `KNOWN FACTS:\n${knownFacts.join('\n')}` : '';
+
+  const decisions = trunc(renderDecisions(d.architectureDecisions ?? []), STATE_DECISIONS_MAX_CHARS);
+  const phaseFiles = scope?.files ?? d.filesChanged;
+  const files =
+    phaseFiles.length > STATE_FILES_CAP ? `… (+${phaseFiles.length - STATE_FILES_CAP} earlier) ${phaseFiles.slice(-STATE_FILES_CAP).join(', ')}` : phaseFiles.join(', ');
+
   const effortLine = d.effortPlan
     ? `EFFORT: ${d.effortPlan.complexity} — ${d.effortPlan.reason} (budget: ${d.effortPlan.maxTurns} turns, ${d.effortPlan.maxSpecialists} specialists, ${d.effortPlan.contextBudget.maxBytes} bytes)`
     : '';
@@ -494,34 +425,24 @@ export function buildStateMessage(
   const riskLine = d.riskPlan
     ? `RISK: ${d.riskPlan.risk} — ${d.riskPlan.reason}${d.riskPlan.recommendedSpecialists.length > 0 ? ` | suggested: ${d.riskPlan.recommendedSpecialists.map((r) => r.agent).join(', ')}` : ''}`
     : '';
-  const decisions = trunc(renderDecisions(d.architectureDecisions ?? []), STATE_DECISIONS_MAX_CHARS);
-  const failures = ledger.failureSummary();
-  const next = scopedPlan.find((step) => step.status === 'in_progress') ?? scopedPlan.find((step) => step.status === 'pending');
-  const counts = stepCounts(scopedPlan);
-  const planBlock =
-    scopedPlan.length === 0
-      ? 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
-      : `PLAN: ${counts.done}/${scopedPlan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(scopedPlan, detail)}`;
-  const designBlock = renderDesign(d.planDesign, detail);
-  const phaseFiles = scope?.files ?? d.filesChanged;
-  const files =
-    phaseFiles.length > STATE_FILES_CAP ? `… (+${phaseFiles.length - STATE_FILES_CAP} earlier) ${phaseFiles.slice(-STATE_FILES_CAP).join(', ')}` : phaseFiles.join(', ');
 
+  // ── Assembled in dominance order: current state outranks history ─────────
   return [
-    authorityBlock,
+    taskBlock,
     `STATUS: ${d.status} | mode: ${d.mode}`,
     effortLine,
     depthLine,
     riskLine,
     recoverySection ? recoverySection : '',
-    d.currentHypothesis ? `CURRENT HYPOTHESIS: ${d.currentHypothesis}` : '',
-    activeSkillsSection ? `ACTIVE SKILLS IN TASK:\n${activeSkillsSection}` : '',
-    `ACCEPTANCE CRITERIA:\n${criteria || '  (none set yet — use set_criteria)'}`,
-    `ARCHITECTURE:\n${decisions}`,
-    ...(designBlock ? [designBlock] : []),
+    knownFactsBlock,
+    criteriaHeader,
+    criteria || '  (none set yet — use set_criteria)',
     planBlock,
+    ...(designBlock ? [designBlock] : []),
+    userAuthorityBlock,
     `EVIDENCE:\n${evidence || '  (none yet)'}`,
-    failures.length ? `FAILED:\n${failures.map((f) => `  ${f}`).join('\n')}` : '',
+    decisions.trim() ? `ARCHITECTURE:\n${decisions}` : '',
+    activeSkillsSection ? `ACTIVE SKILLS IN TASK:\n${activeSkillsSection}` : '',
     `FILES CHANGED: ${files || '(none)'}`,
     next ? `NEXT: ${next.id}${next.area ? ` (${next.area})` : ''} — ${next.description}` : '',
     d.blockers.length

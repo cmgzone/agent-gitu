@@ -52,6 +52,44 @@ export function digestObservation(output: string): string {
   return sha256(redactSecrets(output || '').slice(0, 4000));
 }
 
+// ── Failure episode signatures ────────────────────────────────────────────────
+// Identity of a FAILING VERIFICATION, stable across incidental drift: same
+// command + same failing assertion SHAPE + same target = same failure episode,
+// even when timestamps or shifting counts/timings change the raw text.
+
+const ASSERTION_LINE_RE = /\b(assert|expected|received|fail(?:ed|ure|ing)?|error|exception|mismatch|differs?|does\s+not\s+match)\b|[✗×]/i;
+
+/** Mask volatile numerics so shifting counts/timings do not fork an episode. */
+function maskVolatile(text: string): string {
+  return text.replace(/\d+(?:[.,]\d+)?/g, '#');
+}
+
+/**
+ * Normalized failure identity: base command + masked expected text + masked
+ * failing-assertion lines. "403.6 vs 406.8" and "403.7 vs 406.9" collapse to
+ * the same signature; a different assertion ("five pipes culled...") does not.
+ * When no assertion-shaped line exists, the masked observation itself carries
+ * the identity — a constant signature must never collapse distinct failures.
+ */
+export function normalizeFailureSignature(command: string, expected: string, observed: string): string {
+  const cmdBase = (command || '').trim().split(/\s+/).slice(0, 3).join(' ').toLowerCase();
+  const rawLines = (observed || '')
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+/g, ' ').trim().toLowerCase())
+    .filter((l) => l.length > 0);
+  const lines = rawLines
+    .filter((l) => ASSERTION_LINE_RE.test(l))
+    .slice(0, 4)
+    .map(maskVolatile)
+    .sort();
+  if (lines.length === 0 && rawLines.length > 0) {
+    lines.push(maskVolatile(rawLines.join(' ').slice(0, 300)));
+  }
+  return sha256(
+    redactSecrets([maskVolatile(cmdBase), maskVolatile((expected || '').toLowerCase()), ...lines].join('|')).slice(0, 2000),
+  );
+}
+
 /** Digest of structured fields with secrets redacted and keys canonicalized. */
 export function digestFields(fields: Record<string, unknown>): string {
   const redacted = redactParams(fields);

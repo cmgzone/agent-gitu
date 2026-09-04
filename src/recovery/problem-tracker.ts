@@ -12,7 +12,7 @@ import type {
   VerificationContract,
 } from './problem-state.js';
 import { UNKNOWN_REPAIR_TARGET } from './problem-state.js';
-import { digestObservation, semanticDigest } from './evidence-utils.js';
+import { digestObservation, normalizeFailureSignature, semanticDigest } from './evidence-utils.js';
 import { shortId } from '../util.js';
 
 export interface RecordContradictionInput {
@@ -21,6 +21,8 @@ export interface RecordContradictionInput {
   expectation?: ActionExpectation;
   observed: string;
   fingerprint: string;
+  /** Command/path that produced the observation (failure-episode identity). */
+  command?: string;
   /** Legacy surface hint (telemetry only). Prefer likelyTarget. */
   likelySurface?: RepairSurface;
   /** Open-ended target hint (unknown unless evidence supports it). */
@@ -45,7 +47,9 @@ export class ProblemTracker {
   getActiveProblem(): ProblemState | undefined {
     const top = this.problemStack[this.problemStack.length - 1];
     if (!top) return undefined;
-    return this.problems.get(top);
+    const p = this.problems.get(top);
+    if (!p || p.status === 'resolved' || p.status === 'superseded') return undefined;
+    return p;
   }
 
   /** Full nested stack (bottom → top). */
@@ -59,18 +63,33 @@ export class ProblemTracker {
 
   hasActiveProblem(): boolean {
     const active = this.getActiveProblem();
-    return active !== undefined && active.status !== 'resolved';
+    return active !== undefined && active.status !== 'resolved' && active.status !== 'superseded';
   }
 
   getAllProblems(): ProblemState[] {
     return Array.from(this.problems.values());
   }
 
+  /** Closed episodes (resolved or superseded) — audit history, never active work. */
+  getClosedProblems(): ProblemState[] {
+    return this.getAllProblems().filter((p) => p.status === 'resolved' || p.status === 'superseded');
+  }
+
+  private static isEpisodeOpen(p: ProblemState): boolean {
+    return p.status !== 'resolved' && p.status !== 'superseded';
+  }
+
   recordContradiction(input: RecordContradictionInput): ProblemState {
     const now = Date.now();
-    // Deduplicate: same fingerprint on an unresolved problem updates it.
+    const failureSignature = normalizeFailureSignature(input.command ?? '', input.expected ?? input.expectation?.description ?? '', input.observed);
+
+    // 1. Same failure episode (exact fingerprint OR stable signature on an
+    //    OPEN problem): update in place — this is the same failure again.
     for (const p of this.problems.values()) {
-      if (p.fingerprint === input.fingerprint && p.status !== 'resolved') {
+      const sameEpisode =
+        p.fingerprint === input.fingerprint ||
+        (p.failureSignature !== undefined && p.failureSignature === failureSignature);
+      if (sameEpisode && ProblemTracker.isEpisodeOpen(p)) {
         if (input.stepId && !p.blockedStepIds.includes(input.stepId)) {
           p.blockedStepIds.push(input.stepId);
         }
@@ -82,6 +101,7 @@ export class ProblemTracker {
         }
         p.observed = input.observed;
         p.observationDigest = digestObservation(input.observed);
+        if (!p.failureSignature) p.failureSignature = failureSignature;
         p.updatedAt = now;
         this.activate(p.id);
         return p;
@@ -91,13 +111,37 @@ export class ProblemTracker {
     this.problemSeq += 1;
     const id = shortId(`prob-${this.problemSeq}`);
     const active = this.getActiveProblem();
-    // Nested recovery: a new distinct contradiction while another problem is
-    // active becomes its child — the parent is preserved on the stack.
-    const parentProblemId = active && active.status !== 'resolved' ? active.id : undefined;
+
+    // 2. Failure-episode supersession: a DIFFERENT failure signature arriving
+    //    while a repair was applied (repairing/verifying/act_now/decision_sufficient)
+    //    means the failure surface moved on. The old episode is closed as
+    //    superseded — its hypotheses must never resurface as candidates — and
+    //    the new episode replaces it (no nesting: it is a continuation, not a child).
+    let supersededParent: ProblemState | undefined;
+    if (active && (active.status === 'repairing' || active.status === 'verifying' || active.status === 'act_now' || active.status === 'decision_sufficient')) {
+      supersededParent = this.closeEpisode(active, id, 'repair changed the failure surface — new failure signature observed');
+    }
+
+    // 3. Reopen: this signature was seen in a CLOSED episode. The failure came
+    //    back. Create a fresh episode referencing the old one; prior hypotheses
+    //    carry over marked 'superseded' (reference only — never active candidates).
+    const priorEpisode = this.getAllProblems().find((p) => p.failureSignature === failureSignature && !ProblemTracker.isEpisodeOpen(p));
+
+    // 4. Nested recovery: a new distinct contradiction while still DIAGNOSING
+    //    another problem becomes its child — the parent is preserved on the stack.
+    //    A replacement episode (case 2) inherits the superseded episode's parent:
+    //    it occupies the same position in the blocking chain.
+    const parentProblemId =
+      supersededParent
+        ? supersededParent.parentProblemId
+        : active && active.status !== 'resolved' && active.status !== 'superseded'
+          ? active.id
+          : undefined;
 
     const newProblem: ProblemState = {
       id,
       fingerprint: input.fingerprint,
+      failureSignature,
       goal: input.goal,
       expected: input.expected,
       ...(input.expectation ? { expectation: input.expectation } : {}),
@@ -109,7 +153,10 @@ export class ProblemTracker {
         ...(input.criterionId ? [input.criterionId] : []),
         ...(input.criterionIds ?? []),
       ],
-      hypotheses: [],
+      ...(priorEpisode ? { reopenedFromProblemId: priorEpisode.id } : {}),
+      hypotheses: priorEpisode
+        ? priorEpisode.hypotheses.map((h) => ({ ...h, status: 'superseded' as HypothesisStatus, updatedAt: now }))
+        : [],
       attempts: [],
       status: 'investigating',
       // Ownership stays UNKNOWN unless the caller supplies evidence-backed target.
@@ -123,6 +170,10 @@ export class ProblemTracker {
         expectedOutcome: input.expectation?.description ?? input.expected ?? 'Success',
         ...(input.expectation ? { originalExpectation: input.expectation } : {}),
         originalObservationDigest: digestObservation(input.observed),
+        // The command that produced the contradiction: when it later EXITS 0,
+        // the original failure is positively gone — this is the verification
+        // proof for command-shaped contradictions (fail -> repair -> pass).
+        ...(input.command ? { verificationCommand: input.command } : {}),
       },
       ...(parentProblemId ? { parentProblemId } : {}),
       actionsSinceMaterialProgress: 0,
@@ -134,6 +185,9 @@ export class ProblemTracker {
     };
 
     this.problems.set(id, newProblem);
+    if (priorEpisode) {
+      newProblem.reopenHistoryLine = `failure previously seen in episode ${priorEpisode.id} (${priorEpisode.expected ?? priorEpisode.goal}); prior hypotheses are retained below as SUPERSEDED context only`;
+    }
     if (parentProblemId) {
       const parent = this.problems.get(parentProblemId);
       if (parent) {
@@ -143,6 +197,45 @@ export class ProblemTracker {
     }
     this.activate(id);
     return newProblem;
+  }
+
+  /**
+   * Close an episode as superseded: pop it from the stack, retire its
+   * hypotheses, and resume the parent it had interrupted (if any). Returns
+   * a snapshot of the closed problem.
+   */
+  private closeEpisode(problem: ProblemState, supersededByProblemId: string, reason: string): ProblemState {
+    problem.status = 'superseded';
+    problem.supersededByProblemId = supersededByProblemId;
+    problem.supersededAt = Date.now();
+    for (const h of problem.hypotheses) {
+      if (h.status !== 'rejected') h.status = 'superseded';
+      h.updatedAt = Date.now();
+    }
+    problem.updatedAt = Date.now();
+    this.problemStack = this.problemStack.filter((x) => x !== problem.id);
+    // Unlink from the parent's blocking chain: the replacement episode takes
+    // over this slot, so the parent's blocks list must not keep a closed id.
+    if (problem.parentProblemId) {
+      const parent = this.problems.get(problem.parentProblemId);
+      if (parent) {
+        parent.blocksProblemIds = (parent.blocksProblemIds ?? []).filter((x) => x !== problem.id);
+        parent.updatedAt = Date.now();
+      }
+    }
+    void reason;
+    return { ...problem };
+  }
+
+  /** Bulk-set hypothesis status (episode retirement / contradiction marking). */
+  markHypotheses(problemId: string, status: HypothesisStatus): void {
+    const target = this.problems.get(problemId);
+    if (!target) return;
+    for (const h of target.hypotheses) {
+      h.status = status;
+      h.updatedAt = Date.now();
+    }
+    target.updatedAt = Date.now();
   }
 
   private activate(id: string): void {
@@ -320,7 +413,7 @@ export class ProblemTracker {
     this.problemStack = this.problemStack.filter((id) => id !== active.id);
     const parent = active.parentProblemId ? this.problems.get(active.parentProblemId) : undefined;
     let resumedParent: ProblemState | undefined;
-    if (parent && parent.status !== 'resolved') {
+    if (parent && parent.status !== 'resolved' && parent.status !== 'superseded') {
       parent.blocksProblemIds = (parent.blocksProblemIds ?? []).filter((id) => id !== active.id);
       parent.updatedAt = Date.now();
       resumedParent = parent;
@@ -330,9 +423,9 @@ export class ProblemTracker {
     return { resolved: true, problem: resolvedProblem, unblockedStepIds, ...(resumedParent ? { resumedParent } : {}) };
   }
 
-  /** Unresolved problems (anything not yet resolved), bottom → top of stack. */
+  /** Unresolved problems (open episodes only — superseded never blocks), bottom → top of stack. */
   getUnresolvedProblems(): ProblemState[] {
-    return this.getProblemStack().filter((p) => p.status !== 'resolved');
+    return this.getProblemStack().filter((p) => p.status !== 'resolved' && p.status !== 'superseded');
   }
 
   /**
@@ -356,13 +449,30 @@ export class ProblemTracker {
     target.status = 'resolved';
     target.updatedAt = Date.now();
     this.problemStack = this.problemStack.filter((x) => x !== id);
+    // Supersession is a real graph transition, not merely a stack pop. Unlink
+    // the retired episode so a resumed parent cannot remain permanently
+    // blocked by an id that no longer exists in the active stack.
+    if (target.parentProblemId) {
+      const parent = this.problems.get(target.parentProblemId);
+      if (parent) {
+        parent.blocksProblemIds = (parent.blocksProblemIds ?? []).filter((childId) => childId !== id);
+        parent.updatedAt = Date.now();
+      }
+    }
+    for (const childId of target.blocksProblemIds ?? []) {
+      const child = this.problems.get(childId);
+      if (child) {
+        child.blockedByProblemIds = (child.blockedByProblemIds ?? []).filter((parentId) => parentId !== id);
+        child.updatedAt = Date.now();
+      }
+    }
     return { ...target };
   }
 
   /** Resolve a specific (non-top) problem, e.g. a nested child completed out of order. */
   resolveProblem(id: string, evidenceId?: string): { resolved: boolean; problem?: ProblemState; unblockedStepIds: string[] } {
     const target = this.problems.get(id);
-    if (!target || target.status === 'resolved') return { resolved: false, unblockedStepIds: [] };
+    if (!target || target.status === 'resolved' || target.status === 'superseded') return { resolved: false, unblockedStepIds: [] };
     const wasActive = this.getActiveProblem()?.id === id;
     if (wasActive) return this.resolveActiveProblem(evidenceId);
     target.status = 'resolved';

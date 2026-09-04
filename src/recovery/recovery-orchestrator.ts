@@ -2,6 +2,7 @@ import { ProblemTracker } from './problem-tracker.js';
 import { ProgressEvaluator, type ActionOutcomeInput } from './progress-evaluator.js';
 import { DiagnosisController } from './diagnosis-controller.js';
 import { StrategyGuard, type StrategyCheckInput, type StrategyUnlockContext } from './strategy-guard.js';
+import { InvestigationGuard, type StatFn } from './investigation-guard.js';
 import type {
   ActionCapability,
   ActionExpectation,
@@ -18,8 +19,12 @@ import type {
   VerificationContract,
 } from './problem-state.js';
 import { UNKNOWN_REPAIR_TARGET } from './problem-state.js';
-import { digestObservation } from './evidence-utils.js';
+import { digestObservation, normalizeFailureSignature } from './evidence-utils.js';
+import * as narration from '../agent/narration.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
+import { statSync } from 'node:fs';
+import path from 'node:path';
+import { isManufacturedEvidenceCommand } from '../evidence/evidence.js';
 
 export interface PreActionCheckResult {
   allowed: boolean;
@@ -55,6 +60,7 @@ export class RecoveryOrchestrator {
   public readonly evaluator: ProgressEvaluator;
   public readonly diagnosis: DiagnosisController;
   public readonly strategyGuard: StrategyGuard;
+  public readonly investigationGuard: InvestigationGuard;
   private readonly emit: (event: string) => void;
 
   // Telemetry counters (legacy + AC-22 additions)
@@ -91,6 +97,20 @@ export class RecoveryOrchestrator {
   public verificationContractFailures = 0;
   public verificationContractPasses = 0;
 
+  // Failure-episode telemetry (recovery-control fixes)
+  public problemEpisodes = 0;
+  public episodeSupersessions = 0;
+  public staleHypothesisReopens = 0;
+  public investigationDriftBlocks = 0;
+  public noDecisionImpactRejections = 0;
+  /**
+   * Moot-interruption supersessions (never verified repairs). Rare by design:
+   * a rate that climbs alongside recovery volume means the runtime is spawning
+   * recovery episodes around optional/benign actions instead of real
+   * contradictions, and the completion-gate exception is doing the workload.
+   */
+  public mootProblemSupersessions = 0;
+
   // Interrupt / instruction epoch (AC-30). Every scheduled action captures it;
   // a mismatch means the action is stale and must be dropped before it runs.
   private interrupt: ExecutionInterruptState = { epoch: 0, reason: 'state_changed' };
@@ -109,11 +129,26 @@ export class RecoveryOrchestrator {
   private static readonly DRIFT_ACTION_WINDOW = 8;
   private static readonly DRIFT_READ_WINDOW = 6;
 
-  constructor(emit: (event: string) => void = () => {}) {
+  constructor(emit: (event: string) => void = () => {}, opts: { repoRoot?: string; statFile?: StatFn } = {}) {
     this.tracker = new ProblemTracker();
     this.evaluator = new ProgressEvaluator();
     this.diagnosis = new DiagnosisController();
     this.strategyGuard = new StrategyGuard();
+    // File fingerprinting for the successful-read guard: mtime+size resolves
+    // against the locked workspace root (injectable for tests).
+    const repoRoot = opts.repoRoot ?? process.cwd();
+    this.investigationGuard = new InvestigationGuard({
+      statFile:
+        opts.statFile ??
+        ((file) => {
+          try {
+            const s = statSync(path.resolve(repoRoot, file));
+            return { mtimeMs: Math.round(s.mtimeMs), size: s.size };
+          } catch {
+            return undefined;
+          }
+        }),
+    });
     this.emit = emit;
   }
 
@@ -123,6 +158,39 @@ export class RecoveryOrchestrator {
 
   getActiveProblem(): ProblemState | undefined {
     return this.tracker.getActiveProblem();
+  }
+
+  /**
+   * Retire legacy episodes that were opened around an Agent Gitu protocol or
+   * capability-registration failure. Those failures never observed the target
+   * application, so no application repair can satisfy their verification
+   * contract. Keeping them active creates an unrecoverable state-machine loop.
+   */
+  dismissInternalProtocolProblem(ledger: TaskLedger, trigger = 'supported action selected'): ProblemState | undefined {
+    const active = this.getActiveProblem();
+    if (!active) return undefined;
+    const text = [active.goal, active.expected, active.observed, active.repairTarget?.description]
+      .filter(Boolean)
+      .join('\n');
+    const internalProtocolFailure =
+      /Unknown tool(?::|\s+["'])|not a registered Agent Gitu tool|invalid tool params|registered tool schema|repair_recovery_(?:state|metadata)|(?:browser|Chromium) (?:adapter|action runtime).{0,80}not registered/i.test(
+        text,
+      );
+    if (!internalProtocolFailure) return undefined;
+
+    const dismissed = this.tracker.supersedeProblem(
+      active.id,
+      `Internal protocol/capability episode retired after ${trigger}; it never represented an application contradiction.`,
+    );
+    if (!dismissed) return undefined;
+    this.mootProblemSupersessions += 1;
+    for (const stepId of dismissed.blockedStepIds) {
+      const stillBlocked = this.tracker.getUnresolvedProblems().some((problem) => problem.blockedStepIds.includes(stepId));
+      const step = ledger.step(stepId);
+      if (!stillBlocked && step?.status === 'blocked') ledger.updateStep(stepId, { status: 'in_progress' });
+    }
+    this.emit(`problem ${active.id} retired — internal protocol failure cannot block application work`);
+    return dismissed;
   }
 
   // ── Interrupt epoch (AC-30) ───────────────────────────────────────────────
@@ -171,7 +239,8 @@ export class RecoveryOrchestrator {
       if (done) {
         superseded.push(done);
         this.nestedProblemsResolved += 1;
-        this.emit(`problem superseded — ${problem.id}: blocked work completed, interruption moot (not a verified repair)`);
+        this.mootProblemSupersessions += 1;
+        this.emit(`problem The work this interruption was blocking finished under its own verification — closing it as moot rather than as a proven fix.`);
       }
     }
     return superseded;
@@ -225,7 +294,7 @@ export class RecoveryOrchestrator {
     this.tracker.setDiagnosis(decision);
     if (decision.nextMode === 'act_now') {
       this.actNowTransitions += 1;
-      this.emit(`problem ACT_NOW — ${active.id}: repair decided for ${proposal.target.kind}, execute immediately when authorized`);
+      this.emit(`problem ${narration.actNow(proposal.target.kind, proposal.intendedEffect, active.id)}`);
       return { actNow: true, reason: `ACT_NOW: repair ${proposal.target.kind} — ${proposal.intendedEffect}` };
     }
     return { actNow: false, reason: decision.unresolvedQuestions.map((q) => q.question).join('; ') || 'Awaiting decision inputs.' };
@@ -249,8 +318,42 @@ export class RecoveryOrchestrator {
     const active = this.getActiveProblem();
     if (!active) return { allowed: true };
 
+    const command = action.tool === 'run_command' ? String(action.params?.['command'] ?? '').trim() : '';
+    if (command && isManufacturedEvidenceCommand(command)) {
+      this.nonMaterialEvidenceIgnored += 1;
+      this.tracker.noteImmaterialAction(active, false);
+      return {
+        allowed: false,
+        reason:
+          `INVALID RECOVERY PROOF: "${command}" only manufactures the output it claims to verify. ` +
+          'It cannot repair or resolve a recovery incident. Run the original application check, a real test, or a falsifiable state probe instead.',
+      };
+    }
+
     const isRepairAction = this.isRepairAction(action, active);
     const isRead = this.isReadTool(action.tool);
+
+    // Semantic successful-read guard: a read whose answer is already in hand
+    // for THIS failure episode (unchanged file version, covered lines, same
+    // question) never executes — the cached observation comes back instead.
+    // The LoopDetector cannot catch this class: every repeated read succeeds.
+    if (isRead) {
+      const readVerdict = this.investigationGuard.check(
+        action.tool,
+        action.params ?? {},
+        (action as { reason?: string }).reason,
+        active.id,
+        action.investigationIntent,
+      );
+      if (!readVerdict.allowed) {
+        this.redundantReadsPrevented += 1;
+        this.emit(`note ${narration.duplicateInvestigationPrevented()}`);
+        return {
+          allowed: false,
+          reason: readVerdict.cachedObservation ? `${readVerdict.reason}\n\n${readVerdict.cachedObservation}` : readVerdict.reason,
+        };
+      }
+    }
 
     // Drift control (AC-34): bounded progress window, resets on material progress.
     const sinceProgress = active.actionsSinceMaterialProgress ?? 0;
@@ -271,6 +374,7 @@ export class RecoveryOrchestrator {
         };
       }
       if (sinceProgress >= RecoveryOrchestrator.DRIFT_ACTION_WINDOW || readsSince >= RecoveryOrchestrator.DRIFT_READ_WINDOW) {
+        this.investigationDriftBlocks += 1;
         return {
           allowed: false,
           reason:
@@ -298,7 +402,7 @@ export class RecoveryOrchestrator {
     if (!strategyVerdict.allowed) {
       this.strategyRepeatsPrevented += 1;
       if (strategyVerdict.semanticDuplicate) this.strategySemanticDuplicatesPrevented += 1;
-      this.emit('strategy repeat prevented — same unresolved problem without material change');
+      this.emit(`note ${narration.strategyRepeatPrevented()}`);
       return { allowed: false, reason: strategyVerdict.reason };
     }
 
@@ -310,7 +414,8 @@ export class RecoveryOrchestrator {
     if (!voiVerdict.allowed) {
       this.redundantReadsPrevented += 1;
       this.redundantInvestigationsPrevented += 1;
-      this.emit('investigation redundant read prevented — root cause already diagnosed');
+      if (voiVerdict.reason?.startsWith('NO_DECISION_IMPACT')) this.noDecisionImpactRejections += 1;
+      this.emit(`note ${narration.decisionSufficientReadSuppressed()}`);
       return { allowed: false, reason: voiVerdict.reason };
     }
 
@@ -338,8 +443,55 @@ export class RecoveryOrchestrator {
   // ── Post-action outcomes ──────────────────────────────────────────────────
 
   onActionOutcome(input: ActionOutcomeInput, ledger: TaskLedger): PostActionOutcomeResult {
+    // Schema/registry failures happen before a tool can observe the project.
+    // They are protocol failures, not application contradictions. Keeping this
+    // guard here (rather than only in Gitu's main loop) protects every caller
+    // of the recovery runtime from creating a fake nested problem around an
+    // invented recovery API such as `repair_recovery_state`.
+    if (
+      input.errorSignature === 'unknown-tool' ||
+      input.errorSignature === 'invalid-tool-params' ||
+      input.errorSignature === 'browser-unavailable' ||
+      input.errorSignature === 'skill-requirements-unmet' ||
+      input.errorSignature === 'unknown-skill' ||
+      input.errorSignature === 'skills-unavailable' ||
+      input.errorSignature === 'background-command-unavailable'
+    ) {
+      this.dismissInternalProtocolProblem(ledger, 'a protocol error was rejected at the runtime boundary');
+      return {
+        evaluation: {
+          verdict: 'neutral',
+          isBlocking: false,
+          explanation: 'Malformed/unknown action rejected before problem recovery evaluation.',
+        },
+        interrupted: false,
+        resolved: false,
+        problem: this.getActiveProblem(),
+      };
+    }
+
     const active = this.getActiveProblem();
     const evaluation = this.evaluator.evaluate(input, active);
+
+    // Successful-read ledger for the episode guard: record what this read
+    // answered so a later semantically identical read is answered from cache.
+    if (input.toolOk && this.isReadTool(input.tool)) {
+      this.investigationGuard.record(
+        input.tool,
+        (input.params ?? {}) as Record<string, unknown>,
+        input.reason,
+        active?.id ?? 'none',
+        input.output || '',
+      );
+    }
+    // Any successful mutation invalidates the recorded answers for the files
+    // it touched — the mtime fingerprint would catch it too, but evicting
+    // keeps the entry list honest.
+    if (input.toolOk && (input.tool === 'write_file' || input.tool === 'apply_edit')) {
+      const params = (input.params ?? {}) as Record<string, unknown>;
+      const file = String(params['path'] ?? params['file'] ?? '');
+      if (file) this.investigationGuard.invalidateFile(file);
+    }
 
     // Track evidence materiality: re-observing byte-identical raw output (same
     // screenshot, same response, same error with a new timestamp stripped by
@@ -355,13 +507,16 @@ export class RecoveryOrchestrator {
       this.lastRawDigests.set(active.id, digest);
     }
 
-    // Case 1: Verification succeeded on active problem (contract-gated)!
-    if (active && evaluation.verdict === 'expected_achieved') {
+    // Case 1: Verification succeeded on active problem — CONTRACT-GATED or an
+    // explicit model semantic verdict. Legacy text-overlap 'expected_achieved'
+    // (incidental vocabulary overlap in a diagnostic's output) must NEVER
+    // resolve an episode.
+    if (active && evaluation.verdict === 'expected_achieved' && evaluation.resolvesActiveProblem === true) {
       this.verificationContractPasses += 1;
       const resolution = this.tracker.resolveActiveProblem();
       this.successfulRecoveries += 1;
       this.resumedMissions += 1;
-      this.emit(`problem resolved — ${active.id}: original contradiction verified resolved`);
+      this.emit(`resolved ${narration.problemResolved(active.id)}`);
 
       for (const stepId of resolution.unblockedStepIds) {
         const step = ledger.step(stepId);
@@ -409,7 +564,7 @@ export class RecoveryOrchestrator {
           material: true,
         });
         this.tracker.noteMaterialProgress(active, `repair executed via ${input.tool}`);
-        this.emit(`problem repairing — ${active.id}: fix applied, verification of original failure required`);
+        this.emit(`problem ${narration.repairApplied()}`);
       }
     } else if (active && (active.status === 'verifying' || active.status === 'repairing' || active.status === 'act_now')) {
       this.verificationActions += 1;
@@ -418,20 +573,28 @@ export class RecoveryOrchestrator {
       }
     }
 
-    // Case 3: Contradiction / Blocker detected (nested when distinct).
+    // Case 3: Contradiction / Blocker detected (nested when distinct; superseded
+    // when a repair moved the failure surface; reopened when an old one returns).
     if (evaluation.detectedContradiction && evaluation.isBlocking) {
-      const wasNested = active !== undefined && active.fingerprint !== evaluation.detectedContradiction.fingerprint && active.status !== 'resolved';
+      const c = evaluation.detectedContradiction;
+      const wasNested = active !== undefined && active.fingerprint !== c.fingerprint && active.status !== 'resolved' && active.status !== 'superseded';
+      const wasRepairingOrVerifying =
+        active !== undefined && (active.status === 'repairing' || active.status === 'verifying' || active.status === 'act_now' || active.status === 'decision_sufficient');
+      const reopenCandidate = normalizeFailureSignature(input.command ?? '', c.expected ?? '', c.observed);
       const problem = this.tracker.recordContradiction({
         goal: ledger.data.goal,
-        expected: evaluation.detectedContradiction.expected,
-        ...(evaluation.detectedContradiction.expectation ? { expectation: evaluation.detectedContradiction.expectation } : {}),
-        observed: evaluation.detectedContradiction.observed,
-        fingerprint: evaluation.detectedContradiction.fingerprint,
-        ...(evaluation.detectedContradiction.likelySurface ? { likelySurface: evaluation.detectedContradiction.likelySurface } : {}),
-        ...(evaluation.detectedContradiction.likelyTarget ? { likelyTarget: evaluation.detectedContradiction.likelyTarget } : {}),
+        expected: c.expected,
+        ...(c.expectation ? { expectation: c.expectation } : {}),
+        observed: c.observed,
+        fingerprint: c.fingerprint,
+        ...(input.command !== undefined ? { command: input.command } : {}),
+        ...(c.likelySurface ? { likelySurface: c.likelySurface } : {}),
+        ...(c.likelyTarget ? { likelyTarget: c.likelyTarget } : {}),
         stepId: input.stepId,
       });
-      const isNew = !active || active.fingerprint !== evaluation.detectedContradiction.fingerprint;
+      // Episode identity, not raw fingerprint: a same-episode signature match
+      // (assertion counts drifted) is the SAME failure again, not a new one.
+      const isNew = !active || problem.id !== active.id;
       // Seed raw-output tracking for the (possibly newly created) problem so
       // immediate re-observation of identical output counts as duplicate.
       this.lastRawDigests.set(problem.id, digestObservation(input.output || ''));
@@ -439,13 +602,20 @@ export class RecoveryOrchestrator {
       if (isNew) {
         this.problemsDetected += 1;
         this.planInterruptions += 1;
+        this.problemEpisodes += 1;
         // A blocker discovered mid-batch invalidates stale parallel follow-ups.
         this.notifyInterrupt('problem_detected');
-        if (wasNested) {
+        if (wasRepairingOrVerifying && active && active.status === 'superseded') {
+          this.episodeSupersessions += 1;
+          this.emit(`problem ${narration.episodeSuperseded(active.expected ?? active.expectation?.description, c.observed, problem.id)}`);
+        } else if (problem.reopenedFromProblemId || (this.tracker.getClosedProblems().some((p) => p.failureSignature === reopenCandidate && p.id !== problem.id))) {
+          this.staleHypothesisReopens += 1;
+          this.emit(`problem ${narration.episodeReopened(c.observed, problem.id)}`);
+        } else if (wasNested && active && active.status !== 'superseded') {
           this.nestedProblemsCreated += 1;
-          this.emit(`nested problem detected — ${problem.id} (child of ${active!.id}): ${evaluation.detectedContradiction.observed}`);
+          this.emit(`problem ${narration.nestedProblemDetected(c.observed, problem.id)}`);
         } else {
-          this.emit(`problem detected — ${problem.id}: ${evaluation.detectedContradiction.observed}`);
+          this.emit(`problem ${narration.problemDetected(c.observed, problem.id)}`);
         }
 
         if (input.stepId) {
@@ -460,7 +630,7 @@ export class RecoveryOrchestrator {
         this.failedRecoveries += 1;
         if (problem.activeHypothesisId) {
           this.tracker.updateHypothesis(problem.activeHypothesisId, 'rejected', 0.1);
-          this.emit(`problem hypothesis disproved — ${problem.activeHypothesisId}`);
+          this.emit(`problem That theory didn't survive the evidence — discarding it and trying the next explanation.`);
         }
       }
 
@@ -528,11 +698,11 @@ export class RecoveryOrchestrator {
 
     if (diag.nextMode === 'act_now') {
       this.actNowTransitions += 1;
-      this.emit(`problem ACT_NOW — ${active.id}: ${text.slice(0, 80)} (target: ${diag.repairProposal?.target.kind ?? diag.repairTarget ?? 'unknown'})`);
+      this.emit(`problem ${narration.actNow(diag.repairProposal?.target.kind ?? diag.repairTarget, diag.repairProposal?.intendedEffect, active.id)}`);
     } else if (diag.repairKnown) {
-      this.emit(`problem root cause identified — ${active.id}: ${text.slice(0, 80)}`);
+      this.emit(`problem ${narration.rootCauseIdentified(diag.repairTarget ?? active.repairTarget?.kind, active.id)}`);
     } else {
-      this.emit(`problem hypothesis formulated — ${active.id} [${hyp.id}]: ${text.slice(0, 80)}`);
+      this.emit(`hypothesis ${narration.hypothesisRecorded(text, active.id)}`);
     }
   }
 
@@ -573,23 +743,41 @@ export class RecoveryOrchestrator {
       actNowTransitions: this.actNowTransitions,
       verificationContractFailures: this.verificationContractFailures,
       verificationContractPasses: this.verificationContractPasses,
+      problemEpisodes: this.problemEpisodes,
+      episodeSupersessions: this.episodeSupersessions,
+      staleHypothesisReopens: this.staleHypothesisReopens,
+      investigationDriftBlocks: this.investigationDriftBlocks,
+      noDecisionImpactRejections: this.noDecisionImpactRejections,
+      mootProblemSupersessions: this.mootProblemSupersessions,
+      semanticDuplicateReadsPrevented: this.investigationGuard.semanticDuplicateReadsPrevented,
+      cachedObservationHits: this.investigationGuard.cachedObservationHits,
     };
   }
 
   renderPromptSection(): string {
     const active = this.getActiveProblem();
-    if (!active || active.status === 'resolved') return '';
+    if (!active || active.status === 'resolved' || active.status === 'superseded') return '';
 
     const target = active.repairProposal?.target ?? active.repairTarget ?? UNKNOWN_REPAIR_TARGET;
     const targetLine =
       target.kind !== 'unknown'
         ? `  Repair Target: ${target.kind}${target.resourceId ? ` (${target.resourceId})` : ''} — ${target.description}`
         : '  Repair Target: unknown — do NOT mutate source until evidence identifies a controllable target';
+
+    // Episode history: only CLOSED episodes render here, one line each, so the
+    // model sees what was already disproven/moved past without resurrecting it
+    // as a candidate for current investigation.
+    const closed = this.tracker
+      .getClosedProblems()
+      .slice(-4)
+      .map((p) => (p.status === 'resolved' ? `RESOLVED: ${p.expected ?? p.goal}` : `SUPERSEDED: ${p.expected ?? p.goal} (failure surface moved on — do NOT resume its hypotheses)`));
+
     const lines: string[] = [
       `ACTIVE PROBLEM RECOVERY (${active.id}):`,
       `  Contradiction: Expected "${active.expectation?.description ?? active.expected ?? 'Success'}" vs Observed "${active.observed.slice(0, 200)}"`,
       `  Status: ${active.status.toUpperCase()}`,
       targetLine,
+      ...(active.reopenHistoryLine ? [`  History: ${active.reopenHistoryLine}`] : []),
       ...(active.repairSurface ? [`  Legacy Surface Hint (telemetry only): ${active.repairSurface}`] : []),
       ...(active.parentProblemId ? [`  Nested Child Of: ${active.parentProblemId} (resolve this child, then resume parent)`] : []),
       ...(active.blocksProblemIds?.length ? [`  Blocks: ${active.blocksProblemIds.join(', ')}`] : []),
@@ -597,6 +785,13 @@ export class RecoveryOrchestrator {
       active.activeHypothesisId
         ? `  Active Hypothesis: [${active.activeHypothesisId}] ${active.hypotheses.find((h) => h.id === active.activeHypothesisId)?.statement}`
         : '  Active Hypothesis: (none — use set_hypothesis to state why this contradiction occurred)',
+      ...(active.hypotheses.some((h) => h.status === 'rejected' || h.status === 'superseded' || h.status === 'contradicted')
+        ? [`  Retired Hypotheses (do NOT re-investigate unless NEW contradictory evidence reopens them): ${active.hypotheses
+            .filter((h) => h.status === 'rejected' || h.status === 'superseded' || h.status === 'contradicted')
+            .map((h) => `[${h.id}:${h.status}]`)
+            .join(', ')}`]
+        : []),
+      ...(closed.length ? [`  Episode History: ${closed.join(' | ')}`] : []),
       ...(active.diagnosis?.unresolvedQuestions?.length
         ? [`  Open Decision Questions: ${active.diagnosis.unresolvedQuestions.map((q: DecisionQuestion) => q.question).join(' | ')}`]
         : []),
@@ -609,6 +804,17 @@ export class RecoveryOrchestrator {
         : active.status === 'decision_sufficient'
         ? '  DIRECTIVE: Decision sufficient — submit the repair proposal to enter ACT_NOW.'
         : '  DIRECTIVE: Formulate a hypothesis and investigate ONLY decision-changing evidence (state what decision each read changes).',
+      `  NEXT ALLOWED CLASS: ${
+        active.status === 'act_now' || active.status === 'repairing'
+          ? 'repair (apply_edit / write_file / decided repair action)'
+          : active.status === 'verifying'
+            ? 'verification (re-run the original failing check)'
+            : active.status === 'decision_sufficient'
+              ? 'repair proposal (propose_repair), then repair'
+              : active.status === 'needs_user' || active.status === 'blocked'
+                ? 'user input or blocker resolution'
+                : 'investigate (decision-changing evidence only)'
+      } — further exploratory reads of unchanged sources are refused by the runtime.`,
     ].filter(Boolean);
 
     return lines.join('\n');
@@ -630,6 +836,10 @@ export class RecoveryOrchestrator {
   }
 
   private isRepairOutcome(input: ActionOutcomeInput, active: ProblemState): boolean {
+    const command = input.tool === 'run_command'
+      ? String((input.params as Record<string, unknown> | undefined)?.['command'] ?? input.command ?? '').trim()
+      : '';
+    if (command && isManufacturedEvidenceCommand(command)) return false;
     const extended = input as ActionOutcomeInput & { intent?: ActionCapability['intent']; capability?: ActionCapability; resourceScope?: string };
     if (extended.capability?.intent === 'repair' || extended.capability?.repairIntent === true) return true;
     if (extended.intent === 'repair') return true;
@@ -664,7 +874,8 @@ export class RecoveryOrchestrator {
       tool === 'list_files' ||
       tool === 'grep_search' ||
       tool === 'find_by_name' ||
-      tool === 'browse'
+      tool === 'browse' ||
+      tool === 'browser'
     );
   }
 }

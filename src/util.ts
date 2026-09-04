@@ -151,7 +151,8 @@ export function summarizeParams(tool: string, params: Record<string, unknown>): 
       return `lsp hover ${params['path']}:${params['line']}:${params['column']}`;
     case 'lsp_symbols':
       return `lsp symbols ${params['path']}`;
-    case 'browse': {
+    case 'browse':
+    case 'browser': {
       const a = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
       if (a === 'navigate') return `browse ${params['url']}`;
       if (a === 'click') return params['selector'] ? `browse click ${params['selector']}` : `browse click (${params['x']}, ${params['y']})`;

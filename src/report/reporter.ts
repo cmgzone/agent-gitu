@@ -46,10 +46,11 @@ function summaryBacking(report: CompletionReport): string {
 export class Reporter {
   build(
     ledger: TaskLedger,
-    exitReason: 'complete' | 'blocked' | 'stalled',
+    exitReason: 'complete' | 'blocked' | 'stalled' | 'aborted',
     completionInput?: { summary: string; risks: string[]; followUps: string[] },
     finalWorkspaceFingerprint?: string,
     scope?: ReportBuildScope,
+    stopReason?: string,
   ): CompletionReport {
     const d = ledger.data;
     const phaseEvidence = d.evidence.slice(scope?.evidenceStartIndex ?? 0);
@@ -85,7 +86,7 @@ export class Reporter {
         .filter((action) => (action.tool === 'write_file' || action.tool === 'apply_edit') && action.status === 'success')
         .map((action) => friendlyChange(action.paramsSummary, action.reason)),
     );
-    const browserActions = phaseActions.filter((action) => action.tool === 'browse');
+    const browserActions = phaseActions.filter((action) => action.tool === 'browse' || action.tool === 'browser');
     const browserActivity = browserActions.length
       ? {
           total: browserActions.length,
@@ -98,6 +99,7 @@ export class Reporter {
       complete: 'complete',
       blocked: 'blocked',
       stalled: 'failed',
+      aborted: 'aborted',
     };
 
     const status = statusMap[exitReason];
@@ -118,7 +120,12 @@ export class Reporter {
       status,
       summary:
         completionInput?.summary ??
-        (exitReason === 'blocked' ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}` : `Task ended without completion (${exitReason}).`),
+        (exitReason === 'blocked'
+          ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}`
+          : exitReason === 'aborted'
+            ? 'Task stopped by user.'
+            : `Task stopped without completion: ${stopReason ?? 'the agent stalled before it could finish'}`),
+      ...(exitReason === 'stalled' && stopReason ? { failureReason: stopReason } : {}),
       changes,
       filesChanged: unique((scope?.filesChanged ?? d.filesChanged).filter(isReportableFile)),
       verification,

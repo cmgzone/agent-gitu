@@ -190,7 +190,7 @@ describe('execution ledger survives compaction', () => {
       durationMs: 5,
     });
     const state = buildStateMessage(ledger);
-    expect(state).toContain('FAILED:');
+    expect(state).toContain('RECENT FAILURES');
     expect(state).toContain('role validation failed');
     expect(state).toContain('NEXT: step-1');
   });

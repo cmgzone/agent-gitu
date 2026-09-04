@@ -11,12 +11,14 @@ import type { ActionRecord, ToolResult } from '../types.js';
 import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
+import * as narration from '../agent/narration.js';
 
 /** Outputs larger than this are persisted to an artifact; the model gets the
  *  excerpt plus a read_file pointer instead of the raw bulk. */
 const ARTIFACT_THRESHOLD = 4000;
 import {
   formatToolValidationError,
+  BackgroundCommandRegistry,
   toolAgentStatus,
   toolApplyEdit,
   toolBrowse,
@@ -37,6 +39,7 @@ import {
   toolWebFetch,
   toolWriteFile,
   validateToolParams,
+  runtimeToolNames,
   type DelegateFn,
   type BackgroundAgentStatusFn,
   type BackgroundDelegateFn,
@@ -68,6 +71,7 @@ export type RuntimeCapabilitySupplier = () => Iterable<string>;
 
 export class Executor {
   private readonly instructionPolicy = new InstructionPolicyEngine();
+  private readonly backgroundCommands = new BackgroundCommandRegistry();
 
   constructor(
     private readonly guard: ProjectGuard,
@@ -87,6 +91,10 @@ export class Executor {
 
   private emit(event: string): void {
     this.onEvent?.(event);
+  }
+
+  dispose(): void {
+    this.backgroundCommands.dispose();
   }
 
   /**
@@ -109,6 +117,23 @@ export class Executor {
 
   async execute(req: ExecuteRequest): Promise<ExecuteOutcome> {
     const started = Date.now();
+    // Model-DECLARED scratch writes (recovery-control fix 8): the model marks
+    // a throwaway diagnostic file with scratch:true; the runtime enforces the
+    // placement — the file lands in the task's private temp dir instead of the
+    // user's source tree, never enters the project diff, and is deleted on
+    // completion. No filename pattern matching: placement is declared, not guessed.
+    let scratchNote: string | undefined;
+    if (req.tool === 'write_file' && req.params['scratch'] === true && this.guard.taskTmpRoot) {
+      const base = String(req.params['path'] ?? '').replace(/\\/g, '/').split('/').pop();
+      if (base) {
+        const targetRel = path.join(path.relative(this.guard.activeWritableRoot, this.guard.taskTmpRoot), base);
+        req = { ...req, params: { ...req.params, path: targetRel } };
+        // Model-facing note (drives the next read/run of the file) and the
+        // user-facing narration are separate concerns.
+        scratchNote = `SCRATCH: temporary file redirected to ${targetRel} — kept out of the project source tree, excluded from the project diff, deleted when the task completes. Read/run it via this path. If a diagnostic proves valuable, promote it into a real test instead of keeping it in the project.`;
+        this.emit(`scratch ${narration.scratchRedirected(base, targetRel)}`);
+      }
+    }
     const paramsHash = hashParams(req.tool, req.params);
     const summary = summarizeParams(req.tool, req.params);
     const stepId = req.stepId;
@@ -273,6 +298,7 @@ export class Executor {
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
+    const browserAvailable = Boolean(this.browser?.available());
     const ctx: ToolContext = {
       guard: this.guard,
       cwd: this.guard.lock.repoRoot,
@@ -281,11 +307,7 @@ export class Executor {
         // Every ordinary action protocol tool is available. Browser-only
         // capabilities are intentionally omitted when no browser bridge was
         // provisioned, so a required browser skill fails closed.
-        availableTools: [
-          'read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'web_fetch', 'run_command',
-          'delegate', 'list_skills', 'use_skill', 'use_skill_reference', 'create_skill',
-          ...(this.browser ? ['browser', 'screenshot'] : []),
-        ],
+        availableTools: runtimeToolNames(browserAvailable),
         // Re-evaluate for every action.  Connection setup happens after an
         // executor is constructed, so a construction-time snapshot would make
         // a valid saved connection look unavailable until the task restarted.
@@ -307,6 +329,7 @@ export class Executor {
       delegate: this.delegate,
       delegateBackground: this.delegateBackground,
       backgroundAgentStatus: this.backgroundAgentStatus,
+      backgroundCommands: this.backgroundCommands,
     };
     let result: ToolResult;
     try {
@@ -330,6 +353,7 @@ export class Executor {
           result = await toolWebFetch(ctx, req.params);
           break;
         case 'browse':
+        case 'browser':
           result = await toolBrowse(ctx, req.params);
           break;
         case 'delegate':
@@ -398,6 +422,12 @@ export class Executor {
     // raw output is persisted as an artifact it can read_file on demand.
     // Nothing huge ever enters model context just because the tool saw it.
     let observation = excerpt(result.output, 800);
+    if (scratchNote) {
+      // The note rides in result.output too: the model receives the tool
+      // output, not the ledger observation, and must learn the redirect.
+      result.output += `\n${scratchNote}`;
+      observation += `\n${scratchNote}`;
+    }
     if (result.output.length > ARTIFACT_THRESHOLD) {
       const artifactPath = this.persistArtifact(req.tool, result.output);
       if (artifactPath) {

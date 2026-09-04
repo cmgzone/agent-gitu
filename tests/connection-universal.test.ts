@@ -459,7 +459,7 @@ describe('Milestone 2 & 3 — Universal Registry & ProviderReadCache', () => {
       evidence: material.evidenceLines,
     });
 
-    expect(digest).toContain('KEY FAILURES (do not repeat blindly):');
+    expect(digest).toContain('KEY FAILURES — HISTORICAL');
     expect(digest).toContain('REJECTED OPERATION: GET /api/v1/databases');
     expect(digest).toContain('EVIDENCE ALREADY RECORDED:');
     expect(digest).toContain('[pe-42]');

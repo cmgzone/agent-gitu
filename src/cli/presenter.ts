@@ -143,6 +143,15 @@ export function createCliPresenter(options: CliPresenterOptions = {}) {
       lsp: { title: 'LSP', tone: 'dim' },
       repair: { title: 'REPAIR', tone: 'dim' },
       protocol: { title: 'PROTOCOL', tone: 'dim' },
+      problem: { title: 'RECOVERY', tone: 'yellow' },
+      resolved: { title: 'RECOVERY', tone: 'green' },
+      note: { title: 'WORKING', tone: 'dim' },
+      hypothesis: { title: 'THEORY', tone: 'magenta' },
+      step: { title: 'STEP', tone: 'blue' },
+      todo: { title: 'TODO', tone: 'blue' },
+      decision: { title: 'DECISION', tone: 'magenta' },
+      replan: { title: 'REPLAN', tone: 'blue' },
+      scratch: { title: 'SCRATCH', tone: 'dim' },
     };
     const presentation = labels[key] ?? { title: key.toUpperCase(), tone: 'dim' as const };
     return `${paint(statusSymbol(key), presentation.tone)} ${paint(presentation.title.padEnd(9), presentation.tone)} ${truncate(message, width - 14)}`;

@@ -25,7 +25,15 @@ export type ProblemStatus =
   | 'verifying'
   | 'resolved'
   | 'needs_user'
-  | 'blocked';
+  | 'blocked'
+  /**
+   * Episode closed because a repair changed the failure surface: the next
+   * verification produced a DIFFERENT failure signature. Not 'resolved' —
+   * the old contradiction was never positively verified fixed. Superseded
+   * episodes stay in history for audit but never render as active work and
+   * their hypotheses must not be resurrected as investigation candidates.
+   */
+  | 'superseded';
 
 /**
  * Legacy closed repair-surface vocabulary. Retained ONLY for telemetry
@@ -66,7 +74,7 @@ export function isUnknownTarget(t?: RepairTarget): boolean {
   return t.kind === 'unknown' || t.kind.trim() === '';
 }
 
-export type HypothesisStatus = 'candidate' | 'testing' | 'supported' | 'rejected';
+export type HypothesisStatus = 'candidate' | 'testing' | 'supported' | 'rejected' | 'superseded' | 'contradicted';
 
 export interface Hypothesis {
   id: string;
@@ -282,6 +290,21 @@ export interface ActionCapability {
 export interface ProblemState {
   id: string;
   fingerprint: string;
+  /**
+   * Normalized failure identity (command + masked failing assertion + target),
+   * stable across incidental drift (timestamps, counts shifting by small
+   * amounts). Two contradictions with the same failureSignature belong to the
+   * SAME failure episode even when their raw fingerprints differ.
+   */
+  failureSignature?: string;
+  /** Episode that replaced this one when the failure surface moved on. */
+  supersededByProblemId?: string;
+  /** When this episode was superseded (audit). */
+  supersededAt?: number;
+  /** Prior episode whose failure returned (this is a reopen, not a fresh mystery). */
+  reopenedFromProblemId?: string;
+  /** One-line history when this episode reopens a prior one (rendered in state). */
+  reopenHistoryLine?: string;
 
   goal: string;
   /** Legacy free-form expectation (may remain, but never the only mechanism). */
@@ -356,4 +379,12 @@ export interface OutcomeEvaluation {
   detectedContradiction?: DetectedContradiction;
   /** Normalized observation used for the decision (when available). */
   observation?: NormalizedObservation;
+  /**
+   * True ONLY when the expected_achieved verdict came from a real positive
+   * proof source: the problem's verification contract, or the model's explicit
+   * semantic verdict. Legacy text-overlap matching NEVER resolves an active
+   * problem — incidental vocabulary overlap ('cull counters' vs 'culled') is
+   * not verification.
+   */
+  resolvesActiveProblem?: boolean;
 }

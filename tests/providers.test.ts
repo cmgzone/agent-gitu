@@ -56,6 +56,36 @@ describe('provider registry', () => {
     expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
     expect(deepseek!.maxEffort).toBe('distinct');
   });
+
+  it('registers Google AI Studio with its OpenAI-compatibility endpoint and Gemini seed', () => {
+    const gemini = PROVIDERS['gemini'];
+    expect(gemini).toBeDefined();
+    expect(gemini!.baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
+    expect(gemini!.keyEnvVars).toEqual(['HERMES_GEMINI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY']);
+    expect(gemini!.defaultModel).toBe('gemini-3.7-flash');
+    expect(gemini!.models).toEqual(expect.arrayContaining(['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.1-pro']));
+    // The compatibility layer accepts reasoning_effort low|medium|high only.
+    expect(gemini!.effortLevels).toEqual(['low', 'medium', 'high']);
+    expect(gemini!.toolMode).toBe('auto');
+  });
+
+  it('maps the gemini provider to the google models.dev catalog for pricing and vision metadata', () => {
+    const catalog = parseModelCatalog({
+      google: {
+        models: {
+          'gemini-3.7-flash': {
+            limit: { context: 1_048_576, output: 65_536 },
+            cost: { input: 0.15, output: 0.6, cache_read: 0.0375 },
+            modality: { input: ['text', 'image', 'video'], output: ['text'] },
+          },
+        },
+      },
+    });
+    const meta = modelMetadataFor(catalog, 'gemini', 'gemini-3.7-flash');
+    expect(meta?.contextTokens).toBe(1_048_576);
+    expect(meta?.outputPricePerMillion).toBe(0.6);
+    expect(meta?.vision).toBe(true);
+  });
 });
 
 describe('custom provider profiles', () => {
@@ -184,6 +214,25 @@ describe('resolveLlm', () => {
     const deepseek = resolveLlm({ env: { HERMES_DEEPSEEK_API_KEY: 'ds-x' } });
     expect(deepseek.providerId).toBe('deepseek');
     expect(deepseek.keyEnvVar).toBe('HERMES_DEEPSEEK_API_KEY');
+  });
+
+  it('resolves Google AI Studio from its key and honors model overrides', () => {
+    const gemini = resolveLlm({ provider: 'gemini', env: { GEMINI_API_KEY: 'gm-x' } });
+    expect(gemini.providerId).toBe('gemini');
+    expect(gemini.baseUrl).toBe('https://generativelanguage.googleapis.com/v1beta/openai');
+    expect(gemini.model).toBe('gemini-3.7-flash');
+    expect(gemini.keyEnvVar).toBe('GEMINI_API_KEY');
+    expect(gemini.toolMode).toBe('auto');
+
+    const override = resolveLlm({ provider: 'gemini', model: 'gemini-3.1-pro', env: { GOOGLE_API_KEY: 'gm-y' } });
+    expect(override.model).toBe('gemini-3.1-pro');
+    expect(override.keyEnvVar).toBe('GOOGLE_API_KEY');
+  });
+
+  it('auto-detects Google AI Studio when only its namespaced key is present', () => {
+    const gemini = resolveLlm({ env: { HERMES_GEMINI_API_KEY: 'gm-x' } });
+    expect(gemini.providerId).toBe('gemini');
+    expect(gemini.keyEnvVar).toBe('HERMES_GEMINI_API_KEY');
   });
 
   it('prefers generic HERMES_API_KEY as custom provider', () => {

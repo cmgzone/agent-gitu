@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commandsMatch, EvidenceEngine } from '../src/evidence/evidence.js';
+import { commandsMatch, EvidenceEngine, isManufacturedEvidenceCommand } from '../src/evidence/evidence.js';
 import type { TaskLedgerData } from '../src/types.js';
 
 function emptyLedger(): TaskLedgerData {
@@ -105,6 +105,58 @@ describe('commandsMatch — exact normalized matching', () => {
 
   it('rejects completely different commands', () => {
     expect(commandsMatch('npm test -- auth', 'node --version')).toBe(false);
+  });
+});
+
+describe('manufactured evidence rejection', () => {
+  it.each([
+    'echo FINAL_SCOPE_PASS',
+    'node -e "process.stdout.write(\'STEP6_INSTANCE_REBOUND\')"',
+    'node --input-type=commonjs -e "const payload={status:\'STEP6_CONTRACT_PASS\',ready:true};process.stdout.write(JSON.stringify(payload))"',
+    'node -p "\'STEP6_NEUTRAL_RECHECK\'"',
+    'python -c "print(\'FINAL_SCOPE_PASS\')"',
+    'powershell -NoProfile -Command "$payload = @{ status = \'STEP6_CONTRACT_PASS\' }; $payload | ConvertTo-Json -Compress"',
+  ])('detects output-only proof: %s', (command) => {
+    expect(isManufacturedEvidenceCommand(command)).toBe(true);
+  });
+
+  it.each([
+    'npm test',
+    'node --version',
+    'node -e "const fs=require(\'fs\');if(!fs.existsSync(\'package.json\'))process.exit(1);console.log(\'PASS\')"',
+    'node -e "const{spawnSync}=require(\'child_process\');const r=spawnSync(\'npm\',[\'test\']);if(r.status)process.exit(1);console.log(\'PASS\')"',
+    'powershell -Command "if (-not (Test-Path package.json)) { exit 1 }; Write-Output PASS"',
+  ])('keeps falsifiable verification eligible: %s', (command) => {
+    expect(isManufacturedEvidenceCommand(command)).toBe(false);
+  });
+
+  it('rejects a pinned synthetic oracle even when command and kind match exactly', () => {
+    const engine = new EvidenceEngine();
+    const ledger = emptyLedger();
+    const command = 'node -e "process.stdout.write(\'STEP6_CONTRACT_PASS\')"';
+    ledger.acceptanceCriteria = EvidenceEngine.criteriaFromSpecs([
+      { text: 'recovery contract works', verification: command, evidenceType: 'command_success' },
+    ]);
+    const ev = engine.record(ledger, { kind: 'command', label: command, command, passed: true, output: 'STEP6_CONTRACT_PASS' });
+
+    const claim = engine.link(ledger, 'ac-1', ev.id);
+    expect(claim.ok).toBe(false);
+    expect(claim.reason).toContain('self-authored output');
+    expect(engine.gate(ledger).open).toBe(false);
+  });
+
+  it('invalidates persisted synthetic evidence that an older runtime already linked', () => {
+    const engine = new EvidenceEngine();
+    const ledger = emptyLedger();
+    const command = 'node -e "console.log(\'FINAL_SCOPE_PASS\')"';
+    const ev = engine.record(ledger, { kind: 'command', label: command, command, passed: true, output: 'FINAL_SCOPE_PASS' });
+    ledger.acceptanceCriteria[0]!.evidenceIds = [ev.id];
+    ledger.acceptanceCriteria[0]!.satisfied = true;
+
+    const gate = engine.gate(ledger);
+    expect(gate.open).toBe(false);
+    expect(gate.missing[0]).toContain('[INVALID EVIDENCE]');
+    expect(ledger.acceptanceCriteria[0]!.satisfied).toBe(false);
   });
 });
 
@@ -332,4 +384,3 @@ describe('lying-specialist regression', () => {
     expect(engine.gate(ledger).open).toBe(true);
   });
 });
-

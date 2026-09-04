@@ -1,10 +1,13 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, rmSync } from 'node:fs';
+import { hashParams, summarizeParams } from '../util.js';
+import * as narration from './narration.js';
+import { ACTION_GRAMMAR_FULL } from './prompt-capabilities.js';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine } from '../context/context-engine.js';
-import { EvidenceEngine, classifyEvidenceKind, commandsMatch, hasRegressionProof, isWeakEvidenceLink } from '../evidence/evidence.js';
+import { EvidenceEngine, classifyEvidenceKind, commandsMatch, hasRegressionProof, isManufacturedEvidenceCommand, isTrivialEvidenceCommand, isWeakEvidenceLink } from '../evidence/evidence.js';
 import { parentReverifyCriterion, type OracleRunner } from '../evidence/reverify.js';
 import { MissionGraph } from '../execution/mission.js';
 import { Executor } from '../executor/executor.js';
@@ -32,7 +35,7 @@ import {
 import { resolveEmbedder } from '../llm/providers.js';
 import { recoveryBudgetTokens, reduceEffortOneLevel, type EffortLevel } from '../llm/output-budget.js';
 import { resilientLlm } from '../llm/resilient.js';
-import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { KNOWN_TOOL_NAMES, runtimeToolNames } from '../tools/tools.js';
 import { LspManager } from '../lsp/manager.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { McpManager } from '../mcp/client.js';
@@ -50,8 +53,10 @@ import {
 } from '../connections/connections.js';
 import { catalogOperation, findCatalogOperation } from '../connections/catalog.js';
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
-import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
+import { CapabilityAwareResolver, evaluateBlockRequest, formatBlockedPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
 import { RecoveryOrchestrator } from '../recovery/recovery-orchestrator.js';
+import type { ActionOutcomeInput } from '../recovery/progress-evaluator.js';
+import type { ActionExpectation, ExpectedAssertion } from '../recovery/problem-state.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
@@ -83,7 +88,7 @@ import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './ef
 import { uiVisualGate, isUiTask } from './ui-gate.js';
 import { buildPlanNote, planRisk } from './risk-planner.js';
 import { auditArchitecture, decisionConflicts, detectExplicitTechnologies, normalizeDecisionDraft } from './architecture.js';
-import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry, computeBehaviorMetrics } from './telemetry.js';
+import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry, renderEfficiencySummary, computeBehaviorMetrics, messageTextChars } from './telemetry.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
 import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestMaterial } from '../context/digest.js';
@@ -456,7 +461,7 @@ type ParsedAction =
       intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other';
       capability?: { intent?: 'inspect' | 'diagnose' | 'repair' | 'verify' | 'navigate' | 'other'; mutatesState?: boolean; repairIntent?: boolean; riskClass?: 'read' | 'reversible-write' | 'destructive' | 'costly' | 'production-critical'; resourceScope?: string };
       resourceScope?: string;
-      expectation?: { description: string; assertions?: { kind: string; target: string; expected?: unknown; value?: unknown }[]; blocksOnFailure?: boolean; criterionIds?: string[] };
+      expectation?: ActionExpectation;
       observation?: { transportOk: boolean; fields: Record<string, unknown>; rawDigest?: string; stateChanged?: boolean };
       semanticVerdict?: { verdict: 'expected_achieved' | 'progress' | 'neutral' | 'contradiction' | 'regression' | 'blocker'; explanation?: string; blocking?: boolean };
       investigationIntent?: { decisionQuestion: string; alternatives: string[]; expectedInformationGain: string; affectedRepairDecision?: string; changesHypothesis?: boolean; changesRepairTarget?: boolean; changesRepairAction?: boolean; changesSafetyOrApproval?: boolean; changesVerification?: boolean };
@@ -544,8 +549,33 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
     case 'set_design':
       return 'I’m recording the implementation approach before making changes.';
     case 'tool_call': {
-      const reason = clean(action.reason);
-      return reason ? `Next: ${reason}` : `Next: I’m using ${action.tool} to make the next verified step.`;
+      // Action-aware narration for the common tools; the model's own reason
+      // fills in the "why" whenever it gave one.
+      const params = (action.params ?? {}) as Record<string, unknown>;
+      const p = (key: string): string => clean(String(params[key] ?? ''), 90);
+      const reason = clean(action.reason, 160);
+      const why = reason ? ` — ${reason}` : '';
+      switch (action.tool) {
+        case 'read_file':
+          return `I’m reading ${p('path') || 'the relevant file'} to ground the next change${why}.`;
+        case 'write_file':
+        case 'apply_edit':
+          return `I’m making the change in ${p('path') || 'the file'}${why}.`;
+        case 'run_command': {
+          const command = p('command');
+          return command ? `I’m running \`${command}\`${why}.` : `I’m running a verification command${why}.`;
+        }
+        case 'search_files':
+          return `I’m searching the code for what I need${why}.`;
+        case 'list_files':
+          return `I’m looking at what’s in ${p('path') || 'the project'}${why}.`;
+        case 'lsp_diagnostics':
+          return `I’m checking ${p('path') || 'the file'} for errors the editor would flag${why}.`;
+        case 'web_fetch':
+          return `I’m checking the official documentation${why}.`;
+        default:
+          return reason ? `Next: ${reason}` : `Next: I’m using ${action.tool} to make the next verified step.`;
+      }
     }
     case 'connection_action':
       return `I’m using the registered ${action.operationId} read operation on the saved ${action.connectionId} connection.`;
@@ -584,9 +614,57 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
     }
     case 'report_finding':
       return 'I found a potential issue and I’m recording it for independent verification.';
+    case 'toggle_todo':
+      return action.done ? 'That subtask is done — checking it off.' : 'Reopening that subtask — it needs more work.';
+    case 'show_plan':
+      return 'Here’s the full plan with its verification steps.';
+    case 'ask_user':
+      return 'Before I continue, I need a decision from you.';
+    case 'request_block':
+      return 'I’m checking whether the stated prerequisite is a real external blocker.';
+    case 'complete':
+      return 'Wrapping up with the result summary.';
     default:
       return undefined;
   }
+}
+
+function parseActionExpectation(raw: unknown): ActionExpectation | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const description = typeof source['description'] === 'string' ? source['description'].trim().slice(0, 500) : '';
+  if (!description) return undefined;
+
+  const assertions: ExpectedAssertion[] = [];
+  if (Array.isArray(source['assertions'])) {
+    for (const item of source['assertions']) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+      const assertion = item as Record<string, unknown>;
+      const kind = String(assertion['kind'] ?? '');
+      const target = typeof assertion['target'] === 'string' ? assertion['target'].trim() : '';
+      if (kind === 'state_changed') {
+        assertions.push(target ? { kind, target } : { kind });
+      } else if ((kind === 'exists' || kind === 'absent') && target) {
+        assertions.push({ kind, target });
+      } else if ((kind === 'equals' || kind === 'not_equals') && target) {
+        assertions.push({ kind, target, expected: assertion['expected'] ?? assertion['value'] });
+      } else if ((kind === 'contains' || kind === 'not_contains') && target) {
+        // Text-provider grammar historically called this field `expected`.
+        // Normalize both spellings at the protocol boundary.
+        assertions.push({ kind, target, value: assertion['value'] ?? assertion['expected'] });
+      }
+    }
+  }
+
+  const criterionIds = Array.isArray(source['criterionIds'])
+    ? source['criterionIds'].map(String).map((id) => id.trim()).filter(Boolean).slice(0, 30)
+    : undefined;
+  return {
+    description,
+    ...(assertions.length ? { assertions } : {}),
+    ...(typeof source['blocksOnFailure'] === 'boolean' ? { blocksOnFailure: source['blocksOnFailure'] } : {}),
+    ...(criterionIds?.length ? { criterionIds } : {}),
+  };
 }
 
 function parseAction(raw: unknown): ParsedAction | undefined {
@@ -601,11 +679,15 @@ function parseAction(raw: unknown): ParsedAction | undefined {
   if (!KNOWN_ACTION_TYPES.has(type) && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
     const rawNested = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
     const params: Record<string, unknown> = {};
+    // In direct-tool syntax, `type` carries the tool name, so `name` is a
+    // real parameter for tools such as create_skill/use_skill. It is only a
+    // control field when the tool name itself came from `name`.
+    const directToolType = action['type'] === type;
     if (rawNested && typeof rawNested === 'object' && !Array.isArray(rawNested)) {
       Object.assign(params, rawNested as Record<string, unknown>);
     } else {
       for (const [key, value] of Object.entries(action)) {
-        if (key !== 'type' && key !== 'tool' && key !== 'tool_name' && key !== 'name' && key !== 'thought' && key !== 'reason' && key !== 'expected' && key !== 'stepId') {
+        if (key !== 'type' && key !== 'tool' && key !== 'tool_name' && (key !== 'name' || directToolType) && key !== 'thought' && key !== 'reason' && key !== 'expected' && key !== 'stepId') {
           params[key] = value;
         }
       }
@@ -731,9 +813,14 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       if (!tool) return undefined;
       const rawParams = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
       const params: Record<string, unknown> = (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)) ? { ...(rawParams as Record<string, unknown>) } : {};
+      // With an explicit tool/tool_name, `name` is a parameter for
+      // create_skill/use_skill, not the action's tool selector. If the model
+      // uses the legacy `name` selector instead, keep treating it as control
+      // metadata.
+      const explicitToolName = typeof action['tool'] === 'string' || typeof action['tool_name'] === 'string';
       if (Object.keys(params).length === 0) {
         for (const [k, v] of Object.entries(action)) {
-          if (k !== 'type' && k !== 'tool' && k !== 'tool_name' && k !== 'name' && k !== 'reason' && k !== 'thought' && k !== 'expected' && k !== 'stepId') {
+          if (k !== 'type' && k !== 'tool' && k !== 'tool_name' && (k !== 'name' || explicitToolName) && k !== 'reason' && k !== 'thought' && k !== 'expected' && k !== 'stepId') {
             params[k] = v;
           }
         }
@@ -747,7 +834,7 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       const capRaw = action['capability'];
       const capability = capRaw && typeof capRaw === 'object' && !Array.isArray(capRaw) ? (capRaw as Record<string, unknown>) : undefined;
       const resourceScope = typeof action['resourceScope'] === 'string' ? (action['resourceScope'] as string) : undefined;
-      const expectation = action['expectation'] && typeof action['expectation'] === 'object' ? (action['expectation'] as { description: string; assertions?: { kind: string; target: string; expected?: unknown; value?: unknown }[]; blocksOnFailure?: boolean; criterionIds?: string[] }) : undefined;
+      const expectation = parseActionExpectation(action['expectation']);
       const observation = action['observation'] && typeof action['observation'] === 'object' ? (action['observation'] as { transportOk: boolean; fields: Record<string, unknown>; rawDigest?: string; stateChanged?: boolean }) : undefined;
       const semanticVerdict = action['semanticVerdict'] && typeof action['semanticVerdict'] === 'object' ? (action['semanticVerdict'] as { verdict: 'expected_achieved' | 'progress' | 'neutral' | 'contradiction' | 'regression' | 'blocker'; explanation?: string; blocking?: boolean }) : undefined;
       const investigationIntent = action['investigationIntent'] && typeof action['investigationIntent'] === 'object' ? (action['investigationIntent'] as { decisionQuestion: string; alternatives: string[]; expectedInformationGain: string; affectedRepairDecision?: string; changesHypothesis?: boolean; changesRepairTarget?: boolean; changesRepairAction?: boolean; changesSafetyOrApproval?: boolean; changesVerification?: boolean }) : undefined;
@@ -1075,6 +1162,38 @@ export function estimateMessageChars(messages: LlmMessage[]): number {
 }
 
 /**
+ * Conservative plan reconciliation: a pending/in-progress step whose OWN exact
+ * verification command already has a passing, non-stale evidence record at the
+ * CURRENT workspace fingerprint is marked done. Nothing else is ever
+ * auto-completed — partial progress, related test lines, and stale-fingerprint
+ * evidence never satisfy a step, and steps suspended by an active recovery
+ * problem stay suspended. Returns the number of steps reconciled.
+ */
+export function reconcileVerifiedSteps(ledger: TaskLedger, currentFingerprint: string | undefined, isSuspended?: (stepId: string) => boolean): number {
+  if (!currentFingerprint) return 0;
+  let reconciled = 0;
+  for (const step of ledger.data.plan) {
+    if (step.status === 'done' || !step.verification) continue;
+    if (isSuspended?.(step.id)) continue;
+    const matching = ledger.data.evidence.filter(
+      (ev) =>
+        ev.passed &&
+        !ev.stale &&
+        ev.command !== undefined &&
+        !isManufacturedEvidenceCommand(ev.command) &&
+        !(ev.kind === 'command' && isTrivialEvidenceCommand(ev.command)) &&
+        commandsMatch(step.verification!, ev.command),
+    );
+    const latest = matching[matching.length - 1];
+    if (latest && latest.workspaceFingerprint === currentFingerprint) {
+      ledger.updateStep(step.id, { status: 'done' });
+      reconciled += 1;
+    }
+  }
+  return reconciled;
+}
+
+/**
  * How many of the most recent screenshots stay in model context when a fresh
  * one arrives. One destroyed cross-page/state consistency on frontend runs
  * (the model could never compare views it had already built); four preserves
@@ -1137,7 +1256,7 @@ export function findLastBrowserEvidence(data: TaskLedgerData): string | undefine
   for (let i = data.actions.length - 1; i >= 0; i--) {
     const action = data.actions[i];
     if (
-      action?.tool === 'browse' &&
+      (action?.tool === 'browse' || action?.tool === 'browser') &&
       action.status === 'success' &&
       /evidence/.test(action.paramsSummary) &&
       typeof action.observation === 'string' &&
@@ -1210,7 +1329,7 @@ export function synthesizeExecutableRecovery(input: ExecutableRecoveryInput): st
     lines.push(`3. Claim a criterion you already hold evidence for: ${input.unclaimedCriteria.slice(0, 3).join('; ')}`);
   }
   lines.push(
-    '4. Only if nothing executable can move the task forward: {"thought":"...","action":{"type":"request_block","reason":"<the concrete missing piece>"}} — a concrete blocker with evidence, not analysis.',
+    '4. Only for a concrete EXTERNAL prerequisite the user/host can supply (credential, connection, permission, target, service, resource, or configuration): use request_block with its structured prerequisite. Never use request_block to mean done/stop/give-up, or for a bug, missing skill/tool/dependency, failed build/test, or other implementation problem.',
   );
   return lines.join('\n');
 }
@@ -1491,7 +1610,7 @@ export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) 
 
   if (compacted) {
     onEvent?.(
-      `context compacted ${compactedMessages} earlier messages (${charsBefore} chars before → ${estimateMessageChars(messages)} chars; ${messages.length} messages retained)`,
+      `context ${narration.contextCompacted(compactedMessages, charsBefore, estimateMessageChars(messages))}`,
     );
   }
   return compacted;
@@ -1693,6 +1812,14 @@ export class Gitu {
     actNowTransitions?: number;
     verificationContractFailures?: number;
     verificationContractPasses?: number;
+    problemEpisodes?: number;
+    episodeSupersessions?: number;
+    staleHypothesisReopens?: number;
+    investigationDriftBlocks?: number;
+    noDecisionImpactRejections?: number;
+    mootProblemSupersessions?: number;
+    semanticDuplicateReadsPrevented?: number;
+    cachedObservationHits?: number;
   }): void {
     const r = this.recoveryOrchestrator;
     telemetry.problemsDetected = r.problemsDetected;
@@ -1716,6 +1843,14 @@ export class Gitu {
     telemetry.actNowTransitions = r.actNowTransitions;
     telemetry.verificationContractFailures = r.verificationContractFailures;
     telemetry.verificationContractPasses = r.verificationContractPasses;
+    telemetry.problemEpisodes = r.problemEpisodes;
+    telemetry.episodeSupersessions = r.episodeSupersessions;
+    telemetry.staleHypothesisReopens = r.staleHypothesisReopens;
+    telemetry.investigationDriftBlocks = r.investigationDriftBlocks;
+    telemetry.noDecisionImpactRejections = r.noDecisionImpactRejections;
+    telemetry.mootProblemSupersessions = r.mootProblemSupersessions;
+    telemetry.semanticDuplicateReadsPrevented = r.investigationGuard.semanticDuplicateReadsPrevented;
+    telemetry.cachedObservationHits = r.investigationGuard.cachedObservationHits;
   }
 
   stop(): void {
@@ -1729,7 +1864,6 @@ export class Gitu {
 
   async run(goal: string): Promise<GituRunResult> {
     const { cwd } = this.config;
-    this.recoveryOrchestrator = new RecoveryOrchestrator(this.emit);
     // Dynamic auto-retry: network blips and provider outages delay the run
     // (with visible events) instead of failing it.
     const llm = resilientLlm(this.config.llm, {
@@ -1745,6 +1879,9 @@ export class Gitu {
       if (err instanceof ProjectGuardError) throw err;
       throw err;
     }
+    // Fresh recovery runtime per run; repoRoot anchors file fingerprinting
+    // for the semantic read guard (InvestigationGuard).
+    this.recoveryOrchestrator = new RecoveryOrchestrator(this.emit, { repoRoot: guard.lock.repoRoot });
     guard.persist();
     this.emit(
       `project  locked: ${guard.lock.name} @ ${guard.activeWritableRoot} (${guard.lock.branch ?? 'no branch'}) ` +
@@ -1819,6 +1956,32 @@ export class Gitu {
         ledger.data.constraints = [...ledger.data.constraints, ...this.config.extraConstraints];
       }
       this.emit(`ledger   created: ${ledger.data.taskId}`);
+    }
+
+    // Task-scoped scratch directory (recovery-control fix 8): model-declared
+    // scratch writes (write_file scratch:true) land here instead of the
+    // user's source tree. The guard allowlists exactly this dir; it is
+    // excluded from filesChanged and the workspace fingerprint, and deleted
+    // when the task completes.
+    guard.taskTmpRoot = path.join(guard.activeWritableRoot, '.hermes', 'tmp', ledger.data.taskId);
+
+    // Conservative plan reconciliation at run start: steps whose own exact
+    // verification already passed at the current workspace fingerprint (e.g.
+    // recorded just before a crash/resume) are marked done. Existing partial
+    // progress is never inflated (recovery-control fix 6).
+    try {
+      const startFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+      const reconciled = reconcileVerifiedSteps(
+        ledger,
+        startFp,
+        (stepId) => this.recoveryOrchestrator.getActiveProblem()?.blockedStepIds.includes(stepId) === true,
+      );
+      if (reconciled > 0) {
+        ledger.save();
+        this.emit(`plan ${narration.planReconciled(reconciled)}`);
+      }
+    } catch {
+      /* reconciliation is best-effort; the normal in-loop completion still applies */
     }
 
     // Milestone 3/4: Restore ProviderReadCache from durable ledger state
@@ -1943,12 +2106,16 @@ export class Gitu {
 
       // Discovery stays metadata-only. Loading a full procedure happens only
       // after selection/explicit use_skill, never for the whole installed set.
+      const browserAvailable = Boolean(this.config.browser?.available());
       const skillContext = {
         task: activeGoal,
         repositorySignals: guard.lock.techStack,
         activeSkills: ledger.data.activeSkills,
         priorUsedSkills: ledger.data.usedSkills,
-        availableTools: [...KNOWN_TOOL_NAMES, ...(this.config.browser ? ['browser', 'screenshot'] : [])],
+        // A bridge object is not enough: server-side relay bridges exist before
+        // the desktop Chromium surface connects. Advertise the capability only
+        // when the adapter can actually execute browser actions.
+        availableTools: runtimeToolNames(browserAvailable),
         availableCapabilities: prerequisiteResolver.capabilities().map((capability) => capability.id),
       };
       const skillResolution = skills.resolver().resolve(activeGoal, skillContext);
@@ -2211,6 +2378,23 @@ export class Gitu {
       // after every compaction so it never silently disappears under pressure.
       const protectedSection = memory.renderProtected(guard.lock.name, 12, this.config.memoryRetrieval);
 
+      // Saved-connection context decides whether the CONNECTIONS capability
+      // contract is injected; computed before the system prompt so the layer-2
+      // selection sees it (the listing itself is still pushed later, at turn 1).
+      const providerContext = ledger.data.mode === 'chat' ? undefined : this.config.connectionContext?.();
+      let actionProtocolMode: 'native' | 'structured_text' | 'text' =
+        this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
+      // One-time full action-grammar injection when a native run downgrades to
+      // a text protocol mid-run (the native schema no longer carries the shapes).
+      let grammarFallbackInjected = false;
+      // Layer 2 selection: inject capability manuals ONLY for capabilities this
+      // run can actually use. Planning tutorials appear on fresh tasks (where
+      // planning is the next phase), not on resumes with an existing plan.
+      // Run telemetry exists before the system prompt: the layer-1/layer-2 split
+      // is measured at build time via onMetrics.
+      const telemetry = new RunTelemetry();
+
+      const planningRelevant = ledger.data.acceptanceCriteria.length === 0 || ledger.data.plan.length === 0;
       const systemPrompt = buildSystemPrompt(guard, memory, {
         scopeFiles: this.config.scopeFiles,
         extraConstraints: this.config.extraConstraints,
@@ -2234,13 +2418,22 @@ export class Gitu {
               .join('\n')
           : undefined,
         vision: this.config.supportsImages ?? false,
-        hasBrowser: this.config.browser ? this.config.browser.available() : false,
+        hasBrowser: browserAvailable,
         autoLearn: this.config.autoLearn ?? true,
         uiTask: isFrontendGoal(activeGoal),
         // Keep only the quality bar's non-negotiable contract in the stable
         // system prefix. Its full procedure is supplied by the active-skill
         // state block on activation and after every compaction.
         uiQualityContract: skills.get('frontend-quality-bar') ? renderSkillContract(skills.get('frontend-quality-bar')!, 440) : undefined,
+        capabilityContext: {
+          protocolMode: actionProtocolMode,
+          planningRelevant,
+          connectionsRelevant: Boolean(providerContext) || Boolean(this.config.connectionActionHandler),
+          testCommand: guard.lock.testCommand,
+        },
+        onMetrics: (metrics) => {
+          telemetry.notePromptComposition(metrics.coreChars, metrics.capabilityChars);
+        },
       });
       // Strategy CONTENT comes from the skill layer (shadowable); the
       // classify-and-inject mechanism stays here in core.
@@ -2299,7 +2492,6 @@ export class Gitu {
       // the model verifies through the provider's own reads from turn one:
       // DNS/port probes against internal identifiers and premature BLOCKED
       // declarations were the failure modes of real provider deployments.
-      const providerContext = ledger.data.mode === 'chat' ? undefined : this.config.connectionContext?.();
       if (providerContext) {
         messages.push({
           role: 'user',
@@ -2367,7 +2559,6 @@ export class Gitu {
       // spend can be diagnosed. Everything pushed so far (system prompt,
       // strategy, context pack, resumed conversation, user images) forms the
       // byte-stable prefix that providers can prefix-cache across turns.
-      const telemetry = new RunTelemetry();
       let prefixEnd = messages.length;
       if (ledger.data.contextPack) {
         telemetry.filesInContextPack =
@@ -2403,7 +2594,23 @@ export class Gitu {
       // observe() forces a compaction pass (long context correlates with
       // protocol drift), regardless of the normal compaction triggers.
       let driftCompactionRequested = false;
-      let loopBlocks = 0;
+      // Loop prevention is a corrective gate, not an external prerequisite.
+      // Count only consecutive repeats of the SAME refusal. The old run-global
+      // counter let three unrelated safety interventions—possibly separated by
+      // successful work—terminate a healthy task as BLOCKED.
+      let loopPreventionStreak: { key: string; count: number } | undefined;
+      const normalizedPreventionKey = (source: string, reason: string): string =>
+        `${source}:${reason.split('\n', 1)[0]!.toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 220)}`;
+      const noteLoopPrevention = (source: string, reason: string): number => {
+        const key = normalizedPreventionKey(source, reason);
+        loopPreventionStreak = loopPreventionStreak?.key === key
+          ? { key, count: loopPreventionStreak.count + 1 }
+          : { key, count: 1 };
+        return loopPreventionStreak.count;
+      };
+      const resetLoopPrevention = (): void => {
+        loopPreventionStreak = undefined;
+      };
       interface ConnectionCallRecord {
         consecutiveCalls: number;
         consecutiveFailures: number;
@@ -2430,10 +2637,9 @@ export class Gitu {
       const malformed = new MalformedCallTracker({ remindAt: 1, escalateAt: 2, haltAt: 3 });
       let actionLaneHalted = false;
       let logicalRequestSequence = 0;
-      let actionProtocolMode: 'native' | 'structured_text' | 'text' =
-        this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
       const actionsAtStart = ledger.data.actions.length;
-      let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
+      let exitReason: 'complete' | 'blocked' | 'stalled' | 'aborted' = 'stalled';
+      let stallReason: string | undefined;
       let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
 
       // Adaptive effort enforcement (P1 — effort planner): the plan sets a turn
@@ -2457,7 +2663,7 @@ export class Gitu {
         // Visual-verification turns are real progress on UI work: screenshot /
         // click-through inspection produces no new commands or diffs, but a run
         // that is actively LOOKING at what it built must not be killed mid-QA.
-        browses: ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success').length,
+        browses: ledger.data.actions.filter((a) => (a.tool === 'browse' || a.tool === 'browser') && a.status === 'success').length,
         // Distinct successful actions = genuinely new work (a repeated identical
         // call does not grow the set). Diagnosis/reading turns used to register
         // ZERO progress and stalled runs that were actively making new attempts.
@@ -2466,6 +2672,14 @@ export class Gitu {
       let lastProgress = progressSnapshot();
       let turns = 0;
       let budgetWarned = false;
+      // Adaptive per-call effort (recovery-control fix 9): the planned effort
+      // is a CEILING for novel diagnosis. Once the repair decision is locked
+      // (decision_sufficient → act_now → repairing → verifying) and no action
+      // has failed since, the remaining work is mechanical (apply the known
+      // repair, run the selected verification) and runs one effort level
+      // below the ceiling. Any failure restores full effort immediately.
+      let consecutiveOkOutcomes = 0;
+      let mechanicalEffortNoted = false;
       let delegateSlotsUsed = 0;
       let visualGateRejections = 0;
       let instructionGateRejections = 0;
@@ -2499,8 +2713,21 @@ export class Gitu {
         planDesign: isFollowUpPhase ? undefined : ledger.data.planDesign,
       });
 
+      // Exactly ONE live TASK STATE message: the ledger is authoritative, so
+      // the previous state message is REPLACED before the next one is appended
+      // instead of accumulating stale snapshots in the recent tail (Fix 5).
+      let lastStateMessage: LlmMessage | undefined;
       const ask = async (note?: string): Promise<ParsedAction | undefined> => {
-        messages.push({
+        if (lastStateMessage) {
+          const idx = messages.indexOf(lastStateMessage);
+          if (idx >= 0) {
+            const removed = messages[idx]!;
+            telemetry.stateReplayCharsAvoided += messageTextChars(removed);
+            messages.splice(idx, 1);
+          }
+          lastStateMessage = undefined;
+        }
+        const stateMessage: LlmMessage = {
           role: 'user',
           content: buildStateMessage(
             ledger,
@@ -2509,7 +2736,9 @@ export class Gitu {
             activePhaseStateScope(),
             this.recoveryOrchestrator.renderPromptSection(),
           ),
-        });
+        };
+        lastStateMessage = stateMessage;
+        messages.push(stateMessage);
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
@@ -2562,6 +2791,27 @@ export class Gitu {
               this.emit(`effort escalated to ${activeEffort} — repeated problem recovery failure`);
             } else {
               activeEffort = baseEffort;
+              // Effort is a ceiling, not a constant: mechanical execution of an
+              // already-decided repair runs below it. Status-driven (the
+              // problem lifecycle), never intent-guessed; the first failure
+              // restores the full ceiling via consecutiveOkOutcomes = 0.
+              const problem = this.recoveryOrchestrator.getActiveProblem();
+              const mechanicalPhase =
+                problem !== undefined &&
+                consecutiveOkOutcomes > 0 &&
+                (problem.status === 'decision_sufficient' || problem.status === 'act_now' || problem.status === 'repairing' || problem.status === 'verifying');
+              if (mechanicalPhase) {
+                const reduced = reduceEffortOneLevel(activeEffort);
+                if (reduced) {
+                  activeEffort = reduced;
+                  if (!mechanicalEffortNoted) {
+                    mechanicalEffortNoted = true;
+                    this.emit(`effort  mechanical execution phase (${problem!.status}) — per-call reasoning effort ${baseEffort} → ${reduced}; full ceiling returns on the first failure`);
+                  }
+                }
+              } else if (mechanicalEffortNoted && consecutiveOkOutcomes === 0) {
+                mechanicalEffortNoted = false;
+              }
             }
           }
           return {
@@ -2638,6 +2888,12 @@ export class Gitu {
             if (!(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
             actionProtocolMode = 'structured_text';
             this.emit('protocol native tools unsupported by this provider — using structured action compatibility');
+            // The native tool schema carried the action shapes; a text protocol
+            // needs the full grammar in-context to keep emitting valid actions.
+            if (!grammarFallbackInjected) {
+              grammarFallbackInjected = true;
+              messages.push({ role: 'user', content: ACTION_GRAMMAR_FULL });
+            }
             resetProse();
             try {
               turn = await callOnce('structured_text', 2);
@@ -2656,6 +2912,10 @@ export class Gitu {
             if (actionProtocolMode !== 'structured_text' || !(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
             actionProtocolMode = 'text';
             this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
+            if (!grammarFallbackInjected) {
+              grammarFallbackInjected = true;
+              messages.push({ role: 'user', content: ACTION_GRAMMAR_FULL });
+            }
             resetProse();
             turn = await callOnce('text', 2);
           }
@@ -2742,7 +3002,7 @@ export class Gitu {
           );
           if (verdict.halt) {
             actionLaneHalted = true;
-            ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
+            stallReason = `Model produced ${verdict.streak} consecutive responses without an executable action.`;
             this.emit(`halt    main execution lane stopped after ${verdict.streak} malformed/no-action replies`);
           }
         } else {
@@ -2839,43 +3099,59 @@ export class Gitu {
         }
       };
 
+      // ── User steering (AC-12 + AC-30 + recovery-control fix 7) ─────────────
+      // drainInbox() is called at EVERY action boundary: turn start AND
+      // immediately after each action's results are observed (bottom of the
+      // turn). Every drained message is TRUE PREEMPTION — the interrupt epoch
+      // advances so stale scheduled/parallel follow-ups are cancelled before
+      // they run, and the model is asked to respond to the user before
+      // continuing. A steer must never sit behind another autonomous action.
+      const drainInbox = (): void => {
+        while (this.inbox.length > 0) {
+          const queued = this.inbox.shift()!;
+          this.emit(`user-msg ${queued.text}`);
+          telemetry.noteUserSteer();
+          this.recoveryOrchestrator.notifyInterrupt('user_message');
+          const steered = classifyFollowUp(queued.text);
+          observe(
+            `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
+              (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
+          );
+          // A steered message is real follow-up work, not just a nudge: record
+          // its goal delta, constraints, and target hints in the task authority
+          // so the instruction policy enforces it from the very next action.
+          applyFollowUpToLedger(ledger, queued.text);
+          if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
+            const extraTurns = Math.max(budgetExtensionTurns, 10);
+            budgetCap = turns + extraTurns;
+            ledger.addBudgetExtension({
+              turn: turns,
+              reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
+              filesChanged: ledger.data.filesChanged?.length ?? 0,
+              distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
+              evidenceCount: ledger.data.evidence.length,
+              extraTurns,
+              extraSpecialists: 0,
+              specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
+            });
+            this.emit(`effort  follow-up ${steered.kind} — turn budget re-armed: ${extraTurns} fresh turns (cap now ${budgetCap})`);
+          }
+        }
+      };
+
       try {
         mainLoop: for (;;) {
+          // Persist queued user steering even when stop() races with run
+          // startup. The message remains part of task authority for resume;
+          // no autonomous action runs after the abort flag is observed.
+          drainInbox();
           if (this.aborted) {
-            ledger.addBlocker('Stopped by user.');
-            exitReason = 'blocked';
+            exitReason = 'aborted';
             break;
           }
 
-          // AC-12 + AC-30: Drain inbox at turn start so urgent user messages immediately
-          // reprioritize the active goal/recovery direction before the next action is planned.
-          // Every drained message is TRUE PREEMPTION: the interrupt epoch advances so
-          // stale scheduled/parallel follow-ups are cancelled before they run.
-          while (this.inbox.length > 0) {
-            const queued = this.inbox.shift()!;
-            this.emit(`user-msg ${queued.text}`);
-            this.recoveryOrchestrator.notifyInterrupt('user_message');
-            const steered = classifyFollowUp(queued.text);
-            observe(
-              `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
-                (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
-            );
-            applyFollowUpToLedger(ledger, queued.text);
-            if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
-              const extraTurns = Math.max(budgetExtensionTurns, 10);
-              budgetCap = turns + extraTurns;
-              ledger.addBudgetExtension({
-                turn: turns,
-                reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
-                filesChanged: ledger.data.filesChanged?.length ?? 0,
-                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
-                evidenceCount: ledger.data.evidence.length,
-                extraTurns,
-                extraSpecialists: 0,
-                specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
-              });
-            }
-          }
+          // Inbox was drained above so urgent messages reprioritize the active
+          // goal/recovery direction before the next action is planned.
           // Reasoning-only recovery is once-per-run to bound cost, but a
           // successful concrete action (e.g. a provider read) proves the run is
           // progressing — re-arm the recovery so a reasoning-only blip right
@@ -2945,12 +3221,10 @@ export class Gitu {
                   'Keep working, but steer toward completing and verifying acceptance criteria rather than exploring.',
               );
             } else {
-              ledger.addBlocker(
+              stallReason =
                 `Exhausted the task's effort budget (${turns} turns used` +
-                  `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
-                  `Retry with effort=high — that raises BOTH the model's per-step reasoning effort at the provider AND the turn budget — ` +
-                  `or narrow the task.`,
-              );
+                `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
+                `Retry with effort=high or narrow the task.`;
               exitReason = 'stalled';
               this.emit(`stall   effort budget of ${budgetCap} turns reached without verified progress — stopping`);
               break;
@@ -2970,7 +3244,7 @@ export class Gitu {
 
           if (!action) {
             if (actionLaneHalted) {
-              exitReason = 'blocked';
+              exitReason = 'stalled';
               break;
             }
             if (invalidStreak >= 2) {
@@ -3035,6 +3309,11 @@ export class Gitu {
                 : action.type === 'connection_operation'
                   ? `operation:${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`
                   : action.type;
+
+          // Any different high-level decision breaks a run of tool-level loop
+          // refusals. Tool calls reset the streak only after they actually pass
+          // the pre-check/executor gates below.
+          if (action.type !== 'tool_call' && action.type !== 'request_block') resetLoopPrevention();
 
           switch (action.type) {
             case 'set_criteria': {
@@ -3185,7 +3464,11 @@ export class Gitu {
               ledger.data.currentHypothesis = action.text;
               ledger.save();
               this.recoveryOrchestrator.onSetHypothesis(action.text, action.target, action.confidence);
-              this.emit(`hypothesis ${action.text.slice(0, 120)}`);
+              // With an active problem the recovery runtime narrates the theory
+              // itself; this line only covers hypothesis bookkeeping outside recovery.
+              if (!this.recoveryOrchestrator.hasActiveProblem()) {
+                this.emit(`hypothesis I'm recording the current approach: ${action.text.slice(0, 140)}`);
+              }
               observe('Hypothesis recorded. Proceed with the next action.');
               break;
             }
@@ -3283,6 +3566,7 @@ export class Gitu {
               break;
             }
             case 'complete_step': {
+              this.recoveryOrchestrator.dismissInternalProtocolProblem(ledger, `complete_step(${action.stepId})`);
               if (this.recoveryOrchestrator.hasActiveProblem()) {
                 const activeProblem = this.recoveryOrchestrator.getActiveProblem()!;
                 if (activeProblem.blockedStepIds.includes(action.stepId)) {
@@ -3354,6 +3638,29 @@ export class Gitu {
                 ledger.data.evidence.length,
               );
               if (!preCheck.allowed) {
+                // Audit parity with executor-level blocks: a refusal from the
+                // recovery runtime (stale, drift, strategy, read-dedup, VOI)
+                // leaves a blocked record in the action history too.
+                const refusal = ledger.recordAction({
+                  stepId: action.stepId,
+                  tool: action.tool,
+                  paramsHash: hashParams(action.tool, action.params),
+                  paramsSummary: summarizeParams(action.tool, action.params),
+                  status: 'blocked',
+                  errorSignature: 'recovery-precheck-refused',
+                  reason: action.reason,
+                  expected: action.expected,
+                  observation: preCheck.reason ?? 'blocked by recovery runtime pre-check',
+                  durationMs: 0,
+                });
+                const preventionCount = noteLoopPrevention('precheck', preCheck.reason ?? 'recovery pre-check refused');
+                if (preventionCount >= 3) {
+                  stallReason = `The model repeated the same recovery-precheck refusal ${preventionCount} times without changing strategy: ${preCheck.reason ?? 'recovery pre-check refused'}`;
+                  exitReason = 'stalled';
+                  this.emit('stall   repeated recovery pre-check refusal — stopping without assigning a user blocker');
+                  break mainLoop;
+                }
+                this.emit(`blocked  ${refusal.paramsSummary} — prevented before it could run`);
                 observe(preCheck.reason!);
                 break;
               }
@@ -3368,24 +3675,76 @@ export class Gitu {
 
               const malformedKind = malformedKindFor(outcome.result.errorSignature);
               const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
+              const internalRuntimeFailure = new Set([
+                'browser-unavailable',
+                'skill-requirements-unmet',
+                'unknown-skill',
+                'skills-unavailable',
+                'background-command-unavailable',
+              ]).has(outcome.result.errorSignature ?? '');
+              const protocolFailure = malformedKind !== undefined || internalRuntimeFailure;
+              const actionOutcomeInput: ActionOutcomeInput = {
+                tool: action.tool,
+                params: action.params,
+                reason: action.reason,
+                expected: action.expected,
+                ...(action.expectation ? { expectation: action.expectation } : {}),
+                ...(action.observation ? { observation: action.observation } : {}),
+                ...(action.semanticVerdict ? { semanticVerdict: action.semanticVerdict } : {}),
+                ...(action.intent ? { intent: action.intent } : {}),
+                ...(action.capability ? { capability: action.capability } : {}),
+                ...(action.resourceScope ? { resourceScope: action.resourceScope } : {}),
+                ...(action.tool === 'run_command' ? { command: String(action.params['command'] ?? '') } : {}),
+                stepId: action.stepId,
+                toolOk: outcome.result.ok,
+                output: outcome.result.output,
+                exitCode: outcome.result.exitCode,
+                errorSignature: outcome.result.errorSignature,
+              };
+              const declaredAssertions = action.expectation?.assertions?.length ?? 0;
+              const preliminaryEvaluation = protocolFailure
+                ? undefined
+                : this.recoveryOrchestrator.evaluator.evaluate(
+                    actionOutcomeInput,
+                    this.recoveryOrchestrator.getActiveProblem(),
+                  );
+              // A structured expectation is authoritative for semantic pass/fail.
+              // This lets an expected exit 1 prove a reproduction while also
+              // preventing an exit 0 from passing when its assertions mismatch.
+              const actionPassed = protocolFailure
+                ? false
+                : declaredAssertions > 0
+                  ? preliminaryEvaluation?.verdict === 'expected_achieved'
+                  : outcome.result.ok;
+              if (actionPassed && !outcome.result.ok && declaredAssertions > 0) {
+                // Preserve the raw exit code/output in evidence, but correct the
+                // action ledger's semantic classification. Otherwise the UI and
+                // future task state keep calling a proven reproduction an error.
+                outcome.record.status = 'success';
+                delete outcome.record.errorSignature;
+                outcome.record.observation = `EXPECTED OUTCOME ACHIEVED: ${action.expectation!.description}\n${outcome.record.observation ?? ''}`.trim();
+                ledger.save();
+                this.emit(`expected ${outcome.record.paramsSummary} — structured assertions passed`);
+              }
 
               if (outcome.blockedByLoop) {
-                loopBlocks += 1;
+                const preventionCount = noteLoopPrevention('executor', outcome.blockedByLoop);
                 memory.add({
                   type: 'failure',
                   claim: `Repeated failure on ${outcome.record.paramsSummary}: ${action.reason}`,
                   scope: guard.lock.name,
                   confidence: 0.8,
                 });
-                if (loopBlocks >= 3) {
-                  ledger.addBlocker('Three loop-prevention blocks occurred; task escalated.');
-                  exitReason = 'blocked';
-                  observe(outcome.result.output);
-                  break;
+                if (preventionCount >= 3) {
+                  stallReason = `The model repeated the same loop-prevented action ${preventionCount} times without changing strategy: ${outcome.result.output.slice(0, 600)}`;
+                  exitReason = 'stalled';
+                  this.emit('stall   repeated loop-prevented action — stopping without assigning a user blocker');
+                  break mainLoop;
                 }
                 observe(outcome.result.output);
                 break;
               }
+              resetLoopPrevention();
               if (outcome.deniedByPolicy) {
                 observe(outcome.result.output);
                 break;
@@ -3405,7 +3764,7 @@ export class Gitu {
 
               let evidenceNote = '';
               if (action.tool === 'run_command') {
-                if (!outcome.result.ok) {
+                if (!actionPassed) {
                   // A later retry may repair the command, but its first failed
                   // result is still uncertainty the cheap completion path must
                   // not silently erase.
@@ -3419,7 +3778,7 @@ export class Gitu {
                   label: action.expected || String(action.params['command']),
                   command: String(action.params['command']),
                   exitCode: outcome.result.exitCode,
-                  passed: outcome.result.ok,
+                  passed: actionPassed,
                   output: outcome.result.output,
                   workspaceFingerprint: currentFp,
                 });
@@ -3428,7 +3787,7 @@ export class Gitu {
                 this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
               }
 
-              if (action.tool === 'browse' && outcome.result.image) {
+              if ((action.tool === 'browse' || action.tool === 'browser') && outcome.result.image) {
                 this.emit(`browseshot ${outcome.result.image}`);
               }
 
@@ -3470,7 +3829,7 @@ export class Gitu {
               // even a read_file — completed the step and force-checked its
               // todos, so the plan claimed progress for work that never happened
               // and the agent skipped ahead.
-              if (action.stepId && action.tool === 'run_command' && outcome.result.ok) {
+              if (action.stepId && action.tool === 'run_command' && actionPassed) {
                 const step = ledger.step(action.stepId);
                 const cmd = String(action.params['command'] ?? '');
                 if (step && step.status !== 'done' && step.verification && commandsMatch(step.verification, cmd)) {
@@ -3491,7 +3850,7 @@ export class Gitu {
                     this.syncRecoveryTelemetry(telemetry);
                   }
                 }
-              } else if (!action.stepId && action.tool === 'run_command' && outcome.result.ok) {
+              } else if (!action.stepId && action.tool === 'run_command' && actionPassed) {
                 // Models frequently omit stepId. When a verification command passes,
                 // auto-complete every open plan step that names exactly this
                 // command as its verification — otherwise plans silently never
@@ -3542,12 +3901,23 @@ export class Gitu {
 
               // Failed commands get the failure DIGEST (error lines + tail) rather
               // than a head slice that typically misses the actual cause.
-              const outputForModel = outcome.result.ok
+              const outputForModel = actionPassed
                 ? outcome.result.output.slice(0, 2500)
                 : `${extractFailureDigest(outcome.result.output)}${outcome.result.output.length > 2500 ? `\n[... ${outcome.result.output.length} chars total; showing failure-relevant lines]` : ''}`;
-              let observedResult = `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outputForModel}${evidenceNote}${lspNote}`;
+              const resultLabel = actionPassed ? (outcome.result.ok ? 'success' : 'expected') : 'error';
+              let observedResult = `RESULT [${resultLabel}] ${outcome.record.paramsSummary}\n${outputForModel}${evidenceNote}${lspNote}`;
               telemetry.noteToolCall();
-              if (!outcome.result.ok) {
+              if (protocolFailure) {
+                const protocolExplanation = outcome.result.errorSignature === 'unknown-tool'
+                  ? `"${action.tool}" is not a registered Agent Gitu tool.`
+                  : outcome.result.errorSignature === 'invalid-tool-params'
+                    ? 'The action parameters did not match the registered tool schema.'
+                    : 'The requested runtime capability is not provisioned for this session.';
+                observedResult +=
+                  `\nPROTOCOL/CAPABILITY ERROR: ${protocolExplanation} ` +
+                  'This did not test the repository or application and must not open a problem-recovery episode. Choose a documented action from the system contract; do not invent recovery-state tools or request_block for this internal protocol error.';
+              }
+              if (!actionPassed && !protocolFailure) {
                 // Targeted failure recovery: hand back the compact state needed to
                 // diagnose THIS failure — not a replay of the whole conversation.
                 const openCriteria = ledger.data.acceptanceCriteria.filter((c) => !c.satisfied);
@@ -3569,29 +3939,31 @@ export class Gitu {
               // AC-1/AC-2/AC-3/AC-4/AC-19 + AC-20/AC-28/AC-32: generalized outcome
               // evaluation (structured expectations, intent-declared repairs,
               // contract-gated verification). Execution success ≠ goal success.
-              const recoveryOutcome = this.recoveryOrchestrator.onActionOutcome(
-                {
-                  tool: action.tool,
-                  params: action.params,
-                  reason: action.reason,
-                  expected: action.expected,
-                  ...(action.expectation ? { expectation: action.expectation as { description: string } } : {}),
-                  ...(action.observation ? { observation: action.observation } : {}),
-                  ...(action.semanticVerdict ? { semanticVerdict: action.semanticVerdict } : {}),
-                  ...(action.intent ? { intent: action.intent } : {}),
-                  ...(action.capability ? { capability: action.capability } : {}),
-                  ...(action.resourceScope ? { resourceScope: action.resourceScope } : {}),
-                  stepId: action.stepId,
-                  toolOk: outcome.result.ok,
-                  output: outcome.result.output,
-                  exitCode: outcome.result.exitCode,
-                  errorSignature: outcome.result.errorSignature,
-                },
-                ledger,
-              );
+              // A malformed model action is a protocol failure, not an
+              // application contradiction. Feeding it into the recovery
+              // orchestrator creates a fake nested problem (the exact failure
+              // that made the model invent repair_recovery_state). Keep the
+              // action audit, but leave recovery state unchanged so the model
+              // can immediately choose a supported action.
+              const recoveryOutcome = protocolFailure
+                ? {
+                    evaluation: {
+                      verdict: 'neutral' as const,
+                      isBlocking: false,
+                      explanation: 'Malformed/unknown action rejected before problem recovery evaluation.',
+                    },
+                    interrupted: false,
+                    resolved: false,
+                    problem: this.recoveryOrchestrator.getActiveProblem(),
+                  }
+                : this.recoveryOrchestrator.onActionOutcome(actionOutcomeInput, ledger);
               if (recoveryOutcome.guidance) {
                 observedResult += `\n${recoveryOutcome.guidance}`;
               }
+              // Effort-ceiling bookkeeping (fix 9): any failure or recovery
+              // interruption ends the mechanical streak.
+              if (!actionPassed || recoveryOutcome.interrupted) consecutiveOkOutcomes = 0;
+              else consecutiveOkOutcomes += 1;
               this.syncRecoveryTelemetry(telemetry);
               // Plan-order drift: the agent is working a different step than the
               // one the state message points at. Left unremarked, models tend to
@@ -3615,7 +3987,7 @@ export class Gitu {
                     scope: guard.lock.name,
                     confidence: 0.8,
                   });
-                  ledger.addBlocker(`LLM produced ${malformedVerdict.streak} consecutive malformed tool calls (${action.tool}); task stalled.`);
+                  stallReason = `Model produced ${malformedVerdict.streak} consecutive malformed tool calls (${action.tool}).`;
                   exitReason = 'stalled';
                   this.emit('stall   malformed-call spiral detected — stopping');
                   observe(`${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`);
@@ -3679,7 +4051,7 @@ export class Gitu {
 
               if (tracker.consecutiveCalls > 3) {
                 const blocker = `Saved connection action ${connectionActionKey} was requested more than three times without a new operation.`;
-                ledger.addBlocker(blocker);
+                stallReason = blocker;
                 exitReason = 'stalled';
                 this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
                 observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
@@ -3758,7 +4130,7 @@ export class Gitu {
                 tracker.consecutiveFailures += 1;
                 if (tracker.consecutiveFailures > 3) {
                   const blocker = `Saved connection action ${connectionActionKey} failed repeatedly.`;
-                  ledger.addBlocker(blocker);
+                  stallReason = blocker;
                   exitReason = 'stalled';
                   this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
                   observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
@@ -3845,7 +4217,7 @@ export class Gitu {
 
               if (tracker.consecutiveCalls > 3) {
                 const blocker = `Saved connection discovery for ${action.connectionId} was requested more than three times without new results.`;
-                ledger.addBlocker(blocker);
+                stallReason = blocker;
                 exitReason = 'stalled';
                 this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
                 observe(`${blocker} Use existing discovery evidence, choose a different target, or revise the plan.`);
@@ -3900,7 +4272,7 @@ export class Gitu {
                 tracker.consecutiveFailures += 1;
                 if (tracker.consecutiveFailures > 3) {
                   const blocker = `Saved connection discovery for ${action.connectionId} failed repeatedly.`;
-                  ledger.addBlocker(blocker);
+                  stallReason = blocker;
                   exitReason = 'stalled';
                   this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
                   observe(`${blocker} Resolve the connection error or revise the plan.`);
@@ -4033,6 +4405,7 @@ export class Gitu {
               break;
             }
             case 'claim_criterion': {
+              this.recoveryOrchestrator.dismissInternalProtocolProblem(ledger, `claim_criterion(${action.criterionId})`);
               if (this.recoveryOrchestrator.hasActiveProblem()) {
                 const active = this.recoveryOrchestrator.getActiveProblem()!;
                 if (active.blockedCriterionIds?.includes(action.criterionId)) {
@@ -4071,6 +4444,21 @@ export class Gitu {
               break;
             }
             case 'complete': {
+              this.recoveryOrchestrator.dismissInternalProtocolProblem(ledger, 'task completion');
+              // Moot-interruption supersession: when EVERY acceptance criterion
+              // is satisfied with passing evidence, the mission has demonstrably
+              // moved past the interruption — a dead-end failure (e.g. a failed
+              // optional load) must not deadlock completion forever. The problem
+              // is superseded, never resolved: it is not a verified repair, and
+              // with any criterion still open the gate below still rejects (AC-11).
+              if (this.recoveryOrchestrator.hasActiveProblem() && ledger.data.acceptanceCriteria.length > 0 && ledger.data.acceptanceCriteria.every((c) => c.satisfied)) {
+                const moot = this.recoveryOrchestrator.getActiveProblem()!;
+                const mootDone = this.recoveryOrchestrator.tracker.supersedeProblem(moot.id, 'All acceptance criteria were satisfied through other work; the interruption no longer blocks anything (moot, not a verified repair).');
+                if (mootDone) {
+                  this.recoveryOrchestrator.mootProblemSupersessions += 1;
+                  this.emit('problem The task acceptance checks all pass — the earlier interruption blocks nothing anymore, so I am closing it as moot rather than claiming a proven fix.');
+                }
+              }
               if (this.recoveryOrchestrator.hasActiveProblem()) {
                 const active = this.recoveryOrchestrator.getActiveProblem()!;
                 observe(
@@ -4087,7 +4475,7 @@ export class Gitu {
                 observe(
                   `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
                     `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
-                    `Continue working, or request_block if you cannot proceed.`,
+                    'Continue working. Use request_block only for a concrete external prerequisite that the user or host can actually provide.',
                 );
                 break;
               }
@@ -4116,7 +4504,9 @@ export class Gitu {
               // Active visual reference validation
               const activeVisualRefs = typeof ledger.activeVisualReferences === 'function' ? ledger.activeVisualReferences() : [];
               if (!chatOnly && activeVisualRefs.length > 0) {
-                const hasRecentScreenshot = activePhaseData().actions.some((a) => (a.tool === 'browse' || a.tool === 'screenshot') && a.status === 'success');
+                const hasRecentScreenshot = activePhaseData().actions.some(
+                  (a) => (a.tool === 'browse' || a.tool === 'browser') && a.status === 'success',
+                );
                 if (!hasRecentScreenshot && visualGateRejections < 2) {
                   visualGateRejections += 1;
                   observe(
@@ -4492,10 +4882,47 @@ export class Gitu {
               const browserCalls: { call: (typeof activeCalls)[number]; index: number }[] = [];
               const otherCalls: { call: (typeof activeCalls)[number]; index: number }[] = [];
               activeCalls.forEach((call, index) => {
-                (call.tool === 'browse' ? browserCalls : otherCalls).push({ call, index });
+                (call.tool === 'browse' || call.tool === 'browser' ? browserCalls : otherCalls).push({ call, index });
               });
               const outcomes: (Awaited<ReturnType<typeof executor.execute>> | undefined)[] = new Array(activeCalls.length);
+              // Batched calls pass the same pre-action gates as solo calls
+              // (stale epoch, investigation drift, semantic read dedup, VOI).
+              // A disallowed call never executes; the reason is delivered as a
+              // synthetic blocked result so the model sees the refusal in place.
+              for (let index = 0; index < activeCalls.length; index++) {
+                const call = activeCalls[index]!;
+                const pre = this.recoveryOrchestrator.checkPreAction(
+                  {
+                    tool: call.tool,
+                    params: call.params,
+                    reason: call.reason,
+                    expected: call.expected,
+                    capturedInterruptEpoch: batchEpoch,
+                  },
+                  ledger.data.evidence.length,
+                );
+                if (!pre.allowed) {
+                  this.emit(`blocked  ${call.tool} (parallel pre-check: ${pre.reason?.slice(0, 120)})`);
+                  outcomes[index] = {
+                    record: {
+                      id: `act-parallel-${index}`,
+                      tool: call.tool,
+                      paramsHash: '',
+                      paramsSummary: call.reason || call.tool,
+                      status: 'blocked',
+                      reason: call.reason,
+                      expected: call.expected,
+                      observation: pre.reason ?? 'blocked',
+                      durationMs: 0,
+                      createdAt: new Date().toISOString(),
+                    },
+                    result: { ok: false, output: pre.reason ?? 'BLOCKED by recovery runtime pre-check' },
+                    blockedByLoop: pre.reason,
+                  };
+                }
+              }
               const runOne = async (call: (typeof activeCalls)[number], index: number): Promise<void> => {
+                if (outcomes[index]) return; // already resolved by a pre-check refusal
                 // Batched calls are real tool executions too; without this every
                 // parallel turn undercounts tokenTelemetry.toolCalls.
                 telemetry.noteToolCall();
@@ -4522,19 +4949,32 @@ export class Gitu {
                 const o = outcomes[i];
                 if (!o) continue;
                 const sibling = activeCalls[i]!;
-                const res = this.recoveryOrchestrator.onActionOutcome(
-                  {
-                    tool: sibling.tool,
-                    params: sibling.params,
-                    reason: sibling.reason,
-                    expected: sibling.expected,
-                    toolOk: o.result.ok,
-                    output: o.result.output,
-                    exitCode: o.result.exitCode,
-                    errorSignature: o.result.errorSignature,
-                  },
-                  ledger,
-                );
+                const malformedSibling = malformedKindFor(o.result.errorSignature) !== undefined;
+                const res = malformedSibling
+                  ? {
+                      evaluation: {
+                        verdict: 'neutral' as const,
+                        isBlocking: false,
+                        explanation: 'Malformed/unknown action rejected before problem recovery evaluation.',
+                      },
+                      interrupted: false,
+                      resolved: false,
+                      problem: this.recoveryOrchestrator.getActiveProblem(),
+                    }
+                  : this.recoveryOrchestrator.onActionOutcome(
+                      {
+                        tool: sibling.tool,
+                        params: sibling.params,
+                        reason: sibling.reason,
+                        expected: sibling.expected,
+                        ...(sibling.tool === 'run_command' ? { command: String(sibling.params['command'] ?? '') } : {}),
+                        toolOk: o.result.ok,
+                        output: o.result.output,
+                        exitCode: o.result.exitCode,
+                        errorSignature: o.result.errorSignature,
+                      },
+                      ledger,
+                    );
                 if (res.evaluation.detectedContradiction?.isBlocking && !blockerSeen) {
                   blockerSeen = true;
                 } else if (blockerSeen) {
@@ -4562,6 +5002,20 @@ export class Gitu {
                 }
                 return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}`;
               });
+              // Same conservative reconciliation as the solo path: parallel
+              // verification passes must complete matching steps too.
+              const parallelReconciled = reconcileVerifiedSteps(
+                ledger,
+                currentFp,
+                (stepId) => this.recoveryOrchestrator.getActiveProblem()?.blockedStepIds.includes(stepId) === true,
+              );
+              if (parallelReconciled > 0) {
+                ledger.save();
+                this.emit(`plan ${narration.planReconciled(parallelReconciled)}`);
+              }
+              // Effort-ceiling bookkeeping for batched outcomes (fix 9).
+              if (blockerSeen || outcomes.some((o) => o && !o.result.ok)) consecutiveOkOutcomes = 0;
+              else consecutiveOkOutcomes += 1;
               observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}${recoveryNotes.length ? `\n${recoveryNotes.join('\n')}` : ''}`);
               break;
             }
@@ -4582,8 +5036,40 @@ export class Gitu {
               break;
             }
             case 'request_block': {
-              const prerequisite = action.prerequisite ?? inferMissingPrerequisite(action.reason, action.reason);
-              if (prerequisite) {
+              const blockRequest = evaluateBlockRequest(action.reason, action.prerequisite);
+              if (!blockRequest.allowed) {
+                telemetry.noteWastedCall();
+                ledger.recordAction({
+                  tool: 'request_block',
+                  paramsHash: hashParams('request_block', {
+                    reason: action.reason,
+                    prerequisiteKind: action.prerequisite?.kind,
+                  }),
+                  paramsSummary: `request_block ${action.reason.replace(/\s+/g, ' ').trim().slice(0, 160) || '(empty reason)'}`,
+                  status: 'denied',
+                  errorSignature: 'invalid-block-request',
+                  reason: action.reason,
+                  expected: 'a concrete external prerequisite the user or host can provide',
+                  observation: blockRequest.message,
+                  durationMs: 0,
+                });
+                const preventionCount = noteLoopPrevention('invalid-block', blockRequest.code);
+                this.emit(`denied   invalid request_block rejected (${blockRequest.code}) — no user blocker recorded`);
+                if (preventionCount >= 3) {
+                  stallReason = `${blockRequest.message} The model repeated this invalid stop request ${preventionCount} times; the run ended as an internal agent stop/failure, not a user blocker.`;
+                  exitReason = 'stalled';
+                  this.emit('stall   repeated invalid request_block — bounded after three corrections');
+                  break mainLoop;
+                }
+                observe(
+                  `${blockRequest.message}\nCORRECTION ${preventionCount}/3: Continue with a supported tool or revise the plan. ` +
+                    'Do not ask the user to repair Agent Gitu internals, register built-in tools, clear recovery metadata, or resume a runtime-owned state.',
+                );
+                break;
+              }
+
+              const prerequisite = blockRequest.prerequisite;
+              {
                 this.emit(`recovery RESOLVING_PREREQUISITE — ${prerequisite.description}`);
                 const resolution = await prerequisiteResolver.resolve(prerequisite, {
                   repoRoot: guard.activeWritableRoot,
@@ -4627,11 +5113,10 @@ export class Gitu {
                     const noteCount = (capabilityResolutionNotes.get(prerequisite.id) ?? 0) + 1;
                     capabilityResolutionNotes.set(prerequisite.id, noteCount);
                     if (noteCount > 2) {
-                      const blocked = `${decision.reason}\nRepeatedly re-requested a resolvable capability instead of using the saved connection (registered reads / documented connection_operation).`;
-                      ledger.addBlocker(blocked);
-                      exitReason = 'blocked';
-                      observe(`Recovery stopped after repeated capability-resolution requests:\n${blocked}`);
-                      break;
+                      stallReason = `${decision.reason} The model repeatedly re-requested a resolvable capability instead of using the saved connection (registered reads / documented connection_operation).`;
+                      exitReason = 'stalled';
+                      this.emit('stall   repeated resolvable-capability request — no user blocker recorded');
+                      break mainLoop;
                     }
                     ledger.recordPrerequisiteRecovery({
                       prerequisiteId: prerequisite.id,
@@ -4725,10 +5210,6 @@ export class Gitu {
                 observe(`Recovery exhausted before block:\n${blocked}`);
                 break;
               }
-              ledger.addBlocker(action.reason);
-              exitReason = 'blocked';
-              observe(`Block recorded: ${action.reason}`);
-              break;
             }
             case 'delegate': {
               // Adaptive effort: a recovered logical job reuses its existing
@@ -4964,36 +5445,10 @@ export class Gitu {
 
           lastExecutedActionTag = currentActionTag;
 
-          while (this.inbox.length > 0) {
-            const queued = this.inbox.shift()!;
-            this.emit(`user-msg ${queued.text}`);
-            const steered = classifyFollowUp(queued.text);
-            observe(
-              `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
-                (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
-            );
-            // A steered message is real follow-up work, not just a nudge: record
-            // its goal delta, constraints, and target hints in the task authority
-            // so the instruction policy enforces it from the very next action.
-            applyFollowUpToLedger(ledger, queued.text);
-            if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
-              // Meaningful follow-ups re-arm the turn budget: remaining turns are
-              // measured from now, not from run start.
-              const extraTurns = Math.max(budgetExtensionTurns, 10);
-              budgetCap = turns + extraTurns;
-              ledger.addBudgetExtension({
-                turn: turns,
-                reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
-                filesChanged: ledger.data.filesChanged?.length ?? 0,
-                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
-                evidenceCount: ledger.data.evidence.length,
-                extraTurns,
-                extraSpecialists: 0,
-                specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
-              });
-              this.emit(`effort  follow-up ${steered.kind} — turn budget re-armed: ${extraTurns} fresh turns (cap now ${budgetCap})`);
-            }
-          }
+          // Action boundary: user steering is honored BEFORE exit paths or the
+          // next turn run — a steer arriving during the just-finished action is
+          // applied now, within one action boundary (recovery-control fix 7).
+          drainInbox();
 
           if (exitReason === 'complete' || exitReason === 'blocked') break;
         }
@@ -5002,8 +5457,20 @@ export class Gitu {
       }
 
       if (this.aborted && exitReason === 'stalled') {
-        ledger.addBlocker('Stopped by user.');
-        exitReason = 'blocked';
+        exitReason = 'aborted';
+      }
+
+      // Scratch cleanup (recovery-control fix 8): on COMPLETION the task's
+      // temp diagnostics are deleted. On blocked/stalled they are kept for
+      // post-mortem inspection; a diagnostic that proved valuable should have
+      // been promoted into a real test by the model, not left behind here.
+      if (exitReason === 'complete' && guard.taskTmpRoot) {
+        try {
+          rmSync(guard.taskTmpRoot, { recursive: true, force: true });
+          this.emit('scratch Temporary diagnostics cleaned up — nothing left behind in your workspace.');
+        } catch {
+          /* cleanup must never fail a completed task */
+        }
       }
 
       // ── Finding Verification Gate ──────────────────────────────────────────
@@ -5046,7 +5513,7 @@ export class Gitu {
         }
       }
 
-      const status = exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : 'failed';
+      const status = exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : exitReason === 'aborted' ? 'aborted' : 'failed';
       ledger.setStatus(status);
       if (exitReason === 'complete') ledger.completeActiveWorkPhase();
 
@@ -5063,6 +5530,16 @@ export class Gitu {
       };
       ledger.save();
       this.emit(`telemetry ${renderTelemetry(ledger.data.tokenTelemetry)}`);
+      if (ledger.data.tokenTelemetry) {
+        this.emit(
+          `efficiency ${renderEfficiencySummary(ledger.data.tokenTelemetry, {
+            actions: ledger.data.actions.length - actionsAtStart,
+            stepsDone: ledger.data.plan.filter((step) => step.status === 'done').length,
+            stepsTotal: ledger.data.plan.length,
+            filesChanged: ledger.data.filesChanged?.length ?? 0,
+          })}`,
+        );
+      }
 
       const finalWorkspaceFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot);
       const finalHeadRef = (await gitExec(guard.activeWritableRoot, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
@@ -5107,13 +5584,13 @@ export class Gitu {
         actionStartIndex: activeWorkPhase.actionStartIndex,
         criterionIds: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).map((criterion) => criterion.id),
         filesChanged: phaseFiles ?? ledger.data.filesChanged.slice(activeWorkPhase.fileStartIndex ?? 0),
-      });
+      }, stallReason);
       ledger.data.report = report;
       ledger.save();
 
       if ((this.config.autoLearn ?? true) && exitReason === 'complete') {
         try {
-          await this.autoLearn(messages, ledger, executor, skills);
+          await this.autoLearn(messages, ledger, executor, skills, announcedMemoryPatterns.size > 0, telemetry);
         } catch (err) {
           // The run already completed and the report is saved; a transient
           // failure in this optional reflection pass must not flip the session
@@ -5140,10 +5617,13 @@ export class Gitu {
         scope: guard.lock.name,
         confidence: 0.9,
       });
-      if (status !== 'completed') {
+      if (status !== 'completed' && status !== 'aborted') {
         memory.add({
           type: 'failure',
-          claim: `Task phase "${activeGoal}" did not complete (${status}). Blockers: ${ledger.data.blockers.join('; ') || 'none recorded'}`,
+          claim:
+            `Task phase "${activeGoal}" did not complete (${status}). ` +
+            `Reason: ${report.failureReason ?? report.summary}. ` +
+            `External blockers: ${ledger.data.blockers.join('; ') || 'none recorded'}`,
           scope: guard.lock.name,
           confidence: 0.85,
         });
@@ -5160,15 +5640,30 @@ export class Gitu {
       // indexes and session-scoped LSP managers must remain available for a
       // continuation.
       ownedIndex?.close();
+      executor.dispose();
       if (!this.config.lsp) await lsp.shutdown().catch(() => {});
     }
   }
 
-  private async autoLearn(messages: LlmMessage[], ledger: TaskLedger, executor: Executor, skills: SkillStore): Promise<void> {
+  private async autoLearn(messages: LlmMessage[], ledger: TaskLedger, executor: Executor, skills: SkillStore, patternPromotedDuringRun: boolean, telemetry: RunTelemetry): Promise<void> {
     const d = ledger.data;
     const didWork = d.actions.length > 0 && (d.filesChanged.length > 0 || d.evidence.some((e) => e.passed));
     const alreadyLearned = d.actions.some((a) => a.tool === 'create_skill' && a.status === 'success');
     if (!didWork || alreadyLearned) return;
+
+    // Conservative eligibility gate BEFORE spending an LLM call: reflection is
+    // paid for only when there is a real chance of a reusable skill. Trivial
+    // single-edit tasks never reach the model.
+    const explicitRequest = /(?:create|save|add|store)[^\n]{0,40}skill|skill[^\n]{0,40}(?:create|save|add)/i.test(d.goal);
+    const multiStepWorkflow = d.actions.length >= 8 && d.filesChanged.length >= 2;
+    const substantialWork = d.evidence.filter((e) => e.passed).length >= 3 || d.filesChanged.length >= 3;
+    const eligible = explicitRequest || patternPromotedDuringRun || multiStepWorkflow || substantialWork;
+    if (!eligible) {
+      telemetry.noteAutoLearnSkipped();
+      this.emit(`learn   auto-learn skipped — task too small to reflect on (${d.actions.length} actions, ${d.filesChanged.length} file(s) changed)`);
+      return;
+    }
+    telemetry.noteAutoLearnCall();
     this.emit('learn   reflecting on the completed work to extract a reusable skill');
     const existing =
       skills

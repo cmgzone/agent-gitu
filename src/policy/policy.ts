@@ -91,6 +91,7 @@ export class PolicyEngine {
       case 'search_files':
       case 'web_fetch':
       case 'browse':
+      case 'browser':
       case 'agent_status':
       case 'list_skills':
       case 'use_skill':

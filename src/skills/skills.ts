@@ -130,6 +130,19 @@ function normalizeToken(t: string): string {
   return t.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/**
+ * `list_skills` renders stable references as `name@version`. Keep the version
+ * out of the lookup token so that the displayed reference is also callable.
+ */
+function parseSkillReference(value: string): { name: string; version?: string } {
+  const reference = value.trim();
+  const separator = reference.lastIndexOf('@');
+  if (separator > 0 && separator < reference.length - 1) {
+    return { name: reference.slice(0, separator), version: reference.slice(separator + 1) };
+  }
+  return { name: reference };
+}
+
 function normalizeName(value: unknown): string {
   return String(value ?? '').trim().toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 }
@@ -523,8 +536,13 @@ export class SkillStore {
   }
 
   get(name: string): Skill | undefined {
-    const norm = normalizeToken(name);
-    const metadata = this.list().find((skill) => normalizeToken(skill.name) === norm || (skill.aliases ?? []).some((alias) => normalizeToken(alias) === norm));
+    const reference = parseSkillReference(name);
+    const norm = normalizeToken(reference.name);
+    const metadata = this.list().find((skill) => {
+      const nameMatches = normalizeToken(skill.name) === norm || (skill.aliases ?? []).some((alias) => normalizeToken(alias) === norm);
+      const versionMatches = reference.version === undefined || String(skill.version ?? '1') === reference.version;
+      return nameMatches && versionMatches;
+    });
     if (!metadata) return undefined;
     return metadata.format === 'skill-md' && !metadata.loaded ? this.loadMarkdown(metadata) : metadata;
   }

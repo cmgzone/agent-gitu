@@ -14,6 +14,48 @@ function makeProject(): string {
 }
 
 describe('Reporter', () => {
+  it('reports an internal stall separately from external blockers', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({
+      repoRoot: dir,
+      goal: 'Finish the task',
+      project: ProjectGuard.detect(dir).lock,
+      mode: 'fast',
+    });
+
+    const report = new Reporter().build(
+      ledger,
+      'stalled',
+      undefined,
+      undefined,
+      undefined,
+      'Model repeated the same loop-prevented action three times.',
+    );
+
+    expect(report.status).toBe('failed');
+    expect(report.failureReason).toContain('loop-prevented');
+    expect(report.summary).toContain('Task stopped without completion');
+    expect(report.remainingRisks).toEqual([]);
+    expect(ledger.data.blockers).toEqual([]);
+  });
+
+  it('reports a user stop as aborted rather than blocked', () => {
+    const dir = makeProject();
+    const ledger = TaskLedger.create({
+      repoRoot: dir,
+      goal: 'Long-running task',
+      project: ProjectGuard.detect(dir).lock,
+      mode: 'fast',
+    });
+
+    const report = new Reporter().build(ledger, 'aborted');
+
+    expect(report.status).toBe('aborted');
+    expect(report.summary).toBe('Task stopped by user.');
+    expect(report.failureReason).toBeUndefined();
+    expect(report.remainingRisks).toEqual([]);
+  });
+
   it('keeps reports concise while retaining expandable structured evidence', () => {
     const dir = makeProject();
     const ledger = TaskLedger.create({

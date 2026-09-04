@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/gitu.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
-import { toolRunCommand } from '../src/tools/tools.js';
+import { BackgroundCommandRegistry, toolRunCommand } from '../src/tools/tools.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 
 function makeProject(name: string): string {
@@ -201,4 +201,25 @@ describe('run_command — timeout kills the process tree before evidence resolve
     expect(result.ok).toBe(true);
     expect(result.exitCode).toBe(0);
   }, 30000);
+
+  it('keeps a managed background server alive past its startup window', async () => {
+    const dir = makeProject('background-command');
+    const guard = ProjectGuard.detect(dir);
+    const backgroundCommands = new BackgroundCommandRegistry();
+    try {
+      const result = await toolRunCommand(
+        { guard, cwd: dir, backgroundCommands },
+        {
+          command: `node -e "console.log('ready'); setInterval(() => {}, 1000)"`,
+          background: true,
+          startupWaitMs: 250,
+        },
+      );
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain('BACKGROUND PROCESS STARTED');
+      expect(result.output).toContain('Verify readiness separately');
+    } finally {
+      backgroundCommands.dispose();
+    }
+  }, 15000);
 });

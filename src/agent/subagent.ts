@@ -11,7 +11,7 @@ import { resilientLlm } from '../llm/resilient.js';
 import { LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import { PolicyEngine } from '../policy/policy.js';
-import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { KNOWN_TOOL_NAMES, runtimeToolNames } from '../tools/tools.js';
 import { buildSpecialistEvidenceReport, type SpecialistEvidenceReport } from './specialist-evidence.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import {
@@ -240,7 +240,8 @@ function completeSpecialistTurn(
   });
 }
 
-function buildSystemPrompt(name: string, role: string, root: string, isolated: boolean, criteria?: AcceptanceCriterion[]): string {
+/** Exported for scripts/prompt-snapshot.ts (prompt architecture metrics). */
+export function buildSystemPrompt(name: string, role: string, root: string, isolated: boolean, criteria?: AcceptanceCriterion[]): string {
   const criteriaSection = criteria && criteria.length > 0
     ? `\nACCEPTANCE CRITERIA (you MUST satisfy each criterion with passing evidence before answering):\n` +
       criteria.map((c) => `- [${c.id}] ${c.text}${c.verification ? ` (required verification: ${c.verification})` : ''}`).join('\n')
@@ -283,7 +284,8 @@ When the task is finished and all criteria are verified, respond with:
 
 /** Render the parent briefing for a new specialist. It is intentionally small:
  * enough concrete context to avoid rediscovery, never a repository dump. */
-function renderSpecialistHandoff(handoff: SpecialistHandoff): string {
+/** Exported for scripts/prompt-snapshot.ts (prompt architecture metrics). */
+export function renderSpecialistHandoff(handoff: SpecialistHandoff): string {
   const files = handoff.startingFiles.length > 0
     ? handoff.startingFiles.map((file) => `  - ${file.path} [${file.role}]${file.note ? ` — ${file.note}` : ''}`).join('\n')
     : '  (No ranked source file was available; use a narrow task-named search instead of scanning the repository.)';
@@ -731,7 +733,7 @@ export class SubAgentRunner {
       specialist: name,
       // Specialist worktrees intentionally do not inherit browser-only
       // capabilities. Skills that require them fail closed instead.
-      availableTools: [...KNOWN_TOOL_NAMES],
+      availableTools: runtimeToolNames(false),
     };
     let selectedSkills: SkillIdentity[] = [];
     let skillState: SpecialistSkillState | undefined;
@@ -960,6 +962,7 @@ export class SubAgentRunner {
     let stopReason: SpecialistStopReason = 'task_failed';
     let toolPolicyBlocked = false;
     let ledger: TaskLedger | undefined;
+    let executor: Executor | undefined;
     let projectScope = '';
 
     try {
@@ -983,7 +986,7 @@ export class SubAgentRunner {
       }
       ledger.setStatus('executing');
       const policy = new PolicyEngine(false);
-      const executor = new Executor(guard, ledger, policy, new LoopDetector(), (e) => emit(`subagent ${name}: ${e}`), specialistSkills);
+      executor = new Executor(guard, ledger, policy, new LoopDetector(), (e) => emit(`subagent ${name}: ${e}`), specialistSkills);
 
       const criteriaList = ledger.data.acceptanceCriteria;
       const criteriaPrompt = criteriaList.length > 0
@@ -1407,6 +1410,7 @@ export class SubAgentRunner {
           : `subagent ${name} — stopped: ${message.slice(0, 180)}`,
       );
     } finally {
+      executor?.dispose();
       if (wt) {
         if (ok) {
           const reconciled = await this.reconcileWorktree(wt, repoRoot, name, task);

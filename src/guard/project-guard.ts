@@ -120,6 +120,14 @@ export class ProjectGuard {
     private readonly lockFile: string,
   ) {}
 
+  /**
+   * Task-scoped scratch directory (absolute) that tools MAY touch even though
+   * it sits under .hermes. Set by the orchestrator per run; temporary
+   * diagnostics are redirected here so they never land in the user's source
+   * tree. Everything else under .hermes stays sealed.
+   */
+  taskTmpRoot?: string;
+
   static detect(cwd: string): ProjectGuard {
     const located = findRepoRoot(cwd);
     if (!located) {
@@ -239,6 +247,17 @@ export class ProjectGuard {
     const fold = (s: string): string => (process.platform === 'win32' ? s.toLowerCase() : s);
     const rel = path.relative(this.activeWritableRoot, path.resolve(absPath));
     const foldedRel = fold(rel);
+    // Task-scoped scratch exception: temporary diagnostics redirected out of
+    // the user's source tree live under .hermes/tmp/<taskId>/ and ARE
+    // tool-writable — everything else in .hermes stays sealed.
+    if (this.taskTmpRoot) {
+      const tmpRel = path.relative(path.resolve(this.taskTmpRoot), path.resolve(absPath));
+      const foldedTmpRel = fold(tmpRel);
+      if (!foldedTmpRel.startsWith('..') && !path.isAbsolute(foldedTmpRel) && foldedTmpRel !== '') {
+        this.assertNoSymlinkEscape(absPath);
+        return;
+      }
+    }
     if (foldedRel === '.hermes' || foldedRel.startsWith(`.hermes${path.sep}`)) {
       throw new ProjectGuardError(
         `Path ${absPath} is inside Agent Gitu's legacy private state directory (.hermes) and cannot be touched by tools.`,

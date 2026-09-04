@@ -159,6 +159,9 @@ export class RunTelemetry {
     const split = classifyCall(messages, prefixEnd);
     const estInput = split.prefixTokens + split.historyTokens + split.stateTokens + split.imageTokens;
     this.estimatedInputTokens += estInput;
+    let promptChars = 0;
+    for (const m of messages) promptChars += messageTextChars(m);
+    if (promptChars > this.maxPromptChars) this.maxPromptChars = promptChars;
     if (phase === 'planning') {
       this.estimatedPlanningInput += estInput;
     } else {
@@ -192,6 +195,26 @@ export class RunTelemetry {
 
   notePreventedNetworkCall(): void {
     this.preventedNetworkCalls += 1;
+  }
+
+  /** Prompt-architecture composition (measured once at system-prompt build). */
+  notePromptComposition(coreChars: number, capabilityChars: number): void {
+    this.coreSystemChars = coreChars;
+    this.capabilityContractChars = capabilityChars;
+  }
+
+  /** One queued user message drained and applied at an action boundary. */
+  noteUserSteer(): void {
+    this.userSteersHandled += 1;
+  }
+
+  /** Auto-learn reflection: one LLM call spent vs skipped by the eligibility gate. */
+  noteAutoLearnCall(): void {
+    this.autoLearnCalls += 1;
+  }
+
+  noteAutoLearnSkipped(): void {
+    this.autoLearnSkipped += 1;
   }
 
   snapshot(): TokenTelemetrySnapshot {
@@ -244,6 +267,21 @@ export class RunTelemetry {
       actNowTransitions: this.actNowTransitions,
       verificationContractFailures: this.verificationContractFailures,
       verificationContractPasses: this.verificationContractPasses,
+      problemEpisodes: this.problemEpisodes,
+      episodeSupersessions: this.episodeSupersessions,
+      staleHypothesisReopens: this.staleHypothesisReopens,
+      investigationDriftBlocks: this.investigationDriftBlocks,
+      noDecisionImpactRejections: this.noDecisionImpactRejections,
+      mootProblemSupersessions: this.mootProblemSupersessions,
+      semanticDuplicateReadsPrevented: this.semanticDuplicateReadsPrevented,
+      cachedObservationHits: this.cachedObservationHits,
+      stateReplayCharsAvoided: this.stateReplayCharsAvoided,
+      userSteersHandled: this.userSteersHandled,
+      coreSystemChars: this.coreSystemChars,
+      capabilityContractChars: this.capabilityContractChars,
+      maxPromptChars: this.maxPromptChars,
+      autoLearnCalls: this.autoLearnCalls,
+      autoLearnSkipped: this.autoLearnSkipped,
       wastedCalls: this.wastedCalls,
       filesInContextPack: this.filesInContextPack,
     };
@@ -270,6 +308,59 @@ export class RunTelemetry {
   actNowTransitions = 0;
   verificationContractFailures = 0;
   verificationContractPasses = 0;
+  problemEpisodes = 0;
+  episodeSupersessions = 0;
+  staleHypothesisReopens = 0;
+  investigationDriftBlocks = 0;
+  noDecisionImpactRejections = 0;
+  mootProblemSupersessions = 0;
+  semanticDuplicateReadsPrevented = 0;
+  cachedObservationHits = 0;
+  stateReplayCharsAvoided = 0;
+  userSteersHandled = 0;
+  coreSystemChars = 0;
+  capabilityContractChars = 0;
+  maxPromptChars = 0;
+  autoLearnCalls = 0;
+  autoLearnSkipped = 0;
+}
+
+/**
+ * One-line end-of-run efficiency summary for real-run replay comparisons
+ * (broken run vs recovery-controlled run). Greppable key=value pairs only:
+ * every number answers a specific control-efficiency question — how many
+ * actions the run took, how much duplicate investigation was prevented
+ * instead of executed, how fast a decided repair was acted on, whether the
+ * failure surface moved cleanly (supersessions, no reopenings), whether the
+ * moot-completion exception stayed rare, whether steering reached the model
+ * within a boundary, how much stale task-state was avoided, and the token
+ * totals.
+ */
+export function renderEfficiencySummary(
+  t: TokenTelemetrySnapshot,
+  stats: { actions: number; stepsDone: number; stepsTotal: number; filesChanged: number },
+): string {
+  const k = (n: number | undefined): string => (n === undefined ? '-' : `${Math.round(n / 100) / 10}K`);
+  const tokensIn = t.inputTokens > 0 ? `${k(t.inputTokens)}t` : `${k(t.estimatedInputTokens)}t(est)`;
+  const tokensOut = t.outputTokens > 0 ? `${k(t.outputTokens)}t` : '-';
+  return [
+    `actions=${stats.actions}`,
+    `steps=${stats.stepsDone}/${stats.stepsTotal}`,
+    `files=${stats.filesChanged}`,
+    `dupReadsPrevented=${t.semanticDuplicateReadsPrevented ?? 0}`,
+    `cacheHits=${t.cachedObservationHits ?? 0}`,
+    `voiBlocks=${t.noDecisionImpactRejections ?? 0}`,
+    `driftBlocks=${t.investigationDriftBlocks ?? 0}`,
+    `decisionToAct=${t.actionsAfterDiagnosisBeforeRepair ?? '-'} (reads ${t.readsAfterDiagnosisBeforeRepair ?? '-'})`,
+    `episodes=${t.problemEpisodes ?? 0}`,
+    `supersessions=${t.episodeSupersessions ?? 0}`,
+    `reopenings=${t.staleHypothesisReopens ?? 0}`,
+    `mootSupersessions=${t.mootProblemSupersessions ?? 0}`,
+    `steers=${t.userSteersHandled ?? 0}`,
+    `stateReplayAvoided=${k(t.stateReplayCharsAvoided)}c`,
+    `tokensIn=${tokensIn}`,
+    `tokensOut=${tokensOut}`,
+  ].join(' ');
 }
 
 /** Compact human-readable summary for events/reports. */
@@ -281,7 +372,9 @@ export function renderTelemetry(t: TokenTelemetrySnapshot): string {
     `~estInput=${t.estimatedInputTokens} (system=${src.system} contextPack=${src.contextPack} taskState=${src.state} ` +
     `digest=${src.digest} strategy=${src.strategy} conversation=${src.conversation} images=${src.images}) ` +
     `planning=${t.planningCalls}c/~${t.estimatedPlanningInput}t execution=${t.executionCalls}c/~${t.estimatedExecutionInput}t ` +
-    `compactions=${t.compactions} toolCalls=${t.toolCalls} screenshots=${t.screenshots} wasted=${t.wastedCalls}`;
+    `compactions=${t.compactions} toolCalls=${t.toolCalls} screenshots=${t.screenshots} wasted=${t.wastedCalls}` +
+    ` avgInputPerTurn=${t.calls > 0 ? Math.round(t.estimatedInputTokens / t.calls) : 0}t` +
+    ` coreSystem=${t.coreSystemChars ?? 0}c capabilities=${t.capabilityContractChars ?? 0}c maxPrompt=${t.maxPromptChars ?? 0}c`;
   if (!t.behavior) return base;
   const b = t.behavior;
   return (

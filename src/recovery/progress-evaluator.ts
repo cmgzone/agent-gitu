@@ -9,6 +9,7 @@ import type {
 } from './problem-state.js';
 import { sha256 } from '../util.js';
 import { digestObservation, redactSecrets, stemToken } from './evidence-utils.js';
+import { commandsMatch, isManufacturedEvidenceCommand } from '../evidence/evidence.js';
 
 export interface ActionOutcomeInput {
   tool: string;
@@ -39,6 +40,8 @@ export interface ActionOutcomeInput {
   };
   /** Resource scope this action touches (for scoped epochs). */
   resourceScope?: string;
+  /** Command/file that produced the observation (failure-episode identity). */
+  command?: string;
   toolOk: boolean;
   output: string;
   exitCode?: number;
@@ -62,6 +65,24 @@ export class ProgressEvaluator {
 
     // 0. Build a normalized observation (adapter-supplied or derived generically).
     const observation = this.normalizeObservation(input);
+
+    // Output-only inline programs are diagnostics, never independent proof.
+    // Reject them before active-problem contracts, structured expectations, or
+    // model semantic verdicts can promote their self-authored output to a
+    // verified repair. This is the recovery-boundary counterpart to the
+    // acceptance evidence gate.
+    const command = this.commandFrom(input);
+    if (command && isManufacturedEvidenceCommand(command)) {
+      return {
+        verdict: 'neutral',
+        isBlocking: false,
+        explanation:
+          `Verification ignored: "${command}" manufactures the output it presents as proof. ` +
+          'Run a falsifiable check that observes the application or executes its real tests.',
+        observation,
+        resolvesActiveProblem: false,
+      };
+    }
 
     // 1. Verification against an active problem's contract takes precedence.
     if (activeProblem) {
@@ -95,6 +116,21 @@ export class ProgressEvaluator {
           },
         };
       }
+      // Every declared assertion matched. This is semantic success even when
+      // transportOk is false (the canonical example is a bug-reproduction
+      // command explicitly expected to exit 1). Without this return the
+      // generic tool-failure branch below reverses the assertion result and
+      // opens a bogus recovery episode.
+      return {
+        verdict: 'expected_achieved',
+        isBlocking: false,
+        explanation: `Expected outcome achieved: ${expectation.description}`,
+        observation,
+        // Active-problem resolution remains contract-gated by checkVerification
+        // above. A per-action assertion passing is evidence, not permission to
+        // erase an unrelated recovery episode.
+        resolvesActiveProblem: false,
+      };
     }
 
     // 3. Model-provided semantic verdict (for unstructured cases without hardcoded rules).
@@ -123,6 +159,9 @@ export class ProgressEvaluator {
           isBlocking: false,
           explanation: sv.explanation ?? 'Expected outcome achieved (model semantic verdict).',
           observation,
+          // The model's explicit positive verdict is a deliberate claim — it
+          // may resolve the active problem (contract verification follows).
+          resolvesActiveProblem: true,
         };
       }
     }
@@ -332,6 +371,7 @@ export class ProgressEvaluator {
         isBlocking: false,
         explanation: `Verified: Original problem (${activeProblem.id}) contradiction is resolved. Expected state achieved.`,
         observation,
+        resolvesActiveProblem: true,
       };
     }
     return undefined;
@@ -347,6 +387,9 @@ export class ProgressEvaluator {
     observation: NormalizedObservation,
     contract: VerificationContract,
   ): boolean {
+    const command = this.commandFrom(input);
+    if (command && isManufacturedEvidenceCommand(command)) return false;
+
     // 1. Failure assertions: if any hold, the problem persists.
     if (contract.failureAssertions?.length) {
       for (const a of contract.failureAssertions) {
@@ -372,6 +415,24 @@ export class ProgressEvaluator {
       if (contract.originalObservationDigest && observation.rawDigest === contract.originalObservationDigest) return false;
       return true;
     }
+    // 3b. Command-shaped contradictions: the contract records the command that
+    // FAILED. Re-running that exact command after the repair and seeing it
+    // genuinely succeed (exit 0) is positive proof the original failure is gone
+    // — even when the model's expectation text described the failure it
+    // intended to reproduce ('expected: it crashes') and can never match a
+    // passing output. Two hard limits keep this honest: an adapter that does
+    // not report an exit code provides transport success only (never proof),
+    // and the model's semantic verdict reporting a contradiction/blocker
+    // outranks the exit code (tests can fail inside an exiting-0 run).
+    if (contract.verificationCommand && input.toolOk && input.exitCode === 0) {
+      const verdictReportsFailure = input.semanticVerdict && (input.semanticVerdict.verdict === 'contradiction' || input.semanticVerdict.verdict === 'blocker');
+      if (!verdictReportsFailure) {
+        const inputCommand = typeof (input.params as Record<string, unknown> | undefined)?.['command'] === 'string' ? String((input.params as Record<string, unknown>)['command']) : input.command;
+        if (inputCommand && commandsMatch(contract.verificationCommand, inputCommand)) {
+          return true;
+        }
+      }
+    }
     // 4. Legacy text contract: require POSITIVE containment of the expected
     // outcome — never mere absence of the old error text.
     const expectedOutcome = (contract.expectedOutcome || '').trim();
@@ -392,6 +453,12 @@ export class ProgressEvaluator {
   }
 
   // ── Generic helpers (no technology knowledge) ─────────────────────────────
+
+  private commandFrom(input: ActionOutcomeInput): string | undefined {
+    const fromParams = (input.params as Record<string, unknown> | undefined)?.['command'];
+    if (typeof fromParams === 'string' && fromParams.trim()) return fromParams;
+    return input.command?.trim() || undefined;
+  }
 
   private matchesExpected(expected: string, output: string): boolean {
     const exp = expected.toLowerCase().trim();

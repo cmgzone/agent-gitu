@@ -211,6 +211,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .run-overview-dot.running { background: var(--run); box-shadow: 0 0 0 4px var(--run-dim); }
   .run-overview-dot.completed { background: var(--ok); }
   .run-overview-dot.failed, .run-overview-dot.blocked { background: var(--err); }
+  .run-overview-dot.aborted { background: var(--faint); }
   .run-overview-dot.waiting { background: var(--evidence); }
   .run-overview-goal { color: var(--text); font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .run-overview-next { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -871,6 +872,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (status === 'completed') return '<span class="chip ok">complete</span>';
     if (status === 'blocked') return '<span class="chip bad">blocked</span>';
     if (status === 'failed') return '<span class="chip bad">failed</span>';
+    if (status === 'aborted') return '<span class="chip warn">stopped</span>';
     if (status === 'review') return '<span class="chip warn">awaiting review</span>';
     if (status === 'running') return '<span class="chip info">running</span>';
     return '<span class="chip">' + esc(status || 'idle') + '</span>';
@@ -2303,7 +2305,10 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('criteria') === 0) return 'Defining acceptance criteria…';
     if (text.indexOf('evidence') === 0) return 'Recording evidence…';
     if (text.indexOf('claim') === 0) return 'Checking acceptance…';
-    if (text.indexOf('hypothesis') === 0) return 'Updating hypothesis…';
+    if (text.indexOf('problem') === 0) return 'Investigating a failure…';
+    if (text.indexOf('resolved') === 0) return 'Resuming the plan…';
+    if (text.indexOf('replan') === 0) return 'Updating the plan…';
+    if (text.indexOf('hypothesis') === 0) return 'Working out the cause…';
     if (text.indexOf('context') === 0) return 'Selecting context…';
     return null;
   }
@@ -3091,6 +3096,14 @@ export const UI_HTML = String.raw`<!doctype html>
       var dParsed = parseOutcome(dDash >= 0 ? body.slice(dDash + 3) : body);
       meta.className = 'tl-row tl-meta';
       meta.innerHTML = '<span class="tl-dot dot-ok"></span><div class="tl-body"><b>🎉 ' + esc(dDash >= 0 ? body.slice(0, dDash) : 'done') + '</b> — ' + esc(shortText(reportLede(dParsed.lede), 220)) + '</div>';
+    } else if (tag === 'problem' || tag === 'resolved' || tag === 'note' || tag === 'hypothesis' || tag === 'step' || tag === 'todo' || tag === 'decision' || tag === 'replan') {
+      // Designed narration rows: the agent's story while it works. These are
+      // runtime sentences (already user-facing), so normal users see them —
+      // unlike the dev-only fallback below.
+      var storyLabels = { problem: 'recovery', resolved: 'recovery', note: 'working', hypothesis: 'theory', step: 'step', todo: 'todo', decision: 'decision', replan: 'replan' };
+      var storyTone = tag === 'problem' ? 'dot-bad' : (tag === 'resolved' || tag === 'step' || tag === 'todo') ? 'dot-ok' : 'dot-note';
+      meta.className = 'tl-row tl-meta';
+      meta.innerHTML = '<span class="tl-dot ' + storyTone + '"></span><div class="tl-body"><b>' + esc(storyLabels[tag]) + '</b> ' + esc(body) + '</div>';
     } else if (tag === 'warn') {
       // warn rows are model-health diagnostics (reasoning-only replies,
       // malformed streaks). Actionable failures surface through the error
@@ -3146,15 +3159,17 @@ export const UI_HTML = String.raw`<!doctype html>
     dot.className = 'run-overview-dot ' + status;
     // The blocker line is the most important sentence on screen when a run
     // stops — let it wrap to two lines instead of clipping mid-sentence.
-    next.classList.toggle('wrapped', status === 'blocked' || status === 'failed');
+    next.classList.toggle('wrapped', status === 'blocked' || status === 'failed' || status === 'aborted');
     var current = '';
-    if (ledger && ledger.blockers && ledger.blockers.length) current = 'Blocked: ' + ledger.blockers[ledger.blockers.length - 1];
+    if (status === 'blocked' && ledger && ledger.blockers && ledger.blockers.length) current = 'Blocked: ' + ledger.blockers[ledger.blockers.length - 1];
+    if (!current && status === 'failed' && session.error) current = 'Failed: ' + shortText(session.error, 260);
+    if (!current && status === 'aborted') current = session.error || 'Stopped by user.';
     if (!current && waiting) current = 'Needs your ' + waiting + ' before work can continue';
-    if (!current && ledger && ledger.plan) {
+    if (!current && (status === 'running' || status === 'waiting') && ledger && ledger.plan) {
       var step = ledger.plan.filter(function (s) { return s.status === 'in_progress'; })[0] || ledger.plan.filter(function (s) { return s.status === 'pending'; })[0];
       if (step) current = (step.status === 'in_progress' ? 'Working on: ' : 'Next: ') + step.description;
     }
-    if (!current) current = status === 'completed' ? 'Completed — review the result and evidence' : status === 'failed' ? 'Failed — review the blocker and retry options' : status === 'blocked' ? 'Blocked — review the required action' : status === 'running' ? 'Preparing the next action' : 'Task state ready';
+    if (!current) current = status === 'completed' ? 'Completed — review the result and evidence' : status === 'failed' ? 'Failed — review the failure reason and retry options' : status === 'blocked' ? 'Blocked — review the required action' : status === 'aborted' ? 'Stopped by user' : status === 'running' ? 'Preparing the next action' : 'Task state ready';
     next.textContent = current;
     next.title = current;
     var statBits = [status === 'waiting' ? 'needs input' : status];
@@ -3564,7 +3579,8 @@ export const UI_HTML = String.raw`<!doctype html>
   function reportStatusLine(status, checks, passed, changeCount) {
     var bits = [];
     bits.push(status === 'complete' ? '<span>🟢 <b>Completed</b></span>'
-      : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>' : '<span>❌ <b>Failed</b></span>');
+      : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>'
+      : status === 'aborted' ? '<span>⏹️ <b>Stopped</b></span>' : '<span>❌ <b>Failed</b></span>');
     if (checks.length) {
       bits.push(passed === checks.length
         ? '<span>✅ All ' + checks.length + ' verification checks passed</span>'
@@ -3666,9 +3682,10 @@ export const UI_HTML = String.raw`<!doctype html>
     var files = reportFiles(report);
     var parsed = parseOutcome(report.summary);
     var ok = report.status === 'complete';
-    var icon = ok ? '🎉' : (report.status === 'blocked' ? '⚠️' : '❌');
+    var icon = ok ? '🎉' : (report.status === 'blocked' ? '⚠️' : (report.status === 'aborted' ? '⏹️' : '❌'));
+    var outcomeWord = ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : (report.status === 'aborted' ? 'Stopped' : 'Failed'));
     var html = '<div class="report-flat" style="margin:12px 0 0;border-top:0;padding-top:0">' +
-      '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + (ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : 'Failed')) + '</h2>' +
+      '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + outcomeWord + '</h2>' +
       '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span>' +
       (report.phase && report.phase.kind === 'follow_up' ? '<span class="chip" style="margin-left:6px">follow-up</span>' : '') + '</div>' +
       '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || report.summary), 360)) + '</p>' +
@@ -3707,8 +3724,8 @@ export const UI_HTML = String.raw`<!doctype html>
     var div = document.createElement('div');
     div.className = 'report-flat';
     var ok = r.status === 'complete';
-    var doneIcon = ok ? '🎉' : (r.status === 'blocked' ? '⚠️' : '❌');
-    var doneWord = ok ? 'Done' : (r.status === 'blocked' ? 'Blocked' : 'Failed');
+    var doneIcon = ok ? '🎉' : (r.status === 'blocked' ? '⚠️' : (r.status === 'aborted' ? '⏹️' : '❌'));
+    var doneWord = ok ? 'Done' : (r.status === 'blocked' ? 'Blocked' : (r.status === 'aborted' ? 'Stopped' : 'Failed'));
     var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
       '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
     html += '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || r.summary), 400)) + '</p>';

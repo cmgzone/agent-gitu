@@ -280,7 +280,7 @@ export class StrategyGuard {
       const baseCmd = cmd.split(/\s+/).slice(0, 3).join(' ');
       return `cmd:${canonicalStatement(baseCmd)}`;
     }
-    if (tool === 'browse') {
+    if (tool === 'browse' || tool === 'browser') {
       const action = String(p['action'] || 'nav');
       const target = String(p['url'] || p['selector'] || p['text'] || '');
       return `browse:${action}:${canonicalStatement(target).slice(0, 60)}`;

@@ -97,6 +97,9 @@ Providers:
   deepseek  DeepSeek direct API (OpenAI-compatible)
             keys: HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
             models: run \`gitu models --provider deepseek\` (default: deepseek-v4-pro)
+  gemini    Google AI Studio (Gemini API, OpenAI-compatible)
+            keys: HERMES_GEMINI_API_KEY | GEMINI_API_KEY | GOOGLE_API_KEY
+            models: run \`gitu models --provider gemini\` (default: gemini-3.7-flash)
   openai    OpenAI — keys: HERMES_OPENAI_API_KEY | OPENAI_API_KEY
   custom    HERMES_API_KEY (+ optional HERMES_BASE_URL, HERMES_MODEL)`;
 }

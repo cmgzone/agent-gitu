@@ -89,7 +89,7 @@ export function malformedKindFor(errorSignature?: string): MalformedKind | undef
  */
 export function malformedIntervention(streak: number, tool?: string): string {
   const lines = [
-    `STRATEGY CHANGE REQUIRED: your last ${streak} tool calls were malformed and were rejected by the schema validator.`,
+    `STRATEGY CHANGE REQUIRED: your last ${streak} tool calls were malformed and were rejected by Agent Gitu's action validator.`,
   ];
   if (tool) lines.push(`Stop calling "${tool}" until you fix its parameter schema.`);
   lines.push(
@@ -97,7 +97,7 @@ export function malformedIntervention(streak: number, tool?: string): string {
     '- Retry with a corrected call that matches the Required Schema printed in the error above.',
     '- Choose a different tool or a different approach entirely.',
     '- Record your reasoning: {"thought":"...","action":{"type":"set_hypothesis","text":"..."}}',
-    '- Stop and ask for help: {"thought":"...","action":{"type":"request_block","reason":"..."}}',
+    '- Do NOT use request_block for this: malformed/unknown actions are internal protocol errors, not user-owned prerequisites.',
   );
   return lines.join('\n');
 }

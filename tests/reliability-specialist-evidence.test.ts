@@ -184,6 +184,19 @@ describe('validateSpecialistEvidence — Hermes-side independent revalidation', 
     expect(v.rejected[0]!.reason).toContain('no-op');
   });
 
+  it('rejects a specialist command that only prints its own success sentinel', () => {
+    const command = 'node -e "process.stdout.write(\'STEP6_CONTRACT_PASS\')"';
+    const expected = [{ id: 'ac-1', verification: command, evidenceType: 'command_success' as const }];
+    const v = validateSpecialistEvidence(
+      reportWith({
+        evidence: [{ id: 'ev-1', command, kind: 'command', passed: true, outputExcerpt: 'STEP6_CONTRACT_PASS', workspaceFingerprint: 'fp-1' }],
+      }),
+      expected,
+    );
+    expect(v.accepted).toEqual([]);
+    expect(v.rejected[0]!.reason).toContain('manufactures its own output');
+  });
+
   it('returns a rejection when no report was returned at all', () => {
     const v = validateSpecialistEvidence(undefined, EXPECTED);
     expect(v.accepted).toEqual([]);
@@ -283,13 +296,15 @@ describe('Hermes — specialist evidence inheritance end-to-end', () => {
     ]);
     const hermes = new Hermes({ cwd: dir, llm: hermesLlm, mode: 'fast', subagents: runner, onEvent: (e) => events.push(e) });
 
-    const { ledger } = await hermes.run('verify auth');
+    const { ledger, report } = await hermes.run('verify auth');
 
     // Hermes's own gate never accepted the unrelated evidence.
     expect(events.some((e) => e.includes('delegate-claim worker ac-1: REJECTED'))).toBe(true);
     expect(ledger.data.acceptanceCriteria[0]!.satisfied).toBe(false);
     expect(ledger.data.acceptanceCriteria[0]!.evidenceIds).toEqual([]);
     expect(ledger.data.evidence.some((e) => e.label.startsWith('delegated: worker'))).toBe(false);
-    expect(ledger.data.blockers.length).toBeGreaterThan(0);
+    expect(report.status).toBe('failed');
+    expect(report.failureReason).toContain('internal agent stop');
+    expect(ledger.data.blockers).toEqual([]);
   }, 30000);
 });

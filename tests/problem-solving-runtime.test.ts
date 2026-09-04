@@ -42,6 +42,80 @@ function statusExpectation(description: string, expectedStatus: number): ActionE
 }
 
 describe('Autonomous Problem-Solving Runtime (AC-1 to AC-19)', () => {
+  it('does not convert malformed or unknown tools into nested recovery problems', () => {
+    const { ledger, cleanup } = createTestLedger('verify the app');
+    try {
+      ledger.setPlan([
+        { id: 'step-1', description: 'verify the app', area: 'test', status: 'in_progress', verification: 'npm test' },
+      ]);
+      const orchestrator = new RecoveryOrchestrator();
+      const failed = orchestrator.onActionOutcome(
+        {
+          tool: 'run_command',
+          params: { command: 'npm test' },
+          command: 'npm test',
+          toolOk: false,
+          exitCode: 1,
+          errorSignature: 'command-failed',
+          output: 'real application failure',
+          stepId: 'step-1',
+        },
+        ledger,
+      );
+      expect(failed.interrupted).toBe(true);
+      const problemId = orchestrator.getActiveProblem()?.id;
+      expect(problemId).toBeDefined();
+      const problemsDetected = orchestrator.problemsDetected;
+
+      for (const errorSignature of ['unknown-tool', 'invalid-tool-params']) {
+        const malformed = orchestrator.onActionOutcome(
+          {
+            tool: errorSignature === 'unknown-tool' ? 'repair_recovery_state' : 'run_command',
+            params: {},
+            toolOk: false,
+            errorSignature,
+            output: errorSignature === 'unknown-tool' ? 'Unknown tool: repair_recovery_state' : 'invalid parameters',
+            stepId: 'step-1',
+          },
+          ledger,
+        );
+        expect(malformed.evaluation.verdict).toBe('neutral');
+        expect(malformed.interrupted).toBe(false);
+        expect(malformed.problem?.id).toBe(problemId);
+        expect(orchestrator.problemsDetected).toBe(problemsDetected);
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('retires a legacy internal-tool episode and resumes its suspended step', () => {
+    const { ledger, cleanup } = createTestLedger('verify the app');
+    try {
+      ledger.setPlan([
+        { id: 'step-1', description: 'verify the app', area: 'test', status: 'blocked', verification: 'npm test' },
+      ]);
+      ledger.updateStep('step-1', { status: 'blocked' });
+      const orchestrator = new RecoveryOrchestrator();
+      const problem = orchestrator.tracker.recordContradiction({
+        goal: 'repair recovery state',
+        expected: 'repair_recovery_state succeeds',
+        observed: 'Unknown tool: repair_recovery_state',
+        fingerprint: 'unknown-tool:repair-recovery-state',
+        stepId: 'step-1',
+      });
+
+      const dismissed = orchestrator.dismissInternalProtocolProblem(ledger, 'a supported command was selected');
+
+      expect(dismissed?.id).toBe(problem.id);
+      expect(orchestrator.hasActiveProblem()).toBe(false);
+      expect(ledger.step('step-1')?.status).toBe('in_progress');
+      expect(orchestrator.mootProblemSupersessions).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
   it('AC-1: Model-reasoned contradiction for an error response when toolOk=true (no hardcoded error-code rule)', () => {
     const evaluator = new ProgressEvaluator();
     // Tool execution succeeded (e.g. curl exited code 0), but the MODEL reports
@@ -118,6 +192,25 @@ describe('Autonomous Problem-Solving Runtime (AC-1 to AC-19)', () => {
     });
     expect(evalErr.verdict).toBe('blocker');
     expect(evalErr.isBlocking).toBe(true);
+  });
+
+  it('treats a declared non-zero reproduction exit as expected evidence, not a blocker', () => {
+    const evaluator = new ProgressEvaluator();
+    const result = evaluator.evaluate({
+      tool: 'run_command',
+      toolOk: false,
+      exitCode: 1,
+      output: 'bug reproduced\n[exit 1]',
+      stepId: 'step-1',
+      expectation: {
+        description: 'bug reproduction exits 1',
+        assertions: [{ kind: 'equals', target: 'exitCode', expected: 1 }],
+        blocksOnFailure: false,
+      },
+    });
+
+    expect(result).toMatchObject({ verdict: 'expected_achieved', isBlocking: false, resolvesActiveProblem: false });
+    expect(result.detectedContradiction).toBeUndefined();
   });
 
   it('AC-3 & AC-15: Structured EXPECTED vs OBSERVED lifecycle — interrupt, repair, verify, resume', () => {
@@ -253,7 +346,7 @@ describe('Autonomous Problem-Solving Runtime (AC-1 to AC-19)', () => {
       problem,
     );
     expect(voi.allowed).toBe(false);
-    expect(voi.reason).toContain('VALUE-OF-INFORMATION GUARD');
+    expect(voi.reason).toContain('NO_DECISION_IMPACT');
   });
 
   it('AC-7/AC-21: Unknown repair ownership stays unknown (no tech-keyword surface inference)', () => {
@@ -1056,6 +1149,50 @@ describe('Hardened problem-solving runtime (AC-20 to AC-35)', () => {
       );
       expect(verify.resolved).toBe(true);
       expect(orchestrator.verificationContractPasses).toBe(1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('does not let self-authored sentinel output satisfy an active recovery contract', () => {
+    const { ledger, cleanup } = createTestLedger('Manufactured recovery proof');
+    try {
+      const orchestrator = new RecoveryOrchestrator();
+      orchestrator.onActionOutcome(
+        {
+          tool: 'run_command',
+          params: { command: 'node verify-runtime.js' },
+          command: 'node verify-runtime.js',
+          toolOk: false,
+          exitCode: 1,
+          output: 'runtime contract missing',
+          expected: 'STEP6_CONTRACT_PASS',
+          stepId: 'step-1',
+        },
+        ledger,
+      );
+      expect(orchestrator.hasActiveProblem()).toBe(true);
+
+      const fake = orchestrator.onActionOutcome(
+        {
+          tool: 'run_command',
+          params: { command: 'node -e "process.stdout.write(\'STEP6_CONTRACT_PASS\')"' },
+          command: 'node -e "process.stdout.write(\'STEP6_CONTRACT_PASS\')"',
+          toolOk: true,
+          exitCode: 0,
+          output: 'STEP6_CONTRACT_PASS',
+          expected: 'STEP6_CONTRACT_PASS',
+          semanticVerdict: { verdict: 'expected_achieved', explanation: 'printed marker' },
+          stepId: 'step-1',
+        },
+        ledger,
+      );
+
+      expect(fake.resolved).toBe(false);
+      expect(fake.evaluation.verdict).toBe('neutral');
+      expect(fake.evaluation.explanation).toContain('manufactures the output');
+      expect(orchestrator.hasActiveProblem()).toBe(true);
+      expect(orchestrator.verificationContractPasses).toBe(0);
     } finally {
       cleanup();
     }

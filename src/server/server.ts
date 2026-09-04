@@ -92,7 +92,7 @@ interface ApprovalWaiter extends PendingApproval {
 export interface RunSessionView {
   runId: string;
   goal: string;
-  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed';
+  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed' | 'aborted';
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
@@ -120,7 +120,7 @@ export interface RunSessionView {
 interface RunSession {
   runId: string;
   goal: string;
-  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed';
+  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed' | 'aborted';
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
@@ -629,7 +629,9 @@ export class GituServer {
     for (const entry of this.loadRegistry()) {
       if (this.sessions.has(entry.runId)) continue;
       let status: RunSession['status'] = entry.status as RunSession['status'];
-      const interrupted = status !== 'completed' && status !== 'blocked' && status !== 'failed';
+      // A user-aborted run is terminal. Do not relabel it as an application
+      // restart interruption when the registry is loaded again.
+      const interrupted = status !== 'completed' && status !== 'blocked' && status !== 'failed' && status !== 'aborted';
       if (interrupted) status = 'blocked';
       let mode = entry.mode;
       let report = entry.report;
@@ -2157,7 +2159,7 @@ export class GituServer {
       // Stop must be terminal immediately.  Previously this route only wrote
       // an event, leaving status="running" and causing the UI spinner and
       // subsequent messages to be treated as queued work.
-      session.status = 'blocked';
+      session.status = 'aborted';
       session.error = 'Stopped by user.';
       session.finishedAt = nowIso();
 
@@ -2781,16 +2783,22 @@ export class GituServer {
     try {
       const { ledger, report } = await gitu.run(opts.goal);
       if (!isCurrentExecution()) return;
-      session.status = report.status === 'complete' ? 'completed' : report.status === 'blocked' ? 'blocked' : 'failed';
+      session.status = report.status === 'complete'
+        ? 'completed'
+        : report.status === 'blocked'
+          ? 'blocked'
+          : report.status === 'aborted'
+            ? 'aborted'
+            : 'failed';
       session.report = report;
-      // Stalled/blocked runs previously left session.error null, so the UI
-      // failure card had nothing to show and the end looked like a silent
-      // crash. Surface the ledger blocker as the reason.
-      if (session.status !== 'completed' && !session.error) {
+      // Surface the actual terminal cause. A failed run is not necessarily an
+      // effort-budget exhaustion, and only a BLOCKED run should point at an
+      // external prerequisite from the blocker ledger.
+      if (session.status !== 'completed' && session.status !== 'aborted' && !session.error) {
         const blocker = (ledger.data.blockers || []).slice(-1)[0];
-        session.error =
-          blocker ||
-          (session.status === 'failed' ? 'Task ended without completion (stalled): the effort budget ran out without verified progress.' : undefined);
+        session.error = session.status === 'blocked'
+          ? blocker ?? report.summary
+          : report.failureReason ?? report.summary;
       }
       // Queued user messages (delivery:'queue') are held until a run finishes.
       // On a completed run they immediately start a fresh continuation so the

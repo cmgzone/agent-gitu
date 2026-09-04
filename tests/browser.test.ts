@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Hermes } from '../src/agent/gitu.js';
 import { normalizeUrl, type BrowserBridge, type BrowserState } from '../src/browser/browser.js';
 import { PolicyEngine } from '../src/policy/policy.js';
-import { formatPageDiagnostics, toolBrowse } from '../src/tools/tools.js';
+import { formatPageDiagnostics, runtimeToolNames, toolBrowse } from '../src/tools/tools.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { modelSupportsImages } from '../src/llm/providers.js';
 
@@ -82,6 +82,7 @@ describe('browse tool', () => {
     const decision = await policy.evaluate('browse', { action: 'screenshot' });
     expect(decision.allowed).toBe(true);
     expect(decision.tier).toBe('safe');
+    await expect(policy.evaluate('browser', { action: 'screenshot' })).resolves.toMatchObject({ allowed: true, tier: 'safe' });
 
     const bridge = fakeBridge();
     const guard = { lock: { repoRoot: makeProject('tool') } } as never;
@@ -98,6 +99,11 @@ describe('browse tool', () => {
     const missing = await toolBrowse({ guard, cwd: '.' }, { action: 'screenshot' });
     expect(missing.ok).toBe(false);
     expect(missing.output).toMatch(/desktop/i);
+  });
+
+  it('advertises browser aliases only when the runtime bridge is callable', () => {
+    expect(runtimeToolNames(false)).not.toEqual(expect.arrayContaining(['browse', 'browser']));
+    expect(runtimeToolNames(true)).toEqual(expect.arrayContaining(['browse', 'browser']));
   });
 });
 
@@ -126,6 +132,25 @@ describe('formatPageDiagnostics', () => {
 });
 
 describe('Hermes with in-app browser', () => {
+  it('executes a versioned browser skill reference through the Agent Gitu action runtime', async () => {
+    const dir = makeProject('versioned-skill');
+    const bridge = fakeBridge();
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['browser skill loads'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'load browser skill', verification: 'use_skill succeeds' }] } }),
+      () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'use_skill', params: { name: 'browser@1' }, reason: 'load browser workflow', expected: 'skill instructions' } }),
+      () => JSON.stringify({ action: { type: 'tool_call', stepId: 'step-2', tool: 'browser', params: { action: 'screenshot' }, reason: 'execute browser workflow', expected: 'browser screenshot' } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'browser runtime check complete' } }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', browser: bridge, supportsImages: false });
+    const { ledger } = await hermes.run('check the page with the browser skill');
+
+    expect(ledger.data.actions.find((action) => action.tool === 'use_skill')?.status).toBe('success');
+    expect(ledger.data.actions.find((action) => action.tool === 'browser')?.status).toBe('success');
+    expect(bridge.log).toContain('screenshot');
+  }, 30000);
+
   it('delivers screenshots to vision models as image parts', async () => {
     const dir = makeProject('vision');
     const bridge = fakeBridge();

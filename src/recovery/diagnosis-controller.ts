@@ -144,9 +144,14 @@ export class DiagnosisController {
   }
 
   checkValueOflnformation(action: StructuredActionInput, problem: ProblemState): VoiCheckResult {
-    // VOI applies when the problem demands action, not exploration.
+    // VOI applies when the problem demands action, not exploration. The
+    // problem STATUS is authoritative: once evidence established the repair
+    // decision (decision_sufficient / act_now / repairing), another read is
+    // legal only if its answer could change that decision.
     const mode = problem.diagnosis?.nextMode ?? (problem.status === 'act_now' || problem.status === 'repairing' ? 'act_now' : 'investigate');
-    if (problem.status !== 'act_now' && problem.status !== 'repairing' && problem.status !== 'decision_sufficient' && mode !== 'act_now' && mode !== 'repair') {
+    const decisionLocked =
+      problem.status === 'act_now' || problem.status === 'repairing' || problem.status === 'decision_sufficient' || mode === 'act_now' || mode === 'repair';
+    if (!decisionLocked) {
       return { allowed: true };
     }
 
@@ -159,7 +164,8 @@ export class DiagnosisController {
       tool === 'list_files' ||
       tool === 'grep_search' ||
       tool === 'find_by_name' ||
-      tool === 'browse';
+      tool === 'browse' ||
+      tool === 'browser';
 
     if (!isExploratory) return { allowed: true };
 
@@ -179,9 +185,10 @@ export class DiagnosisController {
       return {
         allowed: false,
         reason:
-          `INVESTIGATION SUPPRESSED (value-of-information): the stated question ("${intent.decisionQuestion}") ` +
-          `cannot change the repair decision (hypothesis/target/action/safety/verification). ` +
-          `Proceed to the decided repair, or provide a structured decision question the answer could change.`,
+          `NO_DECISION_IMPACT: the stated question ("${intent.decisionQuestion}") ` +
+          `cannot change the repair decision (hypothesis/target/action/safety/verification) — the evidence already suffices. ` +
+          `Proceed to the decided repair (apply_edit/write_file), run a targeted diagnostic, or verify. ` +
+          `Another read is legal only with a structured decision question whose answer could change the repair decision.`,
       };
     }
 
@@ -190,10 +197,10 @@ export class DiagnosisController {
     return {
       allowed: false,
       reason:
-        `VALUE-OF-INFORMATION GUARD: A repair decision is already sufficient` +
+        `NO_DECISION_IMPACT: A repair decision is already sufficient` +
         `${problem.repairProposal ? ` (target: ${problem.repairProposal.target.kind})` : problem.repairTarget && !isUnknownTarget(problem.repairTarget) ? ` (target: ${problem.repairTarget.kind})` : ''}. ` +
-        `Generic exploratory ${tool} is suppressed in ACT_NOW mode. Either execute the repair, read the exact region about to be edited, ` +
-        `or supply a structured investigation intent: { decisionQuestion, howAnswerChangesRepair, evidenceNeeded }.`,
+        `Generic exploratory ${tool} is suppressed. Either execute the repair (apply_edit/write_file), read the exact region about to be edited, ` +
+        `run a targeted diagnostic command, or verify — or supply a structured investigation intent stating which decision the answer could change.`,
     };
   }
 

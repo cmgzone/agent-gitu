@@ -29,6 +29,28 @@ const CONTINUE_PATTERNS = [
   /^next$/i,
 ];
 
+/**
+ * Questions about the agent's live progress are conversation steering, not a
+ * new engineering requirement. Treating "are you stuck on step 1?" as the
+ * new currentGoal overwrote the real task, bumped instruction epochs, and
+ * could make the recovery loop even less coherent. These questions stay in
+ * conversation history for the next model turn, but they do not mutate task
+ * authority, target hints, or specialist validity.
+ */
+const NON_MUTATING_STATUS_PATTERNS = [
+  /\b(?:are you|you are|you're)\s+(?:stuck|still working|still on|working on|doing)\b/i,
+  /\b(?:why are you|why're you)\s+(?:still\s+)?(?:on|reading|checking|working|doing)\b/i,
+  /\b(?:what|which)\s+(?:step|stage|part)\s+(?:are you|you are|you're)\s+(?:on|at|doing)\b/i,
+  /\b(?:what(?:'s| is) happening|what(?:'s| is) going on|how far are you|how far along are you)\b/i,
+  /^(?:status|progress|status update|progress update)\??$/i,
+];
+
+export function isNonMutatingStatusQuestion(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed || trimmed.length > 220) return false;
+  return NON_MUTATING_STATUS_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
 const CONSTRAIN_PATTERNS = [
   /\b(?:don't|do not|never|must not|cannot|should not)\s+(?:modify|touch|edit|change|install|delete|remove|browse|use)\b/i,
   /\b(?:only edit|only modify|restricted to|limit edits to)\b/i,
@@ -255,6 +277,18 @@ export function classifyFollowUp(message: string, hasImages = false): FollowUpCl
 
   // 2. Pure continuation
   if (CONTINUE_PATTERNS.some((p) => p.test(trimmed)) && trimmed.length < 60) {
+    return {
+      kind: 'CONTINUE',
+      confidence: 'high',
+      extractedInstructions: [],
+      targetHints: { files: [], symbols: [], errors: [] },
+    };
+  }
+
+  // 2b. Live status/progress question: preserve the engineering goal and
+  // instruction epoch. The raw message still rides in conversation so the
+  // model can answer it on the next turn.
+  if (isNonMutatingStatusQuestion(trimmed)) {
     return {
       kind: 'CONTINUE',
       confidence: 'high',

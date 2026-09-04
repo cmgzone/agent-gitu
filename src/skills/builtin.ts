@@ -4,8 +4,8 @@
  *
  * Core keeps every mechanism — task-kind classification, UI detection,
  * injection points, activation tracking. The KNOWLEDGE (how to investigate a
- * bug, how to keep frontend quality high) lives here in the skill layer, so
- * it is listable, visible to use_skill, and overridable: a user skill with
+ * bug, how to keep frontend quality high) lives here in the skill layer, so it
+ * is listable, visible to use_skill, and overridable: a user skill with
  * the same name shadows the built-in (project > global > builtin).
  */
 import type { Skill } from './skills.js';
@@ -24,29 +24,30 @@ export type BuiltinSkillDef = Omit<Skill, 'createdBy' | 'createdAt'> &
 const EPOCH = '1970-01-01T00:00:00.000Z';
 
 /** A built-in after def() has filled the required Skill bookkeeping fields. */
-export type ResolvedBuiltinSkill = BuiltinSkillDef & Required<Pick<Skill, 'createdBy' | 'createdAt'>>;
+export type ResolvedBuiltinSkill = BuiltinTaskDef & Required<Pick<Skill, 'createdBy' | 'createdAt'>>;
+type BuiltinTaskDef = BuiltinSkillDef;
 
 function def(skill: BuiltinSkillDef): ResolvedBuiltinSkill {
   return { ...skill, createdBy: 'agent', createdAt: EPOCH };
 }
 
 /**
- * Investigation strategies — one per task kind. Content previously lived as
- * hard-coded strings in src/agent/task-strategy.ts.
+ * Investigation strategies — one per task kind. Keep these short and
+ * action-oriented. Host-side recovery/evidence controls enforce invariants;
+ * the strategy should help the model solve the task, not restate the runtime.
  */
 export const STRATEGY_SKILLS: Record<BuiltinTaskKind, ResolvedBuiltinSkill> = {
   'bug-fix': def({
     name: 'strategy-bug-fix',
     taskKind: 'bug-fix',
-    description: 'Investigation strategy for bug fixes: reproduce first, evidence-first targeting, fix small.',
-    instructions: `TASK STRATEGY — bug fix. Prove the bug before you touch anything:
-1. REPRODUCE FIRST: run the command/test that demonstrates the reported wrong behavior and watch it FAIL. If you cannot reproduce it, do NOT edit — investigate environment/config differences or ask_user instead. Speculative fixes are forbidden.
-2. Start with the STRONGEST evidence: the error message, stack trace, failing test, or the file the user named. Read that target FIRST — do not map the repository before reading it.
-3. read_file the implementation at the failure site and form a hypothesis. Inspect callers (lsp_references/search_files) ONLY when the change can affect callers or the local evidence is insufficient — LSP is a lazy tool, not a mandatory rite.
-4. Record the root cause with set_hypothesis, then edit small.
-5. Re-run the SAME reproduction command after the fix — it must go FAIL -> PASS. Completion is mechanically checked for this fail-then-pass pair; a green pre-existing suite alone is not accepted proof.
-6. The automatic post-edit LSP check will report diagnostics for files you changed; fix them BEFORE running the real test/typecheck commands.
-Use lsp_definition/lsp_symbols only when the evidence does not name the location; do not enumerate every reference by default.`,
+    description: 'Direct bug-fix strategy: follow the failure to the implementation, repair small, verify.',
+    instructions: `TASK STRATEGY — bug fix. Follow the shortest evidence path:
+1. Start from the reported error, failing command/test, stack trace, or named file. If a concrete reproduction command exists, run it once and capture the failure.
+2. Read the failure site and the implementation it points to. Use lsp_definition/search_files only when the location is not already clear.
+3. Inspect callers/references only when the proposed change can affect them or local evidence is insufficient.
+4. Make the smallest repair that addresses the observed failure.
+5. Re-run the targeted reproduction/verification first, then the relevant broader checks.
+Do not turn a local bug into a repository survey; widen only when the evidence requires it.`,
   }),
 
   refactor: def({
@@ -65,14 +66,14 @@ If LSP reports "unavailable", use search_files/read_file to trace callers instea
   'test-failure': def({
     name: 'strategy-test-failure',
     taskKind: 'test-failure',
-    description: 'Investigation strategy for failing tests: diagnose the assertion before repairing.',
-    instructions: `TASK STRATEGY — failing test. Diagnose before repairing:
-1. Run the failing test and read its exact failure message and location.
-2. From the failure location, read the code under test directly (lsp_definition only if the trace is not already obvious).
-3. Inspect what the code under test touches ONLY if the failure is not explained by the immediate code.
-4. lsp_diagnostics on both the test file and the implementation before repairing.
-5. Repair small, re-run the failing test first, then run the full suite.
-If LSP reports "unavailable", use search_files/read_file to trace the assertion back to its source instead.`,
+    description: 'Direct failing-test strategy: diagnose the assertion, repair the local cause, verify immediately.',
+    instructions: `TASK STRATEGY — failing test. Diagnose, repair, verify:
+1. Run the failing test and read its exact assertion/error and location.
+2. Read the code under test directly. Use lsp_definition only when the trace does not already identify it.
+3. If the immediate code explains the failure, repair it now; expand to callers/dependencies only when it does not.
+4. Re-run the failing test immediately after the repair.
+5. When targeted verification passes, run the relevant full suite/typecheck/build checks.
+Avoid repeated reads of unchanged evidence; once the cause is clear, act.`,
   }),
 
   explore: def({

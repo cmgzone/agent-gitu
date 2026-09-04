@@ -44,7 +44,7 @@ export const STRATEGY_SKILLS: Record<BuiltinTaskKind, ResolvedBuiltinSkill> = {
 1. Start from the reported error, failing command/test, stack trace, or named file. If a concrete reproduction command exists, run it once and capture the failure.
 2. Read the failure site and the implementation it points to. Use lsp_definition/search_files only when the location is not already clear.
 3. Inspect callers/references only when the proposed change can affect them or local evidence is insufficient.
-4. Make the smallest repair that addresses the observed failure.
+4. Once the cause is clear, record that root cause with set_hypothesis, then make the smallest repair that addresses the observed failure.
 5. Re-run the targeted reproduction/verification first, then the relevant broader checks.
 Do not turn a local bug into a repository survey; widen only when the evidence requires it.`,
   }),

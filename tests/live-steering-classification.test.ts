@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFollowUp, isNonMutatingStatusQuestion } from '../src/agent/follow-up.js';
+import { applyFollowUpToLedger, classifyFollowUp, isNonMutatingStatusQuestion } from '../src/agent/follow-up.js';
+import type { TaskLedger } from '../src/ledger/task-ledger.js';
 
 describe('live steering — status questions are non-mutating', () => {
   it('recognizes the exact stuck-on-step question from the runaway Flappy session', () => {
@@ -30,6 +31,36 @@ describe('live steering — status questions are non-mutating', () => {
       expect(isNonMutatingStatusQuestion(message), message).toBe(true);
       expect(classifyFollowUp(message).kind, message).toBe('CONTINUE');
     }
+  });
+
+  it('does not bump instruction epoch or replace currentGoal for a live status question', () => {
+    let epochBumps = 0;
+    let goalChanges = 0;
+    let recordedKind = '';
+    const ledger = {
+      data: { currentHypothesis: 'active diagnosis', plan: [] },
+      setTargetHints: () => {},
+      bumpInstructionEpoch: () => {
+        epochBumps += 1;
+      },
+      addInstruction: () => {
+        throw new Error('status question must not add instructions');
+      },
+      setCurrentGoal: () => {
+        goalChanges += 1;
+      },
+      activeVisualReferences: () => [],
+      recordFollowUp: (input: { kind: string }) => {
+        recordedKind = input.kind;
+        return { id: 'fu-1', kind: input.kind, rawMessage: 'are you stuck on step 1', timestamp: new Date().toISOString() };
+      },
+    } as unknown as TaskLedger;
+
+    applyFollowUpToLedger(ledger, 'are you stuck on step 1');
+
+    expect(recordedKind).toBe('CONTINUE');
+    expect(epochBumps).toBe(0);
+    expect(goalChanges).toBe(0);
   });
 
   it('still treats real scope changes as authority-changing follow-ups', () => {

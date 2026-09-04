@@ -5,11 +5,9 @@
  * pack, resumed conversation, user images, follow-up notes) is assembled
  * HERE, in a fixed priority order, under a character budget. When the budget
  * is exceeded, the lowest-priority trimmable sections give way first — the
- * context pack (explicitly a partial sample) and the oldest resumed history —
- * while the system prompt, strategy, user images and follow-up notes are
- * never dropped. No subsystem may push model context around this function;
- * the per-turn loop (state message + observations + compaction) remains the
- * only other writer, by design.
+ * context pack, supplementary memory, then only conversation history older
+ * than the protected recent tail — while the system prompt, strategy, user
+ * images and follow-up notes are never dropped.
  *
  * Priority (high -> low), with the PROTECTED tiers the trimmer structurally
  * cannot touch (they are separate variables, never inputs to the trim loop):
@@ -18,7 +16,7 @@
  *     system | strategy | task state (per-turn) | compaction digest
  *     follow-up / user intent | user images
  *   TRIMMABLE (in order):
- *     context pack first -> older conversation history (digest-before-trim)
+ *     context pack -> supplementary memory -> old conversation history
  *
  * The invariant: no information required to resume the current task may
  * exist only in a trimmable section. History is digested before it is
@@ -81,6 +79,11 @@ export interface ModelContextResult {
  *  A focused sample is more useful than repeatedly paying for a repo dump. */
 export const DEFAULT_CONTEXT_MAX_CHARS = 48_000;
 
+/** v0.2.1 kept a 12-message verbatim tail. Preserve the same continuity floor
+ * when trimming resumed/static conversation so memory/context sampling cannot
+ * erase the immediate story the model is actively reasoning about. */
+export const MIN_RECENT_HISTORY_MESSAGES = 12;
+
 export function buildModelContext(input: ModelContextInput): ModelContextResult {
   const maxChars = Math.max(1_000, input.budget?.maxChars ?? DEFAULT_CONTEXT_MAX_CHARS);
   const trims: ModelContextResult['trims'] = [];
@@ -106,11 +109,10 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
     return total;
   };
 
-  // Budget enforcement, lowest priority first: context pack, then oldest
-  // history. HISTORY TRIMMING IS ALWAYS PRECEDED BY DIGESTING — the dropped
-  // messages are condensed into a digest message that is NEVER trimmed, so
-  // trimming cannot lose information that was not captured. A digest already
-  // present in a dropped batch is carried forward, never flattened.
+  // Budget enforcement, lowest-value context first. Keep immediate
+  // conversational continuity ahead of retrieval samples/supplementary memory.
+  // HISTORY TRIMMING IS ALWAYS PRECEDED BY DIGESTING — dropped messages are
+  // condensed into a protected digest instead of silently forgotten.
   while (charsOf() > maxChars) {
     if (contextPack && contextPack.length > 2000) {
       const before = contextPack.length;
@@ -120,16 +122,19 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       input.onTrim?.({ section: 'contextPack', charsRemoved: before - contextPack.length });
       continue;
     }
-    if (input.memory && input.memory.length > 800 && charsOf() - input.memory.length + 400 <= maxChars) {
-      // Memory is supplementary: trim it before history, after the pack.
+    if (input.memory && input.memory.length > 800) {
+      // Supplementary retrieved memory must yield before recent conversation.
+      // Protected constraints/decisions live in protectedMemory and are never
+      // touched here.
       const before = input.memory.length;
-      input.memory = input.memory.slice(0, 400) + '\\n[... memory trimmed to fit the model window ...]';
+      input.memory = input.memory.slice(0, 400) + '\n[... memory trimmed to preserve recent task continuity ...]';
       trims.push({ section: 'memory', charsRemoved: before - input.memory.length });
       input.onTrim?.({ section: 'memory', charsRemoved: before - input.memory.length });
       continue;
     }
-    if (history.length > 2) {
-      const dropCount = Math.max(1, Math.floor((history.length - 2) / 2));
+    if (history.length > MIN_RECENT_HISTORY_MESSAGES) {
+      const oldCount = history.length - MIN_RECENT_HISTORY_MESSAGES;
+      const dropCount = Math.max(1, Math.ceil(oldCount / 2));
       const dropped = history.splice(0, dropCount);
       let droppedChars = 0;
       for (const d of dropped) droppedChars += messageTextChars(d);
@@ -146,7 +151,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       input.onTrim?.({ section: 'conversation', charsRemoved: droppedChars });
       continue;
     }
-    break; // nothing trimmable left — the budget is advisory at this point
+    break; // continuity floor reached — the budget is advisory at this point
   }
 
   const messages: LlmMessage[] = [{ role: 'system', content: input.system }];

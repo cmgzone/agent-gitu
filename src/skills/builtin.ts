@@ -24,8 +24,7 @@ export type BuiltinSkillDef = Omit<Skill, 'createdBy' | 'createdAt'> &
 const EPOCH = '1970-01-01T00:00:00.000Z';
 
 /** A built-in after def() has filled the required Skill bookkeeping fields. */
-export type ResolvedBuiltinSkill = BuiltinTaskDef & Required<Pick<Skill, 'createdBy' | 'createdAt'>>;
-type BuiltinTaskDef = BuiltinSkillDef;
+export type ResolvedBuiltinSkill = BuiltinSkillDef & Required<Pick<Skill, 'createdBy' | 'createdAt'>>;
 
 function def(skill: BuiltinSkillDef): ResolvedBuiltinSkill {
   return { ...skill, createdBy: 'agent', createdAt: EPOCH };

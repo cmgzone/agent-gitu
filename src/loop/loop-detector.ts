@@ -23,6 +23,10 @@ export const DEFAULT_LOOP_POLICY: LoopPolicy = {
   maxSameSuccessfulRead: 2,
 };
 
+/** Prefix used on the one host-side cached replay of unchanged investigation
+ * evidence. A second request after the replay is hard-blocked as drift. */
+export const CACHED_INVESTIGATION_PREFIX = 'CACHED INVESTIGATION OBSERVATION';
+
 const INVESTIGATION_READ_TOOLS = new Set([
   'read_file',
   'search_files',
@@ -36,6 +40,10 @@ const INVESTIGATION_READ_TOOLS = new Set([
 
 function isSuccessfulMutation(action: ActionRecord): boolean {
   return action.status === 'success' && (action.tool === 'write_file' || action.tool === 'apply_edit');
+}
+
+function isCachedInvestigation(action: ActionRecord): boolean {
+  return action.status === 'success' && Boolean(action.observation?.startsWith(CACHED_INVESTIGATION_PREFIX));
 }
 
 /**
@@ -73,6 +81,22 @@ export class LoopDetector {
 
   constructor(policy: Partial<LoopPolicy> = {}) {
     this.policy = { ...DEFAULT_LOOP_POLICY, ...policy };
+  }
+
+  /**
+   * Return the most recent real successful observation when the model has
+   * already gathered the same unchanged investigation evidence enough times.
+   * The executor may replay this observation ONCE without touching the
+   * filesystem/LSP again. Once such a cached replay is recorded, this method
+   * returns undefined and evaluate() hard-blocks further repetition.
+   */
+  reusableSuccessfulRead(actions: ActionRecord[], tool: string, paramsHash: string): ActionRecord | undefined {
+    if (!INVESTIGATION_READ_TOOLS.has(tool)) return undefined;
+    const sameAction = evidenceWindow(actions, tool, paramsHash).filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+    const cachedReplayExists = sameAction.some(isCachedInvestigation);
+    if (cachedReplayExists) return undefined;
+    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a));
+    return realSuccesses.length >= this.policy.maxSameSuccessfulRead ? realSuccesses.at(-1) : undefined;
   }
 
   evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined): LoopVerdict {

@@ -103,16 +103,16 @@ export function verificationFailureSignature(output: string): string {
 
 /**
  * A current hypothesis belongs to the failure it was formed against. Retire it
- * when the same verification command proves that failure resolved (PASS) or
- * produces a materially different failure signature. This prevents a repaired
- * diagnosis from becoming the most prominent state on the next turn.
+ * only when the SAME verification command produces a materially different
+ * failure signature. A later PASS keeps the diagnosed root cause available for
+ * the bug-rigor completion gate and final report; it is resolved knowledge, not
+ * an active reason to keep investigating.
  */
 export function verificationSupersedesHypothesis(
   previousFailure: Pick<Evidence, 'passed' | 'outputExcerpt'> | undefined,
   next: { passed: boolean; output: string },
 ): boolean {
-  if (!previousFailure || previousFailure.passed) return false;
-  if (next.passed) return true;
+  if (!previousFailure || previousFailure.passed || next.passed) return false;
   return verificationFailureSignature(previousFailure.outputExcerpt) !== verificationFailureSignature(next.output);
 }
 
@@ -190,8 +190,9 @@ export class EvidenceEngine {
     },
   ): Evidence {
     // A hypothesis is scoped to the most recent failure of the same
-    // verification command. If that failure resolves or changes identity,
-    // retire the old hypothesis BEFORE the new evidence becomes current state.
+    // verification command. If that command now fails in a materially
+    // different way, retire the old hypothesis BEFORE the new evidence becomes
+    // current state. A PASS intentionally preserves the diagnosed root cause.
     if (ledger.currentHypothesis && input.command) {
       const previousFailure = [...ledger.evidence]
         .reverse()

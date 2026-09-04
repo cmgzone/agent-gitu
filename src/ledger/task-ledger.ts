@@ -815,8 +815,13 @@ export class TaskLedger {
     return (this.data.architectureDecisions ?? []).filter((d) => d.status === 'active');
   }
 
-  /** Distinct recent failures (deduped by error signature) for the compact state. */
-  failureSummary(max = 5): string[] {
+  /**
+   * Newest failure first for live task state. Older failures remain durable in
+   * the ledger/transcript/digest, but the default render intentionally exposes
+   * only the latest one so a repaired assertion cannot keep competing with the
+   * current verification failure. Callers may request a larger audit slice.
+   */
+  failureSummary(max = 1): string[] {
     const seen = new Set<string>();
     const out: string[] = [];
     for (let i = this.data.actions.length - 1; i >= 0 && out.length < max; i--) {

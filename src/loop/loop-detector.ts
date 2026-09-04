@@ -14,6 +14,10 @@ export interface LoopPolicy {
   /** Successful investigation calls against unchanged evidence are useful
    * once or twice; beyond that they are usually context drift, not progress. */
   maxSameSuccessfulRead: number;
+  /** Bound unique investigation after one still-unresolved failing command.
+   * This is deliberately generous enough for real diagnosis but prevents one
+   * failure from funding dozens of unrelated reads. */
+  maxInvestigationReadsPerFailureEpisode: number;
 }
 
 export const DEFAULT_LOOP_POLICY: LoopPolicy = {
@@ -21,6 +25,7 @@ export const DEFAULT_LOOP_POLICY: LoopPolicy = {
   maxSameActionFailures: 3,
   maxFileEditsWithoutEvidence: 3,
   maxSameSuccessfulRead: 2,
+  maxInvestigationReadsPerFailureEpisode: 10,
 };
 
 /** Prefix used on the one host-side cached replay of unchanged investigation
@@ -44,6 +49,32 @@ function isSuccessfulMutation(action: ActionRecord): boolean {
 
 function isCachedInvestigation(action: ActionRecord): boolean {
   return action.status === 'success' && Boolean(action.observation?.startsWith(CACHED_INVESTIGATION_PREFIX));
+}
+
+/**
+ * Find the newest command failure that still has no later PASS for the exact
+ * same command identity. A successful diagnostic command with a different hash
+ * does NOT resolve the failing test/build command. If source was edited after
+ * the failure, begin the investigation count after that edit so a repair gets a
+ * fresh local-inspection allowance before re-verification.
+ */
+function unresolvedFailureEpisodeStart(actions: ActionRecord[]): number | undefined {
+  for (let failureIndex = actions.length - 1; failureIndex >= 0; failureIndex -= 1) {
+    const failure = actions[failureIndex]!;
+    if (failure.tool !== 'run_command' || failure.status !== 'error') continue;
+
+    const resolvedLater = actions
+      .slice(failureIndex + 1)
+      .some((candidate) => candidate.tool === 'run_command' && candidate.paramsHash === failure.paramsHash && candidate.status === 'success');
+    if (resolvedLater) continue;
+
+    let start = failureIndex;
+    for (let i = failureIndex + 1; i < actions.length; i += 1) {
+      if (isSuccessfulMutation(actions[i]!)) start = i;
+    }
+    return start;
+  }
+  return undefined;
 }
 
 /**
@@ -99,6 +130,17 @@ export class LoopDetector {
     return realSuccesses.length >= this.policy.maxSameSuccessfulRead ? realSuccesses.at(-1) : undefined;
   }
 
+  /** Number of successful investigation reads spent on the newest unresolved
+   * command failure since its last source edit. Undefined means no unresolved
+   * failing command currently owns the investigation lane. */
+  investigationPressure(actions: ActionRecord[]): { reads: number; failure?: ActionRecord } | undefined {
+    const start = unresolvedFailureEpisodeStart(actions);
+    if (start === undefined) return undefined;
+    const failure = [...actions.slice(0, start + 1)].reverse().find((action) => action.tool === 'run_command' && action.status === 'error');
+    const reads = actions.slice(start + 1).filter((action) => INVESTIGATION_READ_TOOLS.has(action.tool) && action.status === 'success').length;
+    return { reads, failure };
+  }
+
   evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined): LoopVerdict {
     const relevantActions = evidenceWindow(actions, tool, paramsHash);
     const sameAction = relevantActions.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
@@ -108,6 +150,18 @@ export class LoopDetector {
     );
 
     if (INVESTIGATION_READ_TOOLS.has(tool)) {
+      const pressure = this.investigationPressure(actions);
+      if (pressure && pressure.reads >= this.policy.maxInvestigationReadsPerFailureEpisode) {
+        return {
+          allowed: false,
+          attempts: sameAction.length,
+          priorFailures,
+          reason:
+            `Investigation has already consumed ${pressure.reads} successful reads since the current verification failure${pressure.failure ? ` (${pressure.failure.paramsSummary})` : ''}. ` +
+            `Further reading is blocked until you act on the evidence: make the targeted repair, re-run the failing verification, or explicitly change the plan/hypothesis instead of widening the search.`,
+        };
+      }
+
       const successfulReads = sameAction.filter((a) => a.status === 'success');
       if (successfulReads.length >= this.policy.maxSameSuccessfulRead) {
         return {

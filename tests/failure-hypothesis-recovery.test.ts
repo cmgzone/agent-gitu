@@ -91,7 +91,7 @@ describe('EvidenceEngine hypothesis authority', () => {
     expect(data.currentHypothesis).toBeUndefined();
   });
 
-  it('retires the old hypothesis when the failing verification passes', () => {
+  it('keeps the diagnosed root cause when the failing verification passes', () => {
     const engine = new EvidenceEngine();
     const data = ledger();
     engine.record(data, {
@@ -111,7 +111,7 @@ describe('EvidenceEngine hypothesis authority', () => {
       output: '11 tests passed',
     });
 
-    expect(data.currentHypothesis).toBeUndefined();
+    expect(data.currentHypothesis).toBe('score update is off by one frame');
   });
 
   it('does not retire a hypothesis because an unrelated verification command fails', () => {

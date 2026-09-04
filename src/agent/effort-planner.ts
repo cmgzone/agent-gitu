@@ -10,10 +10,10 @@ export interface EffortPlannerOptions {
   explicitEffort?: 'low' | 'medium' | 'high' | 'max';
   contextWindowTokens?: number;
   /**
-   * Capability tier of the SELECTED MODEL (free/community tiers = 'low').
-   * Scales the TURN budget only: weaker models get more turns because each
-   * turn accomplishes less. The per-call reasoning effort sent to the
-   * provider is a separate dial (llmEffort) and is NOT changed by this.
+   * Capability tier of the selected model. Kept as input metadata for callers,
+   * but it must not silently inflate the autonomous turn budget. v0.2.1 used
+   * the same task budget regardless of provider/model and that produced more
+   * predictable runs. Provider reasoning effort remains a separate dial.
    */
   modelCapability?: 'low' | 'standard' | 'high';
 }
@@ -159,10 +159,9 @@ export function planEffort(goal: string, opts: EffortPlannerOptions = {}): Effor
   const budgetBytes = (base: number, floor: number): number =>
     Math.max(floor, Math.min(MAX_CONTEXT_BUDGET_BYTES, Math.round(base * scale)));
 
-  let plan: EffortPlan;
   switch (complexity) {
     case 'low':
-      plan = {
+      return {
         complexity: 'low',
         reason,
         llmEffort: opts.explicitEffort ?? 'low',
@@ -175,10 +174,9 @@ export function planEffort(goal: string, opts: EffortPlannerOptions = {}): Effor
         requireReview: false,
         verificationDepth: 'light',
       };
-      break;
 
     case 'high':
-      plan = {
+      return {
         complexity: 'high',
         reason,
         llmEffort: opts.explicitEffort ?? 'high',
@@ -191,11 +189,10 @@ export function planEffort(goal: string, opts: EffortPlannerOptions = {}): Effor
         requireReview: true,
         verificationDepth: 'thorough',
       };
-      break;
 
     case 'medium':
     default:
-      plan = {
+      return {
         complexity: 'medium',
         reason,
         llmEffort: opts.explicitEffort ?? 'medium',
@@ -208,28 +205,15 @@ export function planEffort(goal: string, opts: EffortPlannerOptions = {}): Effor
         requireReview: false,
         verificationDepth: 'standard',
       };
-      break;
   }
-
-  // Model-capability scaling (TURN budget only): a lower-capability model
-  // needs more turns to do the same work, so a budget tuned for a frontier
-  // model would stall it mid-task. The per-call reasoning effort actually
-  // sent to the provider (plan.llmEffort) is deliberately untouched — that
-  // dial belongs to the provider and the user's explicit effort choice.
-  if (opts.modelCapability === 'low') {
-    plan.maxTurns = Math.round(plan.maxTurns * 1.5);
-    plan.reason += '; turn budget scaled up for a lower-capability model';
-  }
-  return plan;
 }
 
 /**
- * Mid-run complexity escalation: the initial effort plan classifies the goal
- * text, but the real difficulty only reveals itself during execution � a
- * "small fix" that has touched 8 files, or keeps producing DISTINCT failures,
- * has crossed into harder territory. The budget-extension loop consults this
- * so extensions grow and the specialist budget widens when the discovered
- * scope demands it (bounded by the delegate hard cap).
+ * Mid-run complexity escalation. v0.2.1 did not reward repeated failures with
+ * more autonomous turns, and failure-only extensions can turn a recovery loop
+ * into a longer recovery loop. Preserve a bounded extension for a genuinely
+ * wider change surface, but never grant extra budget merely because many
+ * distinct failures accumulated.
  */
 export interface EscalationSignal {
   filesChanged: number;
@@ -248,18 +232,24 @@ const HARD_PROBLEM_FAILURES = 5;
 export function escalationFor(signal: EscalationSignal): Escalation | undefined {
   const wide = signal.filesChanged >= WIDE_SURFACE_FILES;
   const hard = signal.distinctFailures >= HARD_PROBLEM_FAILURES;
+
   if (wide && hard) {
     return {
-      extraTurns: 15,
-      extraSpecialists: 2,
-      reason: `scope escalated: ${signal.filesChanged} files changed and ${signal.distinctFailures} distinct failures`,
+      extraTurns: 8,
+      extraSpecialists: 1,
+      reason: `wide change surface with repeated failures: ${signal.filesChanged} files changed, ${signal.distinctFailures} distinct failures`,
     };
   }
   if (wide) {
-    return { extraTurns: 10, extraSpecialists: 1, reason: `wide change surface: ${signal.filesChanged} files changed` };
+    return {
+      extraTurns: 8,
+      extraSpecialists: 1,
+      reason: `wide change surface: ${signal.filesChanged} files changed`,
+    };
   }
-  if (hard) {
-    return { extraTurns: 10, extraSpecialists: 1, reason: `hard problem: ${signal.distinctFailures} distinct failures so far` };
-  }
+
+  // Repeated failures alone are a recovery signal, not evidence that the model
+  // deserves a larger autonomous budget. Let loop/recovery controls change the
+  // approach instead of extending the run.
   return undefined;
 }

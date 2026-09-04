@@ -1,5 +1,5 @@
 import type { AcceptanceCriterion, CriterionEvidenceType, CriterionSpec, Evidence, EvidenceKind, TaskLedgerData } from '../types.js';
-import { excerpt, nowIso, shortId } from '../util.js';
+import { errorSignature, excerpt, normalizeErrorText, nowIso, shortId } from '../util.js';
 
 /**
  * Mapping from structured criterion evidence types to the EvidenceKind
@@ -86,6 +86,36 @@ export function classifyEvidenceKind(command: string): EvidenceKind {
   return 'command';
 }
 
+/**
+ * A verification failure identity should survive harmless value drift. Exact
+ * assertion numbers, timings, ports, ids and line numbers can change between
+ * runs while the underlying failure is the same. Normalize those values before
+ * hashing so a genuinely NEW failure message supersedes an old diagnosis, while
+ * a numerically different instance of the same assertion does not.
+ */
+export function verificationFailureSignature(output: string): string {
+  const normalized = normalizeErrorText(output)
+    .replace(/[-+]?\b\d+(?:\.\d+)?\b/g, '<num>')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return errorSignature(normalized);
+}
+
+/**
+ * A current hypothesis belongs to the failure it was formed against. Retire it
+ * when the same verification command proves that failure resolved (PASS) or
+ * produces a materially different failure signature. This prevents a repaired
+ * diagnosis from becoming the most prominent state on the next turn.
+ */
+export function verificationSupersedesHypothesis(
+  previousFailure: Pick<Evidence, 'passed' | 'outputExcerpt'> | undefined,
+  next: { passed: boolean; output: string },
+): boolean {
+  if (!previousFailure || previousFailure.passed) return false;
+  if (next.passed) return true;
+  return verificationFailureSignature(previousFailure.outputExcerpt) !== verificationFailureSignature(next.output);
+}
+
 /** Structural slice of the ledger needed to prove a bug fix causally. */
 export interface RegressionProofInput {
   evidence: { command?: string; passed: boolean; createdAt: string }[];
@@ -159,6 +189,18 @@ export class EvidenceEngine {
       workspaceFingerprint?: string;
     },
   ): Evidence {
+    // A hypothesis is scoped to the most recent failure of the same
+    // verification command. If that failure resolves or changes identity,
+    // retire the old hypothesis BEFORE the new evidence becomes current state.
+    if (ledger.currentHypothesis && input.command) {
+      const previousFailure = [...ledger.evidence]
+        .reverse()
+        .find((candidate) => !candidate.passed && candidate.command && commandsMatch(candidate.command, input.command));
+      if (verificationSupersedesHypothesis(previousFailure, input)) {
+        ledger.currentHypothesis = undefined;
+      }
+    }
+
     const evidence: Evidence = {
       id: shortId('ev'),
       kind: input.kind,
@@ -308,4 +350,3 @@ export class EvidenceEngine {
     );
   }
 }
-

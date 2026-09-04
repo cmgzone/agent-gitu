@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LoopDetector } from '../src/loop/loop-detector.js';
+import { CACHED_INVESTIGATION_PREFIX, LoopDetector } from '../src/loop/loop-detector.js';
 import type { ActionRecord } from '../src/types.js';
 
 function action(overrides: Partial<ActionRecord> & Pick<ActionRecord, 'tool' | 'paramsHash'>): ActionRecord {
@@ -73,6 +73,29 @@ describe('LoopDetector', () => {
     expect(verdict.reason).toMatch(/same investigation evidence already succeeded 2×/i);
   });
 
+  it('offers one cached replay of unchanged investigation evidence before the hard block', () => {
+    const actions = [
+      action({ id: 'read-1', tool: 'read_file', paramsHash: 'read-region', paramsSummary: 'read src/game.ts', status: 'success', observation: 'first observation' }),
+      action({ id: 'read-2', tool: 'read_file', paramsHash: 'read-region', paramsSummary: 'read src/game.ts', status: 'success', observation: 'second observation' }),
+    ];
+
+    expect(detector.reusableSuccessfulRead(actions, 'read_file', 'read-region')?.id).toBe('read-2');
+
+    actions.push(
+      action({
+        id: 'read-cache',
+        tool: 'read_file',
+        paramsHash: 'read-region',
+        paramsSummary: 'read src/game.ts',
+        status: 'success',
+        observation: `${CACHED_INVESTIGATION_PREFIX}: second observation`,
+      }),
+    );
+
+    expect(detector.reusableSuccessfulRead(actions, 'read_file', 'read-region')).toBeUndefined();
+    expect(detector.evaluate(actions, 'read_file', 'read-region', undefined).allowed).toBe(false);
+  });
+
   it('allows the same file region to be read again after that file changes', () => {
     const actions = [
       action({ tool: 'read_file', paramsHash: 'read-region', paramsSummary: 'read src/game.ts', status: 'success' }),
@@ -81,6 +104,7 @@ describe('LoopDetector', () => {
     ];
     const verdict = detector.evaluate(actions, 'read_file', 'read-region', undefined);
     expect(verdict.allowed).toBe(true);
+    expect(detector.reusableSuccessfulRead(actions, 'read_file', 'read-region')).toBeUndefined();
   });
 
   it('resets broader search evidence after any successful source edit', () => {

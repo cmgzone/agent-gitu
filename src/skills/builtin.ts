@@ -72,7 +72,7 @@ If LSP reports "unavailable", use search_files/read_file to trace callers instea
 3. If the immediate code explains the failure, repair it now; expand to callers/dependencies only when it does not.
 4. Re-run the failing test immediately after the repair.
 5. When targeted verification passes, run the relevant full suite/typecheck/build checks.
-Avoid repeated reads of unchanged evidence; once the cause is clear, act.`,
+Avoid repeated reads of unchanged evidence; once the cause is clear, act. If LSP is unavailable, use search_files/read_file only as needed.`,
   }),
 
   explore: def({

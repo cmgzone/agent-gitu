@@ -11,13 +11,62 @@ export interface LoopPolicy {
   maxSameActionSameError: number;
   maxSameActionFailures: number;
   maxFileEditsWithoutEvidence: number;
+  /** Successful investigation calls against unchanged evidence are useful
+   * once or twice; beyond that they are usually context drift, not progress. */
+  maxSameSuccessfulRead: number;
 }
 
 export const DEFAULT_LOOP_POLICY: LoopPolicy = {
   maxSameActionSameError: 2,
   maxSameActionFailures: 3,
   maxFileEditsWithoutEvidence: 3,
+  maxSameSuccessfulRead: 2,
 };
+
+const INVESTIGATION_READ_TOOLS = new Set([
+  'read_file',
+  'search_files',
+  'list_files',
+  'lsp_diagnostics',
+  'lsp_definition',
+  'lsp_references',
+  'lsp_hover',
+  'lsp_symbols',
+]);
+
+function isSuccessfulMutation(action: ActionRecord): boolean {
+  return action.status === 'success' && (action.tool === 'write_file' || action.tool === 'apply_edit');
+}
+
+/**
+ * Investigation evidence becomes stale after a relevant edit. For read_file,
+ * reset only when that file changed; for broader search/LSP/list evidence,
+ * conservatively reset after any successful source edit.
+ */
+function evidenceWindow(actions: ActionRecord[], tool: string, paramsHash: string): ActionRecord[] {
+  if (!INVESTIGATION_READ_TOOLS.has(tool)) return actions;
+
+  const priorSame = actions.filter((action) => action.tool === tool && action.paramsHash === paramsHash);
+  if (tool === 'read_file' && priorSame.length > 0) {
+    const summary = priorSame.at(-1)?.paramsSummary ?? '';
+    const file = summary.startsWith('read ') ? summary.slice('read '.length) : '';
+    if (file) {
+      for (let i = actions.length - 1; i >= 0; i -= 1) {
+        const action = actions[i]!;
+        if (!isSuccessfulMutation(action)) continue;
+        if (action.paramsSummary === `write ${file}` || action.paramsSummary === `edit ${file}`) {
+          return actions.slice(i + 1);
+        }
+      }
+      return actions;
+    }
+  }
+
+  for (let i = actions.length - 1; i >= 0; i -= 1) {
+    if (isSuccessfulMutation(actions[i]!)) return actions.slice(i + 1);
+  }
+  return actions;
+}
 
 export class LoopDetector {
   private readonly policy: LoopPolicy;
@@ -27,11 +76,26 @@ export class LoopDetector {
   }
 
   evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined): LoopVerdict {
-    const sameAction = actions.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+    const relevantActions = evidenceWindow(actions, tool, paramsHash);
+    const sameAction = relevantActions.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
     const failures = sameAction.filter((a) => a.status === 'error' || a.status === 'blocked');
     const priorFailures = failures.map(
       (a) => `- ${a.paramsSummary} → ${a.observation ? a.observation.slice(0, 200) : a.status}`,
     );
+
+    if (INVESTIGATION_READ_TOOLS.has(tool)) {
+      const successfulReads = sameAction.filter((a) => a.status === 'success');
+      if (successfulReads.length >= this.policy.maxSameSuccessfulRead) {
+        return {
+          allowed: false,
+          attempts: sameAction.length,
+          priorFailures,
+          reason:
+            `The same investigation evidence already succeeded ${successfulReads.length}× without a relevant source change. ` +
+            `Use the existing observation, inspect a genuinely different region/question, or edit/verify before rereading it.`,
+        };
+      }
+    }
 
     if (errorSig) {
       const sameError = failures.filter((a) => a.errorSignature === errorSig);

@@ -354,6 +354,45 @@ describe('Milestone 2 & 3 — Universal Registry & ProviderReadCache', () => {
     expect(events.some((e) => e.includes('cache hit'))).toBe(true);
   });
 
+  it('routes capability_action through the shared registry with provider evidence and approval', async () => {
+    const root = project('capability-action-agent');
+    home();
+    const registry = new UniversalCapabilityRegistry();
+    const cache = new ProviderReadCache();
+    const events: string[] = [];
+    let calls = 0;
+    let turn = 0;
+    registry.registerConnection(
+      'coolify-prod',
+      [{ id: 'list-apps', label: 'List applications', capability: 'applications.read', method: 'GET', path: '/api/v1/applications', risk: 'read' }],
+      async () => {
+        calls += 1;
+        return { applications: [{ id: 'app-1' }] };
+      },
+      'coolify',
+    );
+    const llm: LlmClient = {
+      name: 'capability-action-mock',
+      async complete() { return ''; },
+      async completeStream() { return ''; },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'capability_action', capability: 'conn:coolify-prod:list-apps', arguments: {}, reason: 'inspect the deployed applications' } }), metadata: {} };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'applications inspected', chat: true } }), metadata: {} };
+      },
+      async completeTurnStream(): Promise<LlmTurnResult> { return this.completeTurn!([]); },
+    };
+    const gitu = new Gitu({ cwd: root, llm, mode: 'fast', universalRegistry: registry, providerCache: cache, onEvent: (event) => events.push(event) });
+
+    await gitu.run('Inspect the application list');
+
+    expect(calls).toBe(1);
+    expect(cache.listEvidence()).toHaveLength(1);
+    expect(events.some((event) => event.includes('capability conn:coolify-prod:list-apps ok'))).toBe(true);
+  });
+
   it('Gitu agent advances state epoch on connection_operation write, invalidating cache for subsequent reads', async () => {
     const root = project('write-invalidation-agent');
     home();

@@ -435,6 +435,7 @@ type ParsedAction =
       supersedes?: string;
     }
   | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
+  | { type: 'capability_action'; capability: string; arguments: Record<string, unknown>; freshness?: 'current' | 'cached' | 'force-refresh'; reason: string }
   | { type: 'connection_action'; connectionId: string; operationId: string; reason: string }
   | {
       type: 'connection_discovery';
@@ -521,6 +522,8 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
       const reason = clean(action.reason);
       return reason ? `Next: ${reason}` : `Next: I’m using ${action.tool} to make the next verified step.`;
     }
+    case 'capability_action':
+      return `I’m invoking the registered ${action.capability} capability through the shared runtime.`;
     case 'connection_action':
       return `I’m using the registered ${action.operationId} read operation on the saved ${action.connectionId} connection.`;
     case 'connection_discovery': {
@@ -698,6 +701,23 @@ function parseAction(raw: unknown): ParsedAction | undefined {
         reason: String(action['reason'] ?? action['thought'] ?? ''),
         expected: String(action['expected'] ?? ''),
         stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
+      };
+    }
+    case 'capability_action': {
+      const capability = String(action['capability'] ?? action['capabilityId'] ?? action['id'] ?? '').trim();
+      if (!/^(?:conn|mcp|native|cli|plugin):[a-z0-9][a-z0-9._:/-]{0,199}$/i.test(capability)) return undefined;
+      const rawArguments = action['arguments'] ?? action['params'] ?? action['parameters'] ?? action['args'] ?? {};
+      if (!rawArguments || typeof rawArguments !== 'object' || Array.isArray(rawArguments)) return undefined;
+      const freshness = action['freshness'];
+      if (freshness !== undefined && freshness !== 'current' && freshness !== 'cached' && freshness !== 'force-refresh') return undefined;
+      const reason = String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240);
+      if (!reason) return undefined;
+      return {
+        type,
+        capability,
+        arguments: { ...(rawArguments as Record<string, unknown>) },
+        ...(freshness ? { freshness } : {}),
+        reason,
       };
     }
     case 'connection_action': {
@@ -881,6 +901,7 @@ const KNOWN_ACTION_TYPES = new Set([
   'complete_step',
   'show_plan',
   'tool_call',
+  'capability_action',
   'connection_action',
   'connection_discovery',
   'connection_operation',
@@ -2858,6 +2879,8 @@ export class Gitu {
 
           const currentActionTag = action.type === 'tool_call'
             ? `tool:${action.tool}:${action.stepId ?? ''}`
+            : action.type === 'capability_action'
+              ? `capability:${action.capability}`
             : action.type === 'connection_action'
               ? `connection:${action.connectionId}:${action.operationId}`
               : action.type === 'connection_discovery'
@@ -2875,7 +2898,7 @@ export class Gitu {
               continue;
             }
           }
-          if (agentWorkflow && !temporaryPlanPending && ['tool_call', 'parallel', 'delegate'].includes(action.type) && ledger.data.status !== 'executing') {
+          if (agentWorkflow && !temporaryPlanPending && ['tool_call', 'parallel', 'delegate', 'capability_action'].includes(action.type) && ledger.data.status !== 'executing') {
             ledger.setStatus('executing');
           }
           switch (action.type) {
@@ -3345,6 +3368,53 @@ export class Gitu {
                 );
               } else {
                 observe(observedResult);
+              }
+              break;
+            }
+            case 'capability_action': {
+              const registered = this.universalRegistry.get(action.capability);
+              if (!registered) {
+                observe(
+                  `CAPABILITY NOT AVAILABLE: ${action.capability} is not in this host's registered capability catalog. Use a capability id shown in TASK STATE, or research official documentation before proposing a new connection operation.`,
+                );
+                break;
+              }
+              const result = await this.universalRegistry.invoke(
+                {
+                  capability: action.capability,
+                  arguments: action.arguments,
+                  ...(action.freshness ? { freshness: action.freshness } : {}),
+                  source: registered.source,
+                  ...(registered.connectionId ? { connectionId: registered.connectionId } : {}),
+                },
+                {
+                  cache: this.providerCache,
+                  approvalHandler: async (proposal) => {
+                    if (!this.config.approvalHandler) return false;
+                    const body = proposal.params === undefined ? '(no arguments)' : JSON.stringify(proposal.params, null, 2).slice(0, 4_000);
+                    return this.config.approvalHandler({
+                      tool: `capability:${proposal.id}`,
+                      tier: proposal.risk === 'destructive' ? 'dangerous' : 'moderate',
+                      why: `Registered ${proposal.risk} capability — ${action.reason}`,
+                      summary: [`Capability: ${proposal.label} (${proposal.id})`, `Risk: ${proposal.risk}`, `Arguments:\n${body}`].join('\n'),
+                    });
+                  },
+                },
+              );
+              ledger.syncProviderState(this.providerCache.getEpochs(), this.providerCache.listEvidence());
+              const disclosure = connectionResultDisclosure(result.data);
+              const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
+              if (result.status === 'ok' || result.status === 'cached') {
+                concreteActionSinceLastAsk = true;
+                this.emit(`capability ${action.capability} ${result.status}`);
+                observe(
+                  `CAPABILITY RESULT [${result.status.toUpperCase()}${result.evidenceId ? ` ${result.evidenceId}` : ''}]: ${result.message}${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this result as evidence for the next step. A granted approval applies only to this exact invocation.`,
+                );
+              } else {
+                this.emit(`capability ${action.capability} ${result.status} — ${connectionEventReason(result.message)}`);
+                observe(
+                  `CAPABILITY ${result.status.toUpperCase()}: ${result.message}\nDo not retry an unchanged write. Use the provider result or official documentation to correct the next action.`,
+                );
               }
               break;
             }

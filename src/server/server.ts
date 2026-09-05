@@ -25,6 +25,7 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionRequirement } from '../connections/connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
+import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
@@ -2595,6 +2596,35 @@ export class GituServer {
           }
         }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
       });
+    // Build a per-run universal catalog from credentialed saved connections.
+    // The catalog gives the agent immutable ids and routes every invocation
+    // through one cache / evidence / approval path. It never exposes secrets.
+    const universalRegistry = new UniversalCapabilityRegistry();
+    for (const profile of this.connections.list()) {
+      if (!profile.hasCredential) continue;
+      universalRegistry.registerConnection(
+        profile.id,
+        profile.operations,
+        async (operation, body) => {
+          const registered = this.connections.operation(profile.id, operation.id);
+          if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
+          const result = await this.connections.invoke(profile.id, registered.id, body);
+          if (!result.ok) throw new Error(result.message);
+          return result.data;
+        },
+        profile.provider,
+      );
+    }
+    const universalCapabilityContext = (): string => {
+      const capabilities = universalRegistry.list().filter((capability) => capability.source === 'connection');
+      if (capabilities.length === 0) return 'UNIVERSAL CAPABILITIES: none available.';
+      return [
+        'UNIVERSAL CAPABILITIES (invoke directly with capability_action; credentials remain private):',
+        ...capabilities.map((capability) =>
+          `- ${capability.id} | ${capability.risk} | ${capability.label} | provider=${capability.provider ?? 'saved connection'} | capability=${capability.capability}`,
+        ),
+      ].join('\n');
+    };
     const gitu = new Gitu({
       cwd: opts.projectPath ?? this.config.cwd,
       index,
@@ -2629,7 +2659,8 @@ export class GituServer {
       contextWindowTokens,
       modelCapability,
       prerequisiteRecovery: { providers: [this.connections.asPrerequisiteProvider()] },
-      connectionContext: () => this.connections.renderForAgent(),
+      universalRegistry,
+      connectionContext: () => `${universalCapabilityContext()}\n\n${this.connections.renderForAgent()}`,
       connectionActionHandler: async ({ connectionId, operationId }) => {
         // Live read path: resolve FIRST (existing or catalog-backed/documented
         // safe GET auto-registers and persists), then execute. No approval

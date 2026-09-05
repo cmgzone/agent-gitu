@@ -74,6 +74,7 @@ import {
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
+import { agentVerificationGate, agentWorkflowPrompt, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -99,7 +100,7 @@ export interface GituConfig {
   protocolRepairLlm?: LlmClient;
   /** Shared code index to reuse (e.g. a watched one owned by the server). */
   index?: CodeIndex;
-  mode?: 'fast' | 'standard' | 'chat';
+  mode?: 'agent' | 'fast' | 'standard' | 'chat';
   autoApprove?: boolean;
   /** Never auto-approve dangerous commands, even with autoApprove — the
    *  unattended-but-cautious middle ground. */
@@ -1725,6 +1726,9 @@ export class Gitu {
     }
     const isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
     const activeGoal = isFollowUpPhase ? activeWorkPhase.goal : goal;
+    const agentWorkflow = ledger.data.mode === 'agent';
+    const agentBaselineFingerprint = agentWorkflow ? await getWorkspaceFingerprint(guard.activeWritableRoot) : '';
+    let temporaryPlanPending = agentWorkflow && Boolean(this.config.requirePlanReview);
 
     // Investigation depth is computed ONCE at intake from the goal plus the
     // Task Authority target hints, and recorded in the ledger. Escalation is
@@ -1758,7 +1762,14 @@ export class Gitu {
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
-    const loopDetector = new LoopDetector();
+    // Preserve the v0.2.1 execution contract: successful reads remain valid
+    // progress for the orchestrator's dynamic budget. Repeated failing calls
+    // are still bounded by LoopDetector; successful investigation is governed
+    // by the turn budget and compaction instead of being fatal after 2 reads.
+    const loopDetector = new LoopDetector({
+      maxSameSuccessfulRead: Number.MAX_SAFE_INTEGER,
+      maxInvestigationReadsPerFailureEpisode: Number.MAX_SAFE_INTEGER,
+    });
     const evidence = new EvidenceEngine();
     const skills = this.config.skills ?? SkillStore.forProject(guard.lock.repoRoot);
     const lsp =
@@ -1976,7 +1987,7 @@ export class Gitu {
       const reloadActiveSkillInstructions = (): void => deliveredSkillVersions.clear();
 
       let contextNote = '';
-      if (ledger.data.mode === 'standard') {
+      if (ledger.data.mode === 'standard' || agentWorkflow) {
         // A completed task already has its durable ledger and plan. Retrieve
         // only enough source to address the new request instead of re-sending a
         // broad project pack to every follow-up turn.
@@ -2109,6 +2120,8 @@ export class Gitu {
         hasBrowser: this.config.browser ? this.config.browser.available() : false,
         autoLearn: this.config.autoLearn ?? true,
         uiTask: isFrontendGoal(activeGoal),
+        agentWorkflow,
+        planRequested: temporaryPlanPending,
         // Keep only the quality bar's non-negotiable contract in the stable
         // system prefix. Its full procedure is supplied by the active-skill
         // state block on activation and after every compaction.
@@ -2116,12 +2129,12 @@ export class Gitu {
       });
       // Strategy CONTENT comes from the skill layer (shadowable); the
       // classify-and-inject mechanism stays here in core.
-      const strategySection = ledger.data.mode !== 'chat' ? buildTaskStrategySection(activeGoal, lsp.hasServers(), skills) : undefined;
+      const strategySection = ledger.data.mode !== 'chat' && !(agentWorkflow && effortPlan.complexity === 'low') ? buildTaskStrategySection(activeGoal, lsp.hasServers(), skills) : undefined;
       const followUpSection =
         resumeNote && ledger.data.mode !== 'chat'
           ? isFollowUpPhase
             ? `ACTIVE FOLLOW-UP WORK PHASE — user request:\n"${activeGoal}"\n` +
-              `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. Add only the needed criteria and append only the needed plan steps. ` +
+              `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. ${agentWorkflow ? 'Formal criteria and plans remain optional; quick edits can proceed directly.' : 'Add only the needed criteria and append only the needed plan steps.'} ` +
               `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
             : `ACTIVE CONTINUATION — the user wrote:\n"${resumeNote}"\n` +
               `The task is unfinished. Continue from the durable ledger and take the next useful action; do not restart discovery or planning unless the evidence requires it. ` +
@@ -2163,7 +2176,7 @@ export class Gitu {
         messages.push({
           role: 'user',
           content:
-            'The earlier scope is complete and preserved. Work only on the active follow-up request: add only new criteria, append only new plan steps, and verify only the new delta unless it changes prior behavior.',
+            agentWorkflow ? 'Earlier work is preserved. Address and verify only the new request. Formal criteria and plans are optional for quick edits.' : 'The earlier scope is complete and preserved. Work only on the active follow-up request: add only new criteria, append only new plan steps, and verify only the new delta unless it changes prior behavior.',
         });
       }
 
@@ -2348,6 +2361,7 @@ export class Gitu {
       // silently complete after the reviewer has exhausted its automatic repair
       // rounds. Keep the last concrete concern for an explicit release decision.
       let unresolvedQualityReview: string | undefined;
+      let unresolvedQualityReviewFingerprint: string | undefined;
       let bugRigorRejections = 0;
       let planReconcileRejections = 0;
       const isBugTask = classifyTaskKind(activeGoal) === 'bug-fix';
@@ -2586,6 +2600,19 @@ export class Gitu {
           if (parsed.type !== 'tool_call' && parsed.type !== 'parallel') malformed.reset();
         }
         return parsed;
+      };
+
+      // Called only after a successful run_command. An explicit stepId limits
+      // completion to that step; untagged checks cover every exact match.
+      const completeVerifiedPlanSteps = (command: string, stepId?: string): void => {
+        if (!command.trim()) return;
+        const steps = stepId ? [ledger.step(stepId)] : ledger.data.plan;
+        for (const step of steps) {
+          if (!step || step.status === 'done' || !step.verification || !commandsMatch(step.verification, command)) continue;
+          ledger.updateStep(step.id, { status: 'done' });
+          checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
+          this.emit(`step     ${step.id} done — verification "${command}" passed`);
+        }
       };
 
       const observe = (content: string | LlmContentPart[]): void => {
@@ -2839,6 +2866,18 @@ export class Gitu {
                   ? `operation:${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`
                   : action.type;
 
+          if (temporaryPlanPending) {
+            const discovery = action.type === 'tool_call' ? isObservationTool(action.tool, action.params)
+              : action.type === 'parallel' ? action.calls.every(call => isObservationTool(call.tool, call.params))
+              : ['set_criteria', 'add_criteria', 'set_design', 'set_plan', 'append_plan', 'show_plan', 'set_hypothesis', 'record_decision', 'ask_user'].includes(action.type);
+            if (!discovery) {
+              observe('Plan requested for this turn: inspect with read-only tools, propose set_plan, and wait for approval before execution.');
+              continue;
+            }
+          }
+          if (agentWorkflow && !temporaryPlanPending && ['tool_call', 'parallel', 'delegate'].includes(action.type) && ledger.data.status !== 'executing') {
+            ledger.setStatus('executing');
+          }
           switch (action.type) {
             case 'set_criteria': {
               const criteriaAlreadySet = ledger.data.acceptanceCriteria.length > 0;
@@ -2875,7 +2914,7 @@ export class Gitu {
               }
               ledger.setCriteria(action.criteria);
               this.emit(`criteria ${action.criteria.map((c) => `"${c}"`).join('; ')}`);
-              observe('Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');
+              observe(agentWorkflow ? 'Criteria recorded. Continue with the requested work; a formal plan is optional unless the user requested plan review.' : 'Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');
               break;
             }
             case 'add_criteria': {
@@ -2911,7 +2950,7 @@ export class Gitu {
               checkpoints.snapshot(ledger, append ? 'follow-up-plan' : 'plan', append ? 'follow-up plan created' : 'plan created');
               this.emit('plan     ' + action.steps.length + (append ? ' follow-up' : '') + ' steps');
               const planReviewHandler = this.config.planReviewHandler;
-              const needsPlanReview = this.config.requirePlanReview && planReviewHandler && (!ledger.data.planApproved || (isFollowUpPhase && !followUpPlanReviewHandled));
+              const needsPlanReview = this.config.requirePlanReview && planReviewHandler && (temporaryPlanPending || !ledger.data.planApproved || (isFollowUpPhase && !followUpPlanReviewHandled));
               if (needsPlanReview) {
                 ledger.setStatus('review');
                 this.emit('plan-review waiting for user review');
@@ -2944,6 +2983,10 @@ export class Gitu {
                   }
                 }
                 if (decision.approved) {
+                  temporaryPlanPending = false;
+                  if (agentWorkflow && typeof messages[0]?.content === 'string') {
+                    messages[0].content = messages[0].content.replace(agentWorkflowPrompt(true), agentWorkflowPrompt(false));
+                  }
                   ledger.data.planApproved = true;
                   followUpPlanReviewHandled = true;
                   ledger.save();
@@ -3078,7 +3121,7 @@ export class Gitu {
               break;
             }
             case 'tool_call': {
-              if (ledger.data.acceptanceCriteria.length === 0) {
+              if (!agentWorkflow && ledger.data.acceptanceCriteria.length === 0) {
                 observe('No acceptance criteria exist yet. Use set_criteria first.');
                 break;
               }
@@ -3194,30 +3237,8 @@ export class Gitu {
               // even a read_file — completed the step and force-checked its
               // todos, so the plan claimed progress for work that never happened
               // and the agent skipped ahead.
-              if (action.stepId && action.tool === 'run_command' && outcome.result.ok) {
-                const step = ledger.step(action.stepId);
-                const cmd = String(action.params['command'] ?? '');
-                if (step && step.status !== 'done' && step.verification && commandsMatch(step.verification, cmd)) {
-                  ledger.updateStep(step.id, { status: 'done' });
-                  checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
-                  this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
-                }
-              } else if (!action.stepId && action.tool === 'run_command' && outcome.result.ok) {
-                // Models frequently omit stepId. When a verification command passes,
-                // auto-complete every open plan step that names exactly this
-                // command as its verification — otherwise plans silently never
-                // progress even though the work was verified.
-                const cmd = String(action.params['command'] ?? '');
-                if (cmd.trim()) {
-                  for (const step of ledger.data.plan) {
-                    if (step.status === 'done' || !step.verification) continue;
-                    if (commandsMatch(step.verification, cmd)) {
-                      ledger.updateStep(step.id, { status: 'done' });
-                      checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
-                      this.emit(`step     ${step.id} done — verification "${cmd}" passed`);
-                    }
-                  }
-                }
+              if (action.tool === 'run_command' && outcome.result.ok) {
+                completeVerifiedPlanSteps(String(action.params['command'] ?? ''), action.stepId);
               }
 
               // LSP post-edit gate: after any successful edit, surface diagnostics
@@ -3645,7 +3666,13 @@ export class Gitu {
             case 'complete': {
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const gate = evidence.gate(ledger.data, currentFp);
-              const chatOnly = Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
+              const lightweight = agentWorkflow ? agentVerificationGate(activePhaseData(), agentBaselineFingerprint, currentFp) : undefined;
+              if (lightweight) {
+                gate.open = lightweight.open && (gate.totalCount === 0 || gate.open);
+                if (!lightweight.open) gate.missing.push(lightweight.reason);
+              }
+              const conversation = agentWorkflow && ledger.data.actions.slice(actionsAtStart).every(a => isObservationTool(a.tool)) && currentFp === agentBaselineFingerprint;
+              const chatOnly = agentWorkflow ? conversation && gate.open : Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
               if (!gate.open && !chatOnly) {
                 observe(
                   `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
@@ -3806,12 +3833,20 @@ export class Gitu {
               // last screenshot judged by the model itself (vision), closing the
               // "nobody looks at the pixels" gap. Safe documentation/comment-only
               // work can skip only after every deterministic gate has proved it
-              // harmless. Fail-open: errors or ambiguous verdicts accept completion,
-              // and only ONE forced revision is possible so this can never deadlock
-              // a legitimate task.
+              // harmless. Bound the repair rounds, but review the result of the
+              // last allowed repair before escalating an unresolved warning.
               const reviewRoundCap = effortPlan?.complexity === 'high' ? 2 : 1;
               const reviewWarning = unresolvedQualityReview;
-              if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
+              // A rejection requests a repair; it does not review that repair.
+              // The final repair deserves one fresh review even when the last
+              // rejection reached the cap. Never reset the counter on edits:
+              // repeated changes must not create an unlimited review loop.
+              const reviewRepairedWorkspace =
+                reviewWarning !== undefined &&
+                unresolvedQualityReviewFingerprint !== undefined &&
+                unresolvedQualityReviewFingerprint !== currentFp &&
+                qualityReviewRejections === reviewRoundCap;
+              if (riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap && !reviewRepairedWorkspace) {
                 const summary = reviewWarning.slice(0, 600);
                 if (!this.config.approvalHandler) {
                   const blocker = `Strict-risk quality reviewer warning needs explicit user approval: ${summary}`;
@@ -3832,6 +3867,7 @@ export class Gitu {
                   // Reset the counter so the eventual repair gets a fresh review.
                   qualityReviewRejections = 0;
                   unresolvedQualityReview = undefined;
+                  unresolvedQualityReviewFingerprint = undefined;
                   this.emit('review   strict-risk completion not approved — returning to repair and fresh review');
                   observe(
                     `USER DID NOT APPROVE completion with the unresolved quality-review warning:\n${summary}\n` +
@@ -3841,9 +3877,10 @@ export class Gitu {
                 }
                 action.risks = [...(action.risks ?? []), `User accepted unresolved strict-risk quality-review warning: ${summary}`];
                 unresolvedQualityReview = undefined;
+                unresolvedQualityReviewFingerprint = undefined;
                 this.emit('review   strict-risk quality warning explicitly accepted by user — recorded as a release risk');
               }
-              if (!riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap) {
+              if (!riskPlan.strictVerification && reviewWarning !== undefined && qualityReviewRejections >= reviewRoundCap && !reviewRepairedWorkspace) {
                 // Non-strict work may proceed after its bounded repair budget, but
                 // never silently: the final report must say the reviewer concern
                 // was not independently cleared.
@@ -3852,6 +3889,7 @@ export class Gitu {
                   `Unresolved final quality-review warning accepted after ${qualityReviewRejections} revision round(s): ${reviewWarning.slice(0, 600)}`,
                 ];
                 unresolvedQualityReview = undefined;
+                unresolvedQualityReviewFingerprint = undefined;
                 this.emit('review   quality warning unresolved after repair budget — recorded as a release risk');
               }
               // Collect one completion diff snapshot. The final report reuses
@@ -3904,7 +3942,7 @@ export class Gitu {
                 evidenceGateOpen: gate.open,
                 specialistOrVerificationUncertain: specialistOrVerificationUncertain || unresolvedQualityReview !== undefined,
               });
-              const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityDecision.run && qualityReviewRejections < reviewRoundCap;
+              const wantsReview = !chatOnly && this.config.mode !== 'chat' && qualityDecision.run && (qualityReviewRejections < reviewRoundCap || reviewRepairedWorkspace);
               if (!wantsReview && !chatOnly && !qualityDecision.run) {
                 this.emit(`review   final AI quality review skipped — ${qualityDecision.reason}; evidence gates remain enforced`);
               }
@@ -3936,6 +3974,7 @@ export class Gitu {
                       // path above, rather than silently accepting this gap.
                       qualityReviewRejections = reviewRoundCap;
                       unresolvedQualityReview = warning;
+                      unresolvedQualityReviewFingerprint = undefined;
                       observe(
                         `${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`,
                       );
@@ -3946,22 +3985,31 @@ export class Gitu {
                   if (review.verdict === 'revise') {
                     qualityReviewRejections += 1;
                     unresolvedQualityReview = review.feedback;
-                    this.emit(`review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
+                    unresolvedQualityReviewFingerprint = currentFp;
+                    this.emit(qualityReviewRejections > reviewRoundCap
+                      ? 'review   quality reviewer still flagged the result after the final repair'
+                      : `review   quality reviewer flagged the result — revision ${qualityReviewRejections}/${reviewRoundCap} requested`);
                     observe(
                       `COMPLETION REJECTED by final quality review. Issues found:\n${review.feedback}\n` +
-                        (riskPlan.strictVerification
-                          ? `Fix these problems, then call complete again. If the reviewer still rejects the final result after the allowed repair rounds, only an explicit user approval can accept that release risk.`
-                          : `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`),
+                        (qualityReviewRejections > reviewRoundCap
+                          ? riskPlan.strictVerification
+                            ? `The final repair review still found unresolved issues. Call complete again to request explicit user approval of the remaining release risk.`
+                            : `The automatic repair rounds are exhausted. Call complete again to record the unresolved warning as a release risk.`
+                          : riskPlan.strictVerification
+                            ? `Fix these problems, then call complete again. If the reviewer still rejects the final result after the allowed repair rounds, only an explicit user approval can accept that release risk.`
+                            : `Fix these problems, then call complete again. If you already addressed them or disagree with the review, call complete again — it will be accepted.`),
                     );
                     break;
                   }
                   unresolvedQualityReview = undefined;
+                  unresolvedQualityReviewFingerprint = undefined;
                 } catch (err) {
                   const warning = `Final quality review could not run: ${(err as Error).message.slice(0, 300)}`;
                   this.emit('review   quality reviewer unavailable — review gap recorded');
                   if (riskPlan.strictVerification) {
                     qualityReviewRejections = reviewRoundCap;
                     unresolvedQualityReview = warning;
+                    unresolvedQualityReviewFingerprint = undefined;
                     observe(
                       `${warning}\nCOMPLETION PAUSED: submit completion again to request explicit user approval, or restore reviewer availability and re-run the final review.`,
                     );
@@ -4040,21 +4088,25 @@ export class Gitu {
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const parts = outcomes.map((o, i) => {
                 if (!o) return `[${i + 1}] (not executed)`;
+                let evidenceNote = '';
                 if (o.record.tool === 'run_command') {
-                  const kind = classifyEvidenceKind(String(action.calls[i]?.params['command'] ?? ''));
+                  const command = String(action.calls[i]?.params['command'] ?? '');
+                  const kind = classifyEvidenceKind(command);
                   const ev = evidence.record(ledger.data, {
                     kind,
                     label: o.record.paramsSummary,
-                    command: String(action.calls[i]?.params['command'] ?? ''),
+                    command,
                     exitCode: o.result.exitCode,
                     passed: o.result.ok,
                     output: o.result.output,
                     workspaceFingerprint: currentFp,
                   });
                   ledger.save();
+                  evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
                   this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+                  if (o.result.ok) completeVerifiedPlanSteps(command);
                 }
-                return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}`;
+                return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}${evidenceNote}`;
               });
               observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
               break;
@@ -4495,9 +4547,20 @@ export class Gitu {
         if (!this.aborted) throw err;
       }
 
-      if (this.aborted && exitReason === 'stalled') {
-        ledger.addBlocker('Stopped by user.');
-        exitReason = 'blocked';
+      if (this.aborted) {
+        // Stop may abort an in-flight model request before the normal
+        // post-action inbox drain runs. Preserve queued user guidance in the
+        // event stream and task authority even though no further model turn is
+        // allowed to execute it during this stopped run.
+        while (this.inbox.length > 0) {
+          const queued = this.inbox.shift()!;
+          this.emit(`user-msg ${queued.text}`);
+          applyFollowUpToLedger(ledger, queued.text);
+        }
+        if (!ledger.data.blockers.some((blocker) => blocker.includes('Stopped by user'))) {
+          ledger.addBlocker('Stopped by user.');
+        }
+        if (exitReason === 'stalled') exitReason = 'blocked';
       }
 
       // ── Finding Verification Gate ──────────────────────────────────────────

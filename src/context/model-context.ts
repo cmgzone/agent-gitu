@@ -109,6 +109,14 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
     return total;
   };
 
+  // Twelve messages is the normal continuity floor, but on deliberately tiny
+  // context windows it can exceed the entire budget before protected digest
+  // overhead is counted. Scale the floor down only in that constrained case;
+  // two recent messages plus the digest still preserve the immediate exchange.
+  const recentHistoryFloor = charsOf() > maxChars + 1_200
+    ? Math.min(MIN_RECENT_HISTORY_MESSAGES, Math.max(2, Math.floor(maxChars / 800)))
+    : MIN_RECENT_HISTORY_MESSAGES;
+
   // Budget enforcement, lowest-value context first. Keep immediate
   // conversational continuity ahead of retrieval samples/supplementary memory.
   // HISTORY TRIMMING IS ALWAYS PRECEDED BY DIGESTING — dropped messages are
@@ -132,8 +140,8 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
       input.onTrim?.({ section: 'memory', charsRemoved: before - input.memory.length });
       continue;
     }
-    if (history.length > MIN_RECENT_HISTORY_MESSAGES) {
-      const oldCount = history.length - MIN_RECENT_HISTORY_MESSAGES;
+    if (history.length > recentHistoryFloor) {
+      const oldCount = history.length - recentHistoryFloor;
       const dropCount = Math.max(1, Math.ceil(oldCount / 2));
       const dropped = history.splice(0, dropCount);
       let droppedChars = 0;

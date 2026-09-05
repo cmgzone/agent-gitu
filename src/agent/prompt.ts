@@ -4,6 +4,7 @@ import type { MemoryStore } from '../memory/memory-store.js';
 import type { PlanArea, PlanDesign, PlanStep, TaskLedgerData } from '../types.js';
 import { builtinSkillByName } from '../skills/builtin.js';
 import { renderDecisions } from './architecture.js';
+import { agentWorkflowPrompt } from './agent-workflow.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
 //
@@ -192,6 +193,8 @@ export function buildSystemPrompt(
      *  guidance that survives compaction regardless of lexical relevance. */
     protectedSection?: string;
     uiTask?: boolean;
+    agentWorkflow?: boolean;
+    planRequested?: boolean;
     /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string;
     /** Compact, durable frontend skill contract. Prefer this in long-running
      *  agent sessions; full instructions are delivered only on skill activation. */
@@ -258,9 +261,10 @@ OPERATING RULES:
 3. Every action needs a reason and an expected outcome.
 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
 5. Never claim success without evidence. Run verification commands (tests, typecheck, build, lint).
-6. A task is complete ONLY when every acceptance criterion is linked to passing evidence.
+6. ${opts.agentWorkflow ? 'Formal criteria are optional. Verify changes with a fresh meaningful check before completion; any recorded criteria still require passing evidence.' : 'A task is complete ONLY when every acceptance criterion is linked to passing evidence.'}
 7. "I changed something" is not "the task is complete".
 ${learnRule}
+${opts.agentWorkflow ? agentWorkflowPrompt(Boolean(opts.planRequested)) : ''}
 
 AUTHORITY ORDER (how conflicts are decided):
 1. SAFETY & BOUNDARY — never violated by anything: repository boundary, security, user approvals, destructive policy.
@@ -277,6 +281,7 @@ ${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
 
 PROTOCOL — each turn you MUST respond in this exact shape:
 1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
+   Give a concise public summary of the current finding, the next action, and its practical purpose. Do not expose private chain-of-thought or internal deliberation. Tool reasons, hypotheses, and recorded decisions are also user-visible: keep them brief, grounded in observed facts, and label untested hypotheses as uncertain.
 2. Then, on a new line, EXACTLY ONE JSON object describing your action.
 
 Intake/planning actions:
@@ -371,7 +376,7 @@ RESUMING PAUSED SPECIALISTS: a specialist that stops because of a model/provider
 Rules for the protocol:
 - The streamed prose must describe what you are doing or learning right now, in user language.
 - BEFORE set_plan on a project with existing code: study the CURRENT CODE context, then read_file/search_files every file you intend to change. Your plan steps must name the concrete files and functions that actually exist in this codebase and describe real edits to them. If the context is not enough to plan confidently, read more first — do not plan from file names or guess at the implementation.
-- When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: use add_criteria, then append_plan. Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
+- When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: ${opts.agentWorkflow ? 'work only on the new request; add_criteria and append_plan are optional when useful.' : 'use add_criteria, then append_plan.'} Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
 - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
 - In a complete action, write a plain-language outcome summary in one or two sentences: what the user can now do and the important result. Do not dump tool calls, JSON, headings, or a file list; the host builds the polished delivery report from the ledger.
 - Evidence ids come from verification results reported to you (ev-...).
@@ -389,8 +394,8 @@ ARCHITECTURE DECISIONS:
 - If you later change an architecture decision, record a NEW decision with "supersedes" and a reason — never silently drift from a recorded decision.
 
 PLANNING QUALITY (adaptive depth — match ceremony to complexity):
-- Low-complexity tasks: short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.
-- Medium/high complexity, and anything spanning UI + server: FIRST set_design with BOUNDED sections, THEN set_plan.
+- Low-complexity tasks: ${opts.agentWorkflow ? 'skip formal plans, criteria, and design unless explicitly requested; edit and verify directly.' : 'short plan, few or no subtasks, minimal design. Do not pay ceremony for trivial work.'}
+- Medium/high complexity, and anything spanning UI + server: ${opts.agentWorkflow ? 'use a concise set_design and set_plan when dependencies make them useful; planning is optional.' : 'FIRST set_design with BOUNDED sections, THEN set_plan.'}
   - frontend section: pages/views, layout & components, each control's user intent and placement, interactions, state/data flow, responsive behavior, loading/empty/error states, accessibility, visual requirements that matter.
   - backend section: API routes & request/response contracts, schema/DB changes, authn/authz, validation, business logic, integrations, error handling, tests.
   - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
@@ -491,7 +496,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const counts = stepCounts(scopedPlan);
   const planBlock =
     scopedPlan.length === 0
-      ? 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
+      ? d.mode === 'agent' ? 'PLAN: optional — proceed directly for focused work unless plan review was requested.' : 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
       : `PLAN: ${counts.done}/${scopedPlan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(scopedPlan, detail)}`;
   const designBlock = renderDesign(d.planDesign, detail);
   const phaseFiles = scope?.files ?? d.filesChanged;
@@ -506,7 +511,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     riskLine,
     d.currentHypothesis ? `CURRENT HYPOTHESIS: ${d.currentHypothesis}` : '',
     activeSkillsSection ? `ACTIVE SKILLS IN TASK:\n${activeSkillsSection}` : '',
-    `ACCEPTANCE CRITERIA:\n${criteria || '  (none set yet — use set_criteria)'}`,
+    `ACCEPTANCE CRITERIA:\n${criteria || (d.mode === 'agent' ? '  (optional — verify the requested result without formal criteria)' : '  (none set yet — use set_criteria)')}`,
     `ARCHITECTURE:\n${decisions}`,
     ...(designBlock ? [designBlock] : []),
     planBlock,

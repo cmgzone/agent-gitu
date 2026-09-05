@@ -77,6 +77,20 @@ describe('oracle quality (scenario D: trivial oracles detected)', () => {
     expect(v.diagnostics.some((d) => d.rule === 'negative-assertion-cannot-fail')).toBe(true);
   });
 
+  it.each(['npm test -- auth && true', 'npm test -- auth && exit 0'])(
+    'accepts a success-only suffix that preserves verification failures: %s',
+    (command) => {
+      expect(evaluateOracleQuality({ command, criterionText: 'auth works' }).strength).toBe('STRONG');
+    },
+  );
+
+  it.each(['npm test -- auth || exit 0', 'npm test -- auth; true', 'npm test -- auth; exit 0'])(
+    'still rejects suffixes that hide verification failures: %s',
+    (command) => {
+      expect(evaluateOracleQuality({ command, criterionText: 'auth works' }).strength).toBe('WEAK');
+    },
+  );
+
   it('marks a manual criterion as INSUFFICIENT + non-executable, NOT broken', () => {
     const v = evaluateOracleQuality({ command: undefined, criterionText: 'UI looks polished' });
     expect(v.strength).toBe('INSUFFICIENT');
@@ -114,6 +128,19 @@ describe('semantic evidence relevance (scenario C: unrelated passing command rej
 });
 
 describe('parent re-verification (scenarios A, B, K)', () => {
+  it.each([true, false])('preserves the actual result with a success-only suffix (passed=%s)', async (passed) => {
+    const command = 'npm test -- auth && exit 0';
+    const crit = criterion({ id: 'ac-1', text: 'auth works', verification: command, evidenceType: 'test_success' });
+    const ledger = leafLedger([crit]);
+    const { runner, calls } = scriptedRunner({ [command]: { passed } });
+
+    const result = await parentReverifyCriterion({ ledger, criterionId: crit.id, currentFingerprint: 'fp-1', runOracle: runner });
+
+    expect(calls).toEqual([command]);
+    expect(result.verified).toBe(passed);
+    expect(crit.satisfied).toBe(passed);
+  });
+
   it('K: actually EXECUTES the oracle instead of trusting a passing self-report', async () => {
     const crit = criterion({ id: 'ac-1', text: 'auth works', verification: 'npm test -- auth', evidenceIds: ['ev-self'], satisfied: true });
     const selfReport = evidence({ id: 'ev-self', command: 'npm test -- auth', workspaceFingerprint: 'fp-1' });

@@ -6,7 +6,7 @@ export type { EffortPlan, TaskComplexity } from '../types.js';
 export interface EffortPlannerOptions {
   scopeFiles?: string[];
   criteriaCount?: number;
-  mode?: 'fast' | 'standard' | 'chat';
+  mode?: 'agent' | 'fast' | 'standard' | 'chat';
   explicitEffort?: 'low' | 'medium' | 'high' | 'max';
   contextWindowTokens?: number;
   /**
@@ -70,7 +70,7 @@ export function classifyTaskComplexity(
     return { complexity: 'low', reason: 'chat mode is conversational and requires minimal effort budget' };
   }
 
-  if (opts.explicitEffort) {
+  if (opts.explicitEffort && opts.mode !== 'agent') {
     if (opts.explicitEffort === 'low') {
       return { complexity: 'low', reason: 'explicit user configuration: effort=low' };
     }
@@ -209,11 +209,9 @@ export function planEffort(goal: string, opts: EffortPlannerOptions = {}): Effor
 }
 
 /**
- * Mid-run complexity escalation. v0.2.1 did not reward repeated failures with
- * more autonomous turns, and failure-only extensions can turn a recovery loop
- * into a longer recovery loop. Preserve a bounded extension for a genuinely
- * wider change surface, but never grant extra budget merely because many
- * distinct failures accumulated.
+ * Mid-run complexity escalation: discovered scope can prove that the initial
+ * text-only estimate was too small. Keep each extension bounded, while
+ * recording the concrete file/failure signal that justified it.
  */
 export interface EscalationSignal {
   filesChanged: number;
@@ -235,21 +233,16 @@ export function escalationFor(signal: EscalationSignal): Escalation | undefined 
 
   if (wide && hard) {
     return {
-      extraTurns: 8,
-      extraSpecialists: 1,
-      reason: `wide change surface with repeated failures: ${signal.filesChanged} files changed, ${signal.distinctFailures} distinct failures`,
+      extraTurns: 15,
+      extraSpecialists: 2,
+      reason: `scope escalated: ${signal.filesChanged} files changed and ${signal.distinctFailures} distinct failures`,
     };
   }
   if (wide) {
-    return {
-      extraTurns: 8,
-      extraSpecialists: 1,
-      reason: `wide change surface: ${signal.filesChanged} files changed`,
-    };
+    return { extraTurns: 10, extraSpecialists: 1, reason: `wide change surface: ${signal.filesChanged} files changed` };
   }
-
-  // Repeated failures alone are a recovery signal, not evidence that the model
-  // deserves a larger autonomous budget. Let loop/recovery controls change the
-  // approach instead of extending the run.
+  if (hard) {
+    return { extraTurns: 10, extraSpecialists: 1, reason: `hard problem: ${signal.distinctFailures} distinct failures so far` };
+  }
   return undefined;
 }

@@ -462,6 +462,7 @@ describe('HermesServer', () => {
     const firstChunk = await reader.read();
     await reader.cancel();
     expect(new TextDecoder().decode(firstChunk.value)).toContain('user-msg Remember the blue widget');
+    expect(new TextDecoder().decode(firstChunk.value)).toContain('"replay":true');
 
     const resumed = await fetch(`${secondBase}/api/runs/${created.runId}/message`, {
       method: 'POST',

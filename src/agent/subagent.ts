@@ -97,9 +97,9 @@ export interface SubAgentRunnerDeps {
   agentEffort?: (name: string) => 'low' | 'medium' | 'high' | 'max' | undefined;
   /** Limits simultaneous workers; excess work remains visible as queued. */
   maxConcurrent?: number;
-  /** Base turn budget before dynamic extension. Default 20. */
+  /** Base turn budget before dynamic extension. Default 30. */
   baseTurns?: number;
-  /** Maximum turns ceiling for dynamic execution. Default 100. */
+  /** Maximum turns ceiling for dynamic execution. Default 150. */
   hardCeilingTurns?: number;
   /**
    * Hard wall-clock limit for a single specialist model turn.  This is a
@@ -570,6 +570,8 @@ export class SubAgentRunner {
     stopReason?: SpecialistStopReason;
     resumable: boolean;
     selectedSkills?: SkillIdentity[];
+    /** File paths already verified by the caller's Git status read. */
+    verifiedChangedFiles?: string[];
   }): Promise<SpecialistCheckpoint> {
     let failure: unknown;
     // Database locks can occur while a previous desktop process is closing.
@@ -579,10 +581,20 @@ export class SubAgentRunner {
       try {
         const store = this.checkpointStore(input.repoRoot);
         const prior = store.get(input.job.logicalJobId!);
-        const git = await captureGitCheckpoint(input.wt.root, prior?.baseCommit);
+        const git = input.verifiedChangedFiles
+          ? {
+              baseCommit: prior?.baseCommit,
+              headCommit: prior?.headCommit,
+              // The caller has already verified the changed paths. Capture
+              // only the content fingerprint here so an interruption between
+              // this row and the commit cannot be mistaken for a divergence.
+              workspaceFingerprint: await getWorkspaceFingerprint(input.wt.root),
+              changedFiles: input.verifiedChangedFiles,
+            }
+          : await captureGitCheckpoint(input.wt.root, prior?.baseCommit);
         const isIsolatedGit = isGitRepo(input.wt.root);
         const changedFiles = isIsolatedGit ? git.changedFiles : [...input.filesChanged];
-        const hasVerifiedChanges = changedFiles.length > 0 && Boolean(git.workspaceFingerprint);
+        const hasVerifiedChanges = changedFiles.length > 0 && (Boolean(input.verifiedChangedFiles) || Boolean(git.workspaceFingerprint));
         const now = new Date().toISOString();
         return store.upsert({
           logicalJobId: input.job.logicalJobId!,
@@ -983,7 +995,21 @@ export class SubAgentRunner {
       }
       ledger.setStatus('executing');
       const policy = new PolicyEngine(false);
-      const executor = new Executor(guard, ledger, policy, new LoopDetector(), (e) => emit(`subagent ${name}: ${e}`), specialistSkills);
+      // A specialist's own dynamic budget/stagnation controller is the lane
+      // authority. Do not let the executor's optional duplicate-read cache
+      // terminate a productive specialist before that 30 -> 40 contract can
+      // make its decision (the v0.2.1 behavior).
+      const executor = new Executor(
+        guard,
+        ledger,
+        policy,
+        new LoopDetector({
+          maxSameSuccessfulRead: Number.MAX_SAFE_INTEGER,
+          maxInvestigationReadsPerFailureEpisode: Number.MAX_SAFE_INTEGER,
+        }),
+        (e) => emit(`subagent ${name}: ${e}`),
+        specialistSkills,
+      );
 
       const criteriaList = ledger.data.acceptanceCriteria;
       const criteriaPrompt = criteriaList.length > 0
@@ -1040,12 +1066,61 @@ export class SubAgentRunner {
       const checkpoint = async (label: string, lastSuccessfulAction?: string): Promise<void> => {
         if (!wt) return;
         try {
+          let savedBeforeCommit: SpecialistCheckpoint | undefined;
           if (isGitRepo(wt.root)) {
-            const dirty = await gitExec(wt.root, ['status', '--porcelain']);
-            if (dirty.trim()) {
+            // The tool has already verified the exact bytes at the canonical
+            // writable path. Publish that known file immediately so an
+            // interruption cannot race the slower Git status/commit calls.
+            if (filesChanged.size > 0) {
+              emit(`subagent ${name} checkpoint (${label}) recording ${filesChanged.size} verified file(s)`);
+              savedBeforeCommit = await this.persistCheckpoint({
+                repoRoot,
+                job,
+                wt,
+                currentTurn: turnsUsed,
+                filesChanged,
+                selectedSkills,
+                lastSuccessfulAction,
+                resumable: true,
+                verifiedChangedFiles: [...filesChanged],
+              });
+              checkpointedFiles = savedBeforeCommit.changedFiles.length;
+              resumeState = savedBeforeCommit.resumeStatus;
+              emit(`subagent ${name} checkpoint (${label}) recorded ${savedBeforeCommit.changedFiles.length} file(s)`);
+            }
+            // Tool writes are already verified and tracked in filesChanged, so
+            // stage those exact paths directly. This avoids a second status
+            // subprocess and prevents unrelated worktree files from entering
+            // a specialist checkpoint. Fall back to status only when a
+            // checkpoint is needed for a change not reported by a tool.
+            const productFiles = [...filesChanged].filter((file) => file && !file.startsWith('.hermes'));
+            const dirty = productFiles.length === 0
+              ? await gitExec(wt.root, ['status', '--porcelain'])
+              : '';
+            if (dirty.trim() || productFiles.length > 0) {
+              const dirtyFiles = dirty
+                .split(/\r?\n/)
+                .map((line) => line.slice(3).trim().split(' -> ').at(-1) ?? '')
+                .filter((file) => file && !file.startsWith('.hermes'));
+              const filesToStage = productFiles.length > 0 ? productFiles : dirtyFiles;
+              if (!savedBeforeCommit && filesToStage.length > 0) {
+                savedBeforeCommit = await this.persistCheckpoint({
+                  repoRoot,
+                  job,
+                  wt,
+                  currentTurn: turnsUsed,
+                  filesChanged,
+                  selectedSkills,
+                  lastSuccessfulAction,
+                  resumable: true,
+                  verifiedChangedFiles: filesToStage,
+                });
+              }
+              for (const file of dirtyFiles) filesChanged.add(file);
+              checkpointedFiles = filesChanged.size;
               // Same .hermes exclusion as the final merge staging — private agent
               // state must never leak into committed product branches.
-              await gitExec(wt.root, ['add', '-A', '--', ':(exclude).hermes']);
+              await gitExec(wt.root, ['add', '-A', '--', ...filesToStage]);
               const staged = await gitExec(wt.root, ['diff', '--cached', '--name-only']).catch(() => '');
               if (staged.trim()) {
                 const ident = await this.identityArgs(repoRoot);
@@ -1054,7 +1129,12 @@ export class SubAgentRunner {
               }
             }
           }
-          const saved = await this.persistCheckpoint({
+          // The pre-commit row is intentionally retained: it is already a
+          // complete recovery record, and a second full fingerprint capture
+          // after every commit adds several process launches per edit. On a
+          // normal resume, reconcileSpecialistCheckpoint verifies the current
+          // branch/worktree from Git before accepting it.
+          const saved = savedBeforeCommit ?? await this.persistCheckpoint({
             repoRoot,
             job,
             wt,
@@ -1484,6 +1564,7 @@ export class SubAgentRunner {
                 summary: summary || 'stopped early',
                 stopReason,
                 resumable: true,
+                verifiedChangedFiles: [...filesChanged],
               });
             } catch (err) {
               const emergency = await this.persistEmergencyRecoverySafely({

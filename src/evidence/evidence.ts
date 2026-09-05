@@ -135,13 +135,14 @@ export function hasRegressionProof(input: RegressionProofInput): boolean {
     const c = norm(cmd);
     return c && !isTrivialEvidenceCommand(c) ? c : undefined;
   };
-  // Earliest PASS per command — the fix's proof is the first green run.
+  // Latest PASS per command: an earlier green baseline must not hide a later
+  // fail -> edit -> pass sequence. Any causal pair must precede this pass.
   const passAt = new Map<string, string>();
   for (const ev of input.evidence) {
     const cmd = real(ev.command);
     if (!cmd || !ev.passed) continue;
     const prev = passAt.get(cmd);
-    if (!prev || ev.createdAt < prev) passAt.set(cmd, ev.createdAt);
+    if (!prev || ev.createdAt > prev) passAt.set(cmd, ev.createdAt);
   }
   if (passAt.size === 0) return false;
   const edits = input.actions.filter(
@@ -196,7 +197,12 @@ export class EvidenceEngine {
     if (ledger.currentHypothesis && input.command) {
       const previousFailure = [...ledger.evidence]
         .reverse()
-        .find((candidate) => !candidate.passed && candidate.command && commandsMatch(candidate.command, input.command));
+        .find(
+          (candidate) =>
+            !candidate.passed &&
+            typeof candidate.command === 'string' &&
+            commandsMatch(candidate.command, input.command!),
+        );
       if (verificationSupersedesHypothesis(previousFailure, input)) {
         ledger.currentHypothesis = undefined;
       }

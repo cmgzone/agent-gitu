@@ -609,7 +609,7 @@ export interface TaskLedgerData {
   taskId: string;
   goal: string;
   status: TaskStatus;
-  mode: 'fast' | 'standard' | 'chat';
+  mode: 'agent' | 'fast' | 'standard' | 'chat';
   project: ProjectLock;
   gitBranch?: string;
   worktreePath?: string;

@@ -23,7 +23,7 @@ export interface StoredSession {
   startedAt: string;
   status: string;
   finishedAt?: string;
-  mode?: 'fast' | 'standard' | 'chat';
+  mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
   /** The model the user selected when the run began. Never overwritten by fallback. */
@@ -265,7 +265,7 @@ export class SessionStore {
       startedAt: r.startedAt,
       status: r.status,
       finishedAt: r.finishedAt ?? undefined,
-      mode: r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
+      mode: r.mode === 'agent' || r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
       provider: r.provider ?? undefined,
       model: r.model ?? undefined,
       requestedProvider: r.requestedProvider ?? r.provider ?? undefined,
@@ -315,7 +315,7 @@ export class SessionStore {
       startedAt: r.startedAt,
       status: r.status,
       finishedAt: r.finishedAt ?? undefined,
-      mode: r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
+      mode: r.mode === 'agent' || r.mode === 'fast' || r.mode === 'standard' || r.mode === 'chat' ? r.mode : undefined,
       provider: r.provider ?? undefined,
       model: r.model ?? undefined,
       requestedProvider: r.requestedProvider ?? r.provider ?? undefined,

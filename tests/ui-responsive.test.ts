@@ -56,7 +56,7 @@ describe('UI — responsive task shell and trustworthy controls', () => {
 
   it('exposes keyboard and screen-reader semantics for primary controls', () => {
     expect(UI_HTML).toContain('button:focus-visible');
-    expect(UI_HTML).toContain('aria-label="Workflow mode"');
+    expect(UI_HTML).toContain('id="planOnce" aria-pressed="false"');
     expect(UI_HTML).toContain('aria-haspopup="listbox"');
     expect(UI_HTML).toContain('aria-label="Attach files or documents"');
     expect(UI_HTML).toContain("e.key === 'Enter' || e.key === ' '");

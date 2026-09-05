@@ -39,8 +39,9 @@ export interface OracleQualityVerdict {
   executable: boolean;
 }
 
-/** Tokens that make an assertion unfalsifiable (it can never fail). */
-const UNFALSIFIABLE_TAILS = /\|\|\s*(true|exit\s+0)\b|;\s*(true|exit\s+0)\s*$|&&\s*(true|exit\s+0)\s*$/i;
+/** Failure-masking suffixes. A success-only `&& true` / `&& exit 0` suffix
+ * preserves the preceding command's failure status and must remain valid. */
+const UNFALSIFIABLE_TAILS = /\|\|\s*(true|exit\s+0)\b|;\s*(true|exit\s+0)\s*$/i;
 /** `echo <expected>` style oracles that manufacture their own success. */
 const ECHO_ORACLE = /^\s*(echo|printf|write-host|console\.log)\b/i;
 /** Commands that read state but assert nothing about it. */

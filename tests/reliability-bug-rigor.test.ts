@@ -40,6 +40,31 @@ describe('hasRegressionProof', () => {
     ).toBe(false);
   });
 
+  it('accepts fail -> edit -> pass after an earlier passing baseline', () => {
+    expect(
+      hasRegressionProof({
+        evidence: [
+          { command: 'npm test', passed: true, createdAt: t(1) },
+          { command: 'npm test', passed: false, createdAt: t(2) },
+          { command: 'npm test', passed: true, createdAt: t(4) },
+        ],
+        actions: [{ tool: 'apply_edit', status: 'success', createdAt: t(3) }],
+      }),
+    ).toBe(true);
+  });
+
+  it('does not use an earlier passing baseline as post-fix proof', () => {
+    expect(
+      hasRegressionProof({
+        evidence: [
+          { command: 'npm test', passed: true, createdAt: t(1) },
+          { command: 'npm test', passed: false, createdAt: t(2) },
+        ],
+        actions: [{ tool: 'apply_edit', status: 'success', createdAt: t(3) }],
+      }),
+    ).toBe(false);
+  });
+
   it('rejects fail -> pass with no edit in between', () => {
     expect(
       hasRegressionProof({
@@ -78,6 +103,45 @@ describe('hasRegressionProof', () => {
 });
 
 describe('Hermes — bug-fix rigor gate', () => {
+  it('completes a reproduced fix on the first attempt when the original checks passed before regression coverage was added', async () => {
+    const dir = makeBugProject('baseline-pass');
+    writeFileSync(path.join(dir, 'index.js'), 'module.exports = () => "helo";');
+    writeFileSync(path.join(dir, 'check.js'), 'const assert = require("node:assert/strict"); assert.equal(typeof require("./index.js"), "function");');
+    const events: string[] = [];
+    const reply = (action: Record<string, unknown>) => () => JSON.stringify({ action });
+    const verify = reply({ type: 'tool_call', tool: 'run_command', params: { command: 'node check.js' }, reason: 'check the greeting', expected: 'exit 0' });
+    const llm = new ScriptedMockLlm([
+      reply({ type: 'set_criteria', criteria: [{ text: 'Greeting is hello', verification: 'node check.js', evidenceType: 'command_success' }] }),
+      reply({ type: 'set_plan', steps: [{ description: 'Repair greeting', verification: 'node check.js' }] }),
+      verify,
+      reply({
+        type: 'tool_call', tool: 'write_file',
+        params: { path: 'check.js', content: 'const assert = require("node:assert/strict"); assert.equal(require("./index.js")(), "hello");' },
+        reason: 'add coverage for the wrong greeting', expected: 'regression assertion saved',
+      }),
+      verify,
+      reply({ type: 'set_hypothesis', text: 'The greeting string is misspelled and existing coverage only checked its type.' }),
+      reply({ type: 'tool_call', tool: 'write_file', params: { path: 'index.js', content: 'module.exports = () => "hello";' }, reason: 'correct the greeting', expected: 'greeting corrected' }),
+      verify,
+      (_call, messages) => {
+        const evidenceId = [...messages.map((message) => message.content).join('\n')
+          .matchAll(/EVIDENCE RECORDED: (ev-\d{8}-[0-9a-f]{6})/g)].at(-1)?.[1];
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId } });
+      },
+      reply({ type: 'complete', summary: 'Corrected the greeting with regression coverage.', risks: [], followUps: [] }),
+      () => 'VERDICT: PASS',
+      reply({ type: 'request_block', reason: 'Completion unexpectedly rejected after the passing regression.' }),
+    ]);
+
+    const { ledger, report } = await new Hermes({ cwd: dir, llm, mode: 'fast', autoLearn: false, onEvent: (event) => events.push(event) })
+      .run('Fix the misspelled greeting');
+
+    expect(ledger.data.evidence.map((evidence) => evidence.passed)).toEqual([true, false, true]);
+    expect(report.status, events.join('\n')).toBe('complete');
+    expect(events.some((event) => event.includes('bug-fix completion rejected'))).toBe(false);
+    expect(report.remainingRisks.some((risk) => risk.includes('rigor override'))).toBe(false);
+  }, 30000);
+
   it('accepts a bug fix that reproduces (FAIL), edits, and re-verifies (PASS), but rejects completion once for the missing root cause', async () => {
     const dir = makeBugProject('happy');
     const events: string[] = [];

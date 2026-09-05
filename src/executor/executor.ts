@@ -213,7 +213,12 @@ export class Executor {
     // the model gets the prior observation without a new filesystem/LSP read.
     // If it asks for the same unchanged evidence yet again, the normal loop
     // verdict below hard-blocks the repetition.
-    const reusableRead = this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash);
+    // LoopDetector is injected at this boundary and older/custom hosts may
+    // implement only evaluate(). Keep the cache optimization optional so a
+    // newly-added helper cannot crash otherwise valid tool execution.
+    const reusableRead = typeof this.loopDetector.reusableSuccessfulRead === 'function'
+      ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash)
+      : undefined;
     if (reusableRead) {
       const cached =
         `${CACHED_INVESTIGATION_PREFIX}: ${summary}\n` +
@@ -413,8 +418,11 @@ export class Executor {
       result = { ok: false, output: `Tool crashed: ${msg}`, errorSignature: msg.slice(0, 16) };
     }
 
+    // recordAction persists immediately below. Fold touched-file bookkeeping
+    // into that same ledger write; saving once per file and then again for the
+    // action made write-heavy runs needlessly slow on Windows.
     for (const f of result.filesTouched ?? []) {
-      this.ledger.trackFile(f);
+      if (!this.ledger.data.filesChanged.includes(f)) this.ledger.data.filesChanged.push(f);
     }
     if (result.ok && result.linesAdded) {
       const file = String(req.params['path'] ?? '');

@@ -7,7 +7,7 @@ import { Hermes } from '../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { LspManager } from '../src/lsp/manager.js';
 import { formatDiagnostics, flattenDiagnostics } from '../src/lsp/diagnostics.js';
-import { detectLanguages, languageIdForPath } from '../src/lsp/language-detector.js';
+import { detectLanguages, languageForUnknownFile, languageIdForPath } from '../src/lsp/language-detector.js';
 import { DEFAULT_SERVERS, installSpecFor, ServerRegistry, resolveSpawnCommand } from '../src/lsp/server-registry.js';
 import { PolicyEngine } from '../src/policy/policy.js';
 
@@ -103,6 +103,13 @@ describe('language detection', () => {
     const dir = tmpRepo();
     writeFileSync(path.join(dir, 'Cargo.toml'), '[package]\n');
     expect(detectLanguages(dir)).toContain('rust');
+  });
+
+  it('does not infer a project language for unsupported file extensions', () => {
+    const dir = tmpRepo();
+    writeFileSync(path.join(dir, 'package.json'), '{}');
+    expect(languageForUnknownFile(dir, 'generated.txt')).toBeUndefined();
+    expect(languageForUnknownFile(dir, 'tool-without-extension')).toBe('javascript');
   });
 });
 

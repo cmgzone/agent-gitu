@@ -176,6 +176,19 @@ export function writeJson(file: string, data: unknown): void {
         try { unlinkSync(tmp); } catch {}
         throw err;
       }
+      // On Windows, replacing an existing destination with renameSync can
+      // report EPERM even when the file is not meaningfully locked. A direct
+      // copy-over is the fallback we would eventually use below, so try it
+      // immediately instead of paying the full 465ms rename backoff on every
+      // routine ledger save.
+      try {
+        copyFileSync(tmp, file);
+        try { unlinkSync(tmp); } catch {}
+        return;
+      } catch {
+        // A real AV/reader lock can still clear shortly; retain the bounded
+        // backoff before retrying.
+      }
       // Backoff 15ms, 30ms, 60ms, 120ms, 240ms — sync sleep via Atomics.
       const ms = 15 * Math.pow(2, attempt);
       try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}

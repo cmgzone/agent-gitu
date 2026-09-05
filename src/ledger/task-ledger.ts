@@ -73,7 +73,7 @@ export class TaskLedger {
     repoRoot: string;
     goal: string;
     project: ProjectLock;
-    mode: 'fast' | 'standard' | 'chat';
+    mode: 'agent' | 'fast' | 'standard' | 'chat';
     gitBranch?: string;
     worktreePath?: string;
     activeSkills?: string[];

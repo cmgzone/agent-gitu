@@ -99,6 +99,11 @@ export function detectLanguages(repoRoot: string): string[] {
 /** Try to determine a project language for a file that has no known extension. */
 export function languageForUnknownFile(repoRoot: string, file: string): string | undefined {
   if (languageIdForPath(file)) return undefined;
+  // A known-but-unsupported extension is not an extensionless source file.
+  // Inferring the repository's first language for .txt/.log/etc caused every
+  // ordinary generated artifact to start an unrelated language server and
+  // wait for diagnostics.
+  if (path.extname(file)) return undefined;
   const languages = detectLanguages(repoRoot);
   return languages[0];
 }

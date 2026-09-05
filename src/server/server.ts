@@ -100,7 +100,7 @@ export interface RunSessionView {
   projectPath?: string;
   branch?: string;
   worktreePath?: string;
-  mode?: 'fast' | 'standard' | 'chat';
+  mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
   requestedProvider?: string;
@@ -128,7 +128,7 @@ interface RunSession {
   projectPath?: string;
   branch?: string;
   worktreePath?: string;
-  mode?: 'fast' | 'standard' | 'chat';
+  mode?: 'agent' | 'fast' | 'standard' | 'chat';
   provider?: string;
   model?: string;
   requestedProvider?: string;
@@ -1867,12 +1867,12 @@ export class GituServer {
       const constraints = Array.isArray(body['constraints']) ? (body['constraints'] as unknown[]).map(String).filter(Boolean) : undefined;
       const provider = typeof body['provider'] === 'string' ? body['provider'] : undefined;
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
-      const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : 'standard';
+      const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : 'agent';
       const autoApprove = body['autoApprove'] === true;
       const autoLearn = body['autoLearn'] !== false;
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
-      const review = body['review'] !== false;
+      const review = mode === 'agent' ? body['review'] === true : body['review'] !== false;
 
       const images = Array.isArray(body['images'])
         ? (body['images'] as Record<string, unknown>[])
@@ -2020,7 +2020,9 @@ export class GituServer {
           /* socket already gone */
         }
       };
-      for (const ev of session.events) safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
+      // Replayed history must render immediately, without replaying typing
+      // animations when opening a task or reconnecting its transport.
+      for (const ev of session.events) safeWrite(`data: ${JSON.stringify({ ...ev, replay: true })}\n\n`);
       const send = (ev: { i: number; t: string; text: string }): void => {
         safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       };
@@ -2235,7 +2237,7 @@ export class GituServer {
       // An explicit mode in the body is a deliberate workflow switch (the UI
       // always sends it from the dropdown): update the durable session mode so
       // this continuation — and later ones — run in the newly chosen mode.
-      const modeSwitch = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : undefined;
+      const modeSwitch = body['mode'] === 'agent' ? 'agent' : body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : undefined;
       const reviewSwitch = typeof body['review'] === 'boolean' ? body['review'] : undefined;
       const supersede = typeof body['supersede'] === 'string' && body['supersede'].trim() ? body['supersede'].trim() : undefined;
       if (body['autoApprove'] === true) session.autoApprove = true;
@@ -2490,7 +2492,7 @@ export class GituServer {
     opts: {
       goal: string;
       criteria?: string[];
-      mode: 'fast' | 'standard' | 'chat';
+      mode: 'agent' | 'fast' | 'standard' | 'chat';
       review?: boolean;
       scope?: string[];
       constraints?: string[];

@@ -1,3 +1,6 @@
+import { UI_MOTION_JS } from './ui-motion.js';
+import { UI_APPROACH_JS } from './ui-approach.js';
+
 export const UI_HTML = String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -196,10 +199,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .send:disabled { background: #2b3448; }
 
   .run { flex: 1; display: flex; min-height: 0; }
-  .run-main { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+  .run-main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
   /* ── Activity timeline ───────────────────────────────────────────────────
-     One continuous vertical rule down the left of the feed; every entry is a
-     row with a dot marker sitting on the line. No bordered cards. */
+     A continuous vertical rule anchors narration and compact tool cards. */
   .progress { display: flex; align-items: center; gap: 10px; padding: 8px 24px 2px; flex: none; font-family: var(--mono); font-size: 10.5px; letter-spacing: .4px; color: var(--muted); }
   .progress .plabel { white-space: nowrap; }
   .progress .pbar { flex: 1; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
@@ -315,8 +317,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .ev-pill.pass { color: var(--ok); background: var(--ok-dim); box-shadow: inset 0 0 0 1px rgba(63,214,143,.3); }
   .ev-pill.fail { color: var(--err); background: var(--err-dim); box-shadow: inset 0 0 0 1px rgba(255,100,101,.3); }
   /* ── Tool call rows: one monospace line on the timeline ─────────────────
-     $ <command> — italic why — right-aligned status. Output collapsed inside
-     a native <details>; no bordered container around the call itself. */
+     Command, context, duration, and status above a native output disclosure. */
   @keyframes toolIn { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
   @keyframes outFade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
   .tl-tool.done-bad { animation: rowFlash .6s ease; }
@@ -341,6 +342,57 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-out[open] pre { animation: outFade .25s ease; }
   .tl-out pre { margin: 4px 0 0; padding: 8px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.55; color: #a7b1c5; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; border-radius: 8px; background: var(--card2); box-shadow: inset 0 0 0 1px var(--border); }
   .tl-out pre.folded { max-height: 110px; overflow: hidden; position: relative; border-radius: 8px 8px 0 0; }
+  /* Live work: quiet surfaces, clear states, and motion only at the edge. */
+  .stream { overflow-anchor: none; }
+  .replayed, .replayed .dot-ok, .replayed .dot-bad { animation: none !important; }
+  .text-arrival { animation: textArrival .18s ease-out both; }
+  @keyframes textArrival { from { opacity: .3; } to { opacity: 1; } }
+  .text-streaming::after { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 0 2px 5px; border-radius: 50%; background: var(--run); animation: pulse 1.2s ease-in-out infinite; }
+  .tl-note-row:has(.text-streaming) .caret { display: none; }
+  .tl-tool { padding: 5px 0; }
+  .tl-tool > .tl-body { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: rgba(19,24,38,.7); transition: border-color .25s ease, background .25s ease; }
+  .tl-tool[data-tool-state=working] > .tl-body { border-color: rgba(91,168,255,.32); background: linear-gradient(110deg, rgba(91,168,255,.06), rgba(19,24,38,.7)); }
+  .tl-tool[data-tool-status=error] > .tl-body, .tl-tool[data-tool-status=denied] > .tl-body { border-color: rgba(255,100,101,.35); }
+  .tl-tool[data-tool-status=ok] .dot-ok { animation: dotPop .3s ease-out; }
+  .tl-tool .tl-cmd { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; color: inherit; padding: 10px 12px; align-items: center; }
+  .tl-tool .tl-cmd:hover { background: rgba(255,255,255,.025); }
+  .tl-tool .tl-cmd .cmd { flex: 1 1 auto; }
+  .tl-tool .tl-cmd .why { flex: 0 2 auto; max-width: 36%; }
+  .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px; flex: none; border: 1px solid var(--border2); border-radius: 6px; color: var(--run); font: 11px var(--mono); background: var(--card2); }
+  .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
+  .tool-chevron { color: var(--faint); transition: transform .18s ease; }
+  .tl-cmd[aria-expanded=true] .tool-chevron { transform: rotate(90deg); }
+  .tl-tool .tl-out { margin: 0; padding: 0 12px; }
+  .tl-tool .tl-out:not([open]) { display: none; }
+  .tl-tool .tl-out[open] { padding-bottom: 10px; border-top: 1px solid var(--border); }
+  .tl-tool .tl-out summary { display: flex; padding-top: 7px; }
+  .tl-tool .tl-out summary::before { display: none; }
+  .tl-tool .tool-btn-copy { margin-left: auto; }
+  .tl-tool .st-run::before { content: ''; width: 9px; height: 9px; border: 1.5px solid rgba(91,168,255,.25); border-top-color: var(--run); border-radius: 50%; animation: toolSpin .9s linear infinite; }
+  @keyframes toolSpin { to { transform: rotate(360deg); } }
+  .jump-latest { position: absolute; z-index: 5; bottom: 152px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; padding: 7px 14px; border: 1px solid var(--border2); border-radius: 999px; color: var(--text); background: var(--card); box-shadow: 0 6px 24px rgba(0,0,0,.3); font-size: 11px; }
+  .jump-latest:hover { background: var(--hover); border-color: var(--run); }
+  .approach-panel { flex: none; min-width: 0; margin: 0 20px 8px; border: 1px solid var(--border); border-radius: 10px; background: rgba(19,24,38,.6); overflow: hidden; }
+  .approach-panel > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; cursor: pointer; list-style: none; }
+  .approach-panel > summary::-webkit-details-marker { display: none; }
+  .approach-panel > summary::before { content: '›'; color: var(--faint); transition: transform .18s ease; }
+  .approach-panel[open] > summary::before { transform: rotate(90deg); }
+  .approach-panel > summary:hover { background: rgba(255,255,255,.025); }
+  .approach-title { font-weight: 600; color: #b9b1ff; font-size: 12px; }
+  .approach-count { font: 10px var(--mono); color: var(--faint); }
+  .approach-latest { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .approach-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; font: 10px var(--mono); color: var(--faint); }
+  .approach-panel.is-live .approach-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
+  .approach-log { list-style: none; margin: 0; padding: 0 12px; max-height: min(210px, 27vh); overflow-y: auto; overflow-anchor: none; }
+  .approach-entry { display: grid; grid-template-columns: 120px minmax(0,1fr); gap: 12px; border-top: 1px solid var(--border); padding: 8px 0; font-size: 11.5px; line-height: 1.5; animation: outFade .18s ease-out; }
+  .approach-label { color: var(--faint); font-size: 10.5px; }
+  .approach-detail { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+  .approach-entry:last-child .approach-detail { color: var(--text); }
+  .approach-entry.pass .approach-label { color: var(--ok); }
+  .approach-entry.fail .approach-label { color: var(--err); }
+  .approach-note { margin: 0; padding: 4px 12px 10px; color: var(--faint); font-size: 10.5px; }
+  @media (max-width: 720px) { .approach-panel { margin: 0 10px 6px; } .approach-latest { display: none; } .approach-entry { grid-template-columns: 1fr; gap: 2px; } }
+  @media (max-width: 720px) { .tl-tool .why { display: none; } .tl-tool .tl-cmd { gap: 6px; padding: 9px 8px; } .tool-kind { width: 21px; height: 21px; } .tl-tool .st { letter-spacing: 0; } }
   .fold-btn { display: block; width: 100%; padding: 4px 10px; background: var(--card2); border: 0; box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 var(--border); border-radius: 0 0 8px 8px; color: var(--run); font-size: 10.5px; text-align: left; cursor: pointer; font-family: var(--mono); }
   .fold-btn:hover { color: var(--text); }
 
@@ -357,6 +409,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .review-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
   .review-card textarea { width: 100%; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 7px 9px; font-family: var(--mono); font-size: 11.5px; resize: vertical; }
   .review-card .actions, .approval .actions { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+  .review-card .actions { flex-wrap: wrap; }
+  .review-card .actions .btn { flex: none; }
+  .review-card .actions input { min-width: 0; flex: 1 1 160px; }
   .review-card input { flex: 1; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 6px 9px; font-size: 12px; }
   .btn { border: 0; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; }
   .btn.dark { background: var(--dark); color: #10141d; }
@@ -730,12 +785,14 @@ export const UI_HTML = String.raw`<!doctype html>
 </div>
 <script>
 (function () {
+  ${UI_MOTION_JS}
+  ${UI_APPROACH_JS}
   var S = {
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     modelsLoaded: false,
     draft: '',
-    sel: { wf: 'review', model: '', effort: 'high' },
-    settings: { review: true, autoApprove: false, autoLearn: true, projectPath: '', devMode: false },
+    sel: { model: '', effort: 'high' },
+    settings: { autoApprove: false, autoLearn: true, projectPath: '', devMode: false },
     setSection: 'general',
     delivery: 'steer',
     pendingFiles: []
@@ -750,6 +807,9 @@ export const UI_HTML = String.raw`<!doctype html>
       S.draft = saved.draft || '';
     }
   } catch (e) {}
+  // Old workflow preferences must never re-enable persistent planning.
+  delete S.sel.wf;
+  delete S.settings.review;
   function persist() {
     try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: S.draft })); } catch (e) {}
   }
@@ -1182,6 +1242,7 @@ export const UI_HTML = String.raw`<!doctype html>
   // The composer send button doubles as STOP while the agent is running —
   // one button, context-aware, always where your hand already is.
   function updateSendState() {
+    updatePlanControl();
     var b = $('send2');
     if (!b) return;
     var sess = S.sessions[S.active];
@@ -1242,7 +1303,7 @@ export const UI_HTML = String.raw`<!doctype html>
     }
   }
 
-  function stopStreams() { if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
+  function stopStreams() { flushLiveText(); if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
 
   function openHome() {
     S.active = 'home';
@@ -1260,7 +1321,7 @@ export const UI_HTML = String.raw`<!doctype html>
       ? 'What should we work on in <span class="u">' + esc(name) + '</span>?'
       : 'What should we work on?';
     var homeCopy = effProj
-      ? 'Describe the outcome you want. Gitu will plan, make changes, and show the evidence behind every result.'
+      ? 'Ask a question or describe a change. Gitu will get to work and check the result. Use Plan when you want to review the approach first.'
       : 'Choose a project, then describe the outcome you want. Gitu will keep the work scoped and evidence-backed.';
     $('view').innerHTML =
       '<div class="home">' +
@@ -1272,7 +1333,7 @@ export const UI_HTML = String.raw`<!doctype html>
       : '') +
       '<div class="sugs">' +
       '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:var(--run)">' + icon('search') + '</span><span class="sug-title">Explore the codebase</span><span class="sug-hint">Map the architecture and find the right starting point.</span></button>' +
-      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:var(--accent)">' + icon('bolt') + '</span><span class="sug-title">Build something new</span><span class="sug-hint">Turn an idea into a planned, verified change.</span></button>' +
+      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:var(--accent)">' + icon('bolt') + '</span><span class="sug-title">Build something new</span><span class="sug-hint">Turn an idea into a working, verified change.</span></button>' +
       '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:var(--ok)">' + icon('layers') + '</span><span class="sug-title">Review the code</span><span class="sug-hint">Check quality, risks, and practical next improvements.</span></button>' +
       '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:var(--err)">' + icon('wrench') + '</span><span class="sug-title">Fix an issue</span><span class="sug-hint">Investigate a failure and verify the repair.</span></button>' +
       '</div>' +
@@ -1536,8 +1597,29 @@ export const UI_HTML = String.raw`<!doctype html>
       return '<option value="' + l + '">' + esc(label) + '</option>';
     }).join('');
   }
+  function planRequested(runId) {
+    return Boolean(runId === 'home' ? S.homePlanRequested : S.sessions[runId] && S.sessions[runId].planRequested);
+  }
+  function setPlanRequested(runId, enabled) {
+    if (runId === 'home') S.homePlanRequested = enabled;
+    else if (S.sessions[runId]) S.sessions[runId].planRequested = enabled;
+    if (S.active === runId) updatePlanControl();
+  }
+  function updatePlanControl() {
+    var btn = $('planOnce');
+    if (!btn) return;
+    var sess = S.sessions[S.active];
+    var busy = Boolean(sess && sess.session && sess.session.status === 'running');
+    var enabled = planRequested(S.active);
+    btn.disabled = busy || Boolean(S.starting);
+    btn.setAttribute('aria-pressed', String(enabled));
+    btn.textContent = enabled ? 'Plan once' : 'Plan';
+    btn.style.background = enabled ? 'var(--amber-bg)' : '';
+    btn.style.borderColor = enabled ? 'var(--evidence)' : '';
+    btn.title = busy ? 'Available when this task finishes' : enabled ? 'This request will pause for plan review, then build' : 'Plan this request before making changes';
+  }
   function controlsHtml() {
-    return '<label class="pill control-pill"><span class="control-prefix">Mode</span><select id="wf" aria-label="Workflow mode"><option value="review">Plan</option><option value="auto">Build</option><option value="chat">Chat</option></select><span class="caret">&#9662;</span></label>' +
+    return '<span class="pill control-pill" title="Ask questions, investigate, or make changes">Agent</span><button type="button" class="pill control-pill" id="planOnce" aria-pressed="false" title="Plan this request before making changes">Plan</button>' +
       '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="control-prefix">Model</span><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
       '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
@@ -1658,12 +1740,12 @@ export const UI_HTML = String.raw`<!doctype html>
     });
   }
   function bindControls() {
-    var wf = $('wf'), model = $('model'), effort = $('effort');
-    if (wf) wf.value = S.sel.wf;
+    var model = $('model'), effort = $('effort');
+    updatePlanControl();
+    if ($('planOnce')) $('planOnce').onclick = function () { setPlanRequested(S.active, !planRequested(S.active)); };
     if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
-    if (wf) wf.onchange = function () { S.sel.wf = wf.value; persist(); };
     if (model) model.onchange = function () {
       S.sel.model = model.value;
       var activeSession = S.sessions[S.active];
@@ -1709,15 +1791,13 @@ export const UI_HTML = String.raw`<!doctype html>
       sendBtns.forEach(function (b) { if (b) b.disabled = false; });
     };
     var mc = (S.sel.model || '').split('::');
-    // Workflow is an explicit user choice.  Guessing from a short prompt was
-    // able to turn an unfinished task into a conversation and hide its state.
-    var chatish = S.sel.wf === 'chat';
+    var review = planRequested('home');
     api('/api/runs', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         goal: goal, provider: mc[0], model: mc[1],
-        mode: chatish ? 'chat' : 'standard',
-        review: S.sel.wf === 'review' ? S.settings.review : false,
+        mode: 'agent',
+        review: review,
         autoApprove: S.settings.autoApprove,
         autoLearn: S.settings.autoLearn,
         effort: S.sel.effort,
@@ -1728,9 +1808,10 @@ export const UI_HTML = String.raw`<!doctype html>
       })
     }).then(function (r) {
       unlock();
+      setPlanRequested('home', false);
       S.draft = ''; persist();
       pendingFor().length = 0;
-      openRun(r.runId, { chatish: chatish, goal: goal });
+      openRun(r.runId, { chatish: false, goal: goal });
       renderSidebar();
     }, function (e) {
       unlock();
@@ -1751,16 +1832,15 @@ export const UI_HTML = String.raw`<!doctype html>
     // session's staged files (or none), never the previous one's.
     renderThumbs();
     if (opts && opts.chatish !== undefined) sess.chatish = opts.chatish;
-    // Reflect the session's real mode in the workflow dropdown so changing it
-    // and sending is an explicit switch (chat -> plan/build, or the reverse).
-    if (opts && opts.mode) S.sel.wf = opts.mode === 'chat' ? 'chat' : opts.mode === 'fast' ? 'auto' : 'review';
     renderSidebar();
     renderTopbar();
     $('view').innerHTML =
       '<div class="run"><div class="run-main">' +
       '<div class="run-overview" id="runOverview"><div class="run-overview-main"><span class="run-overview-dot" id="runOverviewDot"></span><div style="min-width:0"><div class="run-overview-next" id="runOverviewNext">Connecting to task state</div></div></div><div class="run-overview-stats" id="runOverviewStats"></div><button type="button" class="details-btn" id="overviewPanel">Details</button></div>' +
       '<div class="progress" id="progress" style="display:none"><span class="plabel" id="progText"></span><div class="pbar"><span id="progFill"></span></div><span class="plabel" id="progMeta"></span></div>' +
-      '<div class="stream" id="stream"></div>' +
+      '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
+      '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
+      '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
       '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div></div></div>' +
@@ -1770,6 +1850,14 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="rail"><button id="rsExpand" title="expand panel">PANEL &#171;</button></div></aside></div>';
     renderSideTabs(sess, runId);
     $('overviewPanel').onclick = showRunPanel;
+    renderApproach(sess);
+    $('approachPanel').open = Boolean(sess.approachOpen);
+    $('approachPanel').addEventListener('toggle', function () { sess.approachOpen = this.open; });
+    $('stream').addEventListener('scroll', function () {
+      this.dataset.follow = nearBottom(this) ? 'true' : 'false';
+      updateJumpLatest(this);
+    }, { passive: true });
+    $('jumpLatest').onclick = function () { stickScroll($('stream'), true); };
     $('rsExpand').onclick = function () { S.settings.rightCollapsed = false; persist(); applyLayout(); };
     bindResize('rsResize', 'right');
     applyLayout();
@@ -1810,7 +1898,9 @@ export const UI_HTML = String.raw`<!doctype html>
       $('stream').appendChild(historyNote);
       replayEvents = replayEvents.slice(-MAX_REPLAY_EVENTS);
     }
+    sess.replaying = true;
     replayEvents.forEach(function (ev) { appendEvent(runId, ev); });
+    sess.replaying = false;
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
     w.className = 'working'; w.id = 'working';
@@ -1843,7 +1933,9 @@ export const UI_HTML = String.raw`<!doctype html>
       if (ev.i > sess.lastIndex) {
         sess.lastIndex = ev.i;
         sess.events.push(ev);
+        sess.replaying = Boolean(ev.replay);
         appendEvent(runId, ev);
+        sess.replaying = false;
         if (sess.session && sess.session.status !== 'running') setWorking(null);
       }
     };
@@ -1979,14 +2071,26 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function nearBottom(el) {
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 400;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+  function updateJumpLatest(stream) {
+    var jump = $('jumpLatest');
+    if (jump) {
+      jump.hidden = nearBottom(stream);
+      var composer = document.querySelector('.bottom-composer');
+      if (composer) jump.style.bottom = (composer.offsetHeight + 12) + 'px';
+    }
   }
   // Chase the bottom ONLY when the user is already reading the tail — never
   // yank someone who scrolled up to re-read. Force=true for action-required
   // content (approvals, failures) where attention matters more than position.
   function stickScroll(stream, force) {
     if (!stream) return;
-    if (force || nearBottom(stream)) stream.scrollTop = stream.scrollHeight;
+    if (force || stream.dataset.follow !== 'false') {
+      stream.scrollTop = stream.scrollHeight;
+      stream.dataset.follow = 'true';
+    }
+    updateJumpLatest(stream);
   }
   var MAX_REPLAY_EVENTS = 240;
   var MAX_TIMELINE_NODES = 220;
@@ -2010,10 +2114,11 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function appendLive(stream, el) {
     var w = $('working');
-    var stick = nearBottom(stream);
+    var state = S.sessions[S.active];
+    if (state && state.replaying) el.classList.add('replayed');
     if (w) stream.insertBefore(el, w); else stream.appendChild(el);
     trimTimeline(stream);
-    if (stick) stream.scrollTop = stream.scrollHeight;
+    stickScroll(stream);
   }
 
   function sendFollow(text, supersede) {
@@ -2032,6 +2137,7 @@ export const UI_HTML = String.raw`<!doctype html>
       renderRunSide(runId);
     }
     var attached = pendingFor().length ? pendingFor() : undefined;
+    var review = !running && planRequested(runId);
     var mc = (S.sel.model || '').split('::');
     var useSelectedModel = Boolean(sess && (sess.modelOverride || !sess.session || !sess.session.provider || !sess.session.model));
     // Show the outgoing message immediately. The server will replace this
@@ -2047,14 +2153,14 @@ export const UI_HTML = String.raw`<!doctype html>
       text: text, files: attached,
       delivery: running ? S.delivery : undefined,
       provider: useSelectedModel ? mc[0] : undefined, model: useSelectedModel ? mc[1] : undefined, useSelectedModel: useSelectedModel,
-      // The workflow dropdown drives continuations too: an explicit selection
-      // switches an existing session's mode (chat <-> plan/build).
-      mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-      review: S.sel.wf === 'review' ? S.settings.review : false,
+      mode: 'agent',
+      review: review,
       supersede: sup,
       autoApprove: S.settings.autoApprove
     }) })
       .then(function () {
+        if (!running) setPlanRequested(runId, false);
+        sess.chatish = false;
         pendingFor().length = 0;
         renderThumbs();
         setWorking('Thinking…');
@@ -2072,15 +2178,15 @@ export const UI_HTML = String.raw`<!doctype html>
             method: 'POST', headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               goal: text, provider: mc[0], model: mc[1],
-              mode: S.sel.wf === 'chat' ? 'chat' : 'standard',
-              review: S.sel.wf === 'review' ? S.settings.review : false,
+              mode: 'agent',
+              review: review,
               autoApprove: S.settings.autoApprove,
               autoLearn: S.settings.autoLearn,
               effort: S.sel.effort,
               projectPath: effectiveProjectPath() || undefined,
               files: attached
             })
-          }).then(function (r) { openRun(r.runId, { chatish: r.mode === 'chat' }); }).catch(function (e2) { failUserBubble(runId, text, e2.message, sentBubbleId); toast(e2.message, true); });
+          }).then(function (r) { setPlanRequested(runId, false); openRun(r.runId, { chatish: false }); }).catch(function (e2) { failUserBubble(runId, text, e2.message, sentBubbleId); toast(e2.message, true); });
         } else {
           failUserBubble(runId, text, msg, sentBubbleId);
           toast(msg, true);
@@ -2150,6 +2256,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     var node = sess.nodes.thought;
     if (node) {
+      flushStreamText(node.querySelector('.exec-pre'));
       var c = node.querySelector('.caret'); if (c) c.remove();
       dedupeNarration(sess, node, 'lastThoughtText');
       finalizeNarration(node);
@@ -2210,6 +2317,7 @@ export const UI_HTML = String.raw`<!doctype html>
   // data-final so replays/retries never restructure twice.
   function finalizeNarration(el) {
     var txt = el.querySelector('.txt');
+    flushStreamText(txt);
     if (!txt || txt.getAttribute('data-final')) return;
     txt.setAttribute('data-final', '1');
     var raw = txt.textContent || '';
@@ -2242,6 +2350,7 @@ export const UI_HTML = String.raw`<!doctype html>
   // only the new tail.
   function dedupeNarration(sess, el, memoKey) {
     var txt = el.querySelector('.txt');
+    flushStreamText(txt);
     if (!txt) return;
     var raw = (txt.textContent || '').trim();
     if (!raw) return;
@@ -2276,12 +2385,12 @@ export const UI_HTML = String.raw`<!doctype html>
   // Human tool labels: what Gitu is doing, not the wire format. The raw
   // summary stays on dataset.toolKey for run/ok/error correlation.
   function humanToolSummary(kind, summary) {
-    if (kind === 'read') return '\uD83D\uDCD6 Reading ' + summary.slice(5);
-    if (kind === 'edit') return '\u270F\uFE0F Editing ' + summary.slice(summary.indexOf(' ') + 1);
-    if (kind === 'list') return '\uD83D\uDCC2 Listing ' + summary.slice(5);
-    if (kind === 'search') return '\uD83D\uDD0D Searching ' + summary.slice(7);
-    if (kind === 'browser') return '\uD83C\uDF10 Checking in browser';
-    if (kind === 'shell') return '\uD83E\uDDEA Running ' + summary.slice(2);
+    if (kind === 'read') return 'Read ' + summary.slice(5);
+    if (kind === 'edit') return 'Edit ' + summary.slice(summary.indexOf(' ') + 1);
+    if (kind === 'list') return 'List ' + summary.slice(5);
+    if (kind === 'search') return 'Search ' + summary.slice(7);
+    if (kind === 'browser') return 'Browser · ' + summary;
+    if (kind === 'shell') return summary.slice(2);
     return summary;
   }
   function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
@@ -2327,6 +2436,10 @@ export const UI_HTML = String.raw`<!doctype html>
     if (t && t.textContent !== text) t.textContent = text;
     if (!S.workingTimer) {
       S.workingTimer = setInterval(function () {
+        if (!document.hidden) document.querySelectorAll('.tl-tool[data-tool-state="working"]').forEach(function (row) {
+          var duration = row.querySelector('.tool-duration');
+          if (duration) duration.textContent = Math.max(0, Math.floor((Date.now() - Number(row.dataset.startedAt)) / 1000)) + 's';
+        });
         var sec = Math.floor((Date.now() - (S.workingSince || Date.now())) / 1000);
         var e = $('workingElapsed');
         if (e) e.textContent = sec >= 3 ? '· ' + sec + 's' : '';
@@ -2339,6 +2452,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function setupCopyButton(btn, textGetter) {
     if (!btn) return;
     btn.onclick = function (e) {
+      e.preventDefault();
       e.stopPropagation();
       var str = typeof textGetter === 'function' ? textGetter() : String(textGetter || '');
       if (!str) return;
@@ -2602,6 +2716,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
+    updateApproach(runId, ev);
     if (text.indexOf('think') === 0 || text.indexOf('plan ') === 0 || text.indexOf('activity reasoning') === 0) mascotState('thinking');
     else if (text.indexOf('activity content') === 0 || text.indexOf('activity tool') === 0) mascotState('thinking');
     else if (text.indexOf('run write') === 0 || text.indexOf('run edit') === 0) mascotState('coding');
@@ -2620,6 +2735,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
     var working = $('working');
     function insert(el) {
+      if (sess.replaying) el.classList.add('replayed');
       if (ev && ev.t && el.classList && el.classList.contains('tl-row')) {
         var stamp = document.createElement('span');
         stamp.className = 'tl-time';
@@ -2627,7 +2743,7 @@ export const UI_HTML = String.raw`<!doctype html>
         stamp.title = new Date(ev.t).toLocaleString();
         el.appendChild(stamp);
       }
-      if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream);
+      if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream); stickScroll(stream);
     }
 
     if (text.indexOf('file ') === 0) {
@@ -2653,8 +2769,7 @@ export const UI_HTML = String.raw`<!doctype html>
           appendLive(stream, ab);
           sess.nodes.abubble = ab;
         }
-        sess.nodes.abubble.querySelector('.txt').appendChild(document.createTextNode(chunk));
-        stickScroll(stream);
+        queueStreamText(sess.nodes.abubble.querySelector('.txt'), chunk, sess.replaying);
         return;
       }
       if (!sess.nodes.thought) {
@@ -2676,8 +2791,7 @@ export const UI_HTML = String.raw`<!doctype html>
         sess.nodes.thought = t;
       }
       var sink = sess.nodes.thought.querySelector('.exec-pre') || sess.nodes.thought.querySelector('.txt');
-      sink.appendChild(document.createTextNode(chunk));
-      stickScroll(stream);
+      queueStreamText(sink, chunk, sess.replaying);
       return;
     }
     if (text.indexOf('reason ') === 0) {
@@ -2693,12 +2807,12 @@ export const UI_HTML = String.raw`<!doctype html>
         insert(t3);
         sess.nodes.thought = t3;
       }
-      sess.nodes.thought.querySelector('.txt').appendChild(document.createTextNode(text.slice(7)));
-      stickScroll(stream);
+      queueStreamText(sess.nodes.thought.querySelector('.txt'), text.slice(7), sess.replaying);
       return;
     }
 
     if (text.indexOf('say ') === 0) {
+      if (sess.nodes.thought) flushStreamText(sess.nodes.thought.querySelector('.txt'));
       var prose = text.slice(4);
       if (!prose.trim()) { closeThought(runId); return; }
       if (sess && sess.chatish) {
@@ -2976,6 +3090,17 @@ export const UI_HTML = String.raw`<!doctype html>
       }
       row.dataset.toolState = 'done';
       row.dataset.toolStatus = status;
+      var outputLabel = row.querySelector('.output-label');
+      if (outputLabel) outputLabel.textContent = 'Output';
+      var outputPre = row.querySelector('pre');
+      if (outputPre && outputPre.textContent === 'Waiting for tool output…') outputPre.textContent = 'Tool ' + (status === 'ok' ? 'completed' : status) + '. No output was returned.';
+      var duration = row.querySelector('.tool-duration');
+      var elapsed = /\((\d+)ms\)$/.exec(eventBody);
+      if (duration && elapsed) {
+        var ms = Number(elapsed[1]);
+        duration.textContent = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+      }
+      if (status !== 'ok') row.querySelector('details').open = true;
       state.nodes.lastTool = row;
       state.nodes.lastOutputTool = row;
       if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
@@ -2997,13 +3122,27 @@ export const UI_HTML = String.raw`<!doctype html>
       row.innerHTML =
         '<span class="tl-dot dot-run"></span>' +
         '<div class="tl-body">' +
-          '<div class="tl-cmd">' +
+          '<button type="button" class="tl-cmd" aria-expanded="false">' +
+            '<span class="tool-kind" aria-hidden="true">' + ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇') + '</span>' +
             '<span class="cmd">' + esc(humanToolSummary(kind, summary)) + '</span>' +
             (reason ? '<span class="why">— ' + esc(reason) + '</span>' : '') +
-            '<span class="st st-run">&#8943; working</span>' +
-          '</div>' +
-          '<details class="tl-out"><summary><span>output</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary><pre></pre></details>' +
+            '<span class="st st-run">Running</span><span class="tool-duration">0s</span><span class="tool-chevron" aria-hidden="true">›</span>' +
+          '</button>' +
+          '<details class="tl-out"><summary><span class="output-label">Output · waiting for result</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary><pre>Waiting for tool output…</pre></details>' +
         '</div>';
+      var commandButton = row.querySelector('.tl-cmd');
+      var outputDetails = row.querySelector('.tl-out');
+      commandButton.title = summary + (reason ? '\n' + reason : '');
+      outputDetails.id = 'tool-output-' + runId + '-' + ev.i;
+      commandButton.setAttribute('aria-controls', outputDetails.id);
+      commandButton.onclick = function (e) {
+        e.stopPropagation();
+        outputDetails.open = !outputDetails.open;
+        commandButton.setAttribute('aria-expanded', String(outputDetails.open));
+      };
+      outputDetails.addEventListener('toggle', function () {
+        commandButton.setAttribute('aria-expanded', String(outputDetails.open));
+      });
 
       var copyBtn = row.querySelector('.tool-btn-copy');
       setupCopyButton(copyBtn, function () {
@@ -3016,6 +3155,7 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.nodes.toolRows = sess.nodes.toolRows || [];
       row.dataset.toolKey = summary;
       row.dataset.toolState = 'working';
+      row.dataset.startedAt = String(Date.parse(ev.t) || Date.now());
       sess.nodes.toolRows.push(row);
       var wt = workingTextFor(text);
       if (wt) setWorking(wt);
@@ -3039,6 +3179,10 @@ export const UI_HTML = String.raw`<!doctype html>
         var preEl = t2.querySelector('pre');
         var cleanOut = body.replace(/ ⏎ /g, '\n');
         setupOutputFolding(detailsEl, preEl, cleanOut);
+        var outputLabel = t2.querySelector('.output-label');
+        var outputLines = cleanOut ? cleanOut.split('\n').length : 0;
+        if (outputLabel) outputLabel.textContent = 'Output · ' + outputLines + (outputLines === 1 ? ' line' : ' lines');
+        stickScroll(stream);
       }
       return;
     }
@@ -3117,6 +3261,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var done = 0;
     L.plan.forEach(function (s) { if (s.status === 'done') done++; });
     var total = L.plan.length;
+    if (L.mode === 'agent' && !total) { p.style.display = 'none'; return; }
     p.style.display = 'flex';
     $('progText').textContent = total ? 'Plan step ' + done + ' of ' + total : 'Planning…';
     $('progMeta').textContent = L.actions.length + ' actions · ' + L.evidence.length + ' checks';
@@ -3144,7 +3289,7 @@ export const UI_HTML = String.raw`<!doctype html>
     next.textContent = current;
     next.title = current;
     var statBits = [status === 'waiting' ? 'needs input' : status];
-    if (ledger && ledger.acceptanceCriteria) {
+    if (ledger && ledger.acceptanceCriteria && ledger.acceptanceCriteria.length) {
       var satisfied = ledger.acceptanceCriteria.filter(function (c) { return c.satisfied; }).length;
       statBits.push(satisfied + '/' + ledger.acceptanceCriteria.length + ' criteria');
     }
@@ -3156,7 +3301,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (S.active !== runId) return;
     api('/api/runs/' + runId).then(function (session) {
       var sess = S.sessions[runId];
-      if (!sess) return;
+      if (!sess || S.active !== runId) return;
       S.pollFailures = 0;
       sess.session = session;
       renderRunOverview(session, sess.ledger);
@@ -3182,6 +3327,7 @@ export const UI_HTML = String.raw`<!doctype html>
       // Session mode is durable. Never infer chat mode from an empty ledger:
       // a task can fail before it has planned anything and still be a task.
       sess.chatish = session.mode === 'chat';
+      settleApproach(sess, session);
       renderTopbar();
       renderApprovals(runId, session);
       renderPlanReview(runId, session);
@@ -3205,6 +3351,19 @@ export const UI_HTML = String.raw`<!doctype html>
         }).catch(function () {});
       } else renderRunSide(runId);
       if (session.status !== 'running') {
+        retireAbubble(sess);
+        closeThought(runId);
+        (sess.nodes.toolRows || []).forEach(function (row) {
+          if (!row.isConnected || row.dataset.toolState !== 'working') return;
+          row.dataset.toolState = 'done';
+          row.dataset.toolStatus = 'interrupted';
+          row.querySelector('.tl-dot').className = 'tl-dot dot-blocked';
+          var toolStatus = row.querySelector('.st');
+          toolStatus.className = 'st st-warn';
+          toolStatus.textContent = 'Interrupted';
+          row.querySelector('.output-label').textContent = 'Output · interrupted';
+          row.querySelector('pre').textContent = 'The run ended before this tool reported a result.';
+        });
         setWorking(null);
         if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; }
         S.reconnecting = false;
@@ -3281,11 +3440,6 @@ export const UI_HTML = String.raw`<!doctype html>
         api('/api/approvals/' + id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ approved: e.target.getAttribute('data-ok') === '1' }) })
           .catch(function (er) { toast(er.message, true); });
         return;
-      }
-      var head = e.target.closest && e.target.closest('.tl-tool .tl-cmd');
-      if (head) {
-        var det = head.parentElement.querySelector('details');
-        if (det) det.open = !det.open;
       }
     };
   }
@@ -3439,12 +3593,12 @@ export const UI_HTML = String.raw`<!doctype html>
     div.innerHTML =
       '<h3>plan review — read the plan, edit if needed, then choose</h3>' +
       '<div class="md-plan" id="prDoc">' +
-      '<h4>Acceptance criteria</h4><ul>' + pr.criteria.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>' +
+      (pr.criteria.length ? '<h4>Acceptance criteria</h4><ul>' + pr.criteria.map(function (c) { return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>' : '') +
       '<h4>Plan</h4><ol>' + pr.steps.map(function (s, i2) {
         return '<li><b>Step ' + (i2 + 1) + '.</b> ' + esc(s.description) + '<span class="ver">Verification: ' + esc(s.verification) + '</span></li>';
       }).join('') + '</ol></div>' +
       '<div id="prEdit" style="display:none">' +
-      '<label>Acceptance criteria (one per line)</label>' +
+      '<label>Acceptance criteria (optional, one per line)</label>' +
       '<textarea id="prCrit" rows="' + Math.max(2, pr.criteria.length) + '">' + esc(pr.criteria.join('\n')) + '</textarea>' +
       '<label>Plan steps (one per line: description | verification)</label>' +
       '<textarea id="prSteps" rows="' + Math.max(3, pr.steps.length + 1) + '">' + esc(pr.steps.map(function (s) { return s.description + ' | ' + s.verification; }).join('\n')) + '</textarea>' +
@@ -3772,13 +3926,14 @@ export const UI_HTML = String.raw`<!doctype html>
       ? '<div style="margin:0 0 14px;padding:10px;border:1px solid rgba(255,100,101,.4);border-radius:9px;background:rgba(255,100,101,.1);color:#ffb3b4;font-size:12px;line-height:1.45"><b>Last attempt failed.</b> ' + esc(failure) + '<br>' + recoveryHint + '</div>'
       : '';
     html += '<div class="side-summary"><div class="t">Task state</div><div class="d">' +
-      satisfied + '/' + L.acceptanceCriteria.length + ' criteria · ' + planDone + '/' + L.plan.length + ' plan steps · ' + L.evidence.length + ' checks</div></div>';
+      (L.acceptanceCriteria.length ? satisfied + '/' + L.acceptanceCriteria.length + ' criteria · ' : '') +
+      (L.plan.length ? planDone + '/' + L.plan.length + ' plan steps · ' : '') + L.evidence.length + ' checks</div></div>';
     if (L.blockers.length) {
       html += '<div class="section-h" style="margin-top:0">Blockers</div>';
       L.blockers.slice(-3).forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
     }
-    html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
-    if (!L.acceptanceCriteria.length) html += '<div class="empty">none set yet</div>';
+    if (L.acceptanceCriteria.length || L.mode !== 'agent') html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
+    if (!L.acceptanceCriteria.length && L.mode !== 'agent') html += '<div class="empty">none set yet</div>';
     var orderedCriteria = L.acceptanceCriteria.filter(function (c) { return !c.satisfied; }).concat(L.acceptanceCriteria.filter(function (c) { return c.satisfied; }));
     function criterionHtml(c) {
       var reqHtml = c.verification
@@ -3791,8 +3946,8 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     html += orderedCriteria.slice(0, 6).map(criterionHtml).join('');
     if (orderedCriteria.length > 6) html += '<details class="side-more"><summary>Show ' + (orderedCriteria.length - 6) + ' more criteria</summary>' + orderedCriteria.slice(6).map(criterionHtml).join('') + '</details>';
-    html += '<div class="section-h">Plan' + (L.planApproved ? ' <span class="chip ok" style="margin-left:6px">approved</span>' : '') + '</div>';
-    if (!L.plan.length) html += '<div class="empty">no plan yet</div>';
+    if (L.plan.length || L.mode !== 'agent') html += '<div class="section-h">Plan' + (L.planApproved ? ' <span class="chip ok" style="margin-left:6px">approved</span>' : '') + '</div>';
+    if (!L.plan.length && L.mode !== 'agent') html += '<div class="empty">no plan yet</div>';
     var orderedPlan = L.plan.filter(function (s) { return s.status === 'in_progress'; }).concat(L.plan.filter(function (s) { return s.status === 'pending'; }), L.plan.filter(function (s) { return s.status !== 'in_progress' && s.status !== 'pending'; }));
     function planHtml(s) { return '<div class="step"><span class="st ' + s.status + '">' + esc(s.status) + '</span><div>' + esc(s.description) + ' <span style="color:var(--faint)">· ' + esc(s.verification) + '</span></div></div>'; }
     html += orderedPlan.slice(0, 6).map(planHtml).join('');
@@ -4239,14 +4394,11 @@ export const UI_HTML = String.raw`<!doctype html>
     if (S.setSection === 'general') {
       b.innerHTML = '<h1>General</h1>' +
         '<h2>Defaults</h2><div class="setcard">' +
-        '<div class="setrow"><div class="grow"><div class="t">Default workflow</div><div class="d">Plan mode pauses for your review; Build runs straight through; Chat answers only.</div></div>' +
-        '<select id="gWf"><option value="review">Plan mode</option><option value="auto">Build mode</option><option value="chat">Chat mode</option></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Agent workflow</div><div class="d">One conversation for questions and changes. Quick edits get focused checks. Use Plan in the composer to review a plan for one request, then continue building.</div></div><span class="chip">Always on</span></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
         '</div>';
-      $('gWf').value = S.sel.wf;
       fillEffort('gEffort', provOf(S.sel.model));
       $('gEffort').value = S.sel.effort;
-      $('gWf').onchange = function () { S.sel.wf = $('gWf').value; persist(); };
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
     } else if (S.setSection === 'developer') {
       b.innerHTML = '<h1>Developer</h1>' +

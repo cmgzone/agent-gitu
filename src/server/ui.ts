@@ -349,26 +349,55 @@ export const UI_HTML = String.raw`<!doctype html>
   @keyframes textArrival { from { opacity: .3; } to { opacity: 1; } }
   .text-streaming::after { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 0 2px 5px; border-radius: 50%; background: var(--run); animation: pulse 1.2s ease-in-out infinite; }
   .tl-note-row:has(.text-streaming) .caret { display: none; }
-  .tl-tool { padding: 5px 0; }
-  .tl-tool > .tl-body { overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: rgba(19,24,38,.7); transition: border-color .25s ease, background .25s ease; }
-  .tl-tool[data-tool-state=working] > .tl-body { border-color: rgba(91,168,255,.32); background: linear-gradient(110deg, rgba(91,168,255,.06), rgba(19,24,38,.7)); }
-  .tl-tool[data-tool-status=error] > .tl-body, .tl-tool[data-tool-status=denied] > .tl-body { border-color: rgba(255,100,101,.35); }
-  .tl-tool[data-tool-status=ok] .dot-ok { animation: dotPop .3s ease-out; }
-  .tl-tool .tl-cmd { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; color: inherit; padding: 10px 12px; align-items: center; }
-  .tl-tool .tl-cmd:hover { background: rgba(255,255,255,.025); }
-  .tl-tool .tl-cmd .cmd { flex: 1 1 auto; }
-  .tl-tool .tl-cmd .why { flex: 0 2 auto; max-width: 36%; }
+  /* Tool calls belong to the agent response that caused them. A single
+     expandable activity group keeps a long run readable while still making
+     every command and its output available with one tap. */
+  .tl-tool-group { padding: 5px 0; }
+  .tl-tool-group > .tl-body { overflow: hidden; border: 1px solid var(--border); border-radius: 11px; background: rgba(19,24,38,.7); transition: border-color .25s ease, background .25s ease, box-shadow .25s ease; }
+  .tl-tool-group[data-tool-group-state=working] > .tl-body { border-color: rgba(91,168,255,.42); background: linear-gradient(110deg, rgba(91,168,255,.085), rgba(19,24,38,.78) 48%, rgba(143,128,255,.055)); box-shadow: 0 0 0 1px rgba(91,168,255,.04), 0 8px 22px rgba(7,12,24,.16); }
+  .tl-tool-group[data-tool-group-state=attention] > .tl-body { border-color: rgba(255,100,101,.36); }
+  .tool-group-details { margin: 0; }
+  .tool-group-details > summary { position: relative; list-style: none; display: flex; align-items: center; gap: 8px; min-height: 45px; padding: 0 12px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  .tool-group-details > summary::-webkit-details-marker { display: none; }
+  .tool-group-details > summary:hover { background: rgba(255,255,255,.025); }
+  .tool-group-details[open] > summary { border-bottom: 1px solid var(--border); }
+  .tool-group-mark { position: relative; width: 25px; height: 25px; border: 1px solid rgba(91,168,255,.34); border-radius: 8px; background: rgba(91,168,255,.08); color: var(--run); display: inline-flex; align-items: center; justify-content: center; font: 11px var(--mono); flex: none; overflow: hidden; }
+  .tool-group-mark::after { content: ''; position: absolute; inset: -55% 42% -55% -70%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent); transform: rotate(18deg); }
+  .tl-tool-group[data-tool-group-state=working] .tool-group-mark::after { animation: toolSweep 1.8s ease-in-out infinite; }
+  @keyframes toolSweep { 0% { transform: translateX(-170%) rotate(18deg); opacity: 0; } 24% { opacity: .7; } 58%,100% { transform: translateX(270%) rotate(18deg); opacity: 0; } }
+  .tool-group-title { color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; }
+  .tool-group-count { color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
+  .tool-group-state { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font: 10px var(--mono); letter-spacing: .35px; white-space: nowrap; }
+  .tl-tool-group[data-tool-group-state=working] .tool-group-state { color: var(--run); }
+  .tl-tool-group[data-tool-group-state=attention] .tool-group-state { color: var(--err); }
+  .tool-group-state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+  .tl-tool-group[data-tool-group-state=working] .tool-group-state::before { animation: pulse 1.35s ease-in-out infinite; }
+  .tool-group-shimmer { width: 42px; height: 4px; border-radius: 999px; background: linear-gradient(90deg, rgba(91,168,255,.06), rgba(179,209,255,.95), rgba(143,128,255,.08)); background-size: 160px 100%; animation: toolShimmer 1.25s linear infinite; flex: none; }
+  @keyframes toolShimmer { from { background-position: -80px 0; } to { background-position: 80px 0; } }
+  .tl-tool-group:not([data-tool-group-state=working]) .tool-group-shimmer { display: none; }
+  .tool-group-chevron { color: var(--faint); transition: transform .18s ease; flex: none; }
+  .tool-group-details[open] .tool-group-chevron { transform: rotate(90deg); }
+  .tool-group-list { padding: 0 12px 8px; background: rgba(7,11,20,.16); }
+  .tool-call { position: relative; min-width: 0; border-bottom: 1px solid rgba(117,132,164,.14); animation: toolIn .2s ease-out both; }
+  .tool-call:last-child { border-bottom: 0; }
+  .tool-call.done-bad { animation: rowFlash .6s ease; }
+  .tool-call[data-tool-state=working] .tool-call-head { background: linear-gradient(90deg, rgba(91,168,255,.055), transparent 72%); }
+  .tool-call-head { width: 100%; border: 0; border-radius: 7px; background: transparent; text-align: left; color: inherit; padding: 9px 0; align-items: center; }
+  .tool-call-head:hover { background: rgba(255,255,255,.025); }
+  .tool-call-head .cmd { flex: 1 1 auto; }
+  .tool-call-head .why { flex: 0 2 auto; max-width: 36%; }
   .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px; flex: none; border: 1px solid var(--border2); border-radius: 6px; color: var(--run); font: 11px var(--mono); background: var(--card2); }
   .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
   .tool-chevron { color: var(--faint); transition: transform .18s ease; }
   .tl-cmd[aria-expanded=true] .tool-chevron { transform: rotate(90deg); }
-  .tl-tool .tl-out { margin: 0; padding: 0 12px; }
-  .tl-tool .tl-out:not([open]) { display: none; }
-  .tl-tool .tl-out[open] { padding-bottom: 10px; border-top: 1px solid var(--border); }
-  .tl-tool .tl-out summary { display: flex; padding-top: 7px; }
-  .tl-tool .tl-out summary::before { display: none; }
-  .tl-tool .tool-btn-copy { margin-left: auto; }
-  .tl-tool .st-run::before { content: ''; width: 9px; height: 9px; border: 1.5px solid rgba(91,168,255,.25); border-top-color: var(--run); border-radius: 50%; animation: toolSpin .9s linear infinite; }
+  .tool-repeat { font: 9.5px var(--mono); color: var(--muted); border: 1px solid var(--border2); border-radius: 999px; padding: 1px 5px; flex: none; }
+  .tool-call .tl-out { margin: 0; }
+  .tool-call .tl-out:not([open]) { display: none; }
+  .tool-call .tl-out[open] { padding-bottom: 10px; border-top: 1px solid var(--border); }
+  .tool-call .tl-out summary { display: flex; padding-top: 7px; }
+  .tool-call .tl-out summary::before { display: none; }
+  .tool-call .tool-btn-copy { margin-left: auto; }
+  .tool-call .st-run::before { content: ''; width: 9px; height: 9px; border: 1.5px solid rgba(91,168,255,.25); border-top-color: var(--run); border-radius: 50%; animation: toolSpin .9s linear infinite; }
   @keyframes toolSpin { to { transform: rotate(360deg); } }
   .jump-latest { position: absolute; z-index: 5; bottom: 152px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; padding: 7px 14px; border: 1px solid var(--border2); border-radius: 999px; color: var(--text); background: var(--card); box-shadow: 0 6px 24px rgba(0,0,0,.3); font-size: 11px; }
   .jump-latest:hover { background: var(--hover); border-color: var(--run); }
@@ -392,7 +421,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .approach-entry.fail .approach-label { color: var(--err); }
   .approach-note { margin: 0; padding: 4px 12px 10px; color: var(--faint); font-size: 10.5px; }
   @media (max-width: 720px) { .approach-panel { margin: 0 10px 6px; } .approach-latest { display: none; } .approach-entry { grid-template-columns: 1fr; gap: 2px; } }
-  @media (max-width: 720px) { .tl-tool .why { display: none; } .tl-tool .tl-cmd { gap: 6px; padding: 9px 8px; } .tool-kind { width: 21px; height: 21px; } .tl-tool .st { letter-spacing: 0; } }
+  @media (max-width: 720px) { .tool-call .why { display: none; } .tool-call .tl-cmd { gap: 6px; } .tool-group-shimmer { display: none; } .tool-group-count { display: none; } .tool-kind { width: 21px; height: 21px; } .tool-call .st { letter-spacing: 0; } }
   .fold-btn { display: block; width: 100%; padding: 4px 10px; background: var(--card2); border: 0; box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 var(--border); border-radius: 0 0 8px 8px; color: var(--run); font-size: 10.5px; text-align: left; cursor: pointer; font-family: var(--mono); }
   .fold-btn:hover { color: var(--text); }
 
@@ -517,14 +546,36 @@ export const UI_HTML = String.raw`<!doctype html>
   .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 11px; color: var(--muted); }
   .legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; margin-right: 4px; }
   .tl-time { margin-left: auto; flex: none; align-self: flex-start; margin-top: 5px; color: var(--faint); font: 10px var(--mono); opacity: .8; }
-  .raw { border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; overflow: hidden; }
-  .raw .row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 10px; font-family: var(--mono); font-size: 11px; border-bottom: 1px solid var(--border); color: var(--muted); }
-  .raw .row:last-child { border-bottom: 0; }
-  .raw .row .t { color: var(--faint); flex: none; }
   .empty { color: var(--faint); font-size: 12.5px; padding: 4px 0; }
 
   .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: linear-gradient(180deg, rgba(13,16,23,.72), var(--bg)); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
+  /* The current checklist lives at the point of action. It is deliberately
+     compact: the agent's next work item stays visible without competing with
+     the conversation or forcing people back into the details panel. */
+  .composer-todos { overflow: hidden; margin: 0 0 8px; border: 1px solid rgba(143,128,255,.24); border-radius: 12px; background: linear-gradient(135deg, rgba(143,128,255,.09), rgba(19,24,38,.92) 56%); box-shadow: 0 8px 22px rgba(0,0,0,.10); }
+  .composer-todos-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 11px; border-bottom: 1px solid rgba(143,128,255,.16); }
+  .composer-todos-title { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 11px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: #d3ceff; }
+  .composer-todos-title .todo-title-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run); box-shadow: 0 0 0 4px var(--run-dim); flex: none; }
+  .composer-todos-count { margin-left: auto; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
+  .composer-todo-list { max-height: 132px; overflow-y: auto; margin: 0; padding: 3px 6px 5px; list-style: none; scrollbar-gutter: stable; }
+  .composer-todo { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; color: var(--text); font-size: 12.5px; line-height: 1.34; }
+  .composer-todo + .composer-todo { margin-top: 1px; }
+  .composer-todo.active { background: rgba(91,168,255,.10); }
+  .composer-todo.done { color: var(--muted); }
+  .composer-todo.blocked, .composer-todo.failed { background: var(--err-dim); }
+  .composer-todo-mark { display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid var(--border2); border-radius: 50%; color: transparent; font-size: 10px; line-height: 1; }
+  .composer-todo.active .composer-todo-mark { border-color: var(--run); background: var(--run); box-shadow: 0 0 0 3px var(--run-dim); }
+  .composer-todo.active .composer-todo-mark::after { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #fff; animation: pulse 1.35s ease-in-out infinite; }
+  .composer-todo.done .composer-todo-mark { border-color: var(--ok); background: var(--ok-dim); color: var(--ok); }
+  .composer-todo.blocked .composer-todo-mark, .composer-todo.failed .composer-todo-mark { border-color: var(--err); background: var(--err-dim); color: var(--err); }
+  .composer-todo-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer-todo.done .composer-todo-text { text-decoration: line-through; text-decoration-color: rgba(139,148,167,.55); }
+  .composer-todo-parent { color: var(--faint); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 34vw; }
+  .composer-todo-state { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; white-space: nowrap; }
+  .composer-todo.active .composer-todo-state { color: var(--run); }
+  .composer-todo.done .composer-todo-state { color: var(--ok); }
+  .composer-todo.blocked .composer-todo-state, .composer-todo.failed .composer-todo-state { color: var(--err); }
 
   .settings { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: flex; }
   .setnav { width: 264px; border-right: 1px solid var(--border); padding: 16px 10px; overflow-y: auto; }
@@ -603,7 +654,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .ubtn:hover { color: var(--text); border-color: var(--border2); }
   .ubtn svg { width: 12px; height: 12px; }
 
-  .shell.left-collapsed .sb { width: 44px; }
+  .shell.left-collapsed .sb { width: 44px; border-right: 0; }
   .shell.left-collapsed .sb .scroll, .shell.left-collapsed .sb .foot,
   .shell.left-collapsed .sb .name, .shell.left-collapsed .sb .spacer,
   .shell.left-collapsed .sb #gearBtn { display: none; }
@@ -1841,7 +1892,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
-      '<div class="bottom-composer"><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
+      '<div class="bottom-composer"><section class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></section><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div></div></div>' +
       '</div>' +
@@ -1861,6 +1912,7 @@ export const UI_HTML = String.raw`<!doctype html>
     $('rsExpand').onclick = function () { S.settings.rightCollapsed = false; persist(); applyLayout(); };
     bindResize('rsResize', 'right');
     applyLayout();
+    renderComposerTodos(runId);
   $('follow').addEventListener('keydown', function (e) {
     // Shift+Enter inserts a newline, same as the home composer — the
     // auto-grow textarea exists precisely for multi-line follow-ups.
@@ -2436,7 +2488,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (t && t.textContent !== text) t.textContent = text;
     if (!S.workingTimer) {
       S.workingTimer = setInterval(function () {
-        if (!document.hidden) document.querySelectorAll('.tl-tool[data-tool-state="working"]').forEach(function (row) {
+        if (!document.hidden) document.querySelectorAll('.tool-call[data-tool-state="working"]').forEach(function (row) {
           var duration = row.querySelector('.tool-duration');
           if (duration) duration.textContent = Math.max(0, Math.floor((Date.now() - Number(row.dataset.startedAt)) / 1000)) + 's';
         });
@@ -2711,12 +2763,99 @@ export const UI_HTML = String.raw`<!doctype html>
     if (stream) stickScroll(stream);
   }
 
+  // ── Grouped tool activity ──────────────────────────────────────────────
+  // A model turn can make several calls (especially a parallel action). Keep
+  // them in one disclosure anchored after that turn rather than echoing a
+  // separate timeline card for every lifecycle event. The rows inside remain
+  // independently addressable so out-of-order parallel completions still
+  // update the right call.
+  function toolActivityGroupForRow(row) {
+    return row && row.closest ? row.closest('.tl-tool-group') : null;
+  }
+
+  function refreshToolActivityGroup(groupEl) {
+    if (!groupEl || !groupEl.isConnected) return;
+    var rows = Array.prototype.slice.call(groupEl.querySelectorAll('.tool-call'));
+    var running = 0, troubled = 0, attempts = 0;
+    rows.forEach(function (row) {
+      var state = String(row.dataset.toolState || '');
+      if (state === 'working') running++;
+      var outcome = String(row.dataset.toolStatus || '');
+      if (outcome === 'error' || outcome === 'denied' || outcome === 'blocked' || outcome === 'interrupted') troubled++;
+      attempts += Math.max(1, Number(row.dataset.toolAttempts || 1));
+    });
+    var status = running ? 'working' : troubled ? 'attention' : 'complete';
+    groupEl.dataset.toolGroupState = status;
+    var count = groupEl.querySelector('.tool-group-count');
+    if (count) {
+      var distinct = rows.length + (rows.length === 1 ? ' tool' : ' tools');
+      count.textContent = attempts > rows.length ? distinct + ' · ' + attempts + ' runs' : distinct;
+    }
+    var label = groupEl.querySelector('.tool-group-state');
+    if (label) label.textContent = status === 'working' ? 'Working' : status === 'attention' ? 'Needs attention' : 'Complete';
+    var dot = groupEl.querySelector(':scope > .tl-dot');
+    if (dot) dot.className = 'tl-dot ' + (status === 'working' ? 'dot-run' : status === 'attention' ? 'dot-bad' : 'dot-ok');
+    var summary = groupEl.querySelector('.tool-group-details > summary');
+    if (summary) summary.title = 'Show ' + (attempts === 1 ? '1 tool call' : attempts + ' tool calls');
+  }
+
+  function sealToolActivityGroup(sess, force) {
+    if (!sess || !sess.nodes || !sess.nodes.toolGroup) return;
+    var group = sess.nodes.toolGroup;
+    if (!group.el || !group.el.isConnected) { sess.nodes.toolGroup = null; return; }
+    if (!force && group.el.querySelector('.tool-call[data-tool-state="working"]')) return;
+    group.accepting = false;
+    sess.nodes.toolGroup = null;
+  }
+
+  function createToolActivityGroup(sess, insert) {
+    var el = document.createElement('div');
+    el.className = 'tl-row tl-tool-group';
+    el.dataset.toolGroupState = 'working';
+    el.innerHTML =
+      '<span class="tl-dot dot-run"></span>' +
+      '<div class="tl-body"><details class="tool-group-details">' +
+        '<summary aria-label="Show tool activity">' +
+          '<span class="tool-group-mark" aria-hidden="true">◇</span>' +
+          '<span class="tool-group-title">Tool activity</span>' +
+          '<span class="tool-group-count">0 tools</span>' +
+          '<span class="tool-group-state" aria-live="polite">Working</span>' +
+          '<span class="tool-group-shimmer" aria-hidden="true"></span>' +
+          '<span class="tool-group-chevron" aria-hidden="true">›</span>' +
+        '</summary>' +
+        '<div class="tool-group-list"></div>' +
+      '</details></div>';
+    var details = el.querySelector('.tool-group-details');
+    var summary = el.querySelector('.tool-group-details > summary');
+    if (details && summary) {
+      summary.setAttribute('aria-expanded', 'false');
+      details.addEventListener('toggle', function () { summary.setAttribute('aria-expanded', String(details.open)); });
+    }
+    insert(el);
+    var group = { el: el, callsByKey: Object.create(null), accepting: true };
+    sess.nodes.toolGroup = group;
+    return group;
+  }
+
+  function ensureToolActivityGroup(sess, insert) {
+    var group = sess && sess.nodes && sess.nodes.toolGroup;
+    if (group && group.el && group.el.isConnected && group.accepting) return group;
+    return createToolActivityGroup(sess, insert);
+  }
+
+  function toolActivityBoundary(text) {
+    return /^(?:tdelta |thought |say |user-msg |activity (?:reasoning|content|tool)|think(?:\s|$)|evidence |plan |criteria |hypothesis |decision |ask-user|approval-required|queued |stopped |continue |done )/.test(String(text || ''));
+  }
+
   function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
     updateApproach(runId, ev);
+    // The next assistant event starts a fresh activity group after the prior
+    // one has settled. Do not split an in-flight parallel batch.
+    if (sess && toolActivityBoundary(text)) sealToolActivityGroup(sess);
     if (text.indexOf('think') === 0 || text.indexOf('plan ') === 0 || text.indexOf('activity reasoning') === 0) mascotState('thinking');
     else if (text.indexOf('activity content') === 0 || text.indexOf('activity tool') === 0) mascotState('thinking');
     else if (text.indexOf('run write') === 0 || text.indexOf('run edit') === 0) mascotState('coding');
@@ -2872,16 +3011,10 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
     if (text.indexOf('parallel') === 0) {
-      var pm = document.createElement('div');
-      pm.className = 'tl-row tl-meta';
-      pm.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>parallel</b> ' + esc(text.slice(9)) + ' — running concurrently</div>';
-      insert(pm);
-      // Parallel executors emit all run events up front, then interleave
-      // each call's ok/error and out events as the promises settle.  A
-      // single lastTool pointer cannot represent that lifecycle: the last
-      // card stays in sync while earlier cards spin forever.  Keep the batch
-      // marker so terminal events can use the active-row queue as a safe
-      // fallback when an older server event has no matching command key.
+      // Parallel executors emit all run events up front, then interleave each
+      // completion. The one Tool activity disclosure below owns that batch;
+      // a second "parallel" timeline row would duplicate the same event.
+      sess.nodes.nextToolBatchHint = text.slice(9).trim();
       sess.nodes.parallelPending = true;
       sess.nodes.toolRows = sess.nodes.toolRows || [];
       setWorking('Running parallel tools…');
@@ -3104,6 +3237,7 @@ export const UI_HTML = String.raw`<!doctype html>
       state.nodes.lastTool = row;
       state.nodes.lastOutputTool = row;
       if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
+      refreshToolActivityGroup(toolActivityGroupForRow(row));
       return row;
     }
 
@@ -3117,20 +3251,65 @@ export const UI_HTML = String.raw`<!doctype html>
       var kind = toolKind(body);
       var summary = splitSummary(body);
       var reason = splitReason(body);
+      var group = ensureToolActivityGroup(sess, insert);
+      if (sess.nodes.nextToolBatchHint) {
+        var groupTitle = group.el.querySelector('.tool-group-title');
+        if (groupTitle) groupTitle.textContent = 'Parallel tool activity';
+        sess.nodes.nextToolBatchHint = '';
+      }
+      var key = normalizeToolKey(summary);
+      var existingCall = group.callsByKey[key];
+      // Stream reconnects and provider retries can repeat the same run event.
+      // event. Keep it as one nested call with a run count instead of making
+      // a visually identical card for every echo.
+      if (existingCall && existingCall.isConnected) {
+        var attempts = Math.max(1, Number(existingCall.dataset.toolAttempts || 1)) + 1;
+        existingCall.dataset.toolAttempts = String(attempts);
+        var repeatChip = existingCall.querySelector('.tool-repeat');
+        if (!repeatChip) {
+          repeatChip = document.createElement('span');
+          repeatChip.className = 'tool-repeat';
+          var repeatAnchor = existingCall.querySelector('.st');
+          if (repeatAnchor && repeatAnchor.parentNode) repeatAnchor.parentNode.insertBefore(repeatChip, repeatAnchor);
+        }
+        if (repeatChip) repeatChip.textContent = '\u00d7' + attempts;
+        // A genuine re-run after a completed attempt uses the same compact
+        // row, but resets its live state and output before accepting the new
+        // terminal lifecycle events.
+        if (existingCall.dataset.toolState !== 'working') {
+          existingCall.dataset.toolState = 'working';
+          existingCall.dataset.toolStatus = 'working';
+          existingCall.dataset.startedAt = String(Date.parse(ev.t) || Date.now());
+          existingCall.classList.remove('done-bad');
+          var retryStatus = existingCall.querySelector('.st');
+          if (retryStatus) { retryStatus.className = 'st st-run'; retryStatus.textContent = 'Running'; }
+          var retryDuration = existingCall.querySelector('.tool-duration');
+          if (retryDuration) retryDuration.textContent = '0s';
+          var retryDetails = existingCall.querySelector('.tl-out');
+          var retryOutput = existingCall.querySelector('pre');
+          if (retryDetails) retryDetails.open = false;
+          if (retryOutput) retryOutput.textContent = 'Waiting for tool output…';
+          var retryLabel = existingCall.querySelector('.output-label');
+          if (retryLabel) retryLabel.textContent = 'Output · waiting for result';
+        }
+        sess.nodes.lastTool = existingCall;
+        refreshToolActivityGroup(group.el);
+        var repeatedWorking = workingTextFor(text);
+        if (repeatedWorking) setWorking(repeatedWorking);
+        stickScroll(stream);
+        return;
+      }
       var row = document.createElement('div');
-      row.className = 'tl-row tl-tool' + (kind === 'browser' ? ' tl-browser' : '');
+      row.className = 'tool-call' + (kind === 'browser' ? ' tl-browser' : '');
       row.innerHTML =
-        '<span class="tl-dot dot-run"></span>' +
-        '<div class="tl-body">' +
-          '<button type="button" class="tl-cmd" aria-expanded="false">' +
-            '<span class="tool-kind" aria-hidden="true">' + ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇') + '</span>' +
-            '<span class="cmd">' + esc(humanToolSummary(kind, summary)) + '</span>' +
-            (reason ? '<span class="why">— ' + esc(reason) + '</span>' : '') +
-            '<span class="st st-run">Running</span><span class="tool-duration">0s</span><span class="tool-chevron" aria-hidden="true">›</span>' +
-          '</button>' +
-          '<details class="tl-out"><summary><span class="output-label">Output · waiting for result</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary><pre>Waiting for tool output…</pre></details>' +
-        '</div>';
-      var commandButton = row.querySelector('.tl-cmd');
+        '<button type="button" class="tl-cmd tool-call-head" aria-expanded="false">' +
+          '<span class="tool-kind" aria-hidden="true">' + ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇') + '</span>' +
+          '<span class="cmd">' + esc(humanToolSummary(kind, summary)) + '</span>' +
+          (reason ? '<span class="why">— ' + esc(reason) + '</span>' : '') +
+          '<span class="st st-run">Running</span><span class="tool-duration">0s</span><span class="tool-chevron" aria-hidden="true">›</span>' +
+        '</button>' +
+        '<details class="tl-out"><summary><span class="output-label">Output · waiting for result</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary><pre>Waiting for tool output…</pre></details>';
+      var commandButton = row.querySelector('.tool-call-head');
       var outputDetails = row.querySelector('.tl-out');
       commandButton.title = summary + (reason ? '\n' + reason : '');
       outputDetails.id = 'tool-output-' + runId + '-' + ev.i;
@@ -3150,13 +3329,16 @@ export const UI_HTML = String.raw`<!doctype html>
         return (pre && pre.textContent) || summary;
       });
 
-      insert(row);
+      var list = group.el.querySelector('.tool-group-list');
+      if (list) list.appendChild(row);
       sess.nodes.lastTool = row;
       sess.nodes.toolRows = sess.nodes.toolRows || [];
       row.dataset.toolKey = summary;
       row.dataset.toolState = 'working';
       row.dataset.startedAt = String(Date.parse(ev.t) || Date.now());
       sess.nodes.toolRows.push(row);
+      group.callsByKey[key] = row;
+      refreshToolActivityGroup(group.el);
       var wt = workingTextFor(text);
       if (wt) setWorking(wt);
       stickScroll(stream);
@@ -3269,6 +3451,86 @@ export const UI_HTML = String.raw`<!doctype html>
     $('progFill').style.width = width + '%';
   }
 
+  // Flatten plan steps into the small, actionable checklist shown immediately
+  // above the composer. A step with subtasks contributes its subtasks; a
+  // simple step contributes itself. Only the first unfinished subtask of the
+  // active step is marked as "working", so the list always has one clear next
+  // item even when the ledger has not updated individual todo statuses yet.
+  function composerTodoItems(ledger) {
+    if (!ledger || !Array.isArray(ledger.plan)) return [];
+    var items = [];
+    ledger.plan.forEach(function (step, stepIndex) {
+      if (!step) return;
+      var stepText = String(step.description || '').trim();
+      var stepStatus = String(step.status || 'pending');
+      var todos = Array.isArray(step.subtasks) ? step.subtasks : [];
+      if (!todos.length) {
+        if (stepText) items.push({ text: stepText, parent: '', status: stepStatus, index: stepIndex });
+        return;
+      }
+      var firstOpen = -1;
+      todos.forEach(function (todo, todoIndex) {
+        var done = typeof todo === 'string' ? false : Boolean(todo && todo.done);
+        if (firstOpen === -1 && !done) firstOpen = todoIndex;
+      });
+      todos.forEach(function (todo, todoIndex) {
+        var text = typeof todo === 'string' ? todo : String(todo && todo.text || '');
+        text = String(text || '').trim();
+        if (!text) return;
+        var done = stepStatus === 'done' || (typeof todo !== 'string' && Boolean(todo && todo.done));
+        var status = done ? 'done' : stepStatus;
+        if (status === 'in_progress' && todoIndex !== firstOpen) status = 'pending';
+        items.push({ text: text, parent: stepText, status: status, index: stepIndex * 100 + todoIndex });
+      });
+    });
+    return items;
+  }
+
+  function composerTodoStatus(status) {
+    if (status === 'in_progress') return { rank: 0, label: 'Working', className: 'active' };
+    if (status === 'blocked') return { rank: 1, label: 'Blocked', className: 'blocked' };
+    if (status === 'failed') return { rank: 1, label: 'Needs retry', className: 'failed' };
+    if (status === 'done') return { rank: 3, label: 'Done', className: 'done' };
+    return { rank: 2, label: 'Next', className: 'pending' };
+  }
+
+  function renderComposerTodos(runId) {
+    if (S.active !== runId) return;
+    var panel = $('composerTodos');
+    var sess = S.sessions[runId];
+    if (!panel || !sess) return;
+    var allItems = composerTodoItems(sess.ledger);
+    // This is the active checklist, rather than a duplicate report of work
+    // already completed. Failed/blocked items remain visible until resolved.
+    var items = allItems.filter(function (item) { return item.status !== 'done'; });
+    if (!items.length) {
+      panel.hidden = true;
+      panel.innerHTML = '';
+      delete panel.dataset.signature;
+      return;
+    }
+    items.sort(function (a, b) {
+      var ar = composerTodoStatus(a.status).rank;
+      var br = composerTodoStatus(b.status).rank;
+      return ar - br || a.index - b.index;
+    });
+    var done = allItems.filter(function (item) { return item.status === 'done'; }).length;
+    var signature = items.map(function (item) { return [item.text, item.parent, item.status].join('\u0001'); }).join('\u0002') + '\u0003' + done + '/' + allItems.length;
+    if (!panel.hidden && panel.dataset.signature === signature) return;
+    panel.hidden = false;
+    panel.dataset.signature = signature;
+    var count = items.length + (items.length === 1 ? ' open' : ' open') + ' · ' + done + '/' + allItems.length + ' done';
+    panel.innerHTML = '<div class="composer-todos-head"><span class="composer-todos-title"><span class="todo-title-dot"></span>Task checklist</span><span class="composer-todos-count">' + esc(count) + '</span></div><ol class="composer-todo-list" aria-label="Active task checklist">' +
+      items.map(function (item) {
+        var meta = composerTodoStatus(item.status);
+        var parent = item.parent && item.parent !== item.text
+          ? '<span class="composer-todo-parent" title="' + esc(item.parent) + '"> · ' + esc(item.parent) + '</span>'
+          : '';
+        var mark = meta.className === 'done' ? '&#10003;' : (meta.className === 'blocked' || meta.className === 'failed' ? '!' : '');
+        return '<li class="composer-todo ' + meta.className + '"><span class="composer-todo-mark">' + mark + '</span><span class="composer-todo-text" title="' + esc(item.text) + '">' + esc(item.text) + parent + '</span><span class="composer-todo-state">' + esc(meta.label) + '</span></li>';
+      }).join('') + '</ol>';
+  }
+
   function renderRunOverview(session, ledger) {
     var next = $('runOverviewNext'), stats = $('runOverviewStats'), dot = $('runOverviewDot');
     if (!next || !session) return;
@@ -3345,6 +3607,7 @@ export const UI_HTML = String.raw`<!doctype html>
           if (s2) {
             s2.ledger = ledger;
             renderRunSide(runId);
+            renderComposerTodos(runId);
             renderRunOverview(session, ledger);
             if (s2.chatish) { var pp = $('progress'); if (pp) pp.style.display = 'none'; } else updateProgress(ledger);
           }
@@ -3353,17 +3616,22 @@ export const UI_HTML = String.raw`<!doctype html>
       if (session.status !== 'running') {
         retireAbubble(sess);
         closeThought(runId);
+        var interruptedGroups = [];
         (sess.nodes.toolRows || []).forEach(function (row) {
           if (!row.isConnected || row.dataset.toolState !== 'working') return;
           row.dataset.toolState = 'done';
           row.dataset.toolStatus = 'interrupted';
-          row.querySelector('.tl-dot').className = 'tl-dot dot-blocked';
           var toolStatus = row.querySelector('.st');
-          toolStatus.className = 'st st-warn';
-          toolStatus.textContent = 'Interrupted';
-          row.querySelector('.output-label').textContent = 'Output · interrupted';
-          row.querySelector('pre').textContent = 'The run ended before this tool reported a result.';
+          if (toolStatus) { toolStatus.className = 'st st-warn'; toolStatus.textContent = 'Interrupted'; }
+          var outputLabel = row.querySelector('.output-label');
+          if (outputLabel) outputLabel.textContent = 'Output · interrupted';
+          var output = row.querySelector('pre');
+          if (output) output.textContent = 'The run ended before this tool reported a result.';
+          var interruptedGroup = toolActivityGroupForRow(row);
+          if (interruptedGroup && interruptedGroups.indexOf(interruptedGroup) < 0) interruptedGroups.push(interruptedGroup);
         });
+        interruptedGroups.forEach(refreshToolActivityGroup);
+        sealToolActivityGroup(sess, true);
         setWorking(null);
         if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; }
         S.reconnecting = false;
@@ -4335,13 +4603,6 @@ export const UI_HTML = String.raw`<!doctype html>
         '<span><i style="background:#8a6d1a"></i>Commands ' + pct(counts.command) + '%</span>' +
         '<span><i style="background:#9ca3af"></i>Other ' + pct(counts.other) + '%</span></div>';
     }
-    html += '<div class="section-h">Raw events</div><div class="raw">';
-    var evs = (sess.events || []).filter(function (e) { return String(e.text).indexOf('tdelta') !== 0 && String(e.text).indexOf('activity') !== 0; }).slice(-60).reverse();
-    if (!evs.length) html += '<div class="row"><span>no events yet</span></div>';
-    evs.forEach(function (ev) {
-      html += '<div class="row"><span>' + esc(String(ev.text).slice(0, 90)) + '</span><span class="t">' + esc(new Date(ev.t).toLocaleTimeString()) + '</span></div>';
-    });
-    html += '</div>';
     body.innerHTML = html;
   }
 

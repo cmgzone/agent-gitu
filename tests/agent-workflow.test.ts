@@ -57,6 +57,38 @@ describe('unified Agent workflow', () => {
     expect(result.ledger.data.plan).toEqual([]);
   }, 30000);
 
+  it('uses the actual action reason for progress without a Next prefix or private thoughts', async () => {
+    const events: string[] = [];
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      onEvent: event => events.push(event),
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ thought: 'Private internal deliberation', action: { type: 'tool_call', tool: 'read_file', params: { path: 'README.md' }, reason: 'Next: Reading README.md to confirm the current wording', expected: 'Current text' } }),
+        action({ type: 'complete', summary: 'The README currently says Helo world.' }),
+      ]),
+    }).run('What does README.md say?');
+
+    expect(result.report.status).toBe('complete');
+    expect(events).toContain('say Reading README.md to confirm the current wording');
+    expect(events.some(event => event.startsWith('say Next:'))).toBe(false);
+    expect(events.some(event => event.startsWith('say ') && event.includes('Private internal deliberation'))).toBe(false);
+  }, 30000);
+
+  it('preserves the full developed conversational answer in the report', async () => {
+    const explanation = [
+      'A focused check confirms the part of the project that changed. For a wording correction, that can be an assertion against the updated text; for a behavior change, it should exercise that behavior.',
+      'Broader verification checks how the change interacts with the rest of the application. It may include type checking, the relevant existing tests, a build, and a browser inspection for visible behavior. Each check establishes a different part of the result.',
+      'Evidence records the command, its result, and the workspace version it checked. A passing check from before the latest edit cannot establish that the current result works. The final response should explain which checks ran, what they proved, and any important limits so you can assess the result.',
+    ].join('\n\n');
+    expect(explanation.length).toBeGreaterThan(600);
+    const result = await new Gitu({ cwd: project(), mode: 'chat', autoLearn: false,
+      llm: new ScriptedMockLlm([() => explanation]),
+    }).run('Explain focused checks, broader verification, and evidence.');
+
+    expect(result.report.status).toBe('complete');
+    expect(result.report.summary).toBe(explanation);
+    expect(result.ledger.data.report?.summary).toBe(explanation);
+  }, 30000);
+
   it('rejects an unverified edit even when the model calls it a chat reply', async () => {
     let rejected = false;
     const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,

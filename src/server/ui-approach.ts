@@ -7,12 +7,8 @@ export const UI_APPROACH_JS = String.raw`
     if (!match) return null;
     var tag = match[1], body = match[2].trim();
     var label = '', tone = '', detail = '';
-    if (tag === 'run' && body.indexOf('finished: ') !== 0) {
-      var summary = splitSummary(body);
-      var reason = splitReason(body);
-      label = 'Next action';
-      detail = humanToolSummary(toolKind(summary), summary) + (reason ? ' — ' + reason : '');
-    } else if (tag === 'hypothesis') {
+    // Commands and their purposes already live in the activity disclosure.
+    if (tag === 'hypothesis') {
       label = 'Working hypothesis'; detail = body;
     } else if (tag === 'decision') {
       label = 'Decision'; detail = body.replace(/^ad-\S+\s+—\s*/, '');
@@ -41,10 +37,10 @@ export const UI_APPROACH_JS = String.raw`
     var panel = $('approachPanel');
     if (!panel || !sess) return;
     var state = approachState(sess);
-    panel.hidden = Boolean(sess.chatish);
+    panel.hidden = Boolean(sess.chatish) || !state.entries.length;
     panel.classList.toggle('is-live', state.live);
     var latest = state.entries[state.entries.length - 1];
-    $('approachLatest').textContent = latest ? latest.text : 'The agent’s next action and brief rationale will appear here.';
+    $('approachLatest').textContent = latest ? latest.text : 'Task decisions and verification will appear here.';
     $('approachStatus').textContent = state.phase;
     $('approachCount').textContent = state.count ? String(state.count) : '';
     var log = $('approachLog');
@@ -80,7 +76,7 @@ export const UI_APPROACH_JS = String.raw`
           var old = state.entries.shift(); if (old.el) old.el.remove();
         }
       }
-      state.phase = entry.label === 'Next action' ? 'Working' : entry.label === 'Verification' ? 'Verifying' : 'Planning';
+      state.phase = entry.label === 'Verification' ? 'Verifying' : 'Planning';
       state.live = true;
     } else if (/^(think\s|activity reasoning)/.test(text)) {
       state.phase = 'Reviewing context'; state.live = true;

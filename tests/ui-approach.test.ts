@@ -23,14 +23,17 @@ function setup() {
 }
 
 describe('User-visible approach summaries', () => {
-  it('shows the actual tool purpose and marks a hypothesis as unverified', () => {
+  it('keeps tool purposes in their activity disclosure and marks a hypothesis as unverified', () => {
     const r = setup();
     r.update('run read src/ui.ts — Check where the stream is rendered');
+    expect(r.sess.nodes.approach.entries).toHaveLength(0);
+    r.context.renderApproach(r.sess);
+    expect(r.elements.get('approachPanel').hidden).toBe(true);
     r.update('hypothesis The completion callback may discard buffered text.');
     expect(r.sess.nodes.approach.entries.map((e: any) => [e.label, e.text])).toEqual([
-      ['Next action', 'Read src/ui.ts — Check where the stream is rendered'],
       ['Working hypothesis', 'The completion callback may discard buffered text.'],
     ]);
+    expect(r.elements.get('approachPanel').hidden).toBe(false);
   });
 
   it('does not use raw provider reasoning, model thoughts, tool output, or prose as summaries', () => {
@@ -47,11 +50,10 @@ describe('User-visible approach summaries', () => {
     const r = setup();
     r.update('run $ npm test — Verify the change');
     r.update('evidence ev-1 FAIL (test)');
-    expect(r.sess.nodes.approach.entries[0].tone).toBe('');
-    expect(r.sess.nodes.approach.entries[1].tone).toBe('fail');
-    expect(r.sess.nodes.approach.entries[1].text).toBe('test check failed · ev-1');
+    expect(r.sess.nodes.approach.entries[0].tone).toBe('fail');
+    expect(r.sess.nodes.approach.entries[0].text).toBe('test check failed · ev-1');
     r.update('evidence ev-2 PASS (test)');
-    expect(r.sess.nodes.approach.entries[2].tone).toBe('pass');
+    expect(r.sess.nodes.approach.entries[1].tone).toBe('pass');
     expect(r.context.approachEntry('evidence some unverified claim')).toBeNull();
   });
 
@@ -63,7 +65,7 @@ describe('User-visible approach summaries', () => {
     r.update('activity reasoning');
     expect(r.sess.nodes.approach.count).toBe(1);
     expect(r.sess.nodes.approach.entries[0].el).toBe(original);
-    for (let i = 0; i < 40; i++) r.update(`run read file-${i}.ts`);
+    for (let i = 0; i < 40; i++) r.update(`decision ad-${i} — Use pattern ${i}`);
     expect(r.sess.nodes.approach.count).toBe(41);
     expect(r.sess.nodes.approach.entries).toHaveLength(24);
     expect(r.elements.get('approachLog').children).toHaveLength(24);
@@ -81,7 +83,7 @@ describe('User-visible approach summaries', () => {
     const r = setup();
     r.sess.replaying = true;
     r.sess.session = { status: 'failed' };
-    r.update('run $ npm test — Verify');
+    r.update('evidence ev-1 FAIL (test)');
     expect(r.sess.nodes.approach.live).toBe(false);
     expect(r.elements.get('approachStatus').textContent).toBe('Failed');
     expect(r.sess.nodes.approach.entries[0].el.className).toContain('replayed');

@@ -906,9 +906,9 @@ describe('HermesServer', () => {
     expect(existsSync(path.join(dir, '.hermes', 'session-files', created.runId))).toBe(false);
   }, 30000);
 
-  it('turns oversized agent prose into a downloadable Markdown document', async () => {
+  it('keeps long agent prose in the conversation alongside a downloadable Markdown document', async () => {
     const dir = makeProject('long-document');
-    const longReply = `Detailed response\n\n${'A verified implementation detail. '.repeat(240)}`;
+    const longReply = `Detailed response\n\n${'A verified implementation detail. '.repeat(240)}`.trim();
     expect(longReply.length).toBeGreaterThan(6000);
     const { base, server } = await startServer(dir, new ScriptedMockLlm([() => longReply]));
     const created = await fetch(`${base}/api/runs`, {
@@ -924,15 +924,22 @@ describe('HermesServer', () => {
     expect(finished.files).toHaveLength(1);
     expect(finished.files[0]).toMatchObject({ kind: 'assistant', mime: 'text/markdown; charset=utf-8', previewable: true });
     const events = (server as unknown as { sessions: Map<string, { events: { text: string }[] }> }).sessions.get(created.runId)!.events;
-    expect(events.some((event) => event.text.startsWith('file ') && event.text.includes('replacesLongText'))).toBe(true);
-    expect(events.some((event) => event.text === `say ${longReply}`)).toBe(false);
-    expect(events.some((event) => event.text.includes('so you can preview or download it'))).toBe(true);
+    expect(events.some((event) => event.text.startsWith('file '))).toBe(true);
+    expect(events.some((event) => event.text.includes('replacesLongText'))).toBe(false);
+    expect(events.filter((event) => event.text === `say ${longReply}`)).toHaveLength(1);
+    expect(finished.report.summary).toBe(longReply);
 
     const response = await fetch(`${base}${finished.files[0].downloadUrl}`);
     const markdown = await response.text();
     expect(markdown).toContain('# Agent Gitu response');
     expect(markdown).toContain(longReply.slice(0, 200));
     expect(markdown.length).toBeGreaterThan(6000);
+    await server.stop();
+    const { base: restoredBase, server: restoredServer } = await startServer(dir, new ScriptedMockLlm([]));
+    const restored = await fetch(`${restoredBase}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(restored.report.summary).toBe(longReply);
+    const restoredEvents = (restoredServer as unknown as { sessions: Map<string, { events: { text: string }[] }> }).sessions.get(created.runId)!.events;
+    expect(restoredEvents.filter((event) => event.text === `say ${longReply}`)).toHaveLength(1);
   }, 30000);
 
   it('rejects runs without a goal', async () => {

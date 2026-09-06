@@ -17,8 +17,9 @@ function controls() {
 }
 
 function composerChecklist(ledger: unknown) {
-  const panel = { hidden: true, innerHTML: '', dataset: {} as Record<string, string> };
-  const state = { active: 'run-1', sessions: { 'run-1': { ledger } } };
+  const createPanel = () => ({ hidden: true, open: false, innerHTML: '', dataset: {} as Record<string, string>, ontoggle: null as null | (() => void) });
+  let panel = createPanel();
+  const state = { active: 'run-1', sessions: { 'run-1': { ledger } } as Record<string, { ledger: unknown; composerTodosOpen?: boolean }> };
   const context = createContext({
     S: state,
     $: (id: string) => id === 'composerTodos' ? panel : null,
@@ -26,7 +27,7 @@ function composerChecklist(ledger: unknown) {
   });
   const source = UI_HTML.slice(UI_HTML.indexOf('  function composerTodoItems('), UI_HTML.indexOf('  function renderRunOverview('));
   new Script(source).runInContext(context);
-  return { context, panel, state };
+  return { context, get panel() { return panel; }, state, recreatePanel() { panel = createPanel(); } };
 }
 
 describe('single Agent composer', () => {
@@ -67,7 +68,7 @@ describe('single Agent composer', () => {
     expect(button.disabled).toBe(false);
   });
 
-  it('keeps the active task checklist directly above the run composer', () => {
+  it('keeps a collapsed checklist above the composer with the current item, progress, and every task available', () => {
     const listAt = UI_HTML.indexOf('id="composerTodos"');
     const inputAt = UI_HTML.indexOf('id="follow"');
     expect(listAt).toBeGreaterThan(-1);
@@ -81,14 +82,66 @@ describe('single Agent composer', () => {
     });
     context.renderComposerTodos('run-1');
     expect(panel.hidden).toBe(false);
+    expect(panel.open).toBe(false);
+    expect(panel.innerHTML.split('</summary>')[0]).toContain('Polish the layout');
+    expect(panel.innerHTML.split('</summary>')[0]).toContain('1/3 done');
     expect(panel.innerHTML).toContain('Polish the layout');
     expect(panel.innerHTML).toContain('Verify the result');
-    expect(panel.innerHTML).not.toContain('Wire the UI');
+    expect(panel.innerHTML).toContain('Wire the UI');
+    expect(panel.innerHTML).toContain('Pending');
+    expect(panel.innerHTML).not.toContain('Next');
     expect(panel.innerHTML).toContain('Working');
 
     state.sessions['run-1'].ledger = { plan: [{ description: 'Build the new view', status: 'done' }] };
     context.renderComposerTodos('run-1');
+    expect(panel.hidden).toBe(false);
+    expect(panel.innerHTML).toContain('Checklist complete');
+    expect(panel.innerHTML).toContain('1/1 done');
+  });
+
+  it('preserves the checklist expansion through updates and separately for each task', () => {
+    const harness = composerChecklist({ plan: [{ description: 'Build the view', status: 'in_progress' }] });
+    const { context, state } = harness;
+    context.renderComposerTodos('run-1');
+    harness.panel.open = true;
+    harness.panel.ontoggle?.();
+    state.sessions['run-1'].ledger = { plan: [{ description: 'Verify the view', status: 'in_progress' }] };
+    context.renderComposerTodos('run-1');
+    expect(harness.panel.open).toBe(true);
+    expect(harness.panel.innerHTML).toContain('Verify the view');
+
+    state.sessions['run-2'] = { ledger: { plan: [{ description: 'A separate task', status: 'pending' }] } };
+    state.active = 'run-2';
+    harness.recreatePanel();
+    context.renderComposerTodos('run-2');
+    expect(harness.panel.open).toBe(false);
+
+    state.active = 'run-1';
+    harness.recreatePanel();
+    context.renderComposerTodos('run-1');
+    expect(harness.panel.open).toBe(true);
+    harness.panel.open = false;
+    harness.panel.ontoggle?.();
+    context.renderComposerTodos('run-1');
+    expect(harness.panel.open).toBe(false);
+  });
+
+  it('keeps mixed steps and subtasks in plan order and hides the row when there is no plan', () => {
+    const { context, panel, state } = composerChecklist({ plan: [
+      { description: 'Prepare', status: 'done' },
+      { description: 'Implement', status: 'pending', subtasks: ['First subtask', 'Second subtask'] },
+      { description: 'Verify', status: 'pending' },
+    ] });
+    context.renderComposerTodos('run-1');
+    expect(panel.innerHTML.split('</summary>')[0]).toContain('First subtask');
+    const list = panel.innerHTML.split('</summary>')[1];
+    expect(list.indexOf('First subtask')).toBeLessThan(list.indexOf('Second subtask'));
+    expect(list.indexOf('Second subtask')).toBeLessThan(list.indexOf('Verify'));
+
+    state.sessions['run-1'].ledger = { plan: [] };
+    context.renderComposerTodos('run-1');
     expect(panel.hidden).toBe(true);
+    expect(panel.innerHTML).toBe('');
   });
 
   it('restores unified sessions while preserving older chat and build history', () => {

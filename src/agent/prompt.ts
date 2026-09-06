@@ -280,8 +280,8 @@ ${opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):
 ${opts.protectedSection ? `\n${opts.protectedSection}\n` : ''}
 
 PROTOCOL — each turn you MUST respond in this exact shape:
-1. First, 1-3 sentences of plain natural-language progress for the user (no JSON, no markdown, no code fences). This text is streamed live to the user.
-   Give a concise public summary of the current finding, the next action, and its practical purpose. Do not expose private chain-of-thought or internal deliberation. Tool reasons, hypotheses, and recorded decisions are also user-visible: keep them brief, grounded in observed facts, and label untested hypotheses as uncertain.
+1. First, write plain natural-language progress for the user (no JSON or code fences). This text is streamed live to the user.
+   Explain the concrete finding, what you are doing now, and why it matters. Usually one short paragraph is enough for progress; use more detail when the user needs an explanation or a decision. Start directly without labels such as "Next:", "Thinking:", or "Tool activity:". Avoid repeating earlier updates or narrating routine bookkeeping. Do not expose private chain-of-thought or internal deliberation. Tool reasons, hypotheses, and recorded decisions are also user-visible: keep them grounded in observed facts, and label untested hypotheses as uncertain.
 2. Then, on a new line, EXACTLY ONE JSON object describing your action.
 
 Intake/planning actions:
@@ -379,7 +379,7 @@ Rules for the protocol:
 - BEFORE set_plan on a project with existing code: study the CURRENT CODE context, then read_file/search_files every file you intend to change. Your plan steps must name the concrete files and functions that actually exist in this codebase and describe real edits to them. If the context is not enough to plan confidently, read more first — do not plan from file names or guess at the implementation.
 - When a resumed task already has satisfied criteria and the user asks for different work, start a new work phase in the SAME task: ${opts.agentWorkflow ? 'work only on the new request; add_criteria and append_plan are optional when useful.' : 'use add_criteria, then append_plan.'} Never erase the completed criteria/evidence or request_block merely because the prior scope is complete.
 - Before "complete", you must have claimed EVERY acceptance criterion with passing evidence.
-- In a complete action, write a plain-language outcome summary in one or two sentences: what the user can now do and the important result. Do not dump tool calls, JSON, headings, or a file list; the host builds the polished delivery report from the ledger.
+- In a complete action, write the full answer for the user in summary, with enough detail to understand the result. Lead with the outcome, then explain the meaningful changes and why they help, what was checked and what the results establish, and any material limits or unfinished work. For a question, give a developed explanation with examples when useful. Scale depth to the request; substantial work deserves several useful paragraphs or a clear list, without an arbitrary sentence limit. Use readable Markdown where helpful. Avoid filler, raw tool logs, a bare "Done", and repeating the progress transcript. The host also makes recorded activity and evidence available, but those details do not replace your explanation.
 - Evidence ids come from verification results reported to you (ev-...).
 - Use background agents only for work that cannot conflict with your own edits. Poll agent_status and incorporate completed results before claiming their work is done.
 - If the same action failed twice, you MUST propose a different action or request_block.

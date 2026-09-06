@@ -1,5 +1,6 @@
 import { UI_MOTION_JS } from './ui-motion.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
+import { UI_RESPONSE_JS } from './ui-response.js';
 
 export const UI_HTML = String.raw`<!doctype html>
 <html lang="en">
@@ -199,7 +200,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .send:disabled { background: #2b3448; }
 
   .run { flex: 1; display: flex; min-height: 0; }
-  .run-main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+  .run-main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; }
   /* ── Activity timeline ───────────────────────────────────────────────────
      A continuous vertical rule anchors narration and compact tool cards. */
   .progress { display: flex; align-items: center; gap: 10px; padding: 8px 24px 2px; flex: none; font-family: var(--mono); font-size: 10.5px; letter-spacing: .4px; color: var(--muted); }
@@ -221,7 +222,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .run-overview .details-btn { border: 1px solid var(--border2); background: rgba(19,24,38,.84); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; transition: background .15s ease, border-color .15s ease; }
   .run-overview .details-btn:hover { background: var(--hover); border-color: rgba(143,128,255,.48); }
   .timeline-trim-note { margin: 4px 0 10px 20px; color: var(--faint); font-size: 11.5px; }
-  .stream::before { content: ''; position: absolute; left: 24px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+  .stream::before { content: none; }
   .tl-row { position: relative; display: flex; align-items: flex-start; gap: 11px; padding: 5px 0; min-width: 0; animation: toolIn .22s ease-out both; }
   .tl-dot { position: relative; z-index: 1; flex: none; width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: var(--bg); box-shadow: inset 0 0 0 1.5px var(--faint); transition: box-shadow .25s ease, background .25s ease; }
   .tl-dot.dot-run { box-shadow: inset 0 0 0 1.5px var(--run); animation: tlPulse 1.5s ease-out infinite; }
@@ -238,7 +239,19 @@ export const UI_HTML = String.raw`<!doctype html>
   /* Narration / thought text: full-weight sans body — reads MORE prominent
      than the mono tool lines around it. */
   .tl-note-row { padding: 9px 0; }
-  .tl-note-row .tl-body { font-size: 13.5px; font-weight: 500; line-height: 1.6; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+  .tl-note-row .tl-body { font-size: 14px; font-weight: 400; line-height: 1.75; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tl-note-row > .tl-dot, .tl-tool-group > .tl-dot { display: none; }
+  .tl-note-row > .tl-time, .tl-tool-group > .tl-time { display: none; }
+  .response-prose { display: block; white-space: normal; overflow-wrap: anywhere; line-height: 1.75; }
+  .response-prose p { margin: 0 0 .9em; }
+  .response-prose > :last-child { margin-bottom: 0; }
+  .response-prose h1, .response-prose h2, .response-prose h3, .response-prose h4, .response-prose h5, .response-prose h6 { margin: 1.1em 0 .45em; color: var(--text); font-size: 1.06em; line-height: 1.5; font-weight: 600; }
+  .response-prose ul, .response-prose ol { margin: .4em 0 1em; padding-left: 22px; }
+  .response-prose li { padding: 2px 0; }
+  .response-prose code { font: .9em var(--mono); color: #bdcce6; }
+  .response-prose pre { padding: 8px 0 8px 14px; margin: .8em 0; border-left: 2px solid var(--border2); overflow-x: auto; white-space: pre; }
+  .response-code-language { color: var(--faint); font: 10.5px var(--mono); margin-top: 14px; }
+  .response-prose a { color: var(--run); text-decoration: underline; text-underline-offset: 3px; }
   .thought { padding: 9px 0 9px 20px; color: var(--text); white-space: pre-wrap; font-weight: 500; }
   .thought .caret, .tl-note-row .caret { display: inline-block; width: 7px; height: 14px; background: var(--run); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
   /* ── Collapsible technical sections ─────────────────────────────────────
@@ -259,13 +272,6 @@ export const UI_HTML = String.raw`<!doctype html>
   .exec-pre { margin: 0; padding: 6px 12px 9px; font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow-y: auto; }
   /* Dense narration: long verification reports become headline + checklist +
      footer instead of one wall of pre-wrapped text. Same words, structure. */
-  .tl-body .dense-note, .abubble .dense-note { white-space: normal; display: block; }
-  .dense-headline { display: block; font-weight: 650; }
-  .dense-items { list-style: none; margin: 3px 0 2px; padding: 0; }
-  .dense-items li { position: relative; padding-left: 15px; margin: 2px 0; }
-  .dense-items li::before { position: absolute; left: 1px; top: 0; color: var(--faint); content: '\00B7'; font-weight: 700; }
-  .dense-items li.ev::before { content: '\2713'; color: var(--ok); }
-  .dense-foot { display: block; margin-top: 3px; color: var(--run); font-weight: 600; }
   /* Generic quiet metadata rows (plan/criteria/queued/parallel/…) */
   .meta-line { color: var(--muted); font-size: 12px; padding: 3px 2px; }
   .meta-line b { color: var(--text); font-weight: 600; }
@@ -318,7 +324,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .ev-pill.fail { color: var(--err); background: var(--err-dim); box-shadow: inset 0 0 0 1px rgba(255,100,101,.3); }
   /* ── Tool call rows: one monospace line on the timeline ─────────────────
      Command, context, duration, and status above a native output disclosure. */
-  @keyframes toolIn { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+  @keyframes toolIn { from { opacity: 0; } to { opacity: 1; } }
   @keyframes outFade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
   .tl-tool.done-bad { animation: rowFlash .6s ease; }
   @keyframes rowFlash { 0% { background: rgba(255,100,101,.09); } 100% { background: transparent; } }
@@ -340,7 +346,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-btn-copy.copied { color: var(--ok); border-color: rgba(63,214,143,.4); }
   .tool-btn-copy svg { width: 10px; height: 10px; }
   .tl-out[open] pre { animation: outFade .25s ease; }
-  .tl-out pre { margin: 4px 0 0; padding: 8px 10px; font-family: var(--mono); font-size: 11px; line-height: 1.55; color: #a7b1c5; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow-y: auto; border-radius: 8px; background: var(--card2); box-shadow: inset 0 0 0 1px var(--border); }
+  .tl-out pre { margin: 4px 0 0; padding: 8px 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; color: #a7b1c5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
   .tl-out pre.folded { max-height: 110px; overflow: hidden; position: relative; border-radius: 8px 8px 0 0; }
   /* Live work: quiet surfaces, clear states, and motion only at the edge. */
   .stream { overflow-anchor: none; }
@@ -353,47 +359,43 @@ export const UI_HTML = String.raw`<!doctype html>
      expandable activity group keeps a long run readable while still making
      every command and its output available with one tap. */
   .tl-tool-group { padding: 5px 0; }
-  .tl-tool-group > .tl-body { overflow: hidden; border: 1px solid var(--border); border-radius: 11px; background: rgba(19,24,38,.7); transition: border-color .25s ease, background .25s ease, box-shadow .25s ease; }
-  .tl-tool-group[data-tool-group-state=working] > .tl-body { border-color: rgba(91,168,255,.42); background: linear-gradient(110deg, rgba(91,168,255,.085), rgba(19,24,38,.78) 48%, rgba(143,128,255,.055)); box-shadow: 0 0 0 1px rgba(91,168,255,.04), 0 8px 22px rgba(7,12,24,.16); }
-  .tl-tool-group[data-tool-group-state=attention] > .tl-body { border-color: rgba(255,100,101,.36); }
+  .tl-tool-group > .tl-body { min-width: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
   .tool-group-details { margin: 0; }
-  .tool-group-details > summary { position: relative; list-style: none; display: flex; align-items: center; gap: 8px; min-height: 45px; padding: 0 12px; cursor: pointer; user-select: none; -webkit-user-select: none; }
+  .tool-group-details > summary { list-style: none; display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 5px 0; cursor: pointer; user-select: none; -webkit-user-select: none; }
   .tool-group-details > summary::-webkit-details-marker { display: none; }
-  .tool-group-details > summary:hover { background: rgba(255,255,255,.025); }
-  .tool-group-details[open] > summary { border-bottom: 1px solid var(--border); }
-  .tool-group-mark { position: relative; width: 25px; height: 25px; border: 1px solid rgba(91,168,255,.34); border-radius: 8px; background: rgba(91,168,255,.08); color: var(--run); display: inline-flex; align-items: center; justify-content: center; font: 11px var(--mono); flex: none; overflow: hidden; }
-  .tool-group-mark::after { content: ''; position: absolute; inset: -55% 42% -55% -70%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.55), transparent); transform: rotate(18deg); }
-  .tl-tool-group[data-tool-group-state=working] .tool-group-mark::after { animation: toolSweep 1.8s ease-in-out infinite; }
-  @keyframes toolSweep { 0% { transform: translateX(-170%) rotate(18deg); opacity: 0; } 24% { opacity: .7; } 58%,100% { transform: translateX(270%) rotate(18deg); opacity: 0; } }
-  .tool-group-title { color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; }
-  .tool-group-count { color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
+  .tool-group-details > summary:hover .tool-group-title { color: var(--text); }
+  .tool-group-details > summary:focus-visible, .tool-call-head:focus-visible { outline: 2px solid var(--run); outline-offset: 3px; }
+  .tool-group-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+  .tool-group-title { color: var(--muted); font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tool-group-hint { color: var(--faint); font-size: 11.5px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tool-group-hint:empty { display: none; }
+  .tool-group-count { color: var(--faint); font-size: 10.5px; white-space: nowrap; flex: none; }
   .tool-group-state { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; color: var(--faint); font: 10px var(--mono); letter-spacing: .35px; white-space: nowrap; }
   .tl-tool-group[data-tool-group-state=working] .tool-group-state { color: var(--run); }
   .tl-tool-group[data-tool-group-state=attention] .tool-group-state { color: var(--err); }
-  .tool-group-state::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-  .tl-tool-group[data-tool-group-state=working] .tool-group-state::before { animation: pulse 1.35s ease-in-out infinite; }
-  .tool-group-shimmer { width: 42px; height: 4px; border-radius: 999px; background: linear-gradient(90deg, rgba(91,168,255,.06), rgba(179,209,255,.95), rgba(143,128,255,.08)); background-size: 160px 100%; animation: toolShimmer 1.25s linear infinite; flex: none; }
-  @keyframes toolShimmer { from { background-position: -80px 0; } to { background-position: 80px 0; } }
-  .tl-tool-group:not([data-tool-group-state=working]) .tool-group-shimmer { display: none; }
+  .tool-group-state:empty { display: none; }
+  .tl-tool-group[data-tool-group-state=working] .tool-group-title { color: var(--muted); background: linear-gradient(100deg, var(--muted) 30%, #f1f5ff 48%, var(--muted) 66%); background-size: 250% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: toolTextShimmer 2.4s linear infinite; }
+  @keyframes toolTextShimmer { from { background-position: 160% 0; } to { background-position: -90% 0; } }
+  @media (prefers-reduced-motion: reduce) { .tl-tool-group[data-tool-group-state=working] .tool-group-title { background: none; -webkit-text-fill-color: currentColor; animation: none; } }
   .tool-group-chevron { color: var(--faint); transition: transform .18s ease; flex: none; }
   .tool-group-details[open] .tool-group-chevron { transform: rotate(90deg); }
-  .tool-group-list { padding: 0 12px 8px; background: rgba(7,11,20,.16); }
-  .tool-call { position: relative; min-width: 0; border-bottom: 1px solid rgba(117,132,164,.14); animation: toolIn .2s ease-out both; }
+  .tool-group-list { padding: 3px 0 7px 21px; background: transparent; }
+  .tool-call { position: relative; min-width: 0; border: 0; animation: toolIn .2s ease-out both; }
   .tool-call:last-child { border-bottom: 0; }
   .tool-call.done-bad { animation: rowFlash .6s ease; }
-  .tool-call[data-tool-state=working] .tool-call-head { background: linear-gradient(90deg, rgba(91,168,255,.055), transparent 72%); }
-  .tool-call-head { width: 100%; border: 0; border-radius: 7px; background: transparent; text-align: left; color: inherit; padding: 9px 0; align-items: center; }
-  .tool-call-head:hover { background: rgba(255,255,255,.025); }
+  .tool-call-head { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; color: inherit; padding: 8px 0; align-items: center; }
+  .tool-call-head:hover .cmd { color: var(--text); }
   .tool-call-head .cmd { flex: 1 1 auto; }
   .tool-call-head .why { flex: 0 2 auto; max-width: 36%; }
-  .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 25px; flex: none; border: 1px solid var(--border2); border-radius: 6px; color: var(--run); font: 11px var(--mono); background: var(--card2); }
+  .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; flex: none; border: 0; color: var(--faint); font: 11px var(--mono); background: transparent; }
   .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
   .tool-chevron { color: var(--faint); transition: transform .18s ease; }
   .tl-cmd[aria-expanded=true] .tool-chevron { transform: rotate(90deg); }
-  .tool-repeat { font: 9.5px var(--mono); color: var(--muted); border: 1px solid var(--border2); border-radius: 999px; padding: 1px 5px; flex: none; }
   .tool-call .tl-out { margin: 0; }
   .tool-call .tl-out:not([open]) { display: none; }
-  .tool-call .tl-out[open] { padding-bottom: 10px; border-top: 1px solid var(--border); }
+  .tool-call .tl-out[open] { padding: 0 0 10px 24px; border: 0; }
+  .tool-command { display: block; color: var(--muted); font: 11px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tool-purpose { margin: 4px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
   .tool-call .tl-out summary { display: flex; padding-top: 7px; }
   .tool-call .tl-out summary::before { display: none; }
   .tool-call .tool-btn-copy { margin-left: auto; }
@@ -401,7 +403,7 @@ export const UI_HTML = String.raw`<!doctype html>
   @keyframes toolSpin { to { transform: rotate(360deg); } }
   .jump-latest { position: absolute; z-index: 5; bottom: 152px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; padding: 7px 14px; border: 1px solid var(--border2); border-radius: 999px; color: var(--text); background: var(--card); box-shadow: 0 6px 24px rgba(0,0,0,.3); font-size: 11px; }
   .jump-latest:hover { background: var(--hover); border-color: var(--run); }
-  .approach-panel { flex: none; min-width: 0; margin: 0 20px 8px; border: 1px solid var(--border); border-radius: 10px; background: rgba(19,24,38,.6); overflow: hidden; }
+  .approach-panel { flex: none; min-width: 0; margin: 0 20px 8px; border: 0; border-radius: 0; background: transparent; overflow: hidden; }
   .approach-panel > summary { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 12px; cursor: pointer; list-style: none; }
   .approach-panel > summary::-webkit-details-marker { display: none; }
   .approach-panel > summary::before { content: '›'; color: var(--faint); transition: transform .18s ease; }
@@ -421,8 +423,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .approach-entry.fail .approach-label { color: var(--err); }
   .approach-note { margin: 0; padding: 4px 12px 10px; color: var(--faint); font-size: 10.5px; }
   @media (max-width: 720px) { .approach-panel { margin: 0 10px 6px; } .approach-latest { display: none; } .approach-entry { grid-template-columns: 1fr; gap: 2px; } }
-  @media (max-width: 720px) { .tool-call .why { display: none; } .tool-call .tl-cmd { gap: 6px; } .tool-group-shimmer { display: none; } .tool-group-count { display: none; } .tool-kind { width: 21px; height: 21px; } .tool-call .st { letter-spacing: 0; } }
-  .fold-btn { display: block; width: 100%; padding: 4px 10px; background: var(--card2); border: 0; box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 var(--border); border-radius: 0 0 8px 8px; color: var(--run); font-size: 10.5px; text-align: left; cursor: pointer; font-family: var(--mono); }
+  @media (max-width: 720px) { .tool-call .why { display: none; } .tool-call .tl-cmd { gap: 6px; } .tool-group-state { display: none; } .tool-group-list { padding-left: 10px; } .tool-call .st { letter-spacing: 0; } }
+  .fold-btn { display: block; width: 100%; padding: 4px 0; background: transparent; border: 0; box-shadow: none; color: var(--run); font-size: 10.5px; text-align: left; cursor: pointer; font-family: var(--mono); }
   .fold-btn:hover { color: var(--text); }
 
   .chip { font-size: 11px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--border2); color: var(--muted); }
@@ -512,11 +514,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .report-flat .verify-row summary { cursor: pointer; width: fit-content; }
   .report-flat .verify-row pre { margin: 6px 0 0; padding: 7px; max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; background: var(--card2); font: 10.5px var(--mono); color: var(--muted); }
 
-  @keyframes shimmer { 0% { background-position: -300px 0; } 100% { background-position: 300px 0; } }
   @keyframes spin { to { transform: rotate(360deg); } }
   .working { display: flex; align-items: center; gap: 10px; padding: 12px 2px 12px 40px; }
   .working .spinner { width: 12px; height: 12px; border: 2px solid var(--border2); border-top-color: var(--run); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
-  .working .shimmer { height: 9px; width: 120px; border-radius: 5px; background: linear-gradient(90deg, #161e2e 25%, #212b42 50%, #161e2e 75%); background-size: 600px 100%; animation: shimmer 1.3s linear infinite; flex: none; }
   .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .run-side { width: var(--rsw, 380px); flex: none; display: flex; flex-direction: column; min-height: 0; }
@@ -553,25 +553,29 @@ export const UI_HTML = String.raw`<!doctype html>
   /* The current checklist lives at the point of action. It is deliberately
      compact: the agent's next work item stays visible without competing with
      the conversation or forcing people back into the details panel. */
-  .composer-todos { overflow: hidden; margin: 0 0 8px; border: 1px solid rgba(143,128,255,.24); border-radius: 12px; background: linear-gradient(135deg, rgba(143,128,255,.09), rgba(19,24,38,.92) 56%); box-shadow: 0 8px 22px rgba(0,0,0,.10); }
-  .composer-todos-head { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 7px 11px; border-bottom: 1px solid rgba(143,128,255,.16); }
-  .composer-todos-title { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font-size: 11px; font-weight: 700; letter-spacing: .7px; text-transform: uppercase; color: #d3ceff; }
-  .composer-todos-title .todo-title-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--run); box-shadow: 0 0 0 4px var(--run-dim); flex: none; }
+  .composer-todos { margin: 0 0 5px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  .composer-todos-head { display: flex; align-items: center; gap: 9px; min-height: 34px; padding: 6px 3px; cursor: pointer; list-style: none; color: var(--muted); }
+  .composer-todos-head::-webkit-details-marker { display: none; }
+  .composer-todos-head::before { content: ''; width: 5px; height: 5px; margin: 0 4px 0 2px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .18s ease; flex: none; }
+  .composer-todos[open] > .composer-todos-head::before { transform: rotate(45deg); }
+  .composer-todos-head:hover { color: var(--text); }
+  .composer-todos-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .composer-todos-title { flex: none; font-size: 11.5px; font-weight: 500; }
+  .composer-todos-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text); }
   .composer-todos-count { margin-left: auto; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
-  .composer-todo-list { max-height: 132px; overflow-y: auto; margin: 0; padding: 3px 6px 5px; list-style: none; scrollbar-gutter: stable; }
-  .composer-todo { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 7px; align-items: center; padding: 5px 6px; border-radius: 7px; color: var(--text); font-size: 12.5px; line-height: 1.34; }
-  .composer-todo + .composer-todo { margin-top: 1px; }
-  .composer-todo.active { background: rgba(91,168,255,.10); }
+  .composer-todo-list { max-height: 180px; overflow-y: auto; margin: 0; padding: 2px 0 8px 20px; list-style: none; scrollbar-gutter: stable; }
+  .composer-todo { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 7px; align-items: start; padding: 5px 3px; color: var(--text); font-size: 12px; line-height: 1.5; }
+  .composer-todo.active { color: var(--text); }
   .composer-todo.done { color: var(--muted); }
-  .composer-todo.blocked, .composer-todo.failed { background: var(--err-dim); }
-  .composer-todo-mark { display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid var(--border2); border-radius: 50%; color: transparent; font-size: 10px; line-height: 1; }
+  .composer-todo.blocked, .composer-todo.failed { color: var(--err); }
+  .composer-todo-mark { display: grid; place-items: center; width: 13px; height: 13px; margin-top: 2px; border: 1px solid var(--border2); border-radius: 50%; color: transparent; font-size: 9px; line-height: 1; }
   .composer-todo.active .composer-todo-mark { border-color: var(--run); background: var(--run); box-shadow: 0 0 0 3px var(--run-dim); }
   .composer-todo.active .composer-todo-mark::after { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #fff; animation: pulse 1.35s ease-in-out infinite; }
   .composer-todo.done .composer-todo-mark { border-color: var(--ok); background: var(--ok-dim); color: var(--ok); }
   .composer-todo.blocked .composer-todo-mark, .composer-todo.failed .composer-todo-mark { border-color: var(--err); background: var(--err-dim); color: var(--err); }
-  .composer-todo-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .composer-todo-text { min-width: 0; overflow-wrap: anywhere; }
   .composer-todo.done .composer-todo-text { text-decoration: line-through; text-decoration-color: rgba(139,148,167,.55); }
-  .composer-todo-parent { color: var(--faint); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 34vw; }
+  .composer-todo-parent { color: var(--faint); font-size: 10.5px; }
   .composer-todo-state { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; white-space: nowrap; }
   .composer-todo.active .composer-todo-state { color: var(--run); }
   .composer-todo.done .composer-todo-state { color: var(--ok); }
@@ -672,7 +676,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .vresize:hover, .vresize.active { background: rgba(124, 108, 240, .35); }
   .shell.left-collapsed #sbResize, .run.collapsed-side #rsResize { display: none; }
 
-  .abubble { max-width: 80%; background: var(--card); border: 1px solid var(--border2); border-radius: 12px; padding: 8px 12px; margin: 10px 0 10px 20px; font-size: 13px; white-space: pre-wrap; box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .abubble { max-width: 100%; background: transparent; border: 0; border-radius: 0; padding: 8px 0; margin: 10px 0; font-size: 14px; line-height: 1.75; white-space: pre-wrap; box-shadow: none; }
   .abubble .who { display: block; color: var(--accent); font-size: 10.5px; font-weight: 600; margin-bottom: 2px; }
   .session-file { position: relative; max-width: 520px; margin: 9px 0 9px 20px; border: 1px solid var(--border2); border-radius: 12px; background: var(--card); padding: 10px 11px; display: flex; gap: 10px; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
   .session-file.user { margin-left: auto; border-color: rgba(91,168,255,.34); background: rgba(91,168,255,.08); }
@@ -838,6 +842,7 @@ export const UI_HTML = String.raw`<!doctype html>
 (function () {
   ${UI_MOTION_JS}
   ${UI_APPROACH_JS}
+  ${UI_RESPONSE_JS}
   var S = {
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     modelsLoaded: false,
@@ -1892,7 +1897,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
-      '<div class="bottom-composer"><section class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></section><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
+      '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div></div></div>' +
       '</div>' +
@@ -1958,7 +1963,7 @@ export const UI_HTML = String.raw`<!doctype html>
     w.className = 'working'; w.id = 'working';
     w.setAttribute('role', 'status');
     w.setAttribute('aria-live', 'polite');
-    w.innerHTML = '<span class="spinner"></span><span class="shimmer"></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span>';
+    w.innerHTML = '<span class="spinner"></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span>';
     $('stream').appendChild(w);
     setWorking('Thinking…');
     renderRunSide(runId);
@@ -2316,11 +2321,8 @@ export const UI_HTML = String.raw`<!doctype html>
     }
   }
   // ── Narration finalization ─────────────────────────────────────────────
-  // While a thought streams it is raw text; when it closes we decide how it
-  // should be read: plain sentence(s), structured headline+checklist for
-  // dense verification reports, or a collapsed disclosure if the model
-  // leaked its raw JSON action object into prose (truncated-output retry).
-  var DENSE_MIN_CHARS = 320;
+  // Stream plain text, then apply safe formatting without rewriting or
+  // shortening the response. Protocol leaks never become conversation.
   // Matches a raw JSON action object prefix whether or not the stream cut
   // off before the closing quote: '{"thought"…', '{"thought' (truncated),
   // and the escaped '{\"thought\"' variants.
@@ -2334,36 +2336,6 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     if (cut < 0) return t;
     return t.slice(0, cut).replace(/[\s,;·—-]+$/, '');
-  }
-  function sentencesOf(text) {
-    var out = [], cur = '';
-    for (var i = 0; i < text.length; i++) {
-      var ch = text.charAt(i);
-      cur += ch;
-      if ((ch === '.' || ch === '!' || ch === '?') && (i + 1 >= text.length || text.charAt(i + 1) === ' ')) {
-        out.push(cur.trim()); cur = '';
-      }
-    }
-    if (cur.trim()) out.push(cur.trim());
-    return out;
-  }
-  var EVIDENCE_RE = /(\u2713|confirm|commit|evidence|manifest|untracked|absent|verified|manifest\.txt)/i;
-  var FOOT_RE = /^(?:and\s+)?(next|then|now)\b[:,]?\s*/i;
-  function denseNoteHtml(sents) {
-    var head = sents[0];
-    var rest = sents.slice(1);
-    var foot = null;
-    if (rest.length && FOOT_RE.test(rest[rest.length - 1])) foot = rest.pop();
-    var h = '<span class="dense-headline">' + esc(head) + '</span>';
-    if (rest.length) {
-      h += '<ul class="dense-items">';
-      for (var i = 0; i < rest.length; i++) {
-        h += '<li' + (EVIDENCE_RE.test(rest[i]) ? ' class="ev"' : '') + '>' + esc(rest[i]) + '</li>';
-      }
-      h += '</ul>';
-    }
-    if (foot) h += '<span class="dense-foot">\u25B8 ' + esc(foot) + '</span>';
-    return h;
   }
   // Called once per narration node when its stream ends. Idempotent via
   // data-final so replays/retries never restructure twice.
@@ -2389,10 +2361,8 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
     if (clean !== raw) txt.textContent = clean;
-    var sents = sentencesOf(clean);
-    if (clean.length < DENSE_MIN_CHARS || sents.length < 3) return;
-    txt.classList.add('dense-note');
-    txt.innerHTML = denseNoteHtml(sents);
+    txt.classList.add('response-prose');
+    txt.innerHTML = renderResponseText(clean);
   }
   // ── Retry-duplicate collapsing ──────────────────────────────────────────
   // After a transient LLM failure the retry re-streams the SAME thought, and
@@ -2482,7 +2452,9 @@ export const UI_HTML = String.raw`<!doctype html>
       var e0 = $('workingElapsed'); if (e0) e0.textContent = '';
       return;
     }
-    w.style.display = 'flex';
+    // The activity disclosure or the arriving text already shows live work.
+    // Keep one visible status while retaining the timer for nested calls.
+    w.style.display = document.querySelector('.tool-call[data-tool-state="working"], .text-streaming') ? 'none' : 'flex';
     if (text !== S.lastWorkingText) { S.lastWorkingText = text; S.workingSince = Date.now(); w.classList.remove('slow'); }
     var t = $('workingText');
     if (t && t.textContent !== text) t.textContent = text;
@@ -2773,30 +2745,43 @@ export const UI_HTML = String.raw`<!doctype html>
     return row && row.closest ? row.closest('.tl-tool-group') : null;
   }
 
+  function toolActivityHint(summary, working) {
+    var text = String(summary || '').trim();
+    var verbs = { read: ['Reading', 'Read'], write: ['Writing', 'Wrote'], edit: ['Editing', 'Edited'], list: ['Listing', 'Listed'], search: ['Searching', 'Searched'] };
+    var match = /^(read|write|edit|list|search)\s+([\s\S]*)$/.exec(text);
+    if (match) return verbs[match[1]][working ? 0 : 1] + ' ' + match[2];
+    if (text.indexOf('$ ') === 0) return (working ? 'Running ' : 'Ran ') + text.slice(2);
+    return text || (working ? 'Preparing action' : 'Action completed');
+  }
+
   function refreshToolActivityGroup(groupEl) {
     if (!groupEl || !groupEl.isConnected) return;
     var rows = Array.prototype.slice.call(groupEl.querySelectorAll('.tool-call'));
-    var running = 0, troubled = 0, attempts = 0;
+    var running = 0, troubled = 0, current = null;
     rows.forEach(function (row) {
       var state = String(row.dataset.toolState || '');
-      if (state === 'working') running++;
+      if (state === 'working') { running++; if (!current) current = row; }
       var outcome = String(row.dataset.toolStatus || '');
       if (outcome === 'error' || outcome === 'denied' || outcome === 'blocked' || outcome === 'interrupted') troubled++;
-      attempts += Math.max(1, Number(row.dataset.toolAttempts || 1));
     });
     var status = running ? 'working' : troubled ? 'attention' : 'complete';
     groupEl.dataset.toolGroupState = status;
     var count = groupEl.querySelector('.tool-group-count');
-    if (count) {
-      var distinct = rows.length + (rows.length === 1 ? ' tool' : ' tools');
-      count.textContent = attempts > rows.length ? distinct + ' · ' + attempts + ' runs' : distinct;
-    }
+    if (count) count.textContent = rows.length + (rows.length === 1 ? ' activity' : ' activities');
+    current = current || rows[rows.length - 1];
+    var title = groupEl.querySelector('.tool-group-title');
+    var hint = groupEl.querySelector('.tool-group-hint');
+    if (title && current) title.textContent = toolActivityHint(current.dataset.toolKey, !!running);
+    if (hint) hint.textContent = current ? String(current.dataset.toolReason || '') : '';
     var label = groupEl.querySelector('.tool-group-state');
-    if (label) label.textContent = status === 'working' ? 'Working' : status === 'attention' ? 'Needs attention' : 'Complete';
+    if (label) label.textContent = running > 1 ? running + ' running' : status === 'attention' ? 'Needs attention' : status === 'complete' ? 'Complete' : '';
     var dot = groupEl.querySelector(':scope > .tl-dot');
     if (dot) dot.className = 'tl-dot ' + (status === 'working' ? 'dot-run' : status === 'attention' ? 'dot-bad' : 'dot-ok');
     var summary = groupEl.querySelector('.tool-group-details > summary');
-    if (summary) summary.title = 'Show ' + (attempts === 1 ? '1 tool call' : attempts + ' tool calls');
+    if (summary) {
+      summary.title = (title ? title.textContent : '') + (hint && hint.textContent ? '\n' + hint.textContent : '');
+      summary.setAttribute('aria-label', (title ? title.textContent + '. ' : '') + 'Show ' + rows.length + ' activities and outputs');
+    }
   }
 
   function sealToolActivityGroup(sess, force) {
@@ -2816,12 +2801,10 @@ export const UI_HTML = String.raw`<!doctype html>
       '<span class="tl-dot dot-run"></span>' +
       '<div class="tl-body"><details class="tool-group-details">' +
         '<summary aria-label="Show tool activity">' +
-          '<span class="tool-group-mark" aria-hidden="true">◇</span>' +
-          '<span class="tool-group-title">Tool activity</span>' +
-          '<span class="tool-group-count">0 tools</span>' +
-          '<span class="tool-group-state" aria-live="polite">Working</span>' +
-          '<span class="tool-group-shimmer" aria-hidden="true"></span>' +
           '<span class="tool-group-chevron" aria-hidden="true">›</span>' +
+          '<span class="tool-group-copy"><span class="tool-group-title" aria-live="polite">Preparing action</span><span class="tool-group-hint"></span></span>' +
+          '<span class="tool-group-count">0 activities</span>' +
+          '<span class="tool-group-state"></span>' +
         '</summary>' +
         '<div class="tool-group-list"></div>' +
       '</details></div>';
@@ -2832,7 +2815,7 @@ export const UI_HTML = String.raw`<!doctype html>
       details.addEventListener('toggle', function () { summary.setAttribute('aria-expanded', String(details.open)); });
     }
     insert(el);
-    var group = { el: el, callsByKey: Object.create(null), accepting: true };
+    var group = { el: el, accepting: true };
     sess.nodes.toolGroup = group;
     return group;
   }
@@ -2852,6 +2835,14 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream) return;
     var sess = S.sessions[runId];
     var text = String(ev.text);
+    // Event IDs identify transport replays. Identical commands with different
+    // IDs are real invocations and each must keep its own output.
+    if (sess && sess.nodes && ev.i != null) {
+      var seen = sess.nodes.renderedEventIds || (sess.nodes.renderedEventIds = new Set());
+      if (seen.has(ev.i)) return;
+      seen.add(ev.i);
+      if (seen.size > 2000) seen.delete(seen.values().next().value);
+    }
     updateApproach(runId, ev);
     // The next assistant event starts a fresh activity group after the prior
     // one has settled. Do not split an in-flight parallel batch.
@@ -2931,6 +2922,7 @@ export const UI_HTML = String.raw`<!doctype html>
       }
       var sink = sess.nodes.thought.querySelector('.exec-pre') || sess.nodes.thought.querySelector('.txt');
       queueStreamText(sink, chunk, sess.replaying);
+      var working = $('working'); if (working) working.style.display = 'none';
       return;
     }
     if (text.indexOf('reason ') === 0) {
@@ -3185,14 +3177,18 @@ export const UI_HTML = String.raw`<!doctype html>
       var raw = String(hint || '').trim();
       var key = normalizeToolKey(raw);
       var exact = null;
-      for (var ri = rows.length - 1; ri >= 0; ri--) {
+      for (var ri = 0; ri < rows.length; ri++) {
         var rowKey = String(rows[ri].dataset.toolKey || '');
         if (raw && (rowKey === raw || normalizeToolKey(rowKey) === key)) { exact = rows[ri]; break; }
-        // lines <path> +N lines has only a path hint, so allow it to bind to
-        // the corresponding write/edit summary without relying on event order.
-        if (key && (normalizeToolKey(rowKey).indexOf(key) >= 0 || key.indexOf(normalizeToolKey(rowKey)) >= 0)) { exact = rows[ri]; break; }
       }
       if (exact) return exact;
+      // A path-only lines event can match an edit; only accept an unambiguous
+      // partial match after looking for every exact command match first.
+      var partial = rows.filter(function (row) {
+        var candidate = normalizeToolKey(row.dataset.toolKey || '');
+        return key && candidate && (candidate.indexOf(key) >= 0 || key.indexOf(candidate) >= 0);
+      });
+      if (partial.length === 1) return partial[0];
       // A single active row is unambiguous even for older/replayed events.
       if (rows.length === 1) return rows[0];
       // Old persisted parallel events did not carry a correlation id. FIFO is
@@ -3252,53 +3248,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var summary = splitSummary(body);
       var reason = splitReason(body);
       var group = ensureToolActivityGroup(sess, insert);
-      if (sess.nodes.nextToolBatchHint) {
-        var groupTitle = group.el.querySelector('.tool-group-title');
-        if (groupTitle) groupTitle.textContent = 'Parallel tool activity';
-        sess.nodes.nextToolBatchHint = '';
-      }
-      var key = normalizeToolKey(summary);
-      var existingCall = group.callsByKey[key];
-      // Stream reconnects and provider retries can repeat the same run event.
-      // event. Keep it as one nested call with a run count instead of making
-      // a visually identical card for every echo.
-      if (existingCall && existingCall.isConnected) {
-        var attempts = Math.max(1, Number(existingCall.dataset.toolAttempts || 1)) + 1;
-        existingCall.dataset.toolAttempts = String(attempts);
-        var repeatChip = existingCall.querySelector('.tool-repeat');
-        if (!repeatChip) {
-          repeatChip = document.createElement('span');
-          repeatChip.className = 'tool-repeat';
-          var repeatAnchor = existingCall.querySelector('.st');
-          if (repeatAnchor && repeatAnchor.parentNode) repeatAnchor.parentNode.insertBefore(repeatChip, repeatAnchor);
-        }
-        if (repeatChip) repeatChip.textContent = '\u00d7' + attempts;
-        // A genuine re-run after a completed attempt uses the same compact
-        // row, but resets its live state and output before accepting the new
-        // terminal lifecycle events.
-        if (existingCall.dataset.toolState !== 'working') {
-          existingCall.dataset.toolState = 'working';
-          existingCall.dataset.toolStatus = 'working';
-          existingCall.dataset.startedAt = String(Date.parse(ev.t) || Date.now());
-          existingCall.classList.remove('done-bad');
-          var retryStatus = existingCall.querySelector('.st');
-          if (retryStatus) { retryStatus.className = 'st st-run'; retryStatus.textContent = 'Running'; }
-          var retryDuration = existingCall.querySelector('.tool-duration');
-          if (retryDuration) retryDuration.textContent = '0s';
-          var retryDetails = existingCall.querySelector('.tl-out');
-          var retryOutput = existingCall.querySelector('pre');
-          if (retryDetails) retryDetails.open = false;
-          if (retryOutput) retryOutput.textContent = 'Waiting for tool output…';
-          var retryLabel = existingCall.querySelector('.output-label');
-          if (retryLabel) retryLabel.textContent = 'Output · waiting for result';
-        }
-        sess.nodes.lastTool = existingCall;
-        refreshToolActivityGroup(group.el);
-        var repeatedWorking = workingTextFor(text);
-        if (repeatedWorking) setWorking(repeatedWorking);
-        stickScroll(stream);
-        return;
-      }
+      sess.nodes.nextToolBatchHint = '';
       var row = document.createElement('div');
       row.className = 'tool-call' + (kind === 'browser' ? ' tl-browser' : '');
       row.innerHTML =
@@ -3308,7 +3258,10 @@ export const UI_HTML = String.raw`<!doctype html>
           (reason ? '<span class="why">— ' + esc(reason) + '</span>' : '') +
           '<span class="st st-run">Running</span><span class="tool-duration">0s</span><span class="tool-chevron" aria-hidden="true">›</span>' +
         '</button>' +
-        '<details class="tl-out"><summary><span class="output-label">Output · waiting for result</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary><pre>Waiting for tool output…</pre></details>';
+        '<details class="tl-out"><summary><span class="output-label">Output · waiting for result</span><button type="button" class="tool-btn-copy" title="Copy output">' + icon('copy') + ' Copy</button></summary>' +
+          '<code class="tool-command">' + esc(summary) + '</code>' +
+          (reason ? '<p class="tool-purpose">' + esc(reason) + '</p>' : '') +
+          '<pre>Waiting for tool output…</pre></details>';
       var commandButton = row.querySelector('.tool-call-head');
       var outputDetails = row.querySelector('.tl-out');
       commandButton.title = summary + (reason ? '\n' + reason : '');
@@ -3334,10 +3287,10 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.nodes.lastTool = row;
       sess.nodes.toolRows = sess.nodes.toolRows || [];
       row.dataset.toolKey = summary;
+      row.dataset.toolReason = reason;
       row.dataset.toolState = 'working';
       row.dataset.startedAt = String(Date.parse(ev.t) || Date.now());
       sess.nodes.toolRows.push(row);
-      group.callsByKey[key] = row;
       refreshToolActivityGroup(group.el);
       var wt = workingTextFor(text);
       if (wt) setWorking(wt);
@@ -3397,6 +3350,7 @@ export const UI_HTML = String.raw`<!doctype html>
       meta.className = 'tl-row tl-meta subagent-note';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>specialist</b> ' + esc(body) + '</div>';
     } else if (tag === 'done') {
+      if (!devMode()) return;
       // End-of-run echo: show the conversational outcome, not the raw
       // CHANGES dump (the full report card below carries the detail).
       var dDash = body.indexOf(' — ');
@@ -3459,13 +3413,13 @@ export const UI_HTML = String.raw`<!doctype html>
   function composerTodoItems(ledger) {
     if (!ledger || !Array.isArray(ledger.plan)) return [];
     var items = [];
-    ledger.plan.forEach(function (step, stepIndex) {
+    ledger.plan.forEach(function (step) {
       if (!step) return;
       var stepText = String(step.description || '').trim();
       var stepStatus = String(step.status || 'pending');
       var todos = Array.isArray(step.subtasks) ? step.subtasks : [];
       if (!todos.length) {
-        if (stepText) items.push({ text: stepText, parent: '', status: stepStatus, index: stepIndex });
+        if (stepText) items.push({ text: stepText, parent: '', status: stepStatus, index: items.length });
         return;
       }
       var firstOpen = -1;
@@ -3480,7 +3434,7 @@ export const UI_HTML = String.raw`<!doctype html>
         var done = stepStatus === 'done' || (typeof todo !== 'string' && Boolean(todo && todo.done));
         var status = done ? 'done' : stepStatus;
         if (status === 'in_progress' && todoIndex !== firstOpen) status = 'pending';
-        items.push({ text: text, parent: stepText, status: status, index: stepIndex * 100 + todoIndex });
+        items.push({ text: text, parent: stepText, status: status, index: items.length });
       });
     });
     return items;
@@ -3491,7 +3445,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (status === 'blocked') return { rank: 1, label: 'Blocked', className: 'blocked' };
     if (status === 'failed') return { rank: 1, label: 'Needs retry', className: 'failed' };
     if (status === 'done') return { rank: 3, label: 'Done', className: 'done' };
-    return { rank: 2, label: 'Next', className: 'pending' };
+    return { rank: 2, label: 'Pending', className: 'pending' };
   }
 
   function renderComposerTodos(runId) {
@@ -3499,29 +3453,36 @@ export const UI_HTML = String.raw`<!doctype html>
     var panel = $('composerTodos');
     var sess = S.sessions[runId];
     if (!panel || !sess) return;
+    if (panel.dataset.runId !== runId) {
+      panel.dataset.runId = runId;
+      panel.open = Boolean(sess.composerTodosOpen);
+      panel.ontoggle = function () {
+        var owner = S.sessions[this.dataset.runId];
+        if (owner) owner.composerTodosOpen = this.open;
+      };
+      delete panel.dataset.signature;
+    }
     var allItems = composerTodoItems(sess.ledger);
-    // This is the active checklist, rather than a duplicate report of work
-    // already completed. Failed/blocked items remain visible until resolved.
-    var items = allItems.filter(function (item) { return item.status !== 'done'; });
-    if (!items.length) {
+    if (!allItems.length) {
       panel.hidden = true;
       panel.innerHTML = '';
       delete panel.dataset.signature;
       return;
     }
-    items.sort(function (a, b) {
+    var currentItems = allItems.filter(function (item) { return item.status !== 'done'; }).sort(function (a, b) {
       var ar = composerTodoStatus(a.status).rank;
       var br = composerTodoStatus(b.status).rank;
       return ar - br || a.index - b.index;
     });
     var done = allItems.filter(function (item) { return item.status === 'done'; }).length;
-    var signature = items.map(function (item) { return [item.text, item.parent, item.status].join('\u0001'); }).join('\u0002') + '\u0003' + done + '/' + allItems.length;
+    var signature = allItems.map(function (item) { return [item.text, item.parent, item.status].join('\u0001'); }).join('\u0002');
     if (!panel.hidden && panel.dataset.signature === signature) return;
     panel.hidden = false;
     panel.dataset.signature = signature;
-    var count = items.length + (items.length === 1 ? ' open' : ' open') + ' · ' + done + '/' + allItems.length + ' done';
-    panel.innerHTML = '<div class="composer-todos-head"><span class="composer-todos-title"><span class="todo-title-dot"></span>Task checklist</span><span class="composer-todos-count">' + esc(count) + '</span></div><ol class="composer-todo-list" aria-label="Active task checklist">' +
-      items.map(function (item) {
+    var current = currentItems.length ? currentItems[0].text : 'Checklist complete';
+    var count = done + '/' + allItems.length + ' done';
+    panel.innerHTML = '<summary class="composer-todos-head"><span class="composer-todos-title">To-do</span><span class="composer-todos-current" title="' + esc(current) + '">' + esc(current) + '</span><span class="composer-todos-count">' + esc(count) + '</span></summary><ol class="composer-todo-list" aria-label="Task checklist">' +
+      allItems.map(function (item) {
         var meta = composerTodoStatus(item.status);
         var parent = item.parent && item.parent !== item.text
           ? '<span class="composer-todo-parent" title="' + esc(item.parent) + '"> · ' + esc(item.parent) + '</span>'
@@ -3545,7 +3506,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!current && waiting) current = 'Needs your ' + waiting + ' before work can continue';
     if (!current && ledger && ledger.plan) {
       var step = ledger.plan.filter(function (s) { return s.status === 'in_progress'; })[0] || ledger.plan.filter(function (s) { return s.status === 'pending'; })[0];
-      if (step) current = (step.status === 'in_progress' ? 'Working on: ' : 'Next: ') + step.description;
+      if (step) current = step.description;
     }
     if (!current) current = status === 'completed' ? 'Completed — review the result and evidence' : status === 'failed' ? 'Failed — review the blocker and retry options' : status === 'blocked' ? 'Blocked — review the required action' : status === 'running' ? 'Preparing the next action' : 'Task state ready';
     next.textContent = current;
@@ -3950,7 +3911,7 @@ export const UI_HTML = String.raw`<!doctype html>
   // becomes a human-phrased change list ("Added x", not "NEW x (4490 chars)").
   var CHANGE_VERBS = { NEW: 'Added', CREATED: 'Added', UPDATED: 'Updated', MODIFIED: 'Updated', REWROTE: 'Rewrote', DELETED: 'Removed', REMOVED: 'Removed' };
   function parseOutcome(summary) {
-    var text = String(summary || '').replace(/\s+/g, ' ').trim();
+    var text = String(summary || '').trim();
     var out = { lede: text, changes: [], criteriaNote: '', sourceNote: '' };
     var crit = text.match(/(all \d+ acceptance criteria[^.]*\.)/i);
     if (crit) out.criteriaNote = crit[1];
@@ -3958,8 +3919,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (src) out.sourceNote = src[1];
     var cut = text.search(/\bCHANGES?\s*\(/i);
     var head = cut >= 0 ? text.slice(0, cut).trim() : text;
-    var sents = sentencesOf(head);
-    out.lede = sents.length > 2 ? sents.slice(0, 2).join(' ') : head;
+    out.lede = head;
     var rest = cut >= 0 ? text.slice(cut) : '';
     var cre = /[-\u2022]\s*(NEW|CREATED|UPDATED|MODIFIED|REWROTE|DELETED|REMOVED)\s+([^\s(,;:]+)/g;
     var m;
@@ -4079,7 +4039,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + (ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : 'Failed')) + '</h2>' +
       '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span>' +
       (report.phase && report.phase.kind === 'follow_up' ? '<span class="chip" style="margin-left:6px">follow-up</span>' : '') + '</div>' +
-      '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || report.summary), 360)) + '</p>' +
+      '<div class="r-lede response-prose">' + renderResponseText(parsed.lede || report.summary) + '</div>' +
       reportStatusLine(report.status, currentChecks, passed, files.length || (report.changes || []).length || parsed.changes.length) +
       browserHighlight(report.browserActivity) +
       ((checks.length || report.qualityMetrics) ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + qualityMetricsHtml(report.qualityMetrics) + '</details>' : '') +
@@ -4119,7 +4079,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var doneWord = ok ? 'Done' : (r.status === 'blocked' ? 'Blocked' : 'Failed');
     var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
       '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
-    html += '<p class="r-lede">' + esc(shortText(reportLede(parsed.lede || r.summary), 400)) + '</p>';
+    html += '<div class="r-lede response-prose">' + renderResponseText(parsed.lede || r.summary) + '</div>';
     html += reportStatusLine(r.status, currentChecks, passed, files.length || (r.changes || []).length || parsed.changes.length);
     if (r.phase && r.phase.kind === 'follow_up') html += '<div class="r-note">Follow-up delivery — earlier task work was preserved and is not repeated here.</div>';
     var findings = (r.findings || []).slice(0, 5);

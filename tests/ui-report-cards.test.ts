@@ -1,10 +1,44 @@
+import { Script, createContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { UI_HTML } from '../src/server/ui.js';
 
-// The activity stream must read like an agent report, not a terminal log:
-// dense verification prose is structured (headline + checklist + next-step
-// footer), token telemetry collapses behind "Execution details", and raw
-// model-JSON leaks never render as conversational text.
+function source(name: string) {
+  const declaration = new RegExp('^( +)function ' + name + '\\(', 'm').exec(UI_HTML)!;
+  const start = declaration.index;
+  const end = UI_HTML.indexOf('\n' + declaration[1] + '}', start);
+  return UI_HTML.slice(start, end + declaration[1].length + 2);
+}
+
+function proseRenderer() {
+  const emitted: { innerHTML: string }[] = [];
+  const stream = { appendChild: (element: { innerHTML: string }) => emitted.push(element) };
+  const context = createContext({
+    URL,
+    S: { sessions: { run: {} } },
+    $: (id: string) => id === 'stream' ? stream : null,
+    document: { createElement: () => ({ innerHTML: '', querySelector: () => null }) },
+    JSON_LEAK_RE: /^\{\s*\\?"thought/,
+    JSON_LEAK_MARKERS: ['{"thought', '{\\"thought'],
+    flushStreamText: () => {}, devMode: () => false,
+    reportFiles: () => [], reportChecks: () => [], browserHighlight: () => '',
+    verificationSection: () => '', qualityMetricsHtml: () => '',
+    chipFor: () => '', icon: () => '', setupCopyButton: () => {}, stickScroll: () => {},
+  });
+  new Script([
+    'responseEscape', 'responseLink', 'responseInline', 'responseListItem', 'responseFence',
+    'responseBlockStart', 'renderResponseText', 'stripJsonLeak', 'finalizeNarration',
+    'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportSideCard', 'appendSummary',
+  ].map(source).join('\n') + '\nvar esc = responseEscape;').runInContext(context);
+  return { context, emitted };
+}
+
+const longResponse = [
+  'The activity stream now shows the actual command being executed and explains why it is needed. Each invocation keeps its own output, including repeated verification commands. The disclosure stays available after completion, so the result can be inspected later.',
+  'Text arrives progressively in the conversation and keeps its original paragraphs when the response finishes. The todo list can be collapsed without losing the current task or completion count. These changes preserve the details needed to understand what changed, what was checked, and any remaining limitations.',
+].join('\n\n');
+
+// Public narration preserves the assistant’s complete explanation. Technical
+// telemetry is disclosed separately and protocol objects never become prose.
 describe('UI — narration structuring & technical disclosures', () => {
   it('renders telemetry as a collapsed Execution details card, not a meta line', () => {
     expect(UI_HTML).toContain("text.indexOf('telemetry ') === 0");
@@ -14,13 +48,60 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain("var LABELS = { calls: 'Calls', toolCalls: 'Tool calls'");
   });
 
-  it('structures dense verification notes as headline + checklist + footer', () => {
-    expect(UI_HTML).toContain('denseNoteHtml(sents)');
-    expect(UI_HTML).toContain('.dense-headline');
-    expect(UI_HTML).toContain('.dense-items li.ev');
-    expect(UI_HTML).toContain('.dense-foot');
-    // Only long, multi-sentence notes are restructured; short ones stay plain.
-    expect(UI_HTML).toContain('DENSE_MIN_CHARS');
+  it('finalizes long narration into complete paragraphs without adding a Next footer or checklist', () => {
+    const { context } = proseRenderer();
+    const attributes: Record<string, string> = {};
+    const classes = new Set<string>();
+    const text = {
+      textContent: longResponse,
+      innerHTML: '',
+      getAttribute: (name: string) => attributes[name] || null,
+      setAttribute: (name: string, value: string) => { attributes[name] = value; },
+      classList: { add: (value: string) => classes.add(value) },
+    };
+    const node = { querySelector: () => text };
+    context.finalizeNarration(node);
+    expect(text.innerHTML).toBe(longResponse.split('\n\n').map(paragraph => '<p>' + paragraph + '</p>').join(''));
+    expect(text.innerHTML).not.toContain('<li>');
+    expect(text.innerHTML).not.toContain('Next:');
+    expect(classes.has('response-prose')).toBe(true);
+    const finalized = text.innerHTML;
+    text.textContent = 'A second finalize must leave the rendered response alone.';
+    context.finalizeNarration(node);
+    expect(text.innerHTML).toBe(finalized);
+  });
+
+  it('preserves all sentences and more than 400 characters in both completion views', () => {
+    const { context, emitted } = proseRenderer();
+    expect(longResponse.length).toBeGreaterThan(400);
+    const parsed = context.parseOutcome(longResponse);
+    expect(parsed.lede).toBe(longResponse);
+    const report = { summary: longResponse, status: 'complete', remainingRisks: [], followUps: [] };
+    context.appendSummary('run', { report, goal: 'Improve the conversation', status: 'complete' });
+    const expected = '<div class="r-lede response-prose">' + context.renderResponseText(longResponse) + '</div>';
+    expect(emitted[0].innerHTML).toContain(expected);
+    expect(context.reportSideCard(report)).toContain(expected);
+  });
+
+  it('separates legacy change metadata while preserving every sentence before it', () => {
+    const { context } = proseRenderer();
+    const parsed = context.parseOutcome(longResponse + '\nCHANGES (all inside repo_root): - NEW src/view.ts (400 chars) - UPDATED src/app.ts (800 chars)');
+    expect(parsed.lede).toBe(longResponse);
+    expect(parsed.changes).toEqual([{ action: 'NEW', path: 'src/view.ts' }, { action: 'UPDATED', path: 'src/app.ts' }]);
+  });
+
+  it('formats public prose safely and removes protocol leakage at finalization', () => {
+    const { context } = proseRenderer();
+    expect(context.renderResponseText('**Complete**\n\nUse `npm test`.\n\n<script>alert(1)</script>')).toBe(
+      '<p><strong>Complete</strong></p><p>Use <code>npm test</code>.</p><p>&lt;script&gt;alert(1)&lt;/script&gt;</p>',
+    );
+    const text = {
+      textContent: 'Checking the output. {"thought":"internal protocol","action":',
+      innerHTML: '',
+      getAttribute: () => null, setAttribute: () => {}, classList: { add: () => {} },
+    };
+    context.finalizeNarration({ querySelector: () => text });
+    expect(text.innerHTML).toBe('<p>Checking the output.</p>');
   });
 
   it('finalizes narration exactly once, when the thought/bubble closes', () => {

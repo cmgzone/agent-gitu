@@ -901,13 +901,9 @@ export class GituServer {
     if (persistDb && prose.length >= LONG_RESPONSE_DOCUMENT_CHARS) {
       try {
         const file = this.createAssistantDocument(s, prose);
-        this.recordEvent(
-          s,
-          `file ${JSON.stringify({ ...this.fileView(file), replacesLongText: true })}`,
-          true,
-        );
-        this.recordEvent(s, `say I put the detailed response in ${file.name} so you can preview or download it.`, true);
-        return;
+        // The document is an additional way to use the answer. Keep the full
+        // prose in the conversation and persisted event history as well.
+        this.recordEvent(s, `file ${JSON.stringify(this.fileView(file))}`, true);
       } catch {
         // If document persistence fails, preserve the original response.
       }

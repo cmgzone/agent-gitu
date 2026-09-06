@@ -506,7 +506,7 @@ export function asksForResourceIdentifier(questions: AskUserQuestion[]): boolean
 }
 
 function visibleActionSummary(action: ParsedAction): string | undefined {
-  const clean = (value: string, limit = 280): string => value.replace(/\s+/g, ' ').trim().slice(0, limit);
+  const clean = (value: string, limit = 280): string => value.replace(/\s+/g, ' ').trim().replace(/^next:\s*/i, '').slice(0, limit);
   switch (action.type) {
     case 'set_criteria':
       return `I’m defining ${action.criteria.length === 1 ? 'a clear acceptance check' : `${action.criteria.length} clear acceptance checks`} before I proceed.`;
@@ -520,15 +520,27 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
       return 'I’m recording the implementation approach before making changes.';
     case 'tool_call': {
       const reason = clean(action.reason);
-      return reason ? `Next: ${reason}` : `Next: I’m using ${action.tool} to make the next verified step.`;
+      if (reason) return reason;
+      const target = typeof action.params['path'] === 'string' ? clean(action.params['path'], 160) : '';
+      switch (action.tool) {
+        case 'read_file': return target ? `I’m reading ${target}.` : 'I’m reading the relevant file.';
+        case 'write_file':
+        case 'apply_edit': return target ? `I’m updating ${target}.` : 'I’m applying the requested change.';
+        case 'search_files': return 'I’m searching the project for the relevant implementation.';
+        case 'list_files': return 'I’m checking the project files.';
+        case 'run_command': return 'I’m running the command and checking its result.';
+        case 'web_fetch': return 'I’m reading the requested page.';
+        case 'browse': return 'I’m checking the page in the browser.';
+        default: return `I’m running ${action.tool.replace(/_/g, ' ')}.`;
+      }
     }
     case 'capability_action':
-      return `I’m invoking the registered ${action.capability} capability through the shared runtime.`;
+      return clean(action.reason) || `I’m running ${action.capability}.`;
     case 'connection_action':
-      return `I’m using the registered ${action.operationId} read operation on the saved ${action.connectionId} connection.`;
+      return clean(action.reason) || `I’m reading ${action.operationId} from ${action.connectionId}.`;
     case 'connection_discovery': {
       const target = action.resourceIdOrName ? ` for "${action.resourceIdOrName}"` : '';
-      return `I’m discovering ${action.connectionId} ${action.intents.join(', ')}${target} via the Universal Discovery Engine.`;
+      return clean(action.reason) || `I’m checking ${action.intents.join(', ')}${target} on ${action.connectionId}.`;
     }
     case 'connection_operation': {
       // Safe reads auto-register under the existing credential and run
@@ -536,9 +548,10 @@ function visibleActionSummary(action: ParsedAction): string | undefined {
       // go through the approval channel, so the narration must not claim a
       // GET is "awaiting approval".
       if (action.operation.risk === 'read' && action.operation.method === 'GET') {
-        return `I found a documented GET provider operation and I’m running it on the saved ${action.connectionId} connection — safe reads auto-register and run without approval.`;
+        const purpose = clean(action.reason);
+        return `${purpose ? `${purpose}. ` : ''}I’m reading ${action.operation.label} from ${action.connectionId}; safe reads auto-register and run without approval.`;
       }
-      return `I found a documented ${action.operation.method} provider operation and I’m requesting approval before it can run.`;
+      return `I’m requesting approval for ${clean(action.operation.label)}.`;
     }
     case 'parallel':
       return `I’m running ${action.calls.length} independent checks in parallel.`;
@@ -2156,10 +2169,10 @@ export class Gitu {
           ? isFollowUpPhase
             ? `ACTIVE FOLLOW-UP WORK PHASE — user request:\n"${activeGoal}"\n` +
               `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. ${agentWorkflow ? 'Formal criteria and plans remain optional; quick edits can proceed directly.' : 'Add only the needed criteria and append only the needed plan steps.'} ` +
-              `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
+              `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer directly with the detail needed to address it and end with {"type":"complete","summary":"<your complete conversational reply>","chat":true}.`
             : `ACTIVE CONTINUATION — the user wrote:\n"${resumeNote}"\n` +
               `The task is unfinished. Continue from the durable ledger and take the next useful action; do not restart discovery or planning unless the evidence requires it. ` +
-              `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer briefly and end with {"type":"complete","summary":"<your short conversational reply>","chat":true}.`
+              `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer directly with the detail needed to address it and end with {"type":"complete","summary":"<your complete conversational reply>","chat":true}.`
           : undefined;
       // Unified context authority: EVERYTHING that reaches the model before
       // the per-turn loop is assembled by buildModelContext — one priority
@@ -2248,7 +2261,7 @@ export class Gitu {
           ledger,
           'complete',
           {
-            summary: prose.slice(0, 600) || 'Answered.',
+            summary: prose || 'Answered.',
             risks: [],
             followUps: [],
           },
@@ -3315,7 +3328,7 @@ export class Gitu {
                         .slice(0, 300)}\n`
                     : '') +
                   (recentFiles.length ? `  files in play: ${recentFiles.join(', ')}\n` : '') +
-                  `  Next: form a new hypothesis about this specific error, make a targeted fix, then re-verify.`;
+                  `  Form a new hypothesis about this specific error, make a targeted fix, then re-verify.`;
               }
               // Plan-order drift: the agent is working a different step than the
               // one the state message points at. Left unremarked, models tend to

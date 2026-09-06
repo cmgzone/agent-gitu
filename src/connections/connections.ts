@@ -747,6 +747,9 @@ export class ConnectionRegistry {
       ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
       ...(existing?.authState ? { authState: existing.authState } : {}),
       ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
+      // Operation registration rewrites the profile; the provider's recorded
+      // route rejections (do-not-retry memory) must survive that rewrite.
+      ...(existing?.rejectedOperations?.length ? { rejectedOperations: existing.rejectedOperations } : {}),
     };
     const next = [...this.profiles().filter((candidate) => candidate.id !== id), profile];
     this.saveProfiles(next);

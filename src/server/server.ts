@@ -2595,6 +2595,10 @@ export class GituServer {
     // Build a per-run universal catalog from credentialed saved connections.
     // The catalog gives the agent immutable ids and routes every invocation
     // through one cache / evidence / approval path. It never exposes secrets.
+    // MCP server tools are registered alongside connection operations so the
+    // agent's capability_action can reach them through the same secure runtime
+    // (shared cache, evidence, and fail-closed approval gates) instead of only
+    // the raw mcp:<server>:<tool> executor path.
     const universalRegistry = new UniversalCapabilityRegistry();
     for (const profile of this.connections.list()) {
       if (!profile.hasCredential) continue;
@@ -2611,8 +2615,19 @@ export class GituServer {
         profile.provider,
       );
     }
+    await Promise.all(
+      mcp.servers().map(async (server) => {
+        const tools = await mcp.toolsForServer(server.name);
+        if (!tools || tools.length === 0) return;
+        universalRegistry.registerMcpServerTools(
+          server.name,
+          tools,
+          (toolName, args) => mcp.call(`mcp:${server.name}:${toolName}`, args),
+        );
+      }),
+    );
     const universalCapabilityContext = (): string => {
-      const capabilities = universalRegistry.list().filter((capability) => capability.source === 'connection');
+      const capabilities = universalRegistry.list().filter((capability) => capability.source === 'connection' || capability.source === 'mcp');
       if (capabilities.length === 0) return 'UNIVERSAL CAPABILITIES: none available.';
       return [
         'UNIVERSAL CAPABILITIES (invoke directly with capability_action; credentials remain private):',

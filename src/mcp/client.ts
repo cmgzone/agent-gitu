@@ -15,6 +15,8 @@ export interface McpToolInfo {
   server: string;
   name: string;
   description?: string;
+  /** JSON Schema for the tool's arguments, when the server declares one. */
+  inputSchema?: Record<string, unknown>;
 }
 
 interface JsonRpcResponse {
@@ -148,8 +150,8 @@ export class McpClient {
 
   async listTools(): Promise<McpToolInfo[]> {
     await this.connect();
-    const result = (await this.request('tools/list', {})) as { tools?: { name: string; description?: string }[] };
-    return (result.tools ?? []).map((t) => ({ server: this.config.name, name: t.name, description: t.description }));
+    const result = (await this.request('tools/list', {})) as { tools?: { name: string; description?: string; inputSchema?: Record<string, unknown> }[] };
+    return (result.tools ?? []).map((t) => ({ server: this.config.name, name: t.name, description: t.description, inputSchema: t.inputSchema }));
   }
 
   async callTool(toolName: string, args: Record<string, unknown>): Promise<string> {
@@ -298,6 +300,19 @@ export class McpManager {
       }
     }
     return all;
+  }
+
+  /** Tool definitions for one configured server, or undefined when the
+   * server is unavailable. Never throws: an MCP server being down must not
+   * take down catalog construction. */
+  async toolsForServer(name: string): Promise<McpToolInfo[] | undefined> {
+    const client = this.client(name);
+    if (!client) return undefined;
+    try {
+      return await client.listTools();
+    } catch {
+      return undefined;
+    }
   }
 
   async call(qualifiedName: string, args: Record<string, unknown>): Promise<string> {

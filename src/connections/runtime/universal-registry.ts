@@ -122,6 +122,124 @@ export class UniversalCapabilityRegistry {
   }
 
   /**
+   * Register the tools of a live MCP server into the universal registry.
+   * Matches the real McpClient contract: callTool resolves to the tool's
+   * textual output and THROWS on transport or tool errors (isError responses
+   * are already converted to thrown errors by the client).
+   */
+  registerMcpServerTools(
+    serverName: string,
+    tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>,
+    callTool: (name: string, args: Record<string, unknown>) => Promise<string>,
+  ): void {
+    for (const tool of tools) {
+      const risk = classifyCapabilityRisk(tool.name, tool.description, tool.inputSchema);
+      const capId = `mcp:${serverName}:${tool.name}`;
+      const capabilityName = `${serverName}.${tool.name.replace(/[_.]/g, '.')}`;
+
+      this.register({
+        id: capId,
+        source: 'mcp',
+        provider: serverName,
+        capability: capabilityName,
+        label: tool.name,
+        description: tool.description,
+        risk,
+        inputSchema: tool.inputSchema,
+        execute: async (params, ctx) => {
+          const executionId = `conn-exec-${Date.now()}-${sha256(capId).slice(0, 6)}`;
+          const resourceId = extractResourceId(params, ctx);
+          const resourceType = (params.resourceType as string | undefined) ?? ctx.resourceType;
+
+          // Fail-closed approval check for non-read operations
+          if (risk !== 'read') {
+            if (!ctx.approvalHandler) {
+              return {
+                executionId,
+                source: 'mcp',
+                provider: serverName,
+                capability: capabilityName,
+                operationId: tool.name,
+                status: 'rejected',
+                message: `MCP operation "${tool.name}" requires user approval channel.`,
+                stateEpoch: ctx.cache?.getStateEpoch(serverName, resourceType, resourceId) ?? 1,
+                cacheHit: false,
+                errorClass: 'APPROVAL_REQUIRED',
+              };
+            }
+            const approved = await ctx.approvalHandler({ id: capId, label: tool.name, risk, params });
+            if (!approved) {
+              return {
+                executionId,
+                source: 'mcp',
+                provider: serverName,
+                capability: capabilityName,
+                operationId: tool.name,
+                status: 'rejected',
+                message: `MCP operation "${tool.name}" was rejected by user policy.`,
+                stateEpoch: ctx.cache?.getStateEpoch(serverName, resourceType, resourceId) ?? 1,
+                cacheHit: false,
+                errorClass: 'USER_REJECTED',
+              };
+            }
+          }
+
+          try {
+            const output = await callTool(tool.name, params);
+
+            // On successful write, invalidate scoped cache
+            if (risk !== 'read' && ctx.cache) {
+              ctx.cache.invalidateForWrite(serverName, resourceType, resourceId);
+            }
+
+            // On successful read, record evidence in cache
+            let evidenceId: string | undefined;
+            if (risk === 'read' && ctx.cache) {
+              const ev = ctx.cache.record({
+                connectionId: serverName,
+                provider: serverName,
+                capability: capabilityName,
+                operationId: tool.name,
+                resourceId,
+                params,
+                data: output,
+              });
+              evidenceId = ev.id;
+            }
+
+            return {
+              executionId,
+              source: 'mcp',
+              provider: serverName,
+              capability: capabilityName,
+              operationId: tool.name,
+              status: 'ok',
+              data: output,
+              message: `MCP tool "${tool.name}" succeeded.`,
+              evidenceId,
+              stateEpoch: ctx.cache?.getStateEpoch(serverName, resourceType, resourceId) ?? 1,
+              cacheHit: false,
+            };
+          } catch (error) {
+            return {
+              executionId,
+              source: 'mcp',
+              provider: serverName,
+              capability: capabilityName,
+              operationId: tool.name,
+              status: 'failed',
+              message: (error as Error).message,
+              stateEpoch: ctx.cache?.getStateEpoch(serverName, resourceType, resourceId) ?? 1,
+              cacheHit: false,
+              errorClass: 'MCP_TRANSPORT_ERROR',
+            };
+          }
+        },
+      });
+    }
+  }
+
+  /**
    * Register MCP tools into the universal registry with independent risk classification.
    */
   registerMcpTools(

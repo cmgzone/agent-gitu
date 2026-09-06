@@ -289,6 +289,33 @@ describe('connection recovery — routing decisions', () => {
     expect(onDisk).not.toContain('private-token-coolify');
   });
 
+  it('registering a new operation preserves recorded rejected operations (do-not-retry memory)', () => {
+    home();
+    const registry = new ConnectionRegistry();
+    const id = saveConnection(registry, { provider: 'coolify', capabilities: ['servers.read'] });
+    // The provider rejected this exact endpoint with HTTP 404 (recorded by the runtime).
+    registry.recordRejectedOperation(id, {
+      operationId: 'list-databases',
+      method: 'GET',
+      path: '/api/v1/databases',
+      capability: 'servers.read',
+      status: 404,
+    });
+    expect(registry.isOperationRejected(id, 'list-databases', 'GET', '/api/v1/databases')).toBeDefined();
+
+    // Registering another operation on the same connection must not erase the
+    // rejection memory — otherwise a 404 route becomes blindly retryable.
+    registry.registerApprovedOperation(id, {
+      id: 'list-servers', label: 'List servers', capability: 'servers.read', method: 'GET', path: '/api/v1/servers-ext', risk: 'read',
+    }, true);
+
+    expect(registry.isOperationRejected(id, 'list-databases', 'GET', '/api/v1/databases')).toBeDefined();
+
+    // The rejection memory survives on disk for fresh registry instances too.
+    const fresh = new ConnectionRegistry();
+    expect(fresh.isOperationRejected(id, 'list-databases', 'GET', '/api/v1/databases')).toBeDefined();
+  });
+
   it('retrying after registration resolves as existing and executes under the same credential', async () => {
     home();
     const registry = new ConnectionRegistry();

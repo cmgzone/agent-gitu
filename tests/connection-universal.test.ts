@@ -12,6 +12,7 @@ import {
   type CapabilityInvocationRequest,
 } from '../src/connections/runtime/universal-registry.js';
 import { Gitu } from '../src/agent/gitu.js';
+import { McpManager } from '../src/mcp/client.js';
 import { extractDigestMaterial, buildDigestContent, compressDigest } from '../src/context/digest.js';
 import type { LlmClient, LlmMessage, LlmTurnResult } from '../src/llm/llm.js';
 
@@ -850,5 +851,200 @@ describe('Universal Argument Layer & Invocation Runtime', () => {
     expect(resSv7.status).toBe('ok');
     expect(resSv7.cacheHit).toBe(false);
     expect(sv7Reads).toBe(2);
+  });
+});
+
+describe('Universal registry — MCP server tool registration', () => {
+  it('registers MCP server tools with classified risk and executes reads through the string-throwing client', async () => {
+    const registry = new UniversalCapabilityRegistry();
+    const cache = new ProviderReadCache();
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+
+    registry.registerMcpServerTools(
+      'filesystem',
+      [
+        { name: 'list_directory', description: 'List directory contents', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } },
+        { name: 'write_file', description: 'Write a file', inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } } } },
+      ],
+      async (name, args) => {
+        calls.push({ name, args });
+        if (name === 'write_file') throw new Error('boom');
+        return JSON.stringify({ entries: ['a.txt', 'b.txt'] });
+      },
+    );
+
+    const readCap = registry.get('mcp:filesystem:list_directory');
+    expect(readCap).toBeDefined();
+    expect(readCap?.risk).toBe('read');
+    expect(readCap?.source).toBe('mcp');
+    expect(readCap?.provider).toBe('filesystem');
+    expect(readCap?.inputSchema).toEqual({ type: 'object', properties: { path: { type: 'string' } } });
+    const writeCap = registry.get('mcp:filesystem:write_file');
+    expect(writeCap?.risk).toBe('reversible-write');
+
+    // Read executes and records evidence under the server name
+    const res = await registry.invoke(
+      { capability: 'mcp:filesystem:list_directory', arguments: { path: '/tmp' } },
+      { cache },
+    );
+    expect(res.status).toBe('ok');
+    expect(res.source).toBe('mcp');
+    expect(res.operationId).toBe('list_directory');
+    expect(res.evidenceId).toBeDefined();
+    expect(calls).toEqual([{ name: 'list_directory', args: { path: '/tmp' } }]);
+
+    // Schema validation runs from the MCP inputSchema via the universal invoke path
+    const bad = await registry.invoke(
+      { capability: 'mcp:filesystem:list_directory', arguments: { path: 42 } },
+      { cache },
+    );
+    expect(bad.status).toBe('failed');
+    expect(bad.errorClass).toBe('INVALID_ARGUMENTS');
+    expect(calls).toHaveLength(1);
+
+    // Thrown client errors become failed results (string-throwing contract)
+    const err = await registry.invoke(
+      { capability: 'mcp:filesystem:write_file', arguments: { path: '/x', content: 'hi' } },
+      { cache, approvalHandler: async () => true },
+    );
+    expect(err.status).toBe('failed');
+    expect(err.message).toContain('boom');
+  });
+
+  it('enforces the fail-closed approval gate for non-read MCP tools', async () => {
+    const registry = new UniversalCapabilityRegistry();
+    let calls = 0;
+    registry.registerMcpServerTools(
+      'github-mcp',
+      [{ name: 'create_issue', description: 'Create an issue', inputSchema: { type: 'object', properties: { title: { type: 'string' } } } }],
+      async () => {
+        calls += 1;
+        return 'created';
+      },
+    );
+
+    // No approval handler at all -> rejected without calling the tool
+    const noHandler = await registry.invoke(
+      { capability: 'mcp:github-mcp:create_issue', arguments: { title: 'x' } },
+      {},
+    );
+    expect(noHandler.status).toBe('rejected');
+    expect(noHandler.errorClass).toBe('APPROVAL_REQUIRED');
+    expect(calls).toBe(0);
+
+    // Handler declines -> rejected
+    const declined = await registry.invoke(
+      { capability: 'mcp:github-mcp:create_issue', arguments: { title: 'x' } },
+      { approvalHandler: async () => false },
+    );
+    expect(declined.status).toBe('rejected');
+    expect(declined.errorClass).toBe('USER_REJECTED');
+    expect(calls).toBe(0);
+
+    // Handler approves -> executes and invalidates scoped cache state
+    const cache = new ProviderReadCache();
+    const approved = await registry.invoke(
+      { capability: 'mcp:github-mcp:create_issue', arguments: { title: 'x' } },
+      { cache, approvalHandler: async () => true },
+    );
+    expect(approved.status).toBe('ok');
+    expect(calls).toBe(1);
+  });
+
+  it('MCP tools registered via capability_action run through the agent runtime with evidence and approval', async () => {
+    const root = project('mcp-capability-action');
+    home();
+    const registry = new UniversalCapabilityRegistry();
+    const cache = new ProviderReadCache();
+    const events: string[] = [];
+    let calls = 0;
+    let turn = 0;
+
+    registry.registerMcpServerTools(
+      'fs-mcp',
+      [
+        { name: 'list_dir', description: 'List a directory', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } },
+        { name: 'create_note', description: 'Create a note', inputSchema: { type: 'object', properties: { text: { type: 'string' } } } },
+      ],
+      async (name) => {
+        calls += 1;
+        if (name === 'create_note') return 'note created';
+        return JSON.stringify({ entries: ['one.md'] });
+      },
+    );
+
+    const llm: LlmClient = {
+      name: 'mcp-action-mock',
+      async complete() { return ''; },
+      async completeStream() { return ''; },
+      async completeTurn(): Promise<LlmTurnResult> {
+        turn += 1;
+        if (turn === 1) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['inspect dir'] } }), metadata: {} };
+        }
+        if (turn === 2) {
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'capability_action', capability: 'mcp:fs-mcp:list_dir', arguments: { path: '/work' }, reason: 'list the work dir' } }), metadata: {} };
+        }
+        if (turn === 3) {
+          // Non-read MCP tool without approval must stay rejected, never executed.
+          return { kind: 'text', text: JSON.stringify({ action: { type: 'capability_action', capability: 'mcp:fs-mcp:create_note', arguments: { text: 'hi' }, reason: 'write attempt without approval' } }), metadata: {} };
+        }
+        return { kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done' } }), metadata: {} };
+      },
+      async completeTurnStream(): Promise<LlmTurnResult> { return this.completeTurn!([]); },
+    };
+
+    const gitu = new Gitu({
+      cwd: root,
+      llm,
+      mode: 'fast',
+      universalRegistry: registry,
+      providerCache: cache,
+      onEvent: (event) => events.push(event),
+    });
+
+    await gitu.run('Inspect via MCP tool');
+
+    expect(calls).toBe(1);
+    expect(cache.listEvidence()).toHaveLength(1);
+    expect(events.some((event) => event.includes('capability mcp:fs-mcp:list_dir ok'))).toBe(true);
+  });
+
+  it('registers tools from a live stdio MCP server end-to-end through McpManager.toolsForServer', async () => {
+    const root = home();
+    const serverScript = [
+      'const readline = require("readline");',
+      'const rl = readline.createInterface({ input: process.stdin });',
+      'function send(obj) { process.stdout.write(JSON.stringify(obj) + "\\n"); }',
+      'rl.on("line", (line) => {',
+      '  let msg; try { msg = JSON.parse(line); } catch { return; }',
+      '  if (typeof msg.id !== "number") return;',
+      '  if (msg.method === "initialize") send({ id: msg.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "echo", version: "0.0.1" } } });',
+      '  else if (msg.method === "tools/list") send({ id: msg.id, result: { tools: [ { name: "echo_tool", description: "Echo text back", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } } ] } });',
+      '  else if (msg.method === "tools/call") send({ id: msg.id, result: { content: [{ type: "text", text: "echo: " + (msg.params.arguments?.text ?? "") }] } });',
+      '  else send({ id: msg.id, error: { message: "unknown method" } });',
+      '} );',
+    ].join('\n');
+    const scriptPath = path.join(root, 'mcp-echo-server.cjs');
+    writeFileSync(scriptPath, serverScript);
+
+    const manager = new McpManager(path.join(root, '.hermes', 'mcp.json'));
+    manager.addServer({ name: 'echo', command: process.execPath, args: [scriptPath] }, 'project');
+
+    const tools = await manager.toolsForServer('echo');
+    expect(tools?.map((t) => ({ name: t.name, hasSchema: Boolean(t.inputSchema) }))).toEqual([{ name: 'echo_tool', hasSchema: true }]);
+
+    const registry = new UniversalCapabilityRegistry();
+    registry.registerMcpServerTools('echo', tools ?? [], (toolName, args) => manager.call(`mcp:echo:${toolName}`, args));
+    expect(registry.get('mcp:echo:echo_tool')).toBeDefined();
+
+    const result = await registry.invoke(
+      { capability: 'mcp:echo:echo_tool', arguments: { text: 'ping' } },
+      {},
+    );
+    expect(result.status).toBe('ok');
+    expect(result.data).toContain('echo: ping');
+
+    manager.killAll();
   });
 });

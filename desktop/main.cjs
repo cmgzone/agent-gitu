@@ -506,11 +506,20 @@ function createMainWindow() {
     height: 940,
     minWidth: 900,
     minHeight: 600,
+    // The desktop shell exists to show the web UI. Start maximized so the
+    // workspace uses the available desktop area while retaining normal
+    // window controls for people who prefer to restore or resize it.
+    show: false,
     title: 'Agent Gitu',
     icon: APP_ICON_PATH,
     autoHideMenuBar: true,
     backgroundColor: '#f7f7f5',
     webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  mainWindow.once('ready-to-show', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.maximize();
+    mainWindow.show();
   });
   mainWindow.loadURL(`http://127.0.0.1:${boundPort}`);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

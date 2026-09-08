@@ -513,7 +513,15 @@ function createMainWindow() {
     title: 'Agent Gitu',
     icon: APP_ICON_PATH,
     autoHideMenuBar: true,
-    backgroundColor: '#f7f7f5',
+    // Draw the window controls into the app's dark surface instead of leaving
+    // Windows' white title bar above the web UI.
+    backgroundColor: '#0d1017',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: '#0d1017',
+      symbolColor: '#dbe7ff',
+      height: 32,
+    },
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
   mainWindow.once('ready-to-show', () => {

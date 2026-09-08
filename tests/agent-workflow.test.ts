@@ -80,6 +80,34 @@ describe('unified Agent workflow', () => {
     expect(events).toContain('say I paused the edit. The typo is in the greeting, and we can decide the exact wording before I change it.');
   }, 30000);
 
+  it('starts the requested work after a paused discussion', async () => {
+    const dir = project();
+    const guard = ProjectGuard.detect(dir);
+    const unfinished = TaskLedger.create({ repoRoot: guard.lock.repoRoot, goal: 'Correct the typo in README.md', project: guard.lock, mode: 'agent' });
+    unfinished.setPlan([{ description: 'Edit the greeting', verification: 'node check.cjs' }]);
+
+    const discussed = await new Gitu({
+      cwd: dir,
+      mode: 'agent',
+      autoLearn: false,
+      resume: { taskId: unfinished.data.taskId, message: 'Stop and discuss first. What wording should we use?' },
+      llm: new ScriptedMockLlm([action({ type: 'complete', chat: true, summary: 'I paused the edit so we can choose the wording.' })]),
+    }).run('Stop and discuss first. What wording should we use?');
+    expect(discussed.ledger.data.blockers).toContain('Paused for discussion with the user.');
+
+    const resumed = await new Gitu({
+      cwd: dir,
+      mode: 'agent',
+      autoLearn: false,
+      resume: { taskId: unfinished.data.taskId, message: 'Can you now fix the typo in README.md?' },
+      llm: new ScriptedMockLlm([read, edit, verify, done, reviewer]),
+    }).run('Can you now fix the typo in README.md?');
+
+    expect(resumed.ledger.data.blockers).not.toContain('Paused for discussion with the user.');
+    expect(resumed.ledger.data.actions.some((item) => item.tool === 'write_file' && item.status === 'success')).toBe(true);
+    expect(readFileSync(path.join(dir, 'README.md'), 'utf8')).toBe('Hello world\n');
+  }, 30000);
+
   it('uses the actual action reason for progress without a Next prefix or private thoughts', async () => {
     const events: string[] = [];
     const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,

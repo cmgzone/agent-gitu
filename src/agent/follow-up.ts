@@ -42,7 +42,11 @@ export function conversationIntent(message: string): 'pause' | 'question' | unde
   // "Can you fix ...?" is an action request, whereas "Why ...?" or "Can
   // you explain ...?" asks for a response before more autonomous execution.
   if (/^(?:(?:please\s+)?(?:explain|tell me|help me understand)\b|(?:can|could|would) you (?:please )?(?:explain|tell me|clarify)\b|(?:why|what|how|which|where|when)\b[^\n]*\?\s*$|(?:is|are|does|do|will|would|should|could|can)\b[^\n]*\?\s*$)/i.test(text) &&
-      !/^(?:can|could|would|will) you (?:please )?(?:fix|build|create|add|edit|update|remove|delete|install|deploy|run|implement|use|change|help)\b/i.test(text)) return 'question';
+      // A discussion commonly ends with wording such as "Can you now fix
+      // it?" or "Could you go ahead and implement it?".  Those are work
+      // requests, not more discussion; treating them as questions leaves the
+      // prior conversation/report on screen and the task paused.
+      !/^(?:can|could|would|will) you(?:\s+(?:please|now|then|next|also|just|go\s+ahead(?:\s+and)?)){0,4}\s+(?:fix|build|create|add|edit|update|remove|delete|install|deploy|run|implement|use|change|help|start|continue|proceed|work(?:\s+on)?)\b/i.test(text)) return 'question';
   return undefined;
 }
 

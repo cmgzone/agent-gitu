@@ -36,6 +36,7 @@ describe('HermesServer', () => {
     expect(UI_HTML).not.toContain('looksChat');
     expect(UI_HTML).toContain('Save key and continue');
     expect(UI_HTML).toContain('Review connection settings');
+    expect(UI_HTML).toContain('clearRenderedReport(runId)');
   });
 
   it('keeps event ids monotonic when non-persisted stream deltas leave gaps', () => {

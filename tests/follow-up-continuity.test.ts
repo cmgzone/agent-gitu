@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFollowUp, extractTargetHints, extractInstructionsFromFollowUp, applyFollowUpToLedger, evaluateInstructionGate } from '../src/agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, extractTargetHints, extractInstructionsFromFollowUp, applyFollowUpToLedger, evaluateInstructionGate } from '../src/agent/follow-up.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import type { ProjectLock } from '../src/types.js';
 import fs from 'node:fs';
@@ -47,6 +47,12 @@ describe('Follow-up Continuity & Delta Routing', () => {
 
     expect(classifyFollowUp('now add GitHub OAuth').kind).toBe('NEW_TASK');
     expect(classifyFollowUp('use this screenshot as reference', true).kind).toBe('VISUAL_REFERENCE');
+  });
+
+  it('treats an action request after discussion as work, even with polite transition words', () => {
+    expect(conversationIntent('Can you now fix the connection form?')).toBeUndefined();
+    expect(conversationIntent('Could you please go ahead and implement the new task?')).toBeUndefined();
+    expect(conversationIntent('Can you explain why the connection form failed?')).toBe('question');
   });
 
   it('extracts target hints accurately from message text', () => {

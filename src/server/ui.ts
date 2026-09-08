@@ -2164,6 +2164,19 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.apprShown = {};
     sess.pendingUserMessages = [];
   }
+  // A report belongs to the run that just ended.  Once a user starts another
+  // task in the same session, leaving that final card at the bottom makes it
+  // look as if the new request was ignored.  The durable event history is
+  // retained; this only removes the stale terminal presentation while the
+  // continuation is active.
+  function clearRenderedReport(runId) {
+    var stream = $('stream');
+    if (!stream) return;
+    var reports = stream.querySelectorAll('.report-flat');
+    for (var i = 0; i < reports.length; i++) reports[i].remove();
+    var sess = S.sessions[runId];
+    if (sess) sess.summaryShown = null;
+  }
   function retainUsageEstimate(sess, incoming) {
     var previous = sess && sess.session && sess.session.usage;
     var next = incoming && incoming.usage;
@@ -2260,6 +2273,11 @@ export const UI_HTML = String.raw`<!doctype html>
       autoApprove: S.settings.autoApprove
     }) })
       .then(function (result) {
+        // The server has accepted the continuation. Remove the terminal card
+        // from the previous task before showing the new task's activity.
+        // Keeping it visible until the new task completes made an old report
+        // appear to be the response to the freshly submitted message.
+        if (!running && result && result.ok) clearRenderedReport(runId);
         settlePendingUserMessage(runId, result && result.safeText !== undefined ? result.safeText : credentialChatInput(text).safeText, sentBubbleId, false);
         if (!running) setPlanRequested(runId, false);
         sess.chatish = false;

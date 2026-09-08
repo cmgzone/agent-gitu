@@ -34,8 +34,8 @@ describe('HermesServer', () => {
     expect(() => new Function(js)).not.toThrow();
     expect(UI_HTML).toContain("sess.chatish = session.mode === 'chat';");
     expect(UI_HTML).not.toContain('looksChat');
-    expect(UI_HTML).toContain('Save API key, validate, and resume');
-    expect(UI_HTML).toContain('Review or change connection details');
+    expect(UI_HTML).toContain('Save key and continue');
+    expect(UI_HTML).toContain('Review connection settings');
   });
 
   it('keeps event ids monotonic when non-persisted stream deltas leave gaps', () => {

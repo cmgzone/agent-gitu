@@ -302,7 +302,7 @@ Execution:
 {"thought":"...","action":{"type":"connection_operation","connectionId":"saved-connection-id","operation":{"id":"create-resource","label":"Create resource","capability":"resources.create","method":"POST","path":"/api/v1/resources","risk":"reversible-write"},"body":{"name":"example"},"documentationUrl":"https://docs.provider.example/api/resources","reason":"documented operation needed for the approved plan"}}  (SAFE GET/read proposals auto-register on the saved connection and execute immediately with NO approval. Only non-read proposals (writes) are shown to the user for approval. Never include credentials or unverified paths)
 {"thought":"...","action":{"type":"toggle_todo","stepId":"step-N","index":0,"done":true}}  (check off a subtask as you complete it; checking the last one completes the step)
 {"thought":"...","action":{"type":"complete_step","stepId":"step-N","reason":"why it is done"}}  (explicitly finish a step once its work is done; a step also auto-completes when a run_command matching its verification passes)
-{"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","todos":["new subtask",...]}}  (dynamic replanning: update ONLY the affected step when reality diverges — API differs, reuse found, dependency missing)
+{"thought":"...","action":{"type":"revise_step","stepId":"step-N","reason":"what changed and why","description":"...","verification":"...","area":"...","addTodos":["additional subtask"],"replaceTodos":["replacement subtask"],"status":"pending|cancelled"}}  (dynamic replanning: update ONLY the affected step. Use replaceTodos when the user replaces an approach/provider; cancel obsolete steps and append or reactivate the requested replacement)
 {"thought":"...","action":{"type":"show_plan"}}  (prints the FULL plan + design once — use when you need details no longer shown in compact state)
 
 Tools:
@@ -348,6 +348,11 @@ Tools:
 - create_skill {"name":"deploy-checklist","description":"...","instructions":"step-by-step reusable knowledge","global":true}
                  global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
                  Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
+- update_skill {"name":"skill-name","description":"updated purpose","instructions":"updated reusable procedure"} (inspect with list_skills first; updates only supplied fields)
+- list_mcp {} (refreshes every registered MCP server and returns exact tool names, descriptions, input schemas, and connection errors)
+- configure_mcp {"name":"server-name","command":"executable","args":["arg"],"global":false} (add or edit MCP command metadata; credentials stay in secure settings; call list_mcp afterward)
+- list_connections {} (refresh saved connection ids, capabilities, operations, and auth availability; never returns credentials)
+- update_connection {"connectionId":"saved-id","label":"new label","documentationUrl":"https://official.example/api"} (edit safe metadata; endpoint or credential changes use the secure connection form)
 
 Completion/escalation:
 {"thought":"...","action":{"type":"claim_criterion","criterionId":"ac-N","evidenceId":"ev-...","justification":"why this evidence proves the criterion"}}
@@ -402,7 +407,7 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
   - integration section (full-stack only): shared data contracts, realtime/SSE behavior, persistence flow.
 - Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
 - Plans answer: what are we building, how will it work, which files/surfaces are involved, how is each part verified.
-- DYNAMIC REPLANNING: when execution reveals the plan is wrong (API differs from assumption, reusable component found, missing dependency, test exposes an architectural problem), revise_step ONLY the affected step with a reason instead of blindly continuing or regenerating everything. Check off toggle_todo as you complete each subtask.
+- DYNAMIC REPLANNING: when execution or a user correction makes the plan wrong, revise_step ONLY the affected step. Replace obsolete todos with replaceTodos, mark rejected steps cancelled, and append/reactivate the requested replacement. Do not leave the old provider or approach active. Check off toggle_todo as you complete each subtask.
 - The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.`;
 }
 

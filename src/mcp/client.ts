@@ -15,6 +15,7 @@ export interface McpToolInfo {
   server: string;
   name: string;
   description?: string;
+  inputSchema?: Record<string, unknown>;
 }
 
 interface JsonRpcResponse {
@@ -46,6 +47,7 @@ export class McpClient {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...this.config.env },
             shell: resolved.shell,
+            windowsHide: true,
           });
         } catch (err) {
           reject(err as Error);
@@ -74,20 +76,31 @@ export class McpClient {
             }
           }
         });
+        const connectedProcess = this.proc;
         this.proc.on('error', (err) => {
+          if (this.proc !== connectedProcess) return;
           for (const w of this.pending.values()) w.reject(err);
           this.pending.clear();
+          if (this.proc === connectedProcess) {
+            this.ready = undefined;
+            this.proc = undefined;
+          }
           if (!settled) {
             settled = true;
             reject(err);
           }
         });
         this.proc.on('exit', () => {
+          if (this.proc !== connectedProcess) return;
           for (const w of this.pending.values()) w.reject(new Error('mcp server exited'));
           this.pending.clear();
           // Allow a future call to reconnect instead of returning the stale
           // (resolved) ready promise of a dead server forever.
-          this.ready = undefined;
+          if (this.proc === connectedProcess) {
+            this.ready = undefined;
+            this.proc = undefined;
+            this.buffer = '';
+          }
         });
         this.request('initialize', {
           protocolVersion: '2024-11-05',
@@ -102,6 +115,10 @@ export class McpClient {
           .catch((err) => {
             // Reset the cached handshake AND reap the process: otherwise one
             // failed init bricks this client permanently and leaks the child.
+            if (this.proc !== connectedProcess) {
+              if (!settled) reject(err as Error);
+              return;
+            }
             this.ready = undefined;
             try {
               this.proc?.kill();
@@ -115,6 +132,10 @@ export class McpClient {
             }
           });
       });
+      const handshake = this.ready;
+      void handshake.catch(() => {
+        if (this.ready === handshake) this.ready = undefined;
+      });
     }
     return this.ready;
   }
@@ -127,8 +148,12 @@ export class McpClient {
 
   private request(method: string, params: unknown, timeoutMs = 20000): Promise<unknown> {
     const id = this.nextId++;
-    this.send({ jsonrpc: '2.0', id, method, params });
     return new Promise((resolve, reject) => {
+      const stdin = this.proc?.stdin;
+      if (!stdin || stdin.destroyed || !stdin.writable) {
+        reject(new Error('MCP server is not connected. Retry discovery to reconnect.'));
+        return;
+      }
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`mcp request timed out: ${method}`));
@@ -143,13 +168,34 @@ export class McpClient {
           reject(e);
         },
       });
+      // Install the waiter before writing: a fast server can reply immediately.
+      stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`, (error) => {
+        if (!error) return;
+        this.pending.get(id)?.reject(error);
+        this.pending.delete(id);
+      });
     });
   }
 
   async listTools(): Promise<McpToolInfo[]> {
     await this.connect();
-    const result = (await this.request('tools/list', {})) as { tools?: { name: string; description?: string }[] };
-    return (result.tools ?? []).map((t) => ({ server: this.config.name, name: t.name, description: t.description }));
+    const tools = new Map<string, McpToolInfo>();
+    const cursors = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const result = (await this.request('tools/list', cursor ? { cursor } : {})) as {
+        tools?: Omit<McpToolInfo, 'server'>[]; nextCursor?: string;
+      };
+      if (!result || !Array.isArray(result.tools)) throw new Error('MCP server returned an invalid tools/list response.');
+      for (const tool of result.tools) {
+        if (!tool || typeof tool.name !== 'string' || !tool.name.trim()) continue;
+        tools.set(tool.name, { server: this.config.name, name: tool.name, description: tool.description, inputSchema: tool.inputSchema });
+      }
+      cursor = typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : undefined;
+      if (cursor && cursors.has(cursor)) throw new Error('MCP server repeated its tool-list cursor.');
+      if (cursor) cursors.add(cursor);
+    } while (cursor);
+    return [...tools.values()];
   }
 
   async callTool(toolName: string, args: Record<string, unknown>): Promise<string> {
@@ -167,14 +213,23 @@ export class McpClient {
   }
 
   kill(): void {
+    for (const waiter of this.pending.values()) waiter.reject(new Error('MCP server configuration changed or connection closed. Retry discovery.'));
+    this.pending.clear();
     this.proc?.kill();
     this.proc = undefined;
     this.ready = undefined;
+    this.buffer = '';
   }
 }
 
 export class McpManager {
   private clients = new Map<string, McpClient>();
+  private clientConfigs = new Map<string, string>();
+  private discoveryErrors = new Map<string, string>();
+
+  discoveryFailures(): { server: string; error: string }[] {
+    return [...this.discoveryErrors].map(([server, error]) => ({ server, error }));
+  }
 
   constructor(
     private readonly configFile: string,
@@ -236,13 +291,20 @@ export class McpManager {
   }
 
   addServer(config: McpServerConfig, scope: 'global' | 'project' = 'project'): McpServerConfig[] {
+    if (!config.name?.trim() || !/^[a-zA-Z0-9_-]+$/.test(config.name) || !config.command?.trim()) {
+      throw new Error('MCP server needs a name (letters, digits, hyphens or underscores) and a command.');
+    }
+    if (config.args !== undefined && (!Array.isArray(config.args) || config.args.some((arg) => typeof arg !== 'string'))) {
+      throw new Error('MCP server args must be an array of strings.');
+    }
     const layered = this.readLayered();
     const targetFile = scope === 'global' ? (this.globalFile ?? this.configFile) : this.configFile;
     if (layered === undefined) {
       throw new Error(`Cannot update MCP config: ${targetFile} contains invalid JSON. Fix or delete it first.`);
     }
+    const targetIsGlobal = scope === 'global' && Boolean(this.globalFile);
     const servers = layered
-      .filter((l) => l.global === (scope === 'global') && l.config.name !== config.name)
+      .filter((l) => l.global === targetIsGlobal && l.config.name !== config.name)
       .map((l) => l.config);
     servers.push(config);
     mkdirSync(path.dirname(targetFile), { recursive: true });
@@ -273,34 +335,49 @@ export class McpManager {
   }
 
   private client(name: string): McpClient | undefined {
+    const layered = this.readLayered();
+    const entry = layered ? [...layered].reverse().find((l) => l.config.name === name) : undefined;
+    const fingerprint = entry ? JSON.stringify(entry) : undefined;
     let client = this.clients.get(name);
+    if (client && this.clientConfigs.get(name) !== fingerprint) {
+      client.kill();
+      this.clients.delete(name);
+      this.clientConfigs.delete(name);
+      client = undefined;
+    }
+    if (!entry) return undefined;
     if (!client) {
-      const layered = this.readLayered();
-      const entry = layered?.find((l) => l.config.name === name);
-      if (!entry) return undefined;
       // Project servers run with the project as cwd; global servers run from
       // the workspace home so relative paths stay stable across projects.
       const baseFile = entry.global && this.globalFile ? this.globalFile : this.configFile;
       client = new McpClient(entry.config, path.dirname(path.dirname(baseFile)));
       this.clients.set(name, client);
+      this.clientConfigs.set(name, fingerprint!);
     }
     return client;
   }
 
   async listAllTools(): Promise<McpToolInfo[]> {
-    const all: McpToolInfo[] = [];
-    for (const server of this.servers()) {
+    this.discoveryErrors.clear();
+    if (this.readConfigFile() === undefined) {
+      this.discoveryErrors.set('configuration', 'MCP configuration contains invalid JSON. Repair it to discover registered tools.');
+      return [];
+    }
+    const results = await Promise.all(this.servers().map(async (server) => {
       try {
         const client = this.client(server.name);
-        if (client) all.push(...(await client.listTools()));
+        return client ? await client.listTools() : [];
       } catch {
-        /* server unavailable */
+        // Do not echo server stderr/configuration: either can contain credentials.
+        this.discoveryErrors.set(server.name, 'Registered server is unavailable. Check its command and environment, then retry list_mcp; no new connection is needed.');
+        return [];
       }
-    }
-    return all;
+    }));
+    return results.flat();
   }
 
   async call(qualifiedName: string, args: Record<string, unknown>): Promise<string> {
+    if (!/^mcp:[^:]+:.+/.test(qualifiedName)) throw new Error('Use the complete MCP tool name returned by list_mcp: mcp:server:tool.');
     const [, serverName, ...rest] = qualifiedName.split(':');
     const toolName = rest.join(':');
     const client = this.client(serverName ?? '');
@@ -311,5 +388,6 @@ export class McpManager {
   killAll(): void {
     for (const client of this.clients.values()) client.kill();
     this.clients.clear();
+    this.clientConfigs.clear();
   }
 }

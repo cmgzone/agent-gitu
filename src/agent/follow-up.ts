@@ -29,6 +29,23 @@ const CONTINUE_PATTERNS = [
   /^next$/i,
 ];
 
+/** Conversation control is separate from task authority: asking a question or
+ * pausing to discuss must not replace the engineering goal. */
+export function conversationIntent(message: string): 'pause' | 'question' | undefined {
+  const text = message.trim().replace(/[’]/g, "'");
+  if (!text) return undefined;
+  if (/^(?:please\s+)?(?:stop|pause|hold on|wait)(?:\s+(?:first|for now|a moment|a minute|please|working|execution))?[.!?]*$/i.test(text) ||
+      /\b(?:stop|pause|hold on|wait)\b[^.!?\n]{0,70}\b(?:discuss|talk|explain|answer|question|first)\b/i.test(text) ||
+      /\b(?:discuss|talk|explain|answer|ask me)\b[^.!?\n]{0,80}\b(?:first|before (?:you |we )?(?:start|continue|proceed|work|edit|build|implement|do))\b/i.test(text) ||
+      /\b(?:don't|do not)\s+(?:start|continue|proceed|work|do anything)\b/i.test(text)) return 'pause';
+  if (isNonMutatingStatusQuestion(text)) return 'question';
+  // "Can you fix ...?" is an action request, whereas "Why ...?" or "Can
+  // you explain ...?" asks for a response before more autonomous execution.
+  if (/^(?:(?:please\s+)?(?:explain|tell me|help me understand)\b|(?:can|could|would) you (?:please )?(?:explain|tell me|clarify)\b|(?:why|what|how|which|where|when)\b[^\n]*\?\s*$|(?:is|are|does|do|will|would|should|could|can)\b[^\n]*\?\s*$)/i.test(text) &&
+      !/^(?:can|could|would|will) you (?:please )?(?:fix|build|create|add|edit|update|remove|delete|install|deploy|run|implement|use|change|help)\b/i.test(text)) return 'question';
+  return undefined;
+}
+
 /**
  * Questions about the agent's live progress are conversation steering, not a
  * new engineering requirement. Treating "are you stuck on step 1?" as the
@@ -60,6 +77,8 @@ const CONSTRAIN_PATTERNS = [
 const CORRECT_PATTERNS = [
   /^(?:no[,.\s]|nope|actually|wrong|incorrect|that's not|stop doing)\b/i,
   /\b(?:instead of|rather than|not the backend|backend is fine|frontend is fine|is actually)\b/i,
+  /\b(?:don't|do not|dont)\s+(?:want|use)\b[^.!?\n]{0,100}\b(?:use|switch|instead|replace)\b/i,
+  /\b(?:replace\s+\S+\s+with|switch\s+(?:from\s+\S+\s+)?to)\b/i,
 ];
 
 const EXTEND_PATTERNS = [
@@ -263,6 +282,10 @@ export function classifyFollowUp(message: string, hasImages = false): FollowUpCl
   const lower = trimmed.toLowerCase();
   const targetHints = extractTargetHints(message);
   const extractedInstructions = extractInstructionsFromFollowUp(message);
+
+  if (conversationIntent(trimmed)) {
+    return { kind: 'CONTINUE', confidence: 'high', extractedInstructions: [], targetHints: { files: [], symbols: [], errors: [] } };
+  }
 
   // 1. Image reference
   if (hasImages || VISUAL_PATTERNS.some((p) => p.test(trimmed))) {
@@ -547,7 +570,9 @@ export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText
   const fine = /([a-z][\w-]*)\s+is\s+(?:fine|good|correct|ok)\b/gi;
   const notThe = /\bnot\s+(?:the\s+)?([a-z][\w-]*)/gi;
   const instead = /\b(?:instead of|rather than)\s+(?:the\s+)?([a-z][\w-]*)/gi;
-  for (const re of [fine, notThe, instead]) {
+  const rejected = /\b(?:don't|do not|dont)\s+(?:want|use)\s+(?:to use\s+)?(?:the\s+)?([a-z][\w-]*)/gi;
+  const replaced = /\b(?:replace|switch from)\s+(?:the\s+)?([a-z][\w-]*)/gi;
+  for (const re of [fine, notThe, instead, rejected, replaced]) {
     let m: RegExpExecArray | null;
     while ((m = re.exec(correctionText)) !== null) {
       const token = m[1]!.toLowerCase();
@@ -564,7 +589,7 @@ export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText
 
   const textHits = (text: string): boolean => {
     const lower = text.toLowerCase();
-    return [...roots].some((r) => lower.includes(r));
+    return [...roots].some((r) => new RegExp(`\\b${r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(lower));
   };
 
   const superseded: string[] = [];
@@ -578,10 +603,9 @@ export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText
     }
   }
   for (const step of ledger.data.plan) {
-    if (step.status === 'done' || step.status === 'blocked') continue;
-    if (textHits(step.description)) {
-      step.status = 'blocked';
-      if (!step.description.startsWith('[SUPERSEDED]')) step.description = `[SUPERSEDED] ${step.description}`;
+    if (step.status === 'done' || step.status === 'cancelled') continue;
+    if (textHits([step.description, step.verification, ...(step.subtasks ?? []).map(todo => todo.text)].join(' '))) {
+      ledger.reviseStep(step.id, { status: 'cancelled' }, `Superseded by user request: ${correctionText}`);
     }
   }
   if (superseded.length > 0) ledger.save();

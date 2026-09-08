@@ -4,6 +4,7 @@ import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkd
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
+import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -31,6 +32,7 @@ import type { CompletionReport } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
+import { credentialChatInput } from './credential-chat.js';
 import { BRAND_DIR, BRAND_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
 
 export interface PendingApproval {
@@ -637,11 +639,13 @@ export class GituServer {
       let finishedAt = entry.finishedAt;
       let branch = entry.branch;
       let worktreePath = entry.worktreePath;
+      let pausedForDiscussion = false;
       if (entry.taskId && (!mode || !report || !finishedAt || !branch)) {
         const root = this.resolveTaskRoot(entry.taskId, entry.projectPath);
         const ledger = root ? TaskLedger.load(root, entry.taskId) : undefined;
+        pausedForDiscussion = Boolean(ledger?.data.blockers.includes('Paused for discussion with the user.'));
         mode ??= ledger?.data.mode;
-        report ??= ledger?.data.report;
+        if (!pausedForDiscussion) report ??= ledger?.data.report;
         finishedAt ??= ledger?.data.completedAt;
         branch ??= ledger?.data.gitBranch;
         worktreePath ??= ledger?.data.worktreePath;
@@ -665,7 +669,7 @@ export class GituServer {
         activeProvider: entry.activeProvider ?? entry.provider,
         activeModel: entry.activeModel ?? entry.model,
         report,
-        error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : entry.error,
+        error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : pausedForDiscussion ? undefined : entry.error,
         usage: entry.usage,
         files: entry.files,
         events: Array.isArray(entry.events) ? entry.events : [],
@@ -868,11 +872,105 @@ export class GituServer {
       usage: s.usage
         ? {
             ...s.usage,
-            costUsd: usageCostUsd(modelMetadataFor(peekModelCatalog(), s.provider ?? '', s.model ?? ''), s.usage),
+            costUsd: s.usage.costUsd ?? usageCostUsd(modelMetadataFor(peekModelCatalog(), s.provider ?? '', s.model ?? ''), s.usage),
           }
         : undefined,
       files: s.files.map((file) => this.fileView(file)),
     };
+  }
+
+  private releasePendingInput(session: RunSession, note: string): void {
+    const question = session.questions;
+    session.questions = undefined;
+    question?.resolve(note);
+    const connection = session.connection;
+    session.connection = undefined;
+    connection?.resolve(false);
+    const plan = session.planReview;
+    session.planReview = undefined;
+    plan?.resolve({ approved: false, note });
+    for (const approval of session.approvals.values()) approval.resolve(false);
+    session.approvals.clear();
+  }
+
+  private requestChatCredential(session: RunSession, input: ReturnType<typeof credentialChatInput>): Promise<boolean> {
+    const previous = session.connection?.requirement;
+    const gitu = session.gitu;
+    session.gitu = undefined;
+    gitu?.stop();
+    this.releasePendingInput(session, 'Paused for secure connection setup.');
+    session.queuedUserMessages = [];
+    session.status = 'blocked';
+    session.error = undefined;
+    session.finishedAt = nowIso();
+    const profiles = this.connections.list();
+    const normalized = input.safeText.toLowerCase().replace(/[^a-z0-9]+/g, ' ');
+    const mentioned = profiles.filter((profile) => [profile.id, profile.provider, profile.label].some((value) => normalized.includes(value.toLowerCase().replace(/[^a-z0-9]+/g, ' '))));
+    const selectedModelProvider = session.provider ?? session.requestedProvider;
+    const providerHint = previous?.providerHint
+      ?? (mentioned.length === 1 ? mentioned[0]!.id : input.providerHint)
+      ?? (selectedModelProvider && allProviderSpecs()[selectedModelProvider] ? selectedModelProvider : undefined);
+    const modelProvider = providerHint ? allProviderSpecs()[providerHint] : undefined;
+    const modelCredential = !previous && mentioned.length === 0 && modelProvider?.auth !== 'chatgpt-subscription' && modelProvider?.keyEnvVars[0]
+      && (session.provider === modelProvider.id || session.requestedProvider === modelProvider.id);
+    const requirement: ConnectionRequirement = previous ?? (modelCredential ? {
+      prerequisiteId: shortId('credential'),
+      description: `Add your ${modelProvider.label} API key.`,
+      requiredFor: `Use ${modelProvider.label} as the model provider for this task.`,
+      providerHint: modelProvider.id,
+      capabilities: [],
+      setup: { label: modelProvider.label, baseUrl: modelProvider.baseUrl },
+      requestType: providerKey(modelProvider) ? 'reauth' : 'setup',
+      requiredFields: ['token'],
+      credentialTarget: { kind: 'model-provider', provider: modelProvider.id, envVar: providerKey(modelProvider)?.envVar ?? modelProvider.keyEnvVars[0]! },
+    } : this.connections.requirementFor({
+      id: shortId('credential'), kind: 'credential', description: 'Enter your API key in the secure connection form.',
+      requiredFor: 'Continue your request using this connection.', providerHint, capabilities: [], riskIfWrong: 'high',
+    }));
+    // A pasted replacement key is always entered through the secret field,
+    // even if this profile already has a saved credential.
+    requirement.requiredFields = [...new Set([...(requirement.requiredFields ?? []), 'token' as const])];
+    this.pushEvent(session, 'say Your message contained an API key. I paused the task and removed the key from chat. Enter it in the secure form below to continue.');
+    return new Promise<boolean>((resolve) => {
+      const waiter: ConnectionWaiter = { id: shortId('conn'), requirement, requestedAt: nowIso(), resolve };
+      session.connection = waiter;
+      this.pushEvent(session, 'connection waiting for secure setup');
+      const timer = setTimeout(() => {
+        if (session.connection !== waiter) return;
+        session.connection = undefined;
+        resolve(false);
+        this.pushEvent(session, 'connection setup timed out — send a message when ready to continue');
+      }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+      timer.unref();
+    });
+  }
+
+  private async resumeAfterCredential(session: RunSession, message: string, attachments: ModelContextAttachment[], images: { name: string; dataUrl: string }[]): Promise<void> {
+    if (this.sessions.get(session.runId) !== session) return;
+    try {
+      const root = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+      if (session.taskId) {
+        const ledger = TaskLedger.load(root, session.taskId);
+        if (!ledger) throw new Error('The saved task could not be found. Send a message to resume it.');
+        const check = await ledger.validateEnvironment(root);
+        if (!check.ok) throw new Error(check.reason ?? 'The task workspace changed.');
+      }
+      const llm = this.config.llm ?? resolveLlm({ provider: session.provider, model: session.model, workingDirectory: root }).client;
+      session.status = 'running';
+      session.report = undefined;
+      session.error = undefined;
+      session.finishedAt = undefined;
+      await this.executeRun(session, llm, {
+        goal: session.goal, mode: session.mode ?? 'agent', review: false, projectPath: root,
+        resume: session.taskId ? { taskId: session.taskId, message } : undefined,
+        conversationHistory: this.conversationHistory(session), attachments, images,
+        model: session.model, actionProtocolMode: session.actionProtocolMode, autoApprove: session.autoApprove,
+      });
+    } catch (error) {
+      session.status = 'blocked';
+      session.error = (error as Error).message;
+      this.pushEvent(session, `connection saved — ${session.error}`);
+    }
   }
 
   private recordEvent(s: RunSession, text: string, persistDb = true): void {
@@ -1853,7 +1951,8 @@ export class GituServer {
     if (method === 'POST' && path === '/api/runs') {
       const body = await this.readBody(req, 30_000_000);
       const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
-      const typedGoal = typeof body['goal'] === 'string' ? body['goal'].trim() : '';
+      const credentialInput = credentialChatInput(typeof body['goal'] === 'string' ? body['goal'].trim() : '');
+      const typedGoal = credentialInput.safeText;
       const goal = typedGoal || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!goal) {
         this.sendJson(res, 400, { error: 'goal is required' });
@@ -1864,6 +1963,10 @@ export class GituServer {
       const constraints = Array.isArray(body['constraints']) ? (body['constraints'] as unknown[]).map(String).filter(Boolean) : undefined;
       const provider = typeof body['provider'] === 'string' ? body['provider'] : undefined;
       const model = typeof body['model'] === 'string' ? body['model'] : undefined;
+      const detectedModelProvider = credentialInput.providerHint && allProviderSpecs()[credentialInput.providerHint]
+        ? credentialInput.providerHint
+        : undefined;
+      const requestedProvider = provider ?? (!this.config.llm ? detectedModelProvider : undefined);
       const mode = body['mode'] === 'fast' ? 'fast' : body['mode'] === 'chat' ? 'chat' : body['mode'] === 'standard' ? 'standard' : 'agent';
       const autoApprove = body['autoApprove'] === true;
       const autoLearn = body['autoLearn'] !== false;
@@ -1881,15 +1984,17 @@ export class GituServer {
       let resolvedInfo: { providerId: string; model: string; toolMode?: 'auto' | 'native' | 'structured_text' | 'text' } | undefined;
       if (!llm) {
         try {
-          const resolved = resolveLlm({ provider, model, workingDirectory: projectPath ?? this.projectRoot() ?? this.config.cwd });
+          const resolved = resolveLlm({ provider: requestedProvider, model, workingDirectory: projectPath ?? this.projectRoot() ?? this.config.cwd });
           llm = resolved.client;
           resolvedInfo = { providerId: resolved.providerId, model: resolved.model, toolMode: resolved.toolMode };
         } catch (err) {
-          if (err instanceof ProviderError) {
+          // A pasted model-provider key must reach its secure one-field form
+          // before provider resolution is retried with the newly stored key.
+          if (err instanceof ProviderError && !credentialInput.detected) {
             this.sendJson(res, 400, { error: err.message });
             return;
           }
-          throw err;
+          if (!(err instanceof ProviderError)) throw err;
         }
       }
 
@@ -1899,12 +2004,12 @@ export class GituServer {
         status: 'running',
         startedAt: nowIso(),
         taskId: undefined,
-        provider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
+        provider: resolvedInfo?.providerId ?? requestedProvider,
         model: resolvedInfo?.model ?? model,
         actionProtocolMode: resolvedInfo?.toolMode,
-        requestedProvider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
+        requestedProvider: resolvedInfo?.providerId ?? requestedProvider,
         requestedModel: resolvedInfo?.model ?? model,
-        activeProvider: resolvedInfo?.providerId ?? (provider ? String(provider) : undefined),
+        activeProvider: resolvedInfo?.providerId ?? requestedProvider,
         activeModel: resolvedInfo?.model ?? model,
         projectPath,
         mode,
@@ -1929,8 +2034,35 @@ export class GituServer {
       this.saveRegistry();
       this.pushEvent(session, `user-msg ${goal}`);
       for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
-      this.sendJson(res, 202, { runId: session.runId, mode });
-      void this.executeRun(session, llm!, {
+      const credentialReady = credentialInput.detected ? this.requestChatCredential(session, credentialInput) : Promise.resolve(true);
+      this.sendJson(res, 202, { runId: session.runId, mode, safeText: goal, credentialRequired: credentialInput.detected });
+      void credentialReady.then((saved) => {
+        if (!saved || this.sessions.get(session.runId) !== session) return;
+        // A supplied key may be replacing an already-stored key. Re-resolve
+        // after the form saves so this run cannot retain a client built with
+        // the old credential.
+        let runLlm = credentialInput.detected && !this.config.llm ? undefined : llm;
+        if (!runLlm) {
+          try {
+            const resolved = resolveLlm({ provider: session.provider, model: session.model, workingDirectory: projectPath ?? this.projectRoot() ?? this.config.cwd });
+            runLlm = resolved.client;
+            resolvedInfo = { providerId: resolved.providerId, model: resolved.model, toolMode: resolved.toolMode };
+            session.provider = resolved.providerId;
+            session.model = resolved.model;
+            session.activeProvider = resolved.providerId;
+            session.activeModel = resolved.model;
+            session.actionProtocolMode = resolved.toolMode;
+          } catch (error) {
+            session.status = 'blocked';
+            session.finishedAt = nowIso();
+            session.error = (error as Error).message;
+            this.pushEvent(session, `model provider setup needed — ${session.error}`);
+            return;
+          }
+        }
+        session.status = 'running';
+        session.finishedAt = undefined;
+        return this.executeRun(session, runLlm, {
         goal,
         criteria,
         mode,
@@ -1945,6 +2077,7 @@ export class GituServer {
         attachments: stored.attachments,
         model: resolvedInfo?.model ?? model,
         actionProtocolMode: resolvedInfo?.toolMode,
+        });
       });
       return;
     }
@@ -2065,25 +2198,51 @@ export class GituServer {
       const requirement = waiter.requirement;
       const setup = requirement.setup ?? {};
       const nonEmpty = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+      const existingId = requirement.existingConnectionId ?? nonEmpty(body['id']);
+      const existing = existingId ? this.connections.get(existingId) : undefined;
+      if (requirement.existingConnectionId && !existing) {
+        this.sendJson(res, 409, { error: 'This connection was removed. Close this form and request a new connection.' });
+        return;
+      }
+      if (requirement.requiredFields?.includes('token') && !nonEmpty(body['token'])) {
+        this.sendJson(res, 400, { error: 'Enter your API key in the secure field.' });
+        return;
+      }
+      if (requirement.credentialTarget?.kind === 'model-provider') {
+        if (session.connection !== waiter) {
+          this.sendJson(res, 409, { error: 'This credential request was superseded. The task will stay paused.' });
+          return;
+        }
+        setStoredKey(requirement.credentialTarget.envVar, nonEmpty(body['token'])!);
+        session.connection = undefined;
+        this.pushEvent(session, `model provider connected — ${requirement.credentialTarget.provider}`);
+        waiter.resolve(true);
+        this.sendJson(res, 200, { ok: true, provider: requirement.credentialTarget.provider });
+        return;
+      }
       const requestedCapabilities = Array.isArray(body['capabilities']) ? body['capabilities'].map(String) : [];
-      const capabilities = [...new Set([...requirement.capabilities, ...requestedCapabilities, ...(setup.validationCapability ? [setup.validationCapability] : [])])];
-      const provider = requirement.providerHint || nonEmpty(body['provider']) || 'provider';
+      const capabilities = [...new Set([...(existing?.capabilities ?? []), ...requirement.capabilities, ...requestedCapabilities, ...(setup.validationCapability ? [setup.validationCapability] : [])])];
+      const provider = existing?.provider ?? requirement.providerHint ?? nonEmpty(body['provider']) ?? 'provider';
       const validationPath = nonEmpty(body['validationPath']) ?? setup.validationPath ?? '/';
       const validationCapability = setup.validationCapability && capabilities.includes(setup.validationCapability)
         ? setup.validationCapability
         : capabilities[0] ?? 'connection.discover';
       try {
         const saved = this.connections.save({
-          ...(typeof body['id'] === 'string' ? { id: body['id'] } : {}),
-          label: nonEmpty(body['label']) ?? setup.label ?? provider,
+          ...(existingId ? { id: existingId } : {}),
+          label: nonEmpty(body['label']) ?? existing?.label ?? setup.label ?? provider,
           provider,
-          baseUrl: nonEmpty(body['baseUrl']) ?? setup.baseUrl ?? '',
-          ...(nonEmpty(body['documentationUrl']) ?? setup.documentationUrl ? { documentationUrl: nonEmpty(body['documentationUrl']) ?? setup.documentationUrl } : {}),
+          baseUrl: nonEmpty(body['baseUrl']) ?? existing?.baseUrl ?? setup.baseUrl ?? '',
+          documentationUrl: nonEmpty(body['documentationUrl']) ?? existing?.documentationUrl ?? setup.documentationUrl,
           capabilities: capabilities.length ? capabilities : [validationCapability],
-          operations: [{ id: 'validate', label: 'Validate saved connection', capability: validationCapability, method: 'GET', path: validationPath, risk: 'read' }],
+          operations: existing?.operations ?? [{ id: 'validate', label: 'Validate saved connection', capability: validationCapability, method: 'GET', path: validationPath, risk: 'read' }],
           token: typeof body['token'] === 'string' ? body['token'] : undefined,
         });
         await this.connections.validate(saved.id);
+        if (session.connection !== waiter) {
+          this.sendJson(res, 409, { error: 'Connection saved, but this request was superseded. The previous task will stay paused.' });
+          return;
+        }
         session.connection = undefined;
         this.pushEvent(session, 'connection validated by user — resuming prerequisite recovery');
         waiter.resolve(true);
@@ -2198,7 +2357,8 @@ export class GituServer {
       try {
       const body = await this.readBody(req, 30_000_000);
       const rawFiles = Array.isArray(body['files']) ? body['files'] : [];
-      const typedText = typeof body['text'] === 'string' ? body['text'].trim() : '';
+      const credentialInput = credentialChatInput(typeof body['text'] === 'string' ? body['text'].trim() : '');
+      const typedText = credentialInput.safeText;
       const text = typedText || (rawFiles.length > 0 ? 'Please review the attached file or document.' : '');
       if (!text) {
         if (!wasRunning) session.status = prevStatus;
@@ -2240,20 +2400,57 @@ export class GituServer {
       if (body['autoApprove'] === true) session.autoApprove = true;
       else if (body['autoApprove'] === false) session.autoApprove = false;
       if (modeSwitch) session.mode = modeSwitch;
+      // Apply an explicit picker switch before interpreting a pasted key. It
+      // tells the secure-form router which model-provider key the user intends
+      // to replace, and keeps the resumed task on that selected model.
+      if (useSelectedModel && selectedProvider && selectedModel) {
+        session.provider = selectedProvider;
+        session.model = selectedModel;
+        session.requestedProvider = selectedProvider;
+        session.requestedModel = selectedModel;
+        session.activeProvider = selectedProvider;
+        session.activeModel = selectedModel;
+        session.actionProtocolMode = undefined;
+        session.fallbackHistory = [];
+      } else if ((!session.provider || !session.model) && selectedProvider && selectedModel && (!session.provider || session.provider === selectedProvider)) {
+        session.provider ??= selectedProvider;
+        session.model ??= selectedModel;
+        session.requestedProvider ??= session.provider;
+        session.requestedModel ??= session.model;
+        session.activeProvider = session.provider;
+        session.activeModel = session.model;
+      }
+      if (credentialInput.detected) {
+        this.pushEvent(session, `user-msg ${text}`);
+        for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
+        void this.requestChatCredential(session, credentialInput).then((saved) => {
+          if (saved) return this.resumeAfterCredential(session, text, stored.attachments, modelImages);
+        });
+        this.sendJson(res, 200, { ok: true, credentialRequired: true, safeText: text });
+        return;
+      }
+      // A normal reply can supersede secure setup just like any other pending
+      // question. Resolve it before continuing, so its old callback cannot run.
+      if (!wasRunning && session.connection) this.releasePendingInput(session, text);
       if (wasRunning) {
         // delivery:'steer' (default) injects the message into the live run so
         // the agent takes it into account at the next step. delivery:'queue'
         // holds it until the run finishes, then it starts a fresh continuation.
-        const delivery = body['delivery'] === 'queue' ? 'queue' : 'steer';
+        const intent = conversationIntent(text);
+        const delivery = body['delivery'] === 'queue' && !intent ? 'queue' : 'steer';
         for (const file of stored.files) this.pushEvent(session, `file ${JSON.stringify(this.fileView(file))}`);
         if (delivery === 'queue') {
           (session.queuedUserMessages ??= []).push({ text, attachmentContext: this.attachmentContext(stored.attachments) });
           this.pushEvent(session, `queued  "${text}" — will be delivered when the current run completes`);
-          this.sendJson(res, 200, { ok: true, queued: true, delivery });
+          this.sendJson(res, 200, { ok: true, queued: true, delivery, safeText: text });
         } else {
           session.gitu?.queueMessage(text, this.attachmentContext(stored.attachments));
+          if (intent || classifyFollowUp(text).kind === 'CORRECT') {
+            session.queuedUserMessages = [];
+            this.releasePendingInput(session, text);
+          }
           this.pushEvent(session, `steered  "${text}" — will be delivered to the agent at the next step`);
-          this.sendJson(res, 200, { ok: true, steered: true, delivery });
+          this.sendJson(res, 200, { ok: true, steered: true, delivery, safeText: text });
         }
         return;
       }
@@ -2421,7 +2618,7 @@ export class GituServer {
         actionProtocolMode,
         autoApprove: session.autoApprove,
       });
-      this.sendJson(res, 200, { ok: true, resumed: true });
+      this.sendJson(res, 200, { ok: true, resumed: true, safeText: text });
       return;
       } catch (err) {
         // Any failure during async setup must release the reservation or the
@@ -2533,13 +2730,19 @@ export class GituServer {
     const agentStore = new AgentStore();
     const agentDefs = agentStore.list();
     const usage: SessionUsage = (session.usage ??= { inputTokens: 0, outputTokens: 0, cachedTokens: 0, messages: 0 });
-    const trackUsage = (u: LlmUsage | undefined): void => {
+    if (usage.costUsd === undefined && usage.messages > 0) usage.costUsd = usageCostUsd(modelMeta, usage);
+    const trackUsage = (u: LlmUsage | undefined, pricing = modelMeta): void => {
+      if (!isCurrentExecution()) return;
       usage.messages += 1;
       if (u) {
         usage.inputTokens += u.inputTokens;
         usage.outputTokens += u.outputTokens;
         usage.cachedTokens += u.cachedTokens;
-      }
+        const cost = usageCostUsd(pricing, u);
+        if (cost !== undefined) usage.costUsd = (usage.costUsd ?? 0) + cost;
+        else usage.costIncomplete = true;
+      } else usage.costIncomplete = true;
+      this.persistSession(session);
     };
     const trackedLlm = new UsageTrackingClient(llm, trackUsage);
     const subagents =
@@ -2554,7 +2757,9 @@ export class GituServer {
                   `unknown specialist agent "${name}". Available agents: [${available || 'none'}]. Note: "agent" must be a registered specialist name (e.g. ${agentStore.list()[0]?.name ? `"${agentStore.list()[0]?.name}"` : '"explore"'}), NOT a model/provider identifier.`,
                 );
               }
-              return new UsageTrackingClient(resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root }).client, trackUsage);
+              const resolved = resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root });
+              const pricing = modelMetadataFor(catalog, resolved.providerId, resolved.model);
+              return new UsageTrackingClient(resolved.client, (u) => trackUsage(u, pricing));
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
@@ -2592,26 +2797,33 @@ export class GituServer {
           }
         }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
       });
-    // Build a per-run universal catalog from credentialed saved connections.
-    // The catalog gives the agent immutable ids and routes every invocation
-    // through one cache / evidence / approval path. It never exposes secrets.
+    // Keep the per-run universal catalog synchronized with durable connection
+    // metadata. A connection can be added or gain a documented operation while
+    // this run is paused; the next model turn must see and invoke it immediately.
     const universalRegistry = new UniversalCapabilityRegistry();
-    for (const profile of this.connections.list()) {
-      if (!profile.hasCredential) continue;
-      universalRegistry.registerConnection(
-        profile.id,
-        profile.operations,
-        async (operation, body) => {
-          const registered = this.connections.operation(profile.id, operation.id);
-          if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
-          const result = await this.connections.invoke(profile.id, registered.id, body);
-          if (!result.ok) throw new Error(result.message);
-          return result.data;
-        },
-        profile.provider,
-      );
-    }
+    const syncUniversalConnections = (): void => {
+      for (const capability of universalRegistry.list()) {
+        if (capability.source === 'connection') universalRegistry.unregister(capability.id);
+      }
+      for (const profile of this.connections.list()) {
+        if (!profile.hasCredential) continue;
+        universalRegistry.registerConnection(
+          profile.id,
+          profile.operations,
+          async (operation, body) => {
+            const registered = this.connections.operation(profile.id, operation.id);
+            if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
+            const result = await this.connections.invoke(profile.id, registered.id, body);
+            if (!result.ok) throw new Error(result.message);
+            return result.data;
+          },
+          profile.provider,
+        );
+      }
+    };
+    syncUniversalConnections();
     const universalCapabilityContext = (): string => {
+      syncUniversalConnections();
       const capabilities = universalRegistry.list().filter((capability) => capability.source === 'connection');
       if (capabilities.length === 0) return 'UNIVERSAL CAPABILITIES: none available.';
       return [
@@ -2635,6 +2847,7 @@ export class GituServer {
       actionProtocolMode: opts.actionProtocolMode,
       skills,
       mcp,
+      connections: this.connections,
       lsp,
       subagents,
       agentsSection: agentStore.renderForPrompt() || undefined,
@@ -2806,12 +3019,13 @@ export class GituServer {
     try {
       const { ledger, report } = await gitu.run(opts.goal);
       if (!isCurrentExecution()) return;
+      const pausedForDiscussion = ledger.data.blockers.includes('Paused for discussion with the user.');
       session.status = report.status === 'complete' ? 'completed' : report.status === 'blocked' ? 'blocked' : 'failed';
-      session.report = report;
+      session.report = pausedForDiscussion ? undefined : report;
       // Stalled/blocked runs previously left session.error null, so the UI
       // failure card had nothing to show and the end looked like a silent
       // crash. Surface the ledger blocker as the reason.
-      if (session.status !== 'completed' && !session.error) {
+      if (session.status !== 'completed' && !session.error && !pausedForDiscussion) {
         const blocker = (ledger.data.blockers || []).slice(-1)[0];
         session.error =
           blocker ||

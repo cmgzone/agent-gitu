@@ -92,6 +92,10 @@ export class UniversalCapabilityRegistry {
     this.capabilities.set(capability.id, capability);
   }
 
+  unregister(id: string): void {
+    this.capabilities.delete(id);
+  }
+
   get(id: string): UniversalCapability | undefined {
     return this.capabilities.get(id);
   }

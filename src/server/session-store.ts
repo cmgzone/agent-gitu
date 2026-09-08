@@ -10,6 +10,10 @@ export interface SessionUsage {
   outputTokens: number;
   cachedTokens: number;
   messages: number;
+  /** Accumulated using the price of each calling model; survives catalog expiry. */
+  costUsd?: number;
+  /** True if some calls had no pricing metadata. */
+  costIncomplete?: boolean;
 }
 
 export interface StoredSession {
@@ -365,6 +369,8 @@ function parseUsage(value: string | null): SessionUsage | undefined {
       outputTokens: Number(parsed.outputTokens) || 0,
       cachedTokens: Number(parsed.cachedTokens) || 0,
       messages: Number(parsed.messages) || 0,
+      ...(Number.isFinite(Number(parsed.costUsd)) ? { costUsd: Number(parsed.costUsd) } : {}),
+      ...(parsed.costIncomplete === true ? { costIncomplete: true } : {}),
     };
     return usage.inputTokens || usage.outputTokens || usage.cachedTokens || usage.messages ? usage : undefined;
   } catch {

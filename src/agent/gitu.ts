@@ -36,6 +36,7 @@ import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
 import { LspManager } from '../lsp/manager.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { McpManager } from '../mcp/client.js';
+import type { ConnectionRegistry } from '../connections/connections.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
@@ -75,7 +76,7 @@ import {
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { agentVerificationGate, agentWorkflowPrompt, isObservationTool } from './agent-workflow.js';
-import { applyFollowUpToLedger, classifyFollowUp, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
+import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
 import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './effort-planner.js';
@@ -143,6 +144,8 @@ export interface GituConfig {
   actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
   skills?: SkillStore;
   mcp?: McpManager;
+  /** Host-owned saved connections exposed through metadata-only management tools. */
+  connections?: ConnectionRegistry;
   browser?: BrowserBridge;
   /** Optional LSP intelligence layer. When omitted, one is created lazily for the repo. */
   lsp?: LspManager;
@@ -417,6 +420,8 @@ type ParsedAction =
       verification?: string;
       area?: PlanArea;
       addSubtasks?: string[];
+      replaceSubtasks?: string[];
+      status?: 'pending' | 'cancelled';
       reason: string;
     }
   | { type: 'toggle_todo'; stepId: string; index: number; done?: boolean }
@@ -663,11 +668,13 @@ function parseAction(raw: unknown): ParsedAction | undefined {
       const reason = String(action['reason'] ?? '').trim();
       if (!reason) return undefined;
       const area = parseArea(action['area']);
-      const addSubtasks = parseSubtasks(action['todos']);
+      const addSubtasks = parseSubtasks(action['todos'] ?? action['addTodos']);
+      const replaceSubtasks = Array.isArray(action['replaceTodos']) ? (parseSubtasks(action['replaceTodos']) ?? []) : undefined;
+      const status = action['status'] === 'pending' || action['status'] === 'cancelled' ? action['status'] : undefined;
       const description = typeof action['description'] === 'string' && action['description'].trim() ? action['description'].slice(0, 220) : undefined;
       const verification = typeof action['verification'] === 'string' && action['verification'].trim() ? action['verification'].slice(0, 180) : undefined;
-      if (description === undefined && verification === undefined && !area && !addSubtasks) return undefined;
-      return { type, stepId: action['stepId'], reason, description, verification, area, addSubtasks };
+      if (description === undefined && verification === undefined && !area && !addSubtasks && replaceSubtasks === undefined && !status) return undefined;
+      return { type, stepId: action['stepId'], reason, description, verification, area, addSubtasks, replaceSubtasks, status };
     }
     case 'toggle_todo': {
       if (typeof action['stepId'] !== 'string' || !action['stepId']) return undefined;
@@ -1830,6 +1837,7 @@ export class Gitu {
       // accepted immediately, while the host remains the sole authority that
       // can grant those capabilities.
       () => prerequisiteResolver.capabilities().map((capability) => capability.id),
+      this.config.connections,
     );
     // The server owns and reuses its index. A direct Gitu run owns the index
     // it creates, so it must close it even when the run exits early or fails.
@@ -2352,6 +2360,9 @@ export class Gitu {
       let actionProtocolMode: 'native' | 'structured_text' | 'text' =
         this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
       const actionsAtStart = ledger.data.actions.length;
+      let conversationControl = conversationIntent(resumeNote ?? activeGoal);
+      let preservePausedWork = Boolean(conversationControl && this.config.resume && !resumedCompletedScope);
+      let conversationCompleted = false;
       let exitReason: 'complete' | 'blocked' | 'stalled' = 'stalled';
       let completionInput: { summary: string; risks: string[]; followUps: string[] } | undefined;
 
@@ -2420,7 +2431,12 @@ export class Gitu {
       });
 
       const ask = async (note?: string): Promise<ParsedAction | undefined> => {
-        messages.push({ role: 'user', content: buildStateMessage(ledger, note, activeSkillsSection(), activePhaseStateScope()) });
+        const conversationNote = conversationControl
+          ? `USER CONVERSATION REQUEST: ${conversationControl === 'pause' ? 'Execution is paused. Discuss or answer first; do not run tools or change the plan.' : 'Answer the user question first; only read-only inspection needed for that answer is allowed.'} Use complete with chat:true and a natural response, or ask_user when their input is needed. Preserve unfinished work and wait for a new instruction before continuing it.`
+          : '';
+        const liveConnections = this.config.connectionContext?.();
+        const liveContext = liveConnections ? `CURRENT REGISTERED CONNECTIONS AND CAPABILITIES (refresh, metadata only):\n${liveConnections}` : '';
+        messages.push({ role: 'user', content: buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope()) });
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
@@ -2733,6 +2749,48 @@ export class Gitu {
         }
       };
 
+      const admitQueuedMessages = (): boolean => {
+        const hadMessages = this.inbox.length > 0;
+        while (this.inbox.length > 0) {
+          const queued = this.inbox.shift()!;
+          this.emit(`user-msg ${queued.text}`);
+          const steered = classifyFollowUp(queued.text);
+          const intent = conversationIntent(queued.text);
+          if (intent) {
+            conversationControl = intent;
+            preservePausedWork = true;
+            this.config.subagents?.stop('User requested discussion before continuing.');
+          } else if (conversationControl && steered.kind === 'CONTINUE') {
+            // Only an explicit continuation clears a pause inside the same
+            // admission batch. Extra requirements sent after "stop first"
+            // must remain on hold until the user actually says to continue.
+            conversationControl = undefined;
+            preservePausedWork = false;
+          }
+          observe(`USER MESSAGE (${steered.kind}, current instruction; reconsider your next action): ${queued.text}` +
+            (queued.attachmentContext ? `\n${queued.attachmentContext}` : '') +
+            (intent ? '\nAnswer naturally before doing further work. The existing goal and unfinished plan remain on hold.' :
+              steered.kind === 'CORRECT' ? '\nRevise affected plan steps and replace obsolete todos for the new direction; reactivate a cancelled step with status:pending after revising it, or append the replacement steps. Do not continue the rejected provider.' : ''));
+          applyFollowUpToLedger(ledger, queued.text);
+          if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
+            const extraTurns = Math.max(budgetExtensionTurns, 10);
+            budgetCap = turns + extraTurns;
+            ledger.addBudgetExtension({
+              turn: turns,
+              reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
+              filesChanged: ledger.data.filesChanged?.length ?? 0,
+              distinctFailures: new Set(ledger.data.actions.filter(a => a.status === 'error' && a.errorSignature).map(a => a.errorSignature)).size,
+              evidenceCount: ledger.data.evidence.length,
+              extraTurns,
+              extraSpecialists: 0,
+              specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
+            });
+            this.emit(`effort  follow-up ${steered.kind} — turn budget re-armed: ${extraTurns} fresh turns (cap now ${budgetCap})`);
+          }
+        }
+        return hadMessages;
+      };
+
       try {
         mainLoop: for (;;) {
           if (this.aborted) {
@@ -2740,6 +2798,7 @@ export class Gitu {
             exitReason = 'blocked';
             break;
           }
+          admitQueuedMessages();
           // Reasoning-only recovery is once-per-run to bound cost, but a
           // successful concrete action (e.g. a provider read) proves the run is
           // progressing — re-arm the recovery so a reasoning-only blip right
@@ -2832,6 +2891,11 @@ export class Gitu {
 
           const action = await ask(effortNote);
 
+          // Input may arrive while the model is thinking. Its response was
+          // produced under old instructions and must never reach dispatch.
+          if (this.aborted) continue;
+          if (admitQueuedMessages()) continue;
+
           if (!action) {
             if (actionLaneHalted) {
               exitReason = 'blocked';
@@ -2902,7 +2966,16 @@ export class Gitu {
                   ? `operation:${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`
                   : action.type;
 
-          if (temporaryPlanPending) {
+          if (conversationControl) {
+            const allowed = ['complete', 'ask_user', 'show_plan'].includes(action.type) ||
+              (conversationControl === 'question' && action.type === 'tool_call' && isObservationTool(action.tool, action.params)) ||
+              (conversationControl === 'question' && action.type === 'parallel' && action.calls.every(call => isObservationTool(call.tool, call.params)));
+            if (!allowed) {
+              observe('Work is paused for the user conversation. Answer or discuss naturally using complete with chat:true. Do not execute the previous plan or open a connection form.');
+              continue;
+            }
+          }
+          if (temporaryPlanPending && !conversationControl) {
             const discovery = action.type === 'tool_call' ? isObservationTool(action.tool, action.params)
               : action.type === 'parallel' ? action.calls.every(call => isObservationTool(call.tool, call.params))
               : ['set_criteria', 'add_criteria', 'set_design', 'set_plan', 'append_plan', 'show_plan', 'set_hypothesis', 'record_decision', 'ask_user'].includes(action.type);
@@ -3087,7 +3160,7 @@ export class Gitu {
             case 'revise_step': {
               const revised = ledger.reviseStep(
                 action.stepId,
-                { description: action.description, verification: action.verification, area: action.area, addSubtasks: action.addSubtasks },
+                { description: action.description, verification: action.verification, area: action.area, addSubtasks: action.addSubtasks, replaceSubtasks: action.replaceSubtasks, status: action.status },
                 action.reason,
               );
               if (!revised) {
@@ -3747,6 +3820,13 @@ export class Gitu {
               break;
             }
             case 'complete': {
+              if (conversationControl) {
+                completionInput = { summary: action.summary, risks: action.risks ?? [], followUps: action.followUps ?? [] };
+                if (preservePausedWork) this.emit(`say ${action.summary}`);
+                conversationCompleted = true;
+                exitReason = preservePausedWork ? 'blocked' : 'complete';
+                break;
+              }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const gate = evidence.gate(ledger.data, currentFp);
               const lightweight = agentWorkflow ? agentVerificationGate(activePhaseData(), agentBaselineFingerprint, currentFp) : undefined;
@@ -4593,35 +4673,14 @@ export class Gitu {
 
           lastExecutedActionTag = currentActionTag;
 
-          while (this.inbox.length > 0) {
-            const queued = this.inbox.shift()!;
-            this.emit(`user-msg ${queued.text}`);
-            const steered = classifyFollowUp(queued.text);
-            observe(
-              `USER MESSAGE (${steered.kind}, sent while you were working — take it into account now): ${queued.text}` +
-                (queued.attachmentContext ? `\n${queued.attachmentContext}` : ''),
-            );
-            // A steered message is real follow-up work, not just a nudge: record
-            // its goal delta, constraints, and target hints in the task authority
-            // so the instruction policy enforces it from the very next action.
-            applyFollowUpToLedger(ledger, queued.text);
-            if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
-              // Meaningful follow-ups re-arm the turn budget: remaining turns are
-              // measured from now, not from run start.
-              const extraTurns = Math.max(budgetExtensionTurns, 10);
-              budgetCap = turns + extraTurns;
-              ledger.addBudgetExtension({
-                turn: turns,
-                reason: `follow-up ${steered.kind} arrived mid-run: "${queued.text.slice(0, 120)}"`,
-                filesChanged: ledger.data.filesChanged?.length ?? 0,
-                distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
-                evidenceCount: ledger.data.evidence.length,
-                extraTurns,
-                extraSpecialists: 0,
-                specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
-              });
-              this.emit(`effort  follow-up ${steered.kind} — turn budget re-armed: ${extraTurns} fresh turns (cap now ${budgetCap})`);
-            }
+          if (admitQueuedMessages()) {
+            // A cancelled form/approval may have just produced a terminal
+            // blocker. The queued user direction takes precedence over it.
+            exitReason = 'stalled';
+            completionInput = undefined;
+            conversationCompleted = false;
+            ledger.data.blockers = [];
+            ledger.save();
           }
 
           if (exitReason === 'complete' || exitReason === 'blocked') break;
@@ -4651,7 +4710,7 @@ export class Gitu {
       // independent verifier. Only mechanically-reproduced findings are
       // reported as confirmed; everything else is downgraded explicitly.
       const pendingFindings = (ledger.data.findings ?? []).filter((f) => f.status === 'unverified');
-      if (pendingFindings.length > 0) {
+      if (pendingFindings.length > 0 && !conversationCompleted && !this.aborted) {
         if (this.config.subagents) {
           this.emit(`findings verifying ${pendingFindings.length} finding(s) with independent specialists`);
           for (const finding of pendingFindings) {
@@ -4686,9 +4745,11 @@ export class Gitu {
         }
       }
 
-      const status = exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : 'failed';
+      const pausedForConversation = conversationCompleted && preservePausedWork;
+      const status = pausedForConversation ? 'blocked' : exitReason === 'complete' ? 'completed' : exitReason === 'blocked' ? 'blocked' : 'failed';
       ledger.setStatus(status);
-      if (exitReason === 'complete') ledger.completeActiveWorkPhase();
+      if (pausedForConversation) ledger.addBlocker('Paused for discussion with the user.');
+      if (exitReason === 'complete' && !pausedForConversation) ledger.completeActiveWorkPhase();
 
       // Persist token telemetry so spend can be attributed after the fact.
       const snap = telemetry.snapshot();
@@ -4751,7 +4812,7 @@ export class Gitu {
       ledger.data.report = report;
       ledger.save();
 
-      if ((this.config.autoLearn ?? true) && exitReason === 'complete') {
+      if ((this.config.autoLearn ?? true) && exitReason === 'complete' && !conversationCompleted && !this.aborted) {
         try {
           await this.autoLearn(messages, ledger, executor, skills);
         } catch (err) {
@@ -4762,38 +4823,40 @@ export class Gitu {
         }
       }
 
-      memory.add({
-        type: 'task',
-        claim:
-          `Task phase "${activeGoal}" finished as ${status}: ${report.summary}` +
-          `${report.filesChanged.length ? ` Changed files: ${report.filesChanged.slice(0, 16).join(', ')}.` : ''}` +
-          `${
-            report.verificationDetails?.some((e) => e.passed)
-              ? ` Passing checks: ${report.verificationDetails
-                  .filter((e) => e.passed)
-                  .slice(-4)
-                  .map((e) => e.label)
-                  .join('; ')}.`
-              : ''
-          }`,
-        evidence: ledger.data.taskId,
-        scope: guard.lock.name,
-        confidence: 0.9,
-      });
-      if (status !== 'completed') {
+      if (!conversationCompleted) {
         memory.add({
-          type: 'failure',
-          claim: `Task phase "${activeGoal}" did not complete (${status}). Blockers: ${ledger.data.blockers.join('; ') || 'none recorded'}`,
+          type: 'task',
+          claim:
+            `Task phase "${activeGoal}" finished as ${status}: ${report.summary}` +
+            `${report.filesChanged.length ? ` Changed files: ${report.filesChanged.slice(0, 16).join(', ')}.` : ''}` +
+            `${
+              report.verificationDetails?.some((e) => e.passed)
+                ? ` Passing checks: ${report.verificationDetails
+                    .filter((e) => e.passed)
+                    .slice(-4)
+                    .map((e) => e.label)
+                    .join('; ')}.`
+                : ''
+            }`,
+          evidence: ledger.data.taskId,
           scope: guard.lock.name,
-          confidence: 0.85,
+          confidence: 0.9,
         });
+        if (status !== 'completed') {
+          memory.add({
+            type: 'failure',
+            claim: `Task phase "${activeGoal}" did not complete (${status}). Blockers: ${ledger.data.blockers.join('; ') || 'none recorded'}`,
+            scope: guard.lock.name,
+            confidence: 0.85,
+          });
+        }
       }
 
       // Memory observability (review Phase 13): per-run lifecycle stats land on
       // the ledger so the completion report and details panel can surface them.
       ledger.data.memoryStats = memory.stats();
 
-      this.emit(`done     ${status} — ${report.summary.slice(0, 160)}`);
+      this.emit(conversationCompleted ? 'done     paused — waiting for your next instruction' : `done     ${status} — ${report.summary.slice(0, 160)}`);
       return { ledger, report };
     } finally {
       // Only dispose resources created for this direct run. Server-owned

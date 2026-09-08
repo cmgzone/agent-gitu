@@ -10,6 +10,7 @@ import { LoopDetector } from '../src/loop/loop-detector.js';
 import { PolicyEngine } from '../src/policy/policy.js';
 import { CapabilityAwareResolver } from '../src/recovery/prerequisites.js';
 import { SkillStore } from '../src/skills/skills.js';
+import { removeStoredKey } from '../src/llm/keys.js';
 import type { MissingPrerequisite } from '../src/types.js';
 
 const homes: string[] = [];
@@ -76,6 +77,26 @@ describe('ConnectionRegistry', () => {
     expect(skill).toContain('credentials are kept separately');
     expect(registry.list()[0]).toMatchObject({ id: saved.id, hasCredential: true, lastValidationStatus: 'ok' });
     expect(JSON.stringify(registry.list())).not.toContain(secret);
+  });
+
+  it('redacts a submitted credential when a provider echoes it in an error response', async () => {
+    home();
+    const secret = 'echoed-provider-token-123456789';
+    globalThis.fetch = (async () => new Response(JSON.stringify({ message: `Invalid credential: ${secret}` }), {
+      status: 401, headers: { 'content-type': 'application/json' },
+    })) as typeof fetch;
+    const registry = new ConnectionRegistry();
+    const saved = registry.save({
+      label: 'Echo provider', provider: 'echo-provider', baseUrl: 'https://echo.example.test', capabilities: ['status.read'], token: secret,
+      operations: [{ id: 'validate', label: 'Validate', capability: 'status.read', method: 'GET', path: '/status', risk: 'read' }],
+    });
+
+    const error = await registry.invoke(saved.id, 'validate').catch((value: Error) => value);
+
+    expect(String(error)).not.toContain(secret);
+    expect(JSON.stringify(registry.list())).not.toContain(secret);
+    expect(registry.authStateOf(saved.id).reason).toContain('<redacted>');
+    expect(registry.renderForAgent()).not.toContain(secret);
   });
 
   it('rejects unsafe endpoints and does not let a profile register an unbounded URL', () => {
@@ -175,7 +196,31 @@ describe('ConnectionRegistry', () => {
       validationPath: '/api/v1/servers',
       validationCapability: 'servers.read',
     });
+    expect(requirement.existingConnectionId).toBe('platform-api');
+    expect(requirement.requiredFields).toEqual([]);
     expect(JSON.stringify(requirement)).not.toContain('private-token');
+  });
+
+  it('asks only for a replacement key when a saved profile lost its credential', () => {
+    home();
+    const registry = new ConnectionRegistry();
+    registry.save({
+      id: 'github', label: 'GitHub', provider: 'github', baseUrl: 'https://api.github.com',
+      capabilities: ['repositories.read'],
+      operations: [{ id: 'validate', label: 'Repositories', capability: 'repositories.read', method: 'GET', path: '/user/repos', risk: 'read' }],
+      token: 'old-token',
+    });
+    removeStoredKey('GITU_CONNECTION_GITHUB');
+    const need = {
+      id: 'github-access', kind: 'credential' as const, description: 'GitHub access', requiredFor: 'list repositories',
+      providerHint: 'github', capabilities: ['repositories.read'], riskIfWrong: 'high' as const,
+    };
+
+    const required = registry.requirementFor(need);
+
+    expect(required.existingConnectionId).toBe('github');
+    expect(required.requiredFields).toEqual(['token']);
+    expect(registry.connectionRecoveryDecision(need).action).toBe('reauth');
   });
 
   it('activates a newly saved provider skill by alias without restarting the executor', async () => {
@@ -199,6 +244,7 @@ describe('ConnectionRegistry', () => {
       undefined,
       undefined,
       () => registry.asPrerequisiteProvider().capabilities.map((capability) => capability.id),
+      registry,
     );
 
     // This happens after Executor construction, exactly as it does when a
@@ -223,6 +269,17 @@ describe('ConnectionRegistry', () => {
     expect(outcome.result.ok).toBe(true);
     expect(outcome.result.output).toContain('SKILL gitu-provider-coolify@');
     expect(outcome.result.output).not.toContain('private-token');
+
+    const listed = await executor.execute({ tool: 'list_connections', params: {}, reason: 'refresh registered tools', expected: 'saved connection is listed' });
+    expect(listed.result.ok).toBe(true);
+    expect(listed.result.output).toContain('coolify');
+    const updated = await executor.execute({
+      tool: 'update_connection', params: { connectionId: 'coolify', label: 'Coolify staging' },
+      reason: 'apply the requested connection label', expected: 'safe metadata changes while operations remain registered',
+    });
+    expect(updated.result.ok).toBe(true);
+    expect(registry.get('coolify')?.label).toBe('Coolify staging');
+    expect(registry.operation('coolify', 'validate')).toBeDefined();
   });
 });
 

@@ -52,7 +52,18 @@ class Element {
   }
   getAttribute(name: string) { return this.attributes[name] || null; }
   addEventListener(event: string, listener: () => void) { this.listeners[event] = listener; }
-  appendChild(child: Element) { child.parent = this; this.children.push(child); return child; }
+  appendChild(child: Element) {
+    if (child.parent) child.parent.children = child.parent.children.filter(existing => existing !== child);
+    child.parent = this; this.children.push(child); return child;
+  }
+  insertBefore(child: Element, before: Element | null) {
+    if (!before) return this.appendChild(child);
+    if (child.parent) child.parent.children = child.parent.children.filter(existing => existing !== child);
+    child.parent = this;
+    const index = this.children.indexOf(before);
+    this.children.splice(index < 0 ? this.children.length : index, 0, child);
+    return child;
+  }
   matches(selector: string): boolean {
     const attr = /\[data-tool-state="([^"]+)"\]/.exec(selector);
     if (attr && this.dataset.toolState !== attr[1]) return false;
@@ -72,26 +83,27 @@ class Element {
 function renderer() {
   const stream = new Element(); stream.attached = true;
   const session = { nodes: {} as { toolRows?: Element[]; parallelPending?: boolean; toolGroup?: { el: Element } } };
+  let narrationClosures = 0;
   const context = createContext({
     S: { sessions: { run: session } },
     $: (id: string) => id === 'stream' ? stream : null,
     document: { createElement: (tag: string) => new Element(tag) },
     updateApproach: () => {}, mascotState: () => {}, mascotPulse: () => {},
-    closeThought: () => {}, setWorking: () => {}, trimTimeline: () => {}, stickScroll: () => {},
+    closeThought: () => { narrationClosures++; }, setWorking: () => {}, trimTimeline: () => {}, stickScroll: () => {},
     setupCopyButton: () => {}, icon: () => '',
     setupOutputFolding: (_details: Element, pre: Element, value: string) => { pre.textContent = value; },
     esc: (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
   });
   const functions = ['toolKind', 'humanToolSummary', 'splitSummary', 'splitReason', 'workingTextFor',
     'toolActivityGroupForRow', 'toolActivityHint', 'refreshToolActivityGroup', 'sealToolActivityGroup',
-    'createToolActivityGroup', 'ensureToolActivityGroup', 'toolActivityBoundary', 'appendEvent',
+    'createToolActivityGroup', 'ensureToolActivityGroup', 'followActiveToolActivity', 'toolActivityBoundary', 'appendEvent',
     'normalizeToolKey', 'activeToolRows', 'findToolRow'];
   // The two tiny split helpers share a line; their declarations are exact.
   const code = functions.map(name => name === 'splitSummary' || name === 'splitReason'
     ? UI_HTML.match(new RegExp('  function ' + name + '\\([^\\n]+'))![0] : source(name)).join('\n');
   new Script(code).runInContext(context);
   return {
-    stream, session, context,
+    stream, session, context, narrationClosures: () => narrationClosures,
     event: (i: number, text: string) => context.appendEvent('run', { i, text }),
     rows: () => stream.querySelectorAll('.tool-call'),
     group: () => stream.querySelector('.tl-tool-group')!,
@@ -104,6 +116,9 @@ describe('UI — parallel tool lifecycle', () => {
     r.event(0, 'parallel inspect source and run checks');
     r.event(1, 'run read src/server/ui.ts — Locate the activity renderer');
     r.event(2, 'run $ npm test — Verify the updated interactions');
+    // The parallel phase and each run command close the previous narration,
+    // so newer streamed prose never grows above active activity.
+    expect(r.narrationClosures()).toBe(3);
     expect(r.stream.querySelectorAll('.tl-tool-group')).toHaveLength(1);
     expect(r.group().querySelector('.tool-group-title')!.textContent).toBe('Reading src/server/ui.ts');
     expect(r.group().querySelector('.tool-group-hint')!.textContent).toBe('Locate the activity renderer');
@@ -145,6 +160,24 @@ describe('UI — parallel tool lifecycle', () => {
     expect(first.querySelector('.tl-out')!.open).toBe(false);
     disclosure.open = false; disclosure.listeners.toggle();
     expect(button.getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('keeps a live activity line beside the newest narration without moving completed evidence', () => {
+    const r = renderer();
+    r.event(0, 'run read src/ui.ts');
+    const group = r.group();
+    const narration = new Element('div');
+    narration.className = 'tl-note-row';
+    r.stream.appendChild(narration);
+    r.context.followActiveToolActivity(r.stream, r.session);
+    expect(r.stream.children.at(-1)).toBe(group);
+
+    r.event(1, 'ok read src/ui.ts (10ms)');
+    const newerNarration = new Element('div');
+    newerNarration.className = 'tl-note-row';
+    r.stream.appendChild(newerNarration);
+    r.context.followActiveToolActivity(r.stream, r.session);
+    expect(r.stream.children.at(-1)).toBe(newerNarration);
   });
 
   it('correlates an exact command before a shorter overlapping command and leaves ambiguous hints unmatched', () => {

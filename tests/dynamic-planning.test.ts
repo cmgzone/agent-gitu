@@ -289,6 +289,26 @@ describe('dynamic replanning', () => {
     expect(ledger.step('step-2')!.description).toBe('Design database schema');
   });
 
+  it('replaces obsolete todos and excludes cancelled provider steps from progress', () => {
+    const { ledger } = makeLedger('replace-provider');
+    ledger.setPlan([
+      { description: 'Deploy with Coolify', verification: 'Coolify reports ready', subtasks: ['connect Coolify', 'deploy service'] },
+      { description: 'Verify the application', verification: 'health check passes' },
+    ]);
+    ledger.toggleSubtask('step-1', 0, true);
+    ledger.reviseStep('step-1', { status: 'cancelled' }, 'user rejected Coolify');
+    ledger.appendPlan([{ description: 'Deploy with Vercel', verification: 'Vercel reports ready', subtasks: ['connect Vercel', 'deploy service'] }]);
+    ledger.reviseStep('step-3', { replaceSubtasks: ['reuse saved Vercel connection', 'deploy requested service'], status: 'pending' }, 'use requested provider');
+
+    expect(ledger.step('step-1')!.status).toBe('cancelled');
+    expect(ledger.step('step-3')!.subtasks).toEqual([
+      { text: 'reuse saved Vercel connection', done: false },
+      { text: 'deploy requested service', done: false },
+    ]);
+    expect(ledger.planProgress()).toMatchObject({ stepsTotal: 2, stepsDone: 0 });
+    expect(ledger.toggleSubtask('step-1', 1, true)).toBe(false);
+  });
+
   it('returns undefined for unknown steps', () => {
     const { ledger } = makeLedger('revise-unknown');
     seedPlan(ledger);

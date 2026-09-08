@@ -6,6 +6,8 @@ import { agentVerificationGate } from '../src/agent/agent-workflow.js';
 import { planEffort } from '../src/agent/effort-planner.js';
 import { Gitu } from '../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
+import { ProjectGuard } from '../src/guard/project-guard.js';
+import { TaskLedger } from '../src/ledger/task-ledger.js';
 import type { TaskLedgerData } from '../src/types.js';
 
 type Reply = (call: number, messages: LlmMessage[]) => string;
@@ -55,6 +57,27 @@ describe('unified Agent workflow', () => {
     expect(result.report.status).toBe('complete');
     expect(result.ledger.data.evidence).toEqual([]);
     expect(result.ledger.data.plan).toEqual([]);
+  }, 30000);
+
+  it('pauses execution and discusses first when the user asks it to stop', async () => {
+    const dir = project();
+    const guard = ProjectGuard.detect(dir);
+    const unfinished = TaskLedger.create({ repoRoot: guard.lock.repoRoot, goal: 'Correct the typo in README.md', project: guard.lock, mode: 'agent' });
+    unfinished.setPlan([{ description: 'Edit the greeting', verification: 'node check.cjs' }]);
+    const events: string[] = [];
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, onEvent: (event) => events.push(event),
+      resume: { taskId: unfinished.data.taskId, message: 'Stop and discuss first before you edit README.md. What wording should we use?' },
+      llm: new ScriptedMockLlm([
+        edit,
+        action({ type: 'complete', chat: true, summary: 'I paused the edit. The typo is in the greeting, and we can decide the exact wording before I change it.' }),
+      ]),
+    }).run('Stop and discuss first before you edit README.md. What wording should we use?');
+
+    expect(result.report.status).toBe('blocked');
+    expect(result.ledger.data.blockers).toContain('Paused for discussion with the user.');
+    expect(result.ledger.data.actions).toHaveLength(0);
+    expect(readFileSync(path.join(dir, 'README.md'), 'utf8')).toBe('Helo world\n');
+    expect(events).toContain('say I paused the edit. The typo is in the greeting, and we can decide the exact wording before I change it.');
   }, 30000);
 
   it('uses the actual action reason for progress without a Next prefix or private thoughts', async () => {

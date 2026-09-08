@@ -38,6 +38,8 @@ export interface CatalogOperation {
 export interface CatalogProvider {
   /** Matches ConnectionProfile.provider (slug). */
   provider: string;
+  /** Fixed public API origin, when the provider is not self-hosted. */
+  baseUrl?: string;
   documentationUrl: string;
   capabilities: { id: string; riskClass: 'read' | 'reversible-write' | 'destructive' }[];
   operations: CatalogOperation[];
@@ -131,6 +133,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
   },
   {
     provider: 'github',
+    baseUrl: 'https://api.github.com',
     documentationUrl: 'https://docs.github.com/en/rest',
     capabilities: [
       { id: 'repositories.read', riskClass: 'read' },
@@ -224,6 +227,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
   },
   {
     provider: 'vercel',
+    baseUrl: 'https://api.vercel.com',
     documentationUrl: 'https://vercel.com/docs/rest-api',
     capabilities: [
       { id: 'projects.read', riskClass: 'read' },
@@ -287,6 +291,7 @@ export const CONNECTION_CATALOG: CatalogProvider[] = [
   },
   {
     provider: 'fly',
+    baseUrl: 'https://api.machines.dev',
     documentationUrl: 'https://fly.io/docs/api/',
     capabilities: [
       { id: 'apps.read', riskClass: 'read' },

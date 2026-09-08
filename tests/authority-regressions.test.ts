@@ -158,10 +158,10 @@ describe('regression: correction supersedes conflicting authority', () => {
       expect(ledger.activeInstructions().some((i) => i.text.includes('server.ts'))).toBe(false);
       expect(ledger.data.taskAuthority?.currentGoal).toContain('frontend');
       // Backend-only pending plan steps are stale; frontend steps untouched.
-      const backendStep = ledger.data.plan.find((s) => s.description.includes('SUPERSEDED') && s.description.includes('backend'));
+      const backendStep = ledger.data.plan.find((s) => s.description.includes('backend'));
       const frontendStep = ledger.data.plan.find((s) => s.description.includes('frontend'));
-      expect(backendStep?.status).toBe('blocked');
-      expect(frontendStep?.status).not.toBe('blocked');
+      expect(backendStep?.status).toBe('cancelled');
+      expect(frontendStep?.status).not.toBe('cancelled');
       // Superseded ids recorded in the follow-up record.
       expect(record.supersededInstructions?.length ?? 0).toBeGreaterThan(0);
     } finally {

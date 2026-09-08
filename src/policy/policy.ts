@@ -93,6 +93,8 @@ export class PolicyEngine {
       case 'browse':
       case 'agent_status':
       case 'list_skills':
+      case 'list_mcp':
+      case 'list_connections':
       case 'use_skill':
       case 'lsp_diagnostics':
       case 'lsp_definition':
@@ -105,9 +107,15 @@ export class PolicyEngine {
       case 'write_file':
       case 'apply_edit':
       case 'create_skill':
+      case 'update_skill':
+      case 'update_connection':
       case 'delegate':
         tier = 'moderate';
         why = 'file mutation';
+        break;
+      case 'configure_mcp':
+        tier = 'dangerous';
+        why = 'MCP server executable configuration';
         break;
       case 'run_command': {
         const cls = classifyCommand(String(params['command'] ?? ''));

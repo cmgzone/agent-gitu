@@ -90,6 +90,21 @@ describe('Follow-up Continuity & Delta Routing', () => {
     }
   });
 
+  it('cancels obsolete provider todos when the user requests a replacement', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Deploy with Coolify', project, mode: 'agent' });
+      ledger.setPlan([{ description: 'Connect Coolify and deploy', verification: 'Coolify deployment ready', subtasks: ['add Coolify key', 'deploy with Coolify'] }]);
+      const followUp = applyFollowUpToLedger(ledger, "I don't want Coolify; use Vercel instead");
+      expect(followUp.kind).toBe('CORRECT');
+      expect(ledger.step('step-1')?.status).toBe('cancelled');
+      expect(ledger.data.taskAuthority?.currentGoal).toContain('Vercel');
+      expect(ledger.data.planRevisions?.at(-1)?.reason).toContain('Superseded by user request');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('instruction completion gate blocks unmet requirements and unrecovered policy denials', () => {
     const now = new Date('2026-01-01T00:00:00Z').toISOString();
     const later = new Date('2026-01-01T00:10:00Z').toISOString();

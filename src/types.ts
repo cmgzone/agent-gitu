@@ -68,7 +68,7 @@ export interface Evidence {
   fingerprint?: string;
 }
 
-export type StepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'blocked';
+export type StepStatus = 'pending' | 'in_progress' | 'done' | 'failed' | 'blocked' | 'cancelled';
 
 /** Which surface a plan step touches — drives richer frontend/backend design
  *  output and lets the state message summarize progress per area. */

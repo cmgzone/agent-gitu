@@ -582,19 +582,28 @@ export class TaskLedger {
    * Dynamic replanning: revise ONE step in place and record why. The original
    * intent stays reconstructable from the revision log; nothing else moves.
    */
-  reviseStep(stepId: string, patch: { description?: string; verification?: string; area?: PlanArea; addSubtasks?: string[] }, reason: string): PlanStep | undefined {
+  reviseStep(stepId: string, patch: { description?: string; verification?: string; area?: PlanArea; addSubtasks?: string[]; replaceSubtasks?: string[]; status?: 'pending' | 'cancelled' }, reason: string): PlanStep | undefined {
     const step = this.step(stepId);
     if (!step) return undefined;
     if (patch.description !== undefined) step.description = patch.description.slice(0, STEP_LIMITS.description);
     if (patch.verification !== undefined) step.verification = patch.verification.slice(0, STEP_LIMITS.verification);
     if (patch.area !== undefined) step.area = patch.area;
+    if (patch.replaceSubtasks !== undefined) {
+      const previous = new Map((step.subtasks ?? []).map(todo => [todo.text, todo.done]));
+      step.subtasks = [...new Set(patch.replaceSubtasks.map(text => text.trim().slice(0, STEP_LIMITS.todoText)).filter(Boolean))]
+        .slice(0, STEP_LIMITS.todosPerStep).map(text => ({ text, done: previous.get(text) ?? false }));
+    }
     if (patch.addSubtasks && patch.addSubtasks.length > 0) {
       step.subtasks ??= [];
       const room = Math.max(0, STEP_LIMITS.todosPerStep - step.subtasks.length);
-      for (const text of patch.addSubtasks.slice(0, room)) {
-        step.subtasks.push({ text: text.slice(0, STEP_LIMITS.todoText), done: false });
+      const additions = [...new Set(patch.addSubtasks.map(text => text.trim().slice(0, STEP_LIMITS.todoText)).filter(Boolean))]
+        .filter(text => !step.subtasks!.some(todo => todo.text === text));
+      for (const text of additions.slice(0, room)) {
+        step.subtasks.push({ text, done: false });
       }
     }
+    if (patch.status) step.status = patch.status;
+    else if (step.status === 'done' && step.subtasks?.some(todo => !todo.done)) step.status = 'pending';
     this.data.planRevisions ??= [];
     this.data.planRevisions.push({ stepId, reason: reason.slice(0, 300), createdAt: nowIso() });
     if (this.data.planRevisions.length > 20) this.data.planRevisions.splice(0, this.data.planRevisions.length - 20);
@@ -606,7 +615,7 @@ export class TaskLedger {
   toggleSubtask(stepId: string, index: number, done?: boolean): boolean {
     const step = this.step(stepId);
     const subtask = step?.subtasks?.[index];
-    if (!subtask) return false;
+    if (!subtask || step?.status === 'cancelled') return false;
     subtask.done = done ?? !subtask.done;
     // Step status mirrors its todos in BOTH directions: all checked → done,
     // any unchecked → back to pending (unless a step was completed explicitly
@@ -623,7 +632,7 @@ export class TaskLedger {
     let stepsDone = 0;
     let todosDone = 0;
     let todosTotal = 0;
-    for (const s of this.data.plan) {
+    for (const s of this.data.plan.filter(step => step.status !== 'cancelled')) {
       if (s.status === 'done') stepsDone += 1;
       if (s.subtasks) {
         for (const t of s.subtasks) {
@@ -632,7 +641,7 @@ export class TaskLedger {
         }
       }
     }
-    return { stepsDone, stepsTotal: this.data.plan.length, todosDone, todosTotal };
+    return { stepsDone, stepsTotal: this.data.plan.filter(step => step.status !== 'cancelled').length, todosDone, todosTotal };
   }
   recordAction(action: Omit<ActionRecord, 'id' | 'createdAt'>): ActionRecord {
     const record: ActionRecord = { ...action, id: shortId('act'), createdAt: nowIso() };

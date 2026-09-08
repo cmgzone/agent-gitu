@@ -3,6 +3,7 @@ import type { TaskLedger } from '../ledger/task-ledger.js';
 import { CACHED_INVESTIGATION_PREFIX, LoopDetector } from '../loop/loop-detector.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
+import type { ConnectionRegistry } from '../connections/connections.js';
 import type { PolicyEngine } from '../policy/policy.js';
 import { InstructionPolicyEngine } from '../policy/instruction-policy.js';
 import type { SkillStore } from '../skills/skills.js';
@@ -21,8 +22,11 @@ import {
   toolApplyEdit,
   toolBrowse,
   toolCreateSkill,
+  toolConfigureMcp,
   toolDelegate,
   toolListFiles,
+  toolListConnections,
+  toolListMcp,
   toolListSkills,
   toolLspDefinition,
   toolLspDiagnostics,
@@ -32,6 +36,8 @@ import {
   toolReadFile,
   toolRunCommand,
   toolSearchFiles,
+  toolUpdateConnection,
+  toolUpdateSkill,
   toolUseSkill,
   toolUseSkillReference,
   toolWebFetch,
@@ -83,6 +89,7 @@ export class Executor {
     private readonly delegateBackground?: BackgroundDelegateFn,
     private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
     private readonly runtimeCapabilities?: RuntimeCapabilitySupplier,
+    private readonly connections?: ConnectionRegistry,
   ) {}
 
   private emit(event: string): void {
@@ -334,6 +341,7 @@ export class Executor {
           : {}),
       },
       mcp: this.mcp,
+      connections: this.connections,
       browser: this.browser,
       lsp: this.lsp,
       delegate: this.delegate,
@@ -375,6 +383,21 @@ export class Executor {
           break;
         case 'create_skill':
           result = toolCreateSkill(ctx, req.params);
+          break;
+        case 'update_skill':
+          result = toolUpdateSkill(ctx, req.params);
+          break;
+        case 'list_mcp':
+          result = await toolListMcp(ctx);
+          break;
+        case 'configure_mcp':
+          result = toolConfigureMcp(ctx, req.params);
+          break;
+        case 'list_connections':
+          result = toolListConnections(ctx);
+          break;
+        case 'update_connection':
+          result = toolUpdateConnection(ctx, req.params);
           break;
         case 'use_skill':
           result = toolUseSkill(ctx, req.params);

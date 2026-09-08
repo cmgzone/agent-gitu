@@ -181,6 +181,12 @@ export interface ConnectionRequirement {
   setup?: ConnectionSetupHint;
   /** How the secure connection form should be framed. */
   requestType: 'reauth' | 'setup';
+  /** Stable saved profile id; resuming setup must update this profile. */
+  existingConnectionId?: string;
+  /** Only these genuinely missing values belong in the main secure form. */
+  requiredFields?: Array<'token' | 'provider' | 'baseUrl' | 'validationPath'>;
+  /** Routes a detected model key to the provider key store instead of creating an external API connection. */
+  credentialTarget?: { kind: 'model-provider'; provider: string; envVar: string };
 }
 
 export interface ConnectionDraft {
@@ -193,17 +199,6 @@ export interface ConnectionDraft {
   operations?: ConnectionOperation[];
   /** Accepted only by the local server endpoint; never persisted in profile data. */
   token?: string;
-}
-
-export interface ConnectionRequirement {
-  prerequisiteId: string;
-  description: string;
-  requiredFor: string;
-  providerHint?: string;
-  capabilities: string[];
-  setup?: ConnectionSetupHint;
-  /** How the secure connection form should be framed. */
-  requestType: 'reauth' | 'setup';
 }
 
 export interface ConnectionInvocationResult {
@@ -468,25 +463,41 @@ export class ConnectionInvocationError extends Error {
   }
 }
 
-function redactProviderData(value: unknown, depth = 0): unknown {
+/** Replace the exact credential submitted to this connection before provider
+ * text can become an error, persisted state, event, or model-facing result.
+ * Sort longest-first so overlapping credentials cannot leave a suffix behind. */
+function scrubKnownConnectionSecrets(text: string, secrets: readonly string[]): string {
+  let safe = text;
+  for (const secret of [...new Set(secrets.filter((secret) => secret.length > 0))].sort((a, b) => b.length - a.length)) {
+    safe = safe.split(secret).join('<redacted>');
+  }
+  return safe;
+}
+
+function storedConnectionSecrets(id: string): string[] {
+  const token = loadStoredKeys()[keyRef(id)]?.trim();
+  return token ? [token] : [];
+}
+
+function redactProviderData(value: unknown, secrets: readonly string[] = [], depth = 0): unknown {
   if (depth > 6) return '[truncated]';
   if (typeof value === 'string') {
-    return value
+    return scrubKnownConnectionSecrets(value, secrets)
       .replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s/@:]+:[^\s/@]+@/gi, '$1://<redacted>@')
       .slice(0, 4_000);
   }
-  if (Array.isArray(value)) return value.slice(0, 100).map((item) => redactProviderData(item, depth + 1));
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => redactProviderData(item, secrets, depth + 1));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
-      out[key] = /(?:token|secret|password|authorization|api[_-]?key|credential)/i.test(key) ? '<redacted>' : redactProviderData(item, depth + 1);
+      out[key] = /(?:token|secret|password|authorization|api[_-]?key|credential)/i.test(key) ? '<redacted>' : redactProviderData(item, secrets, depth + 1);
     }
     return out;
   }
   return value;
 }
 
-async function boundedResponseData(response: Response, limit = 48 * 1024): Promise<unknown> {
+async function boundedResponseData(response: Response, secrets: readonly string[] = [], limit = 48 * 1024): Promise<unknown> {
   if (!response.body) return undefined;
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -510,7 +521,7 @@ async function boundedResponseData(response: Response, limit = 48 * 1024): Promi
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   const text = new TextDecoder().decode(bytes).trim();
   if (!text) return undefined;
-  try { return redactProviderData(JSON.parse(text)); } catch { return redactProviderData(text); }
+  try { return redactProviderData(JSON.parse(text), secrets); } catch { return redactProviderData(text, secrets); }
 }
 
 function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
@@ -677,7 +688,7 @@ export class ConnectionRegistry {
   }
 
   renderForAgent(): string {
-    const profiles = this.list().filter((profile) => profile.hasCredential).slice(0, 12);
+    const profiles = this.list();
     if (profiles.length === 0) return 'No saved provider connections are currently available.';
     return profiles.map((profile) => {
       const readOperations = profile.operations
@@ -688,7 +699,8 @@ export class ConnectionRegistry {
         .filter((operation) => operation.risk !== 'read')
         .map((operation) => `${operation.id} (${operation.method} ${operation.path}; ${operation.capability}; ${operation.risk})`)
         .join(', ') || 'none';
-      return `- ${profile.id}: ${profile.label} [provider ${profile.provider}; capabilities ${profile.capabilities.join(', ') || 'none'}; read operations ${readOperations}; approved write operations ${writeOperations}]`;
+      const auth = !profile.hasCredential ? 'credential missing' : profile.authState?.status ?? 'available';
+      return `- ${profile.id}: ${profile.label} [provider ${profile.provider}; auth ${auth}; capabilities ${profile.capabilities.join(', ') || 'none'}; read operations ${readOperations}; approved write operations ${writeOperations}]`;
     }).join('\n');
   }
 
@@ -697,18 +709,39 @@ export class ConnectionRegistry {
     // A profile without its credential is still valuable: its known endpoint,
     // documentation, and validation route let the user reconnect by entering
     // only a fresh API key instead of retyping configuration.
-    const saved = this.profiles().find((profile) => profileMatches(profile, requirement));
-    if (!saved) return requirement;
-    const validation = saved.operations.find((operation) => operation.id === 'validate') ?? saved.operations.find((operation) => operation.risk === 'read' && operation.method === 'GET');
-    return {
-      ...requirement,
-      setup: {
-        ...(requirement.setup ?? {}),
+    const candidates = this.profiles().filter((profile) => profilePlausiblyMatches(profile, requirement));
+    const exact = candidates.find((profile) => profile.id === slug(requirement.providerHint, ''));
+    const saved = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
+    const catalog = catalogProvider(saved?.provider ?? requirement.providerHint ?? '');
+    const catalogValidation = catalog?.operations.find((operation) => operation.risk === 'read' && operation.method === 'GET');
+    const validation = saved?.operations.find((operation) => operation.id === 'validate' && operation.risk === 'read' && operation.method === 'GET')
+      ?? saved?.operations.find((operation) => operation.risk === 'read' && operation.method === 'GET');
+    const setup: ConnectionSetupHint = {
+      ...(catalog ? { documentationUrl: catalog.documentationUrl } : {}),
+      ...(catalog?.baseUrl ? { baseUrl: catalog.baseUrl } : {}),
+      ...(catalogValidation ? { validationPath: catalogValidation.path, validationCapability: catalogValidation.capability } : {}),
+      ...(requirement.setup ?? {}),
+      ...(saved ? {
         label: saved.label,
         baseUrl: saved.baseUrl,
         ...(saved.documentationUrl ? { documentationUrl: saved.documentationUrl } : {}),
-        ...(validation ? { validationPath: validation.path, validationCapability: validation.capability } : {}),
-      },
+      } : {}),
+      ...(validation ? { validationPath: validation.path, validationCapability: validation.capability } : {}),
+    };
+    const providerHint = saved?.provider ?? requirement.providerHint;
+    if (!setup.label && providerHint) setup.label = providerHint;
+    const requiredFields: NonNullable<ConnectionRequirement['requiredFields']> = [];
+    if (!providerHint) requiredFields.push('provider');
+    if (!setup.baseUrl) requiredFields.push('baseUrl');
+    if (!setup.validationPath) requiredFields.push('validationPath');
+    const auth = saved?.authState?.status;
+    if (!saved || !this.credentialPresent(saved.id) || auth === 'invalid' || auth === 'expired') requiredFields.push('token');
+    return {
+      ...requirement,
+      ...(providerHint ? { providerHint } : {}),
+      ...(saved ? { existingConnectionId: saved.id } : {}),
+      setup,
+      requiredFields,
     };
   }
 
@@ -717,8 +750,8 @@ export class ConnectionRegistry {
   }
 
   save(draft: ConnectionDraft): ConnectionProfileView {
-    const existing = draft.id ? this.get(draft.id) : undefined;
     const id = slug(draft.id || draft.provider || draft.label, '');
+    const existing = this.get(id);
     const label = compactText(draft.label, 120);
     const provider = slug(draft.provider, '');
     const baseUrl = normalizeBaseUrl(draft.baseUrl);
@@ -745,8 +778,11 @@ export class ConnectionRegistry {
       ...(documentationUrl ? { documentationUrl } : {}),
       ...(existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
       ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
-      ...(existing?.authState ? { authState: existing.authState } : {}),
-      ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
+      ...(token ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } } : {
+        ...(existing?.authState ? { authState: existing.authState } : {}),
+        ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
+      }),
+      ...(existing?.rejectedOperations && existing.baseUrl === baseUrl ? { rejectedOperations: existing.rejectedOperations } : {}),
     };
     const next = [...this.profiles().filter((candidate) => candidate.id !== id), profile];
     this.saveProfiles(next);
@@ -912,7 +948,8 @@ export class ConnectionRegistry {
       );
     }
 
-    const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
+    const secrets = storedConnectionSecrets(profile.id);
+    const token = secrets[0];
     if (!token) {
       this.recordAuth(profile.id, 'invalid', 'The saved credential is missing.');
       throw new ConnectionInvocationError('not-run', 'Saved connection needs its credential added again.', 'AUTH_INVALID', true);
@@ -938,7 +975,7 @@ export class ConnectionRegistry {
 
     if (!response.ok) {
       this.updateValidation(profile.id, 'failed');
-      const detail = await boundedResponseData(response).catch(() => undefined);
+      const detail = await boundedResponseData(response, secrets).catch(() => undefined);
       const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 4_000)}`;
 
       if (response.status === 401) {
@@ -997,7 +1034,7 @@ export class ConnectionRegistry {
     this.recordAuth(profile.id, 'valid');
     let data: unknown;
     try {
-      data = await boundedResponseData(response);
+      data = await boundedResponseData(response, secrets);
     } catch {
       throw new ConnectionInvocationError(
         'sent-unknown',
@@ -1040,7 +1077,8 @@ export class ConnectionRegistry {
         truncated: false,
       };
     }
-    const token = loadStoredKeys()[keyRef(profile.id)]?.trim();
+    const secrets = storedConnectionSecrets(profile.id);
+    const token = secrets[0];
     const catalogOps = (catalogProvider(profile.provider)?.operations ?? []) as AnnotatedCatalogOperation[];
     const headers: Record<string, string> = {
       accept: 'application/json',
@@ -1054,7 +1092,7 @@ export class ConnectionRegistry {
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),
       });
-      const data = await boundedResponseData(response).catch(() => undefined);
+      const data = await boundedResponseData(response, secrets).catch(() => undefined);
       return {
         ok: response.ok,
         status: response.status,
@@ -1484,7 +1522,7 @@ export class ConnectionRegistry {
    */
   connectionRecoveryDecision(prerequisite: MissingPrerequisite): ConnectionRecoveryDecision {
     const requirement = this.requirementFor(prerequisite);
-    const matching = this.list().filter((profile) => profile.hasCredential && profilePlausiblyMatches(profile, requirement));
+    const matching = this.list().filter((profile) => profilePlausiblyMatches(profile, requirement));
     if (matching.length === 0) {
       return { action: 'setup-new', reason: 'No saved connection matches this prerequisite yet; first-time secure setup is legitimate.' };
     }
@@ -1494,7 +1532,7 @@ export class ConnectionRegistry {
     const invalid = matching
       .filter((profile) => {
         const auth = this.authStateOf(profile.id);
-        return auth.status === 'invalid' || auth.status === 'expired';
+        return !profile.hasCredential || auth.status === 'invalid' || auth.status === 'expired';
       })
       .length;
     if (matching.length === 1 && invalid === 1) {

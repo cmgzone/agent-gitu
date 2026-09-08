@@ -10,6 +10,7 @@ import type { CriterionSpec, SpecialistHandoff, ToolResult } from '../types.js';
 import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
+import { ConnectionRegistry } from '../connections/connections.js';
 
 export interface ToolContext {
   guard: ProjectGuard;
@@ -18,6 +19,7 @@ export interface ToolContext {
   /** Runtime capabilities available to skill requirement validation. */
   skillContext?: SkillSelectionContext;
   mcp?: McpManager;
+  connections?: ConnectionRegistry;
   browser?: BrowserBridge;
   lsp?: LspManager;
   delegate?: DelegateFn;
@@ -50,6 +52,11 @@ export const KNOWN_TOOL_NAMES = new Set([
   'agent_status',
   'list_skills',
   'create_skill',
+  'update_skill',
+  'list_mcp',
+  'configure_mcp',
+  'list_connections',
+  'update_connection',
   'use_skill',
   'use_skill_reference',
   'run_command',
@@ -245,14 +252,37 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
     case 'create_skill': {
       const nameErr = checkNonEmptyString('name');
       const instErr = checkNonEmptyString('instructions');
-      if (nameErr || instErr) {
+      const descriptionErr = checkNonEmptyString('description');
+      if (nameErr || instErr || descriptionErr) {
         return {
           valid: false,
-          error: nameErr ?? instErr,
+          error: nameErr ?? instErr ?? descriptionErr,
           schema: `create_skill({ name: string, description: string, instructions: string, global?: boolean })`,
           correction: `Provide a non-empty name, description, and instructions for the skill.`,
         };
       }
+      return { valid: true };
+    }
+    case 'update_skill':
+    case 'configure_mcp':
+    case 'update_connection': {
+      const identity = tool === 'update_connection' ? 'connectionId' : 'name';
+      const nameErr = checkNonEmptyString(identity);
+      if (nameErr) return { valid: false, error: nameErr, correction: `Use ${tool === 'update_connection' ? 'list_connections' : tool === 'update_skill' ? 'list_skills' : 'list_mcp'} to inspect existing names and values first.` };
+      const fields = tool === 'update_skill' ? ['description', 'instructions'] : tool === 'configure_mcp' ? ['command'] : ['label', 'documentationUrl'];
+      for (const field of fields) {
+        if (p[field] !== undefined) {
+          const err = checkNonEmptyString(field);
+          if (err) return { valid: false, error: err };
+        }
+      }
+      if (tool === 'configure_mcp') {
+        if (p['args'] !== undefined && (!Array.isArray(p['args']) || p['args'].some((arg) => typeof arg !== 'string'))) return { valid: false, error: 'args must be an array of strings.' };
+        if (p['global'] !== undefined && typeof p['global'] !== 'boolean') return { valid: false, error: 'global must be a boolean.' };
+        if (p['env'] !== undefined) return { valid: false, error: 'Configure credentials through secure settings. configure_mcp preserves the saved environment without exposing it.' };
+      }
+      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl'].includes(key))) return { valid: false, error: 'update_connection changes label and documentationUrl only. Change endpoint or credentials through the secure connection form; register operations with connection_operation.' };
+      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined)) return { valid: false, error: `Provide at least one field to update: ${fields.join(', ')}.` };
       return { valid: true };
     }
     case 'use_skill': {
@@ -386,6 +416,8 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
       return { valid: true };
     }
     case 'list_skills':
+    case 'list_mcp':
+    case 'list_connections':
       return { valid: true };
     case 'lsp_diagnostics':
     case 'lsp_symbols': {
@@ -1066,6 +1098,73 @@ export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown
     };
   } catch (err) {
     return fail(`create_skill failed: ${(err as Error).message}`);
+  }
+}
+
+export function toolUpdateSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  if (!ctx.skills) return fail('skills not available');
+  try {
+    const skill = ctx.skills.update(String(params['name'] ?? ''), {
+      ...(typeof params['description'] === 'string' ? { description: params['description'] } : {}),
+      ...(typeof params['instructions'] === 'string' ? { instructions: params['instructions'] } : {}),
+    });
+    return { ok: true, output: `Skill "${skill.name}" updated. Use use_skill to load its updated instructions.` };
+  } catch (error) {
+    return fail(`update_skill failed: ${(error as Error).message}`);
+  }
+}
+
+export async function toolListMcp(ctx: ToolContext): Promise<ToolResult> {
+  if (!ctx.mcp) return fail('MCP support is not available in this session.');
+  const tools = await ctx.mcp.listAllTools();
+  const scopes = ctx.mcp.serverScopes();
+  return { ok: true, output: JSON.stringify({
+    servers: ctx.mcp.servers().map((server) => ({ name: server.name, scope: scopes[server.name] })),
+    tools: tools.map((tool) => ({ name: `mcp:${tool.server}:${tool.name}`, description: tool.description, inputSchema: tool.inputSchema })),
+    errors: ctx.mcp.discoveryFailures(),
+  }, null, 2) };
+}
+
+export function toolConfigureMcp(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  if (!ctx.mcp) return fail('MCP support is not available in this session.');
+  try {
+    const name = String(params['name'] ?? '');
+    const existing = ctx.mcp.servers().find((server) => server.name === name);
+    const existingScope = ctx.mcp.serverScopes()[name];
+    const scope = typeof params['global'] === 'boolean' ? (params['global'] ? 'global' : 'project') : existingScope ?? 'project';
+    if (existing?.env && existingScope && existingScope !== scope) {
+      return fail(`MCP server "${name}" has saved credentials. Move it between project and global settings through secure settings so its credentials are not copied into the wrong scope.`);
+    }
+    ctx.mcp.addServer({
+      ...existing,
+      name,
+      command: typeof params['command'] === 'string' ? params['command'] : existing?.command ?? '',
+      ...(Array.isArray(params['args']) ? { args: params['args'] as string[] } : {}),
+    }, scope);
+    return { ok: true, output: `MCP server "${name}" ${existing ? 'updated' : 'added'} in ${scope} settings. Call list_mcp now to discover its tools and exact input schemas.` };
+  } catch (error) {
+    return fail(`configure_mcp failed: ${(error as Error).message}`);
+  }
+}
+
+export function toolListConnections(ctx: ToolContext): ToolResult {
+  const registry = ctx.connections ?? new ConnectionRegistry();
+  return { ok: true, output: registry.renderForAgent() };
+}
+
+export function toolUpdateConnection(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  try {
+    const registry = ctx.connections ?? new ConnectionRegistry();
+    const profile = registry.get(String(params['connectionId'] ?? ''));
+    if (!profile) return fail('Saved connection not found. Call list_connections and use its exact connection id.');
+    const saved = registry.save({
+      ...profile,
+      ...(typeof params['label'] === 'string' ? { label: params['label'] } : {}),
+      ...(typeof params['documentationUrl'] === 'string' ? { documentationUrl: params['documentationUrl'] } : {}),
+    });
+    return { ok: true, output: `Connection "${saved.id}" updated: ${saved.label}. Its registered operations remain available.` };
+  } catch (error) {
+    return fail(`update_connection failed: ${(error as Error).message}`);
   }
 }
 

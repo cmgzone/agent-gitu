@@ -1,6 +1,8 @@
 import { UI_MOTION_JS } from './ui-motion.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
+import { UI_CONNECTIONS_JS } from './ui-connections.js';
+import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
 
 export const UI_HTML = String.raw`<!doctype html>
 <html lang="en">
@@ -353,7 +355,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .replayed, .replayed .dot-ok, .replayed .dot-bad { animation: none !important; }
   .text-arrival { animation: textArrival .18s ease-out both; }
   @keyframes textArrival { from { opacity: .3; } to { opacity: 1; } }
-  .text-streaming::after { content: ''; display: inline-block; width: 5px; height: 5px; margin: 0 0 2px 5px; border-radius: 50%; background: var(--run); animation: pulse 1.2s ease-in-out infinite; }
+  .text-streaming::after { content: '···'; display: inline-block; margin-left: 5px; color: var(--run); font: 700 14px/1 var(--mono); letter-spacing: 1px; animation: thinkingDots 1.15s ease-in-out infinite; }
+  @keyframes thinkingDots { 0%, 100% { opacity: .28; transform: translateY(1px); } 50% { opacity: 1; transform: translateY(-1px); } }
   .tl-note-row:has(.text-streaming) .caret { display: none; }
   /* Tool calls belong to the agent response that caused them. A single
      expandable activity group keeps a long run readable while still making
@@ -365,6 +368,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-group-details > summary::-webkit-details-marker { display: none; }
   .tool-group-details > summary:hover .tool-group-title { color: var(--text); }
   .tool-group-details > summary:focus-visible, .tool-call-head:focus-visible { outline: 2px solid var(--run); outline-offset: 3px; }
+  .tool-group-orbit { width: 12px; height: 12px; border: 1.5px solid rgba(91,168,255,.22); border-top-color: var(--run); border-radius: 50%; animation: spin .85s linear infinite; flex: none; }
+  .tl-tool-group:not([data-tool-group-state=working]) .tool-group-orbit { display: none; }
   .tool-group-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
   .tool-group-title { color: var(--muted); font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tool-group-hint { color: var(--faint); font-size: 11.5px; line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -513,10 +518,27 @@ export const UI_HTML = String.raw`<!doctype html>
   .report-flat .verify-row details { width: 100%; color: var(--muted); font-size: 11px; }
   .report-flat .verify-row summary { cursor: pointer; width: fit-content; }
   .report-flat .verify-row pre { margin: 6px 0 0; padding: 7px; max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; background: var(--card2); font: 10.5px var(--mono); color: var(--muted); }
+  .connection-fields { display: grid; gap: 12px; margin-top: 12px; }
+  .connection-field { display: grid; gap: 5px; font-size: 12.5px; color: var(--text); }
+  .connection-field small { color: var(--faint); font-weight: normal; }
+  .connection-field input { min-width: 0; width: 100%; }
+  .connection-secret-actions { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+  .connection-secret-actions .hint { flex: 1; }
+  .connection-details { margin-top: 14px; color: var(--muted); font-size: 12px; }
+  .connection-details summary { cursor: pointer; }
+  .connection-error { color: var(--red); margin-top: 12px; font-size: 12.5px; }
+  .step.cancelled, .step .st.cancelled, .composer-todo.cancelled { color: var(--muted); opacity: .7; }
+  .composer-todo.cancelled .composer-todo-text { text-decoration: line-through; }
+  .usermsg.pending .ubtns { display: none; }
 
   @keyframes spin { to { transform: rotate(360deg); } }
-  .working { display: flex; align-items: center; gap: 10px; padding: 12px 2px 12px 40px; }
+  .working { display: flex; align-items: center; gap: 8px; padding: 10px 2px 12px; }
   .working .spinner { width: 12px; height: 12px; border: 2px solid var(--border2); border-top-color: var(--run); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  .working .thinking-waves { display: inline-flex; gap: 3px; align-items: center; height: 12px; }
+  .working .thinking-waves i { width: 3px; height: 3px; border-radius: 50%; background: var(--run); animation: thinkingWave .9s ease-in-out infinite; }
+  .working .thinking-waves i:nth-child(2) { animation-delay: .13s; }
+  .working .thinking-waves i:nth-child(3) { animation-delay: .26s; }
+  @keyframes thinkingWave { 0%, 100% { opacity: .25; transform: translateY(1px); } 50% { opacity: 1; transform: translateY(-2px); } }
   .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .run-side { width: var(--rsw, 380px); flex: none; display: flex; flex-direction: column; min-height: 0; }
@@ -843,6 +865,8 @@ export const UI_HTML = String.raw`<!doctype html>
   ${UI_MOTION_JS}
   ${UI_APPROACH_JS}
   ${UI_RESPONSE_JS}
+  ${UI_CONNECTIONS_JS}
+  ${CHAT_CREDENTIAL_HELPERS_JS}
   var S = {
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     modelsLoaded: false,
@@ -867,7 +891,7 @@ export const UI_HTML = String.raw`<!doctype html>
   delete S.sel.wf;
   delete S.settings.review;
   function persist() {
-    try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: S.draft })); } catch (e) {}
+    try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: credentialChatInput(S.draft || '').safeText })); } catch (e) {}
   }
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
@@ -1883,6 +1907,7 @@ export const UI_HTML = String.raw`<!doctype html>
     stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {}, pendingFiles: [] });
     sess.nodes = {};
+    resetStreamRenderState(sess);
     sess.justOpened = true;
     // Attachments are per-composer: switching sessions must show THAT
     // session's staged files (or none), never the previous one's.
@@ -1963,7 +1988,7 @@ export const UI_HTML = String.raw`<!doctype html>
     w.className = 'working'; w.id = 'working';
     w.setAttribute('role', 'status');
     w.setAttribute('aria-live', 'polite');
-    w.innerHTML = '<span class="spinner"></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span>';
+    w.innerHTML = '<span class="spinner"></span><span class="thinking-waves" aria-hidden="true"><i></i><i></i><i></i></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span>';
     $('stream').appendChild(w);
     setWorking('Thinking…');
     renderRunSide(runId);
@@ -2130,6 +2155,25 @@ export const UI_HTML = String.raw`<!doctype html>
   function nearBottom(el) {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
+
+  function resetStreamRenderState(sess) {
+    sess.summaryShown = null;
+    sess.connShown = null;
+    sess.qShown = null;
+    sess.prShown = null;
+    sess.apprShown = {};
+    sess.pendingUserMessages = [];
+  }
+  function retainUsageEstimate(sess, incoming) {
+    var previous = sess && sess.session && sess.session.usage;
+    var next = incoming && incoming.usage;
+    // A catalog refresh can briefly omit price metadata. Keep the last
+    // accumulated estimate instead of making a visible price turn into “—”.
+    if (previous && next && typeof previous.costUsd === 'number' && typeof next.costUsd !== 'number') {
+      next.costUsd = previous.costUsd;
+      next.costIncomplete = true;
+    }
+  }
   function updateJumpLatest(stream) {
     var jump = $('jumpLatest');
     if (jump) {
@@ -2215,17 +2259,19 @@ export const UI_HTML = String.raw`<!doctype html>
       supersede: sup,
       autoApprove: S.settings.autoApprove
     }) })
-      .then(function () {
+      .then(function (result) {
+        settlePendingUserMessage(runId, result && result.safeText !== undefined ? result.safeText : credentialChatInput(text).safeText, sentBubbleId, false);
         if (!running) setPlanRequested(runId, false);
         sess.chatish = false;
         pendingFor().length = 0;
         renderThumbs();
-        setWorking('Thinking…');
+        setWorking(result && result.credentialRequired ? 'Waiting for secure connection details…' : 'Thinking…');
         // Terminal sessions intentionally close their SSE stream. A follow-up
         // starts the same session again, so reopen it here; polling only
         // refreshes status/ledger and cannot carry live tdelta prose events.
         if (!S.es) connect(runId);
         if (!S.poll) S.poll = setInterval(function () { pollRun(runId); }, 1500);
+        pollRun(runId);
       })
       .catch(function (er) {
         var msg = String(er.message);
@@ -2257,14 +2303,30 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     if (!stream || !sess) return null;
     if (!sess.pendingUserMessages) sess.pendingUserMessages = [];
-    sess.pendingUserMessages.push(text);
     retireAbubble(sess);
     closeThought(runId);
-    var bubble = userBubble(text, runId);
+    var bubble = userBubble('Sending message…', runId);
+    bubble.classList.add('pending');
     var ubId = bubble.getAttribute('data-ubid');
+    sess.pendingUserMessages.push({ id: ubId, text: credentialChatInput(text).safeText });
     appendLive(stream, bubble);
     stickScroll(stream, true);
     return ubId;
+  }
+
+  function settlePendingUserMessage(runId, safeText, ubId, consume) {
+    var sess = S.sessions[runId];
+    var pending = sess && sess.pendingUserMessages;
+    if (!pending) return false;
+    var index = pending.findIndex(function (item) { return ubId ? item.id === ubId : item.text === safeText; });
+    if (index < 0) return false;
+    var item = pending[index];
+    item.text = safeText;
+    var stream = S.active === runId && $('stream');
+    var bubble = stream && stream.querySelector('div[data-ubid="' + item.id + '"]');
+    if (bubble && !item.displayed) { bubble.replaceWith(userBubble(safeText, runId, item.id)); item.displayed = true; }
+    if (consume) pending.splice(index, 1);
+    return Boolean(bubble);
   }
 
   // A failed send previously left an optimistic bubble that looked DELIVERED
@@ -2275,7 +2337,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     if (!stream || !sess) return;
     if (sess.pendingUserMessages) {
-      var idx = sess.pendingUserMessages.indexOf(text);
+      var idx = sess.pendingUserMessages.findIndex(function (item) { return ubId ? item.id === ubId : item.text === credentialChatInput(text).safeText; });
       if (idx >= 0) sess.pendingUserMessages.splice(idx, 1);
     }
     // Prefer the unique bubble id: two identical texts must not fail/retry
@@ -2452,9 +2514,9 @@ export const UI_HTML = String.raw`<!doctype html>
       var e0 = $('workingElapsed'); if (e0) e0.textContent = '';
       return;
     }
-    // The activity disclosure or the arriving text already shows live work.
-    // Keep one visible status while retaining the timer for nested calls.
-    w.style.display = document.querySelector('.tool-call[data-tool-state="working"], .text-streaming') ? 'none' : 'flex';
+    // A tool row owns its own spinner. Otherwise keep the live thinking line
+    // at the tail so the animation follows the current narration.
+    w.style.display = document.querySelector('.tool-call[data-tool-state="working"]') ? 'none' : 'flex';
     if (text !== S.lastWorkingText) { S.lastWorkingText = text; S.workingSince = Date.now(); w.classList.remove('slow'); }
     var t = $('workingText');
     if (t && t.textContent !== text) t.textContent = text;
@@ -2801,6 +2863,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<span class="tl-dot dot-run"></span>' +
       '<div class="tl-body"><details class="tool-group-details">' +
         '<summary aria-label="Show tool activity">' +
+          '<span class="tool-group-orbit" aria-hidden="true"></span>' +
           '<span class="tool-group-chevron" aria-hidden="true">›</span>' +
           '<span class="tool-group-copy"><span class="tool-group-title" aria-live="polite">Preparing action</span><span class="tool-group-hint"></span></span>' +
           '<span class="tool-group-count">0 activities</span>' +
@@ -2824,6 +2887,18 @@ export const UI_HTML = String.raw`<!doctype html>
     var group = sess && sess.nodes && sess.nodes.toolGroup;
     if (group && group.el && group.el.isConnected && group.accepting) return group;
     return createToolActivityGroup(sess, insert);
+  }
+
+  // An operation can still be running when the agent streams a new public
+  // update. Keep that live disclosure at the tail of the update it belongs
+  // to; completed activity stays in its original chronological position.
+  function followActiveToolActivity(stream, sess) {
+    var group = sess && sess.nodes && sess.nodes.toolGroup;
+    if (!stream || !group || !group.el || !group.el.isConnected) return;
+    if (!group.el.querySelector('.tool-call[data-tool-state="working"]')) return;
+    var working = $('working');
+    if (working && working.parentNode === stream) stream.insertBefore(group.el, working);
+    else stream.appendChild(group.el);
   }
 
   function toolActivityBoundary(text) {
@@ -2919,10 +2994,10 @@ export const UI_HTML = String.raw`<!doctype html>
         }
         insert(t);
         sess.nodes.thought = t;
+        followActiveToolActivity(stream, sess);
       }
       var sink = sess.nodes.thought.querySelector('.exec-pre') || sess.nodes.thought.querySelector('.txt');
       queueStreamText(sink, chunk, sess.replaying);
-      var working = $('working'); if (working) working.style.display = 'none';
       return;
     }
     if (text.indexOf('reason ') === 0) {
@@ -2978,7 +3053,7 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
     if (text.indexOf('activity tool') === 0) {
-      if (!sess || !sess.chatish) setWorking('Preparing tool action…');
+      if (!sess || !sess.chatish) { closeThought(runId); setWorking('Preparing tool action…'); }
       return;
     }
     if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
@@ -2986,9 +3061,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
     if (text.indexOf('user-msg ') === 0) {
       var userText = text.slice(9);
-      var pending = sess && sess.pendingUserMessages;
-      var pendingAt = pending ? pending.indexOf(userText) : -1;
-      if (pendingAt >= 0) { pending.splice(pendingAt, 1); return; }
+      if (settlePendingUserMessage(runId, userText, null, true)) return;
       retireAbubble(sess); closeThought(runId); appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
     }
     if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
@@ -3006,6 +3079,7 @@ export const UI_HTML = String.raw`<!doctype html>
       // Parallel executors emit all run events up front, then interleave each
       // completion. The one Tool activity disclosure below owns that batch;
       // a second "parallel" timeline row would duplicate the same event.
+      closeThought(runId);
       sess.nodes.nextToolBatchHint = text.slice(9).trim();
       sess.nodes.parallelPending = true;
       sess.nodes.toolRows = sess.nodes.toolRows || [];
@@ -3526,6 +3600,7 @@ export const UI_HTML = String.raw`<!doctype html>
       var sess = S.sessions[runId];
       if (!sess || S.active !== runId) return;
       S.pollFailures = 0;
+      retainUsageEstimate(sess, session);
       sess.session = session;
       renderRunOverview(session, sess.ledger);
       // On opening a persisted task, place its model in the composer. That
@@ -3557,15 +3632,16 @@ export const UI_HTML = String.raw`<!doctype html>
       renderQuestions(runId, session);
       renderConnectionRequest(runId, session);
       renderErrorCard(runId, session);
-      if (session.status !== 'running' && !sess.summaryShown && session.report) {
-        sess.summaryShown = true;
+      var summaryKey = session.report && JSON.stringify([session.finishedAt, session.report]);
+      if (session.status !== 'running' && session.report && sess.summaryShown !== summaryKey) {
         appendSummary(runId, session);
+        sess.summaryShown = summaryKey;
       }
       if (session.status === 'running') sess.justOpened = false;
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
-          if (s2) {
+          if (s2 && S.active === runId) {
             s2.ledger = ledger;
             renderRunSide(runId);
             renderComposerTodos(runId);
@@ -3726,77 +3802,6 @@ export const UI_HTML = String.raw`<!doctype html>
       }).join('\n');
       api('/api/answers/' + q.id, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answer: answers }) })
         .catch(function (er) { restore(); toast(er.message, true); });
-    };
-  }
-
-  function renderConnectionRequest(runId, session) {
-    var stream = $('stream');
-    if (!stream) return;
-    var sess = S.sessions[runId];
-    var pending = session.pendingConnection;
-    if (!pending) {
-      if (sess.connShown) {
-        sess.connShown = null;
-        var oldCards = stream.querySelectorAll('.connection-card');
-        for (var oi = 0; oi < oldCards.length; oi++) oldCards[oi].remove();
-      }
-      return;
-    }
-    if (sess.connShown === pending.id) return;
-    sess.connShown = pending.id;
-    var olds = stream.querySelectorAll('.connection-card');
-    for (var i = 0; i < olds.length; i++) olds[i].remove();
-    var req = pending.requirement || {};
-    var isReauth = req.requestType === 'reauth';
-    var provider = req.providerHint || 'provider';
-    var caps = req.capabilities || [];
-    var setup = req.setup || {};
-    var apiKeyOnly = Boolean(setup.baseUrl && setup.validationPath);
-    var label = setup.label || provider;
-    var configurationFields =
-      '<input class="conn-label" placeholder="Connection name" value="' + esc(label) + '">' +
-      '<input class="conn-provider" placeholder="Provider identifier" value="' + esc(provider) + '">' +
-      '<input class="conn-base" placeholder="Base URL (HTTPS, or HTTP only for localhost)" value="' + esc(setup.baseUrl || '') + '">' +
-      '<input class="conn-docs" placeholder="Documentation URL (optional, HTTPS)" value="' + esc(setup.documentationUrl || '') + '">' +
-      '<input class="conn-path" placeholder="Read-only validation path" value="' + esc(setup.validationPath || '/') + '">';
-    var documentation = setup.documentationUrl
-      ? ' Documentation source: <a href="' + esc(setup.documentationUrl) + '" target="_blank" rel="noreferrer">' + esc(setup.documentationUrl) + '</a>.'
-      : '';
-    var formFields = apiKeyOnly
-      ? '<div class="hint" style="margin-top:10px">Gitu filled the provider endpoint and validation route from available provider information.' + documentation + ' Review them below only if they are not correct for this account.</div>' +
-        '<input class="conn-token" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model" style="margin-top:8px">' +
-        '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--muted)">Review or change connection details</summary><div style="display:grid;gap:8px;margin-top:8px">' + configurationFields + '</div></details>'
-      : configurationFields +
-        '<input class="conn-token" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model">' +
-        '<div class="hint">If you only have an API key, ask Gitu to find the provider’s official API documentation first; it can prefill safe endpoint details when they are verified.</div>';
-    var div = document.createElement('div');
-    div.className = 'qcard connection-card';
-    div.innerHTML = '<h3>' + (isReauth ? 'reauthorize saved connection' : 'secure connection setup') + '</h3>' +
-      '<div class="meta-line">' + (isReauth
-        ? 'The saved credential for "' + esc(label) + '" was positively rejected or expired (' + esc(req.requestType || 'reauth') + ' auth evidence). Replacing it is the only required action — endpoint, documentation, and registered operations are kept. <strong>A missing capability is never a reason to re-enter a credential.</strong>'
-        : 'Agent Gitu needs ' + esc(req.description || 'provider access') + ' for ' + esc(req.requiredFor || 'this task') + '. Your credential is validated locally and is never shown to the model, task history, generated skill, or logs.') + '</div>' +
-      '<div style="display:grid;gap:8px;margin-top:10px">' + formFields + '</div>' +
-      (caps.length ? '<div class="hint" style="margin-top:8px">Required capabilities: ' + esc(caps.join(', ')) + '</div>' : '') +
-      '<div class="actions"><button class="btn dark" data-saveconnection>' + (apiKeyOnly ? 'Save API key, validate, and resume' : 'Save, validate, and resume') + '</button></div>';
-    var working = $('working');
-    if (working) stream.insertBefore(div, working); else stream.appendChild(div);
-    stickScroll(stream, true);
-    var save = div.querySelector('[data-saveconnection]');
-    save.onclick = function () {
-      if (save.disabled) return;
-      save.disabled = true; save.textContent = 'Validating…';
-      var body = {
-        label: div.querySelector('.conn-label').value,
-        provider: div.querySelector('.conn-provider').value,
-        baseUrl: div.querySelector('.conn-base').value,
-        documentationUrl: div.querySelector('.conn-docs').value,
-        validationPath: div.querySelector('.conn-path').value || '/',
-        token: div.querySelector('.conn-token').value,
-        capabilities: caps
-      };
-      api('/api/runs/' + encodeURIComponent(runId) + '/connection', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-        .then(function () { div.querySelector('.conn-token').value = ''; toast('Connection validated — task is resuming'); })
-        .catch(function (e) { save.disabled = false; save.textContent = 'Save, validate, and resume'; toast((e && e.message) || 'Connection could not be validated', true); });
     };
   }
 
@@ -4190,7 +4195,6 @@ export const UI_HTML = String.raw`<!doctype html>
     var visibleFiles = L.filesChanged.filter(reportableFile);
     html += visibleFiles.length ? visibleFiles.slice(0, 12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') : '<div class="empty">none</div>';
     if (visibleFiles.length > 12) html += '<details class="side-more"><summary>Show ' + (visibleFiles.length - 12) + ' more files</summary>' + visibleFiles.slice(12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') + '</details>';
-    if (L.report) html += reportSideCard(L.report);
     body.innerHTML = html;
   }
 
@@ -4541,7 +4545,7 @@ export const UI_HTML = String.raw`<!doctype html>
     stat('Input tokens', U ? formatTokens(U.inputTokens) : '—', true);
     stat('Cached tokens', U ? formatTokens(U.cachedTokens) : '—', true);
     stat('Output tokens', U ? formatTokens(U.outputTokens) : '—', true);
-    stat('Total cost', U && typeof U.costUsd === 'number' ? '$' + U.costUsd.toFixed(4) : '—', true);
+    stat(U && U.costIncomplete ? 'Estimated cost' : 'Total cost', U && typeof U.costUsd === 'number' ? (U.costIncomplete ? '~$' : '$') + U.costUsd.toFixed(4) : '—', true);
     html += '</div>';
     if (L && L.actions.length) {
       var counts = { read: 0, write: 0, command: 0, other: 0 };

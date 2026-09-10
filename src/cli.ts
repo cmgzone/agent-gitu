@@ -96,7 +96,7 @@ Providers:
             models: run \`gitu models --provider alibaba\` (default: qwen3.8-max)
   deepseek  DeepSeek direct API (OpenAI-compatible)
             keys: HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
-            models: run \`gitu models --provider deepseek\` (default: deepseek-v4-pro)
+            models: run \`gitu models --provider deepseek\` (default: deepseek-flash)
   openai    OpenAI — keys: HERMES_OPENAI_API_KEY | OPENAI_API_KEY
   custom    HERMES_API_KEY (+ optional HERMES_BASE_URL, HERMES_MODEL)`;
 }

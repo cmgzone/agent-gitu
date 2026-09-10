@@ -2496,10 +2496,12 @@ export class Gitu {
             r = await requestLlmTurn(llm, messages, callOpts(protocolMode, maxTransportAttempts, override), (delta) => streamer(delta));
           } catch (err) {
             // A compatible endpoint may accept ordinary completions while not
-            // supporting SSE. Downgrade explicitly, retaining the same logical
-            // request ID and only the unused transport budget. This keeps a
-            // stream failure from hiding a second HTTP attempt inside the client.
-            if (err instanceof LlmError && err.details.kind === 'streaming_incompatible' && protocolMode !== 'native') {
+            // supporting SSE. Downgrade explicitly to the non-streaming turn
+            // API, retaining the same logical request ID and only the unused
+            // transport budget. This keeps a stream failure from hiding a
+            // second HTTP attempt inside the client, and applies to native
+            // tool requests too — a broken stream must not fail the run.
+            if (err instanceof LlmError && err.details.kind === 'streaming_incompatible') {
               r = await requestLlmTurn(llm, messages, callOpts(protocolMode, Math.max(1, maxTransportAttempts - 1), override));
             } else {
               throw err;
@@ -2615,15 +2617,16 @@ export class Gitu {
           const summary = visibleActionSummary(parsed);
           if (summary) this.emit(`say ${summary}`);
         }
-        // Assistant history is echoed verbatim on the wire. Reasoning-provider
-        // loops (DeepSeek thinking + tools, etc.) REQUIRE the prior reasoning
-        // trace and tool-call state to be sent back on every tools-carrying
-        // request — dropping them makes the provider reject the request with
-        // HTTP 400 and look like "native tools unsupported". Carry both.
+        // Assistant history is echoed on the wire with its reasoning trace.
+        // DeepSeek's thinking loop REQUIRES the prior reasoning_content to be
+        // sent back on every tools-carrying request — dropping it makes the
+        // provider reject the request with HTTP 400 and look like "native
+        // tools unsupported". Tool calls are NOT replayed: the harness
+        // executes them itself and answers with a user observation, so a
+        // tool_calls message without matching tool results would be invalid.
         messages.push({
           role: 'assistant',
           content: reply,
-          ...(turn.kind === 'tool_calls' && turn.calls.length ? { toolCalls: turn.calls } : {}),
           ...(turn.metadata.reasoning ? { reasoningContent: turn.metadata.reasoning } : {}),
         });
         if (!parsed) {

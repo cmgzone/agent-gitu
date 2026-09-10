@@ -47,14 +47,15 @@ describe('provider registry', () => {
     expect(or.models.some((m) => m.endsWith(':free'))).toBe(true);
   });
 
-  it('registers the direct DeepSeek API with its V4 model seed', () => {
+  it('registers the direct DeepSeek API with its current model seed', () => {
     const deepseek = PROVIDERS['deepseek'];
     expect(deepseek).toBeDefined();
     expect(deepseek!.baseUrl).toBe('https://api.deepseek.com');
     expect(deepseek!.keyEnvVars).toEqual(['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY']);
-    expect(deepseek!.defaultModel).toBe('deepseek-v4-pro');
-    expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
+    expect(deepseek!.defaultModel).toBe('deepseek-flash');
+    expect(deepseek!.models).toEqual(expect.arrayContaining(['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-v4-flash-vision-exp']));
     expect(deepseek!.maxEffort).toBe('distinct');
+    expect(deepseek!.capabilities?.streamingTools).toBe(true);
   });
 });
 
@@ -167,7 +168,7 @@ describe('resolveLlm', () => {
     const deepseek = resolveLlm({ provider: 'deepseek', env: { DEEPSEEK_API_KEY: 'ds-x' } });
     expect(deepseek.providerId).toBe('deepseek');
     expect(deepseek.baseUrl).toBe('https://api.deepseek.com');
-    expect(deepseek.model).toBe('deepseek-v4-pro');
+    expect(deepseek.model).toBe('deepseek-flash');
     expect(deepseek.keyEnvVar).toBe('DEEPSEEK_API_KEY');
   });
 
@@ -194,6 +195,44 @@ describe('resolveLlm', () => {
 
   it('throws with setup guidance when nothing is configured', () => {
     expect(() => resolveLlm({ env: {} })).toThrow(ProviderError);
+  });
+});
+
+describe('DeepSeek native streaming', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it('wires streamingTools through resolveLlm so native turns stream text deltas', async () => {
+    const requests: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const body =
+        'data: ' + JSON.stringify({ choices: [{ delta: { content: 'Checking ' } }] }) + '\n\n' +
+        'data: ' + JSON.stringify({ choices: [{ delta: { content: 'the repo.' } }] }) + '\n\n' +
+        'data: ' + JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'c1', function: { name: 'agent_gitu_action', arguments: '{"action":{"type":"show_plan"}}' } }] } }] }) + '\n\n' +
+        'data: [DONE]\n\n';
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+
+    const { client } = resolveLlm({ provider: 'deepseek', model: 'deepseek-flash', env: { DEEPSEEK_API_KEY: 'ds-x' } });
+    const deltas: string[] = [];
+    const turn = await client.completeTurnStream(
+      [{ role: 'user', content: 'plan' }],
+      {
+        protocolMode: 'native',
+        tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+        toolChoice: 'required',
+        effort: 'high',
+      },
+      (delta) => deltas.push(delta),
+    );
+
+    expect(requests[0]!['stream']).toBe(true);
+    expect(requests[0]!['tool_choice']).toBe('auto');
+    expect(deltas.join('')).toBe('Checking the repo.');
+    expect(turn.kind).toBe('tool_calls');
   });
 });
 
@@ -272,10 +311,10 @@ describe('isFreeModel', () => {
 
 describe('modelSupportsImages', () => {
   it('flags multimodal opencode models and keeps text-only ones clean', () => {
-    for (const vision of ['claude-sonnet-4-5', 'gemini-3-flash', 'gpt-5.2', 'grok-4.5', 'kimi-k3', 'glm-5.2', 'qwen3.8-max']) {
+    for (const vision of ['claude-sonnet-4-5', 'gemini-3-flash', 'gpt-5.2', 'grok-4.5', 'kimi-k3', 'glm-5.2', 'qwen3.8-max', 'deepseek-flash', 'deepseek-v4-flash']) {
       expect(modelSupportsImages(vision)).toBe(true);
     }
-    for (const textOnly of ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.3-codex', 'minimax-m3']) {
+    for (const textOnly of ['deepseek-v4-pro', 'gpt-5.3-codex', 'minimax-m3']) {
       expect(modelSupportsImages(textOnly)).toBe(false);
     }
   });
@@ -296,7 +335,8 @@ describe('modelSupportsImages', () => {
     expect(resolveSupportedImages(catalog, 'future-provider-xyz', 'nova-lite-13')).toBe(false);
     // Models absent from the catalog fall back to the offline heuristic.
     expect(resolveSupportedImages(catalog, 'future-provider-xyz', 'claude-sonnet-4-5')).toBe(true);
-    expect(resolveSupportedImages(undefined, 'anything', 'deepseek-v4-flash')).toBe(false);
+    expect(resolveSupportedImages(undefined, 'anything', 'deepseek-v4-pro')).toBe(false);
+    expect(resolveSupportedImages(undefined, 'anything', 'deepseek-v4-flash')).toBe(true);
   });
 
   it('parses modality.input and the legacy visual flag from models.dev JSON', () => {

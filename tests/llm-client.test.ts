@@ -229,7 +229,7 @@ describe('OpenAiCompatClient retry behavior', () => {
     expect(error.message).toContain('thinking/tool state');
   });
 
-  it('echoes assistant reasoning and native tool calls back on the wire for thinking+tool loops', async () => {
+  it('echoes the assistant reasoning trace but never replays tool calls without tool results', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const originalFetch = globalThis.fetch;
     try {
@@ -240,20 +240,13 @@ describe('OpenAiCompatClient retry behavior', () => {
           headers: { 'content-type': 'application/json' },
         });
       }) as typeof fetch;
-      const deepseek = new OpenAiCompatClient({ apiKey: 'ds-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' });
+      const deepseek = new OpenAiCompatClient({ apiKey: 'ds-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' });
       const messages = [
         { role: 'user' as const, content: 'read the source' },
         {
           role: 'assistant' as const,
           content: 'I will inspect the files.',
           reasoningContent: 'First I need file.txt.',
-          toolCalls: [
-            {
-              id: 'call-1',
-              name: 'agent_gitu_action',
-              arguments: { action: { type: 'tool_call', tool: 'read_file', params: { path: 'file.txt' } } },
-            },
-          ],
         },
       ];
       await expect(deepseek.completeTurn(messages, { retries: 0 })).resolves.toMatchObject({ kind: 'text' });
@@ -264,18 +257,34 @@ describe('OpenAiCompatClient retry behavior', () => {
           role: 'assistant',
           content: 'I will inspect the files.',
           reasoning_content: 'First I need file.txt.',
-          tool_calls: [
-            {
-              id: 'call-1',
-              type: 'function',
-              function: {
-                name: 'agent_gitu_action',
-                arguments: '{"action":{"type":"tool_call","tool":"read_file","params":{"path":"file.txt"}}}',
-              },
-            },
-          ],
         },
       ]);
+      expect(JSON.stringify(wireMessages)).not.toContain('tool_calls');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('softens tool_choice "required" to "auto" for DeepSeek thinking requests', async () => {
+    let requestBody: Record<string, unknown> | undefined;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch;
+      const deepseek = new OpenAiCompatClient({ apiKey: 'ds-x', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash' });
+      await deepseek.completeTurn([{ role: 'user', content: 'hi' }], {
+        protocolMode: 'native',
+        tools: [{ name: 'agent_gitu_action', description: 'submit an action', parameters: { type: 'object' } }],
+        toolChoice: 'required',
+        effort: 'high',
+        retries: 0,
+      });
+      expect(requestBody).toMatchObject({ tool_choice: 'auto', thinking: { type: 'enabled' }, reasoning_effort: 'high' });
     } finally {
       globalThis.fetch = originalFetch;
     }

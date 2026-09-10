@@ -129,22 +129,26 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     label: 'DeepSeek (direct API, OpenAI-compatible)',
     baseUrl: 'https://api.deepseek.com',
     keyEnvVars: ['HERMES_DEEPSEEK_API_KEY', 'DEEPSEEK_API_KEY'],
-    defaultModel: 'deepseek-v4-pro',
+    defaultModel: 'deepseek-flash',
     // Offline seed only — a configured key also loads the current /models
     // listing, so newly released DeepSeek models appear in the picker.
-    models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
+    // `deepseek-flash` (V4.1-Flash) is the current model; `deepseek-v4-pro`
+    // is being retired and the v4-flash names are legacy aliases still
+    // served by the latest Flash model.
+    models: ['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
     effortLevels: ['low', 'medium', 'high', 'max'],
     // DeepSeek accepts medium for compatibility but maps it to high internally.
     effortLabels: { medium: 'medium (= high)' },
     maxEffort: 'distinct',
     // Capability table (official docs): OpenAI-compatible chat completions:
-    // YES; native function calling: YES (with tool_choice auto/required and
-    // structured tool_calls); thinking + tools: YES (starting V3.2); streaming:
-    // YES. Never route official DeepSeek into the text-JSON compatibility
-    // protocol — always start native, and only downgrade when the server
-    // itself rejects the tool protocol.
+    // YES; native function calling: YES with tool_choice auto ("required" is
+    // rejected in thinking mode, which buildBody softens); thinking + tools:
+    // YES (starting V3.2); streaming: YES, including tool-call deltas. Never
+    // route official DeepSeek into the text-JSON compatibility protocol —
+    // always start native, and only downgrade when the server itself rejects
+    // the tool protocol.
     toolMode: 'auto',
-    capabilities: { streamingTools: false },
+    capabilities: { streamingTools: true },
   },
   chatgpt: {
     id: 'chatgpt',
@@ -414,6 +418,12 @@ export function modelSupportsImages(model: string): boolean {
   // families ("deepseek-vl2" is vision-capable despite /deepseek/ below), while
   // plain "-coder"/"-codex" variants stay text-only.
   if (/\bvl/.test(m) || /vision/.test(m)) return true;
+  // DeepSeek's Flash tier accepts images (deepseek-flash, plus the legacy
+  // deepseek-v4-flash alias served by the same V4.1-Flash model); the Pro
+  // tier does not. These names carry no generic vision marker, and neither
+  // the live /models listing nor the models.dev catalog publishes modality
+  // for DeepSeek, so the name rule is the only signal available.
+  if (/deepseek-(?:v[\d.]+-)?flash/.test(m)) return true;
   if (TEXT_ONLY_PATTERNS.some((re) => re.test(m))) return false;
   return VISION_PATTERNS.some((re) => re.test(m));
 }

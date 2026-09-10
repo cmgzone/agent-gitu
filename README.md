@@ -116,7 +116,7 @@ HERMES_OPENAI_API_KEY | OPENAI_API_KEY
 
 # DeepSeek direct API (provider: deepseek)
 HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
-# Uses https://api.deepseek.com and the built-in DeepSeek V4 model list.
+# Uses https://api.deepseek.com; default model: deepseek-flash.
 
 # Any OpenAI-compatible endpoint (provider: custom)
 HERMES_API_KEY  (+ optional HERMES_BASE_URL, HERMES_MODEL)
@@ -127,7 +127,7 @@ Select explicitly:
 ```bash
 node dist/cli.js providers                       # show providers + key status
 node dist/cli.js models --provider alibaba       # list all models (live from the endpoint when a key is set)
-node dist/cli.js models --provider deepseek      # list DeepSeek V4 models
+node dist/cli.js models --provider deepseek      # list DeepSeek models (deepseek-flash, deepseek-v4-pro, ...)
 node dist/cli.js models --pick                   # interactive model chooser
 node dist/cli.js run "goal" --provider alibaba --model qwen3.7-max
 ```

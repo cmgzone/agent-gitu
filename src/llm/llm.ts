@@ -6,17 +6,13 @@ export interface LlmMessage {
   content: string | LlmContentPart[];
   /**
    * Provider-native reasoning trace that accompanied THIS assistant message.
-   * DeepSeek's thinking mode (and several OpenAI-compatible reasoning
-   * providers) require the original `reasoning_content` to be echoed back on
-   * every subsequent request that carries `tools`; suppressing it makes the
-   * provider return HTTP 400. Adapters translate it to their own wire field
-   * (e.g. `reasoning_content`) and only send it when the provider actually
-   * supplied it — generic endpoints never see it.
+   * DeepSeek's thinking mode requires the original `reasoning_content` to be
+   * echoed back on every subsequent request that carries `tools`; suppressing
+   * it makes the provider return HTTP 400. Adapters translate it to their own
+   * wire field (e.g. `reasoning_content`) and only send it when the provider
+   * actually supplied one — endpoints that do not use the field ignore it.
    */
   reasoningContent?: string;
-  /** Normalized native tool calls issued by THIS assistant message. Echoed
-   *  back on the wire so the model can continue its own loop across turns. */
-  toolCalls?: LlmToolCall[];
 }
 
 export type LlmContentPart =
@@ -561,6 +557,7 @@ export class OpenAiCompatClient implements LlmClient {
   }
 
   private buildBody(messages: LlmMessage[], opts: LlmOptions, stream: boolean): Record<string, unknown> {
+    const style = effortStyleFor(this.baseUrl);
     const body: Record<string, unknown> = {
       model: this.model,
       messages: messages.map((message) => this.toWireMessage(message)),
@@ -576,10 +573,15 @@ export class OpenAiCompatClient implements LlmClient {
         type: 'function',
         function: { name: tool.name, description: tool.description, parameters: tool.parameters },
       }));
-      body['tool_choice'] = opts.toolChoice ?? 'auto';
+      const requestedChoice = opts.toolChoice ?? 'auto';
+      // DeepSeek returns HTTP 400 for tool_choice "required" while thinking
+      // mode is on, and thinking cannot be disabled for this call without
+      // losing the reasoning trace the loop depends on — so soften the choice
+      // to "auto". The action prompt still asks for a tool call, and the
+      // protocol-repair layer covers a prose reply.
+      body['tool_choice'] = style === 'deepseek' && requestedChoice === 'required' ? 'auto' : requestedChoice;
     }
     if (opts.effort) {
-      const style = effortStyleFor(this.baseUrl);
       if (style === 'dashscope') {
         body['enable_thinking'] = opts.effort !== 'low';
         body['thinking_budget'] = DASHSCOPE_THINKING_BUDGETS[opts.effort];
@@ -610,23 +612,21 @@ export class OpenAiCompatClient implements LlmClient {
 
   /**
    * Translate internal message records into the provider's wire shape. The
-   * internal carrier fields (reasoningContent / toolCalls) are NOT valid chat
-   * fields — without this mapping the raw objects would leak camelCase keys
-   * onto the wire and get rejected. Assistant history keeps its reasoning
-   * trace and tool calls so provider thinking loops (DeepSeek thinking + tools)
-   * receive the state they require across turns.
+   * internal carrier field (reasoningContent) is NOT a valid chat field —
+   * without this mapping the raw object would leak a camelCase key onto the
+   * wire and get rejected. Assistant history keeps its reasoning trace so
+   * DeepSeek-style thinking loops receive the state they require across turns.
+   *
+   * Tool calls are deliberately NOT replayed: the harness executes tools
+   * itself and answers with a normal user observation, so an assistant
+   * `tool_calls` message without the matching `role: "tool"` results is an
+   * invalid history that strict OpenAI-compatible providers (including
+   * official DeepSeek and OpenAI) reject with HTTP 400.
    */
   private toWireMessage(message: LlmMessage): Record<string, unknown> {
     const wire: Record<string, unknown> = { role: message.role, content: message.content };
-    if (message.role === 'assistant') {
-      if (message.reasoningContent) wire['reasoning_content'] = message.reasoningContent;
-      if (message.toolCalls?.length) {
-        wire['tool_calls'] = message.toolCalls.map((call) => ({
-          id: call.id ?? `call_${Math.random().toString(36).slice(2, 10)}`,
-          type: 'function',
-          function: { name: call.name, arguments: JSON.stringify(call.arguments) },
-        }));
-      }
+    if (message.role === 'assistant' && message.reasoningContent) {
+      wire['reasoning_content'] = message.reasoningContent;
     }
     return wire;
   }

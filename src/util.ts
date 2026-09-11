@@ -169,8 +169,7 @@ export function writeJson(file: string, data: unknown): void {
             try { unlinkSync(tmp); } catch {}
             return;
           } catch {
-            const ms = 20 * (copyAttempt + 1);
-            try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
+            // Retry next attempt
           }
         }
         try { unlinkSync(tmp); } catch {}
@@ -189,9 +188,7 @@ export function writeJson(file: string, data: unknown): void {
         // A real AV/reader lock can still clear shortly; retain the bounded
         // backoff before retrying.
       }
-      // Backoff 15ms, 30ms, 60ms, 120ms, 240ms — sync sleep via Atomics.
-      const ms = 15 * Math.pow(2, attempt);
-      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch {}
+      // Retry next attempt
     }
   }
 }

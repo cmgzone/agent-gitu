@@ -106,18 +106,16 @@ describe('escalationFor', () => {
 
   it('escalates for a wide change surface', () => {
     const esc = escalationFor({ filesChanged: 8, distinctFailures: 1 });
-    expect(esc).toMatchObject({ extraTurns: 10, extraSpecialists: 1 });
+    expect(esc).toMatchObject({ extraTurns: 8, extraSpecialists: 1 });
     expect(esc!.reason).toContain('wide change surface');
   });
 
-  it('escalates for repeated distinct failures', () => {
-    const esc = escalationFor({ filesChanged: 2, distinctFailures: 5 });
-    expect(esc).toMatchObject({ extraTurns: 10, extraSpecialists: 1 });
-    expect(esc!.reason).toContain('hard problem');
+  it('does not reward repeated failures alone', () => {
+    expect(escalationFor({ filesChanged: 2, distinctFailures: 5 })).toBeUndefined();
   });
 
-  it('escalates hardest for both signals at once', () => {
+  it('keeps bounded extension when both signals are present', () => {
     const esc = escalationFor({ filesChanged: 12, distinctFailures: 7 });
-    expect(esc).toMatchObject({ extraTurns: 15, extraSpecialists: 2 });
+    expect(esc).toMatchObject({ extraTurns: 8, extraSpecialists: 1 });
   });
 });

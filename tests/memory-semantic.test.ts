@@ -230,6 +230,7 @@ describe('advisory contradiction detection', () => {
     const { entry: newer, supersededIds } = store.recordVerified({
       type: 'fact', claim: 'authentication delivers session tokens via httpOnly cookies', scope: 'proj',
       sourceType: 'source_code', evidence: 'src/auth/cookies.ts',
+      replaces: [old.entry.id],
     });
     expect(supersededIds).toContain(old.entry.id);
     expect(newer.status).toBe('verified');

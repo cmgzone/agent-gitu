@@ -233,16 +233,17 @@ export function escalationFor(signal: EscalationSignal): Escalation | undefined 
 
   if (wide && hard) {
     return {
-      extraTurns: 15,
-      extraSpecialists: 2,
-      reason: `scope escalated: ${signal.filesChanged} files changed and ${signal.distinctFailures} distinct failures`,
+      extraTurns: 8,
+      extraSpecialists: 1,
+      reason: `wide change surface with repeated failures: ${signal.filesChanged} files changed, ${signal.distinctFailures} distinct failures`,
     };
   }
   if (wide) {
-    return { extraTurns: 10, extraSpecialists: 1, reason: `wide change surface: ${signal.filesChanged} files changed` };
-  }
-  if (hard) {
-    return { extraTurns: 10, extraSpecialists: 1, reason: `hard problem: ${signal.distinctFailures} distinct failures so far` };
+    return {
+      extraTurns: 8,
+      extraSpecialists: 1,
+      reason: `wide change surface: ${signal.filesChanged} files changed`,
+    };
   }
   return undefined;
 }

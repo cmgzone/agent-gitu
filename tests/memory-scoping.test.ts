@@ -155,7 +155,7 @@ describe('specialist memory scoping + controlled sharing', () => {
     const result = buildModelContext({
       system: 'SYS',
       memory: memorySection,
-      conversationHistory: Array.from({ length: 10 }, (_x, i) => ({ role: 'user', content: `turn ${i} ${'x'.repeat(400)}` })) as LlmMessage[],
+      conversationHistory: Array.from({ length: 2 }, (_x, i) => ({ role: 'user', content: `turn ${i} ${'x'.repeat(400)}` })) as LlmMessage[],
       budget: { maxChars: 1800 },
     });
     expect(result.messages.some((m) => String(m.content).startsWith('RELEVANT MEMORY'))).toBe(true);

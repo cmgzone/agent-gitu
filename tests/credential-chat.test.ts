@@ -121,10 +121,10 @@ describe('chat credential handoff', () => {
       // node:sqlite releases its Windows file handle just after close(). Give
       // the runtime one turn before deleting the isolated test home. Use the
       // async remover so Windows retry delays yield to that release work.
-      await delay(25);
+      await delay(100);
       if (previousHome === undefined) delete process.env.AGENT_GITU_HOME;
       else process.env.AGENT_GITU_HOME = previousHome;
-      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+      await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
     }
   }, 30_000);
 

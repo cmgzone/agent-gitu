@@ -27,18 +27,18 @@ async function shutdownAll(): Promise<void> {
   await Promise.allSettled(managers.splice(0).map((m) => m.shutdown()));
 }
 
-function rmrf(dir: string): void {
+async function rmrf(dir: string): Promise<void> {
   const deadline = Date.now() + 3000;
   for (;;) {
     try {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       return;
     } catch {
       if (Date.now() > deadline) {
         rmSync(dir, { recursive: true, force: true });
         return;
       }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      await new Promise<void>((r) => setTimeout(r, 100));
     }
   }
 }
@@ -46,7 +46,7 @@ function rmrf(dir: string): void {
 afterEach(async () => {
   await shutdownAll();
   for (const dir of tmpDirs.splice(0)) {
-    rmrf(dir);
+    await rmrf(dir);
   }
 });
 

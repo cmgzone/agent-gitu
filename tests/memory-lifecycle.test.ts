@@ -52,6 +52,7 @@ describe('contradiction and supersession', () => {
       scope: 'proj',
       sourceType: 'source_code',
       evidence: 'src/auth/cookies.ts',
+      replaces: [old.entry.id],
     });
     expect(supersededIds).toContain(old.entry.id);
     expect(old.entry.status).toBe('superseded');

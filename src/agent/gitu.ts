@@ -1,6 +1,3 @@
-import { appendFileSync, mkdirSync } from 'node:fs';
-import path from 'node:path';
-import { ensureGituHome } from '../workspace/home.js';
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine } from '../context/context-engine.js';
@@ -14,13 +11,9 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import {
-  extractJson,
   extractLastJsonObject,
-  findXmlCallStart,
   LlmError,
-  parseXmlFunctionCall,
   requestLlmTurn,
-  xmlMarkerHoldBack,
   type LlmActivityEvent,
   type LlmClient,
   type LlmContentPart,
@@ -40,14 +33,9 @@ import type { ConnectionRegistry } from '../connections/connections.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { Reporter } from '../report/reporter.js';
-import {
-  normalizeConnectionDocumentationUrl,
-  normalizeConnectionOperation,
-  normalizeConnectionOperationBody,
-  normalizeConnectionSetupHint,
-  type ConnectionOperation,
-  type ConnectionOperationProposal,
-  type ConnectionRecoveryDecision,
+import type {
+  ConnectionOperationProposal,
+  ConnectionRecoveryDecision,
 } from '../connections/connections.js';
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
@@ -86,9 +74,71 @@ import { auditArchitecture, decisionConflicts, detectExplicitTechnologies, norma
 import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry, computeBehaviorMetrics } from './telemetry.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
-import { buildDigestContent, compressDigest, DIGEST_TARGET_CHARS, extractDigestMaterial } from '../context/digest.js';
 import { ProviderReadCache } from '../connections/runtime/provider-cache.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
+import {
+  buildSpecialistHandoff,
+  specialistHandoffTerms,
+  specialistHandoffOverlap,
+} from './specialist-handoff.js';
+import {
+  synthesizeExecutableRecovery,
+  parseMissingPrerequisite,
+  connectionResultDisclosure,
+  asksForResourceIdentifier,
+  connectionEventReason,
+  PROVIDER_TRUNCATED_GUIDANCE,
+  type AskUserQuestion,
+  type ExecutableRecoveryInput,
+} from './recovery-synthesizer.js';
+import {
+  collectQualityReviewDiff,
+  isVerifiedDiffSnapshotCurrent,
+  shouldRunFinalQualityReview,
+  buildQualityReviewMessages,
+  parseReviewVerdict,
+  findLastScreenshotUrl,
+  findLastBrowserEvidence,
+  type QualityReviewInput,
+} from './quality-review.js';
+import {
+  COMPACT_KEEP_RECENT,
+  COMPACT_TRIGGER,
+  COMPACT_CHAR_BUDGET,
+  COMPACT_MIN_RECENT,
+  COMPACT_RECENT_MESSAGE_MAX_CHARS,
+  estimateMessageChars,
+  KEEP_RECENT_SCREENSHOTS,
+  stripStaleImages,
+  shiftPrefixEndAfterCompaction,
+  compactRecentMessage,
+  extractFailureDigest,
+  compactHistory,
+  compactFollowUpConversation,
+  type CompactionOptions,
+} from './compaction.js';
+import {
+  type PlanActionStep,
+  PLAN_AREAS,
+  parseArea,
+  parseSubtasks,
+  type ParsedAction,
+  visibleActionSummary,
+  parseAction,
+  KNOWN_ACTION_TYPES,
+  GITU_ACTION_TOOL,
+  actionReplyFromTurn,
+  parseReplyAction,
+  braceBalance,
+  type BadReplyKind,
+  classifyBadReply,
+  logParseFailure,
+  ACTION_BRACE_RE,
+  proseCutIndex,
+  createProseStreamer,
+  MAX_PROTOCOL_REPAIRS,
+  PROTOCOL_REPAIR_INSTRUCTION,
+} from './action-parser.js';
 
 export interface GituConfig {
   cwd: string;
@@ -182,12 +232,6 @@ export interface GituConfig {
   onEvent?: (event: string) => void;
 }
 
-export interface AskUserQuestion {
-  question: string;
-  header?: string;
-  options: string[];
-}
-
 export type AskUserHandler = (questions: AskUserQuestion[]) => Promise<string>;
 
 export interface PlanReviewInput {
@@ -208,140 +252,6 @@ export interface GituRunResult {
   ledger: TaskLedger;
   report: CompletionReport;
 }
-
-/** One planned step as offered by the model: bounded on ingest, optionally
- *  tagged with its surface (frontend/backend/...) and broken into todos. */
-interface PlanActionStep {
-  description: string;
-  verification: string;
-  area?: PlanArea;
-  subtasks?: string[];
-}
-
-const PLAN_AREAS: readonly PlanArea[] = ['frontend', 'backend', 'integration', 'shared', 'database', 'infra', 'tests', 'docs'];
-
-function parseArea(value: unknown): PlanArea | undefined {
-  const text = String(value ?? '')
-    .trim()
-    .toLowerCase();
-  return (PLAN_AREAS as readonly string[]).includes(text) ? (text as PlanArea) : undefined;
-}
-
-function parseSubtasks(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const items = value
-    .map((t) => String(t).trim().slice(0, 140))
-    .filter(Boolean)
-    .slice(0, 8);
-  return items.length > 0 ? items : undefined;
-}
-
-function specialistHandoffTerms(text: string): Set<string> {
-  return new Set(
-    text
-      .toLowerCase()
-      .split(/[^a-z0-9_./-]+/)
-      .map((term) => term.replace(/[_./-]+/g, ''))
-      .filter((term) => term.length >= 3),
-  );
-}
-
-function specialistHandoffOverlap(terms: Set<string>, text: string): number {
-  if (terms.size === 0) return 0;
-  const target = specialistHandoffTerms(text);
-  let count = 0;
-  for (const term of terms) if (target.has(term)) count += 1;
-  return count;
-}
-
-/**
- * Build a small, task-specific briefing for one delegated specialist. The
- * parent has already read and indexed the project; passing its useful output
- * prevents every fresh worker from paying to rediscover the same codebase.
- */
-export function buildSpecialistHandoff(
-  task: string,
-  parentGoal: string,
-  context: ContextEngine,
-  parentPack: ContextPack | undefined,
-  parentPlan: PlanStep[],
-  delegatedCriteria: (string | CriterionSpec)[] | undefined,
-  budget?: { maxFiles: number; maxExcerptChars: number },
-): SpecialistHandoff {
-  const maxFiles = Math.max(1, Math.min(6, budget?.maxFiles ?? 6));
-  const maxExcerptChars = Math.max(800, Math.min(6_000, budget?.maxExcerptChars ?? 6_000));
-  const maxExcerpts = maxFiles <= 3 ? 1 : maxFiles <= 4 ? 2 : 3;
-  const criteria = (delegatedCriteria ?? []).map((criterion) => (typeof criterion === 'string' ? { text: criterion } : criterion));
-  const criterionText = criteria.flatMap((criterion) => [criterion.text, criterion.verification ?? '']).filter(Boolean);
-  let scopedPack: ContextPack | undefined;
-  try {
-    // Keep this local and lexical. Semantic embedding calls can be expensive;
-    // the worker needs an immediate starting map, not another broad analysis.
-    scopedPack = context.buildPack(task, { maxFiles, maxBytes: Math.max(2_000, maxExcerptChars + 1_500) }, criterionText);
-  } catch {
-    // A handoff is an optimisation, never a reason to reject delegation.
-  }
-
-  const startingFiles: SpecialistHandoff['startingFiles'] = [];
-  const seen = new Set<string>();
-  const addFiles = (refs: SpecialistHandoff['startingFiles'], limit: number): void => {
-    for (const ref of refs) {
-      if (startingFiles.length >= maxFiles || seen.has(ref.path)) continue;
-      seen.add(ref.path);
-      startingFiles.push(ref);
-      if (startingFiles.length >= limit) break;
-    }
-  };
-  const source = scopedPack ?? parentPack;
-  if (source) {
-    addFiles(source.primaryFiles, Math.min(3, maxFiles));
-    addFiles(source.testFiles, Math.min(4, maxFiles));
-    addFiles(source.relatedFiles, Math.min(5, maxFiles));
-    addFiles(source.configFiles, maxFiles);
-  }
-  // A very sparse task can have no lexical matches. Fall back to the parent
-  // retrieval pack rather than making the specialist inventory the project.
-  if (startingFiles.length === 0 && parentPack && parentPack !== source) {
-    addFiles(parentPack.primaryFiles, Math.min(3, maxFiles));
-    addFiles(parentPack.testFiles, Math.min(4, maxFiles));
-    addFiles(parentPack.relatedFiles, Math.min(5, maxFiles));
-    addFiles(parentPack.configFiles, maxFiles);
-  }
-
-  const excerpts: SpecialistHandoff['excerpts'] = [];
-  let sourceCharsLeft = maxExcerptChars;
-  for (const file of startingFiles) {
-    if (excerpts.length >= maxExcerpts || sourceCharsLeft <= 0) break;
-    const content = context.peekFile(file.path, Math.min(Math.ceil(maxExcerptChars / maxExcerpts), sourceCharsLeft));
-    if (!content) continue;
-    excerpts.push({ path: file.path, content });
-    sourceCharsLeft -= content.length;
-  }
-
-  const taskTerms = specialistHandoffTerms([task, ...criterionText].join('\n'));
-  const planSteps = parentPlan
-    .filter((step) => step.status !== 'done')
-    .map((step) => ({ step, score: specialistHandoffOverlap(taskTerms, `${step.description}\n${step.verification}`) }))
-    .filter(({ score }) => score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3)
-    .map(({ step }) => ({ description: step.description, verification: step.verification }));
-  const verificationTargets = [
-    ...criteria.map((criterion) => (criterion.verification ? `${criterion.text} — verify: ${criterion.verification}` : criterion.text)),
-    ...planSteps.map((step) => step.verification).filter((verification) => verification && !/^n\/?a$|^manual check$/i.test(verification)),
-  ]
-    .filter(Boolean)
-    .slice(0, 5);
-
-  return {
-    parentGoal: parentGoal.slice(0, 1_200),
-    startingFiles,
-    excerpts,
-    planSteps,
-    verificationTargets,
-  };
-}
-
 /** @deprecated Use Gitu. Kept so existing integrations can upgrade safely. */
 export { Gitu as Hermes };
 /** @deprecated Use GituConfig. */
@@ -349,1269 +259,61 @@ export type HermesConfig = GituConfig;
 /** @deprecated Use GituRunResult. */
 export type HermesRunResult = GituRunResult;
 
-function parseMissingPrerequisite(value: unknown, fallbackRequiredFor: string): MissingPrerequisite | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const raw = value as Record<string, unknown>;
-  const kinds = new Set(['credential', 'connection', 'resource', 'configuration', 'dependency', 'service', 'target', 'permission']);
-  const kind = String(raw['kind'] ?? '').trim();
-  const description = String(raw['description'] ?? '').trim();
-  if (!kinds.has(kind) || !description) return undefined;
-  const id =
-    String(raw['id'] ?? '').trim() ||
-    `model-${kind}-${description
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 60)}`;
-  const requiredFor = String(raw['requiredFor'] ?? fallbackRequiredFor).trim() || fallbackRequiredFor;
-  const hints = Array.isArray(raw['hints'])
-    ? raw['hints']
-        .map(String)
-        .map((hint) => hint.trim())
-        .filter(Boolean)
-        .slice(0, 8)
-    : undefined;
-  const providerHint =
-    typeof raw['providerHint'] === 'string'
-      ? raw['providerHint']
-          .trim()
-          .toLowerCase()
-          .replace(/[^a-z0-9-]/g, '')
-          .slice(0, 64)
-      : undefined;
-  const capabilities = Array.isArray(raw['capabilities'])
-    ? [
-        ...new Set(
-          raw['capabilities']
-            .map(String)
-            .map((capability) => capability.trim().toLowerCase())
-            .filter((capability) => /^[a-z][a-z0-9._-]{0,80}$/.test(capability)),
-        ),
-      ].slice(0, 24)
-    : undefined;
-  const connectionSetup = normalizeConnectionSetupHint(raw['connectionSetup']);
-  const riskIfWrong = raw['riskIfWrong'];
-  return {
-    id: id.slice(0, 100),
-    kind: kind as MissingPrerequisite['kind'],
-    description: description.slice(0, 240),
-    requiredFor: requiredFor.slice(0, 240),
-    ...(providerHint ? { providerHint } : {}),
-    ...(capabilities?.length ? { capabilities } : {}),
-    ...(connectionSetup ? { connectionSetup } : {}),
-    ...(hints?.length ? { hints } : {}),
-    ...(riskIfWrong === 'low' || riskIfWrong === 'medium' || riskIfWrong === 'high' ? { riskIfWrong } : {}),
-  };
-}
-
-type ParsedAction =
-  | { type: 'set_criteria'; criteria: string[] }
-  | { type: 'set_plan'; steps: PlanActionStep[] }
-  | { type: 'add_criteria'; criteria: string[] }
-  | { type: 'append_plan'; steps: PlanActionStep[] }
-  | {
-      type: 'set_design';
-      design: { frontend?: string; backend?: string; integration?: string };
-    }
-  | {
-      type: 'revise_step';
-      stepId: string;
-      description?: string;
-      verification?: string;
-      area?: PlanArea;
-      addSubtasks?: string[];
-      replaceSubtasks?: string[];
-      status?: 'pending' | 'cancelled';
-      reason: string;
-    }
-  | { type: 'toggle_todo'; stepId: string; index: number; done?: boolean }
-  | { type: 'complete_step'; stepId: string; reason: string }
-  | { type: 'show_plan' }
-  | { type: 'set_hypothesis'; text: string }
-  | {
-      type: 'record_decision';
-      decision: string;
-      alternatives: string[];
-      repoEvidence: string;
-      requirements: string[];
-      rejected: { alternative: string; reason: string }[];
-      reconsiderIf?: string;
-      basis: DecisionBasis;
-      supersedes?: string;
-    }
-  | { type: 'tool_call'; tool: string; params: Record<string, unknown>; reason: string; expected: string; stepId?: string }
-  | { type: 'capability_action'; capability: string; arguments: Record<string, unknown>; freshness?: 'current' | 'cached' | 'force-refresh'; reason: string }
-  | { type: 'connection_action'; connectionId: string; operationId: string; reason: string }
-  | {
-      type: 'connection_discovery';
-      connectionId: string;
-      intents: DiscoveryIntent[];
-      resourceType?: string;
-      resourceIdOrName?: string;
-      filters?: Record<string, string>;
-      reason: string;
-    }
-  | { type: 'connection_operation'; connectionId: string; operation: ConnectionOperation; body?: unknown; documentationUrl?: string; reason: string }
-  | { type: 'claim_criterion'; criterionId: string; evidenceId: string; justification?: string }
-  | { type: 'complete'; summary: string; risks?: string[]; followUps?: string[]; chat?: boolean }
-  | { type: 'request_block'; reason: string; prerequisite?: MissingPrerequisite }
-  | { type: 'ask_user'; questions: AskUserQuestion[] }
-  | {
-      type: 'delegate';
-      tasks: { agent: string; task: string; criteria?: (string | CriterionSpec)[]; resume?: { jobId: string; note?: string; allowSkillRecovery?: boolean } }[];
-      background?: boolean;
-    }
-  | {
-      type: 'report_finding';
-      claim: string;
-      kind?: string;
-      severity?: string;
-      location?: string;
-      reproductionCommand?: string;
-    }
-  | {
-      type: 'parallel';
-      calls: { tool: string; params: Record<string, unknown>; reason: string; expected: string }[];
-    };
-
-/**
- * Some capable coding models return only the required structured action. That
- * is valid protocol, but it previously left the UI showing a spinner followed
- * by tool output with no readable agent update. Build a short status from the
- * executable action itself instead of exposing hidden model reasoning.
- */
-const PROVIDER_TRUNCATED_MARKER = '[response omitted: exceeds safe connection output limit]';
-const PROVIDER_TRUNCATED_CHARS = 32_000;
-const PROVIDER_TRUNCATED_GUIDANCE =
-  'PROVIDER RESULT TRUNCATED/INCOMPLETE — do NOT ask the user for resource ids or identifiers yet. ' +
-  'Run deterministic provider discovery first with narrower saved-connection reads: list/locate the resource, ' +
-  'resolve its UUID, then fetch the exact resource (get(id) → status → environment). ' +
-  'Only ask the user after those reads are exhausted or genuinely unavailable.';
-
-/** Render a bounded, redacted provider result for model context and flag when
- * the payload was truncated/incomplete. A truncated list is a signal to do a
- * NARROWER read (get-by-id), never a reason to ask the user for identifiers. */
-export function connectionResultDisclosure(data: unknown): { text: string; truncated: boolean } {
-  if (data === undefined) return { text: '', truncated: false };
-  const raw = JSON.stringify(data);
-  const truncated = raw.length >= PROVIDER_TRUNCATED_CHARS || raw.includes(PROVIDER_TRUNCATED_MARKER);
-  const text = truncated ? `${raw.slice(0, 48_000)}\n…(provider result truncated)` : raw;
-  return { text, truncated };
-}
-
-/** A user question that asks for a provider-resolvable resource identifier
- * (app/deployment/project id, uuid, ...). The host holds such questions once
- * so the model performs narrower provider reads before disturbing the user. */
-export function asksForResourceIdentifier(questions: AskUserQuestion[]): boolean {
-  return questions.some((question) =>
-    /(?:^|[^a-z])(?:ids?|uuids?|identifiers?)\b|(?:app|application|deployment|project|server|machine|service|workspace|environment|resource|database|volume|domain)\s+(?:id|uuid|identifier)\b/i.test(
-      `${question.question} ${question.header ?? ''}`,
-    ),
-  );
-}
-
-function visibleActionSummary(action: ParsedAction): string | undefined {
-  const clean = (value: string, limit = 280): string => value.replace(/\s+/g, ' ').trim().replace(/^next:\s*/i, '').slice(0, limit);
-  switch (action.type) {
-    case 'set_criteria':
-      return `I’m defining ${action.criteria.length === 1 ? 'a clear acceptance check' : `${action.criteria.length} clear acceptance checks`} before I proceed.`;
-    case 'set_plan':
-      return `I’m mapping the work into ${action.steps.length === 1 ? 'one verifiable step' : `${action.steps.length} verifiable steps`}.`;
-    case 'add_criteria':
-      return 'I’m adding the follow-up checks needed for this new scope.';
-    case 'append_plan':
-      return 'I’m extending the plan for the follow-up work.';
-    case 'set_design':
-      return 'I’m recording the implementation approach before making changes.';
-    case 'tool_call': {
-      const reason = clean(action.reason);
-      if (reason) return reason;
-      const target = typeof action.params['path'] === 'string' ? clean(action.params['path'], 160) : '';
-      switch (action.tool) {
-        case 'read_file': return target ? `I’m reading ${target}.` : 'I’m reading the relevant file.';
-        case 'write_file':
-        case 'apply_edit': return target ? `I’m updating ${target}.` : 'I’m applying the requested change.';
-        case 'search_files': return 'I’m searching the project for the relevant implementation.';
-        case 'list_files': return 'I’m checking the project files.';
-        case 'run_command': return 'I’m running the command and checking its result.';
-        case 'web_fetch': return 'I’m reading the requested page.';
-        case 'browse': return 'I’m checking the page in the browser.';
-        default: return `I’m running ${action.tool.replace(/_/g, ' ')}.`;
-      }
-    }
-    case 'capability_action':
-      return clean(action.reason) || `I’m running ${action.capability}.`;
-    case 'connection_action':
-      return clean(action.reason) || `I’m reading ${action.operationId} from ${action.connectionId}.`;
-    case 'connection_discovery': {
-      const target = action.resourceIdOrName ? ` for "${action.resourceIdOrName}"` : '';
-      return clean(action.reason) || `I’m checking ${action.intents.join(', ')}${target} on ${action.connectionId}.`;
-    }
-    case 'connection_operation': {
-      // Safe reads auto-register under the existing credential and run
-      // immediately — they never wait for approval. Only non-read operations
-      // go through the approval channel, so the narration must not claim a
-      // GET is "awaiting approval".
-      if (action.operation.risk === 'read' && action.operation.method === 'GET') {
-        const purpose = clean(action.reason);
-        return `${purpose ? `${purpose}. ` : ''}I’m reading ${action.operation.label} from ${action.connectionId}; safe reads auto-register and run without approval.`;
-      }
-      return `I’m requesting approval for ${clean(action.operation.label)}.`;
-    }
-    case 'parallel':
-      return `I’m running ${action.calls.length} independent checks in parallel.`;
-    case 'set_hypothesis':
-      return 'I’m recording the current diagnosis before testing it.';
-    case 'record_decision':
-      return 'I’m recording the design decision and the evidence behind it.';
-    case 'revise_step':
-      return `I’m updating the current plan step: ${clean(action.reason, 180)}`;
-    case 'complete_step':
-      return 'The current plan step is complete; I’m moving to the next one.';
-    case 'claim_criterion':
-      return 'I’m checking this acceptance condition against the recorded evidence.';
-    case 'delegate': {
-      const resumed = action.tasks.filter((task) => task.resume?.jobId).length;
-      if (resumed) return `I’m resuming ${resumed === 1 ? 'a preserved specialist job' : `${resumed} preserved specialist jobs`} without allocating duplicate work.`;
-      return `I’m assigning ${action.tasks.length === 1 ? 'an independent check' : `${action.tasks.length} independent checks`} to specialist work.`;
-    }
-    case 'report_finding':
-      return 'I found a potential issue and I’m recording it for independent verification.';
-    default:
-      return undefined;
-  }
-}
-
-function parseAction(raw: unknown): ParsedAction | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const root = raw as Record<string, unknown>;
-  const action = (root['action'] ?? root) as Record<string, unknown>;
-  const rawType = action['type'] ?? action['tool'] ?? action['tool_name'] ?? action['name'];
-  const type = typeof rawType === 'string' ? rawType.trim() : undefined;
-  if (!type) return undefined;
-
-  // Models that emit direct tool names as action type (e.g. {"type":"run_command",...})
-  if (!KNOWN_ACTION_TYPES.has(type) && (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:'))) {
-    const rawNested = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
-    const params: Record<string, unknown> = {};
-    if (rawNested && typeof rawNested === 'object' && !Array.isArray(rawNested)) {
-      Object.assign(params, rawNested as Record<string, unknown>);
-    } else {
-      for (const [key, value] of Object.entries(action)) {
-        if (key !== 'type' && key !== 'tool' && key !== 'tool_name' && key !== 'name' && key !== 'thought' && key !== 'reason' && key !== 'expected' && key !== 'stepId') {
-          params[key] = value;
-        }
-      }
-    }
-    // Alias normalization for common tool parameters
-    if (params['file_path'] !== undefined && params['path'] === undefined) params['path'] = params['file_path'];
-    if (params['filePath'] !== undefined && params['path'] === undefined) params['path'] = params['filePath'];
-    if (params['file'] !== undefined && params['path'] === undefined && typeof params['file'] === 'string') params['path'] = params['file'];
-    if (params['cmd'] !== undefined && params['command'] === undefined) params['command'] = params['cmd'];
-
-    return {
-      type: 'tool_call',
-      tool: type,
-      params,
-      reason: String(action['reason'] ?? action['thought'] ?? ''),
-      expected: String(action['expected'] ?? ''),
-      stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
-    };
-  }
-
-  switch (type) {
-    case 'set_criteria':
-    case 'add_criteria': {
-      const criteria = action['criteria'];
-      if (!Array.isArray(criteria) || criteria.length === 0) return undefined;
-      return { type, criteria: criteria.map(String).slice(0, 10) };
-    }
-    case 'set_plan':
-    case 'append_plan': {
-      const steps = action['steps'];
-      if (!Array.isArray(steps) || steps.length === 0) return undefined;
-      const parsed = steps
-        .filter((s): s is Record<string, unknown> => !!s && typeof s === 'object')
-        .map((s) => {
-          const area = parseArea(s['area']);
-          const subtasks = parseSubtasks(s['subtasks']);
-          return {
-            description: String(s['description'] ?? '').slice(0, 220),
-            verification: String(s['verification'] ?? 'manual check').slice(0, 180),
-            ...(area ? { area } : {}),
-            ...(subtasks ? { subtasks } : {}),
-          };
-        })
-        .filter((s) => s.description);
-      if (parsed.length === 0) return undefined;
-      // Bounded plan: ≤30 top-level steps keeps the compact state render cheap.
-      return { type, steps: parsed.slice(0, 30) };
-    }
-    case 'set_design': {
-      const raw = action['design'];
-      if (!raw || typeof raw !== 'object') return undefined;
-      const src = raw as Record<string, unknown>;
-      const cap = (value: unknown, max: number): string | undefined => {
-        const text = String(value ?? '').trim();
-        return text ? text.slice(0, max) : undefined;
-      };
-      const design = {
-        frontend: cap(src['frontend'], 1200),
-        backend: cap(src['backend'], 1200),
-        integration: cap(src['integration'], 800),
-      };
-      if (!design.frontend && !design.backend && !design.integration) return undefined;
-      return { type, design };
-    }
-    case 'revise_step': {
-      if (typeof action['stepId'] !== 'string' || !action['stepId']) return undefined;
-      const reason = String(action['reason'] ?? '').trim();
-      if (!reason) return undefined;
-      const area = parseArea(action['area']);
-      const addSubtasks = parseSubtasks(action['todos'] ?? action['addTodos']);
-      const replaceSubtasks = Array.isArray(action['replaceTodos']) ? (parseSubtasks(action['replaceTodos']) ?? []) : undefined;
-      const status = action['status'] === 'pending' || action['status'] === 'cancelled' ? action['status'] : undefined;
-      const description = typeof action['description'] === 'string' && action['description'].trim() ? action['description'].slice(0, 220) : undefined;
-      const verification = typeof action['verification'] === 'string' && action['verification'].trim() ? action['verification'].slice(0, 180) : undefined;
-      if (description === undefined && verification === undefined && !area && !addSubtasks && replaceSubtasks === undefined && !status) return undefined;
-      return { type, stepId: action['stepId'], reason, description, verification, area, addSubtasks, replaceSubtasks, status };
-    }
-    case 'toggle_todo': {
-      if (typeof action['stepId'] !== 'string' || !action['stepId']) return undefined;
-      if (typeof action['index'] !== 'number' || !Number.isFinite(action['index'])) return undefined;
-      const done = typeof action['done'] === 'boolean' ? action['done'] : undefined;
-      return { type, stepId: action['stepId'], index: Math.max(0, Math.floor(action['index'])), done };
-    }
-    case 'complete_step': {
-      if (typeof action['stepId'] !== 'string' || !action['stepId']) return undefined;
-      const reason = String(action['reason'] ?? '').trim();
-      if (!reason) return undefined;
-      return { type, stepId: action['stepId'], reason };
-    }
-    case 'show_plan':
-      return { type: 'show_plan' };
-    case 'set_hypothesis':
-      if (typeof action['text'] !== 'string') return undefined;
-      return { type, text: action['text'] };
-    case 'record_decision': {
-      const draft = normalizeDecisionDraft(action);
-      if (!draft) return undefined;
-      return { type, ...draft, basis: draft.basis ?? 'recommendation' };
-    }
-    case 'tool_call': {
-      const tool = String(action['tool'] ?? action['tool_name'] ?? action['name'] ?? '');
-      if (!tool) return undefined;
-      const rawParams = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
-      const params: Record<string, unknown> = (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)) ? { ...(rawParams as Record<string, unknown>) } : {};
-      if (Object.keys(params).length === 0) {
-        for (const [k, v] of Object.entries(action)) {
-          if (k !== 'type' && k !== 'tool' && k !== 'tool_name' && k !== 'name' && k !== 'reason' && k !== 'thought' && k !== 'expected' && k !== 'stepId') {
-            params[k] = v;
-          }
-        }
-      }
-      if (params['file_path'] !== undefined && params['path'] === undefined) params['path'] = params['file_path'];
-      if (params['filePath'] !== undefined && params['path'] === undefined) params['path'] = params['filePath'];
-      if (params['file'] !== undefined && params['path'] === undefined && typeof params['file'] === 'string') params['path'] = params['file'];
-      if (params['cmd'] !== undefined && params['command'] === undefined) params['command'] = params['cmd'];
-      return {
-        type,
-        tool,
-        params,
-        reason: String(action['reason'] ?? action['thought'] ?? ''),
-        expected: String(action['expected'] ?? ''),
-        stepId: typeof action['stepId'] === 'string' ? action['stepId'] : undefined,
-      };
-    }
-    case 'capability_action': {
-      const capability = String(action['capability'] ?? action['capabilityId'] ?? action['id'] ?? '').trim();
-      if (!/^(?:conn|mcp|native|cli|plugin):[a-z0-9][a-z0-9._:/-]{0,199}$/i.test(capability)) return undefined;
-      const rawArguments = action['arguments'] ?? action['params'] ?? action['parameters'] ?? action['args'] ?? {};
-      if (!rawArguments || typeof rawArguments !== 'object' || Array.isArray(rawArguments)) return undefined;
-      const freshness = action['freshness'];
-      if (freshness !== undefined && freshness !== 'current' && freshness !== 'cached' && freshness !== 'force-refresh') return undefined;
-      const reason = String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240);
-      if (!reason) return undefined;
-      return {
-        type,
-        capability,
-        arguments: { ...(rawArguments as Record<string, unknown>) },
-        ...(freshness ? { freshness } : {}),
-        reason,
-      };
-    }
-    case 'connection_action': {
-      const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
-      const rawOp = action['operationId'] ?? action['operation_id'] ?? (typeof action['operation'] === 'string' ? action['operation'] : (action['operation'] as Record<string, unknown>)?.['id']) ?? action['op'];
-      const connectionId = String(rawConn ?? '').trim().toLowerCase();
-      const operationId = String(rawOp ?? '').trim().toLowerCase();
-      if (!connectionId) return undefined;
-      // Auto-promote to connection_discovery if intents array is provided
-      if (action['intents'] || action['intent']) {
-        const rawIntents = action['intents'] ?? action['intent'];
-        const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents])
-          .map((i) => String(i).trim())
-          .filter(Boolean) as DiscoveryIntent[];
-        if (intentsArray.length > 0) {
-          const resourceType = action['resourceType'] ? String(action['resourceType']).trim() : undefined;
-          const resourceIdOrName = action['resourceIdOrName'] ? String(action['resourceIdOrName']).trim() : (action['resource'] ? String(action['resource']).trim() : (action['name'] ? String(action['name']).trim() : undefined));
-          return {
-            type: 'connection_discovery',
-            connectionId,
-            intents: intentsArray,
-            ...(resourceType ? { resourceType } : {}),
-            ...(resourceIdOrName ? { resourceIdOrName } : {}),
-            reason: String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240),
-          };
-        }
-      }
-      if (!operationId) return undefined;
-      // Tolerant identifier check: allow alphanumeric, dashes, underscores, and provider slashes
-      if (!/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
-      if (!/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(operationId)) return undefined;
-      return {
-        type,
-        connectionId,
-        operationId,
-        reason: String(action['reason'] ?? action['thought'] ?? '')
-          .trim()
-          .slice(0, 240),
-      };
-    }
-    case 'connection_discovery': {
-      const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
-      const connectionId = String(rawConn ?? '').trim().toLowerCase();
-      if (!connectionId || !/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
-      const rawIntents = action['intents'] ?? action['intent'] ?? ['list_resources'];
-      const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents])
-        .map((i) => String(i).trim())
-        .filter(Boolean) as DiscoveryIntent[];
-      if (intentsArray.length === 0) return undefined;
-      const resourceType = action['resourceType'] ? String(action['resourceType']).trim() : undefined;
-      const resourceIdOrName = action['resourceIdOrName'] ? String(action['resourceIdOrName']).trim() : (action['resource'] ? String(action['resource']).trim() : (action['name'] ? String(action['name']).trim() : undefined));
-      const filters = action['filters'] && typeof action['filters'] === 'object' && !Array.isArray(action['filters']) ? (action['filters'] as Record<string, string>) : undefined;
-      const reason = String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240);
-      return {
-        type: 'connection_discovery',
-        connectionId,
-        intents: intentsArray,
-        ...(resourceType ? { resourceType } : {}),
-        ...(resourceIdOrName ? { resourceIdOrName } : {}),
-        ...(filters ? { filters } : {}),
-        reason,
-      };
-    }
-    case 'connection_operation': {
-      const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
-      const connectionId = String(rawConn ?? '').trim().toLowerCase();
-      if (!connectionId || !/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
-      const rawOp = action['operation'] ?? action['op'];
-      const operation = normalizeConnectionOperation(rawOp);
-      if (!operation) return undefined;
-      const rawDocumentationUrl = action['documentationUrl'] ?? action['documentation_url'] ?? action['docUrl'] ?? action['docs'];
-      const documentationUrl = rawDocumentationUrl === undefined ? undefined : normalizeConnectionDocumentationUrl(rawDocumentationUrl);
-      if (rawDocumentationUrl !== undefined && !documentationUrl) return undefined;
-      try {
-        const body = action['body'] === undefined ? undefined : normalizeConnectionOperationBody(action['body'] ?? action['params'] ?? action['payload']);
-        const reason = String(action['reason'] ?? action['thought'] ?? '')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 240);
-        if (!reason) return undefined;
-        return { type, connectionId, operation, ...(body !== undefined ? { body } : {}), ...(documentationUrl ? { documentationUrl } : {}), reason };
-      } catch {
-        return undefined;
-      }
-    }
-    case 'claim_criterion':
-      if (typeof action['criterionId'] !== 'string' || typeof action['evidenceId'] !== 'string') return undefined;
-      return { type, criterionId: action['criterionId'], evidenceId: action['evidenceId'], justification: action['justification'] ? String(action['justification']) : undefined };
-    case 'complete':
-      if (typeof action['summary'] !== 'string') return undefined;
-      return {
-        type,
-        summary: action['summary'],
-        risks: Array.isArray(action['risks']) ? action['risks'].map(String) : [],
-        followUps: Array.isArray(action['followUps']) ? action['followUps'].map(String) : [],
-        chat: action['chat'] === true,
-      };
-    case 'request_block':
-      if (typeof action['reason'] !== 'string') return undefined;
-      return { type, reason: action['reason'], prerequisite: parseMissingPrerequisite(action['prerequisite'], action['reason']) };
-    case 'delegate': {
-      const tasks = action['tasks'];
-      if (!Array.isArray(tasks) || tasks.length === 0) return undefined;
-      const parsed = (tasks as Record<string, unknown>[])
-        .map((t) => {
-          const agent = String(t?.['agent'] ?? '');
-          const task = String(t?.['task'] ?? '');
-          const rawCrit = t?.['criteria'];
-          const criteria = Array.isArray(rawCrit)
-            ? (rawCrit as unknown[]).map((c) => (typeof c === 'string' ? c : typeof c === 'object' && c !== null ? (c as CriterionSpec) : String(c))).slice(0, 10)
-            : undefined;
-          const rawResume = t?.['resume'];
-          const resume =
-            rawResume && typeof rawResume === 'object' && typeof (rawResume as Record<string, unknown>)['jobId'] === 'string'
-              ? {
-                  jobId: String((rawResume as Record<string, unknown>)['jobId']).trim(),
-                  note: typeof (rawResume as Record<string, unknown>)['note'] === 'string' ? String((rawResume as Record<string, unknown>)['note']) : undefined,
-                  allowSkillRecovery: (rawResume as Record<string, unknown>)['allowSkillRecovery'] === true,
-                }
-              : undefined;
-          return { agent, task, criteria, ...(resume?.jobId ? { resume } : {}) };
-        })
-        .filter((t) => t.agent && t.task)
-        .slice(0, 6);
-      if (parsed.length === 0) return undefined;
-      return { type, tasks: parsed, background: action['background'] === true };
-    }
-    case 'report_finding': {
-      if (typeof action['claim'] !== 'string' || !action['claim'].trim()) return undefined;
-      return {
-        type,
-        claim: action['claim'],
-        kind: typeof action['kind'] === 'string' ? action['kind'] : undefined,
-        severity: typeof action['severity'] === 'string' ? action['severity'] : undefined,
-        location: typeof action['location'] === 'string' ? action['location'] : undefined,
-        reproductionCommand: typeof action['reproductionCommand'] === 'string' ? action['reproductionCommand'] : undefined,
-      };
-    }
-    case 'ask_user': {
-      const questions = action['questions'];
-      if (!Array.isArray(questions) || questions.length === 0) return undefined;
-      const parsed = (questions as Record<string, unknown>[])
-        .map((q) => ({
-          question: String(q['question'] ?? ''),
-          header: typeof q['header'] === 'string' ? q['header'] : undefined,
-          options: Array.isArray(q['options']) ? (q['options'] as unknown[]).map(String).slice(0, 6) : [],
-        }))
-        .filter((q) => q.question);
-      if (parsed.length === 0) return undefined;
-      return { type, questions: parsed.slice(0, 4) };
-    }
-    case 'parallel': {
-      const calls = action['calls'];
-      if (!Array.isArray(calls)) return undefined;
-      const parsedCalls = (calls as Record<string, unknown>[])
-        .map((c) => ({
-          tool: String(c['tool'] ?? ''),
-          params: (c['params'] && typeof c['params'] === 'object' ? c['params'] : {}) as Record<string, unknown>,
-          reason: String(c['reason'] ?? ''),
-          expected: String(c['expected'] ?? ''),
-        }))
-        .filter((c) => c.tool);
-      if (parsedCalls.length < 2) return undefined;
-      return { type, calls: parsedCalls.slice(0, 6) };
-    }
-    default:
-      return undefined;
-  }
-}
-
-const KNOWN_ACTION_TYPES = new Set([
-  'set_criteria',
-  'set_plan',
-  'add_criteria',
-  'append_plan',
-  'set_hypothesis',
-  'record_decision',
-  'set_design',
-  'revise_step',
-  'toggle_todo',
-  'complete_step',
-  'show_plan',
-  'tool_call',
-  'capability_action',
-  'connection_action',
-  'connection_discovery',
-  'connection_operation',
-  'claim_criterion',
-  'complete',
-  'request_block',
-  'ask_user',
-  'delegate',
-  'report_finding',
-  'parallel',
-]);
-
-/**
- * One provider-neutral entrypoint keeps model-owned tool syntax outside the
- * executor. A model can suggest an action, but only the existing Gitu parser,
- * policy engine, and executor decide whether it runs.
- */
-export const GITU_ACTION_TOOL: LlmToolDefinition = {
-  name: 'agent_gitu_action',
-  description:
-    'Submit exactly one Agent Gitu action for validation and execution. Put the normal action object (type, tool, params, reason, expected, etc.) in action. Do not describe an action in prose.',
-  parameters: {
-    type: 'object',
-    properties: {
-      action: {
-        type: 'object',
-        description: 'The Agent Gitu action object. Its type must be one of the documented actions in the system instructions.',
-        additionalProperties: true,
-      },
-    },
-    required: ['action'],
-    additionalProperties: false,
-  },
+export {
+  buildSpecialistHandoff,
+  specialistHandoffTerms,
+  specialistHandoffOverlap,
+  synthesizeExecutableRecovery,
+  parseMissingPrerequisite,
+  connectionResultDisclosure,
+  asksForResourceIdentifier,
+  connectionEventReason,
+  PROVIDER_TRUNCATED_GUIDANCE,
+  type AskUserQuestion,
+  type ExecutableRecoveryInput,
+  collectQualityReviewDiff,
+  isVerifiedDiffSnapshotCurrent,
+  shouldRunFinalQualityReview,
+  buildQualityReviewMessages,
+  parseReviewVerdict,
+  findLastScreenshotUrl,
+  findLastBrowserEvidence,
+  type QualityReviewInput,
+  COMPACT_KEEP_RECENT,
+  COMPACT_TRIGGER,
+  COMPACT_CHAR_BUDGET,
+  COMPACT_MIN_RECENT,
+  COMPACT_RECENT_MESSAGE_MAX_CHARS,
+  estimateMessageChars,
+  KEEP_RECENT_SCREENSHOTS,
+  stripStaleImages,
+  shiftPrefixEndAfterCompaction,
+  compactRecentMessage,
+  extractFailureDigest,
+  compactHistory,
+  compactFollowUpConversation,
+  type CompactionOptions,
+  type PlanActionStep,
+  PLAN_AREAS,
+  parseArea,
+  parseSubtasks,
+  type ParsedAction,
+  visibleActionSummary,
+  parseAction,
+  KNOWN_ACTION_TYPES,
+  GITU_ACTION_TOOL,
+  actionReplyFromTurn,
+  parseReplyAction,
+  braceBalance,
+  type BadReplyKind,
+  classifyBadReply,
+  logParseFailure,
+  ACTION_BRACE_RE,
+  proseCutIndex,
+  createProseStreamer,
+  MAX_PROTOCOL_REPAIRS,
+  PROTOCOL_REPAIR_INSTRUCTION,
 };
-
-function actionReplyFromTurn(turn: LlmTurnResult): string {
-  switch (turn.kind) {
-    case 'text':
-      return turn.text;
-    case 'refusal':
-      return turn.reason;
-    case 'empty':
-      return '';
-    case 'tool_calls': {
-      if (turn.calls.length === 0) return '';
-      const explicitActionCall = turn.calls.find((candidate) =>
-        candidate.name === GITU_ACTION_TOOL.name ||
-        candidate.name === 'agent_gitu_action' ||
-        candidate.name === 'gitu_action' ||
-        candidate.name === 'agent_action',
-      );
-      if (explicitActionCall) {
-        const actionObj = explicitActionCall.arguments['action'] ?? explicitActionCall.arguments;
-        return JSON.stringify({ action: actionObj });
-      }
-      const first = turn.calls[0]!;
-      if (KNOWN_ACTION_TYPES.has(first.name)) {
-        return JSON.stringify({ action: { type: first.name, ...first.arguments } });
-      }
-      if (KNOWN_TOOL_NAMES.has(first.name) || first.name.startsWith('mcp:')) {
-        return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: String(first.arguments['reason'] ?? ''), expected: String(first.arguments['expected'] ?? '') } });
-      }
-      return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: '', expected: '' } });
-    }
-  }
-}
-
-function parseReplyAction(reply: string): ParsedAction | undefined {
-  const fromJson = parseAction(extractJson(reply));
-  if (fromJson) return fromJson;
-  const xml = parseXmlFunctionCall(reply);
-  if (!xml) return undefined;
-  const type = String(xml['type'] ?? '');
-  if (!type) return undefined;
-  if (KNOWN_ACTION_TYPES.has(type)) return parseAction({ action: xml });
-  if (KNOWN_TOOL_NAMES.has(type) || type.startsWith('mcp:')) {
-    const params: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(xml)) {
-      if (key !== 'type') params[key] = value;
-    }
-    return parseAction({ action: { type: 'tool_call', tool: type, params, reason: '', expected: '' } });
-  }
-  return undefined;
-}
-
-/** A small verbatim tail gives the model immediate continuity; durable task
- * state lives in the ledger/snapshot rather than in an ever-growing chat. */
-export const COMPACT_KEEP_RECENT = 6;
-const COMPACT_TRIGGER = 32;
-/** ~20K tokens at 4 chars/token, including the system prompt and recent
- * observations. Tool output is available on disk; it must not become a
- * permanent context tax. */
-export const COMPACT_CHAR_BUDGET = 80_000;
-const COMPACT_MIN_RECENT = 2;
-const COMPACT_RECENT_MESSAGE_MAX_CHARS = 6_000;
-
-/** Constrained protocol-repair calls per run: after a malformed/no-action
- * reply, one short call asks for EXACTLY the action object. Bounded so a
- * drifting model cannot double the run cost. */
-export const MAX_PROTOCOL_REPAIRS = 3;
-export const PROTOCOL_REPAIR_INSTRUCTION =
-  'PROTOCOL REPAIR: your previous reply did not contain a usable executable action. Reply NOW with EXACTLY ONE JSON action object and NOTHING else — no prose, no markdown, no code fences, no reasoning: {"thought":"...","action":{...}}';
-
-export function estimateMessageChars(messages: LlmMessage[]): number {
-  let total = 0;
-  for (const m of messages) {
-    if (typeof m.content === 'string') total += m.content.length;
-    else {
-      for (const part of m.content) {
-        if (part.type === 'text') total += part.text.length;
-        else total += Math.floor(part.image_url.url.length / 4);
-      }
-    }
-  }
-  return total;
-}
-
-/**
- * How many of the most recent screenshots stay in model context when a fresh
- * one arrives. One destroyed cross-page/state consistency on frontend runs
- * (the model could never compare views it had already built); four preserves
- * before/after comparisons while bounding vision token cost.
- */
-const KEEP_RECENT_SCREENSHOTS = 4;
-
-/**
- * Replace image parts in older messages with a short text note so obsolete
- * screenshots do not keep billing vision tokens turn after turn. Returns the
- * number of images removed. `keepLast` messages are left untouched, and
- * `fromIndex` protects the stable prefix (e.g. the user's original attached
- * images) from being stripped.
- */
-export function stripStaleImages(messages: LlmMessage[], keepLast = 1, fromIndex = 0): number {
-  let removed = 0;
-  const stopAt = Math.max(fromIndex, messages.length - keepLast);
-  for (let i = fromIndex; i < stopAt; i++) {
-    const m = messages[i]!;
-    if (typeof m.content === 'string') continue;
-    const images = m.content.filter((p) => p.type === 'image_url').length;
-    if (images === 0) continue;
-    removed += images;
-    const textParts = m.content.filter((p): p is Extract<LlmContentPart, { type: 'text' }> => p.type === 'text');
-    m.content =
-      textParts.length > 0
-        ? [...textParts, { type: 'text', text: `[${images} earlier screenshot(s) removed from context — take a fresh one if needed]` }]
-        : `[${images} earlier screenshot(s) removed from context — take a fresh one if needed]`;
-  }
-  return removed;
-}
-
-/**
- * Recompute the stable-prefix boundary after compactHistory() splices
- * messages. Post-compaction the layout is always [system prompt, digest,
- * ...retained tail]: everything that was prefix beyond index 0 is either gone
- * or now lives in the retained history, and the digest itself is stable going
- * forward — so the cacheable prefix is exactly system + digest.
- */
-export function shiftPrefixEndAfterCompaction(prefixEnd: number, _keepFrom: number): number {
-  return prefixEnd > 0 ? Math.min(prefixEnd + 1, 2) : 0;
-}
-
-/** Most recent screenshot attached anywhere in the conversation, if any. */
-export function findLastScreenshotUrl(messages: LlmMessage[]): string | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const content = messages[i]?.content;
-    if (!content || typeof content === 'string') continue;
-    for (let j = content.length - 1; j >= 0; j--) {
-      const part = content[j];
-      if (!part || part.type !== 'image_url') continue;
-      if (part.image_url.url.startsWith('data:image/')) return part.image_url.url;
-    }
-  }
-  return undefined;
-}
-
-/** Most recent structured browser evidence collected for the finished UI. */
-export function findLastBrowserEvidence(data: TaskLedgerData): string | undefined {
-  for (let i = data.actions.length - 1; i >= 0; i--) {
-    const action = data.actions[i];
-    if (
-      action?.tool === 'browse' &&
-      action.status === 'success' &&
-      /evidence/.test(action.paramsSummary) &&
-      typeof action.observation === 'string' &&
-      action.observation.includes('BROWSER EVIDENCE')
-    ) {
-      return action.observation.slice(0, 6000);
-    }
-  }
-  return undefined;
-}
-
-/** One bounded single-line reason for a timeline event: provider errors carry
- * detail the user must see, but events stay compact and never multi-line. */
-export function connectionEventReason(message: string): string {
-  const text = String(message ?? '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text.length > 220 ? `${text.slice(0, 219).trimEnd()}…` : text;
-}
-
-export interface ExecutableRecoveryInput {
-  invalidStreak: number;
-  lastProviderRejection?: string;
-  /** Actual provider state already gathered by the recovery controller. */
-  recoveryEvidence?: string;
-  connectionContext?: string;
-  openSteps: { id: string; description: string; verification?: string }[];
-  unclaimedCriteria: string[];
-}
-
-/**
- * The anti-loop recovery directive. After repeated no-action replies the model
- * must stop analyzing and output ONE executable action; this synthesizes the
- * concrete options from REAL task state — actual provider evidence, registered
- * provider reads, the pending verification command, unclaimed criteria — plus
- * the last provider rejection, so the forced action addresses the actual
- * blocker instead of burning the remaining turn budget on repeated analysis.
- * ADAPT authorization is explicit: evidence may invalidate the strategy, and
- * revising it (revise_step/append_plan) is expected behavior, not a failure.
- */
-export function synthesizeExecutableRecovery(input: ExecutableRecoveryInput): string {
-  const lines: string[] = [
-    `EXECUTABLE ACTION REQUIRED — your last ${input.invalidStreak} replies contained no executable action. Do not analyze again: reply with exactly ONE executable JSON action this turn.`,
-    'You are authorized to ADAPT: the goal and constraints are unchanged, but evidence may invalidate the current strategy — revise_step / append_plan to change the implementation or verification path and continue. The only wrong move is re-running a disproven strategy unchanged.',
-  ];
-  if (input.lastProviderRejection) {
-    lines.push(
-      `The last provider write is still unresolved: ${input.lastProviderRejection}`,
-      'Either fix that request (the provider error says what was wrong) or ground the next action in the provider state below.',
-    );
-  }
-  if (input.recoveryEvidence) {
-    lines.push(input.recoveryEvidence);
-  }
-  if (input.connectionContext) {
-    lines.push(
-      '1. Verify actual provider state with a registered read:',
-      '   {"thought":"...","action":{"type":"connection_action","connectionId":"<real id from the list>","operationId":"<registered read id>","reason":"read back resource state"}}',
-      `   Registered reads:\n${input.connectionContext.slice(0, 1_200)}`,
-    );
-  }
-  const step = input.openSteps.find((candidate) => candidate.verification);
-  if (step) {
-    lines.push(
-      `2. Run the pending verification for step ${step.id} ("${step.description.slice(0, 80)}"):`,
-      `   {"thought":"...","action":{"type":"tool_call","tool":"run_command","params":${JSON.stringify({ command: step.verification })},"reason":"execute the planned verification","expected":"exit 0"}}`,
-    );
-  }
-  if (input.unclaimedCriteria.length > 0) {
-    lines.push(`3. Claim a criterion you already hold evidence for: ${input.unclaimedCriteria.slice(0, 3).join('; ')}`);
-  }
-  lines.push(
-    '4. Only if nothing executable can move the task forward: {"thought":"...","action":{"type":"request_block","reason":"<the concrete missing piece>"}} — a concrete blocker with evidence, not analysis.',
-  );
-  return lines.join('\n');
-}
-
-/**
- * Parse the reviewer's reply. Only an explicit PASS counts as a successful
- * second opinion; malformed/unavailable review output is reported as such so
- * it cannot masquerade as verification.
- */
-export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise' | 'unavailable'; feedback: string } {  const m = /VERDICT:\s*(REVISE|PASS|REJECT)/i.exec(reply);
-  if (m && m[1] && /revise|reject/i.test(m[1])) {
-    const fbIdx = reply.search(/FEEDBACK:/i);
-    const feedback = (fbIdx >= 0 ? reply.slice(fbIdx + 8) : reply.slice((m.index ?? 0) + m[0].length)).replace(/\s+/g, ' ').trim().slice(0, 600);
-    return { verdict: 'revise', feedback: feedback || 'Reviewer did not provide specifics — re-check the diff against the acceptance criteria.' };
-  }
-  if (m && m[1] && /pass/i.test(m[1])) return { verdict: 'pass', feedback: '' };
-  return { verdict: 'unavailable', feedback: 'Final quality reviewer returned no explicit PASS or REVISE verdict.' };
-}
-
-export interface QualityReviewInput {
-  goal: string;
-  criteria: string[];
-  filesChanged: string[];
-  diffStat: string;
-  /** Bounded full diff for deep reviews — lets the reviewer judge real code, not just file names. */
-  diffBody?: string;
-  summary: string;
-  screenshotUrl?: string;
-  /** True even when the selected model/browser cannot supply a screenshot. */
-  uiTask?: boolean;
-  /** Planned view/control intent, used to detect implementation drift. */
-  frontendDesign?: string;
-  /** Latest bounded DOM/accessibility/layout evidence for text-only review. */
-  browserEvidence?: string;
-}
-
-/**
- * Review a durable task delta. A new follow-up supplies its phase baseline;
- * initial tasks retain the historical first-checkpoint behavior. Individual
- * steps are checkpointed as they complete, so `git diff HEAD` alone is often
- * empty by final quality review.
- */
-export async function collectQualityReviewDiff(
-  root: string,
-  checkpointsOrBaseRef: { ref: string }[] | string | undefined,
-  maxBodyChars = 8_000,
-): Promise<{ baseRef?: string; headRef?: string; diffStat: string; diffBody?: string; diffBodyTruncated: boolean; changedFiles: string[] }> {
-  const baseRef =
-    typeof checkpointsOrBaseRef === 'string' ? checkpointsOrBaseRef.trim() || undefined : checkpointsOrBaseRef?.find((checkpoint) => checkpoint.ref.trim())?.ref.trim();
-  const args = baseRef ? ['diff', baseRef] : ['diff', 'HEAD'];
-  const diffStat = await gitExec(root, [...args, '--stat']).catch(() => '');
-  const fullDiff = maxBodyChars > 0 ? await gitExec(root, args).catch(() => '') : '';
-  const diffBody = maxBodyChars > 0 ? fullDiff.slice(0, maxBodyChars) : undefined;
-  const diffBodyTruncated = maxBodyChars > 0 && fullDiff.length > maxBodyChars;
-  const changedFiles = (await gitExec(root, [...args, '--name-only']).catch(() => ''))
-    .split(/\r?\n/)
-    .map((file) => file.trim())
-    .filter(Boolean);
-  const headRef = (await gitExec(root, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
-  return { baseRef, headRef, diffStat, changedFiles, diffBodyTruncated, ...(diffBody ? { diffBody } : {}) };
-}
-
-/** A saved diff is proof only for the exact workspace/commit that produced it. */
-export function isVerifiedDiffSnapshotCurrent(
-  snapshot: VerifiedDiffSnapshot | undefined,
-  input: { phaseId?: string; workspaceFingerprint: string; headRef?: string },
-): snapshot is VerifiedDiffSnapshot {
-  return Boolean(
-    snapshot &&
-      snapshot.phaseId === input.phaseId &&
-      snapshot.workspaceFingerprint === input.workspaceFingerprint &&
-      snapshot.headRef === input.headRef,
-  );
-}
-
-const SAFE_COMPLETION_PATH = /(?:^|\/)(?:docs?(?:\/|$)|readme(?:\.[^/]+)?$|changelog(?:\.[^/]+)?$|license(?:\.[^/]+)?$|contributing(?:\.[^/]+)?$|\.editorconfig$|\.gitattributes$|\.gitignore$|\.prettier(?:rc|ignore)?(?:\.[^/]+)?$|eslint\.config\.[^/]+$)|\.(?:md|mdx|rst|txt)$/i;
-
-function diffContainsOnlyComments(diffBody: string | undefined, truncated: boolean): boolean {
-  if (!diffBody || truncated) return false;
-  const changedLines = diffBody
-    .split(/\r?\n/)
-    .filter((line) => /^[+-]/.test(line) && !/^\+\+\+|^---/.test(line))
-    .map((line) => line.slice(1).trim())
-    .filter(Boolean);
-  return changedLines.length > 0 && changedLines.every((line) => /^(?:\/\/|\/\*|\*\/|\*|<!--|-->|#)/.test(line));
-}
-
-function allApplicableTargetedChecksPassed(data: TaskLedgerData, workspaceFingerprint: string): boolean {
-  const latest = new Map<string, (typeof data.evidence)[number]>();
-  for (const evidence of data.evidence) {
-    if (!evidence.command) continue;
-    latest.set(evidence.command, evidence);
-  }
-  return [...latest.values()].every(
-    (evidence) => evidence.passed && !evidence.stale && (!evidence.workspaceFingerprint || evidence.workspaceFingerprint === workspaceFingerprint),
-  );
-}
-
-/** Decide whether a fresh AI second opinion can prove something new. This is
- * deliberately conservative: ambiguity keeps the review enabled. */
-export function shouldRunFinalQualityReview(input: {
-  effortPlan?: Pick<EffortPlan, 'complexity'>;
-  riskPlan?: { risk: string; strictVerification: boolean; domains: string[] };
-  bugFix: boolean;
-  phaseData: TaskLedgerData;
-  diff: { changedFiles: string[]; diffBody?: string; diffBodyTruncated?: boolean };
-  workspaceFingerprint: string;
-  evidenceGateOpen: boolean;
-  specialistOrVerificationUncertain: boolean;
-}): { run: boolean; reason: string } {
-  if (input.effortPlan?.complexity !== 'low') return { run: true, reason: 'task complexity is not low' };
-  if (
-    input.riskPlan &&
-    (input.riskPlan.strictVerification || input.riskPlan.risk !== 'unknown' || input.riskPlan.domains.some((domain) => domain !== 'unknown'))
-  ) {
-    return { run: true, reason: 'risk plan is not low/unknown' };
-  }
-  if (input.bugFix) return { run: true, reason: 'bug fix needs behavioral review' };
-  if (isUiTask(input.phaseData)) return { run: true, reason: 'UI-affecting change needs review' };
-  if (!input.evidenceGateOpen) return { run: true, reason: 'acceptance evidence is incomplete' };
-  if (!allApplicableTargetedChecksPassed(input.phaseData, input.workspaceFingerprint)) {
-    return { run: true, reason: 'a targeted check is missing, stale, or failed' };
-  }
-  if (input.specialistOrVerificationUncertain) return { run: true, reason: 'specialist or verification reported uncertainty' };
-  if (input.phaseData.actions.some((action) => action.status === 'error' || action.status === 'denied' || action.status === 'blocked')) {
-    return { run: true, reason: 'execution included an unresolved uncertainty' };
-  }
-  if (input.diff.changedFiles.length === 0) {
-    return { run: true, reason: 'verified diff has no changed-file scope to classify as safe' };
-  }
-  const safeFiles = input.diff.changedFiles.every((file) => SAFE_COMPLETION_PATH.test(file));
-  const commentOnly = diffContainsOnlyComments(input.diff.diffBody, input.diff.diffBodyTruncated ?? false);
-  if (!safeFiles && !commentOnly) return { run: true, reason: 'change may affect application or runtime behavior' };
-  return { run: false, reason: safeFiles ? 'low-risk documentation, metadata, or simple configuration only' : 'low-risk comment-only code change' };
-}
-
-/** Build the strict-reviewer message list. UI tasks attach the final screenshot for vision judging. */
-export function buildQualityReviewMessages(input: QualityReviewInput): LlmMessage[] {
-  const criteriaText = input.criteria.length ? input.criteria.map((c, i) => `${i + 1}. ${c}`).join('\n') : '(no explicit criteria — judge against the goal)';
-  const text =
-    `Review this COMPLETED engineering task with fresh eyes. Be strict about real defects; do not nitpick style.\n\n` +
-    `GOAL: ${input.goal}\n\nACCEPTANCE CRITERIA:\n${criteriaText}\n\n` +
-    `FILES CHANGED: ${input.filesChanged.slice(0, 30).join(', ') || '(none recorded)'}\n\n` +
-    `DIFF SUMMARY:\n${(input.diffStat || '(unavailable)').slice(0, 4000)}\n\n` +
-    (input.diffBody ? `FULL DIFF (bounded):\n${input.diffBody}\n\n` : '') +
-    `AGENT'S CLAIMED RESULT: ${input.summary.slice(0, 1500)}\n\n` +
-    (input.uiTask && input.frontendDesign ? `FRONTEND DESIGN INTENT:\n${input.frontendDesign.slice(0, 1200)}\n\n` : '') +
-    (input.uiTask && input.browserEvidence ? `FINAL STRUCTURED BROWSER EVIDENCE:\n${input.browserEvidence.slice(0, 6000)}\n\n` : '') +
-    (input.screenshotUrl
-      ? `The final UI state is attached as an image. JUDGE IT: does it look complete, correctly laid out, and consistent with the goal? Broken layouts, placeholder text, overlapping elements, or missing sections are defects.\n\n`
-      : '') +
-    (input.uiTask
-      ? `UI LOGIC REVIEW (required): inventory the interactive controls visible in the diff, design notes, browser evidence, and screenshot. Every button, link, field, menu, and call to action must have a user-relevant purpose supported by the goal/criteria or an established surrounding pattern; be located near the content or object it affects; have hierarchy proportional to its importance; use a label that predicts its effect; and have a real destination/handler plus correct disabled, loading, permission, validation, and destructive-confirmation behavior where applicable. Treat unrequested, misplaced, duplicated, misleading, dead, or contradictory controls as real defects. Do not reject conventional controls when the supplied evidence supports their purpose.\n\n`
-      : '') +
-    `Check specifically: regressions at call sites of changed code, missed error paths, edge cases, and whether the changes actually satisfy every criterion.\n\n` +
-    `Reply EXACTLY in this format:\nVERDICT: PASS\nor\nVERDICT: REVISE\nFEEDBACK: <one short paragraph of concrete issues to fix>`;
-  const userContent: LlmContentPart[] = [{ type: 'text', text }];
-  if (input.screenshotUrl) userContent.push({ type: 'image_url', image_url: { url: input.screenshotUrl } });
-  return [
-    {
-      role: 'system',
-      content:
-        'You are a strict senior engineer and product-interface reviewer examining finished work before it ships. You have no stake in being agreeable. Judge only what is supported by the goal, criteria, design intent, diff, browser evidence, and screenshot.',
-    },
-    { role: 'user', content: userContent },
-  ];
-}
-
-/**
- * Compact a growing conversation as the run goes: older turns collapse into a
- * single digest while the recent tail stays verbatim. The ledger state message
- * re-emitted on every turn remains authoritative (goal, criteria, architecture
- * decisions, evidence, current state), so compacted details — old tool
- * outputs, stale file dumps, obsolete screenshots — are exactly the noise the
- * model doesn't need.
- *
- * Triggers when EITHER the message count or the cumulative character size
- * (~4 chars/token) crosses its budget.
- */
-export interface CompactionOptions {
-  charBudget?: number;
-  keepRecent?: number;
-  triggerMessages?: number;
-  /** Canonical ContextSnapshot render, embedded so durable state survives
-   *  history drops even before the next TASK STATE message is built. */
-  snapshot?: string;
-  /** Memory-aware compaction: hands the preserved failures to the caller so
-   *  durable lessons can be extracted into project memory before the verbose
-   *  history is discarded. */
-  onExtract?: (info: { failures: string[] }) => void;
-  /** Skip the normal triggers and compact now (protocol-drift recovery). */
-  force?: boolean;
-}
-
-/**
- * Last-resort reduction for a giant *recent* tool result. The original result
- * remains in the ledger, terminal, file system, or browser evidence; this
- * keeps enough head/tail/diagnostic context for the next model turn without
- * letting a single log defeat the whole history budget.
- */
-function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_RECENT_MESSAGE_MAX_CHARS): boolean {
-  if (typeof message.content !== 'string' || message.content.length <= maxChars) return false;
-  const text = message.content;
-  const headBudget = Math.floor(maxChars * 0.4);
-  const tailBudget = Math.floor(maxChars * 0.35);
-  const diagnostic = /RESULT \[error\]|\b(error|failed|exception|assertion)\b/i.test(text) ? extractFailureDigest(text, Math.floor(maxChars * 0.25)) : '';
-  const availableTail = Math.max(200, tailBudget - diagnostic.length);
-  message.content =
-    `${text.slice(0, headBudget)}\n` +
-    `[... ${text.length - headBudget - availableTail} characters trimmed from recent history; re-read the file or rerun the command for the complete result ...]\n` +
-    (diagnostic ? `DIAGNOSTIC CORE:\n${diagnostic}\n` : '') +
-    text.slice(-availableTail);
-  return true;
-}
-
-export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) => void, opts: CompactionOptions = {}): boolean {
-  const charBudget = opts.charBudget ?? COMPACT_CHAR_BUDGET;
-  const keepRecent = opts.keepRecent ?? COMPACT_KEEP_RECENT;
-  const triggerMessages = opts.triggerMessages ?? COMPACT_TRIGGER;
-
-  const charsBefore = estimateMessageChars(messages);
-  if (!opts.force && messages.length <= triggerMessages && charsBefore <= charBudget) return false;
-
-  let compacted = false;
-  let compactedMessages = 0;
-  // Keep two exchanges at minimum. If the recent tail itself is oversized,
-  // reduce its count before truncating any individual recent observation.
-  let retained = Math.max(COMPACT_MIN_RECENT, Math.min(keepRecent, Math.max(COMPACT_MIN_RECENT, messages.length - 2)));
-
-  while (messages.length > triggerMessages || estimateMessageChars(messages) > charBudget) {
-    const hasDigest = typeof messages[1]?.content === 'string' && messages[1]!.content.startsWith('COMPACTED HISTORY');
-    const minimumMessagesAtThisTail = 1 + retained + (hasDigest ? 1 : 0);
-    // We are down to system + digest + desired tail. Tighten the tail before
-    // touching a recent message; the next loop absorbs the oldest tail item
-    // into the digest alongside the prior digest.
-    if (messages.length <= minimumMessagesAtThisTail) {
-      if (retained > COMPACT_MIN_RECENT) {
-        retained -= 1;
-        continue;
-      }
-      break;
-    }
-    const keepFrom = messages.length - retained;
-    const old = messages.splice(1, keepFrom - 1);
-    compactedMessages += old.length;
-    // Digest material extraction lives in the shared context core so the
-    // context authority (buildModelContext) uses the exact same format and
-    // carry-forward rules.
-    const material = extractDigestMaterial(old);
-    const dedupe = (lines: string[]): string[] => [...new Set(lines.map((l) => l.replace(/\s+/g, ' ').trim()))];
-    const keptFailures = dedupe(material.failures).slice(-8);
-    const keptEvidence = dedupe(material.evidenceLines).slice(-10);
-    opts.onExtract?.({ failures: keptFailures });
-    let digest = buildDigestContent({
-      condensedCount: material.carriedMessages + old.length,
-      excerptLines: material.excerptLines,
-      failures: keptFailures,
-      evidence: keptEvidence,
-      snapshot: opts.snapshot,
-    });
-    // The shared digest target is intentionally lower than its hard ceiling:
-    // a durable summary must leave room for the next state message.
-    if (digest.length > DIGEST_TARGET_CHARS) digest = compressDigest(digest, DIGEST_TARGET_CHARS);
-    messages.splice(1, 0, { role: 'user', content: digest });
-    compacted = true;
-    if (retained > COMPACT_MIN_RECENT) retained -= 1;
-    else break;
-  }
-
-  // A few enormous recent read/command results can still exceed the target
-  // after the tail is reduced to two messages. Preserve their diagnostic
-  // beginning/end, but do not let them force 50K-token requests forever.
-  if (estimateMessageChars(messages) > charBudget) {
-    for (let i = 1; i < messages.length && estimateMessageChars(messages) > charBudget; i++) {
-      if (compactRecentMessage(messages[i]!)) compacted = true;
-    }
-  }
-
-  if (compacted) {
-    onEvent?.(
-      `context compacted ${compactedMessages} earlier messages (${charsBefore} chars before → ${estimateMessageChars(messages)} chars; ${messages.length} messages retained)`,
-    );
-  }
-  return compacted;
-}
-
-/**
- * Digest a failed command's output down to its diagnostic core: error-ish
- * lines plus the tail (where summaries/stacks end). Test and build logs put
- * the actual cause at the END; the old first-2500-chars slice usually cut it
- * off entirely.
- */
-const FAILURE_LINE_RE =
-  /\b(fail(?:ed|ure|ing)?s?|error(?:s)?|exception|assert(?:ion)?|expected|received|cannot|unable|refused|denied|invalid|missing|timeout|timed\s*out|enoent|eacces|eperm|stack\s+trace)\b|[✗×]/i;
-
-export function extractFailureDigest(output: string, maxChars = 1200): string {
-  const lines = output.split(/\r?\n/);
-  const seen = new Set<string>();
-  const picked: string[] = [];
-  const push = (line: string): void => {
-    const t = line.replace(/\s+/g, ' ').trim();
-    if (!t || seen.has(t)) return;
-    seen.add(t);
-    picked.push(t.slice(0, 240));
-  };
-  for (const l of lines) {
-    if (FAILURE_LINE_RE.test(l)) push(l);
-  }
-  const tailStart = Math.max(0, lines.length - 8);
-  for (const l of lines.slice(tailStart)) push(l);
-  let out = '';
-  for (const p of picked) {
-    if (out.length + p.length + 1 > maxChars) break;
-    out += (out ? '\n' : '') + p;
-  }
-  return out || output.replace(/\s+/g, ' ').trim().slice(0, maxChars);
-}
-
-/**
- * Net curly-brace balance of a text chunk, ignoring braces inside strings.
- */
-export function braceBalance(text: string): number {
-  let bal = 0;
-  let inStr: string | null = null;
-  let esc = false;
-  for (const ch of text) {
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === '\\') esc = true;
-      else if (ch === inStr) inStr = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      inStr = ch;
-      continue;
-    }
-    if (ch === '{') bal += 1;
-    else if (ch === '}') bal -= 1;
-  }
-  return bal;
-}
-
-export type BadReplyKind = 'empty' | 'truncated-json';
-
-/**
- * Distinguish RETRYABLE model failures from real protocol errors:
- *  - empty completions (provider returned nothing — often output budget or a
- *    transport hiccup under huge contexts)
- *  - prose followed by an UNTERMINATED action object (output cut mid-JSON)
- * Anything else (prose-only replies, malformed but complete JSON) is a genuine
- * unparseable turn and must count toward the anti-spiral streak.
- */
-export function classifyBadReply(reply: string | undefined | null): BadReplyKind | null {
-  if (!reply || !reply.trim()) return 'empty';
-  // Two real-world truncation shapes:
-  //   A) cut inside the thought STRING: `prose… {"thought":"The markup i`
-  //   B) cut inside the INNER action object: `{"thought":"x","action":{"type":"run_co`
-  // Anchor on the last '{' and accept either the key visible just after it
-  // (shape A) or immediately before it (shape B).
-  const idx = reply.lastIndexOf('{');
-  if (idx >= 0) {
-    const tail = reply.slice(idx);
-    const before = reply.slice(Math.max(0, idx - 32), idx);
-    const nearProtocol = /"(?:thought|action)"\s*:/.test(tail.slice(0, 60)) || /"(?:thought|action)"\s*:\s*$/.test(before);
-    if (tail.length <= 8000 && nearProtocol && braceBalance(tail) > 0) return 'truncated-json';
-  }
-  return null;
-}
-
-/** Persist raw unparseable replies so stalls can be diagnosed from logs. */
-function logParseFailure(taskId: string, reply: string, reasoning?: string): void {
-  try {
-    const logs = path.join(ensureGituHome().root, 'logs');
-    mkdirSync(logs, { recursive: true });
-    const entry =
-      `\n=== ${new Date().toISOString()} task=${taskId} ===\n--- reply ---\n${reply.slice(0, 4000)}\n` + (reasoning ? `--- reasoning ---\n${reasoning.slice(0, 4000)}\n` : '');
-    appendFileSync(path.join(logs, 'parse-failures.log'), entry);
-  } catch {
-    /* diagnostics must never break the run */
-  }
-}
-
-/** A '{' only starts a JSON action when a protocol key follows it nearby;
- *  prose that merely mentions braces (config examples, code quotes) must not
- *  truncate the user-facing streamed text. */
-const ACTION_BRACE_RE = /\{\s*"(?:thought|action|type)"/;
-
-function proseCutIndex(text: string): number {
-  const braceMatch = ACTION_BRACE_RE.exec(text);
-  const brace = braceMatch ? braceMatch.index : -1;
-  const xml = findXmlCallStart(text);
-  if (brace < 0) return xml;
-  if (xml < 0) return brace;
-  return Math.min(brace, xml);
-}
-
-function createProseStreamer(emitDelta: (chunk: string) => void): (delta: string) => void {
-  let raw = '';
-  let emitted = 0;
-  let stopped = false;
-  return (delta: string) => {
-    if (stopped) return;
-    raw += delta;
-    const cut = proseCutIndex(raw);
-    let upTo: number;
-    if (cut >= 0) {
-      stopped = true;
-      upTo = cut;
-    } else {
-      upTo = raw.length - xmlMarkerHoldBack(raw);
-    }
-    if (upTo > emitted) {
-      emitDelta(raw.slice(emitted, upTo));
-      emitted = upTo;
-    }
-  };
-}
-
-/** Follow-ups have their exact new request in the protected follow-up block.
- * Keep only a small, recent conversational tail for tone/references instead
- * of paying to replay the whole finished task. */
-function compactFollowUpConversation(history: LlmMessage[] | undefined, maxChars = 6_000): LlmMessage[] | undefined {
-  if (!history?.length) return history;
-  const kept: LlmMessage[] = [];
-  let used = 0;
-  for (let index = history.length - 1; index >= 0; index -= 1) {
-    const message = history[index]!;
-    const text = typeof message.content === 'string' ? message.content : message.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
-    const size = text.length;
-    if (kept.length > 0 && used + size > maxChars) continue;
-    kept.unshift(message);
-    used += size;
-    if (used >= maxChars) break;
-  }
-  return kept;
-}
 
 export class Gitu {
   private readonly config: GituConfig;

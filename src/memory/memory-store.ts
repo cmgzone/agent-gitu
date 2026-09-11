@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
+import { withMemoryFileLock } from './file-lock.js';
 import { STOPWORDS } from '../context/context-engine.js';
 import type { MemoryAuditEvent, MemoryEntry, MemoryRetrievalContext, MemorySourceType, MemoryStatus, MemoryType, MemoryVisibility } from '../types.js';
 import { nowIso, readJson, shortId, writeJson } from '../util.js';
@@ -63,11 +65,23 @@ export interface MemorySearchResult {
   matchReason: 'exact' | 'lexical' | 'semantic';
 }
 
-function dedupeKey(type: MemoryType, scope: string, claim: string, visibility: MemoryVisibility = 'project'): string {
-  return `${type}|${scope}|${visibility}|${claim.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+type MemoryBoundary = Pick<MemoryEntry, 'scope' | 'visibility' | 'agentId' | 'missionId' | 'projectId'>;
+
+function boundaryKey(entry: MemoryBoundary): string {
+  const visibility = entry.visibility ?? 'project';
+  return JSON.stringify([entry.scope, visibility,
+    visibility === 'global' ? null : entry.projectId ?? entry.scope,
+    visibility === 'agent' || visibility === 'mission' ? entry.missionId ?? null : null,
+    visibility === 'agent' ? entry.agentId ?? null : null]);
+}
+
+function dedupeKey(type: MemoryType, scope: string, claim: string, boundary: Partial<MemoryBoundary> = {}): string {
+  return JSON.stringify([type, boundaryKey({ ...boundary, scope }), claim.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim()]);
 }
 export class MemoryStore {
   private entries: MemoryEntry[] = [];
+  private baseline = new Map<string, MemoryEntry>();
+  private diskText?: string;
   /** Structured audit ring — PERSISTED to a sibling file so the provenance
    *  trail survives restarts (review hardening #1). Retention: last 500. */
   private readonly auditFile: string;
@@ -80,9 +94,8 @@ export class MemoryStore {
   private promotionsCount = 0;
 
   constructor(private readonly file: string) {
-    const data = readJson<MemoryEntry[]>(file);
-    if (Array.isArray(data)) this.entries = data;
     this.auditFile = path.join(path.dirname(file), 'memory-audit.json');
+    this.refresh();
     const persistedAudit = readJson<MemoryAuditEvent[]>(this.auditFile);
     if (Array.isArray(persistedAudit)) {
       this.audit = persistedAudit.slice(-MemoryStore.AUDIT_RETENTION);
@@ -129,66 +142,71 @@ export class MemoryStore {
     /** Tier 1 pin: promotes this memory into the protected/active tier. */
     pinned?: boolean;
   }): { entry: MemoryEntry; created: boolean } {
-    const claim = input.claim.trim().replace(/\s+/g, ' ');
-    // Visibility-aware dedupe identity (review fix #2): a specialist's
-    // PRIVATE memory and their PUBLISHED mission finding are different
-    // objects even with identical text — publishing must create a new
-    // shareable entry, not collapse into the private one.
-    const visibility: MemoryVisibility = input.visibility ?? 'project';
-    const key = dedupeKey(input.type, input.scope, claim, visibility);
-    const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e.visibility ?? 'project') === key);
-    if (existing) {
-      existing.confidence = Math.min(1, Math.max(existing.confidence, input.confidence ?? 0.7) + 0.05);
-      existing.evidence = input.evidence ?? existing.evidence;
-      existing.importance = Math.max(existing.importance ?? 0.5, input.importance ?? 0.5);
-      // Re-observation with a STRONGER source can verify a candidate.
-      if (input.sourceType && input.sourceType !== 'model_inference' && (existing.status ?? 'candidate') === 'candidate') {
-        existing.status = 'verified';
-        existing.lastVerifiedAt = nowIso();
-        this.logAudit({ event: 'verified', memoryId: existing.id, agentId: input.agentId, missionId: input.missionId, projectId: existing.projectId, source: input.sourceType });
+    return this.locked(() => {
+      this.refresh();
+      const claim = input.claim.trim().replace(/\s+/g, ' ');
+      // Visibility-aware dedupe identity (review fix #2): a specialist's
+      // PRIVATE memory and their PUBLISHED mission finding are different
+      // objects even with identical text — publishing must create a new
+      // shareable entry, not collapse into the private one.
+      const visibility: MemoryVisibility = input.visibility ?? 'project';
+      const key = dedupeKey(input.type, input.scope, claim, input);
+      const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e) === key);
+      if (existing) {
+        existing.confidence = Math.min(1, Math.max(existing.confidence, input.confidence ?? 0.7) + 0.05);
+        existing.evidence = input.evidence ?? existing.evidence;
+        existing.importance = Math.max(existing.importance ?? 0.5, input.importance ?? 0.5);
+        // Re-observation with a STRONGER source can verify a candidate.
+        if (input.status !== 'candidate' && input.sourceType && input.sourceType !== 'model_inference' && (existing.status ?? 'candidate') === 'candidate') {
+          existing.status = 'verified';
+          existing.lastVerifiedAt = nowIso();
+          this.logAudit({ event: 'verified', memoryId: existing.id, agentId: input.agentId, missionId: input.missionId, projectId: existing.projectId, source: input.sourceType });
+        }
+        existing.updatedAt = nowIso();
+        this.flush();
+        return { entry: existing, created: false };
       }
-      existing.updatedAt = nowIso();
+      // Lifecycle default: bare model inference starts as an UNVERIFIED
+      // candidate; trustworthy sources start verified. Nothing is durable on
+      // arrival — durability is earned via promote().
+      const status: MemoryStatus =
+        input.status ?? (input.sourceType && input.sourceType !== 'model_inference' ? 'verified' : 'candidate');
+      // Visibility default: the narrowest appropriate scope. Ownership rules
+      // (review Phase 2): agent→agentId, mission→missionId+projectId,
+      // project→projectId (defaults to the lexical scope = project name).
+      const entry: MemoryEntry = {
+        id: shortId('mem'),
+        type: input.type,
+        claim,
+        evidence: input.evidence,
+        scope: input.scope,
+        confidence: input.confidence ?? 0.7,
+        createdAt: nowIso(),
+        importance: input.importance ?? 0.5,
+        accessCount: 0,
+        status,
+        source: input.source,
+        sourceType: input.sourceType,
+        visibility,
+        // agentId is ORIGIN PROVENANCE (who created this) at every scope —
+        // visibility filtering uses scope + missionId/projectId, so recording
+        // the author on mission/project entries never leaks private context.
+        ...(input.agentId ? { agentId: input.agentId } : {}),
+        ...(visibility === 'agent' ? { missionId: input.missionId, projectId: input.projectId ?? input.scope } : {}),
+        ...(visibility === 'mission' ? { missionId: input.missionId, projectId: input.projectId ?? input.scope } : {}),
+        ...(visibility === 'project' ? { projectId: input.projectId ?? input.scope } : {}),
+        ...(input.pinned ? { pinned: true } : {}),
+      };
+      if (status === 'verified' || status === 'durable') entry.lastVerifiedAt = nowIso();
+      this.entries.push(entry);
       this.flush();
-      return { entry: existing, created: false };
-    }
-    // Lifecycle default: bare model inference starts as an UNVERIFIED
-    // candidate; trustworthy sources start verified. Nothing is durable on
-    // arrival — durability is earned via promote().
-    const status: MemoryStatus =
-      input.status ?? (input.sourceType && input.sourceType !== 'model_inference' ? 'verified' : 'candidate');
-    // Visibility default: the narrowest appropriate scope. Ownership rules
-    // (review Phase 2): agent→agentId, mission→missionId+projectId,
-    // project→projectId (defaults to the lexical scope = project name).
-    const entry: MemoryEntry = {
-      id: shortId('mem'),
-      type: input.type,
-      claim,
-      evidence: input.evidence,
-      scope: input.scope,
-      confidence: input.confidence ?? 0.7,
-      createdAt: nowIso(),
-      importance: input.importance ?? 0.5,
-      accessCount: 0,
-      status,
-      source: input.source,
-      sourceType: input.sourceType,
-      visibility,
-      // agentId is ORIGIN PROVENANCE (who created this) at every scope —
-      // visibility filtering uses scope + missionId/projectId, so recording
-      // the author on mission/project entries never leaks private context.
-      ...(input.agentId ? { agentId: input.agentId } : {}),
-      ...(visibility === 'mission' ? { missionId: input.missionId, projectId: input.projectId ?? input.scope } : {}),
-      ...(visibility === 'project' ? { projectId: input.projectId ?? input.scope } : {}),
-      ...(input.pinned ? { pinned: true } : {}),
-    };
-    if (status === 'verified' || status === 'durable') entry.lastVerifiedAt = nowIso();
-    this.entries.push(entry);
-    this.flush();
-    this.logAudit({ event: 'created', memoryId: entry.id, agentId: entry.agentId, missionId: entry.missionId, projectId: entry.projectId, newVisibility: visibility, source: input.sourceType });
-    return { entry, created: true };
+      this.logAudit({ event: 'created', memoryId: entry.id, agentId: entry.agentId, missionId: entry.missionId, projectId: entry.projectId, newVisibility: visibility, source: input.sourceType });
+      return { entry, created: true };
+    });
   }
 
   query(q: MemoryQuery = {}): MemoryEntry[] {
+    this.refresh();
     let results = this.entries;
     if (q.type) results = results.filter((e) => e.type === q.type);
     if (q.scope) results = results.filter((e) => e.scope === q.scope);
@@ -208,72 +226,75 @@ export class MemoryStore {
    * memories that keep proving useful surface more readily later.
    */
   retrieve(text: string, scope: string, limit = 8, ctx?: MemoryRetrievalContext): MemoryEntry[] {
-    const queryTokens = new Set(
-      text
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
-    );
-    const now = Date.now();
-    // Isolation BEFORE ranking (review Phase 3): invisible memories never
-    // reach the scorer, so filtering cannot be undone by prompt assembly.
-    const visible = this.entries.filter((e) => this.visibleTo(e, ctx));
-    const scored = visible.map((e) => {
-      const claimTokens = e.claim
-        .toLowerCase()
-        .split(/[^a-z0-9]+/)
-        .filter((t) => t.length > 2);
-      const overlap = claimTokens.filter((t) => queryTokens.has(t) && !STOPWORDS.has(t)).length;
-      const relevance = claimTokens.length > 0 ? Math.min(1, overlap / Math.min(6, Math.max(2, claimTokens.length))) : 0;
-      const scopeMatch = e.scope === scope ? 1 : 0.4;
-      const ageDays = (now - Date.parse(e.createdAt)) / 86_400_000;
-      const recency = Math.pow(0.5, Math.max(0, ageDays) / 14);
-      const usage = Math.min(1, (e.accessCount ?? 0) / 10);
-      const score =
-        0.4 * relevance + 0.2 * scopeMatch + 0.15 * e.confidence + 0.15 * (e.importance ?? 0.5) + 0.08 * recency + 0.02 * usage;
-      return { entry: e, score, relevance };
-    });
-    // Superseded entries that WOULD have matched are counted (telemetry), not shown.
-    this.supersededSkippedCount += scored.filter(
-      (s) => s.relevance > 0 && (s.entry.status === 'superseded' || s.entry.status === 'archived'),
-    ).length;
-    const ranked = scored
-      // Relevance gate: when a query is given, a memory must actually SHARE
-      // ground with it (or be marked critical) — scope/confidence alone never
-      // justify injecting information. "The model should never receive
-      // information merely because Gitu has it."
-      .filter((s) => s.score > 0.2 && (s.relevance > 0 || (s.entry.importance ?? 0.5) >= 0.9))
-      // Lifecycle gate: superseded memories are history, not authority — they
-      // never surface as current facts. Archived memories stay archived.
-      .filter((s) => s.entry.status !== 'superseded' && s.entry.status !== 'archived')
-      // Verification preference: verified/durable knowledge outranks equally
-      // similar unverified model inference.
-      .sort((a, b) => {
-        const rank = (e: MemoryEntry): number =>
-          (e.status === 'durable' ? 2 : e.status === 'verified' ? 1 : 0);
-        const verificationDiff = rank(b.entry) - rank(a.entry);
-        if (verificationDiff !== 0) return verificationDiff;
-        return b.score - a.score;
-      })
-      .slice(0, limit)
-      .map((s) => s.entry);
-    for (const e of ranked) {
-      e.accessCount = (e.accessCount ?? 0) + 1;
-      e.lastUsedAt = nowIso();
-    }
-    if (ranked.length > 0) {
-      this.flush();
-      this.retrievedCount += ranked.length;
-      this.logAudit({
-        event: 'retrieved',
-        memoryId: ranked[0]!.id,
-        agentId: ctx?.requestingAgentId,
-        missionId: ctx?.missionId,
-        projectId: ctx?.projectId,
-        reason: `${ranked.length} memory(ies) retrieved`,
+    return this.locked(() => {
+      this.refresh();
+      const queryTokens = new Set(
+        text
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((t) => t.length > 2 && !STOPWORDS.has(t)),
+      );
+      const now = Date.now();
+      // Isolation BEFORE ranking (review Phase 3): invisible memories never
+      // reach the scorer, so filtering cannot be undone by prompt assembly.
+      const visible = this.entries.filter((e) => this.visibleTo(e, ctx));
+      const scored = visible.map((e) => {
+        const claimTokens = e.claim
+          .toLowerCase()
+          .split(/[^a-z0-9]+/)
+          .filter((t) => t.length > 2);
+        const overlap = claimTokens.filter((t) => queryTokens.has(t) && !STOPWORDS.has(t)).length;
+        const relevance = claimTokens.length > 0 ? Math.min(1, overlap / Math.min(6, Math.max(2, claimTokens.length))) : 0;
+        const scopeMatch = e.scope === scope ? 1 : 0.4;
+        const ageDays = (now - Date.parse(e.createdAt)) / 86_400_000;
+        const recency = Math.pow(0.5, Math.max(0, ageDays) / 14);
+        const usage = Math.min(1, (e.accessCount ?? 0) / 10);
+        const score =
+          0.4 * relevance + 0.2 * scopeMatch + 0.15 * e.confidence + 0.15 * (e.importance ?? 0.5) + 0.08 * recency + 0.02 * usage;
+        return { entry: e, score, relevance };
       });
-    }
-    return ranked;
+      // Superseded entries that WOULD have matched are counted (telemetry), not shown.
+      this.supersededSkippedCount += scored.filter(
+        (s) => s.relevance > 0 && (s.entry.status === 'superseded' || s.entry.status === 'archived'),
+      ).length;
+      const ranked = scored
+        // Relevance gate: when a query is given, a memory must actually SHARE
+        // ground with it (or be marked critical) — scope/confidence alone never
+        // justify injecting information. "The model should never receive
+        // information merely because Gitu has it."
+        .filter((s) => s.score > 0.2 && (s.relevance > 0 || (s.entry.importance ?? 0.5) >= 0.9))
+        // Lifecycle gate: superseded memories are history, not authority — they
+        // never surface as current facts. Archived memories stay archived.
+        .filter((s) => s.entry.status !== 'superseded' && s.entry.status !== 'archived')
+        // Verification preference: verified/durable knowledge outranks equally
+        // similar unverified model inference.
+        .sort((a, b) => {
+          const rank = (e: MemoryEntry): number =>
+            (e.status === 'durable' ? 2 : e.status === 'verified' ? 1 : 0);
+          const verificationDiff = rank(b.entry) - rank(a.entry);
+          if (verificationDiff !== 0) return verificationDiff;
+          return b.score - a.score;
+        })
+        .slice(0, limit)
+        .map((s) => s.entry);
+      for (const e of ranked) {
+        e.accessCount = (e.accessCount ?? 0) + 1;
+        e.lastUsedAt = nowIso();
+      }
+      if (ranked.length > 0) {
+        this.flush();
+        this.retrievedCount += ranked.length;
+        this.logAudit({
+          event: 'retrieved',
+          memoryId: ranked[0]!.id,
+          agentId: ctx?.requestingAgentId,
+          missionId: ctx?.missionId,
+          projectId: ctx?.projectId,
+          reason: `${ranked.length} memory(ies) retrieved`,
+        });
+      }
+      return ranked;
+    });
   }
 
   /**
@@ -358,6 +379,7 @@ export class MemoryStore {
     scope: string,
     opts: { limit?: number; maxChars?: number; ctx?: MemoryRetrievalContext } = {},
   ): MemoryEntry[] {
+    this.refresh();
     const maxChars = opts.maxChars ?? 2_000;
     const candidates = this.entries
       .filter(
@@ -406,24 +428,27 @@ export class MemoryStore {
     id: string,
     opts: { to: 'verified' | 'durable'; evidence?: string; verifiedBy?: string; confidence?: number; importance?: number },
   ): MemoryEntry | undefined {
-    const e = this.entries.find((m) => m.id === id);
-    if (!e) return undefined;
-    if (opts.to === 'durable' && (e.status ?? 'candidate') === 'candidate') {
-      throw new Error(`memory ${id} is still a candidate — verify it before making it durable`);
-    }
-    if (opts.to === 'verified' && !opts.evidence && (e.sourceType === 'model_inference' || !e.sourceType)) {
-      throw new Error(`memory ${id} has no verification support — model inference needs evidence before promotion`);
-    }
-    e.status = opts.to;
-    if (opts.evidence) e.evidence = opts.evidence;
-    if (opts.verifiedBy) e.source = opts.verifiedBy;
-    if (opts.confidence !== undefined) e.confidence = Math.max(e.confidence, opts.confidence);
-    if (opts.importance !== undefined) e.importance = Math.max(e.importance ?? 0.5, opts.importance);
-    e.lastVerifiedAt = nowIso();
-    e.updatedAt = nowIso();
-    this.flush();
-    this.logAudit({ event: 'verified', memoryId: id, reason: opts.verifiedBy, source: opts.to });
-    return e;
+    return this.locked(() => {
+      this.refresh();
+      const e = this.entries.find((m) => m.id === id);
+      if (!e) return undefined;
+      if (opts.to === 'durable' && (e.status ?? 'candidate') === 'candidate') {
+        throw new Error(`memory ${id} is still a candidate — verify it before making it durable`);
+      }
+      if (opts.to === 'verified' && !opts.evidence && (e.sourceType === 'model_inference' || !e.sourceType)) {
+        throw new Error(`memory ${id} has no verification support — model inference needs evidence before promotion`);
+      }
+      e.status = opts.to;
+      if (opts.evidence) e.evidence = opts.evidence;
+      if (opts.verifiedBy) e.source = opts.verifiedBy;
+      if (opts.confidence !== undefined) e.confidence = Math.max(e.confidence, opts.confidence);
+      if (opts.importance !== undefined) e.importance = Math.max(e.importance ?? 0.5, opts.importance);
+      e.lastVerifiedAt = nowIso();
+      e.updatedAt = nowIso();
+      this.flush();
+      this.logAudit({ event: 'verified', memoryId: id, reason: opts.verifiedBy, source: opts.to });
+      return e;
+    });
   }
 
   /**
@@ -433,20 +458,22 @@ export class MemoryStore {
    * default because retrieval excludes superseded entries.
    */
   supersede(oldId: string, newId: string): MemoryEntry | undefined {
-    const old = this.entries.find((m) => m.id === oldId);
-    if (!old) return undefined;
-    old.status = 'superseded';
-    old.supersededBy = newId;
-    old.updatedAt = nowIso();
-    this.flush();
-    this.logAudit({ event: 'superseded', memoryId: oldId, reason: `superseded by ${newId}` });
-    return old;
+    return this.locked(() => {
+      this.refresh();
+      const old = this.entries.find((m) => m.id === oldId);
+      if (!old) return undefined;
+      old.status = 'superseded';
+      old.supersededBy = newId;
+      old.updatedAt = nowIso();
+      this.flush();
+      this.logAudit({ event: 'superseded', memoryId: oldId, reason: `superseded by ${newId}` });
+      return old;
+    });
   }
 
   /**
-   * Record a VERIFIED fact, superseding any near-duplicate candidate it
-   * contradicts/replaces (review Phase 6 example: localStorage → httpOnly
-   * cookies). Returns the new verified entry.
+   * Record a verified fact. Similar wording is not proof of contradiction;
+   * replacement requires explicit predecessor IDs and verification support.
    */
   recordVerified(input: {
     type: MemoryType;
@@ -456,50 +483,57 @@ export class MemoryStore {
     sourceType?: MemorySourceType;
     confidence?: number;
     importance?: number;
+    replaces?: string[];
   }): { entry: MemoryEntry; supersededIds: string[] } {
-    const result = this.add({ ...input, status: 'verified' });
-    const supersededIds: string[] = [];
-    if (result.created) {
-      // Near-duplicates of the same subject that are NOT the new entry are its
-      // predecessors: same type+scope with high claim overlap.
-      const newTokens = new Set(input.claim.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 3));
-      for (const e of this.entries) {
-        if (e.id === result.entry.id || e.type !== input.type || e.scope !== input.scope) continue;
-        if (e.status === 'superseded' || e.status === 'archived') continue;
-        const tokens = e.claim.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 3);
-        const overlap = tokens.filter((t) => newTokens.has(t)).length;
-        if (tokens.length > 0 && overlap / tokens.length >= 0.5) {
-          this.supersede(e.id, result.entry.id);
-          supersededIds.push(e.id);
-        }
+    return this.locked(() => {
+      this.refresh();
+      const predecessors = (input.replaces ?? []).map((id) => this.entries.find((e) => e.id === id));
+      if (predecessors.length && !input.evidence?.trim() && (!input.sourceType || input.sourceType === 'model_inference')) {
+        throw new Error('Replacing memory requires verification support');
       }
-    }
-    return { entry: result.entry, supersededIds };
+      if (predecessors.some((e) => !e || e.type !== input.type || boundaryKey(e) !== boundaryKey({ scope: input.scope }))) {
+        throw new Error('Replacement memories must exist and have the same type and ownership scope');
+      }
+      const result = this.add({ ...input, status: 'verified' });
+      const supersededIds: string[] = [];
+      for (const e of predecessors) {
+        if (!e || e.id === result.entry.id || e.status === 'superseded' || e.status === 'archived') continue;
+        this.supersede(e.id, result.entry.id);
+        supersededIds.push(e.id);
+      }
+      return { entry: result.entry, supersededIds };
+    });
   }
 
   /** Revalidate a memory (review Phase 14): refresh verification state. */
   verify(id: string, opts: { evidence?: string; by?: string } = {}): MemoryEntry | undefined {
-    const e = this.entries.find((m) => m.id === id);
-    if (!e || e.status === 'superseded' || e.status === 'archived') return e;
-    e.status = e.status === 'durable' ? 'durable' : 'verified';
-    e.lastVerifiedAt = nowIso();
-    e.updatedAt = nowIso();
-    if (opts.evidence) e.evidence = opts.evidence;
-    if (opts.by) e.source = opts.by;
-    this.flush();
-    this.logAudit({ event: 'verified', memoryId: id, reason: opts.by ?? 'revalidation', source: opts.evidence });
-    return e;
+    return this.locked(() => {
+      this.refresh();
+      const e = this.entries.find((m) => m.id === id);
+      if (!e || e.status === 'superseded' || e.status === 'archived') return e;
+      e.status = e.status === 'durable' ? 'durable' : 'verified';
+      e.lastVerifiedAt = nowIso();
+      e.updatedAt = nowIso();
+      if (opts.evidence) e.evidence = opts.evidence;
+      if (opts.by) e.source = opts.by;
+      this.flush();
+      this.logAudit({ event: 'verified', memoryId: id, reason: opts.by ?? 'revalidation', source: opts.evidence });
+      return e;
+    });
   }
 
   /** Archive (never destroy) — the terminal rest for decayed memories. */
   archive(id: string): boolean {
-    const e = this.entries.find((m) => m.id === id);
-    if (!e) return false;
-    e.status = 'archived';
-    e.updatedAt = nowIso();
-    this.flush();
-    this.logAudit({ event: 'archived', memoryId: id, reason: 'archived' });
-    return true;
+    return this.locked(() => {
+      this.refresh();
+      const e = this.entries.find((m) => m.id === id);
+      if (!e) return false;
+      e.status = 'archived';
+      e.updatedAt = nowIso();
+      this.flush();
+      this.logAudit({ event: 'archived', memoryId: id, reason: 'archived' });
+      return true;
+    });
   }
 
   /**
@@ -509,24 +543,27 @@ export class MemoryStore {
    * have ZERO decay — important knowledge is never destroyed for being old.
    */
   decay(opts: { olderThanDays?: number } = {}): string[] {
-    const windowDays = opts.olderThanDays ?? 30;
-    const zeroDecayTypes = new Set<MemoryType>(['decision', 'architecture', 'constraint', 'preference', 'lesson', 'pattern', 'project_convention']);
-    const cutoff = Date.now() - windowDays * 86_400_000;
-    const archived: string[] = [];
-    for (const e of this.entries) {
-      if (e.status === 'archived' || e.status === 'superseded') continue;
-      if (zeroDecayTypes.has(e.type)) continue;
-      if ((e.importance ?? 0.5) >= 0.7) continue;
-      if (e.confidence >= 0.5) continue;
-      if ((e.accessCount ?? 0) > 0) continue;
-      if (Date.parse(e.createdAt) > cutoff) continue;
-      e.status = 'archived';
-      e.updatedAt = nowIso();
-      archived.push(e.id);
-      this.logAudit({ event: 'archived', memoryId: e.id, reason: 'decay' });
-    }
-    if (archived.length > 0) this.flush();
-    return archived;
+    return this.locked(() => {
+      this.refresh();
+      const windowDays = opts.olderThanDays ?? 30;
+      const zeroDecayTypes = new Set<MemoryType>(['decision', 'architecture', 'constraint', 'preference', 'lesson', 'pattern', 'project_convention']);
+      const cutoff = Date.now() - windowDays * 86_400_000;
+      const archived: string[] = [];
+      for (const e of this.entries) {
+        if (e.status === 'archived' || e.status === 'superseded') continue;
+        if (zeroDecayTypes.has(e.type)) continue;
+        if ((e.importance ?? 0.5) >= 0.7) continue;
+        if (e.confidence >= 0.5) continue;
+        if ((e.accessCount ?? 0) > 0) continue;
+        if (Date.parse(e.createdAt) > cutoff) continue;
+        e.status = 'archived';
+        e.updatedAt = nowIso();
+        archived.push(e.id);
+        this.logAudit({ event: 'archived', memoryId: e.id, reason: 'decay' });
+      }
+      if (archived.length > 0) this.flush();
+      return archived;
+    });
   }
 
   /**
@@ -536,76 +573,94 @@ export class MemoryStore {
    * superseded (history preserved) and point at the consolidated memory.
    */
   consolidate(scope?: string): { merged: MemoryEntry[]; supersededIds: string[]; flagged: { aId: string; bId: string; reason: string }[] } {
-    const pool = this.entries.filter(
-      (e) => (e.status === 'candidate' || e.status === 'verified') && (!scope || e.scope === scope),
-    );
-    const groups: MemoryEntry[][] = [];
-    const flagged: { aId: string; bId: string; reason: string }[] = [];
-    for (const e of pool) {
-      // The LEXICAL fallback applies the same contradiction protection as the
-      // semantic path: high-overlap pairs whose unique substantive terms
-      // differ (Zustand vs Redux) are subject swaps — keep both and flag,
-      // never merge.
-      const target = groups.find(
-        (g) => g[0]!.type === e.type && g[0]!.scope === e.scope && overlapRatio(g[0]!.claim, e.claim) >= 0.45,
+    return this.locked(() => {
+      this.refresh();
+      const pool = this.entries.filter(
+        (e) => (e.status === 'candidate' || e.status === 'verified') && (!scope || e.scope === scope),
       );
-      if (target) {
-        // Corroboration types (failures, lessons, observations...) REINFORCE
-        // each other — the same failure seen twice is evidence, not a
-        // contradiction. The gate protects only state-assertion memories.
-        const signals = isCorroborationType(e.type) ? 0 : contradictionSignals(target[0]!.claim, e.claim);
-        if (signals >= 2) {
-          flagged.push({ aId: target[0]!.id, bId: e.id, reason: `possible contradiction (${signals} unique substantive terms differ) — kept separate` });
-          this.logAudit({
-            event: 'flagged',
-            memoryId: target[0]!.id,
-            projectId: e.projectId,
-            reason: `POSSIBLE MEMORY CONTRADICTION with ${e.id} — lexical fallback kept both; supersession requires independent evidence`,
-            source: 'lexical-contradiction-check',
-          });
-          continue;
-        }
-        target.push(e);
-      } else {
-        groups.push([e]);
-      }
-    }
-    const merged: MemoryEntry[] = [];
-    const supersededIds: string[] = [];
-    for (const group of groups) {
-      if (group.length < 2) continue;
-      const result = this.mergeGroup(group);
-      if (result) {
-        merged.push(result);
-        for (const g of group) {
-          this.supersede(g.id, result.id);
-          supersededIds.push(g.id);
+      const groups: MemoryEntry[][] = [];
+      const flagged: { aId: string; bId: string; reason: string }[] = [];
+      for (const e of pool) {
+        // The LEXICAL fallback applies the same contradiction protection as the
+        // semantic path: high-overlap pairs whose unique substantive terms
+        // differ (Zustand vs Redux) are subject swaps — keep both and flag,
+        // never merge.
+        const target = groups.find(
+          (g) => g[0]!.type === e.type && boundaryKey(g[0]!) === boundaryKey(e) && overlapRatio(g[0]!.claim, e.claim) >= 0.45,
+        );
+        if (target) {
+          // Corroboration types (failures, lessons, observations...) REINFORCE
+          // each other — the same failure seen twice is evidence, not a
+          // contradiction. The gate protects only state-assertion memories.
+          const signals = isCorroborationType(e.type) ? 0 : contradictionSignals(target[0]!.claim, e.claim);
+          if (signals >= 2) {
+            flagged.push({ aId: target[0]!.id, bId: e.id, reason: `possible contradiction (${signals} unique substantive terms differ) — kept separate` });
+            this.logAudit({
+              event: 'flagged',
+              memoryId: target[0]!.id,
+              projectId: e.projectId,
+              reason: `POSSIBLE MEMORY CONTRADICTION with ${e.id} — lexical fallback kept both; supersession requires independent evidence`,
+              source: 'lexical-contradiction-check',
+            });
+            continue;
+          }
+          target.push(e);
+        } else {
+          groups.push([e]);
         }
       }
-    }
-    return { merged, supersededIds, flagged };
+      const merged: MemoryEntry[] = [];
+      const supersededIds: string[] = [];
+      for (const group of groups) {
+        if (group.length < 2) continue;
+        const result = this.mergeGroup(group);
+        if (result) {
+          merged.push(result);
+          for (const g of group) {
+            supersededIds.push(g.id);
+          }
+        }
+      }
+      return { merged, supersededIds, flagged };
+    });
   }
 
   /** Merge a compatible group into one stronger memory (provenance kept). */
-  private mergeGroup(group: MemoryEntry[]): MemoryEntry {
-    const combined = group
-      .map((g) => g.claim.replace(/^(the |a |an )/i, ''))
-      .join('; ')
-      .slice(0, 400);
-    const best = group.reduce((a, b) => ((b.confidence ?? 0) > (a.confidence ?? 0) ? b : a));
-    const result = this.add({
-      type: best.type,
-      claim: combined,
-      scope: best.scope,
-      evidence: group.map((g) => g.evidence).filter(Boolean).join(' | ') || undefined,
-      confidence: Math.min(1, Math.max(...group.map((g) => g.confidence)) + 0.05),
-      importance: Math.max(...group.map((g) => g.importance ?? 0.5)),
-      source: `consolidated from ${group.length} memories (${group.map((g) => g.id).join(', ')})`,
-      sourceType: group.every((g) => g.sourceType === 'model_inference') ? 'model_inference' : 'tool_result',
-      status: group.every((g) => g.status === 'verified') ? 'verified' : 'candidate',
-    }).entry;
-    this.logAudit({ event: 'consolidated', memoryId: result.id, projectId: result.projectId, reason: `merged ${group.length} memories`, source: group.map((g) => g.id).join(',') });
-    return result;
+  private mergeGroup(group: MemoryEntry[]): MemoryEntry | undefined {
+    const expected = group.map((g) => JSON.stringify([g.claim, g.status, boundaryKey(g)]));
+    return this.locked(() => {
+      this.refresh();
+      // Embedding work can yield to other sessions. Recheck ownership and
+      // lifecycle under the write lock before publishing a derived memory.
+      if (group.some((g, i) => !this.entries.includes(g)
+        || JSON.stringify([g.claim, g.status, boundaryKey(g)]) !== expected[i]
+        || (g.status !== 'candidate' && g.status !== 'verified')
+        || boundaryKey(g) !== boundaryKey(group[0]!))) return undefined;
+      const combined = group
+        .map((g) => g.claim.replace(/^(the |a |an )/i, ''))
+        .join('; ')
+        .slice(0, 400);
+      const best = group.reduce((a, b) => ((b.confidence ?? 0) > (a.confidence ?? 0) ? b : a));
+      const result = this.add({
+        type: best.type,
+        claim: combined,
+        scope: best.scope,
+        visibility: best.visibility,
+        agentId: best.agentId,
+        missionId: best.missionId,
+        projectId: best.projectId,
+        pinned: group.some((g) => g.pinned),
+        evidence: group.map((g) => g.evidence).filter(Boolean).join(' | ') || undefined,
+        confidence: Math.min(1, Math.max(...group.map((g) => g.confidence)) + 0.05),
+        importance: Math.max(...group.map((g) => g.importance ?? 0.5)),
+        source: `consolidated from ${group.length} memories (${group.map((g) => g.id).join(', ')})`,
+        sourceType: group.every((g) => g.sourceType === 'model_inference') ? 'model_inference' : 'tool_result',
+        status: group.every((g) => g.status === 'verified') ? 'verified' : 'candidate',
+      }).entry;
+      for (const entry of group) this.supersede(entry.id, result.id);
+      this.logAudit({ event: 'consolidated', memoryId: result.id, projectId: result.projectId, reason: `merged ${group.length} memories`, source: group.map((g) => g.id).join(',') });
+      return result;
+    });
   }
 
   // ── Semantic layer (review: semantic consolidation / advisory
@@ -640,6 +695,7 @@ export class MemoryStore {
    * intact — search NEVER merges, supersedes, or rewrites anything.
    */
   async search(query: string, options: MemorySearchOptions = {}): Promise<MemorySearchResult[]> {
+    this.refresh();
     const limit = options.limit ?? 10;
     const ctx = options.ctx;
     // Isolation BEFORE filtering/ranking (same invariant as retrieve()).
@@ -780,6 +836,7 @@ export class MemoryStore {
     classified: Record<string, number>;
   }> {
     const embedder = opts.embedder ?? this.embedder;
+    this.refresh();
     if (!embedder) {
       this.embeddingFallbacks += 1;
       const lexical = this.consolidate(opts.scope);
@@ -813,7 +870,7 @@ export class MemoryStore {
         const a = withVectors[i]!.entry;
         const b = withVectors[j]!.entry;
         if (a.type !== b.type) continue; // incompatible types never merge
-        if ((a.visibility ?? 'project') !== (b.visibility ?? 'project')) continue;
+        if (boundaryKey(a) !== boundaryKey(b)) continue;
         if (a.status === 'superseded' || b.status === 'superseded') continue;
         const semantic = cosineSimilarity(vectorById.get(a.id)!, vectorById.get(b.id)!);
         const lexical = overlapRatio(a.claim, b.claim);
@@ -858,10 +915,10 @@ export class MemoryStore {
     for (const group of groups) {
       if (group.length < 2) continue;
       const result = this.mergeGroup(group);
+      if (!result) continue;
       merged.push(result);
       this.semanticMerged += 1;
       for (const g of group) {
-        this.supersede(g.id, result.id);
         supersededIds.push(g.id);
       }
     }
@@ -881,49 +938,51 @@ export class MemoryStore {
     sourceType: MemorySourceType;
     evidence?: string;
   }): { promoted: boolean; pattern?: MemoryEntry; distinctObservations: number; reason?: string } {
-    const trusted: MemorySourceType[] = ['test', 'browser_evidence', 'task_completion', 'tool_result', 'source_code'];
-    if (!trusted.includes(input.sourceType)) {
-      return { promoted: false, distinctObservations: 0, reason: `unverified source (${input.sourceType}) — model claims cannot create success patterns` };
-    }
-    const subject = input.subject.trim().replace(/\s+/g, ' ').toLowerCase();
-    this.successObservations += 1;
-    const added = this.add({
-      type: 'evidence',
-      claim: subject,
-      scope: input.scope,
-      evidence: input.evidence ?? input.taskId,
-      confidence: 0.8,
-      sourceType: input.sourceType,
-      status: 'verified',
-    });
-    const obs = added.entry.observations ?? [];
-    if (!obs.includes(input.taskId)) obs.push(input.taskId);
-    added.entry.observations = obs;
-    added.entry.updatedAt = nowIso();
-    const distinct = obs.length;
-    if (distinct < 3) {
+    return this.locked(() => {
+      const trusted: MemorySourceType[] = ['test', 'browser_evidence', 'task_completion', 'tool_result', 'source_code'];
+      if (!trusted.includes(input.sourceType)) {
+        return { promoted: false, distinctObservations: 0, reason: `unverified source (${input.sourceType}) — model claims cannot create success patterns` };
+      }
+      const subject = input.subject.trim().replace(/\s+/g, ' ').toLowerCase();
+      this.successObservations += 1;
+      const added = this.add({
+        type: 'evidence',
+        claim: subject,
+        scope: input.scope,
+        evidence: input.evidence ?? input.taskId,
+        confidence: 0.8,
+        sourceType: input.sourceType,
+        status: 'verified',
+      });
+      const obs = added.entry.observations ?? [];
+      if (!obs.includes(input.taskId)) obs.push(input.taskId);
+      added.entry.observations = obs;
+      added.entry.updatedAt = nowIso();
+      const distinct = obs.length;
+      if (distinct < 3) {
+        this.flush();
+        return { promoted: false, distinctObservations: distinct, reason: `${distinct} independent observation(s) — need 3` };
+      }
+      // Pattern already exists? Dedupe keeps it single.
+      // Pattern already exists? Dedupe keeps it single (case-insensitive).
+      const existing = this.entries.find((m) => m.type === 'pattern' && m.scope === input.scope && m.claim.toLowerCase().includes(subject));
+      if (existing) return { promoted: false, pattern: existing, distinctObservations: distinct, reason: 'pattern already promoted' };
+      const pattern = this.add({
+        type: 'pattern',
+        claim: `PATTERN: ${input.subject} — verified across ${distinct} independent task(s)`,
+        scope: input.scope,
+        evidence: `observations: ${obs.join(', ')}${input.evidence ? ` | ${input.evidence}` : ''}`,
+        confidence: Math.min(0.95, 0.7 + 0.05 * distinct),
+        importance: 0.8,
+        sourceType: 'task_completion',
+        status: 'verified',
+        source: `success observations from tasks ${obs.join(', ')}`,
+      }).entry;
+      this.successPatternsPromoted += 1;
+      this.logAudit({ event: 'promoted', memoryId: pattern.id, projectId: input.scope, reason: `success pattern from ${distinct} independent verified observations` });
       this.flush();
-      return { promoted: false, distinctObservations: distinct, reason: `${distinct} independent observation(s) — need 3` };
-    }
-    // Pattern already exists? Dedupe keeps it single.
-    // Pattern already exists? Dedupe keeps it single (case-insensitive).
-    const existing = this.entries.find((m) => m.type === 'pattern' && m.scope === input.scope && m.claim.toLowerCase().includes(subject));
-    if (existing) return { promoted: false, pattern: existing, distinctObservations: distinct, reason: 'pattern already promoted' };
-    const pattern = this.add({
-      type: 'pattern',
-      claim: `PATTERN: ${input.subject} — verified across ${distinct} independent task(s)`,
-      scope: input.scope,
-      evidence: `observations: ${obs.join(', ')}${input.evidence ? ` | ${input.evidence}` : ''}`,
-      confidence: Math.min(0.95, 0.7 + 0.05 * distinct),
-      importance: 0.8,
-      sourceType: 'task_completion',
-      status: 'verified',
-      source: `success observations from tasks ${obs.join(', ')}`,
-    }).entry;
-    this.successPatternsPromoted += 1;
-    this.logAudit({ event: 'promoted', memoryId: pattern.id, projectId: input.scope, reason: `success pattern from ${distinct} independent verified observations` });
-    this.flush();
-    return { promoted: true, pattern, distinctObservations: distinct };
+      return { promoted: true, pattern, distinctObservations: distinct };
+    });
   }
 
   /**
@@ -1017,22 +1076,25 @@ export class MemoryStore {
    * confidence ≥ 0.85 earns the pattern.
    */
   maybePromotePattern(input: { entryId: string; patternClaim: string; scope: string }): MemoryEntry | undefined {
-    const e = this.entries.find((m) => m.id === input.entryId);
-    if (!e) return undefined;
-    const occurrences = Math.round((e.confidence - 0.7) / 0.05) + 1;
-    if (occurrences < 3 || e.confidence < 0.85) return undefined;
-    const existing = this.entries.find((m) => m.type === 'pattern' && m.scope === input.scope && dedupeKey(m.type, m.scope, m.claim) === dedupeKey('pattern', input.scope, input.patternClaim));
-    if (existing) return existing;
-    const pattern = this.add({
-      type: 'pattern',
-      claim: `PATTERN: ${input.patternClaim}`,
-      scope: input.scope,
-      confidence: 0.85,
-      importance: 0.8,
-      sourceType: 'task_completion',
-      status: 'verified',
+    return this.locked(() => {
+      this.refresh();
+      const e = this.entries.find((m) => m.id === input.entryId);
+      if (!e) return undefined;
+      const occurrences = Math.round((e.confidence - 0.7) / 0.05) + 1;
+      if (occurrences < 3 || e.confidence < 0.85) return undefined;
+      const existing = this.entries.find((m) => m.type === 'pattern' && m.scope === input.scope && dedupeKey(m.type, m.scope, m.claim) === dedupeKey('pattern', input.scope, input.patternClaim));
+      if (existing) return existing;
+      const pattern = this.add({
+        type: 'pattern',
+        claim: `PATTERN: ${input.patternClaim}`,
+        scope: input.scope,
+        confidence: 0.85,
+        importance: 0.8,
+        sourceType: 'task_completion',
+        status: 'verified',
+      });
+      return pattern.entry;
     });
-    return pattern.entry;
   }
 
   /** Observability (review Phase 16): lifecycle counters. */
@@ -1060,6 +1122,7 @@ export class MemoryStore {
       possibleContradictions: number;
     };
   } {
+    this.refresh();
     const byStatus: Record<string, number> = {};
     const byType: Record<string, number> = {};
     const byVisibility: Record<string, number> = {};
@@ -1107,42 +1170,45 @@ export class MemoryStore {
     target: MemoryVisibility,
     opts: { reason?: string; by?: string; missionId?: string; projectId?: string } = {},
   ): MemoryEntry | undefined {
-    const e = this.entries.find((m) => m.id === id);
-    if (!e) return undefined;
-    const from: MemoryVisibility = e.visibility ?? 'project';
-    const allowed: Record<MemoryVisibility, MemoryVisibility[]> = {
-      agent: ['mission', 'project'],
-      mission: ['project'],
-      project: ['global'],
-      global: [],
-    };
-    if (!allowed[from].includes(target)) {
-      throw new Error(`cannot promote memory ${id} from ${from} to ${target} — allowed: ${from} → ${allowed[from].join(', ') || 'nothing'}`);
-    }
-    // Ownership requirements for the TARGET scope.
-    const missionId = target === 'mission' ? (opts.missionId ?? e.missionId) : e.missionId;
-    const projectId = target === 'project' || target === 'mission' ? (opts.projectId ?? e.projectId ?? e.scope) : e.projectId;
-    if (target === 'mission' && !missionId) throw new Error(`mission-scope memory ${id} requires a missionId`);
-    if ((target === 'mission' || target === 'project') && !projectId) throw new Error(`${target}-scope memory ${id} requires a projectId`);
-    e.promotedFrom = [...(e.promotedFrom ?? []), { visibility: from, at: nowIso(), reason: opts.reason }];
-    e.visibility = target;
-    if (missionId) e.missionId = missionId;
-    if (projectId) e.projectId = projectId;
-    e.updatedAt = nowIso();
-    this.promotionsCount += 1;
-    this.flush();
-    this.logAudit({
-      event: 'promoted',
-      memoryId: id,
-      agentId: e.agentId,
-      missionId: e.missionId,
-      projectId: e.projectId,
-      oldVisibility: from,
-      newVisibility: target,
-      reason: opts.reason,
-      source: opts.by,
+    return this.locked(() => {
+      this.refresh();
+      const e = this.entries.find((m) => m.id === id);
+      if (!e) return undefined;
+      const from: MemoryVisibility = e.visibility ?? 'project';
+      const allowed: Record<MemoryVisibility, MemoryVisibility[]> = {
+        agent: ['mission', 'project'],
+        mission: ['project'],
+        project: ['global'],
+        global: [],
+      };
+      if (!allowed[from].includes(target)) {
+        throw new Error(`cannot promote memory ${id} from ${from} to ${target} — allowed: ${from} → ${allowed[from].join(', ') || 'nothing'}`);
+      }
+      // Ownership requirements for the TARGET scope.
+      const missionId = target === 'mission' ? (opts.missionId ?? e.missionId) : e.missionId;
+      const projectId = target === 'project' || target === 'mission' ? (opts.projectId ?? e.projectId ?? e.scope) : e.projectId;
+      if (target === 'mission' && !missionId) throw new Error(`mission-scope memory ${id} requires a missionId`);
+      if ((target === 'mission' || target === 'project') && !projectId) throw new Error(`${target}-scope memory ${id} requires a projectId`);
+      e.promotedFrom = [...(e.promotedFrom ?? []), { visibility: from, at: nowIso(), reason: opts.reason }];
+      e.visibility = target;
+      if (missionId) e.missionId = missionId;
+      if (projectId) e.projectId = projectId;
+      e.updatedAt = nowIso();
+      this.promotionsCount += 1;
+      this.flush();
+      this.logAudit({
+        event: 'promoted',
+        memoryId: id,
+        agentId: e.agentId,
+        missionId: e.missionId,
+        projectId: e.projectId,
+        oldVisibility: from,
+        newVisibility: target,
+        reason: opts.reason,
+        source: opts.by,
+      });
+      return e;
     });
-    return e;
   }
 
   /**
@@ -1186,16 +1252,102 @@ export class MemoryStore {
   }
 
   private flush(): void {
-    writeJson(this.file, this.entries);
+    this.locked(() => {
+      this.refresh();
+      writeJson(this.file, this.entries);
+      this.baseline = new Map(this.entries.map((e) => [e.id, structuredClone(e)]));
+      this.diskText = `${JSON.stringify(this.entries, null, 2)}\n`;
+    });
+  }
+
+  /**
+   * Run an asynchronous action with the shared cross-process file lock held.
+   * Refreshes the memory state before running and merges state after completion.
+   */
+  async withLock<T>(action: () => Promise<T> | T): Promise<T> {
+    return await withMemoryFileLock(this.file, async () => {
+      this.refresh();
+      try {
+        return await action();
+      } finally {
+        this.refresh();
+      }
+    });
+  }
+
+  private locked<T>(action: () => T): T {
+    return action();
+  }
+
+  private async lockedAsync<T>(action: () => Promise<T> | T): Promise<T> {
+    return await withMemoryFileLock(this.file, async () => {
+      return await action();
+    });
+  }
+
+  private readDisk<T>(file: string): T[] {
+    const data: unknown = JSON.parse(this.readDiskText(file));
+    if (!Array.isArray(data)) throw new Error(`Invalid memory file: ${file}`);
+    return data as T[];
+  }
+
+  private readDiskText(file: string): string {
+    try {
+      return readFileSync(file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '[]';
+      // Never turn an unreadable/corrupt store into an empty writable one.
+      throw error;
+    }
+  }
+
+  /** Merge only locally changed fields into the latest disk snapshot. This
+   * keeps access updates from reverting another session's lifecycle changes.
+   * Preserve entry references held by callers and by consolidation groups. */
+  private refresh(): void {
+      const diskText = this.readDiskText(this.file);
+      if (diskText === this.diskText) {
+        return;
+      }
+      const disk: MemoryEntry[] = JSON.parse(diskText);
+      if (!Array.isArray(disk)) throw new Error(`Invalid memory file: ${this.file}`);
+      const merged = new Map(disk.map((e) => [e.id, e]));
+      for (const local of this.entries) {
+        const previous = this.baseline.get(local.id);
+        const latest = merged.get(local.id);
+        if (!previous) {
+          merged.set(local.id, local);
+          continue;
+        }
+        // A removed disk entry must not be resurrected by an old reader.
+        if (!latest) continue;
+        const fields = new Set([...Object.keys(previous), ...Object.keys(local)]);
+        const changes: Record<string, unknown> = {};
+        for (const field of fields) {
+          const key = field as keyof MemoryEntry;
+          if (JSON.stringify(local[key]) === JSON.stringify(previous[key])) continue;
+          changes[key] = key === 'accessCount'
+            ? (latest.accessCount ?? 0) + (local.accessCount ?? 0) - (previous.accessCount ?? 0)
+            : key === 'observations'
+              ? [...new Set([...(latest.observations ?? []), ...(local.observations ?? [])])]
+              : local[key];
+        }
+        // Remove fields that another session removed (e.g. scope promotion).
+        for (const key of Object.keys(local)) delete (local as unknown as Record<string, unknown>)[key];
+        Object.assign(local, latest, changes);
+        merged.set(local.id, local);
+      }
+      this.entries = [...merged.values()];
+      this.baseline = new Map(disk.map((e) => [e.id, structuredClone(e)]));
+      this.diskText = diskText;
   }
 
   /** Structured audit event — appended to the PERSISTED ring (retention 500). */
   private logAudit(event: Omit<MemoryAuditEvent, 'at'>): void {
-    this.audit.push({ at: nowIso(), ...event });
-    if (this.audit.length > MemoryStore.AUDIT_RETENTION) {
-      this.audit.splice(0, this.audit.length - MemoryStore.AUDIT_RETENTION);
-    }
     try {
+      this.audit = this.readDisk<MemoryAuditEvent>(this.auditFile);
+      this.audit.push({ at: nowIso(), ...event });
+      this.audit = this.audit.slice(-MemoryStore.AUDIT_RETENTION);
       writeJson(this.auditFile, this.audit);
     } catch {
       /* audit persistence must never break memory operations */
@@ -1207,6 +1359,8 @@ export class MemoryStore {
     entry: MemoryEntry | undefined;
     audit: MemoryAuditEvent[];
   } {
+    this.refresh();
+    try { this.audit = this.readDisk<MemoryAuditEvent>(this.auditFile); } catch {}
     const entry = this.entries.find((m) => m.id === id);
     return { entry, audit: this.audit.filter((a) => a.memoryId === id) };
   }

@@ -2281,6 +2281,12 @@ export const UI_HTML = String.raw`<!doctype html>
         settlePendingUserMessage(runId, result && result.safeText !== undefined ? result.safeText : credentialChatInput(text).safeText, sentBubbleId, false);
         if (!running) setPlanRequested(runId, false);
         sess.chatish = false;
+        if (!running) {
+          // Mark the resume boundary: tool cards started BEFORE this moment
+          // belong to earlier interrupted runs and must never suppress the
+          // thinking indicator (see interruptWorkingToolRows).
+          sess.runStartedAtMs = Date.now();
+        }
         pendingFor().length = 0;
         renderThumbs();
         setWorking(result && result.credentialRequired ? 'Waiting for secure connection details…' : 'Thinking…');
@@ -2905,6 +2911,37 @@ export const UI_HTML = String.raw`<!doctype html>
     var group = sess && sess.nodes && sess.nodes.toolGroup;
     if (group && group.el && group.el.isConnected && group.accepting) return group;
     return createToolActivityGroup(sess, insert);
+  }
+
+  // Tool cards left in the "working" state — by a crashed or restarted app, an
+  // approval timeout, or a history replay of a run that ended mid-tool —
+  // suppress the global thinking/reasoning/responding line forever (a working
+  // row "owns" the spinner) and keep their group flagged as running. Mark
+  // everything that started before beforeMs as interrupted so a resumed run
+  // gets its live indicator back. Rows started AFTER beforeMs (the current
+  // run's own tools) are left untouched.
+  function interruptWorkingToolRows(sess, beforeMs) {
+    if (!sess || !sess.nodes) return;
+    var swept = false;
+    var groups = [];
+    (sess.nodes.toolRows || []).forEach(function (row) {
+      if (!row.isConnected || row.dataset.toolState !== 'working') return;
+      if (beforeMs !== undefined && Number(row.dataset.startedAt || 0) >= beforeMs) return;
+      swept = true;
+      row.dataset.toolState = 'done';
+      row.dataset.toolStatus = 'interrupted';
+      var toolStatus = row.querySelector('.st');
+      if (toolStatus) { toolStatus.className = 'st st-warn'; toolStatus.textContent = 'Interrupted'; }
+      var outputLabel = row.querySelector('.output-label');
+      if (outputLabel) outputLabel.textContent = 'Output · interrupted';
+      var output = row.querySelector('pre');
+      if (output) output.textContent = 'The run ended before this tool reported a result.';
+      var interruptedGroup = toolActivityGroupForRow(row);
+      if (interruptedGroup && groups.indexOf(interruptedGroup) < 0) groups.push(interruptedGroup);
+    });
+    if (!swept) return;
+    groups.forEach(refreshToolActivityGroup);
+    sealToolActivityGroup(sess, true);
   }
 
   // An operation can still be running when the agent streams a new public
@@ -3620,6 +3657,12 @@ export const UI_HTML = String.raw`<!doctype html>
       S.pollFailures = 0;
       retainUsageEstimate(sess, session);
       sess.session = session;
+      // A resumed run replays the whole history over SSE, re-creating tool
+      // cards from earlier interrupted runs in the "working" state — those
+      // suppress the thinking/reasoning/responding indicator for the entire
+      // run. Keep sweeping anything that predates this run's start (5s clock-
+      // skew margin); the run's own live tool cards are left alone.
+      if (sess.runStartedAtMs) interruptWorkingToolRows(sess, sess.runStartedAtMs - 5000);
       renderRunOverview(session, sess.ledger);
       // On opening a persisted task, place its model in the composer. That
       // makes continuing it stable; a later picker change is deliberate and
@@ -3671,22 +3714,7 @@ export const UI_HTML = String.raw`<!doctype html>
       if (session.status !== 'running') {
         retireAbubble(sess);
         closeThought(runId);
-        var interruptedGroups = [];
-        (sess.nodes.toolRows || []).forEach(function (row) {
-          if (!row.isConnected || row.dataset.toolState !== 'working') return;
-          row.dataset.toolState = 'done';
-          row.dataset.toolStatus = 'interrupted';
-          var toolStatus = row.querySelector('.st');
-          if (toolStatus) { toolStatus.className = 'st st-warn'; toolStatus.textContent = 'Interrupted'; }
-          var outputLabel = row.querySelector('.output-label');
-          if (outputLabel) outputLabel.textContent = 'Output · interrupted';
-          var output = row.querySelector('pre');
-          if (output) output.textContent = 'The run ended before this tool reported a result.';
-          var interruptedGroup = toolActivityGroupForRow(row);
-          if (interruptedGroup && interruptedGroups.indexOf(interruptedGroup) < 0) interruptedGroups.push(interruptedGroup);
-        });
-        interruptedGroups.forEach(refreshToolActivityGroup);
-        sealToolActivityGroup(sess, true);
+        interruptWorkingToolRows(sess, undefined);
         setWorking(null);
         if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; }
         S.reconnecting = false;

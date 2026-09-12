@@ -112,8 +112,10 @@ const MAX_MESSAGES_PER_CONVERSATION = 2_000;
 export class CoworkStore {
   private data: CoworkData = { ...EMPTY_COWORK_DATA, messages: {} };
   private loaded = false;
+  /** Process-local roster version; message appends do not change it. */
+  rosterRevision = 0;
 
-  constructor(private readonly filePath?: string) {}
+  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void) {}
 
   private file(): string {
     if (this.filePath) return this.filePath;
@@ -147,7 +149,7 @@ export class CoworkStore {
     return this.data;
   }
 
-  private save(): void {
+  private save(rosterChanged = false): void {
     const file = this.file();
     mkdirSync(path.dirname(file), { recursive: true });
     // Write-then-rename so a crash mid-write cannot truncate the document.
@@ -164,6 +166,10 @@ export class CoworkStore {
       } catch {
         /* best effort */
       }
+    }
+    if (rosterChanged) {
+      this.rosterRevision += 1;
+      this.onRosterChange?.();
     }
   }
 
@@ -201,7 +207,7 @@ export class CoworkStore {
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
     data.agents = existing ? data.agents.map((a) => (a.id === agent.id ? agent : a)) : [...data.agents, agent];
-    this.save();
+    this.save(true);
     return agent;
   }
 
@@ -217,7 +223,7 @@ export class CoworkStore {
       if (c.chiefId === id) delete c.chiefId;
       return c.memberIds.length > 0;
     });
-    this.save();
+    this.save(true);
     return true;
   }
 
@@ -259,7 +265,7 @@ export class CoworkStore {
       updatedAt: now,
     };
     data.conversations = existing ? data.conversations.map((c) => (c.id === conv.id ? conv : c)) : [...data.conversations, conv];
-    this.save();
+    this.save(true);
     return conv;
   }
 
@@ -281,7 +287,7 @@ export class CoworkStore {
     if (patch.telegram !== undefined) existing.telegram = sanitizeTelegram(patch.telegram);
     if (patch.schedule !== undefined) existing.schedule = sanitizeSchedule(patch.schedule);
     existing.updatedAt = new Date().toISOString();
-    this.save();
+    this.save(true);
     return existing;
   }
 
@@ -290,7 +296,7 @@ export class CoworkStore {
     if (!data.conversations.some((c) => c.id === id)) return false;
     data.conversations = data.conversations.filter((c) => c.id !== id);
     delete data.messages[id];
-    this.save();
+    this.save(true);
     return true;
   }
 

@@ -180,7 +180,15 @@ export const COWORK_JS = String.raw`
     if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, timer: null, infoOpen: true };
     return S.cw;
   }
-  function cwStopPoll() { var cw = S.cw; if (cw && cw.timer) { clearInterval(cw.timer); cw.timer = null; } }
+  function cwStopPoll() {
+    var cw = S.cw;
+    if (!cw) return;
+    cw.generation = (cw.generation || 0) + 1;
+    if (cw.timer) { clearInterval(cw.timer); cw.timer = null; }
+    if (cw.stream) { cw.stream.close(); cw.stream = null; }
+    cw.streamOpen = false;
+    cw.pollPromise = null;
+  }
 
   // ---- avatars: three.js voxel characters, SVG identicon fallback ----
   window.__cwAvaCache = {};
@@ -328,17 +336,22 @@ export const COWORK_JS = String.raw`
 
   function cwOpenConv(id) {
     var cw = cwEnsure();
+    cwStopPoll();
     cw.active = id;
     cw.msgs = [];
     cw.lastSeq = 0;
-    cwStopPoll();
+    cw.busy = false;
+    cw.working = null;
+    cw.progress = null;
+    cw.queued = 0;
+    cw.rosterRevision = -1;
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.remove('rail-open');
     cwRenderRail();
     cwRenderChat();
-    cwPoll().then(function () {
-      cw.timer = setInterval(cwPoll, 2000);
-    });
+    cwStartStream(id);
+    cwPoll();
+    cw.timer = setInterval(cwPoll, 2000);
   }
 
   function cwRenderChat() {
@@ -373,7 +386,7 @@ export const COWORK_JS = String.raw`
         (window.innerWidth <= 720 ? '<button class="cw-info-toggle" id="cwBack">Back</button>' : '') +
         headAva +
         '<div class="cw-tt"><div class="t1">' + esc(conv.title) + (conv.kind === 'group' && chief ? '<span title="Chief of staff: ' + esc(chief.name) + '">' + cwIcon('crown') + '</span>' : '') + '</div>' +
-        '<div class="t2">' + esc(members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</div></div>' +
+        '<div class="t2" id="cwMemberNames">' + esc(members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</div></div>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') +
         '<button class="cw-info-toggle" id="cwInfoBtn">' + (cw.infoOpen ? 'Hide panel' : 'Chat panel') + '</button>' +
@@ -393,13 +406,29 @@ export const COWORK_JS = String.raw`
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cwSend(); } });
     input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; });
     $('cwSend').onclick = cwSend;
-    if (conv.kind === 'group') {
-      var men = $('cwMentions');
+    cwRenderMembers();
+    cwRenderMsgs();
+    cwRenderInfo();
+    cwRenderTyping();
+  }
+
+  // Updating the roster must preserve the user's draft and cursor.
+  function cwRenderMembers() {
+    var conv = cwActiveConv();
+    if (!conv) return;
+    var members = cwConvMembers(conv);
+    var names = $('cwMemberNames');
+    if (names) names.textContent = members.map(function (m) { return '@' + m.name; }).join(' · ');
+    var men = $('cwMentions');
+    if (men) men.innerHTML = '';
+    if (conv.kind === 'group' && men) {
       members.forEach(function (m) {
         var b = document.createElement('button');
         b.textContent = '@' + m.name;
         b.title = 'Insert @' + m.name;
         b.onclick = function () {
+          var input = $('cwInput');
+          if (!input) return;
           var at = input.selectionStart || input.value.length;
           input.value = input.value.slice(0, at) + '@' + m.name + ' ' + input.value.slice(at);
           input.focus();
@@ -407,8 +436,6 @@ export const COWORK_JS = String.raw`
         men.appendChild(b);
       });
     }
-    cwRenderMsgs();
-    cwRenderInfo();
   }
 
   function cwBubbleHtml(m) {
@@ -459,8 +486,28 @@ export const COWORK_JS = String.raw`
     if (!wrap) return;
     var cw = cwEnsure();
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
-    wrap.innerHTML = cw.msgs.map(function (m) { return cwBubbleHtml(m); }).join('');
+    wrap.innerHTML = cw.msgs.map(function (m) { return cwBubbleHtml(m); }).join('') + '<div class="cw-row" id="cwLive" hidden></div>';
+    cwRenderProgress();
     if (nearBottom || cw.msgs.length <= 2) wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  function cwRenderProgress() {
+    var cw = cwEnsure();
+    var wrap = $('cwMsgs');
+    var live = $('cwLive');
+    if (!wrap || !live) return;
+    var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
+    var p = cw.busy ? cw.progress : null;
+    live.hidden = !p;
+    if (!p) { live.innerHTML = ''; live.removeAttribute('data-agent'); return; }
+    if (live.getAttribute('data-agent') !== p.agentId) {
+      live.setAttribute('data-agent', p.agentId);
+      live.innerHTML = cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm" id="cwLiveName"></span><span>writing…</span></div><div id="cwLiveText" style="white-space:pre-wrap"></div><div class="cw-tools" id="cwLiveTool"></div></div>';
+    }
+    $('cwLiveName').textContent = p.agentName;
+    $('cwLiveText').textContent = p.text || 'Working…';
+    $('cwLiveTool').textContent = p.tool ? p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed') : '';
+    if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
   }
 
   // Telegram + schedule cards are available on EVERY conversation: a DM
@@ -650,34 +697,73 @@ export const COWORK_JS = String.raw`
     });
   }
 
+  function cwStartStream(convId) {
+    var cw = cwEnsure();
+    if (typeof EventSource !== 'function') return;
+    var generation = cw.generation;
+    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq);
+    cw.stream = stream;
+    function current() { return S.active === 'cowork' && cw.active === convId && cw.generation === generation && cw.stream === stream; }
+    stream.onopen = function () { if (current()) cw.streamOpen = true; };
+    stream.onmessage = function (event) {
+      if (!current()) return;
+      try { cwApplySnapshot(JSON.parse(event.data)); } catch (e) { cw.streamOpen = false; cwPoll(); }
+    };
+    stream.onerror = function () { if (current()) { cw.streamOpen = false; cwPoll(); } };
+  }
+
+  function cwApplySnapshot(d) {
+    var cw = cwEnsure();
+    var rosterChanged = false;
+    if (d.roster) {
+      rosterChanged = JSON.stringify(cw.agents) !== JSON.stringify(d.roster.agents) || JSON.stringify(cw.convs) !== JSON.stringify(d.roster.conversations);
+      cw.agents = d.roster.agents || [];
+      cw.convs = d.roster.conversations || [];
+    }
+    if (d.rosterRevision !== undefined) cw.rosterRevision = d.rosterRevision;
+    if (d.deleted) {
+      cwStopPoll(); cw.active = null; cw.msgs = []; cw.busy = false; cw.progress = null;
+      cwRenderRail(); cwRenderChat(); return;
+    }
+    var added = false;
+    (d.messages || []).forEach(function (m) {
+      if (m.seq <= cw.lastSeq) return;
+      cw.msgs.push(m); cw.lastSeq = m.seq; added = true;
+    });
+    var wasBusy = cw.busy;
+    cw.busy = Boolean(d.busy);
+    cw.working = d.working || null;
+    cw.progress = d.progress || null;
+    cw.queued = d.queued || 0;
+    if (rosterChanged) { cwRenderRail(); cwRenderMembers(); }
+    if (added || rosterChanged) cwRenderMsgs(); else cwRenderProgress();
+    cwRenderTyping();
+    if (rosterChanged || (wasBusy && !cw.busy)) cwRenderInfo();
+  }
+
   function cwPoll() {
     var cw = cwEnsure();
     var conv = cwActiveConv();
     if (!conv || S.active !== 'cowork') return Promise.resolve();
     var convId = conv.id;
-    return api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages?after=' + cw.lastSeq).then(function (d) {
-      if (cw.active !== convId || S.active !== 'cowork') return;
-      if (d.messages && d.messages.length > 0) {
-        d.messages.forEach(function (m) { cw.msgs.push(m); cw.lastSeq = Math.max(cw.lastSeq, m.seq); });
-        cwRenderMsgs();
-      }
-      var wasBusy = cw.busy;
-      cw.busy = Boolean(d.busy);
-      cw.working = d.working || null;
-      cw.progress = d.progress || null;
-      cw.queued = d.queued || 0;
-      cwRenderTyping();
-      if (wasBusy && !cw.busy) cwRenderInfo();
+    var generation = cw.generation;
       if (!cw.computersChecked || Date.now() - cw.computersChecked > 5000) {
         cw.computersChecked = Date.now();
         Promise.all(cwConvMembers(conv).map(function (a) {
           return api('/api/cowork/agents/' + encodeURIComponent(a.id) + '/computer').then(function (v) { return v.computer; });
         })).then(function (computers) {
-          if (cw.active !== convId) return;
+          if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork') return;
           if (JSON.stringify(cw.computers) !== JSON.stringify(computers)) { cw.computers = computers; cwRenderInfo(); }
         }).catch(function () {});
       }
-    }).catch(function () {});
+    if (cw.streamOpen) return Promise.resolve();
+    if (cw.pollPromise) return cw.pollPromise;
+    var request = api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages?after=' + cw.lastSeq + '&rosterRevision=' + (cw.rosterRevision === undefined ? -1 : cw.rosterRevision)).then(function (d) {
+      if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork' || cw.streamOpen) return;
+      cwApplySnapshot(d);
+    }).catch(function () {}).finally(function () { if (cw.pollPromise === request) cw.pollPromise = null; });
+    cw.pollPromise = request;
+    return request;
   }
 
   function cwRenderTyping() {
@@ -689,11 +775,7 @@ export const COWORK_JS = String.raw`
       var agent = null;
       for (var i = 0; i < cw.agents.length; i++) if (cw.working && cw.agents[i].name === cw.working) agent = cw.agents[i];
       el.innerHTML = '<span class="dots"><i></i><i></i><i></i></span> ' + (agent ? cwAva(agent, 18) + ' <b>' + esc(agent.name) + '</b> is thinking…' : 'the team is thinking…');
-      if (cw.progress) {
-        var p = cw.progress;
-        el.innerHTML = '<div style="white-space:pre-wrap;max-height:240px;overflow:auto"><b>' + esc(p.agentName) + '</b>\n' + esc(p.text || 'Working…') +
-          (p.tool ? '\n' + esc(p.tool) + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed') : '') + '</div>';
-      }
+      if (cw.progress) el.textContent = cw.progress.agentName + (cw.progress.tool ? ' · ' + cw.progress.tool : ' is writing…');
       if (cw.queued) el.innerHTML += '<span>' + cw.queued + ' queued</span>';
       el.hidden = false;
       btn.classList.add('stop');

@@ -230,6 +230,8 @@ export class GituServer {
   private readonly coworkTools = new Map<string, ToolContext>();
   private readonly coworkComputers = new Map<string, CoworkComputer>();
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
+  private readonly coworkSubscribers = new Map<string, Set<() => void>>();
+  private readonly coworkStreams = new Set<http.ServerResponse>();
 
   private readonly browserSubs = new Set<(msg: Record<string, unknown>) => void>();
   private browserState: { available: boolean; url: string; title: string; canBack: boolean; canForward: boolean; loading: boolean } = {
@@ -801,8 +803,30 @@ export class GituServer {
   // ------------------------------------------------------------- cowork mode
 
   private cowork(): CoworkStore {
-    if (!this.coworkStore) this.coworkStore = new CoworkStore();
+    if (!this.coworkStore) this.coworkStore = new CoworkStore(undefined, () => {
+      for (const id of this.coworkSubscribers.keys()) this.publishCowork(id);
+    });
     return this.coworkStore;
+  }
+
+  private publishCowork(conversationId: string): void {
+    for (const send of this.coworkSubscribers.get(conversationId) ?? []) send();
+  }
+
+  private coworkView(conversationId: string, after = 0, rosterRevision = -1) {
+    const store = this.cowork();
+    const run = this.coworkRuns.get(conversationId);
+    return {
+      messages: store.messages(conversationId, after),
+      busy: Boolean(run?.busy),
+      working: run?.busy ? run.working ?? null : null,
+      progress: run?.progress ?? null,
+      queued: run?.queue.length ?? 0,
+      telegramError: run?.telegramError ?? null,
+      rosterRevision: store.rosterRevision,
+      roster: rosterRevision !== store.rosterRevision ? { agents: store.listAgents(), conversations: store.listConversations() } : undefined,
+      deleted: !store.getConversation(conversationId),
+    };
   }
 
   /** Shared MemoryStore facade: cowork agents use the SAME memory
@@ -872,6 +896,9 @@ export class GituServer {
   }
 
   private async stopCoworkLifecycle(): Promise<void> {
+    for (const response of this.coworkStreams) response.end();
+    this.coworkStreams.clear();
+    this.coworkSubscribers.clear();
     if (this.coworkTimer) clearInterval(this.coworkTimer);
     this.coworkTimer = undefined;
     for (const poller of this.coworkPollers.values()) poller.stop();
@@ -920,16 +947,21 @@ export class GituServer {
       if (run.abort.signal.aborted) return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
       if (run.queue.length >= 50) return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
       run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from }));
+      this.publishCowork(conversationId);
       return { ok: true, queued: true };
     }
     const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from });
     const abort = new AbortController();
     this.coworkRuns.set(conversationId, { busy: true, abort, queue: [trigger] });
+    this.publishCowork(conversationId);
     void this.executeCoworkTurn(conversationId, abort)
       .catch((err: Error) => console.error(`[hermes] cowork turn crashed (${conversationId}): ${err.message}`))
       .finally(() => {
         const current = this.coworkRuns.get(conversationId);
-        if (current?.abort === abort) this.coworkRuns.delete(conversationId);
+        if (current?.abort === abort) {
+          this.coworkRuns.delete(conversationId);
+          this.publishCowork(conversationId);
+        }
       });
     return { ok: true };
   }
@@ -986,32 +1018,40 @@ export class GituServer {
             run.progress = undefined;
             beginStream();
             stream?.update(`${name}: Working…`);
+            this.publishCowork(conversationId);
           },
           onProgress: (progress) => {
             run.progress = progress;
             const tool = progress.tool ? `\n[${progress.tool}: ${progress.toolOk === undefined ? 'running' : progress.toolOk ? 'completed' : 'failed'}]` : '';
             stream?.update(`${progress.agentName}: ${progress.text || 'Working…'}${tool}`);
+            this.publishCowork(conversationId);
           },
           onMessage: async (message) => {
             run.progress = undefined;
+            this.publishCowork(conversationId);
             if (!stream) beginStream();
             const tools = message.tools?.map((t) => `${t.name}: ${t.ok ? 'completed' : 'failed'}`).join(', ');
             try { await stream?.finish(`${message.agentName ? message.agentName + ': ' : ''}${message.text}${tools ? '\nTools: ' + tools : ''}`); }
             catch (err) {
               run.telegramError = (err as Error).message;
               store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${run.telegramError}` });
+              this.publishCowork(conversationId);
             }
             stream = undefined;
           },
         },
         append: (message) => {
           if (!store.getConversation(conversationId)) throw new Error('Conversation was deleted.');
-          return store.appendMessage(conversationId, message);
+          run.progress = undefined;
+          const stored = store.appendMessage(conversationId, message);
+          this.publishCowork(conversationId);
+          return stored;
         },
       });
       } finally {
         run.working = undefined;
         run.progress = undefined;
+        this.publishCowork(conversationId);
       }
     }
   }
@@ -1269,20 +1309,56 @@ export class GituServer {
       return false;
     }
 
+    const streamMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/stream$/);
+    if (streamMatch && method === 'GET') {
+      const convId = streamMatch[1]!;
+      if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
+      let after = Math.max(0, Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('after')) || 0);
+      let rosterRevision = -1;
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+      res.flushHeaders();
+      const subscribers = this.coworkSubscribers.get(convId) ?? new Set<() => void>();
+      this.coworkSubscribers.set(convId, subscribers);
+      this.coworkStreams.add(res);
+      const send = () => {
+        if (res.writableEnded || res.destroyed) return;
+        // Reconnect slow clients rather than buffering unbounded token updates.
+        if (res.writableLength > 1_000_000) { res.destroy(); return; }
+        const snapshot = this.coworkView(convId, after, rosterRevision);
+        if (snapshot.messages.length) after = snapshot.messages[snapshot.messages.length - 1]!.seq;
+        rosterRevision = snapshot.rosterRevision;
+        // A disconnected viewer must never fail an agent's tool or reply.
+        try {
+          res.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+          if (snapshot.deleted) res.end();
+        } catch { res.destroy(); }
+      };
+      subscribers.add(send);
+      const heartbeat = setInterval(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          try { res.write(': heartbeat\n\n'); } catch { res.destroy(); }
+        }
+      }, 15_000);
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        subscribers.delete(send);
+        this.coworkStreams.delete(res);
+        if (!subscribers.size) this.coworkSubscribers.delete(convId);
+      };
+      req.on('close', cleanup);
+      res.on('close', cleanup);
+      res.on('error', cleanup);
+      send();
+      return true;
+    }
+
     const messagesMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/messages$/);
     if (messagesMatch) {
       const convId = messagesMatch[1]!;
       if (method === 'GET') {
         const after = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('after') ?? 0) || 0;
-        const run = this.coworkRuns.get(convId);
-        this.sendJson(res, 200, {
-          messages: store.messages(convId, after > 0 ? after : 0),
-          busy: Boolean(run?.busy),
-          working: run?.busy ? run.working ?? null : null,
-          progress: run?.progress ?? null,
-          queued: run?.queue.length ?? 0,
-          telegramError: run?.telegramError ?? null,
-        });
+        const rosterRevision = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('rosterRevision') ?? -1);
+        this.sendJson(res, 200, this.coworkView(convId, Math.max(0, after), rosterRevision));
         return true;
       }
       if (method === 'POST') {
@@ -1300,6 +1376,7 @@ export class GituServer {
       if (run?.busy) {
         run.queue.length = 0;
         run.abort?.abort(new Error('Stopped by user.'));
+        this.publishCowork(stopMatch[1]!);
         this.sendJson(res, 200, { ok: true });
       } else {
         this.sendJson(res, 200, { ok: true, alreadyStopped: true });

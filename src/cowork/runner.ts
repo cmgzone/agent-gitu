@@ -146,7 +146,13 @@ function transcript(messages: CoworkMessage[]): LlmMessage[] {
 }
 
 function agentById(deps: CoworkRunnerDeps, id: string | undefined): CoworkAgent | undefined {
+  if (deps.store) return id ? deps.store.getAgent(id) : undefined;
   return deps.agents.find((a) => a.id === id);
+}
+
+function currentMembers(conversation: CoworkConversation, deps: CoworkRunnerDeps): CoworkAgent[] {
+  const current = deps.store?.getConversation(conversation.id) ?? conversation;
+  return current.memberIds.map((id) => agentById(deps, id)).filter((agent): agent is CoworkAgent => Boolean(agent));
 }
 
 export function buildCoworkMessages(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], history: CoworkMessage[], deps?: CoworkRunnerDeps): LlmMessage[] {
@@ -178,6 +184,7 @@ async function agentTurn(input: {
 
   for (let round = 0; round <= MAX_TOOL_ROUNDS_PER_TURN; round++) {
     deps.signal?.throwIfAborted();
+    if (deps.store) messages[0] = { role: 'system', content: systemPrompt(agent, conversation, currentMembers(conversation, deps), deps) };
     let streamed = '';
     const opts = {
       temperature: 0.6,
@@ -248,7 +255,7 @@ export async function runConversationTurn(input: {
   append: (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>) => CoworkMessage;
 }): Promise<TurnResult> {
   const { conversation, history, trigger, deps, append } = input;
-  const members = conversation.memberIds.map((id) => agentById(deps, id)).filter((a): a is CoworkAgent => Boolean(a));
+  let members = currentMembers(conversation, deps);
   if (members.length === 0) return { messages: [], error: 'No team members in this conversation' };
   const messages: CoworkMessage[] = [];
   const track = (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>): CoworkMessage => {
@@ -274,7 +281,10 @@ export async function runConversationTurn(input: {
     // Reserve the last slot for synthesis. Each worker answers once.
     while (queue.length > 0 && count < MAX_AGENT_MESSAGES_PER_TRIGGER - 1) {
       deps.signal?.throwIfAborted();
-      const agent = queue.shift()!;
+      const queued = queue.shift()!;
+      members = currentMembers(conversation, deps);
+      const agent = members.find((member) => member.id === queued.id);
+      if (!agent) continue;
       deps.onWorking?.(agent.name);
       const historyAtStart = [...history, ...messages];
       try {
@@ -287,6 +297,7 @@ export async function runConversationTurn(input: {
         continue;
       }
       count += 1;
+      members = currentMembers(conversation, deps);
       const last = messages[messages.length - 1];
       for (const summoned of mentionNames(last?.text ?? '', members)) {
         if (responded.has(summoned.id)) continue;

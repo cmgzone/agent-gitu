@@ -306,7 +306,7 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
       }
       return {
         ok: true,
-        output: `Teammate "${created.name}" created (${created.tagline || 'no tagline'}). ${scope.conversationId ? 'Added to this group when applicable. They can participate on the next user turn.' : 'The user can add them to a group.'} The user manages their permissions and profile.`,
+        output: `Teammate "${created.name}" created (${created.tagline || 'no tagline'}). ${scope.conversationId && store.getConversation(scope.conversationId)?.kind === 'group' ? `Added to this group. Mention @${created.name} in your reply to have them participate now.` : 'They appear in the team list; the user can open their DM or add them to a group.'} The user manages their permissions and profile.`,
       };
     }
     if (action === 'delete') {

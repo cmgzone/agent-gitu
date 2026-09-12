@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmClient } from '../src/llm/llm.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { buildCoworkMessages, runConversationTurn, type CoworkRunnerDeps } from '../src/cowork/runner.js';
 import { parseToolCalls, stripToolMarkers } from '../src/cowork/tools.js';
@@ -220,6 +220,25 @@ describe('cowork runner', () => {
     expect(result.messages[1]!.text).toContain('Draft ready');
   });
 
+  it('lets a newly hired group member answer in the same trigger', async () => {
+    const chief = store.saveAgent(makeAgentInput('hiring-chief', { chiefOfStaff: true }));
+    const other = store.saveAgent(makeAgentInput('existing-member'));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [chief.id, other.id], chiefId: chief.id });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'Hire a scout and ask for a report.', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: conv, trigger, history: [trigger], append: m => store.appendMessage(conv.id, m),
+      deps: depsFor([
+        '<tool>{"name":"team_manage","params":{"action":"create","name":"new-scout","instructions":"Research."}}</tool>',
+        '@new-scout please report.',
+        'Here is my report.',
+        'I have reviewed the scout report.',
+      ], { store, memory: CoworkMemory.forWorkspace(), toolContext: () => ({ cwd: '.' } as ToolContext) }),
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.messages.map(m => m.agentName)).toEqual(['hiring-chief', 'new-scout', 'hiring-chief']);
+    expect(store.getConversation(conv.id)!.memberIds).toContain(store.listAgents().find(a => a.name === 'new-scout')!.id);
+  });
+
   it('does not summon unknown or out-of-group names', async () => {
     const agent = store.saveAgent(makeAgentInput('solo2'));
     const other = store.saveAgent(makeAgentInput('bystander'));
@@ -432,7 +451,7 @@ describe('cowork server routes', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
-  async function startServer(llm: ScriptedMockLlm): Promise<string> {
+  async function startServer(llm: LlmClient): Promise<string> {
     const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm });
     servers.push(server);
     const port = await server.start();
@@ -575,6 +594,65 @@ describe('cowork server routes', () => {
     expect(clear.status).toBe(200);
     const facts = await fetch(`${base}/api/cowork/agents/${agent.id}/memory`).then((r) => r.json()) as { count: number };
     expect(facts.count).toBe(0);
+  });
+
+  it('streams partial replies and agent-created roster changes before the turn finishes', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let round = 0;
+    const llm: LlmClient = {
+      name: 'cowork-stream-test',
+      complete: async () => 'unused',
+      completeStream: async (_messages, _options, delta) => {
+        if (round++ === 0) {
+          const text = 'Hiring now. <tool>{"name":"team_manage","params":{"action":"create","name":"Live Scout","instructions":"Research assistant."}}</tool>';
+          delta(text);
+          return text;
+        }
+        delta('The new teammate');
+        await gate;
+        delta(' is ready.');
+        return 'The new teammate is ready.';
+      },
+    };
+    const base = await startServer(llm);
+    const chief = (await post(base, '/api/cowork/agents', makeAgentInput('live-chief', { chiefOfStaff: true }))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [chief.id] })).json['conversation'] as { id: string };
+    const controller = new AbortController();
+    const response = await fetch(`${base}/api/cowork/conversations/${conv.id}/stream`, { signal: controller.signal });
+    expect(response.headers.get('content-type')).toBe('text/event-stream');
+    const reader = response.body!.getReader();
+    const snapshots: any[] = [];
+    const consume = (async () => {
+      const decoder = new TextDecoder();
+      let pending = '';
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        pending += decoder.decode(chunk.value, { stream: true });
+        let boundary: number;
+        while ((boundary = pending.indexOf('\n\n')) >= 0) {
+          const frame = pending.slice(0, boundary); pending = pending.slice(boundary + 2);
+          if (frame.startsWith('data: ')) snapshots.push(JSON.parse(frame.slice(6)));
+        }
+      }
+    })().catch(() => {});
+    try {
+      await post(base, `/api/cowork/conversations/${conv.id}/messages`, { text: 'Hire a research teammate.' });
+      await waitFor(async () => snapshots.some(s => s.progress?.text === 'The new teammate') ? true : undefined);
+      expect(snapshots.some(s => s.roster?.agents.some((a: any) => a.name === 'Live Scout'))).toBe(true);
+      expect(snapshots.flatMap(s => s.messages).some((m: any) => m.role === 'agent')).toBe(false);
+      expect(snapshots.every(s => !s.progress || !s.progress.text.includes('<tool>'))).toBe(true);
+      release();
+      await waitFor(async () => snapshots.some(s => !s.busy && !s.progress && snapshots.flatMap(v => v.messages).some((m: any) => m.text === 'The new teammate is ready.')) ? true : undefined);
+      const final = snapshots.flatMap(s => s.messages).filter((m: any) => m.role === 'agent');
+      expect(final).toHaveLength(1);
+      // The polling fallback returns the same roster changes for older clients.
+      const fallback = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages?rosterRevision=-1`).then(r => r.json());
+      expect(fallback.roster.agents.some((a: any) => a.name === 'Live Scout')).toBe(true);
+      const unchanged = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages?rosterRevision=${fallback.rosterRevision}`).then(r => r.json());
+      expect(unchanged.roster).toBeUndefined();
+    } finally { release(); controller.abort(); await reader.cancel().catch(() => {}); await consume; }
   });
 
   it('streams incremental message pages with the after cursor', async () => {

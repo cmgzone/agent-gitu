@@ -37,7 +37,7 @@ export function canonicalJson(value: unknown): string {
   return `{${parts.join(',')}}`;
 }
 
-function normalizeToolPath(value: unknown, fallback = ''): string {
+export function normalizeToolPath(value: unknown, fallback = ''): string {
   const raw = String(value ?? fallback).trim().replace(/\\/g, '/').replace(/\/{2,}/g, '/');
   return raw.startsWith('./') ? raw.slice(2) : raw;
 }

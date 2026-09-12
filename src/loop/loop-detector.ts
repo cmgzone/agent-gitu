@@ -1,4 +1,5 @@
 import type { ActionRecord } from '../types.js';
+import { normalizeToolPath } from '../util.js';
 
 export interface LoopVerdict {
   allowed: boolean;
@@ -90,10 +91,21 @@ function evidenceWindow(actions: ActionRecord[], tool: string, paramsHash: strin
     const summary = priorSame.at(-1)?.paramsSummary ?? '';
     const file = summary.startsWith('read ') ? summary.slice('read '.length) : '';
     if (file) {
+      // Compare CANONICAL paths: the read summary carries the raw path
+      // spelling while identity hashing canonicalizes it (./ prefix,
+      // backslashes). An apply_edit on './src/a.ts' must still reset the
+      // window for reads of 'src/a.ts'.
+      const readPath = normalizeToolPath(file);
       for (let i = actions.length - 1; i >= 0; i -= 1) {
         const action = actions[i]!;
         if (!isSuccessfulMutation(action)) continue;
-        if (action.paramsSummary === `write ${file}` || action.paramsSummary === `edit ${file}`) {
+        const s = action.paramsSummary;
+        const writtenPath = s.startsWith('write ')
+          ? normalizeToolPath(s.slice('write '.length))
+          : s.startsWith('edit ')
+            ? normalizeToolPath(s.slice('edit '.length))
+            : '';
+        if (writtenPath && writtenPath === readPath) {
           return actions.slice(i + 1);
         }
       }

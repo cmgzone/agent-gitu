@@ -151,7 +151,7 @@ describe('agent-eval: wide refactor (scope discovered mid-run)', () => {
     expect(record.escalations.some((e) => e.includes('wide change surface'))).toBe(true);
     expect(record.extensions.length).toBeGreaterThanOrEqual(1);
     expect(record.extensions[0]!.reason).toContain('wide change surface');
-    expect(record.extensions[0]!.extraTurns).toBe(20); // 10 base + 10 escalation
+    expect(record.extensions[0]!.extraTurns).toBe(18); // 10 base + 8 escalation
   }, 90000);
 });
 
@@ -176,9 +176,13 @@ describe('agent-eval: failure storm (repeated distinct failures)', () => {
         () => JSON.stringify({ action: { type: 'request_block', reason: 'gave up cleanly' } }),
       ],
     });
-    expect(record.escalations.some((e) => e.includes('hard problem'))).toBe(true);
-    expect(record.extensions[0]!.reason).toContain('hard problem');
-    expect(record.extensions[0]!.extraSpecialists).toBe(1);
+    // Policy since v0.3.0: a hard-only signal (distinct failures with a narrow
+    // change surface) does NOT escalate — escalation requires a wide change
+    // surface. The storm still earns the single BASE extension for verified
+    // progress, with no specialist widening.
+    expect(record.extensions).toHaveLength(1);
+    expect(record.extensions[0]!.reason).toBe('verified progress continued past the initial budget');
+    expect(record.extensions[0]!.extraSpecialists).toBe(0);
   }, 90000);
 });
 

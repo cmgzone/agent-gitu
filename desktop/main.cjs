@@ -222,13 +222,25 @@ async function settle(win, quietMs) {
   const deadline = Date.now() + 15_000;
   let quietStart = Date.now();
   for (;;) {
-    if (Date.now() > deadline) return;
+    if (Date.now() > deadline || wc.isDestroyed()) return;
     if (wc.isLoading()) {
       quietStart = Date.now();
-      await new Promise((resolve) => wc.once('did-stop-loading', resolve));
+      // The user can close the window mid-load: a destroyed webContents never
+      // emits 'did-stop-loading', which would hang the caller (and the agent's
+      // tool call) forever. Bound the wait and always clean up the listener.
+      await new Promise((resolve) => {
+        const timer = setTimeout(done, 15_000);
+        function done() {
+          clearTimeout(timer);
+          if (!wc.isDestroyed()) wc.removeListener('did-stop-loading', done);
+          resolve();
+        }
+        wc.once('did-stop-loading', done);
+      });
       return;
     }
     await sleep(120);
+    if (wc.isDestroyed()) return;
     if (!wc.isLoading() && Date.now() - quietStart >= (quietMs || 500)) return;
   }
 }
@@ -531,7 +543,19 @@ function createMainWindow() {
   });
   mainWindow.loadURL(`http://127.0.0.1:${boundPort}`);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://127.0.0.1') || url.startsWith('http://localhost')) return { action: 'allow' };
+    // Compare parsed hosts, not string prefixes: startsWith('http://127.0.0.1')
+    // also admits look-alike hosts like http://127.0.0.1.evil.com/.
+    try {
+      const parsed = new URL(url);
+      if (
+        (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+        (parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost' || parsed.hostname === '[::1]')
+      ) {
+        return { action: 'allow' };
+      }
+    } catch {
+      return { action: 'deny' };
+    }
     shell.openExternal(url);
     return { action: 'deny' };
   });

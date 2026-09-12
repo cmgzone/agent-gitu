@@ -24,18 +24,30 @@ function normalizePath(value: string): string | undefined {
   return normalized;
 }
 
-/** Parse `git log --name-only` output into bounded, recency-weighted scores. */
+/** Parse `git log --format=%x01 --name-only` output into bounded,
+ *  recency-weighted scores. Each commit block starts with a \x01 marker line
+ *  (git also emits one blank line after the marker); consecutive boundary
+ *  lines collapse so every commit decays exactly once. Blank-line-delimited
+ *  input (the historical format) keeps working. */
 export function scoreRecentChangePaths(logOutput: string, statusOutput = '', maxFiles = 48): Map<string, number> {
   const scores = new Map<string, number>();
   let weight = 1;
+  let atBoundary = true;
+  let sawCommit = false;
   for (const raw of logOutput.split(/\r?\n/)) {
-    const file = normalizePath(raw);
-    if (!file) {
-      // Empty lines delimit commits in the format emitted below. The first
-      // commit remains the strongest signal and older commits decay quickly.
-      weight *= 0.78;
+    if (raw === '\x01' || raw.trim() === '') {
+      atBoundary = true;
       continue;
     }
+    if (atBoundary) {
+      // The first commit remains the strongest signal and older commits
+      // decay quickly.
+      if (sawCommit) weight *= 0.78;
+      atBoundary = false;
+    }
+    sawCommit = true;
+    const file = normalizePath(raw);
+    if (!file) continue;
     scores.set(file, (scores.get(file) ?? 0) + weight);
   }
 
@@ -62,7 +74,10 @@ export function recentChangeScores(root: string, opts: ChangeSignalOptions = {})
   const maxCommits = Math.max(1, Math.min(80, opts.maxCommits ?? 18));
   const maxFiles = Math.max(1, Math.min(200, opts.maxFiles ?? 48));
   try {
-    const log = execFileSync('git', ['log', `--max-count=${maxCommits}`, '--format=', '--name-only'], {
+    // %x01 marks each commit block (the empty --format emits NO delimiters,
+    // which silently flattened the recency decay); core.quotePath=false keeps
+    // non-ASCII paths unescaped so they match real repo paths.
+    const log = execFileSync('git', ['-c', 'core.quotePath=false', 'log', `--max-count=${maxCommits}`, '--format=%x01', '--name-only'], {
       cwd: root,
       encoding: 'utf8',
       windowsHide: true,

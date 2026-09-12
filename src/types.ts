@@ -216,6 +216,9 @@ export interface MemoryEntry {
   promotedFrom?: { visibility: MemoryVisibility; at: string; reason?: string }[];
   /** Success-pattern observations: the distinct taskIds that observed this subject. */
   observations?: string[];
+  /** How many times this memory has been re-observed (dedupe bumps) beyond its
+   *  creation — the explicit occurrence count behind pattern promotion. */
+  reobservations?: number;
   /** Tier 1 pin: explicitly promotes any memory into the protected/active tier
    *  (durable guidance that survives compaction regardless of lexical relevance). */
   pinned?: boolean;

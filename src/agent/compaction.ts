@@ -42,11 +42,19 @@ export const KEEP_RECENT_SCREENSHOTS = 4;
  * `fromIndex` protects the stable prefix (e.g. the user's original attached
  * images) from being stripped.
  */
-export function stripStaleImages(messages: LlmMessage[], keepLast = 1, fromIndex = 0): number {
+export function stripStaleImages(
+  messages: LlmMessage[],
+  keepLast = 1,
+  fromIndex = 0,
+  keepMessage?: (m: LlmMessage) => boolean,
+): number {
   let removed = 0;
   const stopAt = Math.max(fromIndex, messages.length - keepLast);
   for (let i = fromIndex; i < stopAt; i++) {
     const m = messages[i]!;
+    // Durable user-reference visuals (mockups) survive: unlike a browser
+    // screenshot they cannot be re-captured once stripped.
+    if (keepMessage?.(m)) continue;
     if (typeof m.content === 'string') continue;
     const images = m.content.filter((p) => p.type === 'image_url').length;
     if (images === 0) continue;

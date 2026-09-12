@@ -4,11 +4,12 @@ import { CACHED_INVESTIGATION_PREFIX, LoopDetector } from '../loop/loop-detector
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
 import type { ConnectionRegistry } from '../connections/connections.js';
+import type { MemoryStore } from '../memory/memory-store.js';
 import type { PolicyEngine } from '../policy/policy.js';
 import { InstructionPolicyEngine } from '../policy/instruction-policy.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
-import type { ActionRecord, ToolResult } from '../types.js';
+import type { ActionRecord, MemoryRetrievalContext, ToolResult } from '../types.js';
 import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { excerpt, hashParams, summarizeParams } from '../util.js';
@@ -28,6 +29,7 @@ import {
   toolListConnections,
   toolListMcp,
   toolListSkills,
+  toolMemory,
   toolLspDefinition,
   toolLspDiagnostics,
   toolLspHover,
@@ -90,7 +92,14 @@ export class Executor {
     private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
     private readonly runtimeCapabilities?: RuntimeCapabilitySupplier,
     private readonly connections?: ConnectionRegistry,
-  ) {}
+    options?: { memory?: MemoryStore; memoryContext?: MemoryRetrievalContext },
+  ) {
+    this.memory = options?.memory;
+    this.memoryContext = options?.memoryContext;
+  }
+
+  private readonly memory?: MemoryStore;
+  private readonly memoryContext?: MemoryRetrievalContext;
 
   private emit(event: string): void {
     this.onEvent?.(event);
@@ -124,7 +133,15 @@ export class Executor {
       const step = this.ledger.step(stepId);
       if (step) {
         const entering = step.status !== 'in_progress';
-        this.ledger.updateStep(stepId, { status: 'in_progress', attempts: step.attempts + (entering ? 1 : 0) });
+        // A failed step stays in_progress (nothing moves it out), so the
+        // entering check alone would freeze the counter at 1. Count a retry
+        // whenever the step's previous action did not succeed.
+        let attempts = step.attempts + (entering ? 1 : 0);
+        if (!entering) {
+          const lastAction = [...this.ledger.data.actions].reverse().find((a) => a.stepId === stepId);
+          if (lastAction && lastAction.status !== 'success') attempts += 1;
+        }
+        this.ledger.updateStep(stepId, { status: 'in_progress', attempts });
       }
     }
 
@@ -344,6 +361,8 @@ export class Executor {
       connections: this.connections,
       browser: this.browser,
       lsp: this.lsp,
+      memory: this.memory,
+      memoryContext: this.memoryContext,
       delegate: this.delegate,
       delegateBackground: this.delegateBackground,
       backgroundAgentStatus: this.backgroundAgentStatus,
@@ -383,6 +402,9 @@ export class Executor {
           break;
         case 'create_skill':
           result = toolCreateSkill(ctx, req.params);
+          break;
+        case 'memory':
+          result = await toolMemory(ctx, req.params);
           break;
         case 'update_skill':
           result = toolUpdateSkill(ctx, req.params);

@@ -1009,6 +1009,20 @@ export class SubAgentRunner {
         }),
         (e) => emit(`subagent ${name}: ${e}`),
         specialistSkills,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        // The memory tool inside specialists reads through the SAME isolation
+        // filter as retrieval: own memories + mission/project/global, never
+        // another specialist's private memory.
+        this.deps.memory
+          ? { memory: this.deps.memory, memoryContext: { requestingAgentId: name, missionId: this.deps.missionId, projectId: projectScope } }
+          : undefined,
       );
 
       const criteriaList = ledger.data.acceptanceCriteria;
@@ -1392,6 +1406,26 @@ export class SubAgentRunner {
               confidence: Number.isFinite(Number(action['confidence'])) ? Math.min(1, Math.max(0, Number(action['confidence']))) : 0.6,
             });
             emit(`subagent ${name} published finding ${finding.id} to the mission (candidate — needs verification)`);
+            // Advisory contradiction check (review contradiction phase): a new
+            // model-inference claim is compared against existing same-type/
+            // scope memories. Advisory only — never supersedes anything.
+            try {
+              const contradictions = await this.deps.memory.detectContradictions({
+                claim: `${name}: ${content.slice(0, 280)}`,
+                type: findingType,
+                scope: projectScope,
+              });
+              if (contradictions.possibleContradictions.length > 0) {
+                const first = contradictions.possibleContradictions[0]!;
+                emit(`subagent ${name} — possible memory contradiction with ${first.existingId} (${first.claim.slice(0, 80)}) — advisory`);
+                messages.push({
+                  role: 'user',
+                  content: `NOTE: your finding possibly CONTRADICTS an existing memory: "${first.claim.slice(0, 140)}". If yours supersedes it, publish the replacement WITH independent evidence.`,
+                });
+              }
+            } catch {
+              /* advisory only */
+            }
             messages.push({
               role: 'user',
               content: `Finding published to the mission as a CANDIDATE (${finding.id}). Other specialists may see it, but it is not yet verified knowledge — keep working.`,

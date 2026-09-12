@@ -29,8 +29,11 @@ interface CachedVector {
   at: string;
 }
 
-/** Persisted embedding cache keyed by model + content hash. */
+/** Persisted embedding cache keyed by model + content hash. Entries are
+ *  FIFO-evicted past MAX_ENTRIES so the cache file stays bounded for the
+ *  project's lifetime (content-hash keyed, so eviction only costs a re-embed). */
 export class MemoryEmbeddingCache {
+  private static readonly MAX_ENTRIES = 2_000;
   private readonly vectors = new Map<string, Float32Array>();
   private dirty = false;
   hits = 0;
@@ -40,8 +43,9 @@ export class MemoryEmbeddingCache {
     if (existsSync(file)) {
       try {
         const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, CachedVector>;
-        for (const [key, cached] of Object.entries(raw)) {
-          if (cached && Array.isArray(cached.vector)) this.vectors.set(key, Float32Array.from(cached.vector));
+        const entries = Object.entries(raw).filter(([, cached]) => cached && Array.isArray(cached.vector));
+        for (const [key, cached] of entries.slice(-MemoryEmbeddingCache.MAX_ENTRIES)) {
+          this.vectors.set(key, Float32Array.from(cached.vector));
         }
       } catch {
         /* a corrupt cache is just a cold cache */
@@ -64,7 +68,14 @@ export class MemoryEmbeddingCache {
   }
 
   put(model: string, hash: string, vector: Float32Array): void {
-    this.vectors.set(this.key(model, hash), vector);
+    const key = this.key(model, hash);
+    // Re-insert to refresh recency, then drop the oldest entry at capacity.
+    this.vectors.delete(key);
+    this.vectors.set(key, vector);
+    if (this.vectors.size > MemoryEmbeddingCache.MAX_ENTRIES) {
+      const oldest = this.vectors.keys().next().value;
+      if (oldest !== undefined) this.vectors.delete(oldest);
+    }
     this.dirty = true;
   }
 
@@ -106,7 +117,7 @@ const GLUE_WORDS = new Set([
   'application', 'implementation', 'everywhere', 'instead', 'currently', 'system', 'systems',
   'state', 'handling', 'support', 'supports', 'with', 'from', 'that', 'this', 'have', 'has',
   'the', 'and', 'for', 'all', 'new', 'old', 'was', 'were', 'change', 'changed', 'after',
-  'before', 'when', 'only', 'also', 'into', 'onto', 'over', 'under', 'based', 'uses0',
+  'before', 'when', 'only', 'also', 'into', 'onto', 'over', 'under', 'based',
 ]);
 
 const NEGATORS = new Set([

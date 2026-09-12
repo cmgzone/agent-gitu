@@ -110,8 +110,11 @@ export class PolicyEngine {
       case 'update_skill':
       case 'update_connection':
       case 'delegate':
+      case 'memory':
+        // memory reads are visibility-filtered and writes are store-guarded
+        // (promotion requires evidence); no workspace/filesystem effect.
         tier = 'moderate';
-        why = 'file mutation';
+        why = 'memory state change';
         break;
       case 'configure_mcp':
         tier = 'dangerous';

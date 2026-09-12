@@ -255,6 +255,18 @@ function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
   });
 }
 
+/**
+ * True only for a deliberate caller cancel (Stop). The per-request hard
+ * timeout aborts with a TimeoutError whose message matches /abort/i — that
+ * is a transport stall, retryable like any other network failure, and must
+ * not be classified as an abort (which is fatal and never retried).
+ */
+function isCallerAbort(err: unknown, callerSignal: AbortSignal | undefined): boolean {
+  const e = err as { name?: string; message?: string } | undefined;
+  if (e?.name === 'TimeoutError' || /aborted due to timeout/i.test(e?.message ?? '')) return false;
+  return Boolean(callerSignal?.aborted) || /abort/i.test(e?.message ?? '');
+}
+
 function usageNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
 }
@@ -535,7 +547,7 @@ export class OpenAiCompatClient implements LlmClient {
         retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
-      const aborted = opts.signal?.aborted || /abort/i.test((err as Error).message);
+      const aborted = isCallerAbort(err, opts.signal);
       throw new LlmError(`LLM request failed: ${(err as Error).message}`, { kind: aborted ? 'aborted' : 'network', logicalRequestId: opts.logicalRequestId });
     }
     if (!res.ok) {
@@ -648,7 +660,7 @@ export class OpenAiCompatClient implements LlmClient {
         retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
-      const aborted = opts.signal?.aborted || /abort/i.test((err as Error).message);
+      const aborted = isCallerAbort(err, opts.signal);
       throw new LlmError(`LLM request failed: ${(err as Error).message}`, { kind: aborted ? 'aborted' : 'network', logicalRequestId: opts.logicalRequestId });
     }
     if (!res.ok || !res.body) {
@@ -776,7 +788,7 @@ export class OpenAiCompatClient implements LlmClient {
         retryDelayMs: opts.retryDelayMs,
       });
     } catch (err) {
-      const aborted = opts.signal?.aborted || /abort/i.test((err as Error).message);
+      const aborted = isCallerAbort(err, opts.signal);
       throw new LlmError(`LLM request failed: ${(err as Error).message}`, { kind: aborted ? 'aborted' : 'network', logicalRequestId: opts.logicalRequestId });
     }
     if (!res.ok || !res.body) {

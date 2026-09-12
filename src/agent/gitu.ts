@@ -65,7 +65,7 @@ import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './p
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { agentVerificationGate, agentWorkflowPrompt, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
-import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction } from './visual-assets.js';
+import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction, isDurableVisualReferenceMessage } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
 import { planEffort, isFrontendGoal, escalationFor, type EffortPlan } from './effort-planner.js';
 import { uiVisualGate, isUiTask } from './ui-gate.js';
@@ -540,6 +540,9 @@ export class Gitu {
       // can grant those capabilities.
       () => prerequisiteResolver.capabilities().map((capability) => capability.id),
       this.config.connections,
+      // The agent-facing memory tool: reads are scoped to this project, so
+      // specialist-private memories stay invisible to the main agent.
+      { memory, memoryContext: { projectId: guard.lock.name } },
     );
     // The server owns and reuses its index. A direct Gitu run owns the index
     // it creates, so it must close it even when the run exits early or fails.
@@ -757,6 +760,15 @@ export class Gitu {
           }
         } catch {
           /* consolidation is advisory — memory keeps working without it */
+        }
+        // Conservative decay (review Phase 7): archive stale, never-used,
+        // low-confidence observations so memory.json stays meaningful for the
+        // project's lifetime. Decisions/constraints/lessons never decay.
+        try {
+          const decayed = memory.decay();
+          if (decayed.length > 0) this.emit(`memory   decayed ${decayed.length} stale memory(ies) to archived`);
+        } catch {
+          /* decay is advisory */
         }
         // Retrieval sees the criteria and their pinned verification commands,
         // not just the one-line goal — they name concrete APIs/files the goal
@@ -1363,7 +1375,9 @@ export class Gitu {
         if (!command.trim()) return;
         const steps = stepId ? [ledger.step(stepId)] : ledger.data.plan;
         for (const step of steps) {
-          if (!step || step.status === 'done' || !step.verification || !commandsMatch(step.verification, command)) continue;
+          // 'cancelled' must stay terminal: a passing command that happens to
+          // match a cancelled step's verification must not resurrect it to done.
+          if (!step || step.status === 'done' || step.status === 'cancelled' || !step.verification || !commandsMatch(step.verification, command)) continue;
           ledger.updateStep(step.id, { status: 'done' });
           checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
           this.emit(`step     ${step.id} done — verification "${command}" passed`);
@@ -1387,16 +1401,23 @@ export class Gitu {
           // (deduped) before the verbose history is dropped.
           snapshot: renderContextSnapshot(buildContextSnapshot(ledger.data)),
           onExtract: ({ failures }: { failures: string[] }): void => {
-            const known = new Set(memory.query({ type: 'failure' }).map((m) => m.claim.trim().toLowerCase()));
+            // Normalize the FORMATTED lesson claim the same way the store's
+            // dedupe does — raw failure text never matches "FAILURE: … | CAUSE: …"
+            // claims verbatim, so the previous exact-match set never fired.
+            const normalizeClaim = (s: string): string =>
+              s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+            const known = new Set(memory.query({ type: 'failure' }).map((m) => normalizeClaim(m.claim)));
             for (const failure of failures.slice(-3)) {
               const claim = failure.replace(/^RESULT \[error\]\s*/, '').slice(0, 200);
-              const key = claim.trim().toLowerCase();
-              if (!key || known.has(key)) continue;
-              known.add(key);
+              const [action, cause] = claim.split(' | ');
+              const lessonKey = normalizeClaim(
+                `FAILURE: ${action ?? claim} | CAUSE: ${cause ?? 'cause not captured — diagnose on recurrence'}`,
+              );
+              if (!claim.trim() || known.has(lessonKey)) continue;
+              known.add(lessonKey);
               // Structured failure lesson (review Phase 12): action + observed
               // failure in one retrievable record; the diagnostic cause is the
               // part after the '|' separator when present.
-              const [action, cause] = claim.split(' | ');
               const added = memory.addFailureLesson({
                 action: action ?? claim,
                 cause: cause ?? 'cause not captured — diagnose on recurrence',
@@ -2144,8 +2165,11 @@ export class Gitu {
                 // cross-page/state consistency on frontend runs: the model could
                 // never compare what it changed against what it built before. Keep
                 // the most recent few (plus user attachments in the stable prefix,
-                // which are always preserved).
-                const dropped = stripStaleImages(messages, KEEP_RECENT_SCREENSHOTS, prefixEnd);
+                // which are always preserved). Durable user-reference visuals are
+                // exempt everywhere — a mockup cannot be re-captured.
+                const dropped = stripStaleImages(messages, KEEP_RECENT_SCREENSHOTS, prefixEnd, (m) =>
+                  isDurableVisualReferenceMessage(m, rehydratedVisuals),
+                );
                 if (dropped > 0) this.emit(`image    dropped ${dropped} stale screenshot(s) from model context`);
                 telemetry.noteScreenshot(img!.length - img!.indexOf(',') - 1);
                 observe([
@@ -2872,6 +2896,10 @@ export class Gitu {
                   unresolvedQualityReview = undefined;
                   unresolvedQualityReviewFingerprint = undefined;
                 } catch (err) {
+                  // A user Stop during the review is a deliberate cancel, not a
+                  // "reviewer unavailable" gap: rethrow so the main loop ends
+                  // the run as stopped instead of completing with a risk for it.
+                  if (this.abortController?.signal.aborted || (err instanceof LlmError && err.details.kind === 'aborted')) throw err;
                   const warning = `Final quality review could not run: ${(err as Error).message.slice(0, 300)}`;
                   this.emit('review   quality reviewer unavailable — review gap recorded');
                   if (riskPlan.strictVerification) {
@@ -3519,7 +3547,7 @@ export class Gitu {
 
       if ((this.config.autoLearn ?? true) && exitReason === 'complete' && !conversationCompleted && !this.aborted) {
         try {
-          await this.autoLearn(messages, ledger, executor, skills);
+          await this.autoLearn(memory, messages, ledger, executor, skills, guard.lock.name);
         } catch (err) {
           // The run already completed and the report is saved; a transient
           // failure in this optional reflection pass must not flip the session
@@ -3540,9 +3568,9 @@ export class Gitu {
                     .filter((e) => e.passed)
                     .slice(-4)
                     .map((e) => e.label)
-                    .join('; ')}.`
+                    .join('; ')}`
                 : ''
-            }`,
+            }.`,
           evidence: ledger.data.taskId,
           scope: guard.lock.name,
           confidence: 0.9,
@@ -3554,6 +3582,34 @@ export class Gitu {
             scope: guard.lock.name,
             confidence: 0.85,
           });
+        }
+        if (status === 'completed') {
+          // Success-pattern learning (review success-pattern phase): a verified
+          // completion is trusted evidence. The subject anchor is the PINNED
+          // VERIFICATION COMMAND that passed — the same anchor the failure
+          // path uses — so independent tasks verified by the same command
+          // reinforce one pattern. The post-run reflection (autoLearn) can add
+          // a model-generalized subject on top.
+          const subjects = new Set<string>();
+          for (const detail of report.verificationDetails ?? []) {
+            if (!detail.passed || detail.authority === 'historical') continue;
+            const command = detail.command?.trim() ?? '';
+            if (command) subjects.add(command);
+          }
+          for (const subject of [...subjects].slice(0, 4)) {
+            const outcome = memory.recordSuccessObservation({
+              subject: `verification "${subject}" passes on the final workspace`,
+              taskId: ledger.data.taskId,
+              scope: guard.lock.name,
+              sourceType: 'task_completion',
+              evidence: `task ${ledger.data.taskId} completed with passing verification "${subject}"`,
+            });
+            const patternKey = outcome.pattern ? memoryPatternKey(outcome.pattern.scope, outcome.pattern.claim) : '';
+            if (outcome.promoted && outcome.pattern && !announcedMemoryPatterns.has(patternKey)) {
+              announcedMemoryPatterns.add(patternKey);
+              this.emit(`memory   success pattern promoted (${outcome.pattern.claim.slice(0, 90)})`);
+            }
+          }
         }
       }
 
@@ -3572,7 +3628,14 @@ export class Gitu {
     }
   }
 
-  private async autoLearn(messages: LlmMessage[], ledger: TaskLedger, executor: Executor, skills: SkillStore): Promise<void> {
+  private async autoLearn(
+    memory: MemoryStore,
+    messages: LlmMessage[],
+    ledger: TaskLedger,
+    executor: Executor,
+    skills: SkillStore,
+    scope: string,
+  ): Promise<void> {
     const d = ledger.data;
     const didWork = d.actions.length > 0 && (d.filesChanged.length > 0 || d.evidence.some((e) => e.passed));
     const alreadyLearned = d.actions.some((a) => a.tool === 'create_skill' && a.status === 'success');
@@ -3592,6 +3655,8 @@ export class Gitu {
         `If this task revealed a genuinely repeatable multi-step pattern (deploy flow, design convention, checklist, project-specific process), save it as a skill:\n` +
         `{"thought":"...","action":{"type":"tool_call","stepId":"step-1","tool":"create_skill","params":{"name":"kebab-case-name","description":"when to use it","instructions":"step-by-step reusable knowledge","global":true},"reason":"auto-learned from completed task","expected":"skill saved"}}\n` +
         `Use global:true unless the pattern is specific to THIS project's internals (global skills are visible from every project).\n` +
+        `If it revealed a durable success pattern worth remembering but NOT worth a full skill (e.g. "responsive fixes here are verified at 3 viewports"), record it instead:\n` +
+        `{"thought":"...","action":{"type":"tool_call","tool":"memory","params":{"action":"record_pattern","subject":"short generalized subject","evidence":"what verified it"}},"reason":"auto-learned from completed task","expected":"pattern observation recorded"}\n` +
         `Otherwise respond with: {"thought":"nothing reusable","action":{"type":"complete","summary":"nothing to learn","chat":true}}`,
     });
     const reply = await this.config.llm.completeStream(messages, { effort: this.config.effort, signal: this.abortController?.signal }, () => {});
@@ -3607,6 +3672,28 @@ export class Gitu {
       ledger.save();
       const name = String(parsed.params['name'] ?? 'skill');
       this.emit(outcome.result.ok ? `learn   auto-saved skill "${name}"` : `learn   could not save skill: ${outcome.result.output.slice(0, 200)}`);
+    } else if (parsed?.type === 'tool_call' && parsed.tool === 'memory' && parsed.params['action'] === 'record_pattern') {
+      const subject = String(parsed.params['subject'] ?? '').trim().replace(/\s+/g, ' ').slice(0, 160);
+      if (!subject) {
+        this.emit('learn   reflection returned an empty pattern subject — nothing recorded');
+      } else {
+        // Trust anchor: this pass runs ONLY after a verified-complete run, so
+        // task_completion is a trusted source here. The model contributes the
+        // generalized SUBJECT, never the trust — recordSuccessObservation
+        // rejects untrusted sources outright.
+        const outcome = memory.recordSuccessObservation({
+          subject,
+          taskId: d.taskId,
+          scope,
+          sourceType: 'task_completion',
+          evidence: String(parsed.params['evidence'] ?? '').trim() || `auto-learned after verified completion of "${d.goal.slice(0, 80)}"`,
+        });
+        this.emit(
+          outcome.promoted
+            ? `learn   success pattern promoted "${subject.slice(0, 80)}"`
+            : `learn   success observation recorded (${outcome.distinctObservations}/3 for this subject)`,
+        );
+      }
     } else {
       this.emit('learn   nothing new worth saving');
     }

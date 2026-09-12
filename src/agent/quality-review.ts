@@ -30,7 +30,8 @@ export function parseReviewVerdict(reply: string): { verdict: 'pass' | 'revise' 
   const m = /VERDICT:\s*(REVISE|PASS|REJECT)/i.exec(reply);
   if (m && m[1] && /revise|reject/i.test(m[1])) {
     const fbIdx = reply.search(/FEEDBACK:/i);
-    const feedback = (fbIdx >= 0 ? reply.slice(fbIdx + 8) : reply.slice((m.index ?? 0) + m[0].length)).replace(/\s+/g, ' ').trim().slice(0, 600);
+    // 'FEEDBACK:' is 9 chars — slicing at +9 starts after the colon.
+    const feedback = (fbIdx >= 0 ? reply.slice(fbIdx + 9) : reply.slice((m.index ?? 0) + m[0].length)).replace(/\s+/g, ' ').trim().slice(0, 600);
     return { verdict: 'revise', feedback: feedback || 'Reviewer did not provide specifics — re-check the diff against the acceptance criteria.' };
   }
   if (m && m[1] && /pass/i.test(m[1])) return { verdict: 'pass', feedback: '' };
@@ -169,33 +170,6 @@ export function buildQualityReviewMessages(input: QualityReviewInput): LlmMessag
   ];
 }
 
-/** Most recent screenshot attached anywhere in the conversation, if any. */
-export function findLastScreenshotUrl(messages: LlmMessage[]): string | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const content = messages[i]?.content;
-    if (!content || typeof content === 'string') continue;
-    for (let j = content.length - 1; j >= 0; j--) {
-      const part = content[j];
-      if (!part || part.type !== 'image_url') continue;
-      if (part.image_url.url.startsWith('data:image/')) return part.image_url.url;
-    }
-  }
-  return undefined;
-}
-
-/** Most recent structured browser evidence collected for the finished UI. */
-export function findLastBrowserEvidence(data: TaskLedgerData): string | undefined {
-  for (let i = data.actions.length - 1; i >= 0; i--) {
-    const action = data.actions[i];
-    if (
-      action?.tool === 'browse' &&
-      action.status === 'success' &&
-      /evidence/.test(action.paramsSummary) &&
-      typeof action.observation === 'string' &&
-      action.observation.includes('BROWSER EVIDENCE')
-    ) {
-      return action.observation.slice(0, 6000);
-    }
-  }
-  return undefined;
-}
+// Single canonical implementation lives in compaction.ts; re-exported here
+// so the quality-review API (and gitu.ts's re-exports) stay stable.
+export { findLastScreenshotUrl, findLastBrowserEvidence } from './compaction.js';

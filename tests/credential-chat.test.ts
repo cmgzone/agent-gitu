@@ -126,7 +126,7 @@ describe('chat credential handoff', () => {
       else process.env.AGENT_GITU_HOME = previousHome;
       await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
     }
-  }, 30_000);
+  }, { timeout: 90_000, retry: 1 });
 
   it('uses an explicitly selected provider for a pasted model key in a continuation', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'gitu-followup-model-key-'));

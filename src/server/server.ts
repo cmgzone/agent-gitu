@@ -157,6 +157,9 @@ interface RunSession {
   files: StoredSessionFile[];
   /** Messages sent with delivery:'queue' while a run was active; delivered as a continuation when the run completes. */
   queuedUserMessages?: { text: string; attachmentContext?: string }[];
+  /** Steered messages that arrived before the run's Gitu instance existed (the
+   *  executeRun prelude can take seconds); drained into the run on attach. */
+  pendingSteer?: { text: string; attachmentContext?: string }[];
 }
 
 export interface GituServerConfig {
@@ -569,6 +572,10 @@ export class GituServer {
   }
 
   private persistSession(s: RunSession): void {
+    // A deleted (or superseded) session must never be written back: the run's
+    // unwind path (pushEvent → recordEvent, usage tracking) would otherwise
+    // silently resurrect the deleted row in the session database.
+    if (s.runId === undefined || this.sessions.get(s.runId) !== s) return;
     this.db().upsertSession({
       runId: s.runId,
       taskId: s.taskId,
@@ -591,6 +598,33 @@ export class GituServer {
       error: s.error,
       usage: s.usage,
     });
+  }
+
+  /**
+   * Detach the active execution and settle every pending waiter so a stopped,
+   * superseded, or deleted run unwinds immediately instead of staying alive
+   * until its next LLM request or a waiter timeout (10 minutes). Detaching
+   * also makes the run's finally block a no-op via isCurrentExecution(), so it
+   * cannot overwrite user-visible state or resurrect a deleted session row.
+   */
+  private detachRun(session: RunSession, reason: string): void {
+    const gitu = session.gitu;
+    const lsp = session.lsp;
+    session.gitu = undefined;
+    session.lsp = undefined;
+    gitu?.stop();
+    void lsp?.shutdown().catch(() => {});
+    const question = session.questions;
+    session.questions = undefined;
+    question?.resolve(`(${reason})`);
+    const connection = session.connection;
+    session.connection = undefined;
+    connection?.resolve(false);
+    const planReview = session.planReview;
+    session.planReview = undefined;
+    planReview?.resolve({ approved: false, note: `${reason}.` });
+    for (const approval of session.approvals.values()) approval.resolve(false);
+    session.approvals.clear();
   }
 
   async start(): Promise<number> {
@@ -779,7 +813,24 @@ export class GituServer {
       'x-content-type-options': 'nosniff',
     });
     if (headOnly) res.end();
-    else createReadStream(filePath).pipe(res);
+    else this.pipeFile(res, filePath);
+  }
+
+  /**
+   * Pipe a file to the response with an 'error' handler. A stream that fails
+   * to open (file deleted between statSync and open, AV/EBUSY lock, EACCES)
+   * emits an unhandled 'error' event that would otherwise crash the whole
+   * server — there is no global uncaughtException handler. Callers have
+   * always written the headers before piping, so ending the response is the
+   * only recourse left.
+   */
+  private pipeFile(res: http.ServerResponse, filePath: string): void {
+    const stream = createReadStream(filePath);
+    stream.on('error', (err) => {
+      console.error(`[hermes] file stream failed (${filePath}): ${(err as Error).message}`);
+      res.end();
+    });
+    stream.pipe(res);
   }
 
   private async readBody(req: http.IncomingMessage, maxBytes = 1_000_000): Promise<Record<string, unknown>> {
@@ -1125,7 +1176,7 @@ export class GituServer {
         return;
       }
       res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=86400' });
-      createReadStream(VENDOR_THREE).pipe(res);
+      this.pipeFile(res, VENDOR_THREE);
       return;
     }
 
@@ -1138,7 +1189,7 @@ export class GituServer {
         return;
       }
       res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
-      createReadStream(fontPath).pipe(res);
+      this.pipeFile(res, fontPath);
       return;
     }
 
@@ -1343,10 +1394,10 @@ export class GituServer {
       }
       for (const [runId, s] of [...this.sessions.entries()]) {
         if ((projectPath && s.projectPath === projectPath) || (name && s.project === name)) {
-          // Stop before forgetting: a still-running executeRun would resurrect
-          // the session row via its periodic persist calls.
-          s.gitu?.stop();
-          void s.lsp?.shutdown().catch(() => {});
+          // Detach before forgetting: a still-running executeRun would
+          // resurrect the session row via its periodic persist calls, and a
+          // run paused on a waiter would stay alive until its timeout.
+          this.detachRun(s, 'project deleted');
           this.removeSessionFileStorage(s);
           this.sessions.delete(runId);
         }
@@ -1444,7 +1495,7 @@ export class GituServer {
         return;
       }
       res.writeHead(200, { 'content-type': contentType, 'cache-control': 'public, max-age=31536000, immutable' });
-      createReadStream(assetPath).pipe(res);
+      this.pipeFile(res, assetPath);
       return;
     }
 
@@ -2260,12 +2311,12 @@ export class GituServer {
       const ids = Array.isArray(body['ids']) ? (body['ids'] as unknown[]).map(String) : [];
       let removed = 0;
       for (const id of ids) {
-        // Stop in-flight runs first: otherwise executeRun keeps going and its
-        // pushEvent/persistSession calls silently resurrect the deleted row.
+        // Detach in-flight runs first: otherwise executeRun keeps going, its
+        // pushEvent/persistSession calls resurrect the deleted row, and a run
+        // paused on approval/question survives until its waiter timeout.
         const s = this.sessions.get(id);
         if (s) {
-          s.gitu?.stop();
-          void s.lsp?.shutdown().catch(() => {});
+          this.detachRun(s, 'run deleted');
           this.removeSessionFileStorage(s);
         }
         this.sessions.delete(id);
@@ -2444,7 +2495,14 @@ export class GituServer {
           this.pushEvent(session, `queued  "${text}" — will be delivered when the current run completes`);
           this.sendJson(res, 200, { ok: true, queued: true, delivery, safeText: text });
         } else {
-          session.gitu?.queueMessage(text, this.attachmentContext(stored.attachments));
+          if (session.gitu) session.gitu.queueMessage(text, this.attachmentContext(stored.attachments));
+          else {
+            // The run is still in its executeRun prelude (catalog/model setup
+            // can take seconds) so no Gitu instance exists to receive the
+            // steer yet. Buffer it: dropping it here would answer the user
+            // "steered" while silently discarding the message.
+            (session.pendingSteer ??= []).push({ text, attachmentContext: this.attachmentContext(stored.attachments) });
+          }
           if (intent || classifyFollowUp(text).kind === 'CORRECT') {
             session.queuedUserMessages = [];
             this.releasePendingInput(session, text);
@@ -3015,6 +3073,11 @@ export class GituServer {
     });
     activeGitu = gitu;
     session.gitu = gitu;
+    // Steered messages that arrived during the prelude (before this attach)
+    // are buffered on the session — deliver them now so they are not lost.
+    const buffered = session.pendingSteer;
+    session.pendingSteer = undefined;
+    for (const m of buffered ?? []) gitu.queueMessage(m.text, m.attachmentContext);
 
     try {
       const { ledger, report } = await gitu.run(opts.goal);
@@ -3043,6 +3106,15 @@ export class GituServer {
         const message = attachmentContext ? `${combined}\n\n${attachmentContext}` : combined;
         this.pushEvent(session, `user-msg ${combined}`);
         this.pushEvent(session, `continue — delivering ${queued.length} queued message(s) as a new follow-up`);
+        // The continuation now owns the session lifecycle: reserve it as
+        // running (the ending run must not leave a live agent reported as
+        // "completed"), and detach this execution so the finally block below
+        // becomes a no-op and a user message steers the continuation instead
+        // of starting a second concurrent run on the same worktree.
+        session.status = 'running';
+        session.error = undefined;
+        session.finishedAt = undefined;
+        session.gitu = undefined;
         void this.executeRun(session, llm, {
           goal: session.goal,
           mode: session.mode ?? 'standard',

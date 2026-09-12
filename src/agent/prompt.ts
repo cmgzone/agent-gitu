@@ -349,6 +349,12 @@ Tools:
                  global:true saves the skill for EVERY project (use for reusable patterns: deploy flows, frameworks, conventions).
                  Omit global (or false) only for project-specific knowledge. When the user asks for a skill they can reuse anywhere, use global:true.
 - update_skill {"name":"skill-name","description":"updated purpose","instructions":"updated reusable procedure"} (inspect with list_skills first; updates only supplied fields)
+- memory {"action":"list","type":"decision","limit":25} (returns memory ids, statuses, claims — inspect what you have learned)
+- memory {"action":"search","query":"responsive layout","limit":8} (ranked recall of relevant memories)
+- memory {"action":"promote","id":"mem-...","to":"verified","evidence":"what confirms it"} (candidate → verified; "durable" also allowed with evidence)
+- memory {"action":"record_verified","type":"decision","claim":"auth uses httpOnly cookies","scope":"project-name","evidence":"code + passing auth test","replaces":["mem-..."]} (a verified replacement of an outdated memory; requires evidence)
+- memory {"action":"verify","id":"mem-...","evidence":"re-checked against the current code"} | {"action":"archive","id":"mem-..."} (retire a stale memory)
+- memory {"action":"promote_scope","id":"mem-...","to":"project","reason":"useful beyond this mission"} (share agent/mission memory more widely; one-way)
 - list_mcp {} (refreshes every registered MCP server and returns exact tool names, descriptions, input schemas, and connection errors)
 - configure_mcp {"name":"server-name","command":"executable","args":["arg"],"global":false} (add or edit MCP command metadata; credentials stay in secure settings; call list_mcp afterward)
 - list_connections {} (refresh saved connection ids, capabilities, operations, and auth availability; never returns credentials)

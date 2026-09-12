@@ -142,7 +142,7 @@ export class MemoryStore {
     /** Tier 1 pin: promotes this memory into the protected/active tier. */
     pinned?: boolean;
   }): { entry: MemoryEntry; created: boolean } {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const claim = input.claim.trim().replace(/\s+/g, ' ');
       // Visibility-aware dedupe identity (review fix #2): a specialist's
@@ -154,6 +154,7 @@ export class MemoryStore {
       const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e) === key);
       if (existing) {
         existing.confidence = Math.min(1, Math.max(existing.confidence, input.confidence ?? 0.7) + 0.05);
+        existing.reobservations = (existing.reobservations ?? 0) + 1;
         existing.evidence = input.evidence ?? existing.evidence;
         existing.importance = Math.max(existing.importance ?? 0.5, input.importance ?? 0.5);
         // Re-observation with a STRONGER source can verify a candidate.
@@ -205,9 +206,12 @@ export class MemoryStore {
     });
   }
 
-  query(q: MemoryQuery = {}): MemoryEntry[] {
+  query(q: MemoryQuery = {}, ctx?: MemoryRetrievalContext): MemoryEntry[] {
     this.refresh();
     let results = this.entries;
+    // Isolation BEFORE filtering: agent/mission-private memories are invisible
+    // to callers outside their boundary (agent-facing memory tool reads).
+    if (ctx) results = results.filter((e) => this.visibleTo(e, ctx));
     if (q.type) results = results.filter((e) => e.type === q.type);
     if (q.scope) results = results.filter((e) => e.scope === q.scope);
     if (q.text) {
@@ -226,7 +230,7 @@ export class MemoryStore {
    * memories that keep proving useful surface more readily later.
    */
   retrieve(text: string, scope: string, limit = 8, ctx?: MemoryRetrievalContext): MemoryEntry[] {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const queryTokens = new Set(
         text
@@ -428,7 +432,7 @@ export class MemoryStore {
     id: string,
     opts: { to: 'verified' | 'durable'; evidence?: string; verifiedBy?: string; confidence?: number; importance?: number },
   ): MemoryEntry | undefined {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const e = this.entries.find((m) => m.id === id);
       if (!e) return undefined;
@@ -458,7 +462,7 @@ export class MemoryStore {
    * default because retrieval excludes superseded entries.
    */
   supersede(oldId: string, newId: string): MemoryEntry | undefined {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const old = this.entries.find((m) => m.id === oldId);
       if (!old) return undefined;
@@ -485,7 +489,7 @@ export class MemoryStore {
     importance?: number;
     replaces?: string[];
   }): { entry: MemoryEntry; supersededIds: string[] } {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const predecessors = (input.replaces ?? []).map((id) => this.entries.find((e) => e.id === id));
       if (predecessors.length && !input.evidence?.trim() && (!input.sourceType || input.sourceType === 'model_inference')) {
@@ -507,7 +511,7 @@ export class MemoryStore {
 
   /** Revalidate a memory (review Phase 14): refresh verification state. */
   verify(id: string, opts: { evidence?: string; by?: string } = {}): MemoryEntry | undefined {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const e = this.entries.find((m) => m.id === id);
       if (!e || e.status === 'superseded' || e.status === 'archived') return e;
@@ -524,7 +528,7 @@ export class MemoryStore {
 
   /** Archive (never destroy) — the terminal rest for decayed memories. */
   archive(id: string): boolean {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const e = this.entries.find((m) => m.id === id);
       if (!e) return false;
@@ -543,7 +547,7 @@ export class MemoryStore {
    * have ZERO decay — important knowledge is never destroyed for being old.
    */
   decay(opts: { olderThanDays?: number } = {}): string[] {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const windowDays = opts.olderThanDays ?? 30;
       const zeroDecayTypes = new Set<MemoryType>(['decision', 'architecture', 'constraint', 'preference', 'lesson', 'pattern', 'project_convention']);
@@ -573,7 +577,7 @@ export class MemoryStore {
    * superseded (history preserved) and point at the consolidated memory.
    */
   consolidate(scope?: string): { merged: MemoryEntry[]; supersededIds: string[]; flagged: { aId: string; bId: string; reason: string }[] } {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const pool = this.entries.filter(
         (e) => (e.status === 'candidate' || e.status === 'verified') && (!scope || e.scope === scope),
@@ -628,7 +632,7 @@ export class MemoryStore {
   /** Merge a compatible group into one stronger memory (provenance kept). */
   private mergeGroup(group: MemoryEntry[]): MemoryEntry | undefined {
     const expected = group.map((g) => JSON.stringify([g.claim, g.status, boundaryKey(g)]));
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       // Embedding work can yield to other sessions. Recheck ownership and
       // lifecycle under the write lock before publishing a derived memory.
@@ -860,69 +864,86 @@ export class MemoryStore {
     }
     this.embeddingCache?.flush();
 
-    // Union-find style grouping over strong duplicates; flags for the rest.
-    const groups: MemoryEntry[][] = withVectors.map((w) => [w.entry]);
-    const vectorById = new Map(withVectors.map((w) => [w.entry.id, w.vector]));
-    const flagged: NonNullable<Awaited<ReturnType<typeof this.consolidateSemantic>>['flagged']> = [];
-    const classified: Record<string, number> = {};
-    for (let i = 0; i < withVectors.length; i++) {
-      for (let j = i + 1; j < withVectors.length; j++) {
-        const a = withVectors[i]!.entry;
-        const b = withVectors[j]!.entry;
-        if (a.type !== b.type) continue; // incompatible types never merge
-        if (boundaryKey(a) !== boundaryKey(b)) continue;
-        if (a.status === 'superseded' || b.status === 'superseded') continue;
-        const semantic = cosineSimilarity(vectorById.get(a.id)!, vectorById.get(b.id)!);
-        const lexical = overlapRatio(a.claim, b.claim);
-        const hybrid = hybridSimilarity(semantic, lexical);
-        let relationship = classifyPair(hybrid, lexical, isCorroborationType(a.type) ? 0 : contradictionSignals(a.claim, b.claim));
-        if (relationship === 'possible-contradiction' && (isCorroborationType(a.type) || isCorroborationType(b.type))) {
-          relationship = hybrid >= 0.55 && lexical >= 0.2 ? 'strong-duplicate' : 'related';
-        }
-        classified[relationship] = (classified[relationship] ?? 0) + 1;
-        this.semanticCandidates += 1;
-        if (relationship === 'strong-duplicate') {
-          // Same-project check for project-scoped memories before merging.
-          if ((a.projectId && b.projectId && a.projectId !== b.projectId) || a.scope !== b.scope) continue;
-          const ga = groups.find((g) => g.includes(a));
-          const gb = groups.find((g) => g.includes(b));
-          if (ga && gb && ga !== gb) {
-            ga.push(...gb);
-            const idx = groups.indexOf(gb);
-            if (idx >= 0) groups.splice(idx, 1);
-          }
-        } else if (relationship === 'possible-duplicate' || relationship === 'possible-contradiction') {
-          flagged.push({ aId: a.id, bId: b.id, hybrid, relationship });
-          if (relationship === 'possible-contradiction') {
-            this.semanticContradictions += 1;
-            this.possibleContradictions += 1;
-            this.logAudit({
-              event: 'flagged',
-              memoryId: a.id,
-              projectId: a.projectId,
-              reason: `POSSIBLE MEMORY CONTRADICTION with ${b.id} (similarity ${semantic.toFixed(2)}, lexical ${lexical.toFixed(2)}) — advisory only, no automatic supersession`,
-              source: 'semantic-analysis',
-            });
-          }
-        } else if (relationship === 'related') {
-          this.semanticRelated += 1;
-        }
-      }
-    }
-    this.semanticDuplicates = classified['strong-duplicate'] ?? 0;
-    const merged: MemoryEntry[] = [];
-    const supersededIds: string[] = [];
-    for (const group of groups) {
-      if (group.length < 2) continue;
-      const result = this.mergeGroup(group);
-      if (!result) continue;
-      merged.push(result);
-      this.semanticMerged += 1;
-      for (const g of group) {
-        supersededIds.push(g.id);
-      }
-    }
+    // The grouping below mutates entries (merge/supersede) based on vectors we
+    // computed across awaits — publish it under the cross-process file lock so
+    // another session's writes cannot interleave mid-merge. No awaits inside:
+    // the lock is held only for this brief section.
+    const { merged, supersededIds, flagged, classified } = await this.publishSemanticGroups(withVectors);
     return { merged, supersededIds, flagged, classified };
+  }
+
+  /** Grouping + merge/flag pass over precomputed vectors, under the file lock. */
+  private async publishSemanticGroups(withVectors: { entry: MemoryEntry; vector: Float32Array }[]): Promise<{
+    merged: MemoryEntry[];
+    supersededIds: string[];
+    flagged: { aId: string; bId: string; hybrid: number; relationship: PairRelationship }[];
+    classified: Record<string, number>;
+  }> {
+    return this.withLock(() => {
+      // Union-find style grouping over strong duplicates; flags for the rest.
+      const groups: MemoryEntry[][] = withVectors.map((w) => [w.entry]);
+      const vectorById = new Map(withVectors.map((w) => [w.entry.id, w.vector]));
+      const flagged: { aId: string; bId: string; hybrid: number; relationship: PairRelationship }[] = [];
+      const classified: Record<string, number> = {};
+      for (let i = 0; i < withVectors.length; i++) {
+        for (let j = i + 1; j < withVectors.length; j++) {
+          const a = withVectors[i]!.entry;
+          const b = withVectors[j]!.entry;
+          if (a.type !== b.type) continue; // incompatible types never merge
+          if (boundaryKey(a) !== boundaryKey(b)) continue;
+          if (a.status === 'superseded' || b.status === 'superseded') continue;
+          const semantic = cosineSimilarity(vectorById.get(a.id)!, vectorById.get(b.id)!);
+          const lexical = overlapRatio(a.claim, b.claim);
+          const hybrid = hybridSimilarity(semantic, lexical);
+          let relationship = classifyPair(hybrid, lexical, isCorroborationType(a.type) ? 0 : contradictionSignals(a.claim, b.claim));
+          if (relationship === 'possible-contradiction' && (isCorroborationType(a.type) || isCorroborationType(b.type))) {
+            relationship = hybrid >= 0.55 && lexical >= 0.2 ? 'strong-duplicate' : 'related';
+          }
+          classified[relationship] = (classified[relationship] ?? 0) + 1;
+          this.semanticCandidates += 1;
+          if (relationship === 'strong-duplicate') {
+            // Same-project check for project-scoped memories before merging.
+            if ((a.projectId && b.projectId && a.projectId !== b.projectId) || a.scope !== b.scope) continue;
+            const ga = groups.find((g) => g.includes(a));
+            const gb = groups.find((g) => g.includes(b));
+            if (ga && gb && ga !== gb) {
+              ga.push(...gb);
+              const idx = groups.indexOf(gb);
+              if (idx >= 0) groups.splice(idx, 1);
+            }
+          } else if (relationship === 'possible-duplicate' || relationship === 'possible-contradiction') {
+            flagged.push({ aId: a.id, bId: b.id, hybrid, relationship });
+            if (relationship === 'possible-contradiction') {
+              this.semanticContradictions += 1;
+              this.possibleContradictions += 1;
+              this.logAudit({
+                event: 'flagged',
+                memoryId: a.id,
+                projectId: a.projectId,
+                reason: `POSSIBLE MEMORY CONTRADICTION with ${b.id} (similarity ${semantic.toFixed(2)}, lexical ${lexical.toFixed(2)}) — advisory only, no automatic supersession`,
+                source: 'semantic-analysis',
+              });
+            }
+          } else if (relationship === 'related') {
+            this.semanticRelated += 1;
+          }
+        }
+      }
+      this.semanticDuplicates = classified['strong-duplicate'] ?? 0;
+      const merged: MemoryEntry[] = [];
+      const supersededIds: string[] = [];
+      for (const group of groups) {
+        if (group.length < 2) continue;
+        const result = this.mergeGroup(group);
+        if (!result) continue;
+        merged.push(result);
+        this.semanticMerged += 1;
+        for (const g of group) {
+          supersededIds.push(g.id);
+        }
+      }
+      return { merged, supersededIds, flagged, classified };
+    });
   }
 
   /**
@@ -938,7 +959,7 @@ export class MemoryStore {
     sourceType: MemorySourceType;
     evidence?: string;
   }): { promoted: boolean; pattern?: MemoryEntry; distinctObservations: number; reason?: string } {
-    return this.locked(() => {
+    return this.atomic(() => {
       const trusted: MemorySourceType[] = ['test', 'browser_evidence', 'task_completion', 'tool_result', 'source_code'];
       if (!trusted.includes(input.sourceType)) {
         return { promoted: false, distinctObservations: 0, reason: `unverified source (${input.sourceType}) — model claims cannot create success patterns` };
@@ -963,10 +984,13 @@ export class MemoryStore {
         this.flush();
         return { promoted: false, distinctObservations: distinct, reason: `${distinct} independent observation(s) — need 3` };
       }
-      // Pattern already exists? Dedupe keeps it single.
       // Pattern already exists? Dedupe keeps it single (case-insensitive).
       const existing = this.entries.find((m) => m.type === 'pattern' && m.scope === input.scope && m.claim.toLowerCase().includes(subject));
-      if (existing) return { promoted: false, pattern: existing, distinctObservations: distinct, reason: 'pattern already promoted' };
+      if (existing) {
+        // The observation appended above still needs persisting on this path.
+        this.flush();
+        return { promoted: false, pattern: existing, distinctObservations: distinct, reason: 'pattern already promoted' };
+      }
       const pattern = this.add({
         type: 'pattern',
         claim: `PATTERN: ${input.subject} — verified across ${distinct} independent task(s)`,
@@ -1076,11 +1100,14 @@ export class MemoryStore {
    * confidence ≥ 0.85 earns the pattern.
    */
   maybePromotePattern(input: { entryId: string; patternClaim: string; scope: string }): MemoryEntry | undefined {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const e = this.entries.find((m) => m.id === input.entryId);
       if (!e) return undefined;
-      const occurrences = Math.round((e.confidence - 0.7) / 0.05) + 1;
+      // Occurrences = creation + explicit re-observation counter. Entries that
+      // predate the counter fall back to the historical confidence-step
+      // estimate (which assumed a 0.7 base and +0.05 per bump).
+      const occurrences = (e.reobservations ?? Math.round((e.confidence - 0.7) / 0.05)) + 1;
       if (occurrences < 3 || e.confidence < 0.85) return undefined;
       const existing = this.entries.find((m) => m.type === 'pattern' && m.scope === input.scope && dedupeKey(m.type, m.scope, m.claim) === dedupeKey('pattern', input.scope, input.patternClaim));
       if (existing) return existing;
@@ -1170,7 +1197,7 @@ export class MemoryStore {
     target: MemoryVisibility,
     opts: { reason?: string; by?: string; missionId?: string; projectId?: string } = {},
   ): MemoryEntry | undefined {
-    return this.locked(() => {
+    return this.atomic(() => {
       this.refresh();
       const e = this.entries.find((m) => m.id === id);
       if (!e) return undefined;
@@ -1252,7 +1279,7 @@ export class MemoryStore {
   }
 
   private flush(): void {
-    this.locked(() => {
+    this.atomic(() => {
       this.refresh();
       writeJson(this.file, this.entries);
       this.baseline = new Map(this.entries.map((e) => [e.id, structuredClone(e)]));
@@ -1261,8 +1288,15 @@ export class MemoryStore {
   }
 
   /**
-   * Run an asynchronous action with the shared cross-process file lock held.
-   * Refreshes the memory state before running and merges state after completion.
+   * Concurrency model:
+   * - Sync methods (add/promote/retrieve/...) run their read-modify-write in a
+   *   single event-loop turn via atomic(), so they are atomic within a process.
+   *   Across processes, refresh()'s field-level merge converges concurrent
+   *   writers; the residual last-writer window is sub-millisecond.
+   * - Operations that mutate ACROSS await points (embedding-backed
+   *   consolidation) must hold the real cross-process file lock via withLock()
+   *   around the mutating section. The lock is async (never blocks the event
+   *   loop) and is never held during long awaits such as embedding calls.
    */
   async withLock<T>(action: () => Promise<T> | T): Promise<T> {
     return await withMemoryFileLock(this.file, async () => {
@@ -1275,14 +1309,9 @@ export class MemoryStore {
     });
   }
 
-  private locked<T>(action: () => T): T {
+  /** Synchronous in-process critical section. See the class concurrency notes. */
+  private atomic<T>(action: () => T): T {
     return action();
-  }
-
-  private async lockedAsync<T>(action: () => Promise<T> | T): Promise<T> {
-    return await withMemoryFileLock(this.file, async () => {
-      return await action();
-    });
   }
 
   private readDisk<T>(file: string): T[] {

@@ -134,12 +134,18 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
   }
 
   function markTransientFailure(err: Error, delayMs: number): void {
-    if (!(err instanceof LlmError) || err.details.kind !== 'rate_limit_temporary') return;
     const current = cooldowns.get(circuitKey);
-    cooldowns.set(circuitKey, {
-      openUntil: Math.max(current?.openUntil ?? 0, Date.now() + cooldownFor(err, delayMs)),
-      halfOpenProbe: false,
-    });
+    if (err instanceof LlmError && err.details.kind === 'rate_limit_temporary') {
+      cooldowns.set(circuitKey, {
+        openUntil: Math.max(current?.openUntil ?? 0, Date.now() + cooldownFor(err, delayMs)),
+        halfOpenProbe: false,
+      });
+      return;
+    }
+    // A failed probe must always release the half-open slot, regardless of the
+    // error kind — otherwise halfOpenProbe stays true forever while openUntil
+    // is in the past and every later caller spins in waitForCircuit forever.
+    if (current?.halfOpenProbe) current.halfOpenProbe = false;
   }
 
   async function guard<T>(

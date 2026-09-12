@@ -104,25 +104,41 @@ export class CronScheduler {
   }
 
   tick(): void {
-    const now = Date.now();
-    for (const job of this.store.jobs()) {
-      if (!job.enabled || this.running.has(job.id)) continue;
-      let interval: number;
-      try {
-        interval = parseEvery(job.every);
-      } catch {
-        continue;
+    // This runs inside a bare setInterval callback: any throw would be an
+    // uncaught exception (there is no global uncaughtException handler) and
+    // kill the whole server. A filesystem error on the jobs file (AV lock,
+    // EACCES, ENOSPC) must only skip a tick, never take the process down.
+    try {
+      const now = Date.now();
+      for (const job of this.store.jobs()) {
+        if (!job.enabled || this.running.has(job.id)) continue;
+        let interval: number;
+        try {
+          interval = parseEvery(job.every);
+        } catch {
+          continue;
+        }
+        const last = job.lastRunAt ? new Date(job.lastRunAt).getTime() : 0;
+        if (now - last < interval) continue;
+        this.running.add(job.id);
+        try {
+          this.store.update(job.id, { lastRunAt: new Date().toISOString() });
+        } catch (err) {
+          // The job was marked in-flight before the write failed — release it
+          // so a later tick can still dispatch it.
+          this.running.delete(job.id);
+          console.error(`[hermes] cron update failed for ${job.id}: ${(err as Error).message}`);
+          continue;
+        }
+        Promise.resolve(this.onDue(job))
+          .then((runId) => {
+            if (runId) this.store.update(job.id, { lastRunId: runId });
+          })
+          .catch(() => undefined)
+          .finally(() => this.running.delete(job.id));
       }
-      const last = job.lastRunAt ? new Date(job.lastRunAt).getTime() : 0;
-      if (now - last < interval) continue;
-      this.running.add(job.id);
-      this.store.update(job.id, { lastRunAt: new Date().toISOString() });
-      Promise.resolve(this.onDue(job))
-        .then((runId) => {
-          if (runId) this.store.update(job.id, { lastRunId: runId });
-        })
-        .catch(() => undefined)
-        .finally(() => this.running.delete(job.id));
+    } catch (err) {
+      console.error(`[hermes] cron tick failed: ${(err as Error).message}`);
     }
   }
 }

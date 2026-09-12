@@ -83,6 +83,22 @@ function messageCarriesImages(messages: LlmMessage[], dataUrls: string[]): boole
 }
 
 /**
+ * Whether this message is a durable user-reference visual: the spliced
+ * post-compaction restore marker, or any message carrying a rehydrated
+ * user-supplied asset. Context maintenance (screenshot stripping) must never
+ * remove these — a user mockup cannot be re-captured the way a browser
+ * screenshot can.
+ */
+export function isDurableVisualReferenceMessage(m: LlmMessage, rehydrated?: RehydratedVisuals): boolean {
+  if (typeof m.content === 'string') return false;
+  if ((m.content as LlmContentPart[]).some((p) => p.type === 'text' && p.text === RESTORE_TEXT)) return true;
+  if (rehydrated && rehydrated.images.length > 0) {
+    return messageCarriesImages([m], rehydrated.images.map((i) => i.dataUrl));
+  }
+  return false;
+}
+
+/**
  * After history compaction, re-splice the active durable user-reference
  * images into the model context if their message was compacted away.
  * Idempotent: a no-op when the images are still present or the model cannot

@@ -5,8 +5,9 @@ import type { SubAgentJob } from '../agent/subagent.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { LspManager } from '../lsp/manager.js';
 import type { McpManager } from '../mcp/client.js';
+import type { MemoryStore } from '../memory/memory-store.js';
 import type { SkillSelectionContext, SkillStore } from '../skills/skills.js';
-import type { CriterionSpec, SpecialistHandoff, ToolResult } from '../types.js';
+import type { CriterionSpec, MemoryRetrievalContext, SpecialistHandoff, ToolResult } from '../types.js';
 import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
@@ -16,6 +17,11 @@ export interface ToolContext {
   guard: ProjectGuard;
   cwd: string;
   skills?: SkillStore;
+  /** Project memory store — lets the agent inspect and manage what it has learned. */
+  memory?: MemoryStore;
+  /** Visibility/isolation context applied to every memory read through the tool
+   *  (the main agent never sees specialist-private memories and vice versa). */
+  memoryContext?: MemoryRetrievalContext;
   /** Runtime capabilities available to skill requirement validation. */
   skillContext?: SkillSelectionContext;
   mcp?: McpManager;
@@ -53,6 +59,7 @@ export const KNOWN_TOOL_NAMES = new Set([
   'list_skills',
   'create_skill',
   'update_skill',
+  'memory',
   'list_mcp',
   'configure_mcp',
   'list_connections',
@@ -260,6 +267,83 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
           schema: `create_skill({ name: string, description: string, instructions: string, global?: boolean })`,
           correction: `Provide a non-empty name, description, and instructions for the skill.`,
         };
+      }
+      return { valid: true };
+    }
+    case 'memory': {
+      const MEMORY_ACTIONS = ['list', 'search', 'promote', 'verify', 'archive', 'record_verified', 'promote_scope'] as const;
+      const action = String(p['action'] ?? '');
+      if (!(MEMORY_ACTIONS as readonly string[]).includes(action)) {
+        return {
+          valid: false,
+          error: `memory action must be one of: ${MEMORY_ACTIONS.join(', ')}.`,
+          schema: `memory({ action: 'list'|'search'|'promote'|'verify'|'archive'|'record_verified'|'promote_scope', ... })`,
+          correction: `Inspect memories first with action "list" or "search". Success patterns are NOT agent-callable — they form only from verified task completions.`,
+        };
+      }
+      const idActions = ['promote', 'verify', 'archive', 'promote_scope'];
+      if (idActions.includes(action)) {
+        const idErr = checkNonEmptyString('id');
+        if (idErr) {
+          return {
+            valid: false,
+            error: idErr,
+            schema: `memory({ action: '${action}', id: string, ... })`,
+            correction: `Inspect memories with action "list" first to get their ids.`,
+          };
+        }
+      }
+      if (action === 'promote') {
+        const to = String(p['to'] ?? 'verified');
+        if (to !== 'verified' && to !== 'durable') {
+          return {
+            valid: false,
+            error: `promote "to" must be "verified" or "durable" (received "${to}").`,
+            schema: `memory({ action: 'promote', id: string, to: 'verified'|'durable', evidence?: string })`,
+          };
+        }
+        const durableEvidenceErr = to === 'durable' ? checkNonEmptyString('evidence') : undefined;
+        if (durableEvidenceErr) {
+          return {
+            valid: false,
+            error: 'promoting to durable requires evidence — durable knowledge must carry its support.',
+            schema: `memory({ action: 'promote', id: string, to: 'durable', evidence: string })`,
+          };
+        }
+      }
+      if (action === 'promote_scope') {
+        const to = String(p['to'] ?? '');
+        if (!['agent', 'mission', 'project', 'global'].includes(to)) {
+          return {
+            valid: false,
+            error: `promote_scope "to" must be one of: agent, mission, project, global.`,
+            schema: `memory({ action: 'promote_scope', id: string, to: 'agent'|'mission'|'project'|'global', reason?: string })`,
+          };
+        }
+      }
+      if (action === 'search' && checkNonEmptyString('query')) {
+        return {
+          valid: false,
+          error: 'query is required.',
+          schema: `memory({ action: 'search', query: string, limit?: number })`,
+        };
+      }
+      if (action === 'record_verified') {
+        const claimErr = checkNonEmptyString('claim');
+        const scopeErr = checkNonEmptyString('scope');
+        const typeErr = checkNonEmptyString('type');
+        const evErr = checkNonEmptyString('evidence');
+        if (claimErr || scopeErr || typeErr || evErr) {
+          return {
+            valid: false,
+            error: claimErr ?? scopeErr ?? typeErr ?? evErr,
+            schema: `memory({ action: 'record_verified', type: string, claim: string, scope: string, evidence: string, replaces?: string[] })`,
+            correction: `A verified replacement requires evidence — unsupported model claims can never replace an existing memory.`,
+          };
+        }
+        if (p['replaces'] !== undefined && (!Array.isArray(p['replaces']) || p['replaces'].some((r) => typeof r !== 'string' || !r.trim()))) {
+          return { valid: false, error: 'replaces must be an array of memory ids.', schema: `memory({ action: 'record_verified', ..., replaces: string[] })` };
+        }
       }
       return { valid: true };
     }
@@ -1013,32 +1097,14 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
     // POSIX: own process group so the whole tree can be signalled on timeout.
     const execOpts: ExecFileOptionsWithStringEncoding = {
       cwd: ctx.cwd,
-      timeout: timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
       windowsHide: true,
       encoding: 'utf8',
     };
     if (!isWindows) (execOpts as { detached?: boolean }).detached = true;
+    let timedOut = false;
     const child = execFile(shell, args, execOpts, (err, stdout, stderr) => {
-        // Node kills only the DIRECT shell child on timeout. npm/node/etc.
-        // spawn grandchildren that survive it — servers and watchers would
-        // keep running (and holding ports/files) after the evidence was
-        // recorded. Kill the full tree before resolving.
-        if (err?.killed && child.pid) {
-          try {
-            if (isWindows) {
-              execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
-            } else {
-              try {
-                process.kill(-child.pid, 'SIGKILL');
-              } catch {
-                child.kill('SIGKILL');
-              }
-            }
-          } catch {
-            /* best effort — the shell itself is already dead */
-          }
-        }
+        clearTimeout(killer);
         let exitCode = 0;
         if (err) {
           const code = (err as { code?: unknown }).code;
@@ -1047,7 +1113,7 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
         const body = [stdout, stderr].filter(Boolean).join('\n--- stderr ---\n');
         const output = excerpt(body || '(no output)', 4000);
         if (err) {
-          const msg = err.killed ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : '';
+          const msg = timedOut ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : '';
           resolve({
             ok: false,
             exitCode,
@@ -1069,6 +1135,32 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
         }
       },
     );
+    // Own the timeout instead of Node's `timeout` option: Node kills only the
+    // DIRECT shell child, and the completion callback — where a tree kill
+    // could run — fires only AFTER that child is already dead, so `taskkill
+    // /T` would target a dead PID and grandchildren (servers, watchers) would
+    // survive. Killing from our own timer reaches the tree while it is alive.
+    const killer = setTimeout(() => {
+      timedOut = true;
+      try {
+        if (isWindows && child.pid) {
+          execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+        } else if (child.pid) {
+          try {
+            process.kill(-child.pid, 'SIGKILL');
+          } catch {
+            child.kill('SIGKILL');
+          }
+        }
+      } catch {
+        /* best effort — backstop below */
+      }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+    }, timeoutMs);
   });
 }
 export function toolListSkills(ctx: ToolContext): ToolResult {
@@ -1098,6 +1190,103 @@ export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown
     };
   } catch (err) {
     return fail(`create_skill failed: ${(err as Error).message}`);
+  }
+}
+
+const MEMORY_TYPE_VALUES = new Set([
+  'project', 'architecture', 'decision', 'task', 'failure', 'preference', 'fact', 'constraint',
+  'lesson', 'pattern', 'task_result', 'project_convention', 'evidence', 'observation',
+]);
+
+/**
+ * Agent-facing memory tool: inspect what has been learned (list/search) and
+ * drive the learning lifecycle (promote/verify/archive/record_verified/
+ * promote_scope) under the store's own trust rules — a candidate only becomes
+ * verified with real evidence, and only verified memories become durable.
+ * Reads and writes are visibility-filtered through ctx.memoryContext, so the
+ * main agent never sees specialist-private memories and vice versa.
+ * Success-pattern recording is deliberately NOT agent-callable: patterns form
+ * only from verified task completions (the completion path and the post-run
+ * reflection pass call recordSuccessObservation directly).
+ */
+export async function toolMemory(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  if (!ctx.memory) return fail('memory: no memory store is available in this session.');
+  const memory = ctx.memory;
+  const action = String(params['action'] ?? '');
+  const optString = (name: string): string | undefined => {
+    const v = params[name];
+    const s = typeof v === 'string' ? v.trim() : '';
+    return s || undefined;
+  };
+  const id = String(params['id'] ?? '');
+  try {
+    switch (action) {
+      case 'list': {
+        const entries = memory.query(
+          { type: optString('type') as never, scope: optString('scope'), limit: Math.min(50, Math.max(1, Number(params['limit']) || 25)) },
+          ctx.memoryContext,
+        );
+        if (entries.length === 0) return { ok: true, output: '(no memories match — nothing recorded yet for this scope)' };
+        const body = entries
+          .map((e) => `${e.id} [${e.type}] (${e.status ?? 'candidate'}, confidence ${e.confidence.toFixed(2)}) ${e.claim.slice(0, 160)}`)
+          .join('\n');
+        return { ok: true, output: `${entries.length} memory(ies):\n${body}\nUse these ids with memory promote/verify/archive/promote_scope.` };
+      }
+      case 'search': {
+        const results = await memory.search(String(params['query'] ?? ''), {
+          limit: Math.min(20, Math.max(1, Number(params['limit']) || 8)),
+          ctx: ctx.memoryContext,
+        });
+        if (results.length === 0) return { ok: true, output: '(no matching memories)' };
+        const body = results
+          .map((r) => `${r.id} [${r.type}] (${r.status}, score ${r.score.toFixed(2)}) ${r.claim.slice(0, 160)}`)
+          .join('\n');
+        return { ok: true, output: `${results.length} match(es):\n${body}` };
+      }
+      case 'promote': {
+        const to = String(params['to'] ?? 'verified') as 'verified' | 'durable';
+        const e = memory.promote(id, { to, evidence: optString('evidence'), verifiedBy: 'agent' });
+        if (!e) return fail(`memory promote: no memory with id "${id}". Inspect with action "list" first.`);
+        return { ok: true, output: `Memory ${e.id} promoted to ${e.status}.` };
+      }
+      case 'verify': {
+        const e = memory.verify(id, { evidence: optString('evidence'), by: 'agent' });
+        if (!e) return fail(`memory verify: no memory with id "${id}". Inspect with action "list" first.`);
+        return { ok: true, output: `Memory ${e.id} re-verified (status: ${e.status ?? 'verified'}).` };
+      }
+      case 'archive': {
+        const archived = memory.archive(id);
+        if (!archived) return fail(`memory archive: no memory with id "${id}". Inspect with action "list" first.`);
+        return { ok: true, output: `Memory ${id} archived — history preserved, excluded from retrieval.` };
+      }
+      case 'record_verified': {
+        const type = String(params['type'] ?? '');
+        if (!MEMORY_TYPE_VALUES.has(type)) {
+          return fail(`memory record_verified: unknown type "${type}". Use one of: ${[...MEMORY_TYPE_VALUES].join(', ')}.`);
+        }
+        const { entry, supersededIds } = memory.recordVerified({
+          type: type as never,
+          claim: String(params['claim'] ?? ''),
+          scope: String(params['scope'] ?? ctx.guard.lock.name),
+          evidence: String(params['evidence'] ?? ''),
+          sourceType: 'model_inference',
+          replaces: Array.isArray(params['replaces']) ? (params['replaces'] as unknown[]).map(String) : undefined,
+        });
+        return {
+          ok: true,
+          output: `Verified memory ${entry.id} recorded.${supersededIds.length ? ` Superseded: ${supersededIds.join(', ')}.` : ''}`,
+        };
+      }
+      case 'promote_scope': {
+        const e = memory.promoteScope(id, String(params['to'] ?? '') as never, { reason: optString('reason'), by: 'agent' });
+        if (!e) return fail(`memory promote_scope: no memory with id "${id}". Inspect with action "list" first.`);
+        return { ok: true, output: `Memory ${e.id} visibility promoted to ${e.visibility ?? 'project'}.` };
+      }
+      default:
+        return fail(`memory: unknown action "${action}".`);
+    }
+  } catch (err) {
+    return fail(`memory ${action} failed: ${(err as Error).message}`);
   }
 }
 
@@ -1466,7 +1655,11 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
     }];
   }
   if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]} — or resume a paused attempt with "resume":{"jobId":"sub-…"}');
-  if (specs.length > 4) specs = specs.slice(0, 4);
+  // Match the action parser and the escalation budget, which both allow up to
+  // 6 specialists: a silent truncation here would drop delegated work without
+  // any observation telling the model (the orchestrator still counts the
+  // slots as consumed).
+  if (specs.length > 6) specs = specs.slice(0, 6);
   if (params['background'] === true) {
     if (!ctx.delegateBackground) return fail('delegate: no specialist agents configured — create them in Settings → Agents');
     const jobs = ctx.delegateBackground(specs);

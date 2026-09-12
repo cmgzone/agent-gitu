@@ -19,7 +19,8 @@ import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient } from '../llm/llm.js';
 import { CoworkStore, type CoworkConversation, type CoworkMessage, type CoworkAgent } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
-import { runConversationTurn, type CoworkProgress } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, type CoworkProgress } from '../cowork/runner.js';
+import type { CoworkMission } from '../cowork/store.js';
 import { CoworkComputer } from '../cowork/computer.js';
 import { TelegramPoller, TelegramReplyStream, recentTelegramChats } from '../cowork/telegram.js';
 import type { ToolContext } from '../tools/tools.js';
@@ -224,7 +225,7 @@ export class GituServer {
   /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
   private coworkStore?: CoworkStore;
   private coworkMemoryStore?: CoworkMemory;
-  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; telegramError?: string }>();
+  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; telegramError?: string; forceAgentId?: string; missionId?: string }>();
   private readonly coworkPollers = new Map<string, TelegramPoller>();
   private coworkTimer?: ReturnType<typeof setInterval>;
   private readonly coworkTools = new Map<string, ToolContext>();
@@ -816,6 +817,9 @@ export class GituServer {
   private coworkView(conversationId: string, after = 0, rosterRevision = -1) {
     const store = this.cowork();
     const run = this.coworkRuns.get(conversationId);
+    const missions = store.missions(conversationId);
+    const activeMissions = missions.filter((mission) => mission.status === 'running' || mission.status === 'blocked');
+    const recentMissions = missions.filter((mission) => mission.status !== 'running' && mission.status !== 'blocked').slice(0, 20);
     return {
       messages: store.messages(conversationId, after),
       busy: Boolean(run?.busy),
@@ -823,6 +827,7 @@ export class GituServer {
       progress: run?.progress ?? null,
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
+      missions: [...activeMissions, ...recentMissions],
       rosterRevision: store.rosterRevision,
       roster: rosterRevision !== store.rosterRevision ? { agents: store.listAgents(), conversations: store.listConversations() } : undefined,
       deleted: !store.getConversation(conversationId),
@@ -951,6 +956,12 @@ export class GituServer {
       return { ok: true, queued: true };
     }
     const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from });
+    // A user reply in a conversation with a blocked mission is guidance for it.
+    for (const mission of store.missions(conversationId)) {
+      if (mission.status !== 'blocked') continue;
+      store.updateMission(mission.id, { status: 'running', guidance: [...mission.guidance, trimmed].slice(-10), nextWakeAt: new Date(Date.now() + 5_000).toISOString() });
+      store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Mission unblocked — your reply was added as guidance.` });
+    }
     const abort = new AbortController();
     this.coworkRuns.set(conversationId, { busy: true, abort, queue: [trigger] });
     this.publishCowork(conversationId);
@@ -1002,6 +1013,7 @@ export class GituServer {
         history,
         trigger,
         deps: {
+          forceAgentId: run.forceAgentId,
           agents: store.listAgents(),
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
@@ -1081,7 +1093,212 @@ export class GituServer {
     }
   }
 
+  /** One bounded autonomous work session for a mission, with visible progress. */
+  private async executeMissionSession(missionId: string): Promise<void> {
+    const store = this.cowork();
+    const mission = store.getMission(missionId);
+    if (!mission || mission.status !== 'running') return;
+    const conversationId = mission.conversationId;
+    const run = this.coworkRuns.get(conversationId);
+    if (run?.busy) {
+      store.updateMission(missionId, { nextWakeAt: new Date(Date.now() + 15_000).toISOString() });
+      return;
+    }
+    const conversation = store.getConversation(conversationId);
+    const agent = store.getAgent(mission.agentId);
+    if (!conversation || !agent) {
+      store.updateMission(missionId, { status: 'failed', finishedAt: new Date().toISOString(), result: 'Mission agent or conversation no longer exists.' });
+      this.publishCowork(conversationId);
+      return;
+    }
+    const abort = new AbortController();
+    this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [], missionId });
+    this.publishCowork(conversationId);
+    const telegram = conversation.telegram;
+    let stream: TelegramReplyStream | undefined;
+    const beginStream = (): TelegramReplyStream | undefined => {
+      if (!stream && telegram?.enabled && telegram.token && telegram.chatId) stream = new TelegramReplyStream(telegram.token, telegram.chatId);
+      return stream;
+    };
+    const finishStream = async (text: string): Promise<void> => {
+      try { await beginStream()?.finish(text); }
+      catch (err) {
+        const message = (err as Error).message;
+        const current = this.coworkRuns.get(conversationId);
+        if (current) current.telegramError = message;
+        store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${message}` });
+        this.publishCowork(conversationId);
+      }
+      stream = undefined;
+    };
+    try {
+      const result = await runMissionSession({
+        mission,
+        agent,
+        deps: {
+          agents: store.listAgents(),
+          resolveLlm: (a) => this.coworkLlm(a),
+          toolContext: (a) => this.coworkToolContext(a),
+          computerFor: (agentId) => this.coworkComputer(agentId),
+          withAgent: (a, work) => this.withCoworkAgent(a.id, abort.signal, work),
+          store,
+          memory: this.coworkMemory(),
+          browser: true,
+          userContext: this.coworkUserContext(),
+          memoryFor: (a) => this.coworkMemoryFor(a),
+          signal: abort.signal,
+          onProgress: (progress) => {
+            const current = this.coworkRuns.get(conversationId);
+            if (current?.abort !== abort) return;
+            current.progress = progress;
+            beginStream()?.update(`${progress.agentName}: ${progress.text || 'Working on mission…'}`);
+            this.publishCowork(conversationId);
+          },
+          onMessage: async (message) => {
+            const current = this.coworkRuns.get(conversationId);
+            if (current?.abort === abort) current.progress = undefined;
+            this.publishCowork(conversationId);
+            await finishStream(`${message.agentName ? `${message.agentName}: ` : ''}${message.text}`);
+          },
+        },
+        append: (message) => {
+          if (!store.getConversation(conversationId)) throw new Error('Conversation was deleted.');
+          const stored = store.appendMessage(conversationId, message);
+          this.publishCowork(conversationId);
+          return stored;
+        },
+      });
+      const fresh = store.getMission(missionId);
+      if (!fresh || fresh.status !== 'running') return;
+      const turns = fresh.turns + 1;
+      const appendNotice = async (text: string): Promise<void> => {
+        if (!store.getConversation(conversationId)) return;
+        store.appendMessage(conversationId, { role: 'system', via: 'web', text });
+        this.publishCowork(conversationId);
+        await finishStream(text);
+      };
+      if (result.status === 'done') {
+        store.updateMission(missionId, {
+          status: 'done',
+          progress: result.progress,
+          result: result.result ?? result.progress,
+          turns,
+          finishedAt: new Date().toISOString(),
+          nextWakeAt: undefined,
+        });
+        await appendNotice(`Mission complete — ${result.result ?? result.progress}`);
+      } else if (result.status === 'blocked') {
+        store.updateMission(missionId, {
+          status: 'blocked',
+          progress: result.progress,
+          blockers: result.blockers,
+          turns,
+          nextWakeAt: undefined,
+        });
+        await appendNotice(`Mission paused — ${result.blockers ?? 'needs your input'}. Reply here to unblock it.`);
+      } else if (turns >= fresh.maxTurns) {
+        store.updateMission(missionId, {
+          status: 'failed',
+          progress: result.progress,
+          turns,
+          finishedAt: new Date().toISOString(),
+          result: `Turn budget exhausted (${fresh.maxTurns} sessions). Last progress: ${result.progress}`,
+          nextWakeAt: undefined,
+        });
+        await appendNotice(`Mission stopped — turn budget of ${fresh.maxTurns} sessions ran out. Last progress: ${result.progress}`);
+      } else {
+        store.updateMission(missionId, { progress: result.progress, turns, nextWakeAt: new Date(Date.now() + 20_000).toISOString() });
+      }
+    } catch (err) {
+      const currentMission = store.getMission(missionId);
+      if (currentMission?.status === 'running') {
+        store.updateMission(missionId, { nextWakeAt: new Date(Date.now() + (abort.signal.aborted ? 120_000 : 60_000)).toISOString() });
+      }
+      if (currentMission?.status !== 'cancelled') {
+        console.error(`[hermes] mission session failed (${missionId}): ${(err as Error).message}`);
+      }
+      await finishStream(currentMission?.status === 'cancelled'
+        ? 'Mission cancelled.'
+        : abort.signal.aborted
+          ? 'Mission session stopped. It will resume automatically.'
+          : 'Mission session hit an error. It will retry automatically.');
+    } finally {
+      const current = this.coworkRuns.get(conversationId);
+      if (current?.abort === abort) {
+        this.coworkRuns.delete(conversationId);
+        this.publishCowork(conversationId);
+      }
+    }
+  }
+
+  /** Wake one specific agent with an instruction (follow-ups, inbox mail). */
+  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent'): boolean {
+    const store = this.cowork();
+    const conversation = store.getConversation(conversationId);
+    const agent = store.getAgent(agentId);
+    if (!conversation || !agent || !conversation.memberIds.includes(agentId)) return false;
+    const run = this.coworkRuns.get(conversationId);
+    if (run?.busy) return false; // retried by the next autonomy tick where relevant
+    const trigger = store.appendMessage(conversationId, { role: 'system', via, text: instruction });
+    const abort = new AbortController();
+    this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [trigger], forceAgentId: agentId });
+    this.publishCowork(conversationId);
+    void this.executeCoworkTurn(conversationId, abort)
+      .catch((err: Error) => console.error(`[hermes] cowork wake crashed (${conversationId}): ${err.message}`))
+      .finally(() => {
+        const current = this.coworkRuns.get(conversationId);
+        if (current?.abort === abort) {
+          this.coworkRuns.delete(conversationId);
+          this.publishCowork(conversationId);
+        }
+      });
+    return true;
+  }
+
+  /** Deliver due follow-ups and inbox mail, and wake due missions. */
+  private coworkAutonomyTick(): void {
+    const store = this.cowork();
+    const now = Date.now();
+    // 1. Due missions get a work session.
+    for (const mission of store.missions()) {
+      if (mission.status !== 'running') continue;
+      if (!mission.nextWakeAt || Date.parse(mission.nextWakeAt) > now) continue;
+      void this.executeMissionSession(mission.id).catch((err: Error) => console.error(`[hermes] mission session crashed (${mission.id}): ${err.message}`));
+    }
+    // 2. Due agent follow-ups wake their author.
+    for (const followUp of store.dueFollowUps(now)) {
+      const agent = store.getAgent(followUp.agentId);
+      const conversation = store.getConversation(followUp.conversationId);
+      if (!agent || !conversation || !conversation.memberIds.includes(agent.id)) {
+        store.takeFollowUp(followUp.id);
+        continue;
+      }
+      if (this.coworkRuns.get(conversation.id)?.busy) continue;
+      if (this.dispatchAgentWake(conversation.id, agent.id, `Follow-up reminder from @${agent.name}: ${followUp.note}. Act on it with your tools and report the result to the user here.`, 'schedule')) {
+        store.takeFollowUp(followUp.id);
+      }
+    }
+    // 3. Inbox mail is delivered to the recipient's conversation.
+    for (const mail of store.dueInbox(now)) {
+      const from = store.getAgent(mail.fromAgentId);
+      const to = store.getAgent(mail.toAgentId);
+      if (!from || !to) {
+        store.markInboxDelivered([mail.id]);
+        continue;
+      }
+      const original = store.getConversation(mail.conversationId);
+      const target = original && original.memberIds.includes(mail.toAgentId)
+        ? original
+        : store.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === mail.toAgentId)
+          ?? store.saveConversation({ kind: 'dm', memberIds: [mail.toAgentId] });
+      const run = this.coworkRuns.get(target.id);
+      if (run?.busy) continue; // delivered on a later tick
+      this.dispatchAgentWake(target.id, mail.toAgentId, `Inbox — task from @${from.name}: ${mail.text}. Act on it with your tools and report the result here.`);
+    }
+  }
+
   private coworkScheduleTick(): void {
+    this.coworkAutonomyTick();
     const store = this.cowork();
     const now = Date.now();
     for (const conv of store.listConversations()) {
@@ -1368,6 +1585,52 @@ export class GituServer {
         return true;
       }
       return false;
+    }
+
+    const missionsMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/missions$/);
+    if (missionsMatch && method === 'POST') {
+      const body = await this.readBody(req);
+      try {
+        const conversation = store.getConversation(missionsMatch[1]!);
+        if (!conversation) {
+          this.sendJson(res, 404, { error: 'conversation not found' });
+          return true;
+        }
+        let agentId = typeof body['agentId'] === 'string' && body['agentId'] ? body['agentId'] : undefined;
+        if (conversation.kind === 'dm') agentId = conversation.memberIds[0];
+        if (!agentId || !conversation.memberIds.includes(agentId)) {
+          this.sendJson(res, 400, { error: 'Pick which teammate should run the mission.' });
+          return true;
+        }
+        const mission = store.createMission({
+          conversationId: conversation.id,
+          agentId,
+          goal: String(body['goal'] ?? ''),
+          criteria: Array.isArray(body['criteria']) ? body['criteria'].map(String) : [],
+          maxTurns: Number(body['maxTurns']) || 12,
+        });
+        this.publishCowork(conversation.id);
+        this.sendJson(res, 200, { ok: true, mission });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    const missionMatch = path.match(/^\/api\/cowork\/missions\/([\w-]+)$/);
+    if (missionMatch && method === 'DELETE') {
+      const mission = store.getMission(missionMatch[1]!);
+      const cancelled = store.cancelMission(missionMatch[1]!);
+      if (cancelled) {
+        if (mission) {
+          const run = this.coworkRuns.get(mission.conversationId);
+          if (run?.missionId === mission.id) run.abort.abort(new Error('Mission cancelled by user.'));
+          store.appendMessage(mission.conversationId, { role: 'system', via: 'web', text: 'Mission cancelled by the user.' });
+          this.publishCowork(mission.conversationId);
+        }
+      }
+      this.sendJson(res, cancelled ? 200 : 404, cancelled ? { ok: true } : { error: 'no running mission with that id' });
+      return true;
     }
 
     const stopMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/stop$/);

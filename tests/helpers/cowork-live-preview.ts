@@ -14,6 +14,7 @@ store.saveConversation({ kind: 'group', title: 'Cowork live check', memberIds: [
 function answer(messages: LlmMessage[]) {
   const identity = String(messages[0]?.content);
   const latest = String(messages.at(-1)?.content);
+  if (identity.includes('AUTONOMOUS MISSION')) return 'The requested report is complete. {"status":"done","progress":"created and verified the report","criteriaMet":[true],"result":"The report is ready and verified."}';
   if (identity.startsWith('You are "Scout"')) return 'I am Scout. I can now participate in this group and share my findings with the team.';
   if (latest.includes('Synthesize the team findings')) return 'Scout is part of the team and has reported back. The roster updated while we worked.';
   if (latest.includes('TOOL RESULT team_manage')) return 'The new teammate is ready. @Scout, please report back to the group.';
@@ -34,4 +35,5 @@ const llm: LlmClient = {
 };
 const server = new HermesServer({ cwd: path.join(process.env.AGENT_GITU_HOME, 'Workspace'), port: 0, llm });
 console.log(`Cowork preview: http://127.0.0.1:${await server.start()}`);
-process.on('SIGINT', () => { void server.stop().then(() => process.exit(0)); });
+const autonomy = setInterval(() => (server as unknown as { coworkAutonomyTick: () => void }).coworkAutonomyTick(), 500);
+process.on('SIGINT', () => { clearInterval(autonomy); void server.stop().then(() => process.exit(0)); });

@@ -49,6 +49,29 @@ export interface CoworkToolScope {
   conversationId?: string;
   signal?: AbortSignal;
   computerFor?: (agentId: string) => CoworkComputer;
+  /** Set after the first host fallback in a turn (virtual computer unavailable). */
+  hostFallbackNoticed?: boolean;
+}
+
+/** Tools that normally execute inside the agent's virtual computer. */
+const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'list_files', 'read_file', 'search_files', 'write_file', 'apply_edit', 'run_command', 'browse', 'share_file', 'receive_file'];
+/** Computer-only tools with no meaningful host equivalent. */
+const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process', 'share_file', 'receive_file'];
+
+const HOST_FALLBACK_NOTICE =
+  '[VIRTUAL COMPUTER UNAVAILABLE — tools now run on the user\'s computer. Use workspace-relative paths (never /workspace); shell commands execute on the host machine.]\n';
+
+/** The model was briefed on /workspace paths for the virtual computer; map
+ *  them onto workspace-relative paths for host execution. */
+function toHostPaths(params: Record<string, unknown>): Record<string, unknown> {
+  const out = { ...params };
+  for (const key of ['path', 'file']) {
+    const value = out[key];
+    if (typeof value === 'string' && value.startsWith('/workspace')) {
+      out[key] = value === '/workspace' ? '.' : value.replace(/^\/workspace\/?/, '');
+    }
+  }
+  return out;
 }
 
 export interface CoworkToolDoc {
@@ -102,6 +125,8 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'list_connections', doc: 'List saved provider connections (names and capabilities only, never credentials). params: {}', gate: undefined },
   { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
+  { name: 'schedule_followup', doc: 'Schedule your own future wake-up: you will be woken with this note and can act with your tools. params: {"inMinutes":30,"note":"verify the build and report"} (max 7 days)', gate: undefined },
+  { name: 'message_teammate', doc: 'Put a task or message into a teammate\'s inbox — they are woken to act on it. Use for handing off work. params: {"to":"Name","text":"do X and report back"}', gate: undefined },
   {
     name: 'team_manage',
     doc: 'As chief of staff: hire or remove teammates. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"}',
@@ -141,29 +166,34 @@ function blocked(tool: string): ToolResult {
 export async function executeCoworkTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   const validation = validateToolParams(tool, params);
   if (!validation.valid && validation.error) return { ok: false, output: `${tool}: ${validation.error}${validation.correction ? `\n${validation.correction}` : ''}` };
+  const dispatchHost = (): Promise<ToolResult> => dispatchHostTool(ctx, tool, params, perms, scope);
   try {
     scope?.signal?.throwIfAborted();
     const definition = COWORK_TOOLS.find((t) => t.name === tool);
     if (!definition) return { ok: false, output: `unknown tool "${tool}"` };
     if (!isGated(definition.gate, perms)) return blocked(tool);
-    if (
-      scope?.computerFor &&
-      [
-        'computer_status',
-        'computer_process',
-        'list_files',
-        'read_file',
-        'search_files',
-        'write_file',
-        'apply_edit',
-        'run_command',
-        'browse',
-        'share_file',
-        'receive_file',
-      ].includes(tool)
-    ) {
-      return await scope.computerFor(scope.agent.id).execute(tool, params, scope.signal, scope.conversationId);
+    if (scope?.computerFor && COMPUTER_ROUTED_TOOLS.includes(tool)) {
+      const computer = scope.computerFor(scope.agent.id);
+      const result = await computer.execute(tool, params, scope.signal, scope.conversationId);
+      const computerOnly = COMPUTER_ONLY_TOOLS.includes(tool);
+      if (result.ok || computerOnly || computer.status().state !== 'unavailable') return result;
+      // The virtual computer cannot start (no Docker, daemon down, …) — the
+      // user asked for host fallback: run the tool on the user's computer.
+      const first = !scope.hostFallbackNoticed;
+      scope.hostFallbackNoticed = true;
+      params = toHostPaths(params);
+      const host = await dispatchHost();
+      return first ? { ...host, output: HOST_FALLBACK_NOTICE + host.output } : host;
     }
+    return await dispatchHost();
+  } catch (err) {
+    return { ok: false, output: `${tool} crashed: ${(err as Error).message}` };
+  }
+}
+
+/** Host implementations — also the fallback when no virtual computer exists. */
+async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
+  {
     switch (tool) {
       case 'list_files':
         return toolListFiles(ctx, params);
@@ -229,13 +259,15 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
         const created = createProject(String(params['name'] ?? ''));
         return { ok: true, output: `Project "${created.name}" created at ${created.path}. Its files can be reached from the main workspace modes.` };
       }
+      case 'schedule_followup':
+        return coworkScheduleFollowup(scope, params);
+      case 'message_teammate':
+        return coworkMessageTeammate(scope, params);
       case 'team_manage':
         return coworkTeamManage(scope, params);
       default:
         return { ok: false, output: `unknown tool "${tool}"` };
     }
-  } catch (err) {
-    return { ok: false, output: `${tool} crashed: ${(err as Error).message}` };
   }
 }
 
@@ -285,6 +317,40 @@ function coworkUserProfile(scope: CoworkToolScope | undefined, params: Record<st
   }
 }
 
+function coworkScheduleFollowup(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope) return { ok: false, output: 'schedule_followup is unavailable in this session.' };
+  const { store, agent } = scope;
+  try {
+    const minutes = Math.floor(Number(params['inMinutes'] ?? params['minutes'] ?? 0));
+    const note = String(params['note'] ?? '').trim();
+    if (!note) return { ok: false, output: 'schedule_followup requires a "note" describing what to do when you wake up.' };
+    if (!Number.isFinite(minutes) || minutes <= 0) return { ok: false, output: 'schedule_followup requires "inMinutes" — a positive number of minutes.' };
+    if (minutes > 10_080) return { ok: false, output: 'schedule_followup: maximum is 7 days (10080 minutes).' };
+    const dueAt = new Date(Date.now() + minutes * 60_000).toISOString();
+    store.addFollowUp({ conversationId: scope.conversationId ?? '', agentId: agent.id, note, dueAt });
+    return { ok: true, output: `Follow-up scheduled. You will be woken in ${minutes} minute(s) with the note: "${note}". Tell the user about this commitment in your reply.` };
+  } catch (err) {
+    return { ok: false, output: `schedule_followup failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkMessageTeammate(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope) return { ok: false, output: 'message_teammate is unavailable in this session.' };
+  const { store, agent } = scope;
+  try {
+    const to = String(params['to'] ?? '').trim().toLowerCase();
+    const text = String(params['text'] ?? '').trim();
+    if (!text) return { ok: false, output: 'message_teammate requires "text".' };
+    const target = store.listAgents().find((a) => a.name.toLowerCase() === to);
+    if (!target) return { ok: false, output: `No teammate named "${params['to']}". Teammates: ${store.listAgents().map((a) => a.name).join(', ') || 'none'}.` };
+    if (target.id === agent.id) return { ok: false, output: 'That is you — just do the work or reply directly.' };
+    store.addInbox({ fromAgentId: agent.id, toAgentId: target.id, conversationId: scope.conversationId ?? '', text });
+    return { ok: true, output: `Delivered to @${target.name}'s inbox. They will be woken to act on it shortly. Tell the user about the hand-off in your reply.` };
+  } catch (err) {
+    return { ok: false, output: `message_teammate failed: ${(err as Error).message}` };
+  }
+}
+
 function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
   if (!scope) return { ok: false, output: 'team_manage is unavailable in this session.' };
   const { store, agent } = scope;
@@ -292,10 +358,15 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
   const action = String(params['action'] ?? '');
   try {
     if (action === 'create') {
+      const name = String(params['name'] ?? '').trim();
+      const tagline = typeof params['tagline'] === 'string' ? params['tagline'].trim() : '';
+      const instructions = String(params['instructions'] ?? '').trim();
       const created = store.saveAgent({
-        name: String(params['name'] ?? ''),
-        tagline: typeof params['tagline'] === 'string' ? params['tagline'] : undefined,
-        systemPrompt: String(params['instructions'] ?? ''),
+        name,
+        tagline,
+        // A chief hiring without a full brief still gets a working teammate;
+        // failing here silently (while the chief claims success) is worse.
+        systemPrompt: instructions || `You are ${name}${tagline ? `, ${tagline.toLowerCase()}` : ''}. You were hired by ${agent.name} (chief of staff). Ask the user what they need and check your memories for context.`,
         avatar: { color: '#8f80ff', shape: 'cube' },
         provider: agent.provider,
         model: agent.model,

@@ -99,6 +99,13 @@ export const COWORK_CSS = String.raw`
   .cw-info .cw-actions { display: flex; gap: 8px; margin-top: 10px; }
   .cw-info .cw-actions .btn { padding: 5px 12px; font-size: 12px; }
   .cw-info .cw-check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text); margin-top: 8px; }
+  .cw-mission { background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 10px; margin-bottom: 8px; }
+  .cw-mission .t { font-weight: 600; font-size: 12.5px; margin-bottom: 4px; overflow-wrap: anywhere; }
+  .cw-mission .d { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .cw-mission .p { font-size: 11.5px; color: var(--muted); margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cw-mission .p.ok { color: var(--ok); }
+  .cw-mission .p.warn { color: var(--evidence); }
+  .cw-mission button { margin-top: 8px; padding: 3px 10px; font-size: 11.5px; }
   .cw-hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px; overflow: auto; text-align: center; }
   .cw-hero h1 { margin: 0; font-size: 26px; }
   .cw-hero p { margin: 0; color: var(--muted); max-width: 560px; }
@@ -172,12 +179,13 @@ export const COWORK_JS = String.raw`
     clock: CW_SVG_OPEN + '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
     close: CW_SVG_OPEN + '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
     stop: CW_SVG_OPEN + '<rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
-    send: CW_SVG_OPEN + '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>'
+    send: CW_SVG_OPEN + '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
+    target: CW_SVG_OPEN + '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, timer: null, infoOpen: true };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, timer: null, infoOpen: true, missions: [] };
     return S.cw;
   }
   function cwStopPoll() {
@@ -387,6 +395,7 @@ export const COWORK_JS = String.raw`
         headAva +
         '<div class="cw-tt"><div class="t1">' + esc(conv.title) + (conv.kind === 'group' && chief ? '<span title="Chief of staff: ' + esc(chief.name) + '">' + cwIcon('crown') + '</span>' : '') + '</div>' +
         '<div class="t2" id="cwMemberNames">' + esc(members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</div></div>' +
+        '<span class="chip ok" id="cwMissionBadge" title="An autonomous mission is running in this chat"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>' + cwIcon('target') + 'Mission</span>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') +
         '<button class="cw-info-toggle" id="cwInfoBtn">' + (cw.infoOpen ? 'Hide panel' : 'Chat panel') + '</button>' +
@@ -436,6 +445,13 @@ export const COWORK_JS = String.raw`
         men.appendChild(b);
       });
     }
+  }
+
+  function cwRenderMissionBadge() {
+    var cw = cwEnsure();
+    var badge = $('cwMissionBadge');
+    if (!badge) return;
+    badge.hidden = !(cw.missions || []).some(function (mission) { return mission.conversationId === cw.active && mission.status === 'running'; });
   }
 
   function cwBubbleHtml(m) {
@@ -566,6 +582,77 @@ export const COWORK_JS = String.raw`
     };
   }
 
+  function cwMissionsHtml(conv) {
+    var cw = cwEnsure();
+    var missions = (cw.missions || []).filter(function (m) { return m.conversationId === conv.id; });
+    var rows = missions.map(function (m) {
+      var statusChip = m.status === 'running' ? '<span class="chip ok">running</span>'
+        : m.status === 'blocked' ? '<span class="chip" style="color:var(--evidence)">blocked</span>'
+        : m.status === 'done' ? '<span class="chip ok">done</span>'
+        : m.status === 'failed' ? '<span class="chip bad">failed</span>'
+        : '<span class="chip">cancelled</span>';
+      var agent = cwAgentById(m.agentId);
+      return '<div class="cw-mission" data-mission="' + esc(m.id) + '">' +
+        '<div class="t">' + esc(m.goal) + '</div>' +
+        '<div class="d">' + statusChip + ' <span class="tg">' + (agent ? '@' + esc(agent.name) : '') + ' · session ' + m.turns + '/' + m.maxTurns + '</span></div>' +
+        (m.progress ? '<div class="p">' + esc(m.progress.slice(0, 220)) + '</div>' : '') +
+        (m.result ? '<div class="p ok">' + esc(m.result.slice(0, 300)) + '</div>' : '') +
+        (m.blockers ? '<div class="p warn">' + esc(m.blockers.slice(0, 220)) + '</div>' : '') +
+        (m.status === 'running' || m.status === 'blocked' ? '<button class="btn ghost" data-cancelmission="' + esc(m.id) + '">Cancel mission</button>' : '') +
+        '</div>';
+    }).join('');
+    return '<h4>MISSIONS</h4>' +
+      (rows ? rows : '<div class="cw-empty-note">No missions yet. Give a teammate a goal and it works autonomously in sessions until done, blocked, or out of budget.</div>') +
+      '<button class="btn ghost" id="cwNewMission" style="width:100%;margin-bottom:12px">New mission</button>';
+  }
+
+  function cwBindMissions(el, conv) {
+    var btn = el.querySelector('#cwNewMission');
+    if (btn) btn.onclick = function () { cwMissionModal(conv); };
+    el.querySelectorAll('[data-cancelmission]').forEach(function (b) {
+      b.onclick = function () {
+        if (!confirm('Cancel this mission? Its progress is kept in the transcript.')) return;
+        api('/api/cowork/missions/' + encodeURIComponent(b.getAttribute('data-cancelmission')), { method: 'DELETE' }).catch(function (e) { toast(e.message, true); });
+      };
+    });
+  }
+
+  function cwMissionModal(conv) {
+    var members = cwConvMembers(conv);
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML =
+      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">New autonomous mission</span><span style="flex:1"></span><button class="btn ghost" id="cwMmCancel">Cancel</button></div>' +
+      '<div class="cw-body">' +
+        (conv.kind === 'group'
+          ? '<div class="cw-2col"><div><label>Assigned teammate</label><select id="cwMmAgent">' + members.map(function (m) { return '<option value="' + esc(m.id) + '">@' + esc(m.name) + '</option>'; }).join('') + '</select></div>' +
+            '<div><label>Session budget</label><input type="text" id="cwMmTurns" value="12"></div></div>'
+          : '<div class="cw-2col"><div><label>Assigned teammate</label><input type="text" value="' + esc(members[0] ? members[0].name : '') + '" disabled></div>' +
+            '<div><label>Session budget</label><input type="text" id="cwMmTurns" value="12"></div></div>') +
+        '<label>Mission goal — what done looks like</label><textarea id="cwMmGoal" rows="3" placeholder="Build a landing page in my workspace for the coffee brand. Verify it renders."></textarea>' +
+        '<label>Acceptance criteria — one per line</label><textarea id="cwMmCriteria" rows="4" placeholder="index.html exists and opens&#10;All links work&#10;A screenshot was reviewed"></textarea>' +
+        '<div class="cw-note">The teammate works in autonomous sessions (in its virtual computer, or on your machine per its permissions), posts progress here after each session, and stops when done, blocked (reply in this chat to unblock it), or out of budget.</div>' +
+      '</div>' +
+      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwMmSave">Start mission</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#cwMmCancel').onclick = function () { modal.remove(); };
+    modal.querySelector('#cwMmSave').onclick = function () {
+      var criteria = $('cwMmCriteria').value.split('\n').map(function (c) { return c.trim(); }).filter(Boolean);
+      var body = { goal: $('cwMmGoal').value, criteria: criteria, maxTurns: Number($('cwMmTurns').value) || 12 };
+      if (conv.kind === 'group') body.agentId = $('cwMmAgent').value;
+      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/missions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        .then(function (d) {
+          modal.remove();
+          cwEnsure().missions = (cwEnsure().missions || []).filter(function (mission) { return mission.id !== d.mission.id; }).concat([d.mission]);
+          toast('Mission started — progress will appear in this chat');
+          cwRenderInfo();
+          cwRenderChat();
+        })
+        .catch(function (e) { toast(e.message, true); });
+    };
+    setTimeout(function () { var g = modal.querySelector('#cwMmGoal'); if (g) g.focus(); }, 0);
+  }
+
   function cwRenderInfo() {
     var cw = cwEnsure();
     var conv = cwActiveConv();
@@ -592,9 +679,11 @@ export const COWORK_JS = String.raw`
         (a.skills && a.skills.length ? '<div style="margin-top:8px;font-size:11.5px;color:var(--muted)">Skills: ' + esc(a.skills.join(', ')) + '</div>' : '') +
         '<div style="margin-top:10px;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:8px">Persistent memory: <b>' + ((cw.memoryCounts || {})[a.id] || 0) + '</b> facts <button class="btn ghost" id="cwMemClear" style="padding:2px 8px;font-size:11px">Clear</button></div>' +
         '<div class="cw-actions"><button class="btn ghost" id="cwEditAgent">Edit profile</button></div></div>' +
+        cwMissionsHtml(conv) +
         cwComputerHtml(a) + gw.html +
         '<div class="cw-actions"><button class="btn red" id="cwDelAgent">Delete teammate</button></div>';
       gw.bind();
+      cwBindMissions(el, conv);
       cwBindComputers(el);
       $('cwMemClear').onclick = function () {
         if (!confirm('Erase everything ' + a.name + ' has remembered across conversations?')) return;
@@ -623,7 +712,7 @@ export const COWORK_JS = String.raw`
           '<button data-remove="' + esc(m.id) + '" title="Remove from group">' + cwIcon('close') + '</button></div>';
       }).join('') +
       '<button class="btn ghost" id="cwAddMember" style="width:100%;margin-top:6px">Add member</button></div>' +
-      members.map(cwComputerHtml).join('') + gw.html +
+      cwMissionsHtml(conv) + members.map(cwComputerHtml).join('') + gw.html +
       '<div class="cw-actions"><button class="btn red" id="cwDelConv">Delete chat</button></div>';
     el.querySelectorAll('[data-chief]').forEach(function (b) {
       b.onclick = function () {
@@ -653,6 +742,7 @@ export const COWORK_JS = String.raw`
         .catch(function (e) { toast(e.message, true); });
     };
     gw.bind();
+    cwBindMissions(el, conv);
     cwBindComputers(el);
     $('cwDelConv').onclick = function () {
       if (!confirm('Delete this chat and its whole transcript?')) return;
@@ -735,9 +825,12 @@ export const COWORK_JS = String.raw`
     cw.working = d.working || null;
     cw.progress = d.progress || null;
     cw.queued = d.queued || 0;
+    var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
+    cw.missions = d.missions || [];
     if (rosterChanged) { cwRenderRail(); cwRenderMembers(); }
     if (added || rosterChanged) cwRenderMsgs(); else cwRenderProgress();
     cwRenderTyping();
+    if (missionsChanged) { cwRenderMissionBadge(); cwRenderInfo(); }
     if (rosterChanged || (wasBusy && !cw.busy)) cwRenderInfo();
   }
 

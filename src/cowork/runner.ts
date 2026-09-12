@@ -3,8 +3,9 @@ import { resilientLlm } from '../llm/resilient.js';
 import type { ToolContext } from '../tools/tools.js';
 import { excerpt } from '../util.js';
 import { coworkToolDocs, executeCoworkTool, parseToolCalls, stripToolMarkers, type CoworkToolScope } from './tools.js';
+import { extractLastJsonObject } from '../llm/llm.js';
 import type { CoworkMemory } from './memory.js';
-import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkStore } from './store.js';
+import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMission, CoworkStore } from './store.js';
 
 /**
  * The cowork conversation engine.
@@ -46,6 +47,8 @@ export interface CoworkRunnerDeps {
   onMessage?: (message: CoworkMessage) => void | Promise<void>;
   /** Called when an agent starts composing (UI "thinking" indicator). */
   onWorking?: (agentName: string) => void;
+  /** Wake exactly this agent (autonomy: follow-ups, inbox delivery). */
+  forceAgentId?: string;
   signal?: AbortSignal;
 }
 
@@ -77,15 +80,16 @@ function resolveChief(conversation: CoworkConversation, members: CoworkAgent[]):
   return members.find((m) => m.id === conversation.chiefId) ?? members.find((m) => m.chiefOfStaff) ?? members[0];
 }
 
-function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], deps?: CoworkRunnerDeps): string {
+function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], deps?: CoworkRunnerDeps, mission?: CoworkMission): string {
   const now = new Date();
   const parts: string[] = [
     `You are "${agent.name}"${agent.tagline ? ` — ${agent.tagline}` : ''}, a teammate in Agent Gitu's cowork mode.`,
     `Your personality and operating instructions:\n${agent.systemPrompt}`,
     `Current date: ${now.toDateString()}.`,
     deps?.computerFor
-      ? `You have your own persistent Linux virtual computer, private files, shell and browser. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so.`
+      ? `You have your own persistent Linux virtual computer, private files, shell and browser. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so. If a tool result reports the virtual computer is unavailable, you are running on the user's computer instead: drop the /workspace prefix and use workspace-relative paths, and remember shell commands then execute on the host machine.`
       : `Paths in tool calls are relative to your workspace.`,
+    `AUTONOMY: schedule_followup lets you promise and keep future work (you are woken with your note). message_teammate hands work to a teammate's inbox (they are woken to act). Use both deliberately — and always tell the user what you committed to.`,
   ];
   if (deps?.userContext)
     parts.push(
@@ -93,7 +97,27 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
     );
   const memory = deps?.memoryFor?.(agent);
   if (memory) parts.push(`YOUR PERSISTED MEMORY (facts you chose to keep across conversations — update with the agent_memory tool when they change):\n${memory}`);
-  if (conversation.kind === 'group') {
+  const inbox = deps?.store?.inboxFor(agent.id) ?? [];
+  if (inbox.length > 0) {
+    const lines = inbox.map((m) => {
+      const from = deps?.store?.getAgent(m.fromAgentId)?.name ?? 'a teammate';
+      return `- from @${from}: ${m.text}`;
+    });
+    parts.push(`INBOX — teammates handed you work. Act on it now with your tools, or explain your plan and schedule_followup:\n${lines.join('\n')}`);
+  }
+  if (mission) {
+    const briefing = [
+      `AUTONOMOUS MISSION ${mission.id} — you are working on your own toward:`,
+      `GOAL: ${mission.goal}`,
+      mission.criteria.length > 0
+        ? `ACCEPTANCE CRITERIA (every one must be met before you report done):\n${mission.criteria.map((c, i) => `- [${i + 1}] ${c}`).join('\n')}`
+        : '(no explicit criteria — decide yourself when the goal is achieved)',
+      `PROGRESS SO FAR: ${mission.progress || '(none yet — this is session 1)'}`,
+      `TURNS USED: ${mission.turns} / ${mission.maxTurns}`,
+      mission.guidance.length > 0 ? `GUIDANCE FROM THE USER:\n${mission.guidance.map((g) => `- ${g}`).join('\n')}` : '',
+    ].filter(Boolean).join('\n');
+    parts.push(briefing);
+  } else if (conversation.kind === 'group') {
     const roster = members
       .map((m) => `- @${m.name}${m.id === agent.id ? ' (you)' : ''}${m.id === conversation.chiefId ? ' (chief of staff)' : ''}: ${m.tagline || m.systemPrompt.slice(0, 80)}`)
       .join('\n');
@@ -241,6 +265,8 @@ async function agentTurn(input: {
   deps.signal?.throwIfAborted();
   const stored = append({ role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', tools: usedTools.length ? usedTools : undefined });
   await deps.onMessage?.(stored);
+  const pendingInbox = deps.store?.inboxFor(agent.id) ?? [];
+  if (pendingInbox.length > 0) deps.store?.markInboxDelivered(pendingInbox.map((m) => m.id));
 }
 
 /**
@@ -265,8 +291,9 @@ export async function runConversationTurn(input: {
   };
 
   try {
-    if (conversation.kind === 'dm') {
-      const agent = members[0]!;
+    const forced = deps.forceAgentId ? members.find((member) => member.id === deps.forceAgentId) : undefined;
+    if (conversation.kind === 'dm' || forced) {
+      const agent = forced ?? members[0]!;
       deps.onWorking?.(agent.name);
       await agentTurn({ agent, conversation, members, history, deps, append: track });
       return { messages };
@@ -336,4 +363,117 @@ export async function runConversationTurn(input: {
     }
     return { messages, error };
   }
+}
+
+export interface MissionSessionResult {
+  status: 'working' | 'done' | 'blocked';
+  progress: string;
+  result?: string;
+  blockers?: string;
+  criteriaMet?: boolean[];
+}
+
+const MISSION_STATUS_PROTOCOL =
+  'End your reply with EXACTLY ONE line of JSON (after any tool markers):\n' +
+  '{"status":"working","progress":"what you completed this session and what remains","criteriaMet":[true,false,...]}\n' +
+  'or, when every criterion is satisfied:\n' +
+  '{"status":"done","progress":"summary","criteriaMet":[true,...],"result":"the final result for the user"}\n' +
+  'or, when you cannot continue:\n' +
+  '{"status":"blocked","progress":"what you tried","blocker":"exactly what you need from the user"}';
+
+/**
+ * One bounded autonomous work session for a mission. The agent gets the
+ * mission briefing (not the chat transcript), works with its tools, and
+ * reports a structured status. The caller updates the mission and decides
+ * whether to schedule the next session.
+ */
+export async function runMissionSession(input: {
+  mission: CoworkMission;
+  agent: CoworkAgent;
+  deps: CoworkRunnerDeps;
+  append: (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>) => CoworkMessage;
+}): Promise<MissionSessionResult> {
+  let out!: MissionSessionResult;
+  const work = async (): Promise<void> => {
+    const { mission, agent, deps } = input;
+    const client = deps.resolveLlm(agent);
+    const llm = resilientLlm(client, { label: `mission ${agent.name}` });
+    const scope: CoworkToolScope | undefined =
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal } : undefined;
+    let ctx: ToolContext | undefined;
+    const messages: LlmMessage[] = [
+      // The transcript is deliberately not included: missions run in their own
+      // sessions, and the briefing + progress line carry the state.
+      { role: 'system', content: systemPrompt(agent, { ...mission, kind: 'dm', title: `mission`, memberIds: [agent.id], updatedAt: mission.createdAt } as CoworkConversation, [agent], deps, mission) },
+      {
+        role: 'user',
+        content: `WORK SESSION ${mission.turns + 1}/${mission.maxTurns}. Do the next concrete chunk of work toward the mission with your tools (write code and files where relevant, verify with commands). ${MISSION_STATUS_PROTOCOL}`,
+      },
+    ];
+
+    let reply = '';
+    for (let round = 0; round <= MAX_TOOL_ROUNDS_PER_TURN; round++) {
+      deps.signal?.throwIfAborted();
+      let streamed = '';
+      const options = {
+        temperature: 0.4,
+        effort: agent.effort,
+        signal: deps.signal,
+        onStreamReset: () => {
+          streamed = '';
+          deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: '' });
+        },
+      };
+      reply =
+        deps.onProgress && typeof client.completeStream === 'function'
+          ? await llm.completeStream(messages, options, (delta) => {
+              streamed += delta;
+              deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: stripToolMarkers(streamed, true) });
+            })
+          : await llm.complete(messages, options);
+      const calls = parseToolCalls(reply);
+      if (calls.length === 0 || round === MAX_TOOL_ROUNDS_PER_TURN) break;
+      messages.push({ role: 'assistant', content: reply });
+      for (const call of calls.slice(0, 4)) {
+        deps.signal?.throwIfAborted();
+        ctx ??= deps.toolContext(agent);
+        const result = await executeCoworkTool(
+          ctx,
+          call.tool,
+          call.params,
+          { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser: Boolean(deps.browser) },
+          scope,
+        );
+        messages.push({ role: 'user', content: `TOOL RESULT ${call.tool} (ok=${result.ok}):\n${excerpt(result.output, 4_000)}` });
+      }
+      messages.push({ role: 'user', content: 'Continue the work session. Remember to end with your status JSON when this session is done.' });
+    }
+
+    const text = stripToolMarkers(reply);
+    const parsed = extractLastJsonObject(reply) as { status?: unknown; progress?: unknown; result?: unknown; blocker?: unknown; blockers?: unknown; criteriaMet?: unknown } | null;
+    let status: MissionSessionResult['status'] = 'working';
+    if (parsed && typeof parsed === 'object') {
+      const raw = String(parsed.status ?? '').toLowerCase();
+      if (raw === 'done' || raw === 'blocked' || raw === 'working') status = raw;
+    }
+    const criteriaMet = parsed && Array.isArray(parsed.criteriaMet) ? (parsed.criteriaMet as unknown[]).map((value) => value === true) : undefined;
+    const allCriteriaMet = mission.criteria.length === 0 || (criteriaMet?.length === mission.criteria.length && criteriaMet.every(Boolean));
+    if (status === 'done' && !allCriteriaMet) status = 'working';
+    const rawProgress = parsed && typeof parsed.progress === 'string' && parsed.progress.trim() ? parsed.progress : text;
+    const session: MissionSessionResult = {
+      status,
+      progress: `${rawProgress.trim() || '(no report)'}${parsed?.status === 'done' && !allCriteriaMet ? ' Acceptance criteria remain incomplete.' : ''}`.slice(0, 1_500),
+    };
+    if (status === 'done' && parsed && typeof parsed.result === 'string') session.result = parsed.result.slice(0, 4_000);
+    if (status === 'blocked' && parsed && typeof (parsed.blockers ?? parsed.blocker) === 'string') session.blockers = String(parsed.blockers ?? parsed.blocker).slice(0, 1_500);
+    if (criteriaMet) session.criteriaMet = criteriaMet;
+    if (session.status === 'working') {
+      const stored = input.append({ role: 'agent', agentId: agent.id, agentName: agent.name, via: 'agent', text: '[mission] ' + session.progress });
+      await deps.onMessage?.(stored);
+    }
+    out = session;
+  };
+  if (input.deps.withAgent) await input.deps.withAgent(input.agent, work);
+  else await work();
+  return out;
 }

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm, type LlmClient } from '../src/llm/llm.js';
 import { CoworkStore } from '../src/cowork/store.js';
-import { buildCoworkMessages, runConversationTurn, type CoworkRunnerDeps } from '../src/cowork/runner.js';
+import { buildCoworkMessages, runConversationTurn, runMissionSession, type CoworkRunnerDeps } from '../src/cowork/runner.js';
 import { parseToolCalls, stripToolMarkers } from '../src/cowork/tools.js';
 import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, TelegramPoller } from '../src/cowork/telegram.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -16,6 +16,7 @@ import { ensureGituHome } from '../src/workspace/home.js';
 import { HermesServer } from '../src/server/server.js';
 import type { ToolContext } from '../src/tools/tools.js';
 import { executeCoworkTool } from '../src/cowork/tools.js';
+import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
 
 // Cowork data must never touch a real user home during tests.
 const TEST_HOME = mkdtempSync(path.join(tmpdir(), 'cowork-home-'));
@@ -436,6 +437,96 @@ describe('cowork capability tools', () => {
   });
 });
 
+describe('host fallback without a virtual computer', () => {
+  it('runs tools on the user computer, translates /workspace paths, and gates perms', async () => {
+    const failExec: ComputerExec = async () => {
+      throw new Error('docker not found');
+    };
+    const computer = new CoworkComputer('fallback-agent', tempHome('fallback'), failExec);
+    const store = new CoworkStore(path.join(tempHome('fallback'), 'cowork.json'));
+    const agent = store.saveAgent(makeAgentInput('fallback-user', { allowShell: true }));
+    const memory = CoworkMemory.forWorkspace();
+    const scope = { store, agent, memory, computerFor: () => computer };
+    const perms = { allowShell: true, allowWrites: false, allowConfig: false, chief: false, browser: false };
+
+    const first = await executeCoworkTool(realToolContext(), 'list_files', { path: '/workspace' }, perms, scope);
+    expect(first.ok).toBe(true);
+    expect(first.output).toContain('VIRTUAL COMPUTER UNAVAILABLE');
+
+    // Later calls in the same turn run on the host without repeating the notice.
+    const second = await executeCoworkTool(realToolContext(), 'list_files', { path: '/workspace' }, perms, scope);
+    expect(second.ok).toBe(true);
+    expect(second.output).not.toContain('VIRTUAL COMPUTER UNAVAILABLE');
+
+    // Permission gates still apply to host fallback execution.
+    const denied = await executeCoworkTool(realToolContext(), 'write_file', { path: '/workspace/x.md', content: 'hi' }, { ...perms, allowWrites: false }, scope);
+    expect(denied.ok).toBe(false);
+  });
+});
+
+
+describe('cowork autonomy layer', () => {
+  it('schedules follow-ups with the tool and delivers them when due', async () => {
+    const store = new CoworkStore(path.join(tempHome('autonomy'), 'cowork.json'));
+    const agent = store.saveAgent(makeAgentInput('planner'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const scope = { store, agent, memory: CoworkMemory.forWorkspace(), conversationId: conv.id };
+    const ctx = { cwd: '.' } as unknown as ToolContext;
+    const perms = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false };
+    const result = await executeCoworkTool(ctx, 'schedule_followup', { inMinutes: 5, note: 'verify the build output' }, perms, scope);
+    expect(result.ok).toBe(true);
+    const due = store.dueFollowUps(Date.now() + 6 * 60_000);
+    expect(due).toHaveLength(1);
+    expect(due[0]!.note).toBe('verify the build output');
+    expect(store.dueFollowUps(Date.now())).toHaveLength(0);
+    const taken = store.takeFollowUp(due[0]!.id);
+    expect(taken?.note).toBe('verify the build output');
+    expect(store.dueFollowUps(Date.now() + 6 * 60_000)).toHaveLength(0);
+  });
+
+  it('delivers teammate mail through the inbox on wake', async () => {
+    const store = new CoworkStore(path.join(tempHome('inbox'), 'cowork.json'));
+    const sender = store.saveAgent(makeAgentInput('sender'));
+    const receiver = store.saveAgent(makeAgentInput('receiver'));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [sender.id, receiver.id] });
+    const scope = { store, agent: sender, memory: CoworkMemory.forWorkspace(), conversationId: conv.id };
+    const ctx = { cwd: '.' } as unknown as ToolContext;
+    const result = await executeCoworkTool(ctx, 'message_teammate', { to: 'receiver', text: 'draft the announcement' }, { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false }, scope);
+    expect(result.ok).toBe(true);
+    const pending = store.inboxFor('receiver');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.text).toBe('draft the announcement');
+    // The inbox reaches the recipient's system prompt until delivered.
+    const members = [sender, receiver];
+    const messages = buildCoworkMessages(receiver, conv, members, [], { agents: store.listAgents(), resolveLlm: () => { throw new Error('x'); }, toolContext: () => { throw new Error('x'); }, store } as never);
+    expect(messages[0]!.content as string).toContain('INBOX');
+    store.markInboxDelivered(pending.map((m) => m.id));
+    expect(store.inboxFor('receiver')).toHaveLength(0);
+    const built = buildCoworkMessages(receiver, conv, members, [], { agents: store.listAgents(), resolveLlm: () => { throw new Error('x'); }, toolContext: () => { throw new Error('x'); }, store } as never);
+    expect(built[0]!.content as string).not.toContain('INBOX');
+  });
+
+  it('keeps a mission running when an agent claims done before meeting every criterion', async () => {
+    const store = new CoworkStore(path.join(tempHome('mission-criteria'), 'cowork.json'));
+    const agent = store.saveAgent(makeAgentInput('criteria-worker'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const mission = store.createMission({ conversationId: conv.id, agentId: agent.id, goal: 'Ship the report', criteria: ['file exists', 'tests pass'] });
+    const result = await runMissionSession({
+      mission,
+      agent,
+      deps: {
+        agents: [agent],
+        resolveLlm: () => new ScriptedMockLlm([() => '{"status":"done","progress":"wrote the file","criteriaMet":[true,false],"result":"finished"}']),
+        toolContext: () => realToolContext(),
+      },
+      append: (message) => store.appendMessage(conv.id, message),
+    });
+    expect(result.status).toBe('working');
+    expect(result.progress).toContain('Acceptance criteria remain incomplete');
+  });
+
+});
+
 describe('cowork server routes', () => {
   let home: string;
   const servers: HermesServer[] = [];
@@ -451,9 +542,11 @@ describe('cowork server routes', () => {
     rmSync(home, { recursive: true, force: true });
   });
 
+  let serverInstance: HermesServer | undefined;
   async function startServer(llm: LlmClient): Promise<string> {
     const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm });
     servers.push(server);
+    serverInstance = server;
     const port = await server.start();
     return `http://127.0.0.1:${port}`;
   }
@@ -670,5 +763,149 @@ describe('cowork server routes', () => {
     expect(view.busy).toBe(false);
     const after = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages?after=${view.messages[0]!.seq}`).then((r) => r.json())) as { messages: unknown[] };
     expect(after.messages.length).toBe(view.messages.length - 1);
+  });
+
+  it('wakes due follow-ups and routes teammate inbox work to the recipient chat', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'Autonomous wake handled.']));
+    const sender = (await post(base, '/api/cowork/agents', makeAgentInput('wake-sender'))).json['agent'] as { id: string };
+    const receiver = (await post(base, '/api/cowork/agents', makeAgentInput('wake-receiver'))).json['agent'] as { id: string };
+    const senderChat = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [sender.id] })).json['conversation'] as { id: string };
+    const receiverChat = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [receiver.id] })).json['conversation'] as { id: string };
+    const internals = serverInstance as unknown as {
+      cowork: () => CoworkStore;
+      coworkAutonomyTick: () => void;
+      coworkRuns: Map<string, { busy: boolean; abort: AbortController; queue: never[] }>;
+    };
+    const store = internals.cowork();
+    store.addFollowUp({ conversationId: senderChat.id, agentId: sender.id, note: 'check the finished build', dueAt: new Date(Date.now() - 1_000).toISOString() });
+    const mail = store.addInbox({ fromAgentId: sender.id, toAgentId: receiver.id, conversationId: senderChat.id, text: 'review the release notes' });
+    mail.createdAt = new Date(Date.now() - 30_000).toISOString();
+
+    // A due reminder remains queued while its conversation is occupied.
+    internals.coworkRuns.set(senderChat.id, { busy: true, abort: new AbortController(), queue: [] });
+    internals.coworkAutonomyTick();
+    expect(store.dueFollowUps()).toHaveLength(1);
+    internals.coworkRuns.delete(senderChat.id);
+    internals.coworkAutonomyTick();
+    await waitFor(async () => {
+      const senderView = await fetch(`${base}/api/cowork/conversations/${senderChat.id}/messages`).then((r) => r.json()) as { busy: boolean; messages: { role: string; text: string }[] };
+      const receiverView = await fetch(`${base}/api/cowork/conversations/${receiverChat.id}/messages`).then((r) => r.json()) as { busy: boolean; messages: { role: string; text: string }[] };
+      return !senderView.busy && !receiverView.busy && senderView.messages.some((message) => message.role === 'agent') && receiverView.messages.some((message) => message.role === 'agent')
+        ? { senderView, receiverView }
+        : undefined;
+    });
+    expect(store.dueFollowUps()).toHaveLength(0);
+    expect(store.inboxFor(receiver.id)).toHaveLength(0);
+    const recipientMessages = await fetch(`${base}/api/cowork/conversations/${receiverChat.id}/messages`).then((r) => r.json()) as { messages: { text: string }[] };
+    expect(recipientMessages.messages.some((message) => message.text.includes('review the release notes'))).toBe(true);
+  });
+
+  it('runs a mission to completion over HTTP, and unblocks a paused one', async () => {
+    const llm = new ScriptedMockLlm([
+      // Session 1: memory tool round, then a working status.
+      () => 'Starting. <tool>{"name":"agent_memory","params":{"action":"remember","text":"mission kickoff"}}</tool>',
+      () => 'Draft written. {"status":"working","progress":"created the draft document","criteriaMet":[false]}',
+      // Session 2 (forced by direct call): done.
+      () => 'Everything verified. {"status":"done","progress":"all criteria checked","criteriaMet":[true,true],"result":"The report is complete and saved."}',
+      // Session 3 (second mission): blocked.
+      () => 'Cannot continue. {"status":"blocked","progress":"looked everywhere","blocker":"need the API key"}',
+      // Chat turn replying to the user's guidance.
+      () => 'Thanks — I will use it.',
+      // Session 4: done after guidance.
+      () => 'Done with the key. {"status":"done","progress":"used the key","criteriaMet":[true],"result":"Unblocked and finished."}',
+    ]);
+    const base = await startServer(llm);
+
+    const agent = (await post(base, '/api/cowork/agents', makeAgentInput('mission-worker'))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const mission = (await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Write the weekly report', criteria: ['report exists', 'numbers verified'] })).json['mission'] as { id: string; status: string };
+    expect(mission.status).toBe('running');
+
+    const runSession = (id: string): Promise<void> =>
+      (serverInstance as unknown as { executeMissionSession: (id: string) => Promise<void> }).executeMissionSession(id);
+
+    await runSession(mission.id);
+    await waitFor(async () => {
+      const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { busy: boolean };
+      return !d.busy ? true : undefined;
+    });
+    let view = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { messages: { text: string }[]; missions: { id: string; status: string; progress: string; result?: string }[] };
+    const running = view.missions.find((m) => m.status === 'running');
+    await runSession(running!.id);
+    await waitFor(async () => {
+      const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { busy: boolean };
+      return !d.busy ? true : undefined;
+    });
+    view = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { messages: { text: string }[]; missions: { id: string; status: string; result?: string; progress: string }[] };
+    const done = view.missions.find((m) => m.id === mission.id)!;
+    expect(done.status).toBe('done');
+    expect(done.result).toContain('report is complete');
+    expect(view.messages.some((m) => m.text.startsWith('[mission]'))).toBe(true);
+    expect(view.messages.some((m) => m.text.startsWith('Mission complete'))).toBe(true);
+
+    // A blocked mission pauses and is unblocked by a user reply.
+    const blockedMission = (await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Call the weather API', criteria: ['response parsed'] })).json['mission'] as { id: string };
+    await runSession(blockedMission.id);
+    await waitFor(async () => {
+      const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { busy: boolean };
+      return !d.busy ? true : undefined;
+    });
+    let view2 = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { missions: { id: string; status: string; blockers?: string }[] };
+    expect(view2.missions.find((m) => m.id === blockedMission.id)!.status).toBe('blocked');
+    expect(view2.missions.find((m) => m.id === blockedMission.id)!.blockers).toContain('API key');
+    await post(base, `/api/cowork/conversations/${conv.id}/messages`, { text: 'the API key is in .env' });
+    await waitFor(async () => {
+      const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { busy: boolean };
+      return !d.busy ? true : undefined;
+    });
+    view2 = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { missions: { id: string; status: string; guidance: string[] }[] };
+    const unblocked = view2.missions.find((m) => m.id === blockedMission.id)!;
+    expect(unblocked.status).toBe('running');
+    expect(unblocked.guidance.some((g) => g.includes('.env'))).toBe(true);
+  });
+
+  it('aborts an active mission when it is cancelled and does not schedule a retry', async () => {
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let observedAbort = false;
+    const llm: LlmClient = {
+      name: 'cancel-mission-test',
+      complete: async () => 'unused',
+      completeStream: async (_messages, options, delta) => {
+        delta('Working on the mission…');
+        entered();
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () => {
+            observedAbort = true;
+            reject(options.signal?.reason ?? new Error('aborted'));
+          };
+          if (options.signal?.aborted) abort();
+          else options.signal?.addEventListener('abort', abort, { once: true });
+        });
+        return 'unreachable';
+      },
+    };
+    const base = await startServer(llm);
+    const agent = (await post(base, '/api/cowork/agents', makeAgentInput('mission-cancel-worker'))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const mission = (await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Wait for cancellation', criteria: ['never reached'] })).json['mission'] as { id: string };
+    const run = (serverInstance as unknown as { executeMissionSession: (id: string) => Promise<void> }).executeMissionSession(mission.id);
+
+    await started;
+    const cancelled = await fetch(`${base}/api/cowork/missions/${mission.id}`, { method: 'DELETE' });
+    expect(cancelled.status).toBe(200);
+    await run;
+
+    const view = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as {
+      busy: boolean;
+      missions: { id: string; status: string; nextWakeAt?: string }[];
+      messages: { text: string }[];
+    };
+    const saved = view.missions.find((item) => item.id === mission.id)!;
+    expect(observedAbort).toBe(true);
+    expect(view.busy).toBe(false);
+    expect(saved.status).toBe('cancelled');
+    expect(saved.nextWakeAt).toBeUndefined();
+    expect(view.messages.some((message) => message.text === 'Mission cancelled by the user.')).toBe(true);
   });
 });

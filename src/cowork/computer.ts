@@ -57,6 +57,11 @@ export class CoworkComputer {
   private error?: string;
   private starting?: Promise<void>;
   private startupAbort?: AbortController;
+  /** Recent provisioning failure — lets tool dispatch fail fast (and fall
+   *  back to the user's computer) instead of re-probing Docker for 15s on
+   *  every call. Retries are allowed again after the cooldown. */
+  private lastFailure?: { at: number; message: string };
+  private static FAILURE_COOLDOWN_MS = 60_000;
   private readonly active = new Set<AbortController>();
   private static builds = new Map<string, Promise<string>>();
 
@@ -148,9 +153,11 @@ export class CoworkComputer {
       }
       await this.exec(['start', this.name], undefined, signal);
       this.state = 'running';
+      this.lastFailure = undefined;
     } catch (err) {
       this.state = 'unavailable';
       this.error = `Virtual computer unavailable. Install/start Docker Desktop with Linux containers, then retry. ${(err as Error).message}`;
+      this.lastFailure = { at: Date.now(), message: this.error };
       throw new Error(this.error);
     }
   }
@@ -204,6 +211,12 @@ export class CoworkComputer {
     try {
       signal?.throwIfAborted();
       if (tool === 'computer_status') return { ok: true, output: JSON.stringify(this.status()) };
+      // A recent provisioning failure is retried only after the cooldown, so
+      // callers can fall back to the user's computer without 15s Docker probes
+      // on every tool call.
+      if (this.state === 'unavailable' && this.lastFailure && Date.now() - this.lastFailure.at < CoworkComputer.FAILURE_COOLDOWN_MS) {
+        throw new Error(this.lastFailure.message);
+      }
       await this.start(signal);
       if (tool === 'share_file' || tool === 'receive_file') {
         if (!conversationId || !/^[\w-]+$/.test(conversationId)) throw new Error('File sharing requires a conversation.');

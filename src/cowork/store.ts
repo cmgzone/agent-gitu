@@ -52,7 +52,7 @@ export interface CoworkMessage {
   agentId?: string;
   agentName?: string;
   text: string;
-  via: 'web' | 'telegram' | 'schedule';
+  via: 'web' | 'telegram' | 'schedule' | 'agent';
   /** Telegram author name / schedule label, for display. */
   from?: string;
   /** Tool calls the agent made while composing this message. */
@@ -96,6 +96,49 @@ export interface CoworkUserProfile {
   preferences?: string;
 }
 
+/** A long-running autonomous job: an agent keeps working toward a goal in
+ *  bounded work sessions until its criteria are met, it gets blocked, or the
+ *  turn budget runs out. Progress is posted into the conversation. */
+export interface CoworkMission {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  goal: string;
+  criteria: string[];
+  status: 'running' | 'done' | 'blocked' | 'failed' | 'cancelled';
+  progress: string;
+  result?: string;
+  blockers?: string;
+  /** User guidance collected while blocked (fed into the next session). */
+  guidance: string[];
+  turns: number;
+  maxTurns: number;
+  nextWakeAt?: string;
+  createdAt: string;
+  finishedAt?: string;
+}
+
+/** An agent's own reminder: wake me up at <dueAt> to do <note>. */
+export interface CoworkFollowUp {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  note: string;
+  dueAt: string;
+  createdAt: string;
+}
+
+/** Agent-to-agent mail: delivered when the recipient next wakes up. */
+export interface CoworkInboxMessage {
+  id: string;
+  fromAgentId: string;
+  toAgentId: string;
+  conversationId: string;
+  text: string;
+  createdAt: string;
+  deliveredAt?: string;
+}
+
 export interface CoworkData {
   agents: CoworkAgent[];
   conversations: CoworkConversation[];
@@ -103,9 +146,12 @@ export interface CoworkData {
   messages: Record<string, CoworkMessage[]>;
   /** Shared "about the user" context injected into every teammate. */
   userProfile?: CoworkUserProfile;
+  missions: CoworkMission[];
+  followUps: CoworkFollowUp[];
+  inbox: CoworkInboxMessage[];
 }
 
-export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {} };
+export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [] };
 
 const MAX_MESSAGES_PER_CONVERSATION = 2_000;
 
@@ -140,6 +186,9 @@ export class CoworkStore {
               preferences: typeof parsed.userProfile.preferences === 'string' ? parsed.userProfile.preferences : undefined,
             }
           : undefined,
+        missions: Array.isArray(parsed.missions) ? parsed.missions : [],
+        followUps: Array.isArray(parsed.followUps) ? parsed.followUps : [],
+        inbox: Array.isArray(parsed.inbox) ? parsed.inbox : [],
       };
     } catch {
       // A corrupt file must not wipe the team silently: keep defaults in
@@ -223,6 +272,10 @@ export class CoworkStore {
       if (c.chiefId === id) delete c.chiefId;
       return c.memberIds.length > 0;
     });
+    const conversationIds = new Set(data.conversations.map((conversation) => conversation.id));
+    data.missions = data.missions.filter((mission) => mission.agentId !== id && conversationIds.has(mission.conversationId));
+    data.followUps = data.followUps.filter((followUp) => followUp.agentId !== id && conversationIds.has(followUp.conversationId));
+    data.inbox = data.inbox.filter((message) => message.fromAgentId !== id && message.toAgentId !== id && conversationIds.has(message.conversationId));
     this.save(true);
     return true;
   }
@@ -296,6 +349,9 @@ export class CoworkStore {
     if (!data.conversations.some((c) => c.id === id)) return false;
     data.conversations = data.conversations.filter((c) => c.id !== id);
     delete data.messages[id];
+    data.missions = data.missions.filter((mission) => mission.conversationId !== id);
+    data.followUps = data.followUps.filter((followUp) => followUp.conversationId !== id);
+    data.inbox = data.inbox.filter((message) => message.conversationId !== id);
     this.save(true);
     return true;
   }
@@ -324,6 +380,139 @@ export class CoworkStore {
     };
     this.save();
     return { ...data.userProfile };
+  }
+
+  // ------------------------------------------------------- autonomy layer
+
+  // Missions: long-running autonomous jobs worked in bounded sessions.
+
+  missions(conversationId?: string): CoworkMission[] {
+    const all = [...this.load().missions].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return conversationId ? all.filter((m) => m.conversationId === conversationId) : all;
+  }
+
+  getMission(id: string): CoworkMission | undefined {
+    return this.load().missions.find((m) => m.id === id);
+  }
+
+  createMission(input: { conversationId: string; agentId: string; goal: string; criteria: string[]; maxTurns?: number }): CoworkMission {
+    const data = this.load();
+    if (!data.conversations.some((c) => c.id === input.conversationId)) throw new Error('Conversation not found');
+    if (!data.agents.some((a) => a.id === input.agentId)) throw new Error('Unknown agent for mission');
+    const goal = input.goal.trim();
+    if (!goal) throw new Error('Mission goal is required');
+    const mission: CoworkMission = {
+      id: `cm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      conversationId: input.conversationId,
+      agentId: input.agentId,
+      goal: goal.slice(0, 2_000),
+      criteria: (Array.isArray(input.criteria) ? input.criteria.map((c) => String(c).trim()).filter(Boolean) : []).slice(0, 12),
+      status: 'running',
+      progress: '',
+      guidance: [],
+      turns: 0,
+      maxTurns: Math.max(1, Math.min(50, Math.floor(input.maxTurns ?? 12))),
+      nextWakeAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+    };
+    data.missions.push(mission);
+    this.save();
+    return mission;
+  }
+
+  updateMission(id: string, patch: Partial<Omit<CoworkMission, 'id' | 'createdAt'>>): CoworkMission | undefined {
+    const data = this.load();
+    const mission = data.missions.find((m) => m.id === id);
+    if (!mission) return undefined;
+    Object.assign(mission, patch);
+    this.save();
+    return mission;
+  }
+
+  /** Cancel = terminal; finished missions stay for the transcript/history. */
+  cancelMission(id: string): boolean {
+    const mission = this.getMission(id);
+    if (!mission || (mission.status !== 'running' && mission.status !== 'blocked')) return false;
+    this.updateMission(id, { status: 'cancelled', finishedAt: new Date().toISOString(), nextWakeAt: undefined });
+    return true;
+  }
+
+  // Follow-ups: an agent's own scheduled wake-ups.
+
+  addFollowUp(input: { conversationId: string; agentId: string; note: string; dueAt: string }): CoworkFollowUp {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation || !conversation.memberIds.includes(input.agentId)) throw new Error('Follow-up agent is not in this conversation');
+    const note = input.note.trim();
+    if (!note) throw new Error('Follow-up note is required');
+    if (!Number.isFinite(Date.parse(input.dueAt))) throw new Error('Follow-up due date is invalid');
+    const followUp: CoworkFollowUp = {
+      id: `cf-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      conversationId: input.conversationId,
+      agentId: input.agentId,
+      note: note.slice(0, 1_000),
+      dueAt: input.dueAt,
+      createdAt: new Date().toISOString(),
+    };
+    data.followUps.push(followUp);
+    this.save();
+    return followUp;
+  }
+
+  dueFollowUps(now = Date.now()): CoworkFollowUp[] {
+    return this.load().followUps.filter((f) => Date.parse(f.dueAt) <= now);
+  }
+
+  takeFollowUp(id: string): CoworkFollowUp | undefined {
+    const data = this.load();
+    const followUp = data.followUps.find((f) => f.id === id);
+    if (!followUp) return undefined;
+    data.followUps = data.followUps.filter((f) => f.id !== id);
+    this.save();
+    return followUp;
+  }
+
+  // Inbox: agent-to-agent mail, delivered on the recipient's next wake-up.
+
+  addInbox(input: { fromAgentId: string; toAgentId: string; conversationId: string; text: string }): CoworkInboxMessage {
+    const data = this.load();
+    if (!data.agents.some((agent) => agent.id === input.fromAgentId)) throw new Error('Unknown inbox sender');
+    if (!data.agents.some((agent) => agent.id === input.toAgentId)) throw new Error('Unknown inbox recipient');
+    if (!data.conversations.some((conversation) => conversation.id === input.conversationId)) throw new Error('Unknown inbox conversation');
+    const text = input.text.trim();
+    if (!text) throw new Error('Inbox message is required');
+    const message: CoworkInboxMessage = {
+      id: `ci-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      fromAgentId: input.fromAgentId,
+      toAgentId: input.toAgentId,
+      conversationId: input.conversationId,
+      text: text.slice(0, 4_000),
+      createdAt: new Date().toISOString(),
+    };
+    data.inbox.push(message);
+    this.save();
+    return message;
+  }
+
+  /** Undelivered mail for one agent. Accepts the id or the display name. */
+  inboxFor(agentIdOrName: string): CoworkInboxMessage[] {
+    const data = this.load();
+    const agentId = data.agents.find((agent) => agent.id === agentIdOrName || agent.name.toLowerCase() === agentIdOrName.toLowerCase())?.id ?? agentIdOrName;
+    return data.inbox.filter((message) => !message.deliveredAt && message.toAgentId === agentId);
+  }
+
+  markInboxDelivered(ids: string[]): void {
+    const data = this.load();
+    const now = new Date().toISOString();
+    for (const message of data.inbox) {
+      if (ids.includes(message.id) && !message.deliveredAt) message.deliveredAt = now;
+    }
+    this.save();
+  }
+
+  /** Inbox mail old enough to deliver proactively by the ticker. */
+  dueInbox(now = Date.now(), graceMs = 20_000): CoworkInboxMessage[] {
+    return this.load().inbox.filter((m) => !m.deliveredAt && now - Date.parse(m.createdAt) >= graceMs);
   }
 
   // ------------------------------------------------- per-agent memory

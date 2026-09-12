@@ -10,13 +10,19 @@ import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
-import { CronScheduler, CronStore, type CronJob } from '../cron/scheduler.js';
+import { CronScheduler, CronStore, parseEvery, type CronJob } from '../cron/scheduler.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient } from '../llm/llm.js';
+import { CoworkStore, type CoworkConversation, type CoworkMessage, type CoworkAgent } from '../cowork/store.js';
+import { CoworkMemory } from '../cowork/memory.js';
+import { runConversationTurn, type CoworkProgress } from '../cowork/runner.js';
+import { CoworkComputer } from '../cowork/computer.js';
+import { TelegramPoller, TelegramReplyStream, recentTelegramChats } from '../cowork/telegram.js';
+import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
 import { ProviderError, allProviderSpecs, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
@@ -33,7 +39,7 @@ import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
-import { BRAND_DIR, BRAND_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
+import { BRAND_DIR, BRAND_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
 
 export interface PendingApproval {
   id: string;
@@ -214,6 +220,16 @@ export class GituServer {
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
   private store?: SessionStore;
+
+  /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
+  private coworkStore?: CoworkStore;
+  private coworkMemoryStore?: CoworkMemory;
+  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; telegramError?: string }>();
+  private readonly coworkPollers = new Map<string, TelegramPoller>();
+  private coworkTimer?: ReturnType<typeof setInterval>;
+  private readonly coworkTools = new Map<string, ToolContext>();
+  private readonly coworkComputers = new Map<string, CoworkComputer>();
+  private readonly coworkAgentLocks = new Map<string, Promise<void>>();
 
   private readonly browserSubs = new Set<(msg: Record<string, unknown>) => void>();
   private browserState: { available: boolean; url: string; title: string; canBack: boolean; canForward: boolean; loading: boolean } = {
@@ -663,6 +679,7 @@ export class GituServer {
         /* not a project yet */
       }
     }
+    this.startCoworkLifecycle();
     for (const entry of this.loadRegistry()) {
       if (this.sessions.has(entry.runId)) continue;
       let status: RunSession['status'] = entry.status as RunSession['status'];
@@ -718,6 +735,7 @@ export class GituServer {
 
   async stop(): Promise<void> {
     this.scheduler?.stop();
+    await this.stopCoworkLifecycle();
     for (const idx of this.indexWatchers.values()) {
       idx.stopWatch();
       idx.close();
@@ -778,6 +796,530 @@ export class GituServer {
     this.pushEvent(session, `cron job ${job.id} triggered (${job.every})`);
     await this.executeRun(session, llm, { goal: job.goal, mode: 'standard', review: false, projectPath: root });
     return session.runId;
+  }
+
+  // ------------------------------------------------------------- cowork mode
+
+  private cowork(): CoworkStore {
+    if (!this.coworkStore) this.coworkStore = new CoworkStore();
+    return this.coworkStore;
+  }
+
+  /** Shared MemoryStore facade: cowork agents use the SAME memory
+   *  architecture as the main agent (typed, lifecycle, visibility-isolated). */
+  private coworkMemory(): CoworkMemory {
+    if (!this.coworkMemoryStore) {
+      this.coworkMemoryStore = CoworkMemory.forWorkspace();
+      try {
+        const nameById = new Map(this.cowork().listAgents().map((a) => [a.id, a.name]));
+        const migrated = this.coworkMemoryStore.migrateLegacyFactFiles(nameById);
+        if (migrated > 0) console.error(`[hermes] cowork: migrated ${migrated} legacy memory fact(s) into the shared memory store`);
+      } catch {
+        /* best-effort migration */
+      }
+    }
+    return this.coworkMemoryStore;
+  }
+
+  private coworkComputer(agentId: string): CoworkComputer {
+    let computer = this.coworkComputers.get(agentId);
+    if (!computer) {
+      computer = new CoworkComputer(agentId, nodePath.join(ensureGituHome().root, 'Cowork'));
+      this.coworkComputers.set(agentId, computer);
+    }
+    return computer;
+  }
+
+  /** Host context is only for trusted skills/connections/MCP. File, shell and
+   * browser calls are intercepted by the private computer dispatcher. */
+  private coworkToolContext(agent: CoworkAgent): ToolContext {
+    let context = this.coworkTools.get(agent.id);
+    if (!context) {
+      const workspace = nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
+      mkdirSync(workspace, { recursive: true });
+      const marker = nodePath.join(workspace, 'package.json');
+      if (!existsSync(marker)) writeFileSync(marker, '{"name":"cowork-profile","private":true}');
+      context = {
+        guard: ProjectGuard.detect(workspace),
+        cwd: workspace,
+        skills: SkillStore.forProject(ensureGituHome().workspace),
+        mcp: McpManager.forProject(workspace),
+        connections: this.connections,
+      };
+      this.coworkTools.set(agent.id, context);
+    }
+    return context;
+  }
+
+  private coworkLlm(agent: CoworkAgent): LlmClient {
+    if (this.config.llm) return this.config.llm;
+    const resolved = resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: this.coworkToolContext(agent).cwd });
+    return resolved.client;
+  }
+
+  private startCoworkLifecycle(): void {
+    for (const conv of this.cowork().listConversations()) this.startCoworkPoller(conv);
+    // Due scheduled messages are dispatched on a coarse tick; each tick is
+    // guarded so a store error can never kill the server (same contract as
+    // CronScheduler.tick).
+    this.coworkTimer = setInterval(() => {
+      try {
+        this.coworkScheduleTick();
+      } catch (err) {
+        console.error(`[hermes] cowork schedule tick failed: ${(err as Error).message}`);
+      }
+    }, 20_000);
+  }
+
+  private async stopCoworkLifecycle(): Promise<void> {
+    if (this.coworkTimer) clearInterval(this.coworkTimer);
+    this.coworkTimer = undefined;
+    for (const poller of this.coworkPollers.values()) poller.stop();
+    this.coworkPollers.clear();
+    for (const context of this.coworkTools.values()) context.mcp?.killAll();
+    for (const run of this.coworkRuns.values()) { run.queue.length = 0; run.abort.abort(); }
+    await Promise.allSettled([...this.coworkComputers.values()].map((computer) => computer.stop()));
+  }
+
+  private startCoworkPoller(conv: CoworkConversation): void {
+    this.stopCoworkPoller('');
+    const tg = conv.telegram;
+    if (!tg?.enabled || !tg.token || !tg.chatId) return;
+    if (this.coworkPollers.has(tg.token)) return;
+    const poller = new TelegramPoller({
+      token: tg.token,
+      chatId: '*',
+      chatTitle: tg.chatTitle,
+      onMessage: (from, text, chatId) => {
+        for (const linked of this.cowork().listConversations()) {
+          if (linked.telegram?.enabled && linked.telegram.token === tg.token && linked.telegram.chatId === chatId) this.dispatchCoworkMessage(linked.id, text, 'telegram', from);
+        }
+      },
+      onError: (message) => console.error(`[hermes] cowork telegram (${conv.id}): ${message}`),
+    });
+    this.coworkPollers.set(tg.token, poller);
+    poller.start();
+  }
+
+  private stopCoworkPoller(conversationId: string): void {
+    const tokens = new Set(this.cowork().listConversations().filter((c) => c.id !== conversationId && c.telegram?.enabled).map((c) => c.telegram?.token));
+    for (const [token, poller] of this.coworkPollers) {
+      if (!tokens.has(token)) { poller.stop(); this.coworkPollers.delete(token); }
+    }
+  }
+
+  /** Public entry: append a user-side message and start the team's response. */
+  private dispatchCoworkMessage(conversationId: string, text: string, via: CoworkMessage['via'], from?: string): { ok: boolean; queued?: boolean; error?: string } {
+    const store = this.cowork();
+    const conv = store.getConversation(conversationId);
+    if (!conv) return { ok: false, error: 'conversation not found' };
+    const trimmed = text.trim().slice(0, 20_000);
+    if (!trimmed) return { ok: false, error: 'text is required' };
+    const run = this.coworkRuns.get(conversationId);
+    if (run?.busy) {
+      if (run.abort.signal.aborted) return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
+      if (run.queue.length >= 50) return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
+      run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from }));
+      return { ok: true, queued: true };
+    }
+    const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from });
+    const abort = new AbortController();
+    this.coworkRuns.set(conversationId, { busy: true, abort, queue: [trigger] });
+    void this.executeCoworkTurn(conversationId, abort)
+      .catch((err: Error) => console.error(`[hermes] cowork turn crashed (${conversationId}): ${err.message}`))
+      .finally(() => {
+        const current = this.coworkRuns.get(conversationId);
+        if (current?.abort === abort) this.coworkRuns.delete(conversationId);
+      });
+    return { ok: true };
+  }
+
+  /** Rendered persistent-memory block for one agent's prompt. */
+  private coworkMemoryFor(agent: { name: string }): string {
+    return this.coworkMemory().promptBlock({ name: agent.name } as CoworkAgent);
+  }
+
+  /** Shared "about the user" block for every teammate's prompt. */
+  private coworkUserContext(): string | undefined {
+    const profile = this.cowork().userProfile();
+    const parts: string[] = [];
+    if (profile.name) parts.push(`Name: ${profile.name}`);
+    if (profile.about) parts.push(`About: ${profile.about}`);
+    if (profile.preferences) parts.push(`Working preferences: ${profile.preferences}`);
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }
+
+  private async executeCoworkTurn(conversationId: string, abort: AbortController): Promise<void> {
+    const store = this.cowork();
+    const run = this.coworkRuns.get(conversationId);
+    if (!run) return;
+    while (run.queue.length && !abort.signal.aborted) {
+      const trigger = run.queue.shift()!;
+      const conv = store.getConversation(conversationId);
+      if (!conv) break;
+      // Queued future user messages must not steer the current trigger.
+      const history = store.messages(conversationId).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);
+      let stream: TelegramReplyStream | undefined;
+      const tg = conv.telegram;
+      const beginStream = () => {
+        if (tg?.enabled && tg.token && tg.chatId) stream = new TelegramReplyStream(tg.token, tg.chatId);
+      };
+      try {
+      await runConversationTurn({
+        conversation: conv,
+        history,
+        trigger,
+        deps: {
+          agents: store.listAgents(),
+          resolveLlm: (agent) => this.coworkLlm(agent),
+          toolContext: (agent) => this.coworkToolContext(agent),
+          computerFor: (agentId) => this.coworkComputer(agentId),
+          withAgent: (agent, work) => this.withCoworkAgent(agent.id, abort.signal, work),
+          store,
+          memory: this.coworkMemory(),
+          browser: true,
+          userContext: this.coworkUserContext(),
+          memoryFor: (agent) => this.coworkMemoryFor(agent),
+          signal: abort.signal,
+          onWorking: (name) => {
+            run.working = name;
+            run.progress = undefined;
+            beginStream();
+            stream?.update(`${name}: Working…`);
+          },
+          onProgress: (progress) => {
+            run.progress = progress;
+            const tool = progress.tool ? `\n[${progress.tool}: ${progress.toolOk === undefined ? 'running' : progress.toolOk ? 'completed' : 'failed'}]` : '';
+            stream?.update(`${progress.agentName}: ${progress.text || 'Working…'}${tool}`);
+          },
+          onMessage: async (message) => {
+            run.progress = undefined;
+            if (!stream) beginStream();
+            const tools = message.tools?.map((t) => `${t.name}: ${t.ok ? 'completed' : 'failed'}`).join(', ');
+            try { await stream?.finish(`${message.agentName ? message.agentName + ': ' : ''}${message.text}${tools ? '\nTools: ' + tools : ''}`); }
+            catch (err) {
+              run.telegramError = (err as Error).message;
+              store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${run.telegramError}` });
+            }
+            stream = undefined;
+          },
+        },
+        append: (message) => {
+          if (!store.getConversation(conversationId)) throw new Error('Conversation was deleted.');
+          return store.appendMessage(conversationId, message);
+        },
+      });
+      } finally {
+        run.working = undefined;
+        run.progress = undefined;
+      }
+    }
+  }
+
+  /** Serialize an agent across chats so two turns cannot race its browser/files. */
+  private async withCoworkAgent(agentId: string, signal: AbortSignal, work: () => Promise<void>): Promise<void> {
+    const previous = this.coworkAgentLocks.get(agentId) ?? Promise.resolve();
+    let release!: () => void;
+    const lock = new Promise<void>((resolve) => { release = resolve; });
+    const tail = previous.then(() => lock);
+    this.coworkAgentLocks.set(agentId, tail);
+    let onAbort: (() => void) | undefined;
+    try {
+      signal.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        onAbort = () => reject(signal.reason ?? new Error('Stopped.'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        previous.then(resolve, reject);
+      });
+      signal.throwIfAborted();
+      await work();
+    } finally {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+      release();
+      // A cancelled waiter cannot remove the lock while its predecessor works.
+      void tail.then(() => { if (this.coworkAgentLocks.get(agentId) === tail) this.coworkAgentLocks.delete(agentId); });
+    }
+  }
+
+  private coworkScheduleTick(): void {
+    const store = this.cowork();
+    const now = Date.now();
+    for (const conv of store.listConversations()) {
+      const schedule = conv.schedule;
+      if (!schedule?.enabled || !schedule.goal) continue;
+      let interval: number;
+      try {
+        interval = parseEvery(schedule.every);
+      } catch {
+        continue;
+      }
+      const last = schedule.lastRunAt ? Date.parse(schedule.lastRunAt) : 0;
+      if (now - last < interval) continue;
+      store.updateConversation(conv.id, { schedule: { ...schedule, lastRunAt: new Date().toISOString() } });
+      this.dispatchCoworkMessage(conv.id, `Scheduled task (every ${schedule.every}): ${schedule.goal}`, 'schedule');
+    }
+  }
+
+  /** All /api/cowork/* routes. Returns true when the request was handled. */
+  private async coworkRoutes(req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string): Promise<boolean> {
+    const store = this.cowork();
+
+    if (path === '/api/cowork/agents') {
+      if (method === 'GET') {
+        // The shared skill library comes from the cowork workspace; it powers
+        // the per-agent skill picker in the profile editor.
+        let availableSkills: { name: string; description: string; scope?: string }[] = [];
+        try {
+          availableSkills = SkillStore.forProject(ensureGituHome().workspace)
+            .list()
+            .map((s) => ({ name: s.name, description: s.description, scope: s.scope }));
+        } catch {
+          /* workspace unavailable — the editor just shows an empty list */
+        }
+        const agents = store.listAgents();
+        const memoryCounts: Record<string, number> = {};
+        for (const agent of agents) memoryCounts[agent.id] = this.coworkMemory().count(agent);
+        this.sendJson(res, 200, { agents, availableSkills, memoryCounts, computers: agents.map((a) => this.coworkComputer(a.id).status()), profile: store.userProfile() });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const agent = store.saveAgent({
+            id: typeof body['id'] === 'string' && body['id'] ? body['id'] : undefined,
+            name: String(body['name'] ?? ''),
+            avatar: body['avatar'] && typeof body['avatar'] === 'object' ? (body['avatar'] as Record<string, unknown>) : undefined,
+            tagline: typeof body['tagline'] === 'string' ? body['tagline'] : undefined,
+            systemPrompt: String(body['systemPrompt'] ?? ''),
+            provider: typeof body['provider'] === 'string' ? body['provider'] : undefined,
+            model: typeof body['model'] === 'string' ? body['model'] : undefined,
+            effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
+            skills: Array.isArray(body['skills']) ? body['skills'].map(String) : [],
+            allowShell: body['allowShell'] === true,
+            allowWrites: body['allowWrites'] === true,
+            allowConfig: body['allowConfig'] === true,
+            chiefOfStaff: body['chiefOfStaff'] === true,
+          });
+          this.sendJson(res, 200, { ok: true, agent });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      return false;
+    }
+
+    const agentMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)$/);
+    if (agentMatch && method === 'DELETE') {
+      const target = store.getAgent(agentMatch[1]!);
+      if (target) for (const conv of store.listConversations()) {
+        if (conv.memberIds.includes(target.id)) {
+          const run = this.coworkRuns.get(conv.id);
+          if (run) { run.queue.length = 0; run.abort.abort(); }
+        }
+      }
+      const removed = store.deleteAgent(agentMatch[1]!);
+      if (removed && target) {
+        await this.coworkComputers.get(target.id)?.stop().catch(() => {});
+        this.coworkTools.get(target.id)?.mcp?.killAll();
+        this.coworkTools.delete(target.id);
+        this.stopCoworkPoller('');
+      }
+      if (removed && target) this.coworkMemory().clear(target);
+      this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'agent not found' });
+      return true;
+    }
+
+    const computerMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer$/);
+    if (computerMatch) {
+      if (!store.getAgent(computerMatch[1]!)) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
+      const computer = this.coworkComputer(computerMatch[1]!);
+      if (method === 'GET') { this.sendJson(res, 200, { computer: computer.status() }); return true; }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        if (body['action'] === 'stop') {
+          for (const conversation of store.listConversations()) {
+            if (!conversation.memberIds.includes(computerMatch[1]!)) continue;
+            const run = this.coworkRuns.get(conversation.id);
+            if (run) { run.queue.length = 0; run.abort.abort(new Error('Virtual computer stopped by user.')); }
+          }
+          await computer.stop();
+        }
+        else if (body['action'] === 'screenshot') {
+          const shot = await computer.execute('browse', { action: 'screenshot', path: '.browser-preview.png' });
+          if (!shot.ok) { this.sendJson(res, 503, { error: shot.output }); return true; }
+          const image = await computer.execute('export_file', { path: '.browser-preview.png' });
+          this.sendJson(res, image.ok ? 200 : 503, image.ok ? { computer: computer.status(), pngBase64: image.output } : { error: image.output });
+          return true;
+        }
+        else if (body['action'] === 'start') {
+          // Image installation can take minutes. Status is polled by the UI.
+          void computer.start().catch(() => {});
+        } else { this.sendJson(res, 400, { error: 'action must be start, stop or screenshot' }); return true; }
+        this.sendJson(res, 202, { computer: computer.status() }); return true;
+      }
+    }
+
+    const memoryMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/memory$/);
+    if (memoryMatch) {
+      const target = store.getAgent(memoryMatch[1]!);
+      if (!target) {
+        this.sendJson(res, 404, { error: 'agent not found' });
+        return true;
+      }
+      if (method === 'GET') {
+        this.sendJson(res, 200, { count: this.coworkMemory().count(target) });
+        return true;
+      }
+      if (method === 'DELETE') {
+        const cleared = this.coworkMemory().clear(target);
+        this.sendJson(res, 200, { ok: true, cleared });
+        return true;
+      }
+      return false;
+    }
+
+    if (path === '/api/cowork/profile') {
+      if (method === 'GET') {
+        this.sendJson(res, 200, { profile: store.userProfile() });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        const profile = store.saveUserProfile({
+          name: typeof body['name'] === 'string' ? body['name'] : undefined,
+          about: typeof body['about'] === 'string' ? body['about'] : undefined,
+          preferences: typeof body['preferences'] === 'string' ? body['preferences'] : undefined,
+        });
+        this.sendJson(res, 200, { ok: true, profile });
+        return true;
+      }
+      return false;
+    }
+
+    if (path === '/api/cowork/conversations') {
+      if (method === 'GET') {
+        this.sendJson(res, 200, { conversations: store.listConversations() });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const conv = store.saveConversation({
+            kind: body['kind'] === 'group' ? 'group' : 'dm',
+            title: typeof body['title'] === 'string' ? body['title'] : undefined,
+            memberIds: Array.isArray(body['memberIds']) ? body['memberIds'].map(String) : [],
+            chiefId: typeof body['chiefId'] === 'string' && body['chiefId'] ? body['chiefId'] : undefined,
+          });
+          this.sendJson(res, 200, { ok: true, conversation: conv });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      return false;
+    }
+
+    const convMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)$/);
+    if (convMatch) {
+      const convId = convMatch[1]!;
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const telegram = body['telegram'] && typeof body['telegram'] === 'object' ? (body['telegram'] as Record<string, unknown>) : undefined;
+          const schedule = body['schedule'] && typeof body['schedule'] === 'object' ? (body['schedule'] as Record<string, unknown>) : undefined;
+          if (telegram?.['enabled'] === true && store.listConversations().some((c) => c.id !== convId && c.telegram?.enabled && c.telegram.token === String(telegram['token'] ?? '').trim() && c.telegram.chatId === String(telegram['chatId'] ?? '').trim())) {
+            throw new Error('This Telegram bot and chat are already linked to another conversation.');
+          }
+          const conv = store.updateConversation(convId, {
+            title: typeof body['title'] === 'string' ? body['title'] : undefined,
+            memberIds: Array.isArray(body['memberIds']) ? body['memberIds'].map(String) : undefined,
+            chiefId: body['chiefId'] === undefined ? undefined : typeof body['chiefId'] === 'string' && body['chiefId'] ? body['chiefId'] : '',
+            telegram: telegram
+              ? {
+                  enabled: telegram['enabled'] === true,
+                  token: typeof telegram['token'] === 'string' ? telegram['token'] : undefined,
+                  chatId: telegram['chatId'] !== undefined ? String(telegram['chatId'] ?? '') : undefined,
+                  chatTitle: typeof telegram['chatTitle'] === 'string' ? telegram['chatTitle'] : undefined,
+                }
+              : undefined,
+            schedule: schedule ? { every: String(schedule['every'] ?? ''), goal: String(schedule['goal'] ?? ''), enabled: schedule['enabled'] !== false, lastRunAt: typeof schedule['lastRunAt'] === 'string' ? schedule['lastRunAt'] : undefined } : undefined,
+          });
+          if (!conv) {
+            this.sendJson(res, 404, { error: 'conversation not found' });
+            return true;
+          }
+          // Telegram/schedule config changes take effect immediately.
+          this.startCoworkPoller(conv);
+          this.sendJson(res, 200, { ok: true, conversation: conv });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        this.stopCoworkPoller(convId);
+        const run = this.coworkRuns.get(convId);
+        run?.abort?.abort();
+        this.coworkRuns.delete(convId);
+        const removed = store.deleteConversation(convId);
+        this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'conversation not found' });
+        return true;
+      }
+      return false;
+    }
+
+    const messagesMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/messages$/);
+    if (messagesMatch) {
+      const convId = messagesMatch[1]!;
+      if (method === 'GET') {
+        const after = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('after') ?? 0) || 0;
+        const run = this.coworkRuns.get(convId);
+        this.sendJson(res, 200, {
+          messages: store.messages(convId, after > 0 ? after : 0),
+          busy: Boolean(run?.busy),
+          working: run?.busy ? run.working ?? null : null,
+          progress: run?.progress ?? null,
+          queued: run?.queue.length ?? 0,
+          telegramError: run?.telegramError ?? null,
+        });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        const result = this.dispatchCoworkMessage(convId, String(body['text'] ?? ''), 'web');
+        this.sendJson(res, result.ok ? 202 : 409, result.ok ? { ok: true, queued: result.queued ?? false } : { error: result.error });
+        return true;
+      }
+      return false;
+    }
+
+    const stopMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/stop$/);
+    if (stopMatch && method === 'POST') {
+      const run = this.coworkRuns.get(stopMatch[1]!);
+      if (run?.busy) {
+        run.queue.length = 0;
+        run.abort?.abort(new Error('Stopped by user.'));
+        this.sendJson(res, 200, { ok: true });
+      } else {
+        this.sendJson(res, 200, { ok: true, alreadyStopped: true });
+      }
+      return true;
+    }
+
+    if (path === '/api/cowork/telegram/chats' && method === 'POST') {
+      const body = await this.readBody(req);
+      try {
+        const token = String(body['token'] ?? '').trim();
+        const chats = this.coworkPollers.get(token)?.chats() ?? await recentTelegramChats(undefined, token);
+        this.sendJson(res, 200, { chats });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
+    return false;
   }
 
   private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
@@ -1175,8 +1717,19 @@ export class GituServer {
         this.sendJson(res, 404, { error: 'three.js bundle not installed' });
         return;
       }
-      res.writeHead(200, { 'content-type': 'text/javascript', 'cache-control': 'public, max-age=86400' });
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' });
       this.pipeFile(res, VENDOR_THREE);
+      return;
+    }
+
+    if (method === 'GET' && path === '/vendor/three.core.min.js') {
+      // three.module.min.js imports this sibling chunk by a relative path.
+      if (!existsSync(VENDOR_THREE_CORE)) {
+        this.sendJson(res, 404, { error: 'three.js core chunk not installed' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' });
+      this.pipeFile(res, VENDOR_THREE_CORE);
       return;
     }
 
@@ -1814,6 +2367,10 @@ export class GituServer {
         this.sendJson(res, 200, { ok: true, jobs: store.remove(cronMatch[1]) });
         return;
       }
+    }
+
+    if (path.startsWith('/api/cowork/')) {
+      if (await this.coworkRoutes(req, res, path, method)) return;
     }
 
     const allowedKeyVars = new Set<string>([

@@ -11,6 +11,9 @@ function nodePathFromModule(): string {
 }
 
 export const VENDOR_THREE = path.join(moduleDir, '../../node_modules/three/build/three.module.min.js');
+/** three.module.min.js re-exports from this sibling chunk; both must be served
+ *  or every module import of three fails (mascot + cowork avatars). */
+export const VENDOR_THREE_CORE = path.join(moduleDir, '../../node_modules/three/build/three.core.min.js');
 export const FONTS_DIR = path.join(moduleDir, '../../assets/fonts');
 export const BRAND_DIR = path.join(moduleDir, '../../assets');
 

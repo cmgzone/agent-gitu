@@ -2,6 +2,7 @@ import { UI_MOTION_JS } from './ui-motion.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
+import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
 
 export const UI_HTML = String.raw`<!doctype html>
@@ -664,7 +665,10 @@ export const UI_HTML = String.raw`<!doctype html>
   @keyframes tin { from { transform: translateY(-6px); opacity: 0; } }
   .modal { position: fixed; inset: 0; background: rgba(4,6,10,.6); z-index: 60; display: flex; align-items: center; justify-content: center; }
   .modal .box { width: 580px; max-width: 94vw; max-height: 72vh; background: var(--card); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
-  .modal .bar { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  /* Modal headers share the .bar class name with the 6px progress strip.
+     Re-assert every strip property here so headers render as real bars. */
+  .modal .bar { height: auto; margin: 0; border-radius: 0; background: transparent; overflow: visible; flex: none; display: flex; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+  .modal .bar span { height: auto; }
   .modal .bar .crumb { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .modal .list { flex: 1; overflow-y: auto; padding: 6px; }
   .modal .frow { display: flex; gap: 9px; align-items: center; padding: 7px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; }
@@ -819,6 +823,7 @@ export const UI_HTML = String.raw`<!doctype html>
     .toast { max-width: none; }
     #mascotWrap { display: none !important; }
   }
+  ${COWORK_CSS}
 </style>
 </head>
 <body>
@@ -827,6 +832,7 @@ export const UI_HTML = String.raw`<!doctype html>
     <div class="head">
       <span class="name"><img class="brand-mark" src="/brand/agent-gitu-mark.svg" alt=""><span>AGENT GITU</span></span>
       <span class="spacer"></span>
+      <button class="iconbtn" id="sbCowork" title="Cowork mode — your agent team" aria-label="Open Cowork mode"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
       <button class="iconbtn" id="gearBtn" title="settings" aria-label="Open settings">&#9881;</button>
       <button class="iconbtn" id="sbCollapse" title="collapse sidebar" aria-label="Collapse sidebar">&#171;</button>
     </div>
@@ -862,6 +868,9 @@ export const UI_HTML = String.raw`<!doctype html>
 </div>
 <script>
 (function () {
+  window.__bootErrors = [];
+  window.addEventListener('error', function (e) { window.__bootErrors.push(String(e && e.message) + ' @ ' + String(e && e.filename) + ':' + String(e && e.lineno)); });
+  window.addEventListener('unhandledrejection', function (e) { window.__bootErrors.push('unhandled: ' + String(e && e.reason)); });
   ${UI_MOTION_JS}
   ${UI_APPROACH_JS}
   ${UI_RESPONSE_JS}
@@ -981,6 +990,7 @@ export const UI_HTML = String.raw`<!doctype html>
     terminal: SVG_OPEN + '<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
     file: SVG_OPEN + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>',
     list: SVG_OPEN + '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
+    users: SVG_OPEN + '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     chevDown: SVG_OPEN + '<polyline points="6 9 12 15 18 9"/></svg>',
     chevRight: SVG_OPEN + '<polyline points="9 6 15 12 9 18"/></svg>'
   };
@@ -1383,7 +1393,7 @@ export const UI_HTML = String.raw`<!doctype html>
     }
   }
 
-  function stopStreams() { flushLiveText(); if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } }
+  function stopStreams() { flushLiveText(); if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } cwStopPoll(); }
 
   function openHome() {
     S.active = 'home';
@@ -1411,6 +1421,9 @@ export const UI_HTML = String.raw`<!doctype html>
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
           '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
       : '') +
+      '<button class="setup-card" id="coworkCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto;max-width:760px">' +
+      '<h3 style="margin:0 0 4px;display:flex;align-items:center;gap:7px"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--accent)"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Cowork mode</h3>' +
+      '<div class="meta-line">Create your own agent teammates, chat one-on-one or in group chats, put them on Telegram, and let a chief of staff coordinate the work.</div><span class="setup-action">Open your team →</span></button>' +
       '<div class="sugs">' +
       '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:var(--run)">' + icon('search') + '</span><span class="sug-title">Explore the codebase</span><span class="sug-hint">Map the architecture and find the right starting point.</span></button>' +
       '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:var(--accent)">' + icon('bolt') + '</span><span class="sug-title">Build something new</span><span class="sug-hint">Turn an idea into a working, verified change.</span></button>' +
@@ -1434,6 +1447,8 @@ export const UI_HTML = String.raw`<!doctype html>
     $('homeProj').onclick = openFolderBrowser;
     var kcta = $('keylessCta');
     if (kcta) kcta.onclick = function () { openSettings('providers'); };
+    var ccta = $('coworkCta');
+    if (ccta) ccta.onclick = function () { openCowork(); };
   }
 
   function isFreeModelId(id) {
@@ -4636,6 +4651,7 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderSettings() {
     var items = [
       ['general', 'gear', 'General'],
+      ['cowork', 'users', 'Cowork'],
       ['providers', 'layers', 'Providers'],
       ['connections', 'plug', 'Connections'],
       ['permissions', 'shield', 'Permissions'],
@@ -4671,6 +4687,29 @@ export const UI_HTML = String.raw`<!doctype html>
       fillEffort('gEffort', provOf(S.sel.model));
       $('gEffort').value = S.sel.effort;
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
+    } else if (S.setSection === 'cowork') {
+      b.innerHTML = '<h1>Cowork</h1>' +
+        '<p style="color:var(--muted);font-size:12.5px;max-width:640px">Shared context for your agent team. Every teammate receives this in their system prompt, and they will update it themselves when you ask them to in a chat (or when you share something durable about you).</p>' +
+        '<div class="setcard" style="margin-bottom:12px"><div class="t" style="margin:14px 18px 10px">About you</div>' +
+        '<div style="display:grid;gap:8px;max-width:620px;padding:0 18px 16px">' +
+        '<input id="cwSetName" placeholder="Your name" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px">' +
+        '<textarea id="cwSetAbout" rows="4" placeholder="About you — role, company, current focus…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
+        '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
+        '<div><button class="btn dark" id="cwSetProfileSave">Save</button></div></div></div>';
+      api('/api/cowork/profile').then(function (d) {
+        if (S.setSection !== 'cowork' || !$('cwSetName')) return;
+        $('cwSetName').value = (d.profile && d.profile.name) || '';
+        $('cwSetAbout').value = (d.profile && d.profile.about) || '';
+        $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
+      }).catch(function () {});
+      $('cwSetProfileSave').onclick = function () {
+        var btn = this;
+        btn.disabled = true; btn.textContent = 'Saving…';
+        api('/api/cowork/profile', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: $('cwSetName').value, about: $('cwSetAbout').value, preferences: $('cwSetPrefs').value }) })
+          .then(function () { toast('Team context saved'); })
+          .catch(function (e) { toast(e.message, true); })
+          .finally(function () { btn.disabled = false; btn.textContent = 'Save'; });
+      };
     } else if (S.setSection === 'developer') {
       b.innerHTML = '<h1>Developer</h1>' +
         '<div class="setcard">' +
@@ -5433,6 +5472,7 @@ export const UI_HTML = String.raw`<!doctype html>
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
     $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('general'); };
     $('gearBtn').innerHTML = icon('gear');
+    $('sbCowork').onclick = function () { toggleMobileNav(false); openCowork(); };
     $('sbCollapse').onclick = function () { S.settings.leftCollapsed = !S.settings.leftCollapsed; persist(); applyLayout(); };
     bindResize('sbResize', 'left');
     $('bulkDel').onclick = bulkDelete;
@@ -5447,7 +5487,9 @@ export const UI_HTML = String.raw`<!doctype html>
     renderSidebar();
     renderTopbar();
     applyLayout();
-    openHome();
+    var cwWasOpen = false;
+    try { cwWasOpen = localStorage.getItem('hermes.cowork') === 'open'; } catch (e) {}
+    if (cwWasOpen) openCowork(); else openHome();
 
     // Narrow-window panel toggle: the right side becomes an overlay instead
     // of being removed entirely (Browser/Git used to vanish ≤1080px).
@@ -5493,12 +5535,13 @@ export const UI_HTML = String.raw`<!doctype html>
     window.addEventListener('resize', function () { if (window.innerWidth > 720) toggleMobileNav(false); });
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
+  ${COWORK_JS}
   boot();
 })();
 </script>
 <div id="mascotWrap" style="position:fixed;right:14px;bottom:12px;z-index:45;pointer-events:none;width:240px;height:170px">
   <canvas id="mascotCanvas" aria-hidden="true" style="width:240px;height:170px;image-rendering:pixelated"></canvas>
-  <div id="mascotName" style="position:absolute;top:44px;left:0;font-family:var(--mono);font-weight:700;font-size:11px;color:#fff;background:#1b2334;border:1px solid #8f80ff;border-radius:6px;padding:2px 8px;white-space:nowrap;opacity:0;transition:opacity .4s">Agent Gitu</div>
+  <div id="mascotName" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-weight:700;font-size:11px;color:#fff;background:#1b2334;border:1px solid #8f80ff;border-radius:6px;padding:2px 8px;white-space:nowrap;opacity:0;transition:opacity .4s">Agent Gitu</div>
 </div>
 <script type="module">
 import * as THREE from '/vendor/three.module.js';
@@ -5666,16 +5709,148 @@ import * as THREE from '/vendor/three.module.js';
       root.position.x = 2;
       root.position.y = Math.sin(t * 2) * 0.06;
     }
-    var targetX = root.position.x - 5.2;
+    // The name tag hangs BELOW the character (never over its face) and
+    // follows it with easing, clamped so it stays inside the wrap.
+    var targetX = root.position.x;
     nameX += (targetX - nameX) * 0.05;
     if (nameEl) {
-      nameEl.style.left = Math.round((nameX + 12) / 24 * 240) + 'px';
+      var charPx = Math.max(44, Math.min(196, Math.round((nameX + 12) / 24 * 240)));
+      nameEl.style.left = charPx + 'px';
       nameEl.style.opacity = mode === 'idle' ? '0.85' : '1';
     }
     renderer.render(scene, cam);
   }
   mascotVisible = !mascotIsHidden();
   if (mascotVisible) rafId = requestAnimationFrame(tick);
+})();
+</script>
+<script type="module">
+// Cowork character avatars: voxel busts built with the bundled three.js and
+// snapshotted to PNG data URLs so lists and chat bubbles stay cheap. The
+// module registers window.__coworkAvatar; without three.js the UI falls back
+// to inline SVG identicons.
+import * as THREE from '/vendor/three.module.js';
+(function () {
+  function shade(hex, f) {
+    var n = parseInt(hex.slice(1), 16);
+    var r = Math.min(255, Math.max(0, Math.round(((n >> 16) & 255) * f)));
+    var g = Math.min(255, Math.max(0, Math.round(((n >> 8) & 255) * f)));
+    var b = Math.min(255, Math.max(0, Math.round((n & 255) * f)));
+    return (r << 16) | (g << 8) | b;
+  }
+  function box(w, h, d, color) {
+    return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color: color }));
+  }
+  // A head-and-shoulders voxel bust in one of four head styles. Everything is
+  // derived from the saved config (color + shape) so the same character
+  // renders identically everywhere.
+  function buildCharacter(config) {
+    var color = /^#[0-9a-f]{6}$/i.test(config.color) ? config.color : '#8f80ff';
+    var shape = config.shape || 'cube';
+    var group = new THREE.Group();
+    var dark = shade(color, 0.62), darker = shade(color, 0.4), light = shade(color, 1.25);
+    var head = box(10, 9, 9, color);
+    head.position.y = 8.5;
+    group.add(head);
+    var eyeMat = new THREE.MeshLambertMaterial({ color: 0x10141d });
+    function eye(x, y, w, h) {
+      var e = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.6), eyeMat);
+      e.position.set(x, y, 4.55);
+      head.add(e);
+    }
+    var mouth = new THREE.Mesh(new THREE.BoxGeometry(4, 0.7, 0.6), eyeMat);
+    mouth.position.set(0, -2.6, 4.55);
+    head.add(mouth);
+    if (shape === 'visor') {
+      var visor = new THREE.Mesh(new THREE.BoxGeometry(8.4, 2.6, 0.5), new THREE.MeshLambertMaterial({ color: 0x10141d }));
+      visor.position.set(0, 1.1, 4.55);
+      head.add(visor);
+      var glowL = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.2, 0.4), new THREE.MeshLambertMaterial({ color: 0xeaf2ff }));
+      glowL.position.set(-1.8, 1.1, 4.7);
+      head.add(glowL);
+      var glowR = glowL.clone();
+      glowR.position.x = 1.8;
+      head.add(glowR);
+      head.remove(mouth);
+    } else if (shape === 'antenna') {
+      eye(-2.1, 0.9, 1.7, 1.9);
+      eye(2.1, 0.9, 1.7, 1.9);
+      var rod = box(0.7, 3.4, 0.7, darker);
+      rod.position.set(0, 6.1, 0);
+      group.add(rod);
+      var bulb = new THREE.Mesh(new THREE.SphereGeometry(1.25, 12, 10), new THREE.MeshLambertMaterial({ color: light }));
+      bulb.position.set(0, 8.2, 0);
+      group.add(bulb);
+    } else if (shape === 'bot') {
+      eye(-2.1, 0.9, 1.6, 2.1);
+      eye(2.1, 0.9, 1.6, 2.1);
+      var earL = box(0.9, 3, 3, darker);
+      earL.position.set(-5.4, 0.4, 0);
+      group.add(earL);
+      var earR = earL.clone();
+      earR.position.x = 5.4;
+      group.add(earR);
+      var bolt = box(2.2, 0.8, 0.7, dark);
+      bolt.position.set(0, 4.9, 4.4);
+      head.add(bolt);
+    } else {
+      eye(-2.1, 0.9, 1.7, 2.1);
+      eye(2.1, 0.9, 1.7, 2.1);
+      var brow = box(7.4, 0.8, 0.6, dark);
+      brow.position.set(0, 2.8, 4.55);
+      head.add(brow);
+    }
+    var neck = box(4, 1.6, 4, darker);
+    neck.position.y = 3.1;
+    group.add(neck);
+    var torso = box(14, 5, 8, dark);
+    torso.position.y = -0.2;
+    group.add(torso);
+    var collar = box(15.4, 1.2, 9.2, darker);
+    collar.position.y = 2.2;
+    group.add(collar);
+    var chest = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.4, 0.5), new THREE.MeshLambertMaterial({ color: light }));
+    chest.position.set(0, -0.1, 4.15);
+    torso.add(chest);
+    return group;
+  }
+  function renderScene(group, size) {
+    var canvas = document.createElement('canvas');
+    var renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
+    renderer.setClearColor(0x000000, 0);
+    renderer.setSize(size, size, false);
+    var scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, 1.45));
+    var key = new THREE.DirectionalLight(0xffffff, 1.35);
+    key.position.set(6, 10, 12);
+    scene.add(key);
+    var rim = new THREE.DirectionalLight(0xffffff, 0.5);
+    rim.position.set(-8, 4, -6);
+    scene.add(rim);
+    scene.add(group);
+    var cam = new THREE.PerspectiveCamera(30, 1, 0.1, 200);
+    cam.position.set(7, 9, 34);
+    cam.lookAt(0, 4.5, 0);
+    group.rotation.y = -0.42;
+    renderer.render(scene, cam);
+    var url = canvas.toDataURL('image/png');
+    renderer.dispose();
+    return url;
+  }
+  window.__coworkAvatar = {
+    /** Render the configured character to a transparent PNG data URL. */
+    render: function (config, size) {
+      try {
+        return renderScene(buildCharacter(config || {}), size || 128);
+      } catch (e) {
+        return null;
+      }
+    },
+    shapes: ['cube', 'visor', 'antenna', 'bot'],
+  };
+  // Classic-script UI may have rendered SVG fallbacks before this deferred
+  // module registered the renderer — tell it to redraw the avatars.
+  window.dispatchEvent(new CustomEvent('coworkavatarsready'));
 })();
 </script>
 </body>

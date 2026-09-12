@@ -253,6 +253,53 @@ The desktop shell (`npm run app`) is fully offline-capable: the server and UI
 run locally inside Electron; only LLM calls need network. If port 8321 is
 taken it binds a free port automatically.
 
+## Cowork mode
+
+Cowork is a second mode, opened from the home page card or the 👥 button in the
+sidebar. Instead of task runs it gives you a messaging-style team surface:
+
+- **Agent profiles** — create named teammates (personality prompt, avatar,
+  provider/model, effort, per-agent skills, opt-in shell/write permissions).
+  Presets are included, including Grok- and Hermes-style personas and a Chief
+  of Staff coordinator.
+- **DMs and group chats** — chat with one teammate directly, or assemble a
+  group. In groups the **chief of staff** opens each turn and can summon
+  teammates with `@Name` mentions; mentioned agents then answer in a bounded
+  chain, then the chief synthesizes the results (five agent replies maximum).
+  Messages arriving while the team works are queued and answered in order.
+- **Private virtual computers** — each agent gets a persistent Linux container
+  with its own `/workspace`, shell and Chromium browser session. Install and
+  start Docker Desktop with Linux containers enabled. Use **Start** in the
+  agent's computer card, or let its first computer tool start it. The first
+  start builds `assets/cowork-computer/Dockerfile` and downloads Chromium;
+  allow several minutes. **View browser** shows a current screenshot.
+  Containers have 2 CPUs, 2 GB memory, no host mounts or published ports.
+  Stop preserves the volumes; deleting a teammate retains its computer data.
+  Long-running app servers use `run_command` with `background: true`; agents
+  inspect their output or stop them with `computer_process`.
+  Missing Docker is reported explicitly; computer tools never use a host shell
+  as a fallback. Existing shared Workspace files remain where they are.
+- **Tools and skills** — agents read/search and edit their own computer files.
+  Use `share_file` and `receive_file` to pass artifacts within a conversation.
+  Shell and writes are enabled per profile. Skills, memory and connections
+  remain app services; MCP runs as a trusted host extension, with separate
+  per-agent manager/configuration, and calling it requires shell, write and
+  tool-setup permissions. An agent is serialized across chats to protect its
+  private browser and files.
+- **Telegram gateway** — link a bot token (@BotFather) and a chat to any
+  conversation: Telegram messages arrive as user messages and every agent
+  reply streams through edited messages, including tool activity and final
+  tool outcomes. Delivery is serialized, rate-limit responses are retried,
+  and one poller per bot routes updates to all its linked chats. Tool markers
+  never appear in the stream. Delivery failures appear in the web transcript.
+- **Schedules** — set `every` + a prompt per conversation; the scheduler
+  injects it as a scheduled task on an interval (same syntax as cron jobs).
+
+Data lives in `<AgentGitu home>/Cowork/cowork.json` (profiles, conversations,
+transcripts, gateway tokens). API surface: `/api/cowork/agents`,
+`/api/cowork/agents/:id/computer` (GET status; POST start/stop/screenshot),
+`/api/cowork/conversations[/:id/messages|stop]`, `/api/cowork/telegram/chats`.
+
 ## Agent Gitu home
 
 On first launch Gitu creates its own workspace (never a drive root):

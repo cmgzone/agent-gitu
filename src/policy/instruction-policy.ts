@@ -55,14 +55,14 @@ function evaluateStructured(
 
   switch (constraint.kind) {
     case 'file_scope': {
-      if (tool !== 'write_file' && tool !== 'apply_edit') return { allowed: true };
+      if (tool !== 'write_file' && tool !== 'apply_edit' && tool !== 'create_document') return { allowed: true };
       const target = normalizePath(String(params['path'] ?? ''));
       const allowed = constraint.allow ?? [];
       if (allowed.some((entry) => pathMatchesScope(target, entry))) return { allowed: true };
       return deny(`restricts edits to [${allowed.join(', ')}]. Attempted to edit "${params['path']}"`);
     }
     case 'deny_paths': {
-      if (tool !== 'write_file' && tool !== 'apply_edit') return { allowed: true };
+      if (tool !== 'write_file' && tool !== 'apply_edit' && tool !== 'create_document') return { allowed: true };
       const target = normalizePath(String(params['path'] ?? ''));
       const denied = constraint.deny ?? [];
       if (denied.some((entry) => entry && pathMatchesScope(target, entry))) {
@@ -100,7 +100,7 @@ function evaluateStructured(
     default:
       // Unknown structured kind: fail CONSERVATIVELY — block the tools the
       // constraint plausibly governs rather than silently allowing.
-      if (tool === 'write_file' || tool === 'apply_edit' || tool === 'run_command' || tool === 'delegate') {
+      if (tool === 'write_file' || tool === 'apply_edit' || tool === 'create_document' || tool === 'run_command' || tool === 'delegate') {
         return deny('uses an unrecognized constraint form; failing closed until it is clarified');
       }
       return { allowed: true };
@@ -218,7 +218,7 @@ export class InstructionPolicyEngine {
       }
 
       // 5. File modification constraints ("only edit ...", "don't modify ...", "don't change ...")
-      if (tool === 'write_file' || tool === 'apply_edit') {
+      if (tool === 'write_file' || tool === 'apply_edit' || tool === 'create_document') {
         const targetPath = String(params['path'] ?? '').trim();
         const normalizedTarget = normalizePath(targetPath);
 

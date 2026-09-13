@@ -32,7 +32,8 @@ function killGroup(child) {
 }
 async function command(id, params) {
   if (typeof params.command !== 'string' || !params.command.trim()) throw new Error('command is required');
-  const timeoutMs = Math.min(120000, Math.max(100, Number(params.timeoutMs) || 120000));
+  const timeoutMs = Number(params.timeoutMs ?? 0);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0) throw new Error('timeoutMs must be a nonnegative integer; 0 means no deadline.');
   const background = params.background === true;
   if (background && [...processes.values()].filter((p) => p.running).length >= 8) throw new Error('Stop an existing background process before starting another (limit: 8).');
   return new Promise((resolve) => {
@@ -46,12 +47,17 @@ async function command(id, params) {
       for (const [key, process] of processes) if (!process.running && processes.size > 100) processes.delete(key);
       child.on('spawn', () => resolve({ ok: true, output: `Background process started: ${id}. Use computer_process to read output or stop it.` }));
     }
-    const timer = background
-      ? undefined
-      : setTimeout(() => {
-          timedOut = true;
-          killGroup(child);
-        }, timeoutMs);
+    let timer;
+    let remaining = timeoutMs;
+    const nextDeadline = () => {
+      const slice = Math.min(remaining, 2147483647);
+      timer = setTimeout(() => {
+        remaining -= slice;
+        if (remaining > 0) nextDeadline();
+        else { timedOut = true; killGroup(child); }
+      }, slice);
+    };
+    if (!background && timeoutMs) nextDeadline();
     const collect = (d) => {
       output = (output + d.toString()).slice(-16000);
       record.output = output;
@@ -83,6 +89,7 @@ async function browse(id, p) {
     void browser?.close().catch(() => {});
     browser = undefined;
   });
+  let image;
   try {
     switch (p.action) {
       case 'navigate': {
@@ -101,6 +108,12 @@ async function browse(id, p) {
       case 'fill':
         await page.locator(p.selector).fill(String(p.text ?? ''));
         break;
+      case 'select':
+        await page.locator(p.selector).selectOption(String(p.value ?? ''));
+        break;
+      case 'wait':
+        await page.waitForTimeout(Math.min(10000, Math.max(0, Number(p.ms) || 1000)));
+        break;
       case 'press':
         await page.keyboard.press(String(p.key));
         break;
@@ -117,19 +130,22 @@ async function browse(id, p) {
         await page.reload();
         break;
       case 'screenshot':
-        await page.screenshot({ path: safePath(p.path || 'screenshot.png') });
+        image = 'data:image/png;base64,' + (await page.screenshot({ path: safePath(p.path || 'screenshot.png') })).toString('base64');
         break;
+      case 'evidence':
       case 'state':
         break;
       default:
-        throw new Error('Unknown browser action. Use navigate, state, screenshot, click, fill, type, press, scroll, back, forward, reload.');
+        throw new Error('Unknown browser action. Use navigate, evidence, state, screenshot, click, fill, select, wait, type, press, scroll, back, forward, reload.');
     }
     return {
       ok: true,
+      image,
       output: JSON.stringify({
         url: page.url(),
         title: await page.title(),
         text: (await page.locator('body').innerText()).slice(0, 12000),
+        controls: page.locator('body').ariaSnapshot ? (await page.locator('body').ariaSnapshot()).slice(0, 8000) : undefined,
         screenshot: p.action === 'screenshot' ? p.path || 'screenshot.png' : undefined,
       }),
     };

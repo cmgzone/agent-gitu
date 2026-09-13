@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { classifyCommand, PolicyEngine } from '../src/policy/policy.js';
 
 describe('classifyCommand', () => {
+  it('allows Windows inspection and does not mistake formatting helpers for disk formatting', () => {
+    expect(classifyCommand('Get-ChildItem -Name | Select-Object -First 20').tier).toBe('safe');
+    expect(classifyCommand('Get-Item README.md | Format-List').tier).toBe('safe');
+    expect(classifyCommand('node format-report.js').tier).toBe('moderate');
+    expect(classifyCommand('format C: /Q').tier).toBe('dangerous');
+    expect(classifyCommand('Get-Item README.md; Remove-Item -Recurse data').tier).toBe('dangerous');
+  });
   it('classifies read-only git and test commands as safe', () => {
     expect(classifyCommand('git status').tier).toBe('safe');
     expect(classifyCommand('git diff').tier).toBe('safe');

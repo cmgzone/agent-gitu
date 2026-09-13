@@ -5,6 +5,8 @@ import type { PlanArea, PlanDesign, PlanStep, TaskLedgerData } from '../types.js
 import { builtinSkillByName } from '../skills/builtin.js';
 import { renderDecisions } from './architecture.js';
 import { agentWorkflowPrompt } from './agent-workflow.js';
+import { DOCUMENT_TOOL_DOC } from '../tools/productivity.js';
+import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
 //
@@ -312,7 +314,9 @@ Tools:
 - list_files   {"path":"src"}
 - search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":["**/vendor/**"],"maxResults":50,"contextLines":2}
     language-agnostic whole-file search (any language, any text file). Regex mode scans full file content, so patterns match ACROSS lines: use \\n, \\s or [\\s\\S] spans, or flags "s"/"m". Use mode "literal" for plain text with no regex escaping. Every result ends with a capability line (mode/flags/multiline/matches) telling you exactly what ran.
-- run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":120000}
+- run_command  {"command":"${lock.testCommand ?? 'npm test'}","timeoutMs":0} (no deadline by default; 0 means unlimited; positive timeoutMs is respected without a 600-second ceiling; Stop cancels the process tree)
+- create_document ${DOCUMENT_TOOL_DOC}
+- schedule_manage ${SCHEDULE_TOOL_DOC}
 - lsp_diagnostics {"path":"src/auth.ts"}  (compiler/type errors for a file; run after edits for fast feedback — it does NOT replace real verification commands)
 - lsp_definition {"path":"src/auth.ts","line":42,"column":17}  (1-based; where the symbol at that position is defined)
 - lsp_references {"path":"src/auth.ts","line":42,"column":17}  (every place the symbol is used)

@@ -74,7 +74,7 @@ describe('CoworkStore', () => {
   it('sanitizes avatar configs and rejects junk', () => {
     const store = new CoworkStore(path.join(tempHome('avatar'), 'cowork.json'));
     const bad = store.saveAgent(makeAgentInput('junky', { avatar: { color: 'javascript:alert(1)', shape: 'explosion' } }));
-    expect(bad.avatar).toEqual({ color: '#8f80ff', shape: 'cube' });
+    expect(bad.avatar).toEqual({ color: '#8f80ff', shape: 'orb' });
     const partial = store.saveAgent({ name: 'partial', systemPrompt: 'x', avatar: { shape: 'visor' } });
     expect(partial.avatar).toEqual({ color: '#8f80ff', shape: 'visor' });
   });
@@ -546,7 +546,7 @@ describe('host fallback without a virtual computer', () => {
     };
     const computer = new CoworkComputer('fallback-agent', tempHome('fallback'), failExec);
     const store = new CoworkStore(path.join(tempHome('fallback'), 'cowork.json'));
-    const agent = store.saveAgent(makeAgentInput('fallback-user', { allowShell: true }));
+    const agent = store.saveAgent(makeAgentInput('fallback-user', { allowShell: true, useHostComputer: false }));
     const memory = CoworkMemory.forWorkspace();
     const scope = { store, agent, memory, computerFor: () => computer };
     const perms = { allowShell: true, allowWrites: false, allowConfig: false, chief: false, browser: false };

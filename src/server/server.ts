@@ -22,6 +22,7 @@ import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, type CoworkProgress } from '../cowork/runner.js';
 import type { CoworkMission } from '../cowork/store.js';
 import { CoworkComputer } from '../cowork/computer.js';
+import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { TelegramPoller, TelegramReplyStream, recentTelegramChats, sendTelegramDocument } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import type { ToolContext } from '../tools/tools.js';
@@ -231,6 +232,7 @@ export class GituServer {
   private coworkTimer?: ReturnType<typeof setInterval>;
   private readonly coworkTools = new Map<string, ToolContext>();
   private readonly coworkComputers = new Map<string, CoworkComputer>();
+  private readonly coworkBrowserLease = new CoworkBrowserLease();
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
   private readonly coworkStreams = new Set<http.ServerResponse>();
@@ -890,6 +892,7 @@ export class GituServer {
         skills: SkillStore.forProject(ensureGituHome().workspace),
         mcp: McpManager.forProject(workspace),
         connections: this.connections,
+        browser: this.browserImpl(),
       };
       this.coworkTools.set(agent.id, context);
     }
@@ -900,6 +903,12 @@ export class GituServer {
     if (this.config.llm) return this.config.llm;
     const resolved = resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: this.coworkToolContext(agent).cwd });
     return resolved.client;
+  }
+
+  private async coworkSupportsImages(agent: CoworkAgent): Promise<boolean> {
+    if (this.config.llm) return true;
+    const resolved = resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: this.coworkToolContext(agent).cwd });
+    return resolveImageSupport({ providerId: resolved.providerId, model: resolved.model, timeoutMs: 2_000 });
   }
 
   private startCoworkLifecycle(): void {
@@ -1064,6 +1073,8 @@ export class GituServer {
           store,
           memory: this.coworkMemory(),
           browser: true,
+          supportsImagesFor: (agent) => this.coworkSupportsImages(agent),
+          acquireHostBrowser: () => this.coworkBrowserLease.acquire(abort.signal),
           userContext: this.coworkUserContext(),
           memoryFor: (agent) => this.coworkMemoryFor(agent),
           signal: abort.signal,
@@ -1207,6 +1218,8 @@ export class GituServer {
           store,
           memory: this.coworkMemory(),
           browser: true,
+          supportsImagesFor: (agent) => this.coworkSupportsImages(agent),
+          acquireHostBrowser: () => this.coworkBrowserLease.acquire(abort.signal),
           userContext: this.coworkUserContext(),
           memoryFor: (a) => this.coworkMemoryFor(a),
           signal: abort.signal,

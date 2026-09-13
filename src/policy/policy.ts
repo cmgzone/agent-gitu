@@ -18,7 +18,7 @@ const DANGEROUS_COMMAND_PATTERNS: { re: RegExp; why: string }[] = [
   { re: /\byarn\s+publish\b|\bpnpm\s+publish\b/i, why: 'package publish' },
   { re: /\bdrop\s+(database|table|schema)\b/i, why: 'destructive sql' },
   { re: /\btruncate\s+table\b/i, why: 'destructive sql' },
-  { re: /\b(mkfs|format|diskpart|fdisk)\b/i, why: 'disk operation' },
+  { re: /\b(mkfs(?:\.\w+)?|diskpart|fdisk)\b|\bformat(?:\.com|\.exe)?\s+(?:[a-z]:|\/[a-z])/i, why: 'disk operation' },
   { re: /\b(shutdown|reboot|halt|poweroff)\b/i, why: 'system power control' },
   { re: /\b(curl|wget)\b[^\n]*\|\s*(ba|z|pw)?sh\b/i, why: 'pipe remote script to shell' },
   { re: /\biwr\b[^\n]*-usebasicparsing[^\n]*\|\s*iex/i, why: 'pipe remote script to shell' },
@@ -52,9 +52,16 @@ const SAFE_COMMAND_RE =
 // separators otherwise bypass classification entirely.
 const COMPOUND_COMMAND_RE = /&&|\|\||[;|`]|\$\(|\r?\n|>{1,2}|<{1,2}|(?:^|\s)&(?=\s|$)/;
 
+const POWERSHELL_READ_RE = /^(?:get-(?:childitem|content|location|command|item|date)|test-path|select-object|format-(?:table|list)|measure-object|write-(?:host|output))\b/i;
+
 export function classifyCommand(command: string): { tier: RiskTier; why: string } {
   for (const { re, why } of DANGEROUS_COMMAND_PATTERNS) {
     if (re.test(command)) return { tier: 'dangerous', why };
+  }
+  // Recognize common Windows inspection pipelines. Reject script blocks,
+  // substitutions, redirections and invocation operators before splitting.
+  if (!/[`$(){}<>]|&&|\|\||(?:^|\s)&/.test(command) && command.split(/[;|\r\n]+/).filter(s => s.trim()).every(s => POWERSHELL_READ_RE.test(s.trim())) && command.trim()) {
+    return { tier: 'safe', why: 'PowerShell read-only inspection' };
   }
   for (const { re, why } of MODERATE_COMMAND_PATTERNS) {
     if (re.test(command)) return { tier: 'moderate', why };
@@ -105,6 +112,8 @@ export class PolicyEngine {
         why = 'read-only';
         break;
       case 'write_file':
+      case 'create_document':
+      case 'schedule_manage':
       case 'apply_edit':
       case 'create_skill':
       case 'update_skill':
@@ -114,7 +123,7 @@ export class PolicyEngine {
         // memory reads are visibility-filtered and writes are store-guarded
         // (promotion requires evidence); no workspace/filesystem effect.
         tier = 'moderate';
-        why = 'memory state change';
+        why = tool === 'memory' ? 'memory state change' : 'workspace or agent state change';
         break;
       case 'configure_mcp':
         tier = 'dangerous';

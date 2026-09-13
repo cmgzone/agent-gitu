@@ -19,13 +19,14 @@ export function parseEvery(every: string): number {
   if (/^\d+$/.test(trimmed)) {
     ms = Number(trimmed) * 60 * 1000;
   } else {
-    const m = trimmed.match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hours?)$/i);
-    if (!m) throw new Error(`Invalid schedule "${every}". Use e.g. 30, 30s, 5m, 1h (bare numbers are minutes).`);
+    const m = trimmed.match(/^(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hours?|d|days?|w|weeks?)$/i);
+    if (!m) throw new Error(`Invalid schedule "${every}". Use e.g. 30, 30s, 5m, 1h, 1d, 1w (bare numbers are minutes).`);
     const n = Number(m[1]);
     const unit = m[2]!.toLowerCase();
     if (unit.startsWith('s')) ms = n * 1000;
     else if (unit.startsWith('m')) ms = n * 60 * 1000;
-    else ms = n * 60 * 60 * 1000;
+    else if (unit.startsWith('h')) ms = n * 60 * 60 * 1000;
+    else ms = n * 24 * 60 * 60 * 1000 * (unit.startsWith('w') ? 7 : 1);
   }
   if (!Number.isFinite(ms) || ms < MIN_CRON_INTERVAL_MS) {
     throw new Error(`Schedule "${every}" is too frequent (minimum ${MIN_CRON_INTERVAL_MS / 1000}s).`);

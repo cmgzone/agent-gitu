@@ -118,6 +118,8 @@ export interface PlanRevision {
 export type ActionStatus = 'success' | 'error' | 'denied' | 'blocked' | 'skipped';
 
 export interface ActionRecord {
+  /** Host-computed from actual parameters, never model-assigned. */
+  observationOnly?: boolean;
   id: string;
   stepId?: string;
   tool: string;

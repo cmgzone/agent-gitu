@@ -542,7 +542,7 @@ export class Gitu {
       this.config.connections,
       // The agent-facing memory tool: reads are scoped to this project, so
       // specialist-private memories stay invisible to the main agent.
-      { memory, memoryContext: { projectId: guard.lock.name } },
+      { memory, memoryContext: { projectId: guard.lock.name }, signal: () => this.abortController?.signal },
     );
     // The server owns and reuses its index. A direct Gitu run owns the index
     // it creates, so it must close it even when the run exits early or fails.
@@ -1112,6 +1112,7 @@ export class Gitu {
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
       let visualGateRejections = 0;
+      let evidenceGateRejections = 0;
       let instructionGateRejections = 0;
       let qualityReviewRejections = 0;
       let completionAttempts = 0;
@@ -2030,6 +2031,18 @@ export class Gitu {
                 this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
               }
 
+              if (outcome.result.ok && (action.tool === 'create_document' || action.tool === 'schedule_manage' || (action.tool === 'browse' && ['screenshot', 'evidence'].includes(String(action.params['action']))))) {
+                const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                const ev = evidence.record(ledger.data, {
+                  kind: action.tool === 'create_document' ? 'file' : action.tool === 'browse' ? 'manual' : 'log',
+                  label: `${action.tool}: ${action.expected || 'Verified tool result'}`,
+                  passed: true,
+                  output: outcome.result.output,
+                  workspaceFingerprint: currentFp,
+                });
+                ledger.save();
+                evidenceNote += `\nEVIDENCE RECORDED: ${ev.id} [PASS]. ${action.tool === 'create_document' ? 'File structure verified; visual layout is not asserted.' : 'Tool result verified.'}`;
+              }
               if (action.tool === 'browse' && outcome.result.image) {
                 this.emit(`browseshot ${outcome.result.image}`);
               }
@@ -2563,9 +2576,17 @@ export class Gitu {
                 gate.open = lightweight.open && (gate.totalCount === 0 || gate.open);
                 if (!lightweight.open) gate.missing.push(lightweight.reason);
               }
-              const conversation = agentWorkflow && ledger.data.actions.slice(actionsAtStart).every(a => isObservationTool(a.tool)) && currentFp === agentBaselineFingerprint;
+              const conversation = agentWorkflow && ledger.data.actions.slice(actionsAtStart).every(a => a.observationOnly ?? isObservationTool(a.tool)) && currentFp === agentBaselineFingerprint;
               const chatOnly = agentWorkflow ? conversation && gate.open : Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
               if (!gate.open && !chatOnly) {
+                evidenceGateRejections += 1;
+                if (evidenceGateRejections >= 3) {
+                  const blocker = `Verification could not be completed after two correction opportunities: ${gate.missing.join('; ')}`;
+                  ledger.addBlocker(blocker);
+                  exitReason = 'blocked';
+                  observe(blocker);
+                  break;
+                }
                 observe(
                   `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
                     `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +

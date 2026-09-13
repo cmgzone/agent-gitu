@@ -12,8 +12,10 @@ import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
 import { ConnectionRegistry } from '../connections/connections.js';
+import { commandTimeout, deadline } from './command-timeout.js';
 
 export interface ToolContext {
+  signal?: AbortSignal;
   guard: ProjectGuard;
   cwd: string;
   skills?: SkillStore;
@@ -47,6 +49,8 @@ export type BackgroundDelegateFn = (specs: DelegateSpec[]) => SubAgentJob[];
 export type BackgroundAgentStatusFn = (ids?: string[]) => SubAgentJob[];
 
 export const KNOWN_TOOL_NAMES = new Set([
+  'create_document',
+  'schedule_manage',
   'read_file',
   'write_file',
   'apply_edit',
@@ -1085,10 +1089,10 @@ export async function toolLspSymbols(ctx: ToolContext, params: Record<string, un
 export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
   const command = String(params['command'] ?? '');
   if (!command) return Promise.resolve(fail('run_command: missing "command"'));
-  const rawTimeout = Number(params['timeoutMs'] ?? 120_000);
-  // 10-minute ceiling: install-heavy builds and large test suites routinely
-  // exceed the old 5-minute cap and died mid-verification.
-  const timeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0 ? Math.min(600_000, rawTimeout) : 120_000;
+  let timeoutMs: number;
+  try { timeoutMs = commandTimeout(params['timeoutMs']); }
+  catch (err) { return Promise.resolve(fail((err as Error).message)); }
+  if (ctx.signal?.aborted) return Promise.resolve(fail('Command cancelled before launch.'));
 
   return new Promise((resolve) => {
     const isWindows = process.platform === 'win32';
@@ -1104,7 +1108,8 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
     if (!isWindows) (execOpts as { detached?: boolean }).detached = true;
     let timedOut = false;
     const child = execFile(shell, args, execOpts, (err, stdout, stderr) => {
-        clearTimeout(killer);
+        cancelDeadline();
+        ctx.signal?.removeEventListener('abort', cancel);
         let exitCode = 0;
         if (err) {
           const code = (err as { code?: unknown }).code;
@@ -1113,7 +1118,7 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
         const body = [stdout, stderr].filter(Boolean).join('\n--- stderr ---\n');
         const output = excerpt(body || '(no output)', 4000);
         if (err) {
-          const msg = timedOut ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : '';
+          const msg = timedOut ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : ctx.signal?.aborted ? ' (cancelled; process tree terminated)' : '';
           resolve({
             ok: false,
             exitCode,
@@ -1140,8 +1145,7 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
     // could run — fires only AFTER that child is already dead, so `taskkill
     // /T` would target a dead PID and grandchildren (servers, watchers) would
     // survive. Killing from our own timer reaches the tree while it is alive.
-    const killer = setTimeout(() => {
-      timedOut = true;
+    const cancel = () => {
       try {
         if (isWindows && child.pid) {
           execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
@@ -1160,7 +1164,10 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
       } catch {
         /* already gone */
       }
-    }, timeoutMs);
+    };
+    const cancelDeadline = deadline(timeoutMs, () => { timedOut = true; cancel(); });
+    ctx.signal?.addEventListener('abort', cancel, { once: true });
+    if (ctx.signal?.aborted) cancel();
   });
 }
 export function toolListSkills(ctx: ToolContext): ToolResult {

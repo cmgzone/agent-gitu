@@ -39,6 +39,7 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     }),
     url: () => url,
     title: async () => 'Private page',
+    screenshot: vi.fn(async () => Buffer.from('screenshot-bytes')),
     locator: () => ({ innerText: async () => 'Visible page content' }),
   };
   const launch = vi.fn(async () => ({ pages: () => [page], close: async () => {} }));
@@ -73,11 +74,17 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     launch,
     page,
     handler,
-    execute: (tool: string, params: Record<string, unknown>) => context.executeTool({ id: 'test-id', tool, params }) as Promise<{ ok: boolean; output: string }>,
+    execute: (tool: string, params: Record<string, unknown>) => context.executeTool({ id: 'test-id', tool, params }) as Promise<{ ok: boolean; output: string; image?: string }>,
   };
 }
 
 describe('virtual computer service', () => {
+  it('returns screenshot pixels and supports the advertised evidence action', async () => {
+    const a = service('browser-image');
+    expect((await a.execute('browse', { action: 'evidence' })).output).toContain('Visible page content');
+    const result = await a.execute('browse', { action: 'screenshot' });
+    expect(result.image).toBe('data:image/png;base64,' + Buffer.from('screenshot-bytes').toString('base64'));
+  });
   it('keeps an explicit background process available for logs and stop', async () => {
     const child = Object.assign(new EventEmitter(), { pid: 123, stdout: new EventEmitter(), stderr: new EventEmitter() });
     const kill = vi.fn();

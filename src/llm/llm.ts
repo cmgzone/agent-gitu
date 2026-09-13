@@ -1092,6 +1092,21 @@ export class ScriptedMockLlm implements LlmClient {
   }
 }
 
+/**
+ * DeepSeek emits DSML both compact (`<|DSML|invoke>`) and spaced
+ * (`<| DSML | invoke >`), and sometimes closes parameters as `<| DSML | parameter>`
+ * without a slash. Normalize every dialect onto the compact, slash-closed form the
+ * parsers below expect so one implementation understands all of them.
+ */
+export function compactDialectMarkers(text: string): string {
+  return text
+    .replace(
+      /<\s*(\/)?\s*[|｜]+\s*([A-Za-z_]\w*)\s*[|｜]+\s*/g,
+      (_match, slash: string | undefined, word: string) => `<${slash ?? ''}|${word}|`,
+    )
+    .replace(/<((?:\|[^|<>]*\|)?(?:[\w]+:)?)parameter\s*>/gi, '</$1parameter>');
+}
+
 const XML_CALL_MARKERS = [
   '<dots_function_call',
   '<function_calls',
@@ -1100,11 +1115,22 @@ const XML_CALL_MARKERS = [
   '<tool_call',
   '<antml:invoke',
   '<invoke',
+  // DeepSeek V3.2 streams tool calls as DSML markup in the text channel:
+  //   <|DSML|tool_calls>\n<|DSML|invoke name="x">…</|DSML|invoke>\n</|DSML|tool_calls>
+  // Without these markers the markup was streamed verbatim to the user and
+  // never parsed into an action.
+  '<| DSML', // spaced dialect DeepSeek also renders: `<| DSML | invoke ...>`
+  '<|DSML|calls', // shorter wrapper variant DeepSeek also emits
+  '<|DSML|tool_calls',
+  '<|DSML|tool_call',
+  '<|DSML|function_calls',
+  '<|DSML|function_call',
+  '<|DSML|invoke',
   '<json>',
 ];
 
 export function findXmlCallStart(text: string): number {
-  let best = -1;
+  let best = /<\s*\/?\s*[|｜]+\s*DSML\s*[|｜]+/i.exec(text)?.index ?? -1;
   for (const marker of XML_CALL_MARKERS) {
     const at = text.indexOf(marker);
     if (at >= 0 && (best < 0 || at < best)) best = at;
@@ -1113,7 +1139,7 @@ export function findXmlCallStart(text: string): number {
 }
 
 export function xmlMarkerHoldBack(text: string): number {
-  let hold = 0;
+  let hold = text.match(/<\s*[|｜]+\s*[A-Za-z_]*\s*[|｜]*\s*$/)?.[0].length ?? 0;
   for (const marker of XML_CALL_MARKERS) {
     for (let prefix = 1; prefix < marker.length; prefix++) {
       if (text.endsWith(marker.slice(0, prefix))) hold = Math.max(hold, prefix);
@@ -1123,20 +1149,27 @@ export function xmlMarkerHoldBack(text: string): number {
 }
 
 export function parseXmlFunctionCall(text: string): Record<string, unknown> | undefined {
+  text = compactDialectMarkers(text);
   const start = findXmlCallStart(text);
   if (start < 0) return undefined;
   const block = text.slice(start);
-  const invoke = block.match(/<(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*)/i);
+  // The tag name may carry a pipe-delimited dialect prefix (`<|DSML|invoke`),
+  // an XML namespace (`<antml:invoke`) or neither (`<invoke`).
+  const invoke = block.match(/<(?:\|[^|<>]*\|)?(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*)/i);
   if (!invoke || !invoke[1] || invoke[2] === undefined) return undefined;
   const name = invoke[1];
-  const body = invoke[2] as string;
+  const body = (invoke[2] as string).split(/<\/(?:\|[^|<>]*\|)?(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s*>/i)[0]!;
   const params: Record<string, unknown> = {};
-  const paramRe = /<(?:[\w]+:)?parameter\s+name\s*=\s*"([^"]+)"[^>]*>([\s\S]*?)<\/(?:[\w]+:)?parameter\s*>/gi;
+  const paramRe = /<(?:\|[^|<>]*\|)?(?:[\w]+:)?parameter\s+name\s*=\s*"([^"]+)"([^>]*)>([\s\S]*?)<\/?(?:\|[^|<>]*\|)?(?:[\w]+:)?parameter\s*>/gi;
   let match: RegExpExecArray | null;
   while ((match = paramRe.exec(body))) {
-    if (!match[1] || match[2] === undefined) continue;
+    if (!match[1] || match[3] === undefined) continue;
     const key = match[1];
-    const rawValue = (match[2] as string).trim();
+    const rawValue = (match[3] as string).trim();
+    if (/\bstring\s*=\s*["']true["']/i.test(match[2] ?? '')) {
+      params[key] = rawValue;
+      continue;
+    }
     try {
       params[key] = JSON.parse(rawValue);
     } catch {
@@ -1144,20 +1177,22 @@ export function parseXmlFunctionCall(text: string): Record<string, unknown> | un
     }
   }
   if (Object.keys(params).length === 0) {
-    const bare = body.replace(/<\/(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s*>[\s\S]*$/, '').trim();
+    const bare = body.replace(/<\/(?:\|[^|<>]*\|)?(?:[\w]+:)?(?:invoke|function|function_call|tool_call|tool)\s*>[\s\S]*$/, '').trim();
     if (bare) {
       try {
         const parsed = JSON.parse(bare) as unknown;
         if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          return { type: name, ...(parsed as Record<string, unknown>) };
+          return { ...(parsed as Record<string, unknown>), type: name };
         }
       } catch {
         return undefined;
       }
     }
-    return undefined;
+    return bare ? undefined : { type: name };
   }
-  return { type: name, ...params };
+  const wrapped = params['params'];
+  if (Object.keys(params).length === 1 && wrapped && typeof wrapped === 'object' && !Array.isArray(wrapped)) return { ...wrapped as Record<string, unknown>, type: name };
+  return { ...params, type: name };
 }
 
 export function extractJson(text: string): unknown {

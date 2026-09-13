@@ -667,6 +667,31 @@ describe('parseXmlFunctionCall', () => {
     const out = parseXmlFunctionCall(text);
     expect(out).toEqual({ type: 'set_criteria', criteria: ['hello.ts exists', 'tests pass'] });
   });
+  it('parses DeepSeek |DSML| tool_calls markup (streamed as text)', () => {
+    const text =
+      'Let me read that file.\n<|DSML|tool_calls>\n<|DSML|invoke name="read_file">\n' +
+      '<|DSML|parameter name="path" string="true">src/index.ts</|DSML|parameter>\n' +
+      '</|DSML|invoke>\n</|DSML|tool_calls>';
+    const out = parseXmlFunctionCall(text);
+    expect(out).toEqual({ type: 'read_file', path: 'src/index.ts' });
+  });
+  it('parses |DSML| markup without the tool_calls wrapper', () => {
+    const text =
+      '<|DSML|invoke name="run_command">\n' +
+      '<|DSML|parameter name="command">npm test</|DSML|parameter>\n' +
+      '</|DSML|invoke>';
+    const out = parseXmlFunctionCall(text);
+    expect(out).toEqual({ type: 'run_command', command: 'npm test' });
+  });
+  it('finds the DSML call start so prose is not streamed with the markup', () => {
+    const text = 'Checking now.\n<|DSML|tool_calls>\n<|DSML|invoke name="x">';
+    expect(findXmlCallStart(text)).toBe('Checking now.\n'.length);
+  });
+  it('holds back a partial DSML marker during streaming', () => {
+    expect(xmlMarkerHoldBack('waiting <|DSM')).toBe('<|DSM'.length);
+    expect(xmlMarkerHoldBack('waiting <|DSML|invo')).toBe('<|DSML|invo'.length);
+    expect(xmlMarkerHoldBack('plain prose')).toBe(0);
+  });
   it('parses a tool call with object params (dots format)', () => {
     const text =
       '<dots_function_call>\n<invoke name="write_file">\n<parameter name="path">src/a.ts</parameter>\n' +

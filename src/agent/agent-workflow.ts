@@ -4,14 +4,15 @@ import { isTrivialEvidenceCommand } from '../evidence/evidence.js';
 /** Conservative discovery allowlist for temporary planning and conversational reads. */
 export function isObservationTool(tool: string, params: Record<string, unknown> = {}): boolean {
   if (['read_file', 'search_files', 'list_files', 'web_fetch', 'list_skills', 'use_skill', 'use_skill_reference',
-    'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'agent_status'].includes(tool)) return true;
+    'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'agent_status', 'list_mcp', 'list_connections'].includes(tool)) return true;
+  if (tool === 'schedule_manage') return params['action'] === 'list';
   return tool === 'browse' && ['screenshot', 'evidence'].includes(String(params['action']));
 }
 
 /** Quick work needs fresh checks, without inventing formal acceptance criteria. */
 export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint: string, currentFingerprint: string): { open: boolean; reason: string } {
   const actions = data.actions.filter(a => a.status === 'success');
-  const work = actions.some(a => !isObservationTool(a.tool));
+  const work = actions.some(a => !(a.observationOnly ?? isObservationTool(a.tool)));
   if (!work && baselineFingerprint === currentFingerprint) return { open: true, reason: 'Conversation or read-only investigation.' };
 
   const checks = data.evidence.filter(e => e.command && !isTrivialEvidenceCommand(e.command));
@@ -20,7 +21,10 @@ export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint:
   const fresh = [...latest.values()].filter(e => !e.stale && e.workspaceFingerprint === currentFingerprint);
   if (fresh.some(e => !e.passed)) return { open: false, reason: 'A check still fails on the current workspace. Resolve it or report the blocker.' };
   if (fresh.some(e => e.passed)) return { open: true, reason: 'Fresh, lightweight verification passed.' };
-  return { open: false, reason: 'Run a focused test, lint, typecheck, build, or a meaningful assertion against the changed result. Checks from before the latest edit do not count.' };
+  const productWork = actions.every(a => (a.observationOnly ?? isObservationTool(a.tool)) || ['browse', 'create_document', 'schedule_manage'].includes(a.tool));
+  const verifiedResults = data.evidence.filter(e => !e.command && e.passed && !e.stale && e.workspaceFingerprint === currentFingerprint && ['file', 'manual', 'log'].includes(e.kind));
+  if (productWork && verifiedResults.length) return { open: true, reason: 'Fresh browser, document or schedule verification recorded.' };
+  return { open: false, reason: 'Verify the changed result: a focused check for code, a fresh browser screenshot/evidence for web work, or the document/schedule tool’s verified result. Checks from before the latest edit do not count.' };
 }
 
 export function agentWorkflowPrompt(planRequested: boolean): string {

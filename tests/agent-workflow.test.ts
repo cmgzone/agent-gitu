@@ -26,6 +26,25 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('stops repeated evidence rejection without claiming unverified work completed', async () => {
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, edit, done, done, done]),
+    }).run('Correct the typo in README.md');
+    expect(result.report.status).toBe('blocked');
+    expect(result.ledger.data.blockers.join(' ')).toContain('two correction opportunities');
+  }, 30000);
+
+  it('accepts current document/browser verification without inventing a shell test', () => {
+    const data = { actions: [{ tool: 'create_document', status: 'success' }], evidence: [{ kind: 'file', passed: true, workspaceFingerprint: 'after' }] } as unknown as TaskLedgerData;
+    expect(agentVerificationGate(data, 'before', 'after').open).toBe(true);
+    data.actions[0]!.tool = 'write_file';
+    expect(agentVerificationGate(data, 'before', 'after').open).toBe(false);
+    data.actions[0]!.tool = 'browse';
+    data.evidence[0]!.kind = 'manual';
+    expect(agentVerificationGate(data, 'before', 'after').open).toBe(true);
+    data.evidence[0]!.stale = true;
+    expect(agentVerificationGate(data, 'before', 'after').open).toBe(false);
+  });
   it('keeps high model effort while giving a typo edit a lightweight task budget', () => {
     const effort = planEffort('Correct a typo in README.md', { mode: 'agent', explicitEffort: 'high' });
     expect(effort.complexity).toBe('low');

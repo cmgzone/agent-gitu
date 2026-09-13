@@ -308,7 +308,7 @@ describe('cowork streaming and tool execution', () => {
     const client = { complete: async () => '<tool>{"name":"unknown","params":{}}</tool>' };
     const result = await runConversationTurn(setup('budget', client));
     expect(result.messages[0]!.text).toContain('Work is incomplete');
-    expect(result.messages[0]!.tools).toHaveLength(8);
+    expect(result.messages[0]!.tools).toHaveLength(24);
     expect(result.messages[0]!.tools!.every((t) => !t.ok)).toBe(true);
   });
 

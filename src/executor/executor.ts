@@ -51,6 +51,10 @@ import {
   type ToolContext,
 } from '../tools/tools.js';
 
+import { toolCreateDocument } from '../tools/productivity.js';
+import { toolScheduleManage } from '../cron/tools.js';
+import { isObservationTool } from '../agent/agent-workflow.js';
+
 export interface ExecuteRequest {
   tool: string;
   params: Record<string, unknown>;
@@ -92,13 +96,15 @@ export class Executor {
     private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
     private readonly runtimeCapabilities?: RuntimeCapabilitySupplier,
     private readonly connections?: ConnectionRegistry,
-    options?: { memory?: MemoryStore; memoryContext?: MemoryRetrievalContext },
+    options?: { memory?: MemoryStore; memoryContext?: MemoryRetrievalContext; signal?: () => AbortSignal | undefined },
   ) {
     this.memory = options?.memory;
     this.memoryContext = options?.memoryContext;
+    this.signal = options?.signal;
   }
 
   private readonly memory?: MemoryStore;
+  private readonly signal?: () => AbortSignal | undefined;
   private readonly memoryContext?: MemoryRetrievalContext;
 
   private emit(event: string): void {
@@ -428,7 +434,13 @@ export class Executor {
           result = toolUseSkillReference(ctx, req.params);
           break;
         case 'run_command':
-          result = await toolRunCommand(ctx, req.params);
+          result = await toolRunCommand({ ...ctx, signal: this.signal?.() }, req.params);
+          break;
+        case 'create_document':
+          result = await toolCreateDocument({ ...ctx, signal: this.signal?.() }, req.params);
+          break;
+        case 'schedule_manage':
+          result = toolScheduleManage(ctx, req.params);
           break;
         case 'lsp_diagnostics':
           result = await toolLspDiagnostics(ctx, req.params);
@@ -486,6 +498,7 @@ export class Executor {
     }
 
     const record = this.ledger.recordAction({
+      observationOnly: isObservationTool(req.tool, req.params),
       stepId,
       tool: req.tool,
       paramsHash,

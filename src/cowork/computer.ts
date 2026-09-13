@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
+import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
 const IMAGE = 'agent-gitu-cowork:1';
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
@@ -21,10 +22,10 @@ export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_00
     const child = spawn('docker', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], signal });
     let output = '';
     let error = '';
-    const timer = setTimeout(() => {
+    const cancelTimer = deadline(timeoutMs, () => {
       child.kill();
       reject(new Error('Virtual computer operation timed out.'));
-    }, timeoutMs);
+    });
     child.stdout.on('data', (data: Buffer) => {
       output += data.toString();
       if (output.length > 8_000_000) {
@@ -36,11 +37,11 @@ export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_00
       error = (error + data.toString()).slice(-8_000);
     });
     child.on('error', (err) => {
-      clearTimeout(timer);
+      cancelTimer();
       reject(err);
     });
     child.on('close', (code) => {
-      clearTimeout(timer);
+      cancelTimer();
       if (code === 0) resolve(output);
       else reject(new Error(error || `Docker exited with code ${code}.`));
     });
@@ -157,6 +158,10 @@ export class CoworkComputer {
           signal,
         );
       }
+      // Refresh the small bundled service even for an existing container.
+      // Volumes and login sessions stay intact; no image rebuild is needed.
+      await this.exec(['cp', path.join(ASSETS, 'server.cjs'), `${this.name}:/computer/server.cjs`], undefined, signal);
+      if (exists) await this.exec(['stop', '--time', '2', this.name], undefined, signal);
       await this.exec(['start', this.name], undefined, signal);
       this.state = 'running';
       this.lastFailure = undefined;
@@ -201,7 +206,10 @@ export class CoworkComputer {
     combined.addEventListener('abort', cancel, { once: true });
     try {
       combined.throwIfAborted();
-      const result = await this.exec(['exec', '-i', this.name, 'node', '-e', invoke], JSON.stringify({ id, tool, params }), combined, 140_000);
+      // The service owns command deadlines. The transport must not terminate
+      // long commands first; cancellation still reaches the container process.
+      const timeout = tool === 'run_command' ? commandTimeout(params['timeoutMs']) : 120_000;
+      const result = await this.exec(['exec', '-i', this.name, 'node', '-e', invoke], JSON.stringify({ id, tool, params }), combined, timeout ? timeout + 20_000 : 0);
       combined.throwIfAborted();
       return JSON.parse(result) as ToolResult;
     } catch (err) {

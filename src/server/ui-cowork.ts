@@ -65,7 +65,9 @@ export const COWORK_CSS = String.raw`
   .cw-tools span { font-size: 10.5px; font-family: var(--mono); border: 1px solid var(--border2); color: var(--muted); border-radius: 6px; padding: 1px 6px; }
   .cw-tools span.ok { color: var(--ok); border-color: rgba(63,214,143,.4); }
   .cw-tools span.bad { color: var(--err); border-color: rgba(255,100,101,.4); }
-  .cw-sys { align-self: center; text-align: center; font-size: 11.5px; color: var(--faint); background: var(--card2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 12px; max-width: 90%; overflow-wrap: anywhere; }
+  .cw-sys { align-self: center; text-align: left; font-size: 12px; line-height: 1.6; color: var(--muted); background: var(--card2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; max-width: 90%; overflow-wrap: anywhere; }
+  .cw-sys summary { cursor: pointer; font-weight: 600; }
+  .cw-sys .cw-sys-detail { white-space: pre-wrap; margin-top: 8px; max-height: 280px; overflow: auto; }
   .cw-code { display: block; background: var(--card2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; margin: 6px 0; }
   .cw-bubble code { font-family: var(--mono); font-size: 12px; background: var(--card2); border-radius: 4px; padding: 1px 4px; }
   .cw-bubble .cw-mention { color: var(--accent); font-weight: 600; }
@@ -98,12 +100,31 @@ export const COWORK_CSS = String.raw`
   .cw-file-meta { display: block; color: var(--faint); font-size: 10.5px; }
   .cw-file-actions { display: flex; gap: 5px; flex: none; }
   .cw-file-actions .btn { padding: 3px 8px; font-size: 11px; }
-  .cw-work { display: grid; gap: 8px; margin-bottom: 8px; }
+  .cw-work { display: grid; gap: 8px; margin-bottom: 8px; max-height: min(30vh, 260px); overflow-y: auto; overscroll-behavior: contain; }
   .cw-todos, .cw-request { border: 1px solid var(--border); background: var(--card); border-radius: 11px; padding: 8px 10px; }
   .cw-todos summary { cursor: pointer; color: var(--muted); font-size: 11.5px; font-weight: 600; }
   .cw-todo { display: flex; gap: 7px; align-items: flex-start; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
   .cw-todo b { color: var(--text); font-weight: 500; }
   .cw-todo.done { opacity: .6; text-decoration: line-through; }
+  .cw-todo .cw-todo-owner { margin-left: auto; white-space: nowrap; color: var(--faint); }
+  .cw-todo.in_progress > span:first-child { color: var(--accent); animation: cwpulse 1.2s infinite; }
+  .cw-todo.blocked > span:first-child { color: var(--err); }
+  .cw-orb-body { transform-origin: 50% 60%; animation: cworb-idle 5s ease-in-out infinite; }
+  .cw-orb-eyes { transform-origin: 50% 45%; animation: cworb-blink 6.2s infinite; }
+  .cw-ava.working .cw-orb-body { animation: cworb-work 1.4s ease-in-out infinite; }
+  .cw-ava.working img { animation: cworb-work 1.4s ease-in-out infinite; }
+  .cw-chat-head .cw-ava, .cw-avprev { overflow: visible; }
+  .cw-item:hover .cw-ava { transform: rotate(-7deg); }
+  .cw-ava { transition: transform .2s ease; }
+  .cw button:focus-visible, .cw summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  .cw-composer:focus-within { border-color: var(--accent); }
+  .cw-live-status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+  .cw-live-status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+  .cw-live-status.busy::before { background: var(--accent); animation: cwpulse 1.1s infinite; }
+  @keyframes cworb-idle { 0%, 100% { transform: translateY(0) rotate(-4deg); } 50% { transform: translateY(-1.5px) rotate(4deg); } }
+  @keyframes cworb-work { 0%, 100% { transform: translateY(0) rotate(-9deg); } 50% { transform: translateY(-3px) rotate(9deg); } }
+  @keyframes cworb-blink { 0%, 43%, 47%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.1); } }
+  @media (prefers-reduced-motion: reduce) { .cw *, .cw *::before { animation: none !important; transition: none !important; } }
   .cw-request { border-color: rgba(91,168,255,.42); box-shadow: 0 0 0 1px rgba(91,168,255,.08) inset; }
   .cw-request .k { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
   .cw-request .t { font-size: 12.5px; font-weight: 650; margin-top: 3px; }
@@ -179,7 +200,8 @@ export const COWORK_CSS = String.raw`
   .cw-modal .cw-check { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); }
   .cw-modal .cw-check input { width: 16px; height: 16px; accent-color: var(--accent); }
   .cw-modal .cw-foot { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--border); background: rgba(15,20,31,.6); }
-  @media (max-width: 1080px) { .cw-info { display: none; } }
+  @media (max-width: 1080px) { .cw-info { display: none; position: absolute; inset: 56px 0 0 auto; z-index: 60; width: min(340px, 92vw); background: var(--bg); box-shadow: -12px 0 35px rgba(0,0,0,.3); } }
+  @media (max-width: 720px) { .cw-msgs { padding: 14px 12px 8px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-head { padding: 8px 12px; gap: 7px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw.rail-open .cw-rail { transform: none; } }
 `;
@@ -187,7 +209,7 @@ export const COWORK_CSS = String.raw`
 export const COWORK_JS = String.raw`
   // ==================== COWORK MODE ====================
   var CW_COLORS = ['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b'];
-  var CW_SHAPES = ['cube', 'visor', 'antenna', 'bot'];
+  var CW_SHAPES = ['orb', 'cube', 'visor', 'antenna', 'bot'];
   // Neutral starting points for the INSTRUCTIONS field only. They never fill
   // the name (users name their own agents) and carry no branding.
   var CW_TEMPLATES = [
@@ -241,6 +263,7 @@ export const COWORK_JS = String.raw`
   }
   function cwAvaSvg(avatar) {
     var color = (avatar && /^#[0-9a-f]{6}$/i.test(avatar.color)) ? avatar.color : '#8f80ff';
+    if (avatar && avatar.shape === 'orb') return '<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g class="cw-orb-body"><circle cx="20" cy="21" r="16" fill="' + color + '"/><ellipse cx="14" cy="12" rx="6" ry="3" fill="#fff" opacity=".13" transform="rotate(-30 14 12)"/><g class="cw-orb-eyes" fill="#fff"><rect x="14" y="15" width="3.5" height="7" rx="1.75" transform="rotate(-12 16 18)"/><rect x="23" y="14" width="3.5" height="7" rx="1.75" transform="rotate(-12 25 17)"/></g></g></svg>';
     var shape = (avatar && avatar.shape) || 'cube';
     var visor = shape === 'visor'
       ? '<rect x="6" y="14" width="20" height="7" rx="2.5" fill="#10141d"/><rect x="10" y="16.4" width="3.4" height="2.4" fill="#eaf2ff"/><rect x="18.6" y="16.4" width="3.4" height="2.4" fill="#eaf2ff"/>'
@@ -252,12 +275,15 @@ export const COWORK_JS = String.raw`
       '<rect x="9" y="26" width="14" height="5" rx="1.5" fill="rgba(0,0,0,.45)"/></svg>';
   }
   function cwAvaImg(avatar) {
+    if (avatar && avatar.shape === 'orb') return cwAvaSvg(avatar);
     var url = cwAvaDataUrl(avatar);
     return url ? '<img src="' + url + '" alt="">' : cwAvaSvg(avatar);
   }
   function cwAva(agent, size) {
     var style = size ? ' style="width:' + size + 'px;height:' + size + 'px;border-radius:' + Math.round(size * 0.32) + 'px"' : '';
-    return '<span class="cw-ava"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'cube' }) + '</span>';
+    var cw = cwEnsure();
+    var busy = agent && cw.busy && ((cw.progresses || []).some(function (p) { return p.agentId === agent.id; }) || cw.working === agent.name);
+    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }) + '</span>';
   }
   function cwAgentById(id) { var cw = cwEnsure(); for (var i = 0; i < cw.agents.length; i++) if (cw.agents[i].id === id) return cw.agents[i]; return null; }
   // The three.js renderer registers in a deferred module, possibly after the
@@ -413,7 +439,7 @@ export const COWORK_JS = String.raw`
         '<div class="cw-hero">' +
           '<span class="cw-hero-ico">' + cwIcon('users') + '</span>' +
           '<h1>Your team, in one place</h1>' +
-          '<p>Name your agents and chat with them directly or in groups. Teammates coordinate through @mentions, share files explicitly, and each have a private Linux computer and browser. Connect Telegram to see their replies and tool activity as they work.</p>' +
+          '<p>Give your teammates real work. They remember progress, use your tools and browser, and bring back finished files. Work on this computer or choose an optional private computer for each teammate.</p>' +
           '<div class="cw-hero-cta"><button class="btn dark" id="cwHeroAgent">New teammate</button><button class="btn ghost" id="cwHeroGroup">New group chat</button></div>' +
           (cw.agents.length === 0 ? '<div class="cw-hero-back"><button class="btn ghost" id="cwHeroBack">Back to workspace</button></div>' : '') +
         '</div>';
@@ -451,8 +477,8 @@ export const COWORK_JS = String.raw`
         '<textarea id="cwInput" rows="1" placeholder="' + (conv.kind === 'group' ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + '"></textarea>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button></div>' +
       '</div>';
-    $('cwInfoBtn').onclick = function () { cw.infoOpen = !cw.infoOpen; $('cwInfo').style.display = cw.infoOpen ? '' : 'none'; $('cwInfoBtn').textContent = cw.infoOpen ? 'Hide panel' : 'Chat panel'; };
-    $('cwInfo').style.display = cw.infoOpen ? '' : 'none';
+    $('cwInfoBtn').onclick = function () { cw.infoOpen = !cw.infoOpen; $('cwInfo').style.display = cw.infoOpen ? 'block' : 'none'; $('cwInfoBtn').textContent = cw.infoOpen ? 'Hide panel' : 'Chat panel'; };
+    $('cwInfo').style.display = cw.infoOpen ? 'block' : 'none';
     var back = $('cwBack');
     if (back) back.onclick = function () { var el = $('cw'); if (el) el.classList.toggle('rail-open'); };
     var input = $('cwInput');
@@ -567,10 +593,13 @@ export const COWORK_JS = String.raw`
     var open = (cw.requests || []).filter(function (request) { return request.status === 'open'; });
     var todos = (cw.todos || []).filter(function (todo) { return todo.status !== 'cancelled'; });
     var active = todos.filter(function (todo) { return todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'blocked'; });
-    var todoHtml = todos.length ? '<details class="cw-todos"' + (active.length ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
-      return '<div class="cw-todo ' + esc(todo.status) + '"><span>' + (todo.status === 'done' ? '✓' : todo.status === 'blocked' ? '!' : '○') + '</span><b>' + esc(todo.text) + '</b><span>· ' + esc(todo.status.replace('_', ' ')) + '</span></div>';
+    var todoHtml = todos.length ? '<details class="cw-todos"' + ((cw.todoOpen === undefined ? active.length > 0 : cw.todoOpen) ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
+      var owner = cwAgentById(todo.agentId);
+      return '<div class="cw-todo ' + esc(todo.status) + '" title="' + esc(todo.note || '') + '"><span>' + (todo.status === 'done' ? '✓' : todo.status === 'blocked' ? '!' : '○') + '</span><b>' + esc(todo.text) + '</b><span>· ' + esc(todo.status.replace('_', ' ')) + '</span><span class="cw-todo-owner">' + esc(owner ? '@' + owner.name : '') + '</span></div>';
     }).join('') + '</details>' : '';
     el.innerHTML = open.map(cwRequestHtml).join('') + todoHtml;
+    var checklist = el.querySelector('.cw-todos');
+    if (checklist) checklist.ontoggle = function () { cw.todoOpen = checklist.open; };
     el.querySelectorAll('[data-cwrequest]').forEach(function (button) {
       button.onclick = function () {
         var id = button.getAttribute('data-cwrequest');
@@ -615,7 +644,7 @@ export const COWORK_JS = String.raw`
     var conv = cwActiveConv();
     var members = conv ? cwConvMembers(conv) : [];
     var agent = m.agentId ? cwAgentById(m.agentId) : null;
-    if (m.role === 'system') return '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';
+    if (m.role === 'system') return m.text.length > 240 ? '<details class="cw-sys"><summary>' + esc(m.text.slice(0, 110)) + '…</summary><div class="cw-sys-detail">' + esc(m.text) + '</div>' + cwFilesHtml(m.artifactIds) + '</details>' : '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';
     if (m.role === 'user') {
       var via = '';
       if (m.via === 'telegram') via = ' · Telegram' + (m.from ? ' — ' + esc(m.from) : '');
@@ -676,7 +705,7 @@ export const COWORK_JS = String.raw`
     if (!ps.length) { live.innerHTML = ''; return; }
     live.innerHTML = ps.map(function (p) {
       var tool = p.tool ? '<div class="cw-tools">' + esc(p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed')) + '</div>' : '';
-      return '<div class="cw-row">' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span>working in parallel…</span></div><div style="white-space:pre-wrap">' + esc(p.text || 'Working…') + '</div>' + tool + '</div></div>';
+      return '<div class="cw-row">' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span>working…</span></div><div style="white-space:pre-wrap">' + esc(p.text || 'Working…') + '</div>' + tool + '</div></div>';
     }).join('');
     if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
   }
@@ -1058,13 +1087,18 @@ export const COWORK_JS = String.raw`
     var el = $('cwTyping');
     var btn = $('cwSend');
     if (!el || !btn) return;
+    document.querySelectorAll('[data-cw-avatar]').forEach(function (node) {
+      var id = node.getAttribute('data-cw-avatar');
+      var member = cwAgentById(id);
+      node.classList.toggle('working', Boolean(cw.busy && member && (cw.working === member.name || (cw.progresses || []).some(function (p) { return p.agentId === id; }))));
+    });
     if (cw.busy) {
       var parallel = (cw.progresses || []).map(function (p) { return p.agentName; });
       var agent = null;
       for (var i = 0; i < cw.agents.length; i++) if (cw.working && cw.agents[i].name === cw.working) agent = cw.agents[i];
       el.innerHTML = '<span class="dots"><i></i><i></i><i></i></span> ' + (agent ? cwAva(agent, 18) + ' <b>' + esc(agent.name) + '</b> is thinking…' : 'the team is thinking…');
       if (parallel.length > 1) el.textContent = parallel.length + ' teammates working in parallel: ' + parallel.join(', ');
-      else if (cw.progress) el.textContent = cw.progress.agentName + (cw.progress.tool ? ' · ' + cw.progress.tool : ' is writing…');
+      else if (cw.progress) el.innerHTML = '<span class="cw-live-status busy">' + esc(cw.progress.agentName + (cw.progress.tool ? ' · ' + cw.progress.tool.replace(/_/g, ' ') : ' is writing…')) + '</span>';
       if (cw.queued) el.innerHTML += '<span>' + cw.queued + ' queued</span>';
       el.hidden = false;
       btn.classList.add('stop');
@@ -1121,11 +1155,11 @@ export const COWORK_JS = String.raw`
       provider: agent ? (agent.provider || '') : '',
       model: agent ? (agent.model || '') : '',
       effort: agent ? (agent.effort || '') : '',
-      skills: agent ? (agent.skills || []).slice() : [],
+      skills: agent ? (agent.skills || []).slice() : ['browser-workflow'],
       allowShell: agent ? Boolean(agent.allowShell) : false,
       allowWrites: agent ? Boolean(agent.allowWrites) : false,
       allowConfig: agent ? Boolean(agent.allowConfig) : false,
-      useHostComputer: agent ? Boolean(agent.useHostComputer) : false,
+      useHostComputer: agent ? Boolean(agent.useHostComputer) : true,
       chiefOfStaff: agent ? Boolean(agent.chiefOfStaff) : false
     };
     var modal = document.createElement('div');
@@ -1141,7 +1175,7 @@ export const COWORK_JS = String.raw`
           '<div class="cw-avopts">' +
             '<div class="cw-shapes" id="cwAmShapes">' + CW_SHAPES.map(function (s) { return '<button type="button" data-shape="' + s + '"' + (s === d.avatar.shape ? ' class="cur"' : '') + '>' + s + '</button>'; }).join('') + '</div>' +
             '<div class="cw-colors" id="cwAmColors">' + CW_COLORS.map(function (c) { return '<button type="button" data-color="' + c + '" style="background:' + c + '"' + (c === d.avatar.color ? ' class="cur"' : '') + ' aria-label="color ' + c + '"></button>'; }).join('') + '</div>' +
-            '<div class="cw-avhint">Rendered live as a 3D voxel character (three.js) and used as the avatar everywhere.</div>' +
+            '<div class="cw-avhint">A lively orb or a voxel character, with motion that follows your teammate’s activity.</div>' +
           '</div>' +
         '</div>' +
         (!isEdit ? '<label>Starting points — fill instructions only, then make it yours</label><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '">' + esc(t.label) + '</button>'; }).join('') + '</div>' : '') +
@@ -1156,7 +1190,7 @@ export const COWORK_JS = String.raw`
           '<label><input type="checkbox" id="cwAmShell"' + (d.allowShell ? ' checked' : '') + '> Allow run_command</label>' +
           '<label><input type="checkbox" id="cwAmWrites"' + (d.allowWrites ? ' checked' : '') + '> Allow file writes</label>' +
           '<label><input type="checkbox" id="cwAmConfig"' + (d.allowConfig ? ' checked' : '') + '> Allow tool setup (add MCP servers, create skills, manage connections, create projects)</label>' +
-          '<label><input type="checkbox" id="cwAmHost"' + (d.useHostComputer ? ' checked' : '') + '> Use my computer instead of the private Docker computer</label>' +
+          '<label><input type="checkbox" id="cwAmHost"' + (d.useHostComputer ? ' checked' : '') + '> My computer — no Docker required (uncheck for a private computer)</label>' +
         '</div>' +
         '<div class="cw-note">“Use my computer” gives this teammate direct access to the Agent Gitu workspace on this Windows computer, so Docker does not need to be started. Shell, writes and tool setup remain opt-in per agent.</div>' +
       '</div>' +

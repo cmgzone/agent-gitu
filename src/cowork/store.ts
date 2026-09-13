@@ -15,7 +15,7 @@ export interface CoworkAvatar {
   /** Hex accent color of the character body. */
   color: string;
   /** Head style rendered by the three.js character builder. */
-  shape: 'cube' | 'visor' | 'antenna' | 'bot';
+  shape: 'orb' | 'cube' | 'visor' | 'antenna' | 'bot';
 }
 
 export interface CoworkAgent {
@@ -198,14 +198,32 @@ export interface CoworkData {
   artifacts: CoworkArtifact[];
   todos: CoworkTodo[];
   requests: CoworkRequest[];
+  workLog: CoworkWorkEntry[];
 }
 
-export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [] };
+export interface CoworkWorkEntry {
+  conversationId: string;
+  agentId: string;
+  tool: string;
+  ok: boolean;
+  output: string;
+  ts: string;
+}
+
+export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [] };
+
+function taskKey(text: string): string {
+  return text.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!]+$/, '');
+}
+
+function emptyCoworkData(): CoworkData {
+  return structuredClone(EMPTY_COWORK_DATA);
+}
 
 const MAX_MESSAGES_PER_CONVERSATION = 2_000;
 
 export class CoworkStore {
-  private data: CoworkData = { ...EMPTY_COWORK_DATA, messages: {} };
+  private data: CoworkData = emptyCoworkData();
   private loaded = false;
   /** Process-local roster version; message appends do not change it. */
   rosterRevision = 0;
@@ -241,11 +259,22 @@ export class CoworkStore {
         artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
         todos: Array.isArray(parsed.todos) ? parsed.todos : [],
         requests: Array.isArray(parsed.requests) ? parsed.requests : [],
+        workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
       };
+      // Repair exact legacy duplicates without reopening completed work.
+      const unique = new Map<string, CoworkTodo>();
+      for (const todo of this.data.todos) {
+        const key = `${todo.conversationId}:${todo.agentId}:${taskKey(todo.text)}`;
+        const prior = unique.get(key);
+        if (!prior) unique.set(key, todo);
+        else if (todo.status === 'done' || (prior.status !== 'done' && todo.updatedAt > prior.updatedAt)) Object.assign(prior, { status: todo.status, note: todo.note, updatedAt: todo.updatedAt });
+      }
+      this.data.todos = [...unique.values()];
+      for (const agent of this.data.agents) agent.skills = [...new Set(['browser-workflow', ...(agent.skills ?? [])])];
     } catch {
       // A corrupt file must not wipe the team silently: keep defaults in
       // memory; the next successful save replaces the damaged document.
-      this.data = { ...EMPTY_COWORK_DATA, messages: {} };
+      this.data = emptyCoworkData();
     }
     return this.data;
   }
@@ -300,11 +329,11 @@ export class CoworkStore {
       provider: input.provider?.trim() || existing?.provider || undefined,
       model: input.model?.trim() || existing?.model || undefined,
       effort: input.effort ?? existing?.effort,
-      skills: sanitizeNames(input.skills ?? existing?.skills ?? []),
+      skills: sanitizeNames(['browser-workflow', ...(input.skills ?? existing?.skills ?? [])]),
       allowShell: input.allowShell ?? existing?.allowShell ?? false,
       allowWrites: input.allowWrites ?? existing?.allowWrites ?? false,
       allowConfig: input.allowConfig ?? existing?.allowConfig ?? false,
-      useHostComputer: input.useHostComputer ?? existing?.useHostComputer ?? false,
+      useHostComputer: input.useHostComputer ?? existing?.useHostComputer ?? true,
       chiefOfStaff: input.chiefOfStaff ?? existing?.chiefOfStaff ?? false,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
@@ -335,6 +364,7 @@ export class CoworkStore {
     data.inbox = data.inbox.filter((message) => message.fromAgentId !== id && message.toAgentId !== id && conversationIds.has(message.conversationId));
     data.todos = data.todos.filter((todo) => todo.agentId !== id && conversationIds.has(todo.conversationId));
     data.requests = data.requests.filter((request) => request.agentId !== id && conversationIds.has(request.conversationId));
+    data.workLog = data.workLog.filter((entry) => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
     this.save(true);
     return true;
@@ -424,6 +454,7 @@ export class CoworkStore {
     data.followUps = data.followUps.filter((followUp) => followUp.conversationId !== id);
     data.inbox = data.inbox.filter((message) => message.conversationId !== id);
     data.todos = data.todos.filter((todo) => todo.conversationId !== id);
+    data.workLog = data.workLog.filter((entry) => entry.conversationId !== id);
     data.requests = data.requests.filter((request) => request.conversationId !== id);
     data.artifacts = data.artifacts.filter((artifact) => artifact.conversationId !== id);
     rmSync(this.artifactDir(id), { recursive: true, force: true });
@@ -521,6 +552,8 @@ export class CoworkStore {
     const note = input.note.trim();
     if (!note) throw new Error('Follow-up note is required');
     if (!Number.isFinite(Date.parse(input.dueAt))) throw new Error('Follow-up due date is invalid');
+    const existing = data.followUps.find((item) => item.conversationId === input.conversationId && item.agentId === input.agentId && taskKey(item.note) === taskKey(note.slice(0, 1_000)));
+    if (existing) return existing;
     const followUp: CoworkFollowUp = {
       id: `cf-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       conversationId: input.conversationId,
@@ -556,6 +589,8 @@ export class CoworkStore {
     if (!data.conversations.some((conversation) => conversation.id === input.conversationId)) throw new Error('Unknown inbox conversation');
     const text = input.text.trim();
     if (!text) throw new Error('Inbox message is required');
+    const existing = data.inbox.find((item) => !item.deliveredAt && item.fromAgentId === input.fromAgentId && item.toAgentId === input.toAgentId && item.conversationId === input.conversationId && taskKey(item.text) === taskKey(text.slice(0, 4_000)));
+    if (existing) return existing;
     const message: CoworkInboxMessage = {
       id: `ci-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       fromAgentId: input.fromAgentId,
@@ -654,8 +689,10 @@ export class CoworkStore {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Todo owner is not in this conversation');
-    const text = input.text.trim();
+    const text = input.text.trim().slice(0, 500);
     if (!text) throw new Error('Todo text is required');
+    const existing = data.todos.find((todo) => todo.conversationId === input.conversationId && todo.agentId === input.agentId && taskKey(todo.text) === taskKey(text));
+    if (existing) return existing;
     const now = new Date().toISOString();
     const todo: CoworkTodo = { id: `ct-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`, conversationId: input.conversationId, agentId: input.agentId, text: text.slice(0, 500), status: 'pending', createdAt: now, updatedAt: now };
     data.todos.push(todo);
@@ -680,6 +717,19 @@ export class CoworkStore {
     if (data.todos.length === before) return false;
     this.save();
     return true;
+  }
+
+  recordWork(input: Omit<CoworkWorkEntry, 'ts'>): void {
+    const data = this.load();
+    data.workLog.push({ ...input, output: input.output.slice(0, 3_000), ts: new Date().toISOString() });
+    const own = data.workLog.filter((entry) => entry.conversationId === input.conversationId && entry.agentId === input.agentId);
+    const expired = new Set(own.slice(0, -40));
+    data.workLog = data.workLog.filter((entry) => !expired.has(entry));
+    this.save();
+  }
+
+  workLog(conversationId: string, agentId: string): CoworkWorkEntry[] {
+    return this.load().workLog.filter((entry) => entry.conversationId === conversationId && entry.agentId === agentId);
   }
 
   // Interactive cards: user questions, capability permission, recommendations.
@@ -770,13 +820,13 @@ function artifactMime(name: string, supplied?: string): string {
   return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
 }
 
-const AVATAR_SHAPES = new Set(['cube', 'visor', 'antenna', 'bot']);
+const AVATAR_SHAPES = new Set(['orb', 'cube', 'visor', 'antenna', 'bot']);
 const AVATAR_COLORS = new Set(['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b']);
 
 function sanitizeAvatar(value: unknown, fallback: CoworkAvatar | undefined): CoworkAvatar {
   const raw = (value ?? {}) as Record<string, unknown>;
   const color = typeof raw['color'] === 'string' && AVATAR_COLORS.has(raw['color'].toLowerCase()) ? raw['color'].toLowerCase() : fallback?.color ?? '#8f80ff';
-  const shape = typeof raw['shape'] === 'string' && AVATAR_SHAPES.has(raw['shape']) ? (raw['shape'] as CoworkAvatar['shape']) : fallback?.shape ?? 'cube';
+  const shape = typeof raw['shape'] === 'string' && AVATAR_SHAPES.has(raw['shape']) ? (raw['shape'] as CoworkAvatar['shape']) : fallback?.shape ?? 'orb';
   return { color, shape };
 }
 

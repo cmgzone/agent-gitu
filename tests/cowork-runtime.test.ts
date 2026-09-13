@@ -351,7 +351,9 @@ describe('cowork streaming and tool execution', () => {
         }) as LlmClient,
     };
     const result = await runConversationTurn({ ...input, conversation, deps, append: (m) => input.store.appendMessage(conversation.id, m) });
-    expect(result.messages.map((m) => m.agentName)).toEqual(['broken', 'healthy', 'resilient-chief']);
+    const names = result.messages.map((m) => m.agentName);
+    expect(new Set(names.slice(0, -1))).toEqual(new Set(['broken', 'healthy']));
+    expect(names.at(-1)).toBe('resilient-chief');
     expect(result.messages.at(-1)!.text).toContain('partial success');
   });
 });

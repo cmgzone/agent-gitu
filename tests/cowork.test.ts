@@ -257,21 +257,78 @@ describe('cowork runner', () => {
     expect(store.getConversation(conv.id)!.memberIds).toContain(store.listAgents().find(a => a.name === 'new-scout')!.id);
   });
 
-  it('sends unmentioned group messages to every member with the chief last', async () => {
+  it('runs every worker concurrently for unmentioned group messages, with the chief last', async () => {
     const agent = store.saveAgent(makeAgentInput('solo2'));
     const other = store.saveAgent(makeAgentInput('bystander'));
     const chief = store.saveAgent(makeAgentInput('broadcast-chief', { chiefOfStaff: true }));
     const conv = store.saveConversation({ kind: 'group', memberIds: [agent.id, chief.id, other.id], chiefId: chief.id, title: 'broadcast-test' });
     const trigger = store.appendMessage(conv.id, { role: 'user', text: 'hello', via: 'web' });
+    let activeWorkers = 0;
+    let maxActiveWorkers = 0;
+    let startedWorkers = 0;
+    let releaseWorkers!: () => void;
+    const workersReady = new Promise<void>((resolve) => { releaseWorkers = resolve; });
     const result = await runConversationTurn({
       conversation: conv,
       history: store.messages(conv.id),
       trigger,
-      deps: depsFor(['First view.', 'Second view.', 'Combined answer.']),
+      deps: depsFor([], {
+        resolveLlm: (member) => ({
+          complete: async () => {
+            if (member.id === chief.id) return 'Combined answer.';
+            activeWorkers += 1;
+            startedWorkers += 1;
+            maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
+            if (startedWorkers === 2) releaseWorkers();
+            await workersReady;
+            activeWorkers -= 1;
+            return `${member.name} view.`;
+          },
+        } as never),
+      }),
       append: (m) => store.appendMessage(conv.id, m),
     });
-    expect(result.messages.map((message) => message.agentName)).toEqual(['solo2', 'bystander', 'broadcast-chief']);
+    expect(maxActiveWorkers).toBe(2);
+    expect(new Set(result.messages.slice(0, -1).map((message) => message.agentName))).toEqual(new Set(['solo2', 'bystander']));
+    expect(result.messages.at(-1)!.agentName).toBe('broadcast-chief');
     expect(result.messages.at(-1)!.text).toBe('Combined answer.');
+  });
+
+  it('runs a large team in waves so every member still answers once', async () => {
+    const workers = Array.from({ length: 6 }, (_, index) => store.saveAgent(makeAgentInput(`wave-${index}`)));
+    const chief = store.saveAgent(makeAgentInput('wave-chief', { chiefOfStaff: true }));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [...workers.map((w) => w.id), chief.id], chiefId: chief.id, title: 'wave-test' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'status?', via: 'web' });
+    let activeWorkers = 0;
+    let maxActiveWorkers = 0;
+    let startedWorkers = 0;
+    let releaseWorkers!: () => void;
+    const firstWaveStarted = new Promise<void>((resolve) => { releaseWorkers = resolve; });
+    const result = await runConversationTurn({
+      conversation: conv,
+      history: store.messages(conv.id),
+      trigger,
+      deps: depsFor([], {
+        resolveLlm: (member) => ({
+          complete: async () => {
+            if (member.id === chief.id) return 'Combined answer.';
+            activeWorkers += 1;
+            startedWorkers += 1;
+            maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
+            if (startedWorkers === 4) releaseWorkers();
+            await firstWaveStarted;
+            activeWorkers -= 1;
+            return `${member.name} view.`;
+          },
+        } as never),
+      }),
+      append: (m) => store.appendMessage(conv.id, m),
+    });
+    expect(maxActiveWorkers).toBe(4);
+    expect(startedWorkers).toBe(6);
+    const replies = result.messages.map((message) => message.agentName);
+    expect(new Set(replies.slice(0, -1))).toEqual(new Set(workers.map((w) => w.name)));
+    expect(replies.at(-1)).toBe('wave-chief');
   });
 
   it('keeps mentioned group messages targeted', async () => {

@@ -226,7 +226,7 @@ export class GituServer {
   /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
   private coworkStore?: CoworkStore;
   private coworkMemoryStore?: CoworkMemory;
-  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; telegramError?: string; forceAgentId?: string; missionId?: string }>();
+  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
   private readonly coworkPollers = new Map<string, TelegramPoller>();
   private coworkTimer?: ReturnType<typeof setInterval>;
   private readonly coworkTools = new Map<string, ToolContext>();
@@ -837,6 +837,7 @@ export class GituServer {
       busy: Boolean(run?.busy),
       working: run?.busy ? run.working ?? null : null,
       progress: run?.progress ?? null,
+      progresses: run?.busy ? Object.values(run.progresses ?? {}) : [],
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
       missions: [...activeMissions, ...recentMissions],
@@ -1024,10 +1025,20 @@ export class GituServer {
       if (!conv) break;
       // Queued future user messages must not steer the current trigger.
       const history = store.messages(conversationId).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);
-      let stream: TelegramReplyStream | undefined;
+      const streams = new Map<string, TelegramReplyStream>();
+      const activeAgents = new Map<string, string>();
       const tg = conv.telegram;
-      const beginStream = () => {
-        if (tg?.enabled && tg.token && tg.chatId) stream = new TelegramReplyStream(tg.token, tg.chatId);
+      const beginStream = (agentId: string): TelegramReplyStream | undefined => {
+        let stream = streams.get(agentId);
+        if (!stream && tg?.enabled && tg.token && tg.chatId) {
+          stream = new TelegramReplyStream(tg.token, tg.chatId);
+          streams.set(agentId, stream);
+        }
+        return stream;
+      };
+      const syncWorking = () => {
+        run.working = activeAgents.size > 0 ? [...activeAgents.values()].join(', ') : undefined;
+        run.progress = Object.values(run.progresses ?? {}).at(-1);
       };
       const sendArtifacts = async (message: CoworkMessage): Promise<void> => {
         if (!tg?.enabled || !tg.token || !tg.chatId) return;
@@ -1056,23 +1067,31 @@ export class GituServer {
           userContext: this.coworkUserContext(),
           memoryFor: (agent) => this.coworkMemoryFor(agent),
           signal: abort.signal,
-          onWorking: (name) => {
-            run.working = name;
-            run.progress = undefined;
-            beginStream();
-            stream?.update(`${name}: Working…`);
+          onWorking: (agent) => {
+            activeAgents.set(agent.id, agent.name);
+            run.progresses ??= {};
+            run.progresses[agent.id] = { agentId: agent.id, agentName: agent.name, text: 'Working…' };
+            syncWorking();
+            beginStream(agent.id)?.update(`${agent.name}: Working…`);
             this.publishCowork(conversationId);
           },
           onProgress: (progress) => {
+            run.progresses ??= {};
+            run.progresses[progress.agentId] = progress;
             run.progress = progress;
             const tool = progress.tool ? `\n[${progress.tool}: ${progress.toolOk === undefined ? 'running' : progress.toolOk ? 'completed' : 'failed'}]` : '';
-            stream?.update(`${progress.agentName}: ${progress.text || 'Working…'}${tool}`);
+            beginStream(progress.agentId)?.update(`${progress.agentName}: ${progress.text || 'Working…'}${tool}`);
             this.publishCowork(conversationId);
           },
           onMessage: async (message) => {
-            run.progress = undefined;
+            if (message.agentId) {
+              activeAgents.delete(message.agentId);
+              if (run.progresses) delete run.progresses[message.agentId];
+            }
+            syncWorking();
             this.publishCowork(conversationId);
-            if (!stream) beginStream();
+            let stream = message.agentId ? streams.get(message.agentId) : undefined;
+            if (!stream && message.agentId) stream = beginStream(message.agentId);
             const tools = message.tools?.map((t) => `${t.name}: ${t.ok ? 'completed' : 'failed'}`).join(', ');
             try {
               await stream?.finish(`${message.agentName ? message.agentName + ': ' : ''}${message.text}${tools ? '\nTools: ' + tools : ''}`);
@@ -1083,7 +1102,7 @@ export class GituServer {
               store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${run.telegramError}` });
               this.publishCowork(conversationId);
             }
-            stream = undefined;
+            if (message.agentId) streams.delete(message.agentId);
           },
         },
         append: (message) => {
@@ -1097,6 +1116,7 @@ export class GituServer {
       } finally {
         run.working = undefined;
         run.progress = undefined;
+        run.progresses = undefined;
         this.publishCowork(conversationId);
       }
     }

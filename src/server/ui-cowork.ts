@@ -216,7 +216,7 @@ export const COWORK_JS = String.raw`
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [] };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [] };
     return S.cw;
   }
   function cwStopPoll() {
@@ -382,6 +382,7 @@ export const COWORK_JS = String.raw`
     cw.busy = false;
     cw.working = null;
     cw.progress = null;
+    cw.progresses = [];
     cw.queued = 0;
     cw.artifacts = [];
     cw.todos = [];
@@ -658,7 +659,7 @@ export const COWORK_JS = String.raw`
     if (!wrap) return;
     var cw = cwEnsure();
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
-    wrap.innerHTML = cw.msgs.map(function (m) { return cwBubbleHtml(m); }).join('') + '<div class="cw-row" id="cwLive" hidden></div>';
+    wrap.innerHTML = cw.msgs.map(function (m) { return cwBubbleHtml(m); }).join('') + '<div id="cwLive" hidden></div>';
     cwBindFileCards(wrap);
     cwRenderProgress();
     if (nearBottom || cw.msgs.length <= 2) wrap.scrollTop = wrap.scrollHeight;
@@ -670,16 +671,13 @@ export const COWORK_JS = String.raw`
     var live = $('cwLive');
     if (!wrap || !live) return;
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
-    var p = cw.busy ? cw.progress : null;
-    live.hidden = !p;
-    if (!p) { live.innerHTML = ''; live.removeAttribute('data-agent'); return; }
-    if (live.getAttribute('data-agent') !== p.agentId) {
-      live.setAttribute('data-agent', p.agentId);
-      live.innerHTML = cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm" id="cwLiveName"></span><span>writing…</span></div><div id="cwLiveText" style="white-space:pre-wrap"></div><div class="cw-tools" id="cwLiveTool"></div></div>';
-    }
-    $('cwLiveName').textContent = p.agentName;
-    $('cwLiveText').textContent = p.text || 'Working…';
-    $('cwLiveTool').textContent = p.tool ? p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed') : '';
+    var ps = cw.busy ? ((cw.progresses && cw.progresses.length) ? cw.progresses : (cw.progress ? [cw.progress] : [])) : [];
+    live.hidden = ps.length === 0;
+    if (!ps.length) { live.innerHTML = ''; return; }
+    live.innerHTML = ps.map(function (p) {
+      var tool = p.tool ? '<div class="cw-tools">' + esc(p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed')) + '</div>' : '';
+      return '<div class="cw-row">' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span>working in parallel…</span></div><div style="white-space:pre-wrap">' + esc(p.text || 'Working…') + '</div>' + tool + '</div></div>';
+    }).join('');
     if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
   }
 
@@ -1001,7 +999,7 @@ export const COWORK_JS = String.raw`
     }
     if (d.rosterRevision !== undefined) cw.rosterRevision = d.rosterRevision;
     if (d.deleted) {
-      cwStopPoll(); cw.active = null; cw.msgs = []; cw.busy = false; cw.progress = null;
+      cwStopPoll(); cw.active = null; cw.msgs = []; cw.busy = false; cw.progress = null; cw.progresses = [];
       cwRenderRail(); cwRenderChat(); return;
     }
     var added = false;
@@ -1013,6 +1011,7 @@ export const COWORK_JS = String.raw`
     cw.busy = Boolean(d.busy);
     cw.working = d.working || null;
     cw.progress = d.progress || null;
+    cw.progresses = d.progresses || (d.progress ? [d.progress] : []);
     cw.queued = d.queued || 0;
     var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
     cw.missions = d.missions || [];
@@ -1060,10 +1059,12 @@ export const COWORK_JS = String.raw`
     var btn = $('cwSend');
     if (!el || !btn) return;
     if (cw.busy) {
+      var parallel = (cw.progresses || []).map(function (p) { return p.agentName; });
       var agent = null;
       for (var i = 0; i < cw.agents.length; i++) if (cw.working && cw.agents[i].name === cw.working) agent = cw.agents[i];
       el.innerHTML = '<span class="dots"><i></i><i></i><i></i></span> ' + (agent ? cwAva(agent, 18) + ' <b>' + esc(agent.name) + '</b> is thinking…' : 'the team is thinking…');
-      if (cw.progress) el.textContent = cw.progress.agentName + (cw.progress.tool ? ' · ' + cw.progress.tool : ' is writing…');
+      if (parallel.length > 1) el.textContent = parallel.length + ' teammates working in parallel: ' + parallel.join(', ');
+      else if (cw.progress) el.textContent = cw.progress.agentName + (cw.progress.tool ? ' · ' + cw.progress.tool : ' is writing…');
       if (cw.queued) el.innerHTML += '<span>' + cw.queued + ' queued</span>';
       el.hidden = false;
       btn.classList.add('stop');

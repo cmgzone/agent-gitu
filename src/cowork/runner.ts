@@ -11,13 +11,20 @@ import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMission, Cow
  * The cowork conversation engine.
  *
  * DMs are simple: the member agent answers with full tool access.
- * Group chats route turns through a bounded mention chain: an explicit
- * @mention targets those teammates, while an unmentioned message invites the
- * whole group and lets the chief answer last with the combined context.
+ * Group chats route turns through bounded parallel batches: an explicit
+ * @mention targets those teammates, while an unmentioned message runs every
+ * non-chief teammate concurrently and lets the chief answer last with the
+ * combined context.
  * Mention chains stay bounded so chatty teammates cannot loop forever.
  */
 
 const MAX_AGENT_MESSAGES_PER_TRIGGER = 5;
+/**
+ * Workers per parallel batch. Every worker holds its own provider stream and
+ * tool session (often including its own virtual computer), so a large team
+ * finishes in waves instead of opening all of those sessions at once.
+ */
+const MAX_PARALLEL_WORKERS = 4;
 const MAX_TOOL_ROUNDS_PER_TURN = 8;
 const TRANSCRIPT_MESSAGES = 40;
 const MAX_TRANSCRIPT_CHARS = 24_000;
@@ -45,7 +52,7 @@ export interface CoworkRunnerDeps {
   /** Called after every appended agent/system message (Telegram mirror). */
   onMessage?: (message: CoworkMessage) => void | Promise<void>;
   /** Called when an agent starts composing (UI "thinking" indicator). */
-  onWorking?: (agentName: string) => void;
+  onWorking?: (agent: CoworkAgent) => void;
   /** Wake exactly this agent (autonomy: follow-ups, inbox delivery). */
   forceAgentId?: string;
   signal?: AbortSignal;
@@ -90,7 +97,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       : deps?.computerFor
       ? `You have your own persistent Linux virtual computer, private files, shell and browser. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so. If a tool result reports the virtual computer is unavailable, tools fall back automatically to the user workspace: continue with workspace-relative paths and do not ask the user to install or start Docker.`
       : `Paths in tool calls are relative to your workspace.`,
-    `AUTONOMY: maintain a visible checklist with todo_manage. schedule_followup lets you promise future work; message_teammate hands work to a teammate. Use ask_user when a real answer is required, request_permission when a disabled capability is necessary, and recommend when the user should choose whether to follow your proposed next step. A question or permission card means stop and wait for the user's response. Use share_file for every finished document the user should open or download.`,
+    `AUTONOMY: do the requested work now with your tools; your visible reply ends this work turn, so never merely announce what you will do and stop. Maintain a visible checklist with todo_manage. If work must continue later, call schedule_followup before replying. message_teammate privately hands work to a teammate and wakes them automatically. Use ask_user when a real answer is required, and call request_permission instead of merely saying a capability is disabled. Use recommend when the user should choose whether to follow your proposed next step. A question or permission card means stop and wait for the user's response. Use share_file for every finished document the user should open or download.`,
   ];
   if (deps?.userContext)
     parts.push(
@@ -124,7 +131,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       .join('\n');
     parts.push(
       `GROUP CHAT: "${conversation.title}" with these teammates:\n${roster}\n` +
-        `The user sees every message. A message without @mentions is for the whole group, so every teammate contributes once and the chief answers last. A message with @Name is targeted to the named teammate(s). Answer with your own expertise; when a teammate's specialty is needed, summon them by mentioning @Name (exactly their name) anywhere in your reply. Never answer as or impersonate another teammate.`,
+        `The user sees every group message. A message without @mentions is for the whole group, so non-chief teammates work concurrently and the chief answers after their results arrive. A message with @Name is targeted to the named teammate(s), and multiple named teammates run concurrently. Perform your own part now instead of describing a future plan. When a teammate's specialty is needed, summon them by mentioning @Name (exactly their name) anywhere in your reply. Never answer as or impersonate another teammate.`,
     );
     if (agent.id === resolveChief(conversation, members)?.id) {
       parts.push(
@@ -302,7 +309,7 @@ export async function runConversationTurn(input: {
     const forced = deps.forceAgentId ? members.find((member) => member.id === deps.forceAgentId) : undefined;
     if (conversation.kind === 'dm' || forced) {
       const agent = forced ?? members[0]!;
-      deps.onWorking?.(agent.name);
+      deps.onWorking?.(agent);
       await agentTurn({ agent, conversation, members, history, deps, append: track });
       return { messages };
     }
@@ -310,44 +317,47 @@ export async function runConversationTurn(input: {
     const mentioned = mentionNames(trigger.text, members);
     const chief = resolveChief(conversation, members)!;
     const broadcast = mentioned.length === 0;
-    // For a team-wide message, workers go first and the chief sees their
-    // contributions before replying. Every current member gets one turn.
-    const queue: CoworkAgent[] = broadcast ? [...members.filter((member) => member.id !== chief.id), chief] : mentioned;
+    // For a team-wide message, workers start together on their own computers.
+    // The chief is intentionally held until all worker results are available.
+    const queue: CoworkAgent[] = broadcast ? [...members.filter((member) => member.id !== chief.id)] : [...mentioned];
     const responded = new Set<string>();
     for (const agent of queue) responded.add(agent.id);
     let count = 0;
-    // Targeted chains reserve one slot for chief synthesis. Broadcasts already
-    // place the chief last, so their budget covers every group member.
-    const turnBudget = broadcast ? members.length : MAX_AGENT_MESSAGES_PER_TRIGGER - 1;
+    // Targeted chains reserve one slot for chief synthesis. Broadcast worker
+    // batches cover every non-chief member, regardless of team size.
+    const turnBudget = broadcast ? queue.length : MAX_AGENT_MESSAGES_PER_TRIGGER - 1;
     while (queue.length > 0 && count < turnBudget) {
       deps.signal?.throwIfAborted();
-      const queued = queue.shift()!;
       members = currentMembers(conversation, deps);
-      const agent = members.find((member) => member.id === queued.id);
-      if (!agent) continue;
-      deps.onWorking?.(agent.name);
+      const batch = queue.splice(0, Math.min(turnBudget - count, MAX_PARALLEL_WORKERS))
+        .map((queued) => members.find((member) => member.id === queued.id))
+        .filter((agent): agent is CoworkAgent => Boolean(agent));
+      if (batch.length === 0) continue;
       const historyAtStart = [...history, ...messages];
-      try {
-        await agentTurn({ agent, conversation, members, history: historyAtStart, deps, append: track });
-      } catch (err) {
-        deps.signal?.throwIfAborted();
-        const failed = track({ role: 'agent', agentId: agent.id, agentName: agent.name, text: `Could not complete my part: ${(err as Error).message}`, via: 'web' });
-        await deps.onMessage?.(failed);
-        count += 1;
-        continue;
-      }
-      count += 1;
+      const firstBatchMessage = messages.length;
+      await Promise.all(batch.map(async (agent) => {
+        deps.onWorking?.(agent);
+        try {
+          await agentTurn({ agent, conversation, members, history: historyAtStart, deps, append: track });
+        } catch (err) {
+          deps.signal?.throwIfAborted();
+          const failed = track({ role: 'agent', agentId: agent.id, agentName: agent.name, text: `Could not complete my part: ${(err as Error).message}`, via: 'web' });
+          await deps.onMessage?.(failed);
+        }
+      }));
+      count += batch.length;
       members = currentMembers(conversation, deps);
-      const last = messages[messages.length - 1];
-      for (const summoned of mentionNames(last?.text ?? '', members)) {
-        if (responded.has(summoned.id)) continue;
-        responded.add(summoned.id);
-        queue.push(summoned);
+      for (const message of messages.slice(firstBatchMessage)) {
+        for (const summoned of mentionNames(message.text, members)) {
+          if (responded.has(summoned.id)) continue;
+          responded.add(summoned.id);
+          queue.push(summoned);
+        }
       }
     }
     if (queue.length > 0) track({ role: 'system', text: `Team turn limit reached; not run: ${queue.map((a) => a.name).join(', ')}.`, via: 'web' });
-    if (messages.filter((m) => m.role === 'agent').length > 1 && messages.at(-1)?.agentId !== chief.id) {
-      deps.onWorking?.(chief.name);
+    if (broadcast || (messages.filter((m) => m.role === 'agent').length > 1 && messages.at(-1)?.agentId !== chief.id)) {
+      deps.onWorking?.(chief);
       await agentTurn({
         agent: chief,
         conversation,

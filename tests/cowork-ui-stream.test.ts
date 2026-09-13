@@ -61,6 +61,20 @@ describe('Cowork UI live updates', () => {
     expect(u.input).toEqual({ value: 'Unsent draft', selectionStart: 4 });
   });
 
+  it('keeps simultaneous teammate progress in the live snapshot', () => {
+    const u = ui();
+    u.context.cwStartStream('group');
+    u.streams[0]!.receive({
+      busy: true,
+      messages: [],
+      progresses: [
+        { agentId: 'chief', agentName: 'Chief', text: 'Coordinating' },
+        { agentId: 'scout', agentName: 'Scout', text: 'Researching' },
+      ],
+    });
+    expect(u.cw.progresses.map((progress: any) => progress.agentName)).toEqual(['Chief', 'Scout']);
+  });
+
   it('deduplicates replayed messages after reconnect and clears the live reply on completion', () => {
     const u = ui();
     u.context.cwStartStream('group');

@@ -54,6 +54,23 @@ describe('CoworkStore', () => {
     expect(reloaded.messages(conv.id, m1.seq)).toHaveLength(1);
   });
 
+  it('persists shared artifacts, todos and user decision requests', () => {
+    const file = path.join(tempHome('work-state'), 'cowork.json');
+    const store = new CoworkStore(file);
+    const agent = store.saveAgent(makeAgentInput('worker', { useHostComputer: true }));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const artifact = store.addArtifact({ conversationId: conv.id, agentId: agent.id, name: '../report.md', mime: 'text/markdown', dataBase64: Buffer.from('# Ready').toString('base64') });
+    const todo = store.addTodo({ conversationId: conv.id, agentId: agent.id, text: 'Review report' });
+    const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'permission', title: 'Allow host', detail: 'Edit the shared workspace', permission: 'host' });
+
+    const reloaded = new CoworkStore(file);
+    expect(reloaded.listAgents()[0]!.useHostComputer).toBe(true);
+    expect(reloaded.artifacts(conv.id)[0]!.name).toBe('report.md');
+    expect(readFileSync(reloaded.artifactPath(artifact.id)!, 'utf8')).toBe('# Ready');
+    expect(reloaded.updateTodo(todo.id, agent.id, { status: 'done' })?.status).toBe('done');
+    expect(reloaded.resolveRequest(request.id, 'approved')?.status).toBe('approved');
+  });
+
   it('sanitizes avatar configs and rejects junk', () => {
     const store = new CoworkStore(path.join(tempHome('avatar'), 'cowork.json'));
     const bad = store.saveAgent(makeAgentInput('junky', { avatar: { color: 'javascript:alert(1)', shape: 'explosion' } }));
@@ -207,7 +224,7 @@ describe('cowork runner', () => {
     const chief = store.saveAgent(makeAgentInput('chief', { chiefOfStaff: true }));
     const writer = store.saveAgent(makeAgentInput('writer'));
     const conv = store.saveConversation({ kind: 'group', memberIds: [chief.id, writer.id], chiefId: chief.id, title: 'room' });
-    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'plan the announcement', via: 'web' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: '@chief plan the announcement', via: 'web' });
     const script = ['I will bring in @writer to draft it.', 'Draft ready: "Hello world".', 'Final announcement: Hello world.'];
     const result = await runConversationTurn({
       conversation: conv,
@@ -225,7 +242,7 @@ describe('cowork runner', () => {
     const chief = store.saveAgent(makeAgentInput('hiring-chief', { chiefOfStaff: true }));
     const other = store.saveAgent(makeAgentInput('existing-member'));
     const conv = store.saveConversation({ kind: 'group', memberIds: [chief.id, other.id], chiefId: chief.id });
-    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'Hire a scout and ask for a report.', via: 'web' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: '@hiring-chief hire a scout and ask for a report.', via: 'web' });
     const result = await runConversationTurn({
       conversation: conv, trigger, history: [trigger], append: m => store.appendMessage(conv.id, m),
       deps: depsFor([
@@ -240,19 +257,30 @@ describe('cowork runner', () => {
     expect(store.getConversation(conv.id)!.memberIds).toContain(store.listAgents().find(a => a.name === 'new-scout')!.id);
   });
 
-  it('does not summon unknown or out-of-group names', async () => {
+  it('sends unmentioned group messages to every member with the chief last', async () => {
     const agent = store.saveAgent(makeAgentInput('solo2'));
     const other = store.saveAgent(makeAgentInput('bystander'));
-    const conv = store.saveConversation({ kind: 'group', memberIds: [agent.id, other.id], title: 'mention-test' });
+    const chief = store.saveAgent(makeAgentInput('broadcast-chief', { chiefOfStaff: true }));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [agent.id, chief.id, other.id], chiefId: chief.id, title: 'broadcast-test' });
     const trigger = store.appendMessage(conv.id, { role: 'user', text: 'hello', via: 'web' });
     const result = await runConversationTurn({
       conversation: conv,
       history: store.messages(conv.id),
       trigger,
-      deps: depsFor(['Ask @nobody and @ghost for help.']),
+      deps: depsFor(['First view.', 'Second view.', 'Combined answer.']),
       append: (m) => store.appendMessage(conv.id, m),
     });
-    expect(result.messages).toHaveLength(1);
+    expect(result.messages.map((message) => message.agentName)).toEqual(['solo2', 'bystander', 'broadcast-chief']);
+    expect(result.messages.at(-1)!.text).toBe('Combined answer.');
+  });
+
+  it('keeps mentioned group messages targeted', async () => {
+    const agent = store.saveAgent(makeAgentInput('target-one'));
+    const other = store.saveAgent(makeAgentInput('target-two'));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [agent.id, other.id], title: 'mention-test' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: '@target-two answer this', via: 'web' });
+    const result = await runConversationTurn({ conversation: conv, history: [trigger], trigger, deps: depsFor(['Only me.']), append: (message) => store.appendMessage(conv.id, message) });
+    expect(result.messages.map((message) => message.agentName)).toEqual(['target-two']);
   });
 
   it('builds a system prompt that includes identity, roster and chief role', () => {
@@ -415,6 +443,23 @@ describe('cowork capability tools', () => {
     const allowed = await executeCoworkTool(mcpCtx, 'configure_mcp', { name: 'x', command: 'npx', args: ['-y', 'pkg'] }, yes, scope(agent));
     expect(allowed.ok).toBe(true);
     expect(allowed.output).toContain('added');
+  });
+
+  it('creates visible todos, questions, permissions and recommendations', async () => {
+    const agent = store.saveAgent(makeAgentInput('decision-user'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const sharedScope = { ...scope(agent), conversationId: conv.id };
+    const perms = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false };
+    const added = await executeCoworkTool(noopCtx, 'todo_manage', { action: 'add', text: 'Prepare release' }, perms, sharedScope);
+    expect(added.ok).toBe(true);
+    const todo = store.todos(conv.id)[0]!;
+    await executeCoworkTool(noopCtx, 'todo_manage', { action: 'complete', id: todo.id }, perms, sharedScope);
+    expect(store.todos(conv.id)[0]!.status).toBe('done');
+    await executeCoworkTool(noopCtx, 'ask_user', { question: 'Which region?', options: ['EU', 'US'] }, perms, sharedScope);
+    await executeCoworkTool(noopCtx, 'request_permission', { permission: 'host', reason: 'Edit the shared workspace' }, perms, sharedScope);
+    await executeCoworkTool(noopCtx, 'recommend', { title: 'Use SQLite', reason: 'Local and durable', action: 'Create the schema' }, perms, sharedScope);
+    expect(store.requests(conv.id).map((request) => request.kind)).toEqual(['question', 'permission', 'recommendation']);
+    expect(store.requests(conv.id)[1]!.permission).toBe('host');
   });
 
   it('injects user context and agent memory into the system prompt', () => {
@@ -608,6 +653,39 @@ describe('cowork server routes', () => {
     expect(gone.messages).toHaveLength(0);
   });
 
+  it('serves attachments, hides Telegram tokens and applies interactive host permission', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'I reviewed the attached file.']));
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('artifact-agent'));
+    const agent = created.json['agent'] as { id: string; useHostComputer: boolean };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const updated = await post(base, `/api/cowork/conversations/${conv.id}`, {
+      telegram: { enabled: false, token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ', chatId: '', chatTitle: '' },
+    });
+    expect((updated.json['conversation'] as { telegram: Record<string, unknown> }).telegram).toEqual(expect.objectContaining({ tokenSaved: true }));
+    expect(JSON.stringify(updated.json)).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+
+    const upload = await post(base, `/api/cowork/conversations/${conv.id}/messages`, {
+      text: 'Review this',
+      files: [{ name: 'brief.md', type: 'text/markdown', dataUrl: `data:text/markdown;base64,${Buffer.from('# Brief').toString('base64')}` }],
+    });
+    expect(upload.status).toBe(202);
+    const view = await waitFor(async () => {
+      const data = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; artifacts: { id: string; name: string }[]; messages: { artifactIds?: string[] }[] };
+      return !data.busy && data.artifacts.length ? data : undefined;
+    });
+    expect(view.artifacts[0]!.name).toBe('brief.md');
+    expect(view.messages.some((message) => message.artifactIds?.includes(view.artifacts[0]!.id))).toBe(true);
+    const preview = await fetch(`${base}/api/cowork/artifacts/${view.artifacts[0]!.id}/preview`);
+    expect(preview.status).toBe(200);
+    expect(await preview.text()).toContain('# Brief');
+
+    const store = (serverInstance as unknown as { cowork: () => CoworkStore }).cowork();
+    const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'permission', title: 'Allow host', detail: 'Work in Agent Gitu workspace', permission: 'host' });
+    const approved = await post(base, `/api/cowork/requests/${request.id}`, { action: 'approve' });
+    expect(approved.status).toBe(200);
+    expect((approved.json['agent'] as { useHostComputer: boolean }).useHostComputer).toBe(true);
+  });
+
   it('accepts and actually answers a second send after the current turn', async () => {
     // First reply is delayed so the busy window is observable; the group
     // chain only produces one message.
@@ -771,6 +849,7 @@ describe('cowork server routes', () => {
     const receiver = (await post(base, '/api/cowork/agents', makeAgentInput('wake-receiver'))).json['agent'] as { id: string };
     const senderChat = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [sender.id] })).json['conversation'] as { id: string };
     const receiverChat = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [receiver.id] })).json['conversation'] as { id: string };
+    const groupChat = (await post(base, '/api/cowork/conversations', { kind: 'group', memberIds: [sender.id, receiver.id], chiefId: sender.id, title: 'Private inbox test' })).json['conversation'] as { id: string };
     const internals = serverInstance as unknown as {
       cowork: () => CoworkStore;
       coworkAutonomyTick: () => void;
@@ -778,7 +857,7 @@ describe('cowork server routes', () => {
     };
     const store = internals.cowork();
     store.addFollowUp({ conversationId: senderChat.id, agentId: sender.id, note: 'check the finished build', dueAt: new Date(Date.now() - 1_000).toISOString() });
-    const mail = store.addInbox({ fromAgentId: sender.id, toAgentId: receiver.id, conversationId: senderChat.id, text: 'review the release notes' });
+    const mail = store.addInbox({ fromAgentId: sender.id, toAgentId: receiver.id, conversationId: groupChat.id, text: 'review the release notes' });
     mail.createdAt = new Date(Date.now() - 30_000).toISOString();
 
     // A due reminder remains queued while its conversation is occupied.
@@ -798,6 +877,8 @@ describe('cowork server routes', () => {
     expect(store.inboxFor(receiver.id)).toHaveLength(0);
     const recipientMessages = await fetch(`${base}/api/cowork/conversations/${receiverChat.id}/messages`).then((r) => r.json()) as { messages: { text: string }[] };
     expect(recipientMessages.messages.some((message) => message.text.includes('review the release notes'))).toBe(true);
+    const groupMessages = await fetch(`${base}/api/cowork/conversations/${groupChat.id}/messages`).then((r) => r.json()) as { messages: { text: string }[] };
+    expect(groupMessages.messages.some((message) => message.text.includes('review the release notes'))).toBe(false);
   });
 
   it('runs a mission to completion over HTTP, and unblocks a paused one', async () => {

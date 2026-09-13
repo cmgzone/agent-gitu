@@ -9,6 +9,12 @@ const IMAGE = 'agent-gitu-cowork:1';
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
 
+export interface CoworkSharedFile {
+  artifactId: string;
+  name: string;
+  dataBase64: string;
+}
+
 /** Docker receives argv and stdin separately: agent input never becomes host shell code. */
 export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_000) =>
   new Promise((resolve, reject) => {
@@ -207,7 +213,13 @@ export class CoworkComputer {
     }
   }
 
-  async execute(tool: string, params: Record<string, unknown>, signal?: AbortSignal, conversationId?: string): Promise<ToolResult> {
+  async execute(
+    tool: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+    conversationId?: string,
+    onSharedFile?: (file: CoworkSharedFile) => void,
+  ): Promise<ToolResult> {
     try {
       signal?.throwIfAborted();
       if (tool === 'computer_status') return { ok: true, output: JSON.stringify(this.status()) };
@@ -225,8 +237,10 @@ export class CoworkComputer {
           const exported = await this.request('export_file', params, signal);
           if (!exported.ok) return exported;
           const artifactId = randomUUID();
+          const name = path.basename(String(params['path'] ?? 'file'));
           mkdirSync(folder, { recursive: true });
           writeFileSync(path.join(folder, `${artifactId}.json`), JSON.stringify({ agentId: this.agentId, path: params['path'], data: exported.output }));
+          onSharedFile?.({ artifactId, name, dataBase64: exported.output });
           return { ok: true, output: `Shared ${String(params['path'])}. Artifact id: ${artifactId}. Teammates in this conversation can use receive_file with this id.` };
         }
         const artifactId = String(params['artifactId'] ?? '');

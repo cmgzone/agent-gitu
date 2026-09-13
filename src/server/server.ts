@@ -22,7 +22,8 @@ import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, type CoworkProgress } from '../cowork/runner.js';
 import type { CoworkMission } from '../cowork/store.js';
 import { CoworkComputer } from '../cowork/computer.js';
-import { TelegramPoller, TelegramReplyStream, recentTelegramChats } from '../cowork/telegram.js';
+import { TelegramPoller, TelegramReplyStream, recentTelegramChats, sendTelegramDocument } from '../cowork/telegram.js';
+import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
 import { ProviderError, allProviderSpecs, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
@@ -814,6 +815,17 @@ export class GituServer {
     for (const send of this.coworkSubscribers.get(conversationId) ?? []) send();
   }
 
+  /** Browser snapshots expose connection state, never the reusable bot secret. */
+  private coworkConversationView(conversation: CoworkConversation) {
+    const telegram = conversation.telegram;
+    return {
+      ...conversation,
+      ...(telegram
+        ? { telegram: { enabled: telegram.enabled, chatId: telegram.chatId, chatTitle: telegram.chatTitle, tokenSaved: Boolean(telegram.token) } }
+        : {}),
+    };
+  }
+
   private coworkView(conversationId: string, after = 0, rosterRevision = -1) {
     const store = this.cowork();
     const run = this.coworkRuns.get(conversationId);
@@ -828,8 +840,11 @@ export class GituServer {
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
       missions: [...activeMissions, ...recentMissions],
+      artifacts: store.artifacts(conversationId),
+      todos: store.todos(conversationId),
+      requests: store.requests(conversationId).filter((request) => request.status === 'open' || (request.resolvedAt && Date.now() - Date.parse(request.resolvedAt) < 86_400_000)),
       rosterRevision: store.rosterRevision,
-      roster: rosterRevision !== store.rosterRevision ? { agents: store.listAgents(), conversations: store.listConversations() } : undefined,
+      roster: rosterRevision !== store.rosterRevision ? { agents: store.listAgents(), conversations: store.listConversations().map((conversation) => this.coworkConversationView(conversation)) } : undefined,
       deleted: !store.getConversation(conversationId),
     };
   }
@@ -864,7 +879,7 @@ export class GituServer {
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(agent.id);
     if (!context) {
-      const workspace = nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
+      const workspace = agent.useHostComputer ? ensureGituHome().workspace : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
       mkdirSync(workspace, { recursive: true });
       const marker = nodePath.join(workspace, 'package.json');
       if (!existsSync(marker)) writeFileSync(marker, '{"name":"cowork-profile","private":true}');
@@ -922,9 +937,16 @@ export class GituServer {
       token: tg.token,
       chatId: '*',
       chatTitle: tg.chatTitle,
-      onMessage: (from, text, chatId) => {
+      initialOffset: tg.offset,
+      onOffset: (offset) => this.cowork().updateTelegramOffset(tg.token!, offset),
+      onMessage: (from, text, chatId, file) => {
         for (const linked of this.cowork().listConversations()) {
-          if (linked.telegram?.enabled && linked.telegram.token === tg.token && linked.telegram.chatId === chatId) this.dispatchCoworkMessage(linked.id, text, 'telegram', from);
+          if (linked.telegram?.enabled && linked.telegram.token === tg.token && linked.telegram.chatId === chatId) {
+            const artifactIds = file
+              ? [this.cowork().addArtifact({ conversationId: linked.id, name: file.name, mime: file.mime, dataBase64: file.dataBase64 }).id]
+              : undefined;
+            this.dispatchCoworkMessage(linked.id, text, 'telegram', from, artifactIds);
+          }
         }
       },
       onError: (message) => console.error(`[hermes] cowork telegram (${conv.id}): ${message}`),
@@ -941,7 +963,7 @@ export class GituServer {
   }
 
   /** Public entry: append a user-side message and start the team's response. */
-  private dispatchCoworkMessage(conversationId: string, text: string, via: CoworkMessage['via'], from?: string): { ok: boolean; queued?: boolean; error?: string } {
+  private dispatchCoworkMessage(conversationId: string, text: string, via: CoworkMessage['via'], from?: string, artifactIds?: string[]): { ok: boolean; queued?: boolean; error?: string } {
     const store = this.cowork();
     const conv = store.getConversation(conversationId);
     if (!conv) return { ok: false, error: 'conversation not found' };
@@ -951,11 +973,11 @@ export class GituServer {
     if (run?.busy) {
       if (run.abort.signal.aborted) return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
       if (run.queue.length >= 50) return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
-      run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from }));
+      run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds }));
       this.publishCowork(conversationId);
       return { ok: true, queued: true };
     }
-    const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from });
+    const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds });
     // A user reply in a conversation with a blocked mission is guidance for it.
     for (const mission of store.missions(conversationId)) {
       if (mission.status !== 'blocked') continue;
@@ -1007,6 +1029,15 @@ export class GituServer {
       const beginStream = () => {
         if (tg?.enabled && tg.token && tg.chatId) stream = new TelegramReplyStream(tg.token, tg.chatId);
       };
+      const sendArtifacts = async (message: CoworkMessage): Promise<void> => {
+        if (!tg?.enabled || !tg.token || !tg.chatId) return;
+        for (const id of message.artifactIds ?? []) {
+          const artifact = store.getArtifact(id);
+          const filePath = store.artifactPath(id);
+          if (!artifact || !filePath) continue;
+          await sendTelegramDocument(undefined, tg.token, tg.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${message.agentName ?? 'Agent Gitu'} shared ${artifact.name}`);
+        }
+      };
       try {
       await runConversationTurn({
         conversation: conv,
@@ -1043,7 +1074,10 @@ export class GituServer {
             this.publishCowork(conversationId);
             if (!stream) beginStream();
             const tools = message.tools?.map((t) => `${t.name}: ${t.ok ? 'completed' : 'failed'}`).join(', ');
-            try { await stream?.finish(`${message.agentName ? message.agentName + ': ' : ''}${message.text}${tools ? '\nTools: ' + tools : ''}`); }
+            try {
+              await stream?.finish(`${message.agentName ? message.agentName + ': ' : ''}${message.text}${tools ? '\nTools: ' + tools : ''}`);
+              await sendArtifacts(message);
+            }
             catch (err) {
               run.telegramError = (err as Error).message;
               store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${run.telegramError}` });
@@ -1131,6 +1165,15 @@ export class GituServer {
       }
       stream = undefined;
     };
+    const sendArtifacts = async (artifactIds: string[] | undefined): Promise<void> => {
+      if (!telegram?.enabled || !telegram.token || !telegram.chatId) return;
+      for (const id of artifactIds ?? []) {
+        const artifact = store.getArtifact(id);
+        const filePath = store.artifactPath(id);
+        if (!artifact || !filePath) continue;
+        await sendTelegramDocument(undefined, telegram.token, telegram.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${agent.name} shared ${artifact.name}`);
+      }
+    };
     try {
       const result = await runMissionSession({
         mission,
@@ -1171,12 +1214,13 @@ export class GituServer {
       const fresh = store.getMission(missionId);
       if (!fresh || fresh.status !== 'running') return;
       const turns = fresh.turns + 1;
-      const appendNotice = async (text: string): Promise<void> => {
-        if (!store.getConversation(conversationId)) return;
-        store.appendMessage(conversationId, { role: 'system', via: 'web', text });
-        this.publishCowork(conversationId);
-        await finishStream(text);
-      };
+       const appendNotice = async (text: string, artifactIds?: string[]): Promise<void> => {
+         if (!store.getConversation(conversationId)) return;
+         store.appendMessage(conversationId, { role: 'system', via: 'web', text, artifactIds });
+         this.publishCowork(conversationId);
+         await finishStream(text);
+         await sendArtifacts(artifactIds);
+       };
       if (result.status === 'done') {
         store.updateMission(missionId, {
           status: 'done',
@@ -1186,7 +1230,7 @@ export class GituServer {
           finishedAt: new Date().toISOString(),
           nextWakeAt: undefined,
         });
-        await appendNotice(`Mission complete — ${result.result ?? result.progress}`);
+        await appendNotice(`Mission complete — ${result.result ?? result.progress}`, result.artifactIds);
       } else if (result.status === 'blocked') {
         store.updateMission(missionId, {
           status: 'blocked',
@@ -1195,7 +1239,7 @@ export class GituServer {
           turns,
           nextWakeAt: undefined,
         });
-        await appendNotice(`Mission paused — ${result.blockers ?? 'needs your input'}. Reply here to unblock it.`);
+        await appendNotice(`Mission paused — ${result.blockers ?? 'needs your input'}. Reply here to unblock it.`, result.artifactIds);
       } else if (turns >= fresh.maxTurns) {
         store.updateMission(missionId, {
           status: 'failed',
@@ -1205,7 +1249,7 @@ export class GituServer {
           result: `Turn budget exhausted (${fresh.maxTurns} sessions). Last progress: ${result.progress}`,
           nextWakeAt: undefined,
         });
-        await appendNotice(`Mission stopped — turn budget of ${fresh.maxTurns} sessions ran out. Last progress: ${result.progress}`);
+        await appendNotice(`Mission stopped — turn budget of ${fresh.maxTurns} sessions ran out. Last progress: ${result.progress}`, result.artifactIds);
       } else {
         store.updateMission(missionId, { progress: result.progress, turns, nextWakeAt: new Date(Date.now() + 20_000).toISOString() });
       }
@@ -1278,7 +1322,9 @@ export class GituServer {
         store.takeFollowUp(followUp.id);
       }
     }
-    // 3. Inbox mail is delivered to the recipient's conversation.
+    // 3. Inbox mail is delivered privately in the recipient's DM. Never append
+    // an inbox instruction to the originating group, where other agents could
+    // see a message that was addressed to one teammate.
     for (const mail of store.dueInbox(now)) {
       const from = store.getAgent(mail.fromAgentId);
       const to = store.getAgent(mail.toAgentId);
@@ -1286,11 +1332,8 @@ export class GituServer {
         store.markInboxDelivered([mail.id]);
         continue;
       }
-      const original = store.getConversation(mail.conversationId);
-      const target = original && original.memberIds.includes(mail.toAgentId)
-        ? original
-        : store.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === mail.toAgentId)
-          ?? store.saveConversation({ kind: 'dm', memberIds: [mail.toAgentId] });
+      const target = store.listConversations().find((c) => c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === mail.toAgentId)
+        ?? store.saveConversation({ kind: 'dm', memberIds: [mail.toAgentId] });
       const run = this.coworkRuns.get(target.id);
       if (run?.busy) continue; // delivered on a later tick
       this.dispatchAgentWake(target.id, mail.toAgentId, `Inbox — task from @${from.name}: ${mail.text}. Act on it with your tools and report the result here.`);
@@ -1355,8 +1398,12 @@ export class GituServer {
             allowShell: body['allowShell'] === true,
             allowWrites: body['allowWrites'] === true,
             allowConfig: body['allowConfig'] === true,
+            useHostComputer: body['useHostComputer'] === true,
             chiefOfStaff: body['chiefOfStaff'] === true,
           });
+          const oldContext = this.coworkTools.get(agent.id);
+          oldContext?.mcp?.killAll();
+          this.coworkTools.delete(agent.id);
           this.sendJson(res, 200, { ok: true, agent });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
@@ -1456,7 +1503,7 @@ export class GituServer {
 
     if (path === '/api/cowork/conversations') {
       if (method === 'GET') {
-        this.sendJson(res, 200, { conversations: store.listConversations() });
+        this.sendJson(res, 200, { conversations: store.listConversations().map((conversation) => this.coworkConversationView(conversation)) });
         return true;
       }
       if (method === 'POST') {
@@ -1468,7 +1515,7 @@ export class GituServer {
             memberIds: Array.isArray(body['memberIds']) ? body['memberIds'].map(String) : [],
             chiefId: typeof body['chiefId'] === 'string' && body['chiefId'] ? body['chiefId'] : undefined,
           });
-          this.sendJson(res, 200, { ok: true, conversation: conv });
+          this.sendJson(res, 200, { ok: true, conversation: this.coworkConversationView(conv) });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
         }
@@ -1485,7 +1532,11 @@ export class GituServer {
         try {
           const telegram = body['telegram'] && typeof body['telegram'] === 'object' ? (body['telegram'] as Record<string, unknown>) : undefined;
           const schedule = body['schedule'] && typeof body['schedule'] === 'object' ? (body['schedule'] as Record<string, unknown>) : undefined;
-          if (telegram?.['enabled'] === true && store.listConversations().some((c) => c.id !== convId && c.telegram?.enabled && c.telegram.token === String(telegram['token'] ?? '').trim() && c.telegram.chatId === String(telegram['chatId'] ?? '').trim())) {
+          const existing = store.getConversation(convId);
+          const submittedToken = typeof telegram?.['token'] === 'string' ? telegram['token'].trim() : '';
+          const effectiveToken = submittedToken || existing?.telegram?.token;
+          const effectiveChatId = telegram?.['chatId'] !== undefined ? String(telegram['chatId'] ?? '') : existing?.telegram?.chatId;
+          if (telegram?.['enabled'] === true && store.listConversations().some((c) => c.id !== convId && c.telegram?.enabled && c.telegram.token === effectiveToken && c.telegram.chatId === effectiveChatId)) {
             throw new Error('This Telegram bot and chat are already linked to another conversation.');
           }
           const conv = store.updateConversation(convId, {
@@ -1495,9 +1546,10 @@ export class GituServer {
             telegram: telegram
               ? {
                   enabled: telegram['enabled'] === true,
-                  token: typeof telegram['token'] === 'string' ? telegram['token'] : undefined,
+                  token: effectiveToken,
                   chatId: telegram['chatId'] !== undefined ? String(telegram['chatId'] ?? '') : undefined,
                   chatTitle: typeof telegram['chatTitle'] === 'string' ? telegram['chatTitle'] : undefined,
+                  offset: effectiveToken === existing?.telegram?.token ? existing?.telegram?.offset : undefined,
                 }
               : undefined,
             schedule: schedule ? { every: String(schedule['every'] ?? ''), goal: String(schedule['goal'] ?? ''), enabled: schedule['enabled'] !== false, lastRunAt: typeof schedule['lastRunAt'] === 'string' ? schedule['lastRunAt'] : undefined } : undefined,
@@ -1508,7 +1560,7 @@ export class GituServer {
           }
           // Telegram/schedule config changes take effect immediately.
           this.startCoworkPoller(conv);
-          this.sendJson(res, 200, { ok: true, conversation: conv });
+          this.sendJson(res, 200, { ok: true, conversation: this.coworkConversationView(conv) });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
         }
@@ -1580,7 +1632,21 @@ export class GituServer {
       }
       if (method === 'POST') {
         const body = await this.readBody(req);
-        const result = this.dispatchCoworkMessage(convId, String(body['text'] ?? ''), 'web');
+        const artifactIds: string[] = [];
+        try {
+          const files = Array.isArray(body['files']) ? (body['files'] as Record<string, unknown>[]).slice(0, 4) : [];
+          for (const file of files) {
+            const match = /^data:([^;,]*)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(String(file['dataUrl'] ?? ''));
+            if (!match?.[2]) throw new Error(`Invalid attachment: ${String(file['name'] ?? 'file')}`);
+            artifactIds.push(store.addArtifact({ conversationId: convId, name: String(file['name'] ?? 'file'), mime: String(file['type'] ?? match[1] ?? ''), dataBase64: match[2] }).id);
+          }
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+          return true;
+        }
+        const attached = artifactIds.map((id) => store.getArtifact(id)?.name).filter(Boolean);
+        const text = String(body['text'] ?? '').trim() || (attached.length ? `Attached ${attached.join(', ')}` : '');
+        const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined);
         this.sendJson(res, result.ok ? 202 : 409, result.ok ? { ok: true, queued: result.queued ?? false } : { error: result.error });
         return true;
       }
@@ -1633,6 +1699,83 @@ export class GituServer {
       return true;
     }
 
+    const requestMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)$/);
+    if (requestMatch && method === 'POST') {
+      const body = await this.readBody(req);
+      const request = store.getRequest(requestMatch[1]!);
+      if (!request || request.status !== 'open') {
+        this.sendJson(res, 404, { error: 'request not found or already answered' });
+        return true;
+      }
+      const action = String(body['action'] ?? '').toLowerCase();
+      const response = String(body['response'] ?? '').trim();
+      let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
+      if (request.kind === 'permission') {
+        if (action !== 'approve' && action !== 'deny') { this.sendJson(res, 400, { error: 'action must be approve or deny' }); return true; }
+        status = action === 'approve' ? 'approved' : 'denied';
+      }
+      else if (request.kind === 'recommendation') {
+        if (action !== 'accept' && action !== 'dismiss') { this.sendJson(res, 400, { error: 'action must be accept or dismiss' }); return true; }
+        status = action === 'accept' ? 'accepted' : 'dismissed';
+      }
+      else {
+        if (action !== 'answer') { this.sendJson(res, 400, { error: 'action must be answer' }); return true; }
+        if (!response) { this.sendJson(res, 400, { error: 'an answer is required' }); return true; }
+        status = 'answered';
+      }
+      const resolved = store.resolveRequest(request.id, status, response);
+      const agent = store.getAgent(request.agentId);
+      if (resolved?.status === 'approved' && agent && request.permission) {
+        const patch = request.permission === 'shell' ? { allowShell: true }
+          : request.permission === 'writes' ? { allowWrites: true }
+            : request.permission === 'config' ? { allowConfig: true }
+              : { useHostComputer: true };
+        store.saveAgent({ ...agent, ...patch });
+        const context = this.coworkTools.get(agent.id);
+        context?.mcp?.killAll();
+        this.coworkTools.delete(agent.id);
+      }
+      const answer = response || status;
+      store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : 'Recommendation'} ${status}: ${answer}.` });
+      this.publishCowork(request.conversationId);
+      const instruction = `The user responded to your ${request.kind} "${request.title}": ${answer}. Continue from that decision and report what you do.`;
+      if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
+        store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
+      }
+      this.sendJson(res, 200, { ok: true, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined });
+      return true;
+    }
+
+    const artifactPreviewMatch = path.match(/^\/api\/cowork\/artifacts\/([\w-]+)\/preview$/);
+    if (artifactPreviewMatch && method === 'GET') {
+      const artifact = store.getArtifact(artifactPreviewMatch[1]!);
+      const filePath = store.artifactPath(artifactPreviewMatch[1]!);
+      if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
+      if (artifact.mime === 'application/pdf' || /^image\//i.test(artifact.mime)) {
+        this.sendLocalFile(res, filePath, artifact.name, artifact.mime, true);
+        return true;
+      }
+      try {
+        const html = coworkDocumentPreview(filePath, artifact);
+        if (!html) { this.sendJson(res, 415, { error: 'preview unavailable for this file type' }); return true; }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' });
+        res.end(html);
+      } catch (err) {
+        this.sendJson(res, 422, { error: `document preview failed: ${(err as Error).message}` });
+      }
+      return true;
+    }
+
+    const artifactMatch = path.match(/^\/api\/cowork\/artifacts\/([\w-]+)$/);
+    if (artifactMatch && method === 'GET') {
+      const artifact = store.getArtifact(artifactMatch[1]!);
+      const filePath = store.artifactPath(artifactMatch[1]!);
+      if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
+      const inline = new URL(req.url ?? '/', 'http://localhost').searchParams.get('inline') === '1';
+      this.sendLocalFile(res, filePath, artifact.name, artifact.mime, inline);
+      return true;
+    }
+
     const stopMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/stop$/);
     if (stopMatch && method === 'POST') {
       const run = this.coworkRuns.get(stopMatch[1]!);
@@ -1650,7 +1793,8 @@ export class GituServer {
     if (path === '/api/cowork/telegram/chats' && method === 'POST') {
       const body = await this.readBody(req);
       try {
-        const token = String(body['token'] ?? '').trim();
+        const conversationId = String(body['conversationId'] ?? '');
+        const token = String(body['token'] ?? '').trim() || store.getConversation(conversationId)?.telegram?.token || '';
         const chats = this.coworkPollers.get(token)?.chats() ?? await recentTelegramChats(undefined, token);
         this.sendJson(res, 200, { chats });
       } catch (err) {

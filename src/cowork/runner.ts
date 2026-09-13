@@ -12,10 +12,9 @@ import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMission, Cow
  *
  * DMs are simple: the member agent answers with full tool access.
  * Group chats route turns through a bounded mention chain: an explicit
- * @mention answers directly; otherwise the chief of staff opens, and agents
- * summon teammates by mentioning them mid-reply. The chain ends when nobody
- * new is summoned or the per-message agent budget is spent, so two chatty
- * teammates can never loop forever at the user's expense.
+ * @mention targets those teammates, while an unmentioned message invites the
+ * whole group and lets the chief answer last with the combined context.
+ * Mention chains stay bounded so chatty teammates cannot loop forever.
  */
 
 const MAX_AGENT_MESSAGES_PER_TRIGGER = 5;
@@ -86,10 +85,12 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
     `You are "${agent.name}"${agent.tagline ? ` — ${agent.tagline}` : ''}, a teammate in Agent Gitu's cowork mode.`,
     `Your personality and operating instructions:\n${agent.systemPrompt}`,
     `Current date: ${now.toDateString()}.`,
-    deps?.computerFor
-      ? `You have your own persistent Linux virtual computer, private files, shell and browser. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so. If a tool result reports the virtual computer is unavailable, you are running on the user's computer instead: drop the /workspace prefix and use workspace-relative paths, and remember shell commands then execute on the host machine.`
+    agent.useHostComputer
+      ? `The user enabled direct use of their Agent Gitu workspace for you. File, shell and browser tools run on the user's computer with workspace-relative paths. Do not ask them to start Docker or your private computer. Stay inside the workspace, obey your shell/write/config switches, and use share_file for documents the user should open.`
+      : deps?.computerFor
+      ? `You have your own persistent Linux virtual computer, private files, shell and browser. Paths are relative to /workspace. Teammates cannot read your private files. Share findings in the conversation; use share_file and receive_file for artifacts. Never claim a tool succeeded unless its result says so. If a tool result reports the virtual computer is unavailable, tools fall back automatically to the user workspace: continue with workspace-relative paths and do not ask the user to install or start Docker.`
       : `Paths in tool calls are relative to your workspace.`,
-    `AUTONOMY: schedule_followup lets you promise and keep future work (you are woken with your note). message_teammate hands work to a teammate's inbox (they are woken to act). Use both deliberately — and always tell the user what you committed to.`,
+    `AUTONOMY: maintain a visible checklist with todo_manage. schedule_followup lets you promise future work; message_teammate hands work to a teammate. Use ask_user when a real answer is required, request_permission when a disabled capability is necessary, and recommend when the user should choose whether to follow your proposed next step. A question or permission card means stop and wait for the user's response. Use share_file for every finished document the user should open or download.`,
   ];
   if (deps?.userContext)
     parts.push(
@@ -123,7 +124,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       .join('\n');
     parts.push(
       `GROUP CHAT: "${conversation.title}" with these teammates:\n${roster}\n` +
-        `The user sees every message. Answer with your own expertise; when a teammate's specialty is needed, summon them by mentioning @Name (exactly their name) anywhere in your reply. Do not summon someone for what you can already answer. Never answer as or impersonate another teammate.`,
+        `The user sees every message. A message without @mentions is for the whole group, so every teammate contributes once and the chief answers last. A message with @Name is targeted to the named teammate(s). Answer with your own expertise; when a teammate's specialty is needed, summon them by mentioning @Name (exactly their name) anywhere in your reply. Never answer as or impersonate another teammate.`,
     );
     if (agent.id === resolveChief(conversation, members)?.id) {
       parts.push(
@@ -147,7 +148,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
   return parts.join('\n\n');
 }
 
-function transcript(messages: CoworkMessage[]): LlmMessage[] {
+function transcript(messages: CoworkMessage[], store?: CoworkStore): LlmMessage[] {
   const recent = messages.slice(-TRANSCRIPT_MESSAGES);
   const lines: string[] = [];
   let chars = 0;
@@ -159,7 +160,13 @@ function transcript(messages: CoworkMessage[]): LlmMessage[] {
           ? `${m.agentName ?? 'agent'} (assistant)`
           : 'system';
     const toolNote = m.tools && m.tools.length > 0 ? ` [used tools: ${m.tools.map((t) => t.name).join(', ')}]` : '';
-    const line = `${who}${toolNote}: ${m.text}`.slice(-MAX_TRANSCRIPT_CHARS);
+    const artifactNote = m.artifactIds?.length
+      ? ` [files: ${m.artifactIds.map((id) => {
+          const artifact = store?.getArtifact(id);
+          return artifact ? `${artifact.name} (artifact ${id})` : id;
+        }).join(', ')}]`
+      : '';
+    const line = `${who}${toolNote}${artifactNote}: ${m.text}`.slice(-MAX_TRANSCRIPT_CHARS);
     chars += line.length;
     if (chars > MAX_TRANSCRIPT_CHARS && lines.length > 0) break;
     lines.unshift(line);
@@ -180,7 +187,7 @@ function currentMembers(conversation: CoworkConversation, deps: CoworkRunnerDeps
 }
 
 export function buildCoworkMessages(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], history: CoworkMessage[], deps?: CoworkRunnerDeps): LlmMessage[] {
-  return [{ role: 'system', content: systemPrompt(agent, conversation, members, deps) }, ...transcript(history)];
+  return [{ role: 'system', content: systemPrompt(agent, conversation, members, deps) }, ...transcript(history, deps?.store)];
 }
 
 /** Run one agent's turn: LLM → tools → LLM … until a marker-free reply. */
@@ -200,9 +207,10 @@ async function agentTurn(input: {
   const llm = resilientLlm(client, { label: `cowork ${agent.name}` });
   const messages = buildCoworkMessages(agent, conversation, members, history, deps);
   const usedTools: { name: string; ok: boolean }[] = [];
+  const artifactIds: string[] = [];
   let ctx: ToolContext | undefined;
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, computerFor: deps.computerFor, signal: deps.signal } : undefined;
+    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, computerFor: deps.computerFor, signal: deps.signal, artifactIds } : undefined;
   let reply = '';
   const progress = (text: string, tool?: string, toolOk?: boolean) => deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk });
 
@@ -263,7 +271,7 @@ async function agentTurn(input: {
 
   const text = stripToolMarkers(reply) || '(no reply)';
   deps.signal?.throwIfAborted();
-  const stored = append({ role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', tools: usedTools.length ? usedTools : undefined });
+  const stored = append({ role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', tools: usedTools.length ? usedTools : undefined, artifactIds: artifactIds.length ? artifactIds : undefined });
   await deps.onMessage?.(stored);
   const pendingInbox = deps.store?.inboxFor(agent.id) ?? [];
   if (pendingInbox.length > 0) deps.store?.markInboxDelivered(pendingInbox.map((m) => m.id));
@@ -300,13 +308,18 @@ export async function runConversationTurn(input: {
     }
 
     const mentioned = mentionNames(trigger.text, members);
-    const queue: CoworkAgent[] = mentioned.length > 0 ? mentioned : [resolveChief(conversation, members)!];
+    const chief = resolveChief(conversation, members)!;
+    const broadcast = mentioned.length === 0;
+    // For a team-wide message, workers go first and the chief sees their
+    // contributions before replying. Every current member gets one turn.
+    const queue: CoworkAgent[] = broadcast ? [...members.filter((member) => member.id !== chief.id), chief] : mentioned;
     const responded = new Set<string>();
     for (const agent of queue) responded.add(agent.id);
-    const chief = resolveChief(conversation, members)!;
     let count = 0;
-    // Reserve the last slot for synthesis. Each worker answers once.
-    while (queue.length > 0 && count < MAX_AGENT_MESSAGES_PER_TRIGGER - 1) {
+    // Targeted chains reserve one slot for chief synthesis. Broadcasts already
+    // place the chief last, so their budget covers every group member.
+    const turnBudget = broadcast ? members.length : MAX_AGENT_MESSAGES_PER_TRIGGER - 1;
+    while (queue.length > 0 && count < turnBudget) {
       deps.signal?.throwIfAborted();
       const queued = queue.shift()!;
       members = currentMembers(conversation, deps);
@@ -371,6 +384,7 @@ export interface MissionSessionResult {
   result?: string;
   blockers?: string;
   criteriaMet?: boolean[];
+  artifactIds?: string[];
 }
 
 const MISSION_STATUS_PROTOCOL =
@@ -398,8 +412,9 @@ export async function runMissionSession(input: {
     const { mission, agent, deps } = input;
     const client = deps.resolveLlm(agent);
     const llm = resilientLlm(client, { label: `mission ${agent.name}` });
+    const artifactIds: string[] = [];
     const scope: CoworkToolScope | undefined =
-      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal } : undefined;
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, artifactIds } : undefined;
     let ctx: ToolContext | undefined;
     const messages: LlmMessage[] = [
       // The transcript is deliberately not included: missions run in their own
@@ -467,8 +482,9 @@ export async function runMissionSession(input: {
     if (status === 'done' && parsed && typeof parsed.result === 'string') session.result = parsed.result.slice(0, 4_000);
     if (status === 'blocked' && parsed && typeof (parsed.blockers ?? parsed.blocker) === 'string') session.blockers = String(parsed.blockers ?? parsed.blocker).slice(0, 1_500);
     if (criteriaMet) session.criteriaMet = criteriaMet;
+    if (artifactIds.length) session.artifactIds = artifactIds;
     if (session.status === 'working') {
-      const stored = input.append({ role: 'agent', agentId: agent.id, agentName: agent.name, via: 'agent', text: '[mission] ' + session.progress });
+      const stored = input.append({ role: 'agent', agentId: agent.id, agentName: agent.name, via: 'agent', text: '[mission] ' + session.progress, artifactIds: artifactIds.length ? artifactIds : undefined });
       await deps.onMessage?.(stored);
     }
     out = session;

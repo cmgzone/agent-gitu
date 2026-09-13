@@ -8,9 +8,16 @@ import type { LlmClient, LlmMessage } from '../../src/llm/llm.js';
 
 process.env.AGENT_GITU_HOME = mkdtempSync(path.join(tmpdir(), 'gitu-cowork-preview-'));
 const store = new CoworkStore();
-const chief = store.saveAgent({ name: 'Mira', systemPrompt: 'Coordinate the team.', chiefOfStaff: true });
+const chief = store.saveAgent({ name: 'Mira', systemPrompt: 'Coordinate the team.', chiefOfStaff: true, useHostComputer: true, allowShell: true, allowWrites: true });
 const writer = store.saveAgent({ name: 'Writer', systemPrompt: 'Write concise reports.' });
-store.saveConversation({ kind: 'group', title: 'Cowork live check', memberIds: [chief.id, writer.id], chiefId: chief.id });
+store.saveAgent({ name: 'Reviewer', systemPrompt: 'Review the finished work.' });
+const conversation = store.saveConversation({ kind: 'group', title: 'Cowork live check', memberIds: [chief.id, writer.id], chiefId: chief.id });
+const artifact = store.addArtifact({ conversationId: conversation.id, agentId: writer.id, name: 'launch-brief.md', mime: 'text/markdown', dataBase64: Buffer.from('# Launch brief\n\nReady for review.').toString('base64') });
+store.appendMessage(conversation.id, { role: 'agent', agentId: writer.id, agentName: writer.name, text: 'The launch brief is ready to review.', via: 'web', artifactIds: [artifact.id] });
+store.addTodo({ conversationId: conversation.id, agentId: writer.id, text: 'Review launch brief with the team' });
+store.addRequest({ conversationId: conversation.id, agentId: chief.id, kind: 'permission', title: 'Allow host computer', detail: 'Use the Agent Gitu workspace directly for the release build.', permission: 'host' });
+store.addRequest({ conversationId: conversation.id, agentId: writer.id, kind: 'question', title: 'Which launch region?', detail: 'Pick the first region for the announcement.', options: ['Africa', 'Europe', 'Global'] });
+store.addRequest({ conversationId: conversation.id, agentId: writer.id, kind: 'recommendation', title: 'Publish a PDF copy', detail: 'A PDF is easier to share with the launch team.' });
 function answer(messages: LlmMessage[]) {
   const identity = String(messages[0]?.content);
   const latest = String(messages.at(-1)?.content);

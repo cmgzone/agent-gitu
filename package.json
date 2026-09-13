@@ -97,6 +97,7 @@
   },
   "dependencies": {
     "@openai/codex-sdk": "^0.150.1",
+    "fflate": "^0.8.3",
     "three": "^0.185.1"
   }
 }

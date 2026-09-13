@@ -32,6 +32,17 @@ function ui() {
 }
 
 describe('Cowork UI live updates', () => {
+  it('includes direct-computer permission, member picker, work cards and document previews', () => {
+    expect(COWORK_JS).toContain('id="cwAmHost"');
+    expect(COWORK_JS).toContain('function cwAddMemberModal');
+    expect(COWORK_JS).not.toContain("prompt('Add member");
+    expect(COWORK_JS).toContain('data-cwrequest');
+    expect(COWORK_JS).toContain('/api/cowork/artifacts/');
+    expect(COWORK_JS).toContain('id="cwFile"');
+    expect(COWORK_JS).toContain('id="cwTgChatId"');
+    expect(COWORK_JS).toContain('Telegram user or group chat ID');
+  });
+
   it('updates teammates during a partial reply without replacing the composer', () => {
     const u = ui();
     u.context.cwStartStream('group');

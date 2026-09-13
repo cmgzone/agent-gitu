@@ -4,7 +4,7 @@ import path from 'node:path';
 import { Script } from 'node:vm';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
-import { TelegramReplyStream, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
+import { sendTelegramDocument, TelegramReplyStream, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { buildCoworkMessages, runConversationTurn, type CoworkRunnerDeps, type CoworkProgress } from '../src/cowork/runner.js';
 import { executeCoworkTool, stripToolMarkers } from '../src/cowork/tools.js';
@@ -120,6 +120,48 @@ describe('Telegram live replies', () => {
     release();
     await finished;
     expect(calls.map((c) => c.body['text'])).toEqual(['first', 'final']);
+  });
+
+  it('sends generated documents as multipart attachments', async () => {
+    let form: FormData | undefined;
+    const fetchImpl: TelegramFetch = async (_url, init) => {
+      form = init?.body as FormData;
+      return { ok: true, status: 200, text: async () => '{"ok":true,"result":{}}' };
+    };
+    await sendTelegramDocument(fetchImpl, token, '42', { name: 'report.txt', mime: 'text/plain', bytes: new TextEncoder().encode('ready') }, 'Agent result');
+    expect(form).toBeInstanceOf(FormData);
+    expect(form!.get('chat_id')).toBe('42');
+    expect(form!.get('caption')).toBe('Agent result');
+    const file = form!.get('document') as File;
+    expect(file.name).toBe('report.txt');
+    expect(await file.text()).toBe('ready');
+  });
+
+  it('downloads inbound documents and persists the next update offset', async () => {
+    const offsets: number[] = [];
+    const received: { text: string; file?: { name: string; dataBase64: string } }[] = [];
+    let polls = 0;
+    const bytes = new TextEncoder().encode('telegram file');
+    const fetchImpl: TelegramFetch = async (url, init) => {
+      if (url.includes('/file/')) return { ok: true, status: 200, text: async () => '', arrayBuffer: async () => bytes.buffer };
+      if (url.endsWith('/getFile')) return { ok: true, status: 200, text: async () => '{"ok":true,"result":{"file_path":"documents/report.txt"}}' };
+      polls++;
+      if (polls === 1) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: [{ update_id: 75, message: { message_id: 9, date: Date.now() / 1000, chat: { id: 42 }, from: { first_name: 'Ada' }, caption: 'Please review', document: { file_id: 'doc-1', file_name: 'report.txt', mime_type: 'text/plain', file_size: bytes.length } } }] }) };
+      }
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    };
+    const poller = new TelegramPoller({
+      token, chatId: '42', fetchImpl, initialOffset: 70,
+      onOffset: (offset) => offsets.push(offset),
+      onMessage: (_from, text, _chat, file) => received.push({ text, file }),
+    });
+    poller.start();
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    poller.stop();
+    expect(offsets).toEqual([76]);
+    expect(received[0]!.text).toBe('Please review');
+    expect(received[0]!.file).toEqual({ name: 'report.txt', mime: 'text/plain', dataBase64: Buffer.from(bytes).toString('base64') });
   });
 });
 
@@ -295,7 +337,6 @@ describe('cowork streaming and tool execution', () => {
     const broken = input.store.saveAgent({ name: 'broken', systemPrompt: 'Help.' });
     const healthy = input.store.saveAgent({ name: 'healthy', systemPrompt: 'Help.' });
     const conversation = input.store.saveConversation({ kind: 'group', memberIds: [input.agent.id, broken.id, healthy.id], chiefId: input.agent.id });
-    let chiefCalls = 0;
     const deps = {
       ...input.deps,
       agents: [input.agent, broken, healthy],
@@ -304,14 +345,13 @@ describe('cowork streaming and tool execution', () => {
           complete: async (messages: LlmMessage[]) => {
             if (agent.id === broken.id) throw new Error('Invalid API key');
             if (agent.id === healthy.id) return 'My part succeeded.';
-            if (chiefCalls++ === 0) return '@broken @healthy please help.';
             expect(JSON.stringify(messages)).toContain('Could not complete my part: Invalid API key');
             return 'Summary: partial success; one worker needs its connection fixed.';
           },
         }) as LlmClient,
     };
     const result = await runConversationTurn({ ...input, conversation, deps, append: (m) => input.store.appendMessage(conversation.id, m) });
-    expect(result.messages.map((m) => m.agentName)).toEqual(['resilient-chief', 'broken', 'healthy', 'resilient-chief']);
+    expect(result.messages.map((m) => m.agentName)).toEqual(['broken', 'healthy', 'resilient-chief']);
     expect(result.messages.at(-1)!.text).toContain('partial success');
   });
 });

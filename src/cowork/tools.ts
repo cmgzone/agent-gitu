@@ -1,4 +1,6 @@
 import { createProject } from '../workspace/home.js';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 import type { ToolResult } from '../types.js';
 import type { ToolContext } from '../tools/tools.js';
 import {
@@ -51,12 +53,14 @@ export interface CoworkToolScope {
   computerFor?: (agentId: string) => CoworkComputer;
   /** Set after the first host fallback in a turn (virtual computer unavailable). */
   hostFallbackNoticed?: boolean;
+  /** Artifacts presented during this turn are attached to the final message. */
+  artifactIds?: string[];
 }
 
 /** Tools that normally execute inside the agent's virtual computer. */
 const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'list_files', 'read_file', 'search_files', 'write_file', 'apply_edit', 'run_command', 'browse', 'share_file', 'receive_file'];
 /** Computer-only tools with no meaningful host equivalent. */
-const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process', 'share_file', 'receive_file'];
+const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process'];
 
 const HOST_FALLBACK_NOTICE =
   '[VIRTUAL COMPUTER UNAVAILABLE — tools now run on the user\'s computer. Use workspace-relative paths (never /workspace); shell commands execute on the host machine.]\n';
@@ -83,7 +87,7 @@ export interface CoworkToolDoc {
 export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'computer_status', doc: 'Inspect your private virtual computer and its setup status. params: {}', gate: undefined },
   { name: 'computer_process', doc: 'Inspect or stop a background process on your computer. params: {"action":"status","id":"..."} | {"action":"stop","id":"..."}', gate: 'shell' },
-  { name: 'share_file', doc: 'Publish a private file for this conversation. params: {"path":"report.md"}. Returns an artifact id teammates can receive.', gate: 'writes' },
+  { name: 'share_file', doc: 'Present a file in the conversation as an Open/Download document card and make it available to teammates. params: {"path":"report.pdf"}.', gate: 'writes' },
   { name: 'receive_file', doc: 'Copy a shared conversation artifact into your computer. params: {"artifactId":"...","path":"report.md"}', gate: 'writes' },
   { name: 'list_files', doc: 'List files in a folder. params: {"path":"src"}', gate: undefined },
   { name: 'read_file', doc: 'Read a text file. params: {"path":"src/x.ts"}', gate: undefined },
@@ -127,6 +131,10 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
   { name: 'schedule_followup', doc: 'Schedule your own future wake-up: you will be woken with this note and can act with your tools. params: {"inMinutes":30,"note":"verify the build and report"} (max 7 days)', gate: undefined },
   { name: 'message_teammate', doc: 'Put a task or message into a teammate\'s inbox — they are woken to act on it. Use for handing off work. params: {"to":"Name","text":"do X and report back"}', gate: undefined },
+  { name: 'todo_manage', doc: 'Maintain the visible conversation checklist. params: {"action":"add","text":"Draft report"} | {"action":"start|complete|block|cancel|delete","id":"ct-...","note":"optional"} | {"action":"list"}', gate: undefined },
+  { name: 'ask_user', doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}', gate: undefined },
+  { name: 'request_permission', doc: 'Ask the user to enable one capability for you. params: {"permission":"shell|writes|config|host","reason":"exact work that needs it"}. host means use the shared user workspace directly without Docker. Stop and wait after asking.', gate: undefined },
+  { name: 'recommend', doc: 'Post a recommendation card the user can accept or dismiss. params: {"title":"Use PostgreSQL","reason":"why","action":"what I will do if accepted"}', gate: undefined },
   {
     name: 'team_manage',
     doc: 'As chief of staff: hire or remove teammates. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"}',
@@ -172,9 +180,17 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
     const definition = COWORK_TOOLS.find((t) => t.name === tool);
     if (!definition) return { ok: false, output: `unknown tool "${tool}"` };
     if (!isGated(definition.gate, perms)) return blocked(tool);
+    if (scope?.agent.useHostComputer && COMPUTER_ROUTED_TOOLS.includes(tool) && !COMPUTER_ONLY_TOOLS.includes(tool)) {
+      params = toHostPaths(params);
+      return await dispatchHost();
+    }
     if (scope?.computerFor && COMPUTER_ROUTED_TOOLS.includes(tool)) {
       const computer = scope.computerFor(scope.agent.id);
-      const result = await computer.execute(tool, params, scope.signal, scope.conversationId);
+      const result = await computer.execute(tool, params, scope.signal, scope.conversationId, (file) => {
+        if (!scope.conversationId) throw new Error('File sharing requires a conversation.');
+        const artifact = scope.store.addArtifact({ id: file.artifactId, conversationId: scope.conversationId, agentId: scope.agent.id, name: file.name, dataBase64: file.dataBase64 });
+        (scope.artifactIds ??= []).push(artifact.id);
+      });
       const computerOnly = COMPUTER_ONLY_TOOLS.includes(tool);
       if (result.ok || computerOnly || computer.status().state !== 'unavailable') return result;
       // The virtual computer cannot start (no Docker, daemon down, …) — the
@@ -197,6 +213,27 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
     switch (tool) {
       case 'list_files':
         return toolListFiles(ctx, params);
+      case 'share_file': {
+        if (!scope?.conversationId) return { ok: false, output: 'share_file requires a conversation.' };
+        const requested = String(params['path'] ?? '');
+        const abs = ctx.guard.resolve(requested);
+        const info = statSync(abs);
+        if (!info.isFile()) return { ok: false, output: 'share_file path is not a file.' };
+        if (info.size > 2_000_000) return { ok: false, output: 'share_file exceeds the 2 MB Cowork limit.' };
+        const artifact = scope.store.addArtifact({ conversationId: scope.conversationId, agentId: scope.agent.id, name: path.basename(abs), dataBase64: readFileSync(abs).toString('base64') });
+        (scope.artifactIds ??= []).push(artifact.id);
+        return { ok: true, output: `Presented ${artifact.name}. Artifact id: ${artifact.id}.` };
+      }
+      case 'receive_file': {
+        if (!scope) return { ok: false, output: 'receive_file requires a Cowork session.' };
+        const artifactId = String(params['artifactId'] ?? '');
+        const source = scope.store.artifactPath(artifactId);
+        if (!source) return { ok: false, output: 'Artifact not found.' };
+        const target = ctx.guard.resolve(String(params['path'] ?? scope.store.getArtifact(artifactId)?.name ?? 'file'));
+        mkdirSync(path.dirname(target), { recursive: true });
+        writeFileSync(target, readFileSync(source));
+        return { ok: true, output: `Received artifact ${artifactId} at ${target}.` };
+      }
       case 'read_file':
         return toolReadFile(ctx, params);
       case 'search_files':
@@ -263,6 +300,14 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return coworkScheduleFollowup(scope, params);
       case 'message_teammate':
         return coworkMessageTeammate(scope, params);
+      case 'todo_manage':
+        return coworkTodoManage(scope, params);
+      case 'ask_user':
+        return coworkAskUser(scope, params);
+      case 'request_permission':
+        return coworkRequestPermission(scope, params);
+      case 'recommend':
+        return coworkRecommend(scope, params);
       case 'team_manage':
         return coworkTeamManage(scope, params);
       default:
@@ -348,6 +393,71 @@ function coworkMessageTeammate(scope: CoworkToolScope | undefined, params: Recor
     return { ok: true, output: `Delivered to @${target.name}'s inbox. They will be woken to act on it shortly. Tell the user about the hand-off in your reply.` };
   } catch (err) {
     return { ok: false, output: `message_teammate failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkTodoManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope?.conversationId) return { ok: false, output: 'todo_manage requires a conversation.' };
+  const action = String(params['action'] ?? 'list').toLowerCase();
+  try {
+    if (action === 'list') {
+      const todos = scope.store.todos(scope.conversationId).filter((todo) => todo.agentId === scope.agent.id);
+      return { ok: true, output: todos.length ? todos.map((todo) => `${todo.id} [${todo.status}] ${todo.text}${todo.note ? ` — ${todo.note}` : ''}`).join('\n') : 'Your todo list is empty.' };
+    }
+    if (action === 'add') {
+      const todo = scope.store.addTodo({ conversationId: scope.conversationId, agentId: scope.agent.id, text: String(params['text'] ?? '') });
+      return { ok: true, output: `Added todo ${todo.id}: ${todo.text}.` };
+    }
+    const id = String(params['id'] ?? '');
+    if (!id) return { ok: false, output: `todo_manage action "${action}" requires an id.` };
+    if (action === 'delete') return scope.store.removeTodo(id, scope.agent.id) ? { ok: true, output: `Deleted todo ${id}.` } : { ok: false, output: 'Todo not found or owned by another teammate.' };
+    const statuses = { start: 'in_progress', complete: 'done', block: 'blocked', cancel: 'cancelled' } as const;
+    const status = statuses[action as keyof typeof statuses];
+    if (!status) return { ok: false, output: 'todo_manage action must be list, add, start, complete, block, cancel, or delete.' };
+    const todo = scope.store.updateTodo(id, scope.agent.id, { status, note: typeof params['note'] === 'string' ? params['note'] : undefined });
+    return todo ? { ok: true, output: `Todo ${id} is now ${status}.` } : { ok: false, output: 'Todo not found or owned by another teammate.' };
+  } catch (err) {
+    return { ok: false, output: `todo_manage failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkAskUser(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope?.conversationId) return { ok: false, output: 'ask_user requires a conversation.' };
+  try {
+    const question = String(params['question'] ?? '').trim();
+    const detail = String(params['detail'] ?? question).trim();
+    const options = Array.isArray(params['options']) ? params['options'].map(String) : [];
+    const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: question, detail, options });
+    return { ok: true, output: `Question ${request.id} posted. Stop working and tell the user you are waiting for their answer.` };
+  } catch (err) {
+    return { ok: false, output: `ask_user failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkRequestPermission(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope?.conversationId) return { ok: false, output: 'request_permission requires a conversation.' };
+  const permission = String(params['permission'] ?? '').toLowerCase();
+  if (permission !== 'shell' && permission !== 'writes' && permission !== 'config' && permission !== 'host') return { ok: false, output: 'permission must be shell, writes, config, or host.' };
+  try {
+    const reason = String(params['reason'] ?? '').trim();
+    const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'permission', title: `Allow ${permission}`, detail: reason, permission });
+    return { ok: true, output: `Permission request ${request.id} posted. Stop working and wait for the user to approve or deny it.` };
+  } catch (err) {
+    return { ok: false, output: `request_permission failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkRecommend(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope?.conversationId) return { ok: false, output: 'recommend requires a conversation.' };
+  try {
+    const title = String(params['title'] ?? '').trim();
+    const reason = String(params['reason'] ?? '').trim();
+    const action = String(params['action'] ?? '').trim();
+    const detail = [reason, action ? `If accepted: ${action}` : ''].filter(Boolean).join('\n');
+    const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'recommendation', title, detail });
+    return { ok: true, output: `Recommendation ${request.id} posted. The user can accept or dismiss it.` };
+  } catch (err) {
+    return { ok: false, output: `recommend failed: ${(err as Error).message}` };
   }
 }
 

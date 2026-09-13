@@ -84,6 +84,35 @@ export const COWORK_CSS = String.raw`
   .cw-composer .cw-send { width: 32px; height: 32px; flex: none; border-radius: 10px; border: 0; background: var(--accent); color: #fff; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; }
   .cw-composer .cw-send:disabled { opacity: .4; cursor: default; }
   .cw-composer .cw-send.stop { background: var(--err); }
+  .cw-attach { width: 32px; height: 32px; flex: none; border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; }
+  .cw-attach:hover { color: var(--text); border-color: var(--accent); }
+  .cw-pending { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+  .cw-pending span { display: inline-flex; align-items: center; gap: 5px; max-width: 260px; border: 1px solid var(--border2); background: var(--card); border-radius: 8px; padding: 4px 8px; font-size: 11.5px; color: var(--muted); }
+  .cw-pending button { border: 0; background: transparent; color: var(--muted); padding: 0; line-height: 1; }
+  .cw-files { display: grid; gap: 7px; margin-top: 8px; }
+  .cw-file { display: flex; align-items: center; gap: 9px; min-width: 230px; max-width: 520px; border: 1px solid var(--border2); background: var(--card2); border-radius: 10px; padding: 8px 10px; }
+  .cw-file-ico { color: var(--accent); display: inline-flex; flex: none; }
+  .cw-file-ico svg { width: 20px; height: 20px; }
+  .cw-file-main { flex: 1; min-width: 0; }
+  .cw-file-name { display: block; font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cw-file-meta { display: block; color: var(--faint); font-size: 10.5px; }
+  .cw-file-actions { display: flex; gap: 5px; flex: none; }
+  .cw-file-actions .btn { padding: 3px 8px; font-size: 11px; }
+  .cw-work { display: grid; gap: 8px; margin-bottom: 8px; }
+  .cw-todos, .cw-request { border: 1px solid var(--border); background: var(--card); border-radius: 11px; padding: 8px 10px; }
+  .cw-todos summary { cursor: pointer; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+  .cw-todo { display: flex; gap: 7px; align-items: flex-start; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+  .cw-todo b { color: var(--text); font-weight: 500; }
+  .cw-todo.done { opacity: .6; text-decoration: line-through; }
+  .cw-request { border-color: rgba(91,168,255,.42); box-shadow: 0 0 0 1px rgba(91,168,255,.08) inset; }
+  .cw-request .k { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+  .cw-request .t { font-size: 12.5px; font-weight: 650; margin-top: 3px; }
+  .cw-request .d { font-size: 11.5px; color: var(--muted); margin-top: 3px; white-space: pre-wrap; }
+  .cw-request .cw-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .cw-request .cw-actions .btn { padding: 4px 10px; font-size: 11.5px; }
+  .cw-request input { flex: 1; min-width: 150px; background: var(--card2); border: 1px solid var(--border2); color: var(--text); border-radius: 7px; padding: 5px 8px; }
+  .cw-doc-modal .box { width: min(980px, 94vw); height: min(820px, 92vh); }
+  .cw-doc-frame { width: 100%; flex: 1; min-height: 0; border: 0; background: #fff; }
   .cw-info { width: 300px; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 14px; min-height: 0; }
   .cw-info h4 { margin: 2px 0 8px; font-size: 11px; letter-spacing: .1em; color: var(--faint); font-weight: 700; }
   .cw-info .cw-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 12px; }
@@ -181,11 +210,13 @@ export const COWORK_JS = String.raw`
     stop: CW_SVG_OPEN + '<rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
     send: CW_SVG_OPEN + '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
     target: CW_SVG_OPEN + '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>'
+    ,file: CW_SVG_OPEN + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>'
+    ,paperclip: CW_SVG_OPEN + '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, timer: null, infoOpen: true, missions: [] };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [] };
     return S.cw;
   }
   function cwStopPoll() {
@@ -352,6 +383,14 @@ export const COWORK_JS = String.raw`
     cw.working = null;
     cw.progress = null;
     cw.queued = 0;
+    cw.artifacts = [];
+    cw.todos = [];
+    cw.requests = [];
+    cw.pendingFiles = [];
+    cw.artifacts = [];
+    cw.todos = [];
+    cw.requests = [];
+    cw.pendingFiles = [];
     cw.rosterRevision = -1;
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.remove('rail-open');
@@ -403,8 +442,12 @@ export const COWORK_JS = String.raw`
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<div class="cw-typing" id="cwTyping" hidden></div>' +
       '<div class="cw-composer-wrap">' +
+        '<div class="cw-work" id="cwWork"></div>' +
+        '<div class="cw-pending" id="cwPending"></div>' +
         '<div class="cw-mentions" id="cwMentions"' + (conv.kind === 'group' ? '' : ' hidden') + '></div>' +
-        '<div class="cw-composer"><textarea id="cwInput" rows="1" placeholder="' + (conv.kind === 'group' ? 'Message the team — @Name to bring someone in' : 'Message ' + esc(conv.title)) + '"></textarea>' +
+        '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
+        '<button class="cw-attach" id="cwAttach" title="Attach documents or files" aria-label="Attach files">' + cwIcon('paperclip') + '</button>' +
+        '<textarea id="cwInput" rows="1" placeholder="' + (conv.kind === 'group' ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + '"></textarea>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button></div>' +
       '</div>';
     $('cwInfoBtn').onclick = function () { cw.infoOpen = !cw.infoOpen; $('cwInfo').style.display = cw.infoOpen ? '' : 'none'; $('cwInfoBtn').textContent = cw.infoOpen ? 'Hide panel' : 'Chat panel'; };
@@ -414,9 +457,13 @@ export const COWORK_JS = String.raw`
     var input = $('cwInput');
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); cwSend(); } });
     input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; });
+    $('cwAttach').onclick = function () { $('cwFile').click(); };
+    $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };
     $('cwSend').onclick = cwSend;
     cwRenderMembers();
     cwRenderMsgs();
+    cwRenderWork();
+    cwRenderPending();
     cwRenderInfo();
     cwRenderTyping();
   }
@@ -454,16 +501,125 @@ export const COWORK_JS = String.raw`
     badge.hidden = !(cw.missions || []).some(function (mission) { return mission.conversationId === cw.active && mission.status === 'running'; });
   }
 
+  function cwArtifact(id) {
+    var artifacts = cwEnsure().artifacts || [];
+    for (var i = 0; i < artifacts.length; i++) if (artifacts[i].id === id) return artifacts[i];
+    return null;
+  }
+
+  function cwBytes(size) {
+    var value = Number(size) || 0;
+    if (value < 1024) return value + ' B';
+    if (value < 1048576) return Math.round(value / 1024) + ' KB';
+    return (value / 1048576).toFixed(1) + ' MB';
+  }
+
+  function cwCanPreview(file) {
+    return /^(image\/|text\/|application\/pdf|application\/json)/i.test(file.mime || '') || /\.(md|markdown|csv|json|txt|log|docx|xlsx|pptx)$/i.test(file.name || '');
+  }
+
+  function cwFilesHtml(ids) {
+    var files = (ids || []).map(cwArtifact).filter(Boolean);
+    if (!files.length) return '';
+    return '<div class="cw-files">' + files.map(function (file) {
+      return '<div class="cw-file"><span class="cw-file-ico">' + cwIcon('file') + '</span><span class="cw-file-main">' +
+        '<span class="cw-file-name" title="' + esc(file.name) + '">' + esc(file.name) + '</span><span class="cw-file-meta">' + esc(cwBytes(file.size)) + '</span></span>' +
+        '<span class="cw-file-actions">' + (cwCanPreview(file) ? '<button class="btn ghost" data-cwpreview="' + esc(file.id) + '">Open</button>' : '') +
+        '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a></span></div>';
+    }).join('') + '</div>';
+  }
+
+  function cwBindFileCards(root) {
+    if (!root) return;
+    root.querySelectorAll('[data-cwpreview]').forEach(function (button) {
+      button.onclick = function () { cwPreviewFile(button.getAttribute('data-cwpreview')); };
+    });
+  }
+
+  function cwPreviewFile(id) {
+    var file = cwArtifact(id);
+    if (!file) { toast('That file is no longer available', true); return; }
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal cw-doc-modal';
+    modal.innerHTML = '<div class="box" style="display:flex;flex-direction:column"><div class="bar"><span>' + esc(file.name) + '</span><span style="flex:1"></span>' +
+      '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a><button class="btn ghost" data-close>Close</button></div>' +
+      '<iframe class="cw-doc-frame" title="Document preview" sandbox src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview"></iframe></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('[data-close]').onclick = function () { modal.remove(); };
+  }
+
+  function cwRequestHtml(request) {
+    var agent = cwAgentById(request.agentId);
+    var label = request.kind === 'permission' ? 'Permission request' : request.kind === 'question' ? 'Question' : 'Recommendation';
+    var controls = '';
+    if (request.kind === 'permission') controls = '<button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="approve">Allow</button><button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="deny">Deny</button>';
+    else if (request.kind === 'recommendation') controls = '<button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="accept">Accept</button><button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="dismiss">Dismiss</button>';
+    else controls = (request.options || []).map(function (option) { return '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="answer" data-response="' + esc(option) + '">' + esc(option) + '</button>'; }).join('') + '<input data-cwanswer="' + esc(request.id) + '" placeholder="Type your answer"><button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="answer">Send</button>';
+    return '<div class="cw-request"><div class="k">' + label + (agent ? ' · @' + esc(agent.name) : '') + '</div><div class="t">' + esc(request.title) + '</div>' +
+      (request.detail ? '<div class="d">' + esc(request.detail) + '</div>' : '') + '<div class="cw-actions">' + controls + '</div></div>';
+  }
+
+  function cwRenderWork() {
+    var cw = cwEnsure();
+    var el = $('cwWork');
+    if (!el) return;
+    var open = (cw.requests || []).filter(function (request) { return request.status === 'open'; });
+    var todos = (cw.todos || []).filter(function (todo) { return todo.status !== 'cancelled'; });
+    var active = todos.filter(function (todo) { return todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'blocked'; });
+    var todoHtml = todos.length ? '<details class="cw-todos"' + (active.length ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
+      return '<div class="cw-todo ' + esc(todo.status) + '"><span>' + (todo.status === 'done' ? '✓' : todo.status === 'blocked' ? '!' : '○') + '</span><b>' + esc(todo.text) + '</b><span>· ' + esc(todo.status.replace('_', ' ')) + '</span></div>';
+    }).join('') + '</details>' : '';
+    el.innerHTML = open.map(cwRequestHtml).join('') + todoHtml;
+    el.querySelectorAll('[data-cwrequest]').forEach(function (button) {
+      button.onclick = function () {
+        var id = button.getAttribute('data-cwrequest');
+        var action = button.getAttribute('data-action');
+        var response = button.getAttribute('data-response') || '';
+        var input = el.querySelector('[data-cwanswer="' + id + '"]');
+        if (!response && input) response = input.value.trim();
+        if (action === 'answer' && !response) { toast('Type an answer first', true); return; }
+        button.disabled = true;
+        api('/api/cowork/requests/' + encodeURIComponent(id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action, response: response }) })
+          .then(function (d) {
+            cw.requests = (cw.requests || []).map(function (request) { return request.id === id ? d.request : request; });
+            if (d.agent) cw.agents = cw.agents.map(function (agent) { return agent.id === d.agent.id ? d.agent : agent; });
+            cwRenderWork(); cwRenderInfo(); cwRenderRail(); cwPoll();
+          }).catch(function (e) { toast(e.message, true); button.disabled = false; });
+      };
+    });
+  }
+
+  function cwRenderPending() {
+    var cw = cwEnsure();
+    var el = $('cwPending');
+    if (!el) return;
+    el.innerHTML = (cw.pendingFiles || []).map(function (file, i) { return '<span title="' + esc(file.name) + '">' + cwIcon('file') + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(file.name) + '</span><button data-cwremovefile="' + i + '" title="Remove">×</button></span>'; }).join('');
+    el.querySelectorAll('[data-cwremovefile]').forEach(function (button) { button.onclick = function () { cw.pendingFiles.splice(Number(button.getAttribute('data-cwremovefile')), 1); cwRenderPending(); }; });
+  }
+
+  function cwAddFiles(files) {
+    var cw = cwEnsure();
+    var room = Math.max(0, 4 - (cw.pendingFiles || []).length);
+    files.slice(0, room).forEach(function (file) {
+      if (file.size > 2097152) { toast(file.name + ' is larger than 2 MB', true); return; }
+      var reader = new FileReader();
+      reader.onload = function () { cw.pendingFiles.push({ name: file.name, type: file.type || '', dataUrl: String(reader.result || '') }); cwRenderPending(); };
+      reader.onerror = function () { toast('Could not read ' + file.name, true); };
+      reader.readAsDataURL(file);
+    });
+    if (files.length > room) toast('You can attach up to 4 files at once', true);
+  }
+
   function cwBubbleHtml(m) {
     var conv = cwActiveConv();
     var members = conv ? cwConvMembers(conv) : [];
     var agent = m.agentId ? cwAgentById(m.agentId) : null;
-    if (m.role === 'system') return '<div class="cw-sys">' + esc(m.text) + '</div>';
+    if (m.role === 'system') return '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';
     if (m.role === 'user') {
       var via = '';
       if (m.via === 'telegram') via = ' · Telegram' + (m.from ? ' — ' + esc(m.from) : '');
       else if (m.via === 'schedule') via = ' · schedule';
-      return '<div class="cw-row me"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(m.text, members) + '</div></div>';
+      return '<div class="cw-row me"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(m.text, members) + cwFilesHtml(m.artifactIds) + '</div></div>';
     }
     var toolChips = '';
     if (m.tools && m.tools.length > 0) {
@@ -471,7 +627,7 @@ export const COWORK_JS = String.raw`
     }
     return '<div class="cw-row">' + cwAva(agent || { name: m.agentName || 'agent', avatar: { color: '#8f80ff', shape: 'cube' } }) +
       '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(m.agentName || 'agent') + '</span><span class="tg">' + cwTime(m.ts) + '</span></div>' +
-      cwBody(m.text, members) + toolChips + '</div></div>';
+      cwBody(m.text, members) + toolChips + cwFilesHtml(m.artifactIds) + '</div></div>';
   }
 
   function cwTime(ts) {
@@ -503,6 +659,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
     wrap.innerHTML = cw.msgs.map(function (m) { return cwBubbleHtml(m); }).join('') + '<div class="cw-row" id="cwLive" hidden></div>';
+    cwBindFileCards(wrap);
     cwRenderProgress();
     if (nearBottom || cw.msgs.length <= 2) wrap.scrollTop = wrap.scrollHeight;
   }
@@ -539,10 +696,13 @@ export const COWORK_JS = String.raw`
         '<h4>TELEGRAM GATEWAY</h4>' +
         '<div class="cw-card">' +
           '<div class="cw-check"><input type="checkbox" id="cwTgOn"' + (tg.enabled ? ' checked' : '') + '> <span>Connect this chat to Telegram</span></div>' +
-          '<label>Bot token (from @BotFather)</label><input type="password" id="cwTgToken" value="' + esc(tg.token || '') + '" placeholder="123456:ABC-DEF...">' +
-          '<label>Linked chat</label>' +
+          '<label>Bot token (from @BotFather)</label><input type="password" id="cwTgToken" value="" placeholder="' + (tg.tokenSaved ? 'Saved in this local app — leave blank to keep' : '123456:ABC-DEF...') + '">' +
+          '<label>Telegram user or group chat ID</label>' +
+          '<input type="text" id="cwTgChatId" value="' + esc(tg.chatId || '') + '" placeholder="Private: 123456789 · Group: -1001234567890">' +
+          '<label>Or choose a recent chat</label>' +
           '<div style="display:flex;gap:6px"><select id="cwTgChat"><option value="' + esc(tg.chatId || '') + '">' + esc(tg.chatTitle || tg.chatId || '— pick a chat —') + '</option></select>' +
           '<button class="btn ghost" id="cwTgFind" style="flex:none">Find chats</button></div>' +
+          '<div style="font-size:11px;color:var(--faint);margin-top:6px">For a private bot chat, your numeric Telegram user ID is also the chat ID. Group IDs are usually negative and may start with -100.</div>' +
           '<div style="font-size:11px;color:var(--faint);margin-top:6px">' + hint + '</div>' +
           '<div class="cw-actions"><button class="btn dark" id="cwTgSave">Save gateway</button></div>' +
         '</div>' +
@@ -557,17 +717,21 @@ export const COWORK_JS = String.raw`
       bind: function () {
         $('cwTgFind').onclick = function () {
           var token = $('cwTgToken').value.trim();
-          if (!token) { toast('Paste the bot token first', true); return; }
-          api('/api/cowork/telegram/chats', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: token }) })
+          if (!token && !tg.tokenSaved) { toast('Paste the bot token first', true); return; }
+          api('/api/cowork/telegram/chats', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: token, conversationId: conv.id }) })
             .then(function (d) {
               var sel = $('cwTgChat');
               sel.innerHTML = (d.chats || []).map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.title) + ' (' + esc(c.id) + ')</option>'; }).join('') || '<option value="">No chats found — message the bot first</option>';
+              if (sel.value) $('cwTgChatId').value = sel.value;
             })
             .catch(function (e) { toast(e.message, true); });
         };
+        $('cwTgChat').onchange = function () { if ($('cwTgChat').value) $('cwTgChatId').value = $('cwTgChat').value; };
         $('cwTgSave').onclick = function () {
           var sel = $('cwTgChat');
-          var body = { telegram: { enabled: $('cwTgOn').checked, token: $('cwTgToken').value.trim(), chatId: sel ? sel.value : '', chatTitle: sel && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : '' } };
+          var chatId = $('cwTgChatId').value.trim();
+          var selectedTitle = sel && sel.value === chatId && sel.selectedOptions[0] ? sel.selectedOptions[0].textContent : chatId;
+          var body = { telegram: { enabled: $('cwTgOn').checked, token: $('cwTgToken').value.trim(), chatId: chatId, chatTitle: selectedTitle } };
           api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
             .then(function (d) { cw.convs = cw.convs.map(function (c) { return c.id === d.conversation.id ? d.conversation : c; }); cwRenderChat(); cwRenderRail(); toast(d.conversation.telegram && d.conversation.telegram.enabled ? 'Telegram gateway connected' : 'Telegram gateway disabled'); })
             .catch(function (e) { toast(e.message, true); });
@@ -675,6 +839,7 @@ export const COWORK_JS = String.raw`
           (a.allowShell ? '<span class="chip" style="color:var(--amber)">shell allowed</span>' : '') +
           (a.allowWrites ? '<span class="chip" style="color:var(--amber)">writes allowed</span>' : '') +
           (a.allowConfig ? '<span class="chip" style="color:var(--amber)">tool setup</span>' : '') +
+          (a.useHostComputer ? '<span class="chip ok">using my computer</span>' : '') +
         '</div>' +
         (a.skills && a.skills.length ? '<div style="margin-top:8px;font-size:11.5px;color:var(--muted)">Skills: ' + esc(a.skills.join(', ')) + '</div>' : '') +
         '<div style="margin-top:10px;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:8px">Persistent memory: <b>' + ((cw.memoryCounts || {})[a.id] || 0) + '</b> facts <button class="btn ghost" id="cwMemClear" style="padding:2px 8px;font-size:11px">Clear</button></div>' +
@@ -730,16 +895,7 @@ export const COWORK_JS = String.raw`
       };
     });
     $('cwAddMember').onclick = function () {
-      var outside = cw.agents.filter(function (a) { return conv.memberIds.indexOf(a.id) < 0; });
-      if (outside.length === 0) { toast('Every teammate is already in this chat'); return; }
-      var pick = outside.map(function (a) { return a.name + ' (' + a.tagline + ')'; }).map(function (t, i) { return (i + 1) + '. ' + t; }).join('\n');
-      var name = prompt('Add member — type a name:\n' + pick);
-      if (!name) return;
-      var agent = cw.agents.filter(function (a) { return conv.memberIds.indexOf(a.id) < 0 && a.name.toLowerCase() === name.trim().toLowerCase(); })[0];
-      if (!agent) { toast('No teammate named ' + name, true); return; }
-      api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ memberIds: conv.memberIds.concat([agent.id]) }) })
-        .then(function (d) { cw.convs = cw.convs.map(function (c) { return c.id === d.conversation.id ? d.conversation : c; }); cwRenderChat(); cwRenderRail(); })
-        .catch(function (e) { toast(e.message, true); });
+      cwAddMemberModal(conv);
     };
     gw.bind();
     cwBindMissions(el, conv);
@@ -753,6 +909,10 @@ export const COWORK_JS = String.raw`
   }
 
   function cwComputerHtml(agent) {
+    if (agent.useHostComputer) {
+      return '<div class="cw-card"><h4>' + esc(agent.name) + ' · COMPUTER</h4><div class="chip ok">My computer</div>' +
+        '<p style="font-size:11.5px;color:var(--muted)">Uses the Agent Gitu workspace on this computer directly. Docker is not required. Shell and file changes still follow this teammate’s permissions.</p></div>';
+    }
     var computer = (cwEnsure().computers || []).filter(function (c) { return c.agentId === agent.id; })[0] || { state: 'stopped' };
     return '<div class="cw-card"><h4>' + esc(agent.name) + ' · COMPUTER</h4><div class="chip">' + esc(computer.state) + '</div>' +
       '<p style="font-size:11.5px;color:var(--muted)">Private Linux files, shell and browser. Files and browser sessions persist when stopped.</p>' +
@@ -761,6 +921,35 @@ export const COWORK_JS = String.raw`
       '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="stop">Stop</button>' +
       '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="screenshot">View browser</button></div>' +
       '<div data-screen="' + esc(agent.id) + '"></div></div>';
+  }
+
+  function cwAddMemberModal(conv) {
+    var cw = cwEnsure();
+    var outside = cw.agents.filter(function (agent) { return conv.memberIds.indexOf(agent.id) < 0; });
+    if (!outside.length) { toast('Every teammate is already in this chat'); return; }
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML = '<div class="box"><div class="bar"><span>Add members to ' + esc(conv.title) + '</span><span style="flex:1"></span><button class="btn ghost" data-cancel>Cancel</button></div>' +
+      '<div class="cw-body"><label>Available teammates</label><div class="cw-skills">' + outside.map(function (agent) { return '<button type="button" data-member="' + esc(agent.id) + '">' + esc(agent.name) + (agent.tagline ? ' · ' + esc(agent.tagline) : '') + '</button>'; }).join('') + '</div></div>' +
+      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" data-save disabled>Add selected</button></div></div>';
+    document.body.appendChild(modal);
+    var chosen = [];
+    modal.querySelector('[data-cancel]').onclick = function () { modal.remove(); };
+    modal.querySelectorAll('[data-member]').forEach(function (button) {
+      button.onclick = function () {
+        var id = button.getAttribute('data-member');
+        var index = chosen.indexOf(id);
+        if (index >= 0) { chosen.splice(index, 1); button.classList.remove('on'); } else { chosen.push(id); button.classList.add('on'); }
+        modal.querySelector('[data-save]').disabled = !chosen.length;
+      };
+    });
+    modal.querySelector('[data-save]').onclick = function () {
+      var save = modal.querySelector('[data-save]');
+      save.disabled = true;
+      api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ memberIds: conv.memberIds.concat(chosen) }) })
+        .then(function (d) { modal.remove(); cw.convs = cw.convs.map(function (item) { return item.id === d.conversation.id ? d.conversation : item; }); cwRenderChat(); cwRenderRail(); })
+        .catch(function (e) { toast(e.message, true); save.disabled = false; });
+    };
   }
 
   function cwBindComputers(el) {
@@ -827,8 +1016,14 @@ export const COWORK_JS = String.raw`
     cw.queued = d.queued || 0;
     var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
     cw.missions = d.missions || [];
+    var artifactsChanged = JSON.stringify(cw.artifacts || []) !== JSON.stringify(d.artifacts || []);
+    var workChanged = JSON.stringify(cw.todos || []) !== JSON.stringify(d.todos || []) || JSON.stringify(cw.requests || []) !== JSON.stringify(d.requests || []);
+    cw.artifacts = d.artifacts || [];
+    cw.todos = d.todos || [];
+    cw.requests = d.requests || [];
     if (rosterChanged) { cwRenderRail(); cwRenderMembers(); }
-    if (added || rosterChanged) cwRenderMsgs(); else cwRenderProgress();
+    if (added || rosterChanged || artifactsChanged) cwRenderMsgs(); else cwRenderProgress();
+    if (workChanged || rosterChanged) cwRenderWork();
     cwRenderTyping();
     if (missionsChanged) { cwRenderMissionBadge(); cwRenderInfo(); }
     if (rosterChanged || (wasBusy && !cw.busy)) cwRenderInfo();
@@ -897,13 +1092,16 @@ export const COWORK_JS = String.raw`
     var input = $('cwInput');
     if (!input) return;
     var text = input.value.trim();
-    if (!text) return;
+    var files = (cw.pendingFiles || []).slice();
+    if (!text && !files.length) return;
     if (!cw.active) { toast('Open a chat first', true); return; }
     input.value = '';
     input.style.height = 'auto';
-    api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text }) })
+    cw.pendingFiles = [];
+    cwRenderPending();
+    api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, files: files }) })
       .then(function () { cwPoll(); })
-      .catch(function (e) { toast(e.message, true); cwPoll(); });
+      .catch(function (e) { cw.pendingFiles = files.concat(cw.pendingFiles || []).slice(0, 4); cwRenderPending(); toast(e.message, true); cwPoll(); });
   }
 
   // ------------------- modals -------------------
@@ -926,6 +1124,7 @@ export const COWORK_JS = String.raw`
       allowShell: agent ? Boolean(agent.allowShell) : false,
       allowWrites: agent ? Boolean(agent.allowWrites) : false,
       allowConfig: agent ? Boolean(agent.allowConfig) : false,
+      useHostComputer: agent ? Boolean(agent.useHostComputer) : false,
       chiefOfStaff: agent ? Boolean(agent.chiefOfStaff) : false
     };
     var modal = document.createElement('div');
@@ -956,8 +1155,9 @@ export const COWORK_JS = String.raw`
           '<label><input type="checkbox" id="cwAmShell"' + (d.allowShell ? ' checked' : '') + '> Allow run_command</label>' +
           '<label><input type="checkbox" id="cwAmWrites"' + (d.allowWrites ? ' checked' : '') + '> Allow file writes</label>' +
           '<label><input type="checkbox" id="cwAmConfig"' + (d.allowConfig ? ' checked' : '') + '> Allow tool setup (add MCP servers, create skills, manage connections, create projects)</label>' +
+          '<label><input type="checkbox" id="cwAmHost"' + (d.useHostComputer ? ' checked' : '') + '> Use my computer instead of the private Docker computer</label>' +
         '</div>' +
-        '<div class="cw-note">Every teammate can read files, search the workspace, fetch web pages, browse (desktop app) and keep persistent memories. Shell, writes and tool setup are opt-in per agent.</div>' +
+        '<div class="cw-note">“Use my computer” gives this teammate direct access to the Agent Gitu workspace on this Windows computer, so Docker does not need to be started. Shell, writes and tool setup remain opt-in per agent.</div>' +
       '</div>' +
       '<div class="cw-foot"><button class="btn ghost" id="cwAmDel"' + (isEdit ? '' : ' hidden') + '>Delete</button><span style="flex:1"></span><button class="btn dark" id="cwAmSave">' + (isEdit ? 'Save changes' : 'Create teammate') + '</button></div></div>';
     document.body.appendChild(modal);
@@ -1020,6 +1220,7 @@ export const COWORK_JS = String.raw`
         allowShell: $('cwAmShell').checked,
         allowWrites: $('cwAmWrites').checked,
         allowConfig: $('cwAmConfig').checked,
+        useHostComputer: $('cwAmHost').checked,
         chiefOfStaff: $('cwAmChief').checked
       };
       api('/api/cowork/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })

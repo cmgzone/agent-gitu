@@ -39,6 +39,8 @@ export interface CoworkAgent {
   /** Allow self-serve tooling: add MCP servers, create/update skills, manage
    *  connections, create projects. Off by default. */
   allowConfig: boolean;
+  /** Route file, shell and browser tools directly to the shared user workspace. */
+  useHostComputer: boolean;
   /** Default chief-of-staff suggestion when assembling new groups. */
   chiefOfStaff: boolean;
   createdAt: string;
@@ -57,6 +59,8 @@ export interface CoworkMessage {
   from?: string;
   /** Tool calls the agent made while composing this message. */
   tools?: { name: string; ok: boolean }[];
+  /** Files attached by the user or explicitly presented by an agent. */
+  artifactIds?: string[];
   ts: string;
 }
 
@@ -66,6 +70,8 @@ export interface CoworkTelegramConfig {
   token?: string;
   chatId?: string;
   chatTitle?: string;
+  /** Durable getUpdates cursor so a restart neither replays nor drops queued messages. */
+  offset?: number;
 }
 
 export interface CoworkSchedule {
@@ -139,6 +145,46 @@ export interface CoworkInboxMessage {
   deliveredAt?: string;
 }
 
+export interface CoworkArtifact {
+  id: string;
+  conversationId: string;
+  /** Empty for files received directly from the user or Telegram. */
+  agentId?: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** Generated server-owned name below Cowork/artifacts/<conversation>. */
+  storageName: string;
+  createdAt: string;
+}
+
+export interface CoworkTodo {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  text: string;
+  status: 'pending' | 'in_progress' | 'done' | 'blocked' | 'cancelled';
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CoworkRequest {
+  id: string;
+  conversationId: string;
+  agentId: string;
+  kind: 'permission' | 'question' | 'recommendation';
+  title: string;
+  detail: string;
+  options: string[];
+  /** Permission requests can enable one existing per-agent capability. */
+  permission?: 'shell' | 'writes' | 'config' | 'host';
+  status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
+  response?: string;
+  createdAt: string;
+  resolvedAt?: string;
+}
+
 export interface CoworkData {
   agents: CoworkAgent[];
   conversations: CoworkConversation[];
@@ -149,9 +195,12 @@ export interface CoworkData {
   missions: CoworkMission[];
   followUps: CoworkFollowUp[];
   inbox: CoworkInboxMessage[];
+  artifacts: CoworkArtifact[];
+  todos: CoworkTodo[];
+  requests: CoworkRequest[];
 }
 
-export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [] };
+export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [] };
 
 const MAX_MESSAGES_PER_CONVERSATION = 2_000;
 
@@ -189,6 +238,9 @@ export class CoworkStore {
         missions: Array.isArray(parsed.missions) ? parsed.missions : [],
         followUps: Array.isArray(parsed.followUps) ? parsed.followUps : [],
         inbox: Array.isArray(parsed.inbox) ? parsed.inbox : [],
+        artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
+        todos: Array.isArray(parsed.todos) ? parsed.todos : [],
+        requests: Array.isArray(parsed.requests) ? parsed.requests : [],
       };
     } catch {
       // A corrupt file must not wipe the team silently: keep defaults in
@@ -252,6 +304,7 @@ export class CoworkStore {
       allowShell: input.allowShell ?? existing?.allowShell ?? false,
       allowWrites: input.allowWrites ?? existing?.allowWrites ?? false,
       allowConfig: input.allowConfig ?? existing?.allowConfig ?? false,
+      useHostComputer: input.useHostComputer ?? existing?.useHostComputer ?? false,
       chiefOfStaff: input.chiefOfStaff ?? existing?.chiefOfStaff ?? false,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
@@ -263,6 +316,7 @@ export class CoworkStore {
   deleteAgent(id: string): boolean {
     const data = this.load();
     if (!data.agents.some((a) => a.id === id)) return false;
+    const previousConversationIds = new Set(data.conversations.map((conversation) => conversation.id));
     data.agents = data.agents.filter((a) => a.id !== id);
     // Remove the agent from every group; delete DMs that were only with them.
     data.conversations = data.conversations.filter((c) => {
@@ -273,9 +327,15 @@ export class CoworkStore {
       return c.memberIds.length > 0;
     });
     const conversationIds = new Set(data.conversations.map((conversation) => conversation.id));
+    for (const conversationId of previousConversationIds) {
+      if (!conversationIds.has(conversationId)) rmSync(this.artifactDir(conversationId), { recursive: true, force: true });
+    }
     data.missions = data.missions.filter((mission) => mission.agentId !== id && conversationIds.has(mission.conversationId));
     data.followUps = data.followUps.filter((followUp) => followUp.agentId !== id && conversationIds.has(followUp.conversationId));
     data.inbox = data.inbox.filter((message) => message.fromAgentId !== id && message.toAgentId !== id && conversationIds.has(message.conversationId));
+    data.todos = data.todos.filter((todo) => todo.agentId !== id && conversationIds.has(todo.conversationId));
+    data.requests = data.requests.filter((request) => request.agentId !== id && conversationIds.has(request.conversationId));
+    data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
     this.save(true);
     return true;
   }
@@ -344,6 +404,17 @@ export class CoworkStore {
     return existing;
   }
 
+  updateTelegramOffset(token: string, offset: number): void {
+    if (!Number.isSafeInteger(offset) || offset < 0) return;
+    let changed = false;
+    for (const conversation of this.load().conversations) {
+      if (conversation.telegram?.token !== token || conversation.telegram.offset === offset) continue;
+      conversation.telegram.offset = offset;
+      changed = true;
+    }
+    if (changed) this.save();
+  }
+
   deleteConversation(id: string): boolean {
     const data = this.load();
     if (!data.conversations.some((c) => c.id === id)) return false;
@@ -352,6 +423,10 @@ export class CoworkStore {
     data.missions = data.missions.filter((mission) => mission.conversationId !== id);
     data.followUps = data.followUps.filter((followUp) => followUp.conversationId !== id);
     data.inbox = data.inbox.filter((message) => message.conversationId !== id);
+    data.todos = data.todos.filter((todo) => todo.conversationId !== id);
+    data.requests = data.requests.filter((request) => request.conversationId !== id);
+    data.artifacts = data.artifacts.filter((artifact) => artifact.conversationId !== id);
+    rmSync(this.artifactDir(id), { recursive: true, force: true });
     this.save(true);
     return true;
   }
@@ -515,6 +590,143 @@ export class CoworkStore {
     return this.load().inbox.filter((m) => !m.deliveredAt && now - Date.parse(m.createdAt) >= graceMs);
   }
 
+  // Files: durable, server-owned copies shown in Cowork and delivered to Telegram.
+
+  private artifactDir(conversationId: string): string {
+    return path.join(path.dirname(this.file()), 'artifacts', conversationId);
+  }
+
+  addArtifact(input: { id?: string; conversationId: string; agentId?: string; name: string; mime?: string; dataBase64: string }): CoworkArtifact {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation) throw new Error('Artifact conversation not found');
+    if (input.agentId && !data.agents.some((agent) => agent.id === input.agentId)) throw new Error('Artifact agent not found');
+    const name = safeArtifactName(input.name);
+    const bytes = Buffer.from(String(input.dataBase64 ?? '').replace(/\s+/g, ''), 'base64');
+    if (bytes.length === 0) throw new Error('Artifact is empty');
+    if (bytes.length > 2_000_000) throw new Error('Artifact exceeds the 2 MB Cowork limit');
+    const id = input.id && /^[a-z0-9-]{8,80}$/i.test(input.id) ? input.id : `cf-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`;
+    const storageName = `${id}-${name}`;
+    const dir = this.artifactDir(conversation.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, storageName), bytes);
+    // Keep the existing private-computer exchange format so receive_file can
+    // import files attached by the user or Telegram as well as agent exports.
+    writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ agentId: input.agentId, path: name, data: bytes.toString('base64') }), 'utf8');
+    const artifact: CoworkArtifact = {
+      id,
+      conversationId: conversation.id,
+      agentId: input.agentId,
+      name,
+      mime: artifactMime(name, input.mime),
+      size: bytes.length,
+      storageName,
+      createdAt: new Date().toISOString(),
+    };
+    data.artifacts = data.artifacts.filter((candidate) => candidate.id !== id);
+    data.artifacts.push(artifact);
+    this.save();
+    return artifact;
+  }
+
+  artifacts(conversationId: string): CoworkArtifact[] {
+    return this.load().artifacts.filter((artifact) => artifact.conversationId === conversationId);
+  }
+
+  getArtifact(id: string): CoworkArtifact | undefined {
+    return this.load().artifacts.find((artifact) => artifact.id === id);
+  }
+
+  artifactPath(id: string): string | undefined {
+    const artifact = this.getArtifact(id);
+    if (!artifact || !/^[a-z0-9_.-]+$/i.test(artifact.storageName)) return undefined;
+    const candidate = path.join(this.artifactDir(artifact.conversationId), artifact.storageName);
+    return existsSync(candidate) ? candidate : undefined;
+  }
+
+  // To-do list: one shared checklist per conversation, owned item-by-item.
+
+  todos(conversationId: string): CoworkTodo[] {
+    return this.load().todos.filter((todo) => todo.conversationId === conversationId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  addTodo(input: { conversationId: string; agentId: string; text: string }): CoworkTodo {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Todo owner is not in this conversation');
+    const text = input.text.trim();
+    if (!text) throw new Error('Todo text is required');
+    const now = new Date().toISOString();
+    const todo: CoworkTodo = { id: `ct-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`, conversationId: input.conversationId, agentId: input.agentId, text: text.slice(0, 500), status: 'pending', createdAt: now, updatedAt: now };
+    data.todos.push(todo);
+    this.save();
+    return todo;
+  }
+
+  updateTodo(id: string, agentId: string, patch: { status?: CoworkTodo['status']; note?: string }): CoworkTodo | undefined {
+    const todo = this.load().todos.find((candidate) => candidate.id === id && candidate.agentId === agentId);
+    if (!todo) return undefined;
+    if (patch.status) todo.status = patch.status;
+    if (patch.note !== undefined) todo.note = patch.note.trim().slice(0, 500) || undefined;
+    todo.updatedAt = new Date().toISOString();
+    this.save();
+    return todo;
+  }
+
+  removeTodo(id: string, agentId: string): boolean {
+    const data = this.load();
+    const before = data.todos.length;
+    data.todos = data.todos.filter((todo) => todo.id !== id || todo.agentId !== agentId);
+    if (data.todos.length === before) return false;
+    this.save();
+    return true;
+  }
+
+  // Interactive cards: user questions, capability permission, recommendations.
+
+  requests(conversationId: string): CoworkRequest[] {
+    return this.load().requests.filter((request) => request.conversationId === conversationId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  getRequest(id: string): CoworkRequest | undefined {
+    return this.load().requests.find((request) => request.id === id);
+  }
+
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; options?: string[]; permission?: CoworkRequest['permission'] }): CoworkRequest {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
+    const title = input.title.trim();
+    const detail = input.detail.trim();
+    if (!title || !detail) throw new Error('Request title and detail are required');
+    if (input.kind === 'permission' && !input.permission) throw new Error('Permission type is required');
+    const request: CoworkRequest = {
+      id: `cr-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
+      conversationId: input.conversationId,
+      agentId: input.agentId,
+      kind: input.kind,
+      title: title.slice(0, 180),
+      detail: detail.slice(0, 2_000),
+      options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))].slice(0, 6),
+      permission: input.permission,
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+    data.requests.push(request);
+    this.save();
+    return request;
+  }
+
+  resolveRequest(id: string, status: Exclude<CoworkRequest['status'], 'open'>, response?: string): CoworkRequest | undefined {
+    const request = this.getRequest(id);
+    if (!request || request.status !== 'open') return undefined;
+    request.status = status;
+    request.response = response?.trim().slice(0, 2_000) || undefined;
+    request.resolvedAt = new Date().toISOString();
+    this.save();
+    return request;
+  }
+
   // ------------------------------------------------- per-agent memory
   // Memory now lives in the shared MemoryStore (same architecture as the main
   // agent — typed entries, lifecycle, isolation). See cowork/memory.ts.
@@ -543,6 +755,21 @@ function sanitizeNames(value: unknown): string[] {
   return [...new Set(value.map((v) => String(v).trim()).filter(Boolean))].slice(0, 24);
 }
 
+function safeArtifactName(value: string): string {
+  return (path.basename(String(value || 'file')).replace(/[\x00-\x1f<>:"/\\|?*]+/g, '-').trim() || 'file').slice(0, 160);
+}
+
+function artifactMime(name: string, supplied?: string): string {
+  const known: Record<string, string> = {
+    '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8', '.json': 'application/json; charset=utf-8', '.csv': 'text/csv; charset=utf-8',
+    '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  };
+  return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
+}
+
 const AVATAR_SHAPES = new Set(['cube', 'visor', 'antenna', 'bot']);
 const AVATAR_COLORS = new Set(['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b']);
 
@@ -560,6 +787,7 @@ function sanitizeTelegram(value: unknown): CoworkTelegramConfig {
     token: typeof raw['token'] === 'string' && raw['token'].trim() ? raw['token'].trim() : undefined,
     chatId: raw['chatId'] !== undefined && raw['chatId'] !== '' ? String(raw['chatId']) : undefined,
     chatTitle: typeof raw['chatTitle'] === 'string' ? raw['chatTitle'] : undefined,
+    offset: Number.isSafeInteger(raw['offset']) && Number(raw['offset']) >= 0 ? Number(raw['offset']) : undefined,
   };
 }
 

@@ -9,8 +9,8 @@ import { excerpt } from '../util.js';
 
 export type TelegramFetch = (
   url: string,
-  init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
-) => Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
+  init?: { method?: string; headers?: Record<string, string>; body?: string | FormData; signal?: AbortSignal },
+) => Promise<{ ok: boolean; status: number; text: () => Promise<string>; arrayBuffer?: () => Promise<ArrayBuffer> }>;
 
 const API_BASE = 'https://api.telegram.org';
 const POLL_TIMEOUT_S = 25;
@@ -30,7 +30,16 @@ export interface TelegramUpdate {
     chat?: { id?: number | string; title?: string; type?: string };
     from?: { first_name?: string; username?: string; is_bot?: boolean };
     text?: string;
+    caption?: string;
+    document?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number };
+    photo?: { file_id?: string; file_size?: number; width?: number; height?: number }[];
   };
+}
+
+export interface TelegramInboundFile {
+  name: string;
+  mime: string;
+  dataBase64: string;
 }
 
 export class TelegramError extends Error {
@@ -82,6 +91,20 @@ async function callTelegram(
 
 /** Production fetch bound to the shape the module expects; tests inject their own. */
 const defaultFetch: TelegramFetch = (url, init) => fetch(url, init as RequestInit) as unknown as Promise<{ ok: boolean; status: number; text: () => Promise<string> }>;
+
+async function downloadTelegramFile(fetchImpl: TelegramFetch | undefined, token: string, fileId: string, name: string, mime: string): Promise<TelegramInboundFile> {
+  const info = await callTelegram(fetchImpl, token, 'getFile', { file_id: fileId });
+  const filePath = String(info['file_path'] ?? '');
+  if (!filePath || filePath.includes('..')) throw new TelegramError('Telegram returned an invalid file path.');
+  const doFetch = fetchImpl ?? defaultFetch;
+  const response = await doFetch(`${API_BASE}/file/bot${token.trim()}/${filePath}`, { method: 'GET', signal: AbortSignal.timeout(40_000) });
+  if (!response.ok) throw new TelegramError(`Telegram file download failed (HTTP ${response.status}).`, response.status);
+  if (!response.arrayBuffer) throw new TelegramError('Telegram file download did not provide binary data.');
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length === 0) throw new TelegramError('Telegram file was empty.');
+  if (bytes.length > 2_000_000) throw new TelegramError('Telegram file exceeds the 2 MB Cowork limit.');
+  return { name, mime, dataBase64: bytes.toString('base64') };
+}
 
 export interface TelegramChatInfo {
   id: string;
@@ -139,6 +162,31 @@ export async function sendTelegramMessage(fetchImpl: TelegramFetch | undefined, 
       text: chunk,
       disable_web_page_preview: true,
     });
+  }
+}
+
+export async function sendTelegramDocument(
+  fetchImpl: TelegramFetch | undefined,
+  token: string,
+  chatId: string,
+  file: { name: string; mime: string; bytes: Uint8Array },
+  caption?: string,
+): Promise<void> {
+  if (!/^\d{5,}:[\w-]{20,}$/.test(token.trim())) throw new TelegramError('That does not look like a Telegram bot token.');
+  const doFetch = fetchImpl ?? defaultFetch;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const form = new FormData();
+    form.set('chat_id', chatId);
+    if (caption) form.set('caption', caption.slice(0, 1_000));
+    form.set('document', new Blob([file.bytes], { type: file.mime }), file.name);
+    const response = await doFetch(`${API_BASE}/bot${token.trim()}/sendDocument`, { method: 'POST', body: form, signal: AbortSignal.timeout(60_000) });
+    const body = await response.text();
+    let parsed: { ok?: boolean; description?: string; parameters?: { retry_after?: number } } = {};
+    try { parsed = JSON.parse(body) as typeof parsed; } catch { /* Telegram may return a proxy error page. */ }
+    if (response.ok && parsed.ok === true) return;
+    const retryAfter = parsed.parameters?.retry_after;
+    if (response.status !== 429 || attempt === 2) throw new TelegramError(`Telegram sendDocument failed (HTTP ${response.status}): ${(parsed.description ?? excerpt(body, 200)).replaceAll(token.trim(), '[redacted]')}`, response.status, retryAfter);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(60, Math.max(1, retryAfter ?? 1)) * 1_000));
   }
 }
 
@@ -227,7 +275,9 @@ export interface TelegramPollerOptions {
   /** Human-readable Telegram chat title for status display. */
   chatTitle?: string;
   fetchImpl?: TelegramFetch;
-  onMessage: (from: string, text: string, chatId: string) => void;
+  onMessage: (from: string, text: string, chatId: string, file?: TelegramInboundFile) => void | Promise<void>;
+  initialOffset?: number;
+  onOffset?: (offset: number) => void;
   /** Called with a plain-text diagnosis when polling stops working. */
   onError?: (message: string) => void;
 }
@@ -248,7 +298,8 @@ export class TelegramPoller {
   }
 
   constructor(private readonly options: TelegramPollerOptions) {
-    this.startedAt = Date.now() / 1000 - 60;
+    this.offset = options.initialOffset;
+    this.startedAt = options.initialOffset === undefined ? Date.now() / 1000 - 60 : 0;
   }
 
   start(): void {
@@ -288,14 +339,25 @@ export class TelegramPoller {
           if (this.stopped) break;
           if (this.offset !== undefined && update.update_id < this.offset) continue;
           this.offset = Math.max(this.offset ?? 0, update.update_id + 1);
+          this.options.onOffset?.(this.offset);
           const message = update.message;
           if (message?.chat?.id !== undefined) this.seenChats.set(String(message.chat.id), message.chat.title || message.from?.first_name || String(message.chat.id));
-          if (!message?.text || message.date < this.startedAt) continue;
+          if (!message || message.date < this.startedAt) continue;
           if (this.options.chatId !== '*' && String(message.chat?.id ?? '') !== String(this.options.chatId)) continue;
           if (message.from?.is_bot) continue;
           const from = message.from?.first_name || message.from?.username || 'telegram user';
           try {
-            this.options.onMessage(from, message.text, String(message.chat?.id ?? ''));
+            const document = message.document;
+            const photo = message.photo?.at(-1);
+            const selected = document?.file_id
+              ? { id: document.file_id, name: document.file_name || 'telegram-document', mime: document.mime_type || 'application/octet-stream', size: document.file_size }
+              : photo?.file_id
+                ? { id: photo.file_id, name: `telegram-photo-${message.message_id}.jpg`, mime: 'image/jpeg', size: photo.file_size }
+                : undefined;
+            if (selected?.size && selected.size > 2_000_000) throw new TelegramError('Telegram file exceeds the 2 MB Cowork limit.');
+            const file = selected ? await downloadTelegramFile(fetchImpl, this.options.token, selected.id, selected.name, selected.mime) : undefined;
+            const text = message.text || message.caption || (file ? `Attached ${file.name}` : '');
+            if (text || file) await this.options.onMessage(from, text, String(message.chat?.id ?? ''), file);
           } catch (err) {
             this.options.onError?.(`cowork telegram handler failed: ${(err as Error).message}`);
           }

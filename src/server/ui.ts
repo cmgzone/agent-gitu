@@ -11,6 +11,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Gitu</title>
+<link rel="icon" type="image/svg+xml" href="/brand/agent-gitu-mark.svg">
   <style>
   /* Bundled fonts (served locally from /fonts/*, no CDN, offline-safe). */
   @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/inter-latin-400-normal.woff2') format('woff2'); }

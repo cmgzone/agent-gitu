@@ -18,11 +18,13 @@ let driving = 0;
 let consoleLog = [];
 
 function log(msg) {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
   try {
-    fs.appendFileSync(path.join(os.tmpdir(), 'hermes-desktop.log'), `[${new Date().toISOString()}] ${msg}\n`);
-  } catch {
-    /* best effort */
-  }
+    fs.appendFileSync(path.join(os.tmpdir(), 'hermes-desktop.log'), line);
+  } catch {}
+  try {
+    fs.appendFileSync(path.join(os.homedir(), '.hermes-desktop.log'), line);
+  } catch {}
 }
 
 // Electron changed the console-message payload across versions: legacy builds
@@ -78,6 +80,20 @@ function ensureBrowserWin() {
     const b = mainWindow.getBounds();
     browserWin.setPosition(b.x + 140, b.y + 90);
   }
+  // This window keeps backgroundThrottling disabled so driven pages keep
+  // rendering while the agent works; that can also leave it frame-evicted
+  // after being hidden (electron/electron#42378), so repaint on reveal.
+  const repaintBrowser = () => {
+    if (browserWin && !browserWin.isDestroyed()) {
+      try {
+        browserWin.webContents.invalidate();
+      } catch {
+        /* best-effort repaint */
+      }
+    }
+  };
+  browserWin.on('show', repaintBrowser);
+  browserWin.on('restore', repaintBrowser);
   browserWin.loadURL('about:blank').catch(() => {});
   browserWin.on('closed', () => {
     browserWin = null;
@@ -534,14 +550,183 @@ function createMainWindow() {
       symbolColor: '#dbe7ff',
       height: 32,
     },
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    // Do NOT set backgroundThrottling: false here. On Windows it triggers
+    // electron/electron#42378: once the window is hidden/minimized, Chromium
+    // evicts the compositor frame ~5 minutes later and the window renders
+    // blank even though the DOM and renderer are perfectly healthy.
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
   });
-  mainWindow.once('ready-to-show', () => {
+
+  // Belt-and-braces for the same frame-eviction family of bugs: ask for a
+  // fresh frame whenever the window becomes visible again. Without this a
+  // minimized/occluded window can be restored to an empty surface until the
+  // user resizes it.
+  const forceRepaint = () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
-    mainWindow.maximize();
-    mainWindow.show();
+    try {
+      mainWindow.webContents.invalidate();
+    } catch {
+      /* the window can be gone mid-restore; repaint is best-effort */
+    }
+  };
+  mainWindow.on('show', forceRepaint);
+  mainWindow.on('restore', forceRepaint);
+  mainWindow.on('maximize', forceRepaint);
+
+  let revealed = false;
+  const appUrl = `http://127.0.0.1:${boundPort}`;
+  const revealWindow = () => {
+    if (revealed || !mainWindow || mainWindow.isDestroyed()) return;
+    revealed = true;
+    log('revealing mainWindow');
+    try {
+      mainWindow.show();
+      mainWindow.maximize();
+      log(`mainWindow revealed successfully, isVisible=${mainWindow.isVisible()}`);
+    } catch (err) {
+      log(`error showing mainWindow: ${err && err.message}`);
+    }
+  };
+
+  mainWindow.webContents.on('console-message', (...args) => {
+    try {
+      const event = args[0] ?? {};
+      const legacy = typeof args[1] === 'number';
+      const level = legacy ? args[1] : event.level;
+      const message = legacy ? args[2] : event.message;
+      const numeric = typeof level === 'number' ? level : { verbose: 0, info: 1, warning: 2, error: 3 }[String(level)] ?? 1;
+      if (numeric >= 3) log(`mainWindow console error: ${String(message).slice(0, 300)}`);
+    } catch {
+      /* never let logging break the page */
+    }
   });
-  mainWindow.loadURL(`http://127.0.0.1:${boundPort}`);
+
+  // A stalled or failed first navigation must never leave the user with a
+  // permanently blank window (seen under heavy disk load / first-run AV
+  // scans). Retry the local UI, then replace the void with a real error page.
+  let loaded = false;
+  let loadAttempts = 0;
+  let failureShown = false;
+  let loadWatchdog;
+  let retryTimer;
+  const loadFailurePage = (reason) => {
+    clearTimeout(loadWatchdog);
+    clearTimeout(retryTimer);
+    if (failureShown || !mainWindow || mainWindow.isDestroyed()) return;
+    failureShown = true;
+    const html =
+      '<!doctype html><html><head><meta charset="utf-8"><title>Agent Gitu</title>' +
+      '<style>html,body{height:100%;margin:0;background:#0d1017;color:#dbe7ff;font:15px/1.6 system-ui,sans-serif;display:flex;align-items:center;justify-content:center}' +
+      'main{max-width:520px;padding:32px;text-align:center}h1{font-size:20px;margin:0 0 10px}p{color:#93a0bb;margin:0 0 18px}' +
+      'a{display:inline-block;background:#7c6cf0;color:#fff;text-decoration:none;border-radius:8px;padding:9px 18px;font-weight:600}</style></head>' +
+      '<body><main id="gitu-fail"><h1>Agent Gitu could not load its interface</h1><p>' +
+      reason +
+      '</p><p>The local server is running at ' +
+      appUrl +
+      '.</p><a href="' +
+      appUrl +
+      '">Try again</a></main></body></html>';
+    log(`showing load failure page: ${reason}`);
+    mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch((err) => {
+      log(`load failure page could not be shown: ${err && err.message}`);
+    });
+  };
+  const scheduleRetry = (reason) => {
+    if (loaded || failureShown || !mainWindow || mainWindow.isDestroyed()) return;
+    if (loadAttempts >= 2) {
+      loadFailurePage(reason);
+      return;
+    }
+    loadAttempts += 1;
+    log(`retrying page load (${reason}; attempt ${loadAttempts})`);
+    retryTimer = setTimeout(() => {
+      if (loaded || failureShown || !mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.reload();
+      armLoadWatchdog();
+    }, 1000);
+  };
+  const armLoadWatchdog = () => {
+    clearTimeout(loadWatchdog);
+    loadWatchdog = setTimeout(() => {
+      if (loaded || !mainWindow || mainWindow.isDestroyed()) return;
+      const wc = mainWindow.webContents;
+      log(`page load watchdog fired (attempt=${loadAttempts}, url=${wc.getURL()}, loading=${wc.isLoading()})`);
+      scheduleRetry('the page stalled');
+    }, 20000);
+  };
+  const appShellProbe = `(function(){
+    if (document.getElementById('gitu-fail')) return 'fail';
+    if (document.getElementById('view') && document.getElementById('gearBtn')) return 'app';
+    return 'other';
+  })()`;
+
+  mainWindow.once('ready-to-show', () => {
+    log('mainWindow ready-to-show fired');
+    revealWindow();
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // A Chromium error page also emits did-finish-load; only a document that
+    // actually contains the app shell counts as a successful load.
+    mainWindow.webContents
+      .executeJavaScript(appShellProbe, true)
+      .then((state) => {
+        if (loaded || !mainWindow || mainWindow.isDestroyed()) return;
+        if (state === 'app') {
+          loaded = true;
+          clearTimeout(loadWatchdog);
+          log('mainWindow did-finish-load fired (app shell present)');
+          revealWindow();
+        } else if (state === 'fail') {
+          clearTimeout(loadWatchdog);
+          log('mainWindow is showing the load failure page');
+        } else {
+          scheduleRetry('the loaded document was not the app shell');
+        }
+      })
+      .catch((err) => scheduleRetry(`shell probe failed: ${err && err.message}`));
+  });
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    log(`mainWindow did-fail-load: ${errorCode} ${errorDescription} ${validatedURL}`);
+    revealWindow();
+    // -3 is ERR_ABORTED (navigation superseded by a reload), not a failure.
+    if (loaded || isMainFrame === false || errorCode === -3) return;
+    scheduleRetry(`the load failed (${errorDescription || errorCode})`);
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log(`mainWindow render-process-gone: ${details && details.reason} exitCode=${details && details.exitCode}`);
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      log('reloading after renderer exit');
+      loaded = false;
+      try {
+        mainWindow.webContents.reload();
+        armLoadWatchdog();
+      } catch (err) {
+        log(`reload after renderer exit failed: ${err && err.message}`);
+      }
+    }, 700);
+  });
+
+  // Safety fallback: reveal the window even if first paint never happens. The
+  // watchdog above retries the load and surfaces an error page if it keeps
+  // failing, so the user is never left staring at an unexplained void.
+  setTimeout(() => {
+    if (!revealed) {
+      log('fallback timer (1500ms) revealing window');
+      revealWindow();
+    }
+  }, 1500);
+
+  mainWindow.loadURL(appUrl);
+  armLoadWatchdog();
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     // Compare parsed hosts, not string prefixes: startsWith('http://127.0.0.1')
     // also admits look-alike hosts like http://127.0.0.1.evil.com/.
@@ -559,59 +744,91 @@ function createMainWindow() {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+  mainWindow.on('close', (e) => {
+    log(`mainWindow close event fired! defaultPrevented=${e.defaultPrevented}`);
+  });
   mainWindow.on('closed', () => {
+    log('mainWindow closed event fired!');
     mainWindow = null;
   });
 }
 
 async function start() {
   log('start() begin');
-  const dist = path.join(__dirname, '..', 'dist');
-  const { HermesServer } = await import(pathToFileURL(path.join(dist, 'server', 'server.js')).href);
-  log('server module loaded');
-  const homeMod = await import(pathToFileURL(path.join(dist, 'workspace', 'home.js')).href);
-  const browserMod = await import(pathToFileURL(path.join(dist, 'browser', 'browser.js')).href);
-  const home = homeMod.ensureHermesHome();
-  log(`hermes home at ${home.root}`);
-  const cwd = process.env.HERMES_CWD || home.workspace;
-  const bridge = makeBrowserBridge(browserMod.normalizeUrl);
-
-  server = new HermesServer({ cwd, port: DESIRED_PORT, browser: bridge });
   try {
-    boundPort = await server.start();
-  } catch (err) {
-    log(`first start failed: ${err && err.code} ${err && err.message}`);
-    if (String(err && err.code) === 'EADDRINUSE') {
-      server = new HermesServer({ cwd, port: 0, browser: bridge });
+    const dist = path.join(__dirname, '..', 'dist');
+    log(`dist path: ${dist}`);
+    const serverUrl = pathToFileURL(path.join(dist, 'server', 'server.js')).href;
+    log(`importing server from: ${serverUrl}`);
+    const { HermesServer } = await import(serverUrl);
+    log('server module loaded');
+    const homeUrl = pathToFileURL(path.join(dist, 'workspace', 'home.js')).href;
+    const browserUrl = pathToFileURL(path.join(dist, 'browser', 'browser.js')).href;
+    const homeMod = await import(homeUrl);
+    const browserMod = await import(browserUrl);
+    log('workspace and browser modules loaded');
+    const home = homeMod.ensureHermesHome();
+    log(`hermes home at ${home.root}`);
+    const cwd = process.env.HERMES_CWD || home.workspace;
+    const bridge = makeBrowserBridge(browserMod.normalizeUrl);
+
+    server = new HermesServer({ cwd, port: DESIRED_PORT, browser: bridge });
+    try {
       boundPort = await server.start();
-    } else {
-      throw err;
+    } catch (err) {
+      log(`first start failed: ${err && err.code} ${err && err.message}`);
+      if (String(err && err.code) === 'EADDRINUSE') {
+        server = new HermesServer({ cwd, port: 0, browser: bridge });
+        boundPort = await server.start();
+      } else {
+        throw err;
+      }
     }
-  }
-  log(`server bound to ${boundPort}`);
-  console.log(`[hermes-desktop] UI ready on http://127.0.0.1:${boundPort}`);
-  try {
-    fs.writeFileSync(path.join(os.tmpdir(), 'hermes-desktop-port'), String(boundPort));
-  } catch {
-    /* best effort */
-  }
+    log(`server bound to ${boundPort}`);
+    console.log(`[hermes-desktop] UI ready on http://127.0.0.1:${boundPort}`);
+    try {
+      fs.writeFileSync(path.join(os.tmpdir(), 'hermes-desktop-port'), String(boundPort));
+    } catch {
+      /* best effort */
+    }
 
-  createMainWindow();
-  log('main window created');
+    createMainWindow();
+    log('main window created');
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-  });
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    });
+  } catch (err) {
+    log(`start() fatal error: ${err && err.stack ? err.stack : err}`);
+    throw err;
+  }
 }
+
+process.on('uncaughtException', (err) => {
+  log(`uncaughtException: ${err && err.stack ? err.stack : err}`);
+});
+process.on('unhandledRejection', (reason) => {
+  log(`unhandledRejection: ${reason && reason.stack ? reason.stack : reason}`);
+});
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
+  log('singleInstanceLock not acquired; quitting secondary process');
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
+    log('second-instance triggered');
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (!mainWindow.isVisible()) {
+        log('second-instance: window was hidden, showing now');
+        mainWindow.show();
+        mainWindow.maximize();
+      }
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
+    } else {
+      log('second-instance: recreating main window');
+      createMainWindow();
     }
   });
   app.whenReady().then(start).catch((err) => {
@@ -619,11 +836,19 @@ if (!gotLock) {
     console.error('[hermes-desktop]', err);
     app.quit();
   });
-  app.on('window-all-closed', () => {
-    app.quit();
+  app.on('before-quit', () => {
+    log('app before-quit event fired');
   });
   app.on('will-quit', () => {
+    log('app will-quit event fired');
     if (server) void server.stop().catch(() => {});
+  });
+  app.on('quit', (_e, exitCode) => {
+    log(`app quit event fired with code ${exitCode}`);
+  });
+  app.on('window-all-closed', () => {
+    log('app window-all-closed event fired');
+    app.quit();
   });
 }
 

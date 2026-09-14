@@ -23,9 +23,10 @@ import {
   toolWriteFile,
   validateToolParams,
 } from '../tools/tools.js';
-import type { CoworkAgent, CoworkStore } from './store.js';
+import type { CoworkAgent, CoworkStore, CoworkWidgetKind } from './store.js';
 import type { CoworkMemory } from './memory.js';
 import type { CoworkComputer } from './computer.js';
+import { ProjectGuardError } from '../guard/project-guard.js';
 import { parseEvery } from '../cron/scheduler.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js';
@@ -53,10 +54,14 @@ export interface CoworkToolScope {
   agent: CoworkAgent;
   memory: CoworkMemory;
   conversationId?: string;
+  /** Topic thread the current turn belongs to; absent means the Main thread. */
+  threadId?: string;
   signal?: AbortSignal;
   computerFor?: (agentId: string) => CoworkComputer;
   /** Set after the first host fallback in a turn (virtual computer unavailable). */
   hostFallbackNoticed?: boolean;
+  /** Absolute folders tagged for this conversation; host tools may work inside them. */
+  taggedFolders?: string[];
   /** Artifacts presented during this turn are attached to the final message. */
   artifactIds?: string[];
   acquireHostBrowser?: () => Promise<() => void>;
@@ -141,12 +146,20 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'schedule_followup', doc: 'Schedule your own future wake-up: you will be woken with this note and can act with your tools. params: {"inMinutes":30,"note":"verify the build and report"} (max 7 days)', gate: undefined },
   { name: 'message_teammate', doc: 'Put a task or message into a teammate\'s inbox — they are woken to act on it. Use for handing off work. params: {"to":"Name","text":"do X and report back"}', gate: undefined },
   { name: 'todo_manage', doc: 'Maintain the visible conversation checklist. params: {"action":"add","text":"Draft report"} | {"action":"start|complete|block|cancel|delete","id":"ct-...","note":"optional"} | {"action":"list"}', gate: undefined },
+  { name: 'folder_manage', doc: 'Tag folders this conversation works in (the user can also tag folders). Tagged folders are listed in your prompt and host-mode file/shell tools may work inside them. params: {"action":"list"} | {"action":"add","path":"C:\\\\Projects\\\\site","label":"site"} | {"action":"remove","id":"cfd-..."}', gate: undefined },
+  {
+    name: 'widget_manage',
+    doc:
+      'Pin or refresh a small live dashboard card in the cowork sidebar so the user sees your progress at a glance. kinds: stats {"items":[{"label":"Tests","value":"12/12"}]}, list {"items":[{"text":"Draft","done":true}]}, progress {"label":"Build","value":40}, links {"items":[{"label":"Preview","url":"https://..."}]}, text {"text":"..."}. params: {"action":"create","title":"Deploy status","kind":"progress","icon":"bolt","data":{...}} | {"action":"update","id":"cw-...","data":{...}} | {"action":"delete","id":"cw-..."} | {"action":"list"}',
+    gate: undefined,
+  },
   { name: 'ask_user', doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}', gate: undefined },
   { name: 'request_permission', doc: 'Ask the user to enable one capability for you. params: {"permission":"shell|writes|config|host","reason":"exact work that needs it"}. host means use the shared user workspace directly without Docker. Stop and wait after asking.', gate: undefined },
   { name: 'recommend', doc: 'Post a recommendation card the user can accept or dismiss. params: {"title":"Use PostgreSQL","reason":"why","action":"what I will do if accepted"}', gate: undefined },
   {
     name: 'team_manage',
-    doc: 'As chief of staff: hire or remove teammates. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"}',
+    doc:
+      'As chief of staff: hire teammates, remove them, create a new group chat, or open a topic thread. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"} | {"action":"create_group","title":"Launch room","members":["Scout","Writer"],"chief":"Scout"} | {"action":"create_thread","title":"Launch copy","topic":"Only landing page copy"}.',
     gate: 'chief',
   },
 ];
@@ -179,6 +192,42 @@ function blocked(tool: string): ToolResult {
   return { ok: false, output: `${tool} is disabled for this agent. The user can enable it in the agent profile.` };
 }
 
+/**
+ * Host tools normally refuse paths outside the agent workspace. Tagged folders
+ * extend that allowlist per conversation so the team can work in folders the
+ * user pointed at, while the locked project keep its normal protections.
+ */
+function guardWithFolders(base: ToolContext['guard'], folders: string[]): ToolContext['guard'] {
+  const roots = folders.map((folder) => path.resolve(folder)).filter(Boolean);
+  if (roots.length === 0) return base;
+  const inside = (abs: string): boolean => {
+    const resolved = path.resolve(abs);
+    return roots.some((root) => {
+      const rel = path.relative(root, resolved);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    });
+  };
+  const guard = Object.create(base) as ToolContext['guard'];
+  guard.isInsideProject = (abs: string) => inside(abs) || base.isInsideProject(abs);
+  guard.assertInside = (abs: string) => {
+    if (!inside(abs)) {
+      base.assertInside(abs);
+      return;
+    }
+    // Tagged folders still must never expose Agent Gitu's private state.
+    const relative = path.relative(path.parse(path.resolve(abs)).root, path.resolve(abs));
+    if (relative.split(path.sep).some((part) => part.toLowerCase() === '.hermes')) {
+      throw new ProjectGuardError(`Path ${abs} is inside an Agent Gitu state directory and cannot be touched by tools.`);
+    }
+  };
+  return guard;
+}
+
+function hostContextWithFolders(ctx: ToolContext, scope?: CoworkToolScope): ToolContext {
+  const folders = scope?.taggedFolders ?? [];
+  return folders.length > 0 ? { ...ctx, guard: guardWithFolders(ctx.guard, folders) } : ctx;
+}
+
 /** Dispatch one tool call for a cowork agent. Never throws: every failure is a ToolResult. */
 export async function executeCoworkTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   const validation = validateToolParams(tool, params);
@@ -186,7 +235,7 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
   const dispatchHost = async (): Promise<ToolResult> => {
     if (tool === 'browse' && scope?.acquireHostBrowser && !scope.releaseHostBrowser) scope.releaseHostBrowser = await scope.acquireHostBrowser();
     scope?.signal?.throwIfAborted();
-    return dispatchHostTool(ctx, tool, params, perms, scope);
+    return dispatchHostTool(hostContextWithFolders(ctx, scope), tool, params, perms, scope);
   };
   try {
     scope?.signal?.throwIfAborted();
@@ -245,7 +294,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const query = String(params['query'] ?? '').trim().toLowerCase();
         const requestedLimit = Number(params['limit'] ?? 20);
         const limit = Number.isFinite(requestedLimit) ? Math.min(50, Math.max(1, Math.floor(requestedLimit))) : 20;
-        const matches = scope.store.messages(scope.conversationId).filter((message) => !query || message.text.toLowerCase().includes(query)).slice(-limit);
+        const matches = scope.store.messages(scope.conversationId, 0, scope.threadId ?? null).filter((message) => !query || message.text.toLowerCase().includes(query)).slice(-limit);
         return { ok: true, output: matches.map((message) => `${message.ts} ${message.role === 'agent' ? message.agentName : message.role}: ${message.text}`).join('\n\n').slice(-16_000) || 'No matching conversation history.' };
       }
       case 'share_file': {
@@ -368,6 +417,10 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return coworkRecommend(scope, params);
       case 'team_manage':
         return coworkTeamManage(scope, params);
+      case 'folder_manage':
+        return coworkFolderManage(scope, params);
+      case 'widget_manage':
+        return coworkWidgetManage(scope, params);
       default:
         return { ok: false, output: `unknown tool "${tool}"` };
     }
@@ -565,9 +618,133 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
       const ok = store.deleteAgent(target.id);
       return ok ? { ok: true, output: `Teammate "${target.name}" removed from the team.` } : { ok: false, output: `Could not remove "${target.name}".` };
     }
-    return { ok: false, output: 'team_manage action must be "create" or "delete".' };
+    if (action === 'create_group') {
+      const title = String(params['title'] ?? '').trim() || 'Team room';
+      const requested = Array.isArray(params['members'])
+        ? params['members'].map(String)
+        : String(params['members'] ?? '').split(',').map((name) => name.trim());
+      const roster = store.listAgents();
+      const picked: string[] = [agent.id];
+      for (const name of requested) {
+        const found = roster.find((candidate) => candidate.name.toLowerCase() === name.toLowerCase());
+        if (found && !picked.includes(found.id)) picked.push(found.id);
+      }
+      if (picked.length < 2) {
+        return { ok: false, output: `A group needs at least two teammates. Found: ${roster.map((candidate) => candidate.name).join(', ') || 'none'}. Create teammates first, then name at least one existing teammate.` };
+      }
+      const requestedChief = String(params['chief'] ?? '').trim().toLowerCase();
+      const chief = roster.find((candidate) => picked.includes(candidate.id) && candidate.name.toLowerCase() === requestedChief) ?? agent;
+      const conversation = store.saveConversation({ kind: 'group', title, memberIds: picked, chiefId: chief.id });
+      return {
+        ok: true,
+        output: `Group chat "${conversation.title}" created (${conversation.id}) with ${picked.map((id) => '@' + (roster.find((candidate) => candidate.id === id)?.name ?? id)).join(', ')}. Chief: ${chief.name}. Open it from the CHATS list to work there.`,
+      };
+    }
+    if (action === 'create_thread') {
+      if (!scope.conversationId) return { ok: false, output: 'create_thread requires a conversation.' };
+      const title = String(params['title'] ?? '').trim();
+      if (!title) return { ok: false, output: 'create_thread requires a "title".' };
+      const thread = store.addThread({
+        conversationId: scope.conversationId,
+        title,
+        topic: typeof params['topic'] === 'string' ? params['topic'] : undefined,
+        createdByAgentId: agent.id,
+      });
+      return {
+        ok: true,
+        output: `Thread "${thread.title}" created (${thread.id}) for this conversation. It appears in the thread bar — tell the user to switch to it for that topic; this turn stays in its current thread.`,
+      };
+    }
+    return { ok: false, output: 'team_manage action must be "create", "delete", "create_group", or "create_thread".' };
   } catch (err) {
     return { ok: false, output: `team_manage failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkFolderManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope?.conversationId) return { ok: false, output: 'folder_manage requires a conversation.' };
+  const { store } = scope;
+  const action = String(params['action'] ?? 'list').toLowerCase();
+  try {
+    const folders = store.folders(scope.conversationId);
+    if (action === 'list') {
+      return {
+        ok: true,
+        output: folders.length
+          ? folders.map((folder) => `${folder.id} ${folder.label}: ${folder.path}`).join('\n')
+          : 'No folders are tagged in this conversation yet. Use folder_manage add with an absolute path.',
+      };
+    }
+    if (action === 'add') {
+      const requested = String(params['path'] ?? '').trim();
+      if (!requested) return { ok: false, output: 'folder_manage add requires "path" (absolute or workspace-relative).' };
+      const resolved = path.resolve(requested);
+      let info;
+      try {
+        info = statSync(resolved);
+      } catch {
+        return { ok: false, output: `Folder not found: ${resolved}` };
+      }
+      if (!info.isDirectory()) return { ok: false, output: `${resolved} is not a folder.` };
+      const tag = store.addFolder({
+        conversationId: scope.conversationId,
+        path: resolved,
+        label: typeof params['label'] === 'string' ? params['label'] : undefined,
+        agentId: scope.agent.id,
+      });
+      return { ok: true, output: `Tagged folder "${tag.label}" (${tag.path}, id ${tag.id}). It is now part of this conversation and host-mode file/shell tools may work inside it.` };
+    }
+    if (action === 'remove') {
+      const requested = String(params['id'] ?? params['label'] ?? params['path'] ?? '').trim();
+      const match = folders.find((folder) => folder.id === requested || folder.label.toLowerCase() === requested.toLowerCase() || folder.path.toLowerCase() === requested.toLowerCase());
+      if (!match) return { ok: false, output: 'No folder tag with that id, label, or path in this conversation.' };
+      const removed = store.removeFolder(scope.conversationId, match.id);
+      return removed ? { ok: true, output: `Removed folder tag "${match.label}".` } : { ok: false, output: `Could not remove folder tag "${match.label}".` };
+    }
+    return { ok: false, output: 'folder_manage action must be list, add, or remove.' };
+  } catch (err) {
+    return { ok: false, output: `folder_manage failed: ${(err as Error).message}` };
+  }
+}
+
+function coworkWidgetManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+  if (!scope?.conversationId) return { ok: false, output: 'widget_manage requires a conversation.' };
+  const { store, agent } = scope;
+  const action = String(params['action'] ?? 'list').toLowerCase();
+  try {
+    const widgets = store.widgets(scope.conversationId);
+    if (action === 'list') {
+      return {
+        ok: true,
+        output: widgets.length
+          ? widgets.map((widget) => `${widget.id} [${widget.kind}] ${widget.title}`).join('\n')
+          : 'No widgets in this conversation yet. Create one to show the user live progress in the sidebar.',
+      };
+    }
+    if (action === 'delete') {
+      const requested = String(params['id'] ?? params['title'] ?? '').trim().toLowerCase();
+      const match = widgets.find((widget) => widget.id.toLowerCase() === requested || widget.title.toLowerCase() === requested);
+      if (!match) return { ok: false, output: 'No widget with that id or title in this conversation.' };
+      const removed = store.deleteWidget(match.id, agent.chiefOfStaff ? undefined : agent.id);
+      return removed ? { ok: true, output: `Deleted widget "${match.title}".` } : { ok: false, output: `Could not delete "${match.title}" (it belongs to another teammate).` };
+    }
+    if (action !== 'create' && action !== 'update') return { ok: false, output: 'widget_manage action must be list, create, update, or delete.' };
+    const title = String(params['title'] ?? '').trim();
+    if (!title && action === 'create') return { ok: false, output: 'widget_manage create requires a "title".' };
+    const kind = String(params['kind'] ?? 'text').toLowerCase() as CoworkWidgetKind;
+    const payload = params['data'] && typeof params['data'] === 'object' ? params['data'] : typeof params['text'] === 'string' ? { text: params['text'] } : {};
+    const widget = store.saveWidget({
+      id: typeof params['id'] === 'string' ? params['id'] : undefined,
+      conversationId: scope.conversationId,
+      title: title || (typeof params['id'] === 'string' ? store.getWidget(params['id'])?.title ?? '' : ''),
+      icon: typeof params['icon'] === 'string' ? params['icon'] : undefined,
+      kind,
+      data: payload,
+      createdByAgentId: agent.id,
+    });
+    return { ok: true, output: `Widget "${widget.title}" (${widget.id}, ${widget.kind}) is pinned in the cowork sidebar. Update it with widget_manage update and id ${widget.id} as work progresses.` };
+  } catch (err) {
+    return { ok: false, output: `widget_manage failed: ${(err as Error).message}` };
   }
 }
 

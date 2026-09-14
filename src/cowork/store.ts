@@ -9,19 +9,18 @@ import { ensureGituHome } from '../workspace/home.js';
  * whole team, every transcript, and gateway settings.
  */
 
-/** Voxel character configuration for an agent's three.js avatar. The UI
- *  renders it to an image once and reuses that everywhere. */
+/** Saved appearance for animated vector characters and voxel avatars. */
 export interface CoworkAvatar {
   /** Hex accent color of the character body. */
   color: string;
-  /** Head style rendered by the three.js character builder. */
-  shape: 'orb' | 'cube' | 'visor' | 'antenna' | 'bot';
+  /** Character style rendered consistently throughout the UI. */
+  shape: 'orb' | 'jelly' | 'cat' | 'sprout' | 'ufo' | 'cube' | 'visor' | 'antenna' | 'bot';
 }
 
 export interface CoworkAgent {
   id: string;
   name: string;
-  /** three.js character config; the UI snapshots it to a PNG for lists. */
+  /** Saved character and accent color. */
   avatar: CoworkAvatar;
   /** One-line title shown under the name (e.g. "Backend engineer"). */
   tagline: string;
@@ -61,6 +60,8 @@ export interface CoworkMessage {
   tools?: { name: string; ok: boolean }[];
   /** Files attached by the user or explicitly presented by an agent. */
   artifactIds?: string[];
+  /** Thread this message belongs to; absent means the Main thread. */
+  threadId?: string;
   ts: string;
 }
 
@@ -81,6 +82,47 @@ export interface CoworkSchedule {
   lastRunAt?: string;
 }
 
+/** A folder the user or a teammate tagged for this conversation. Tagged
+ *  folders become part of the shared working context: host-mode tools may
+ *  read/write inside them, and the prompt lists them for every teammate. */
+export interface CoworkFolderTag {
+  id: string;
+  /** Absolute folder path on the user's computer. */
+  path: string;
+  /** Short display name (defaults to the basename). */
+  label: string;
+  /** Teammate that tagged it; empty when the user tagged it. */
+  agentId?: string;
+  createdAt: string;
+}
+
+/** A topic-scoped thread inside a conversation. Messages without a threadId
+ *  belong to the implicit "Main" thread. */
+export interface CoworkThread {
+  id: string;
+  title: string;
+  /** Optional goal/briefing that steers this thread. */
+  topic?: string;
+  createdByAgentId?: string;
+  createdAt: string;
+}
+
+/** A small agent-authored dashboard card pinned in the cowork sidebar. */
+export type CoworkWidgetKind = 'stats' | 'list' | 'progress' | 'links' | 'text';
+
+export interface CoworkWidget {
+  id: string;
+  conversationId: string;
+  title: string;
+  icon?: string;
+  kind: CoworkWidgetKind;
+  /** Widget payload, strictly sanitized per kind (no raw HTML). */
+  data: Record<string, unknown>;
+  createdByAgentId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface CoworkConversation {
   id: string;
   kind: 'dm' | 'group';
@@ -90,6 +132,10 @@ export interface CoworkConversation {
   chiefId?: string;
   telegram?: CoworkTelegramConfig;
   schedule?: CoworkSchedule;
+  /** Folders tagged for this conversation (user or teammate). */
+  folders?: CoworkFolderTag[];
+  /** Topic threads; messages without a threadId live in the Main thread. */
+  threads?: CoworkThread[];
   createdAt: string;
   updatedAt: string;
 }
@@ -181,6 +227,7 @@ export interface CoworkRequest {
   permission?: 'shell' | 'writes' | 'config' | 'host';
   status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
   response?: string;
+  telegramNotifiedAt?: string;
   createdAt: string;
   resolvedAt?: string;
 }
@@ -199,6 +246,8 @@ export interface CoworkData {
   todos: CoworkTodo[];
   requests: CoworkRequest[];
   workLog: CoworkWorkEntry[];
+  /** Agent-authored sidebar widgets, scoped to their conversation. */
+  widgets: CoworkWidget[];
 }
 
 export interface CoworkWorkEntry {
@@ -210,7 +259,7 @@ export interface CoworkWorkEntry {
   ts: string;
 }
 
-export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [] };
+export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
 
 function taskKey(text: string): string {
   return text.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!]+$/, '');
@@ -260,7 +309,13 @@ export class CoworkStore {
         todos: Array.isArray(parsed.todos) ? parsed.todos : [],
         requests: Array.isArray(parsed.requests) ? parsed.requests : [],
         workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
+        widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
       };
+      // Repair older documents: conversations gain well-formed folders/threads.
+      for (const conversation of this.data.conversations) {
+        conversation.folders = Array.isArray(conversation.folders) ? conversation.folders.map(sanitizeFolderTag).filter((tag): tag is CoworkFolderTag => Boolean(tag)) : undefined;
+        conversation.threads = Array.isArray(conversation.threads) ? conversation.threads.map(sanitizeThread).filter((thread): thread is CoworkThread => Boolean(thread)) : undefined;
+      }
       // Repair exact legacy duplicates without reopening completed work.
       const unique = new Map<string, CoworkTodo>();
       for (const todo of this.data.todos) {
@@ -445,6 +500,107 @@ export class CoworkStore {
     if (changed) this.save();
   }
 
+  // ------------------------------------------------------- tagged folders
+
+  folders(conversationId: string): CoworkFolderTag[] {
+    return [...(this.getConversation(conversationId)?.folders ?? [])];
+  }
+
+  /** Tag a folder for the conversation. Adding the same path twice is a no-op. */
+  addFolder(input: { conversationId: string; path: string; label?: string; agentId?: string }): CoworkFolderTag {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation) throw new Error('Conversation not found');
+    if (input.agentId && !data.agents.some((agent) => agent.id === input.agentId)) throw new Error('Tagging agent not found');
+    const folderPath = path.resolve(String(input.path ?? '').trim());
+    if (!folderPath) throw new Error('Folder path is required');
+    const existing = (conversation.folders ?? []).find((tag) => path.resolve(tag.path).toLowerCase() === folderPath.toLowerCase());
+    if (existing) return existing;
+    const label = (input.label ?? '').trim().slice(0, 80) || path.basename(folderPath) || folderPath;
+    const tag: CoworkFolderTag = {
+      id: `cfd-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
+      path: folderPath.slice(0, 500),
+      label,
+      agentId: input.agentId,
+      createdAt: new Date().toISOString(),
+    };
+    conversation.folders = [...(conversation.folders ?? []), tag];
+    conversation.updatedAt = tag.createdAt;
+    this.save(true);
+    return tag;
+  }
+
+  removeFolder(conversationId: string, folderId: string): boolean {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === conversationId);
+    if (!conversation?.folders) return false;
+    const before = conversation.folders.length;
+    conversation.folders = conversation.folders.filter((tag) => tag.id !== folderId);
+    if (conversation.folders.length === before) return false;
+    conversation.updatedAt = new Date().toISOString();
+    this.save(true);
+    return true;
+  }
+
+  // ------------------------------------------------------------- threads
+
+  threads(conversationId: string): CoworkThread[] {
+    return [...(this.getConversation(conversationId)?.threads ?? [])];
+  }
+
+  getThread(conversationId: string, threadId: string): CoworkThread | undefined {
+    return (this.getConversation(conversationId)?.threads ?? []).find((thread) => thread.id === threadId);
+  }
+
+  addThread(input: { conversationId: string; title: string; topic?: string; createdByAgentId?: string }): CoworkThread {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation) throw new Error('Conversation not found');
+    if (input.createdByAgentId && !data.agents.some((agent) => agent.id === input.createdByAgentId)) throw new Error('Thread author not found');
+    const title = String(input.title ?? '').trim().slice(0, 120);
+    if (!title) throw new Error('Thread title is required');
+    const duplicate = (conversation.threads ?? []).find((thread) => taskKey(thread.title) === taskKey(title));
+    if (duplicate) return duplicate;
+    const thread: CoworkThread = {
+      id: `cth-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
+      title,
+      topic: typeof input.topic === 'string' && input.topic.trim() ? input.topic.trim().slice(0, 1_000) : undefined,
+      createdByAgentId: input.createdByAgentId,
+      createdAt: new Date().toISOString(),
+    };
+    conversation.threads = [...(conversation.threads ?? []), thread];
+    conversation.updatedAt = thread.createdAt;
+    this.save(true);
+    return thread;
+  }
+
+  updateThread(conversationId: string, threadId: string, patch: { title?: string; topic?: string }): CoworkThread | undefined {
+    const conversation = this.load().conversations.find((candidate) => candidate.id === conversationId);
+    const thread = conversation?.threads?.find((candidate) => candidate.id === threadId);
+    if (!conversation || !thread) return undefined;
+    if (patch.title !== undefined) {
+      const title = patch.title.trim().slice(0, 120);
+      if (title) thread.title = title;
+    }
+    if (patch.topic !== undefined) thread.topic = patch.topic.trim().slice(0, 1_000) || undefined;
+    conversation.updatedAt = new Date().toISOString();
+    this.save(true);
+    return thread;
+  }
+
+  /** Deleting a thread removes its messages; the Main thread cannot be deleted. */
+  deleteThread(conversationId: string, threadId: string): boolean {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === conversationId);
+    if (!conversation?.threads?.some((thread) => thread.id === threadId)) return false;
+    conversation.threads = conversation.threads.filter((thread) => thread.id !== threadId);
+    const list = data.messages[conversationId];
+    if (list) data.messages[conversationId] = list.filter((message) => message.threadId !== threadId);
+    conversation.updatedAt = new Date().toISOString();
+    this.save(true);
+    return true;
+  }
+
   deleteConversation(id: string): boolean {
     const data = this.load();
     if (!data.conversations.some((c) => c.id === id)) return false;
@@ -457,6 +613,7 @@ export class CoworkStore {
     data.workLog = data.workLog.filter((entry) => entry.conversationId !== id);
     data.requests = data.requests.filter((request) => request.conversationId !== id);
     data.artifacts = data.artifacts.filter((artifact) => artifact.conversationId !== id);
+    data.widgets = data.widgets.filter((widget) => widget.conversationId !== id);
     rmSync(this.artifactDir(id), { recursive: true, force: true });
     this.save(true);
     return true;
@@ -464,9 +621,12 @@ export class CoworkStore {
 
   // -------------------------------------------------------------- messages
 
-  messages(conversationId: string, afterSeq = 0): CoworkMessage[] {
+  /** Messages in a conversation. `threadId` undefined returns every thread;
+   *  null selects the Main thread; a string selects that thread. */
+  messages(conversationId: string, afterSeq = 0, threadId?: string | null): CoworkMessage[] {
     const all = this.load().messages[conversationId] ?? [];
-    return afterSeq > 0 ? all.filter((m) => m.seq > afterSeq) : [...all];
+    const scoped = threadId === undefined ? all : all.filter((m) => (threadId === null ? !m.threadId : m.threadId === threadId));
+    return afterSeq > 0 ? scoped.filter((m) => m.seq > afterSeq) : [...scoped];
   }
 
   // ------------------------------------------------------------ user profile
@@ -679,6 +839,66 @@ export class CoworkStore {
     return existsSync(candidate) ? candidate : undefined;
   }
 
+  // Widgets: small dashboard cards the team pins to the cowork sidebar.
+
+  widgets(conversationId: string): CoworkWidget[] {
+    return this.load().widgets
+      .filter((widget) => widget.conversationId === conversationId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  getWidget(id: string): CoworkWidget | undefined {
+    return this.load().widgets.find((widget) => widget.id === id);
+  }
+
+  /** Create or update a widget. Updating matches by id or by case-insensitive title. */
+  saveWidget(input: { id?: string; conversationId: string; title: string; icon?: string; kind: CoworkWidgetKind; data: unknown; createdByAgentId?: string }): CoworkWidget {
+    const data = this.load();
+    const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
+    if (!conversation) throw new Error('Widget conversation not found');
+    if (input.createdByAgentId && !data.agents.some((agent) => agent.id === input.createdByAgentId)) throw new Error('Widget author not found');
+    const title = String(input.title ?? '').trim().slice(0, 120);
+    if (!title) throw new Error('Widget title is required');
+    const kind: CoworkWidgetKind = ['stats', 'list', 'progress', 'links', 'text'].includes(input.kind) ? input.kind : 'text';
+    const sanitized = sanitizeWidgetData(kind, input.data);
+    const existing = data.widgets.find((widget) => widget.conversationId === input.conversationId && (widget.id === input.id || taskKey(widget.title) === taskKey(title)));
+    const now = new Date().toISOString();
+    if (existing) {
+      existing.title = title;
+      existing.icon = typeof input.icon === 'string' && /^[a-z][a-z0-9-]{0,23}$/.test(input.icon) ? input.icon : existing.icon;
+      existing.kind = kind;
+      existing.data = sanitized;
+      existing.createdByAgentId = input.createdByAgentId ?? existing.createdByAgentId;
+      existing.updatedAt = now;
+      this.save(true);
+      return existing;
+    }
+    const widget: CoworkWidget = {
+      id: `cw-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
+      conversationId: input.conversationId,
+      title,
+      icon: typeof input.icon === 'string' && /^[a-z][a-z0-9-]{0,23}$/.test(input.icon) ? input.icon : undefined,
+      kind,
+      data: sanitized,
+      createdByAgentId: input.createdByAgentId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    data.widgets.push(widget);
+    this.save(true);
+    return widget;
+  }
+
+  /** Delete a widget. `agentId` restricts deletion to the author's own widgets. */
+  deleteWidget(id: string, agentId?: string): boolean {
+    const data = this.load();
+    const before = data.widgets.length;
+    data.widgets = data.widgets.filter((widget) => widget.id !== id || (agentId !== undefined && widget.createdByAgentId !== agentId));
+    if (data.widgets.length === before) return false;
+    this.save(true);
+    return true;
+  }
+
   // To-do list: one shared checklist per conversation, owned item-by-item.
 
   todos(conversationId: string): CoworkTodo[] {
@@ -777,6 +997,14 @@ export class CoworkStore {
     return request;
   }
 
+  markRequestTelegramNotified(id: string): CoworkRequest | undefined {
+    const request = this.getRequest(id);
+    if (!request || request.status !== 'open') return undefined;
+    request.telegramNotifiedAt = new Date().toISOString();
+    this.save();
+    return request;
+  }
+
   // ------------------------------------------------- per-agent memory
   // Memory now lives in the shared MemoryStore (same architecture as the main
   // agent — typed entries, lifecycle, isolation). See cowork/memory.ts.
@@ -820,7 +1048,7 @@ function artifactMime(name: string, supplied?: string): string {
   return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
 }
 
-const AVATAR_SHAPES = new Set(['orb', 'cube', 'visor', 'antenna', 'bot']);
+const AVATAR_SHAPES = new Set(['orb', 'jelly', 'cat', 'sprout', 'ufo', 'cube', 'visor', 'antenna', 'bot']);
 const AVATAR_COLORS = new Set(['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b']);
 
 function sanitizeAvatar(value: unknown, fallback: CoworkAvatar | undefined): CoworkAvatar {
@@ -851,5 +1079,104 @@ function sanitizeSchedule(value: unknown): CoworkSchedule | undefined {
     goal: goal.slice(0, 2_000),
     enabled: raw['enabled'] !== false,
     lastRunAt: typeof raw['lastRunAt'] === 'string' ? raw['lastRunAt'] : undefined,
+  };
+}
+
+function randomId(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`;
+}
+
+function cleanString(value: unknown, max: number): string {
+  return typeof value === 'string' ? value.trim().slice(0, max) : '';
+}
+
+function sanitizeFolderTag(value: unknown): CoworkFolderTag | undefined {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  const folderPath = cleanString(raw['path'], 500);
+  if (!folderPath) return undefined;
+  return {
+    id: typeof raw['id'] === 'string' && /^[\w-]{3,80}$/.test(raw['id']) ? raw['id'] : randomId('cfd'),
+    path: folderPath,
+    label: cleanString(raw['label'], 80) || path.basename(folderPath) || folderPath,
+    agentId: cleanString(raw['agentId'], 80) || undefined,
+    createdAt: typeof raw['createdAt'] === 'string' ? raw['createdAt'] : new Date().toISOString(),
+  };
+}
+
+function sanitizeThread(value: unknown): CoworkThread | undefined {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  const title = cleanString(raw['title'], 120);
+  if (!title) return undefined;
+  return {
+    id: typeof raw['id'] === 'string' && /^[\w-]{3,80}$/.test(raw['id']) ? raw['id'] : randomId('cth'),
+    title,
+    topic: cleanString(raw['topic'], 1_000) || undefined,
+    createdByAgentId: cleanString(raw['createdByAgentId'], 80) || undefined,
+    createdAt: typeof raw['createdAt'] === 'string' ? raw['createdAt'] : new Date().toISOString(),
+  };
+}
+
+/** Widget payloads are strict per kind: the UI renders them without HTML. */
+function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<string, unknown> {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  if (kind === 'stats') {
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 12);
+    return {
+      items: items
+        .map((item) => {
+          const row = (item ?? {}) as Record<string, unknown>;
+          return { label: cleanString(row['label'], 60), value: cleanString(row['value'], 120) };
+        })
+        .filter((row) => row.label),
+    };
+  }
+  if (kind === 'list') {
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 20);
+    return {
+      items: items
+        .map((item) => {
+          const row = (item ?? {}) as Record<string, unknown>;
+          return { text: cleanString(row['text'], 200), done: row['done'] === true };
+        })
+        .filter((row) => row.text),
+    };
+  }
+  if (kind === 'progress') {
+    const percent = Math.round(Number(raw['value']));
+    return { label: cleanString(raw['label'], 120), value: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0 };
+  }
+  if (kind === 'links') {
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 10);
+    return {
+      items: items
+        .map((item) => {
+          const row = (item ?? {}) as Record<string, unknown>;
+          const url = cleanString(row['url'], 500);
+          const label = cleanString(row['label'], 80);
+          if (!label || !/^https?:\/\//i.test(url)) return null;
+          return { label, url };
+        })
+        .filter((row): row is { label: string; url: string } => Boolean(row)),
+    };
+  }
+  return { text: cleanString(raw['text'], 2_000) };
+}
+
+function sanitizeWidget(value: unknown): CoworkWidget | undefined {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  const conversationId = cleanString(raw['conversationId'], 80);
+  const title = cleanString(raw['title'], 120);
+  if (!conversationId || !title) return undefined;
+  const kind: CoworkWidgetKind = ['stats', 'list', 'progress', 'links', 'text'].includes(String(raw['kind'])) ? (raw['kind'] as CoworkWidgetKind) : 'text';
+  return {
+    id: typeof raw['id'] === 'string' && /^[\w-]{3,80}$/.test(raw['id']) ? raw['id'] : randomId('cw'),
+    conversationId,
+    title,
+    icon: typeof raw['icon'] === 'string' && /^[a-z][a-z0-9-]{0,23}$/.test(raw['icon']) ? raw['icon'] : undefined,
+    kind,
+    data: sanitizeWidgetData(kind, raw['data']),
+    createdByAgentId: cleanString(raw['createdByAgentId'], 80) || undefined,
+    createdAt: typeof raw['createdAt'] === 'string' ? raw['createdAt'] : new Date().toISOString(),
+    updatedAt: typeof raw['updatedAt'] === 'string' ? raw['updatedAt'] : new Date().toISOString(),
   };
 }

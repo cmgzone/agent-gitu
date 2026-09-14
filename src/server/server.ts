@@ -17,13 +17,12 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient } from '../llm/llm.js';
-import { CoworkStore, type CoworkConversation, type CoworkMessage, type CoworkAgent } from '../cowork/store.js';
+import { CoworkStore, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, type CoworkProgress } from '../cowork/runner.js';
-import type { CoworkMission } from '../cowork/store.js';
 import { CoworkComputer } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
-import { TelegramPoller, TelegramReplyStream, recentTelegramChats, sendTelegramDocument } from '../cowork/telegram.js';
+import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
@@ -180,9 +179,20 @@ export interface GituServerConfig {
   /** Automatically bootstrap missing built-in language servers (enabled by default). */
   autoInstallLsp?: boolean;
   browser?: BrowserBridge;
+  telegramFetch?: TelegramFetch;
   /** Injectable for tests; production queries the local Codex runtime. */
   codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
   startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
+}
+
+interface CoworkRequestResolution {
+  ok: boolean;
+  statusCode: number;
+  error?: string;
+  request?: CoworkRequest;
+  agent?: CoworkAgent;
+  answer?: string;
+  status?: Exclude<CoworkRequest['status'], 'open'>;
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -828,14 +838,18 @@ export class GituServer {
     };
   }
 
-  private coworkView(conversationId: string, after = 0, rosterRevision = -1) {
+  private coworkView(conversationId: string, after = 0, rosterRevision = -1, threadId: string | null = null) {
     const store = this.cowork();
     const run = this.coworkRuns.get(conversationId);
     const missions = store.missions(conversationId);
     const activeMissions = missions.filter((mission) => mission.status === 'running' || mission.status === 'blocked');
     const recentMissions = missions.filter((mission) => mission.status !== 'running' && mission.status !== 'blocked').slice(0, 20);
     return {
-      messages: store.messages(conversationId, after),
+      messages: store.messages(conversationId, after, threadId),
+      threadId,
+      threads: store.threads(conversationId),
+      folders: store.folders(conversationId),
+      widgets: store.widgets(conversationId),
       busy: Boolean(run?.busy),
       working: run?.busy ? run.working ?? null : null,
       progress: run?.progress ?? null,
@@ -938,6 +952,141 @@ export class GituServer {
     await Promise.allSettled([...this.coworkComputers.values()].map((computer) => computer.stop()));
   }
 
+  private recordCoworkTelegramError(conversationId: string, message: string): void {
+    const run = this.coworkRuns.get(conversationId);
+    if (run) run.telegramError = message;
+    this.cowork().appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${message}` });
+    this.publishCowork(conversationId);
+  }
+
+  private resolveCoworkRequestAction(requestId: string, actionInput: string, responseInput = ''): CoworkRequestResolution {
+    const store = this.cowork();
+    const request = store.getRequest(requestId);
+    if (!request || request.status !== 'open') return { ok: false, statusCode: 404, error: 'request not found or already answered' };
+    const action = actionInput.toLowerCase();
+    const response = responseInput.trim();
+    let status: Exclude<CoworkRequest['status'], 'open'>;
+    if (request.kind === 'permission') {
+      if (action !== 'approve' && action !== 'deny') return { ok: false, statusCode: 400, error: 'action must be approve or deny' };
+      status = action === 'approve' ? 'approved' : 'denied';
+    } else if (request.kind === 'recommendation') {
+      if (action !== 'accept' && action !== 'dismiss') return { ok: false, statusCode: 400, error: 'action must be accept or dismiss' };
+      status = action === 'accept' ? 'accepted' : 'dismissed';
+    } else {
+      if (action !== 'answer') return { ok: false, statusCode: 400, error: 'action must be answer' };
+      if (!response) return { ok: false, statusCode: 400, error: 'an answer is required' };
+      status = 'answered';
+    }
+    const resolved = store.resolveRequest(request.id, status, response);
+    if (!resolved) return { ok: false, statusCode: 404, error: 'request not found or already answered' };
+    const agent = store.getAgent(request.agentId);
+    if (resolved.status === 'approved' && agent && request.permission) {
+      const patch = request.permission === 'shell' ? { allowShell: true }
+        : request.permission === 'writes' ? { allowWrites: true }
+          : request.permission === 'config' ? { allowConfig: true }
+            : { useHostComputer: true };
+      store.saveAgent({ ...agent, ...patch });
+      const context = this.coworkTools.get(agent.id);
+      context?.mcp?.killAll();
+      this.coworkTools.delete(agent.id);
+    }
+    const answer = response || status;
+    store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : 'Recommendation'} ${status}: ${answer}.` });
+    this.publishCowork(request.conversationId);
+    const instruction = `The user responded to your ${request.kind} "${request.title}": ${answer}. Continue from that decision and report what you do.`;
+    if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
+      store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
+    }
+    return { ok: true, statusCode: 200, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined, answer, status };
+  }
+
+  private coworkTelegramQuestionAnswer(request: CoworkRequest, text: string): string {
+    const trimmed = text.trim();
+    const numbered = /^#?(\d+)$/.exec(trimmed);
+    if (numbered) {
+      const option = request.options[Number(numbered[1]) - 1];
+      if (option) return option;
+    }
+    const exact = request.options.find((option) => option.toLowerCase() === trimmed.toLowerCase());
+    return exact ?? trimmed;
+  }
+
+  private resolveCoworkTelegramCallback(conversationId: string, data: string): string {
+    const parsed = parseTelegramRequestAction(data);
+    if (!parsed) return 'I could not read that action.';
+    const request = this.cowork().getRequest(parsed.requestId);
+    if (!request || request.conversationId !== conversationId) return 'That request is no longer open here.';
+    const response = parsed.action === 'answer' ? request.options[parsed.optionIndex ?? -1] ?? '' : '';
+    const result = this.resolveCoworkRequestAction(parsed.requestId, parsed.action, response);
+    return result.ok ? `Recorded: ${result.answer ?? result.status}.` : result.error ?? 'Could not record that response.';
+  }
+
+  private resolveCoworkTelegramTextRequest(conversationId: string, text: string): CoworkRequestResolution | undefined {
+    const store = this.cowork();
+    const open = store.requests(conversationId).filter((request) => request.status === 'open');
+    if (open.length === 0) return undefined;
+    const trimmed = text.trim();
+    const answerCommand = /^\/?answer(?:\s+([\w-]+))?\s+([\s\S]+)$/i.exec(trimmed);
+    if (answerCommand) {
+      const requestId = answerCommand[1];
+      const questions = open.filter((request) => request.kind === 'question' && (!requestId || request.id === requestId));
+      if (questions.length !== 1) return { ok: false, statusCode: 400, error: requestId ? 'question request not found' : 'more than one question is open; include the request id' };
+      return this.resolveCoworkRequestAction(questions[0]!.id, 'answer', this.coworkTelegramQuestionAnswer(questions[0]!, answerCommand[2]!));
+    }
+    const questions = open.filter((request) => request.kind === 'question');
+    const decision = /^\/?(approve|allow|yes|y|deny|no|n|accept|dismiss)(?:\s+([\w-]+))?$/i.exec(trimmed);
+    if (decision) {
+      const word = decision[1]!.toLowerCase();
+      const requestId = decision[2];
+      const action = ['deny', 'no', 'n', 'dismiss'].includes(word)
+        ? (word === 'dismiss' ? 'dismiss' : 'deny')
+        : (word === 'accept' ? 'accept' : 'approve');
+      const kind = action === 'accept' || action === 'dismiss' ? 'recommendation' : 'permission';
+      const candidates = open.filter((request) => request.kind === kind && (!requestId || request.id === requestId));
+      if (candidates.length !== 1) {
+        return {
+          ok: false,
+          statusCode: 400,
+          error: requestId ? `${kind} request not found` : `more than one ${kind} request is open; include the request id`,
+        };
+      }
+      return this.resolveCoworkRequestAction(candidates[0]!.id, action);
+    }
+    if (questions.length === 1) {
+      return this.resolveCoworkRequestAction(questions[0]!.id, 'answer', this.coworkTelegramQuestionAnswer(questions[0]!, trimmed));
+    }
+    return undefined;
+  }
+
+  private async handleCoworkTelegramRequestText(conversation: CoworkConversation, text: string): Promise<boolean> {
+    const result = this.resolveCoworkTelegramTextRequest(conversation.id, text);
+    if (!result) return false;
+    const tg = conversation.telegram;
+    if (tg?.enabled && tg.token && tg.chatId) {
+      try {
+        await sendTelegramMessage(this.config.telegramFetch, tg.token, tg.chatId, result.ok ? `Recorded: ${result.answer ?? result.status}.` : result.error ?? 'Could not record that response.');
+      } catch (err) {
+        this.recordCoworkTelegramError(conversation.id, (err as Error).message);
+      }
+    }
+    return true;
+  }
+
+  private async sendCoworkRequestCards(conversation: CoworkConversation): Promise<void> {
+    const tg = conversation.telegram;
+    if (!tg?.enabled || !tg.token || !tg.chatId) return;
+    for (const request of this.cowork().requests(conversation.id)) {
+      if (request.status !== 'open' || request.telegramNotifiedAt) continue;
+      try {
+        const agent = this.cowork().getAgent(request.agentId);
+        await sendTelegramRequestCard(this.config.telegramFetch, tg.token, tg.chatId, request, agent?.name);
+        this.cowork().markRequestTelegramNotified(request.id);
+      } catch (err) {
+        this.recordCoworkTelegramError(conversation.id, (err as Error).message);
+      }
+    }
+  }
+
   private startCoworkPoller(conv: CoworkConversation): void {
     this.stopCoworkPoller('');
     const tg = conv.telegram;
@@ -947,22 +1096,33 @@ export class GituServer {
       token: tg.token,
       chatId: '*',
       chatTitle: tg.chatTitle,
+      fetchImpl: this.config.telegramFetch,
       initialOffset: tg.offset,
       onOffset: (offset) => this.cowork().updateTelegramOffset(tg.token!, offset),
-      onMessage: (from, text, chatId, file) => {
+      onMessage: async (from, text, chatId, file) => {
         for (const linked of this.cowork().listConversations()) {
           if (linked.telegram?.enabled && linked.telegram.token === tg.token && linked.telegram.chatId === chatId) {
             const artifactIds = file
               ? [this.cowork().addArtifact({ conversationId: linked.id, name: file.name, mime: file.mime, dataBase64: file.dataBase64 }).id]
               : undefined;
+            if (!file && await this.handleCoworkTelegramRequestText(linked, text)) continue;
             this.dispatchCoworkMessage(linked.id, text, 'telegram', from, artifactIds);
           }
         }
+      },
+      onCallback: async (_from, data, chatId) => {
+        for (const linked of this.cowork().listConversations()) {
+          if (linked.telegram?.enabled && linked.telegram.token === tg.token && linked.telegram.chatId === chatId) {
+            return this.resolveCoworkTelegramCallback(linked.id, data);
+          }
+        }
+        return 'That request is not linked to this chat.';
       },
       onError: (message) => console.error(`[hermes] cowork telegram (${conv.id}): ${message}`),
     });
     this.coworkPollers.set(tg.token, poller);
     poller.start();
+    void this.sendCoworkRequestCards(conv);
   }
 
   private stopCoworkPoller(conversationId: string): void {
@@ -973,21 +1133,22 @@ export class GituServer {
   }
 
   /** Public entry: append a user-side message and start the team's response. */
-  private dispatchCoworkMessage(conversationId: string, text: string, via: CoworkMessage['via'], from?: string, artifactIds?: string[]): { ok: boolean; queued?: boolean; error?: string } {
+  private dispatchCoworkMessage(conversationId: string, text: string, via: CoworkMessage['via'], from?: string, artifactIds?: string[], threadId?: string): { ok: boolean; queued?: boolean; error?: string } {
     const store = this.cowork();
     const conv = store.getConversation(conversationId);
     if (!conv) return { ok: false, error: 'conversation not found' };
+    if (threadId && !store.getThread(conversationId, threadId)) return { ok: false, error: 'thread not found in this conversation' };
     const trimmed = text.trim().slice(0, 20_000);
     if (!trimmed) return { ok: false, error: 'text is required' };
     const run = this.coworkRuns.get(conversationId);
     if (run?.busy) {
       if (run.abort.signal.aborted) return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
       if (run.queue.length >= 50) return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
-      run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds }));
+      run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds, threadId }));
       this.publishCowork(conversationId);
       return { ok: true, queued: true };
     }
-    const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds });
+    const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds, threadId });
     // A user reply in a conversation with a blocked mission is guidance for it.
     for (const mission of store.missions(conversationId)) {
       if (mission.status !== 'blocked') continue;
@@ -1032,15 +1193,17 @@ export class GituServer {
       const trigger = run.queue.shift()!;
       const conv = store.getConversation(conversationId);
       if (!conv) break;
-      // Queued future user messages must not steer the current trigger.
-      const history = store.messages(conversationId).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);
+      const threadId = trigger.threadId;
+      // Queued future user messages must not steer the current trigger, and
+      // other threads never bleed into this one.
+      const history = store.messages(conversationId, 0, threadId ?? null).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);
       const streams = new Map<string, TelegramReplyStream>();
       const activeAgents = new Map<string, string>();
       const tg = conv.telegram;
       const beginStream = (agentId: string): TelegramReplyStream | undefined => {
         let stream = streams.get(agentId);
         if (!stream && tg?.enabled && tg.token && tg.chatId) {
-          stream = new TelegramReplyStream(tg.token, tg.chatId);
+          stream = new TelegramReplyStream(tg.token, tg.chatId, this.config.telegramFetch);
           streams.set(agentId, stream);
         }
         return stream;
@@ -1055,7 +1218,7 @@ export class GituServer {
           const artifact = store.getArtifact(id);
           const filePath = store.artifactPath(id);
           if (!artifact || !filePath) continue;
-          await sendTelegramDocument(undefined, tg.token, tg.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${message.agentName ?? 'Agent Gitu'} shared ${artifact.name}`);
+          await sendTelegramDocument(this.config.telegramFetch, tg.token, tg.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${message.agentName ?? 'Agent Gitu'} shared ${artifact.name}`);
         }
       };
       try {
@@ -1063,6 +1226,7 @@ export class GituServer {
         conversation: conv,
         history,
         trigger,
+        threadId,
         deps: {
           forceAgentId: run.forceAgentId,
           agents: store.listAgents(),
@@ -1083,15 +1247,14 @@ export class GituServer {
             run.progresses ??= {};
             run.progresses[agent.id] = { agentId: agent.id, agentName: agent.name, text: 'Working…' };
             syncWorking();
-            beginStream(agent.id)?.update(`${agent.name}: Working…`);
+            beginStream(agent.id)?.update(telegramAgentMessage(agent.name, 'Working...'));
             this.publishCowork(conversationId);
           },
           onProgress: (progress) => {
             run.progresses ??= {};
             run.progresses[progress.agentId] = progress;
             run.progress = progress;
-            const tool = progress.tool ? `\n[${progress.tool}: ${progress.toolOk === undefined ? 'running' : progress.toolOk ? 'completed' : 'failed'}]` : '';
-            beginStream(progress.agentId)?.update(`${progress.agentName}: ${progress.text || 'Working…'}${tool}`);
+            beginStream(progress.agentId)?.update(telegramAgentMessage(progress.agentName, progress.text || 'Working...'));
             this.publishCowork(conversationId);
           },
           onMessage: async (message) => {
@@ -1103,15 +1266,13 @@ export class GituServer {
             this.publishCowork(conversationId);
             let stream = message.agentId ? streams.get(message.agentId) : undefined;
             if (!stream && message.agentId) stream = beginStream(message.agentId);
-            const tools = message.tools?.map((t) => `${t.name}: ${t.ok ? 'completed' : 'failed'}`).join(', ');
             try {
-              await stream?.finish(`${message.agentName ? message.agentName + ': ' : ''}${message.text}${tools ? '\nTools: ' + tools : ''}`);
+              await stream?.finish(telegramAgentMessage(message.agentName, message.text));
               await sendArtifacts(message);
+              await this.sendCoworkRequestCards(conv);
             }
             catch (err) {
-              run.telegramError = (err as Error).message;
-              store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${run.telegramError}` });
-              this.publishCowork(conversationId);
+              this.recordCoworkTelegramError(conversationId, (err as Error).message);
             }
             if (message.agentId) streams.delete(message.agentId);
           },
@@ -1124,6 +1285,7 @@ export class GituServer {
           return stored;
         },
       });
+      await this.sendCoworkRequestCards(conv);
       } finally {
         run.working = undefined;
         run.progress = undefined;
@@ -1182,11 +1344,11 @@ export class GituServer {
     const telegram = conversation.telegram;
     let stream: TelegramReplyStream | undefined;
     const beginStream = (): TelegramReplyStream | undefined => {
-      if (!stream && telegram?.enabled && telegram.token && telegram.chatId) stream = new TelegramReplyStream(telegram.token, telegram.chatId);
+      if (!stream && telegram?.enabled && telegram.token && telegram.chatId) stream = new TelegramReplyStream(telegram.token, telegram.chatId, this.config.telegramFetch);
       return stream;
     };
     const finishStream = async (text: string): Promise<void> => {
-      try { await beginStream()?.finish(text); }
+      try { await beginStream()?.finish(cleanTelegramText(text)); }
       catch (err) {
         const message = (err as Error).message;
         const current = this.coworkRuns.get(conversationId);
@@ -1202,7 +1364,7 @@ export class GituServer {
         const artifact = store.getArtifact(id);
         const filePath = store.artifactPath(id);
         if (!artifact || !filePath) continue;
-        await sendTelegramDocument(undefined, telegram.token, telegram.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${agent.name} shared ${artifact.name}`);
+        await sendTelegramDocument(this.config.telegramFetch, telegram.token, telegram.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${agent.name} shared ${artifact.name}`);
       }
     };
     try {
@@ -1227,14 +1389,15 @@ export class GituServer {
             const current = this.coworkRuns.get(conversationId);
             if (current?.abort !== abort) return;
             current.progress = progress;
-            beginStream()?.update(`${progress.agentName}: ${progress.text || 'Working on mission…'}`);
+            beginStream()?.update(telegramAgentMessage(progress.agentName, progress.text || 'Working on mission...'));
             this.publishCowork(conversationId);
           },
           onMessage: async (message) => {
             const current = this.coworkRuns.get(conversationId);
             if (current?.abort === abort) current.progress = undefined;
             this.publishCowork(conversationId);
-            await finishStream(`${message.agentName ? `${message.agentName}: ` : ''}${message.text}`);
+            await finishStream(telegramAgentMessage(message.agentName, message.text));
+            await this.sendCoworkRequestCards(conversation);
           },
         },
         append: (message) => {
@@ -1244,6 +1407,7 @@ export class GituServer {
           return stored;
         },
       });
+      await this.sendCoworkRequestCards(conversation);
       const fresh = store.getMission(missionId);
       if (!fresh || fresh.status !== 'running') return;
       const turns = fresh.turns + 1;
@@ -1611,11 +1775,158 @@ export class GituServer {
       return false;
     }
 
+    const threadsMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/threads$/);
+    if (threadsMatch) {
+      const convId = threadsMatch[1]!;
+      if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
+      if (method === 'GET') {
+        this.sendJson(res, 200, { threads: store.threads(convId) });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const thread = store.addThread({ conversationId: convId, title: String(body['title'] ?? ''), topic: typeof body['topic'] === 'string' ? body['topic'] : undefined });
+          this.publishCowork(convId);
+          this.sendJson(res, 200, { ok: true, thread });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      return false;
+    }
+
+    const threadMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/threads\/([\w-]+)$/);
+    if (threadMatch) {
+      const convId = threadMatch[1]!;
+      const threadId = threadMatch[2]!;
+      if (!store.getConversation(convId) || !store.getThread(convId, threadId)) { this.sendJson(res, 404, { error: 'thread not found' }); return true; }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const thread = store.updateThread(convId, threadId, {
+            title: typeof body['title'] === 'string' ? body['title'] : undefined,
+            topic: typeof body['topic'] === 'string' ? body['topic'] : undefined,
+          });
+          this.publishCowork(convId);
+          this.sendJson(res, 200, { ok: true, thread });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const removed = store.deleteThread(convId, threadId);
+        this.publishCowork(convId);
+        this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'thread not found' });
+        return true;
+      }
+      return false;
+    }
+
+    const foldersMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/folders$/);
+    if (foldersMatch) {
+      const convId = foldersMatch[1]!;
+      if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
+      if (method === 'GET') {
+        this.sendJson(res, 200, { folders: store.folders(convId) });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const requested = String(body['path'] ?? '').trim();
+          if (!requested) throw new Error('Folder path is required');
+          const resolved = nodePath.resolve(requested);
+          if (!existsSync(resolved) || !statSync(resolved).isDirectory()) throw new Error(`Folder not found: ${resolved}`);
+          const folder = store.addFolder({ conversationId: convId, path: resolved, label: typeof body['label'] === 'string' ? body['label'] : undefined });
+          this.publishCowork(convId);
+          this.sendJson(res, 200, { ok: true, folder });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      return false;
+    }
+
+    const folderMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/folders\/([\w-]+)$/);
+    if (folderMatch && method === 'DELETE') {
+      const removed = store.removeFolder(folderMatch[1]!, folderMatch[2]!);
+      if (removed) this.publishCowork(folderMatch[1]!);
+      this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'folder tag not found' });
+      return true;
+    }
+
+    const widgetsMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/widgets$/);
+    if (widgetsMatch) {
+      const convId = widgetsMatch[1]!;
+      if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
+      if (method === 'GET') {
+        this.sendJson(res, 200, { widgets: store.widgets(convId) });
+        return true;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const widget = store.saveWidget({
+            conversationId: convId,
+            title: String(body['title'] ?? ''),
+            icon: typeof body['icon'] === 'string' ? body['icon'] : undefined,
+            kind: (body['kind'] ?? 'text') as CoworkWidgetKind,
+            data: body['data'],
+          });
+          this.publishCowork(convId);
+          this.sendJson(res, 200, { ok: true, widget });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      return false;
+    }
+
+    const widgetMatch = path.match(/^\/api\/cowork\/widgets\/([\w-]+)$/);
+    if (widgetMatch) {
+      const widgetId = widgetMatch[1]!;
+      const existing = store.getWidget(widgetId);
+      if (!existing) { this.sendJson(res, 404, { error: 'widget not found' }); return true; }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        try {
+          const widget = store.saveWidget({
+            id: existing.id,
+            conversationId: existing.conversationId,
+            title: typeof body['title'] === 'string' && body['title'].trim() ? body['title'] : existing.title,
+            icon: typeof body['icon'] === 'string' ? body['icon'] : existing.icon,
+            kind: (body['kind'] ?? existing.kind) as CoworkWidgetKind,
+            data: body['data'] ?? existing.data,
+          });
+          this.publishCowork(existing.conversationId);
+          this.sendJson(res, 200, { ok: true, widget });
+        } catch (err) {
+          this.sendJson(res, 400, { error: (err as Error).message });
+        }
+        return true;
+      }
+      if (method === 'DELETE') {
+        const removed = store.deleteWidget(widgetId);
+        if (removed) this.publishCowork(existing.conversationId);
+        this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'widget not found' });
+        return true;
+      }
+      return false;
+    }
+
     const streamMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/stream$/);
     if (streamMatch && method === 'GET') {
       const convId = streamMatch[1]!;
       if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
-      let after = Math.max(0, Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('after')) || 0);
+      const streamParams = new URL(req.url ?? '/', 'http://localhost').searchParams;
+      let after = Math.max(0, Number(streamParams.get('after')) || 0);
+      const rawThread = streamParams.get('thread');
+      const streamThread: string | null = !rawThread || rawThread === 'main' ? null : rawThread;
       let rosterRevision = -1;
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       res.flushHeaders();
@@ -1626,7 +1937,7 @@ export class GituServer {
         if (res.writableEnded || res.destroyed) return;
         // Reconnect slow clients rather than buffering unbounded token updates.
         if (res.writableLength > 1_000_000) { res.destroy(); return; }
-        const snapshot = this.coworkView(convId, after, rosterRevision);
+        const snapshot = this.coworkView(convId, after, rosterRevision, streamThread);
         if (snapshot.messages.length) after = snapshot.messages[snapshot.messages.length - 1]!.seq;
         rosterRevision = snapshot.rosterRevision;
         // A disconnected viewer must never fail an agent's tool or reply.
@@ -1658,9 +1969,12 @@ export class GituServer {
     if (messagesMatch) {
       const convId = messagesMatch[1]!;
       if (method === 'GET') {
-        const after = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('after') ?? 0) || 0;
-        const rosterRevision = Number(new URL(req.url ?? '/', 'http://localhost').searchParams.get('rosterRevision') ?? -1);
-        this.sendJson(res, 200, this.coworkView(convId, Math.max(0, after), rosterRevision));
+        const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const after = Number(params.get('after') ?? 0) || 0;
+        const rosterRevision = Number(params.get('rosterRevision') ?? -1);
+        const rawThread = params.get('thread');
+        const viewThread: string | null = !rawThread || rawThread === 'main' ? null : rawThread;
+        this.sendJson(res, 200, this.coworkView(convId, Math.max(0, after), rosterRevision, viewThread));
         return true;
       }
       if (method === 'POST') {
@@ -1679,7 +1993,8 @@ export class GituServer {
         }
         const attached = artifactIds.map((id) => store.getArtifact(id)?.name).filter(Boolean);
         const text = String(body['text'] ?? '').trim() || (attached.length ? `Attached ${attached.join(', ')}` : '');
-        const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined);
+        const threadId = typeof body['threadId'] === 'string' && body['threadId'] ? body['threadId'] : undefined;
+        const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined, threadId);
         this.sendJson(res, result.ok ? 202 : 409, result.ok ? { ok: true, queued: result.queued ?? false } : { error: result.error });
         return true;
       }

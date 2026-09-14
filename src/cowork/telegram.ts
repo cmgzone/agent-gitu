@@ -1,4 +1,5 @@
 import { excerpt } from '../util.js';
+import type { CoworkRequest } from './store.js';
 
 /**
  * Telegram message gateway for cowork conversations. One long-polling bot per
@@ -33,6 +34,12 @@ export interface TelegramUpdate {
     caption?: string;
     document?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number };
     photo?: { file_id?: string; file_size?: number; width?: number; height?: number }[];
+  };
+  callback_query?: {
+    id: string;
+    data?: string;
+    message?: { message_id: number; date?: number; chat?: { id?: number | string; title?: string; type?: string } };
+    from?: { first_name?: string; username?: string; is_bot?: boolean };
   };
 }
 
@@ -111,6 +118,10 @@ export interface TelegramChatInfo {
   title: string;
 }
 
+export interface TelegramMessageOptions {
+  replyMarkup?: Record<string, unknown>;
+}
+
 /** Recent chats that messaged the bot — used by the pairing UI. */
 export async function recentTelegramChats(fetchImpl: TelegramFetch | undefined, token: string): Promise<TelegramChatInfo[]> {
   const result = await callTelegram(fetchImpl, token, 'getUpdates', { limit: 100, timeout: 0 });
@@ -142,6 +153,108 @@ export function telegramChunks(text: string): string[] {
   return chunks;
 }
 
+export function cleanTelegramText(text: string, fallback = 'Working...'): string {
+  const cleaned = String(text ?? '')
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/<tool\b[^>]*>[\s\S]*?<\/tool>/gi, '')
+    .replace(/<tool[\s\S]*$/i, '')
+    .replace(/<\/?tool[^>]*>/gi, '')
+    .replace(/^\s*\[[\w.-]+:\s*(?:running|completed|failed)\]\s*$/gim, '')
+    .replace(/^\s*Tools:\s.*$/gim, '')
+    .replace(/^```[^\n]*\n?/gm, '')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
+    .replace(/^\s*>+\s?/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '- ')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u2026/g, '...')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[•◦▪▫]/g, '-')
+    .replace(/·/g, '-')
+    .replace(/[✓✔]/g, 'done')
+    .replace(/○/g, '-')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return cleaned || fallback;
+}
+
+function cleanTelegramLine(text: string, fallback: string): string {
+  return cleanTelegramText(text, fallback).replace(/\s+/g, ' ').trim();
+}
+
+export function telegramAgentMessage(agentName: string | undefined, text: string, fallback = 'Working...'): string {
+  const name = cleanTelegramLine(agentName || 'Agent Gitu', 'Agent Gitu').slice(0, 80);
+  return `${name}\n${cleanTelegramText(text, fallback)}`;
+}
+
+function telegramRequestLabel(request: CoworkRequest): string {
+  if (request.kind === 'permission') return 'Approval needed';
+  if (request.kind === 'recommendation') return 'Recommendation';
+  return 'Question';
+}
+
+function telegramButtonText(text: string, fallback: string): string {
+  return cleanTelegramLine(text, fallback).slice(0, 48);
+}
+
+export function telegramRequestCardText(request: CoworkRequest, agentName?: string): string {
+  const lines = [telegramRequestLabel(request)];
+  if (agentName) lines.push(`From: ${cleanTelegramLine(agentName, 'teammate')}`);
+  lines.push(cleanTelegramText(request.title, 'Untitled request'));
+  if (request.detail && request.detail !== request.title) lines.push(cleanTelegramText(request.detail));
+  if (request.options.length > 0) {
+    lines.push('', 'Options:');
+    request.options.forEach((option, index) => lines.push(`${index + 1}. ${cleanTelegramLine(option, `Option ${index + 1}`)}`));
+  }
+  lines.push('', `Request id: ${request.id}`);
+  if (request.kind === 'permission') lines.push('Tap Allow or Deny, or reply approve / deny.');
+  else if (request.kind === 'recommendation') lines.push('Tap Accept or Dismiss, or reply accept / dismiss.');
+  else lines.push(request.options.length > 0 ? 'Tap an option, reply with the option number, or type your answer.' : 'Reply with your answer.');
+  return lines.join('\n');
+}
+
+export function telegramRequestReplyMarkup(request: CoworkRequest): Record<string, unknown> | undefined {
+  if (request.kind === 'permission') {
+    return { inline_keyboard: [[
+      { text: 'Allow', callback_data: `cwreq:${request.id}:approve` },
+      { text: 'Deny', callback_data: `cwreq:${request.id}:deny` },
+    ]] };
+  }
+  if (request.kind === 'recommendation') {
+    return { inline_keyboard: [[
+      { text: 'Accept', callback_data: `cwreq:${request.id}:accept` },
+      { text: 'Dismiss', callback_data: `cwreq:${request.id}:dismiss` },
+    ]] };
+  }
+  if (request.options.length === 0) return undefined;
+  return {
+    inline_keyboard: request.options.map((option, index) => [
+      { text: telegramButtonText(option, `Option ${index + 1}`), callback_data: `cwreq:${request.id}:answer:${index}` },
+    ]),
+  };
+}
+
+export interface TelegramRequestAction {
+  requestId: string;
+  action: 'approve' | 'deny' | 'accept' | 'dismiss' | 'answer';
+  optionIndex?: number;
+}
+
+export function parseTelegramRequestAction(data: string): TelegramRequestAction | undefined {
+  const match = /^cwreq:([\w-]+):(approve|deny|accept|dismiss|answer)(?::(\d+))?$/.exec(String(data ?? '').trim());
+  if (!match) return undefined;
+  return {
+    requestId: match[1]!,
+    action: match[2]! as TelegramRequestAction['action'],
+    optionIndex: match[3] === undefined ? undefined : Number(match[3]),
+  };
+}
+
 async function delivery(fetchImpl: TelegramFetch | undefined, token: string, method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -154,15 +267,21 @@ async function delivery(fetchImpl: TelegramFetch | undefined, token: string, met
   }
 }
 
-export async function sendTelegramMessage(fetchImpl: TelegramFetch | undefined, token: string, chatId: string, text: string): Promise<void> {
+export async function sendTelegramMessage(fetchImpl: TelegramFetch | undefined, token: string, chatId: string, text: string, options: TelegramMessageOptions = {}): Promise<void> {
   const chunks = telegramChunks(text);
-  for (const chunk of chunks) {
-    await delivery(fetchImpl, token, 'sendMessage', {
+  for (const [index, chunk] of chunks.entries()) {
+    const params: Record<string, unknown> = {
       chat_id: chatId,
       text: chunk,
       disable_web_page_preview: true,
-    });
+    };
+    if (index === 0 && chunks.length === 1 && options.replyMarkup) params['reply_markup'] = options.replyMarkup;
+    await delivery(fetchImpl, token, 'sendMessage', params);
   }
+}
+
+export async function sendTelegramRequestCard(fetchImpl: TelegramFetch | undefined, token: string, chatId: string, request: CoworkRequest, agentName?: string): Promise<void> {
+  await sendTelegramMessage(fetchImpl, token, chatId, telegramRequestCardText(request, agentName), { replyMarkup: telegramRequestReplyMarkup(request) });
 }
 
 export async function sendTelegramDocument(
@@ -276,6 +395,7 @@ export interface TelegramPollerOptions {
   chatTitle?: string;
   fetchImpl?: TelegramFetch;
   onMessage: (from: string, text: string, chatId: string, file?: TelegramInboundFile) => void | Promise<void>;
+  onCallback?: (from: string, data: string, chatId: string, callbackId: string, messageId?: number) => void | string | Promise<void | string>;
   initialOffset?: number;
   onOffset?: (offset: number) => void;
   /** Called with a plain-text diagnosis when polling stops working. */
@@ -330,7 +450,7 @@ export class TelegramPoller {
             offset: this.offset,
             timeout: POLL_TIMEOUT_S,
             limit: 10,
-            allowed_updates: ['message'],
+            allowed_updates: ['message', 'callback_query'],
           },
           this.controller.signal,
         );
@@ -340,6 +460,28 @@ export class TelegramPoller {
           if (this.offset !== undefined && update.update_id < this.offset) continue;
           this.offset = Math.max(this.offset ?? 0, update.update_id + 1);
           this.options.onOffset?.(this.offset);
+          const callback = update.callback_query;
+          if (callback) {
+            const chat = callback.message?.chat;
+            if (chat?.id !== undefined) this.seenChats.set(String(chat.id), chat.title || callback.from?.first_name || String(chat.id));
+            if (!callback.data || chat?.id === undefined) continue;
+            if (this.options.chatId !== '*' && String(chat.id) !== String(this.options.chatId)) continue;
+            if (callback.from?.is_bot) continue;
+            const from = callback.from?.first_name || callback.from?.username || 'telegram user';
+            try {
+              const notice = await this.options.onCallback?.(from, callback.data, String(chat.id), callback.id, callback.message?.message_id);
+              await callTelegram(
+                fetchImpl,
+                this.options.token,
+                'answerCallbackQuery',
+                { callback_query_id: callback.id, text: String(notice || 'Recorded').slice(0, 180), show_alert: false },
+                this.controller.signal,
+              );
+            } catch (err) {
+              this.options.onError?.(`cowork telegram callback failed: ${(err as Error).message}`);
+            }
+            continue;
+          }
           const message = update.message;
           if (message?.chat?.id !== undefined) this.seenChats.set(String(message.chat.id), message.chat.title || message.from?.first_name || String(message.chat.id));
           if (!message || message.date < this.startedAt) continue;

@@ -8,7 +8,19 @@ function ui() {
   const cw = { agents, convs, active: 'group', generation: 1, msgs: [], lastSeq: 0, busy: false, computersChecked: Date.now() };
   const input = { value: 'Unsent draft', selectionStart: 4 };
   const mentions = { innerHTML: '', appendChild: vi.fn() };
-  const elements: Record<string, unknown> = { cwInput: input, cwMentions: mentions, cwMemberNames: { textContent: '' } };
+  const gateway = {
+    cwTgFind: { onclick: null as null | (() => void) },
+    cwTgSave: { onclick: null as null | (() => void) },
+    cwTgChat: { value: '', selectedOptions: [] as { textContent?: string }[], innerHTML: '', onchange: null as null | (() => void) },
+    cwTgChatId: { value: '' },
+    cwTgToken: { value: '' },
+    cwTgOn: { checked: true },
+    cwSchSave: { onclick: null as null | (() => void) },
+    cwSchEvery: { value: '' },
+    cwSchGoal: { value: '' },
+    cwSchOn: { checked: false },
+  };
+  const elements: Record<string, unknown> = { cwInput: input, cwMentions: mentions, cwMemberNames: { textContent: '' }, ...gateway };
   const streams: Stream[] = [];
   class Stream {
     onopen?: () => void;
@@ -22,13 +34,14 @@ function ui() {
   const context = createContext({
     S: { active: 'cowork', cw }, window: { addEventListener: vi.fn() },
     document: { createElement: () => ({}) }, $: (id: string) => elements[id],
-    EventSource: Stream, clearInterval: vi.fn(), api,
+    EventSource: Stream, clearInterval: vi.fn(), api, toast: vi.fn(),
+    esc: (s: unknown) => String(s ?? ''),
   });
   new Script(COWORK_JS).runInContext(context);
   // Keep the actual snapshot, roster and stream lifecycle code. Rendering the
   // surrounding panels is covered by the browser fixture.
   for (const name of ['cwRenderRail', 'cwRenderMsgs', 'cwRenderInfo', 'cwRenderTyping', 'cwRenderProgress']) context[name] = vi.fn();
-  return { context, cw: context.S.cw, input, mentions, streams, api };
+  return { context, cw: context.S.cw, input, mentions, streams, api, gateway };
 }
 
 describe('Cowork UI live updates', () => {
@@ -41,6 +54,35 @@ describe('Cowork UI live updates', () => {
     expect(COWORK_JS).toContain('id="cwFile"');
     expect(COWORK_JS).toContain('id="cwTgChatId"');
     expect(COWORK_JS).toContain('Telegram user or group chat ID');
+  });
+
+  it('saves the Telegram gateway into cowork state, not the id="cw" DOM element', async () => {
+    const u = ui();
+    u.api.mockResolvedValue({
+      ok: true,
+      conversation: { id: 'group', kind: 'group', memberIds: ['chief'], telegram: { enabled: true, chatId: '42', chatTitle: 'Taskium', tokenSaved: true } },
+    });
+    u.context.cwGatewayHtml(u.cw.convs[0], 'dm').bind();
+    u.gateway.cwTgSave.onclick!();
+    await vi.waitFor(() => expect((u.cw.convs[0] as any).telegram.enabled).toBe(true));
+    expect(u.api).toHaveBeenCalledWith('/api/cowork/conversations/group', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('tracks threads, folders and widgets from live snapshots', () => {
+    const u = ui();
+    u.context.cwStartStream('group');
+    u.streams[0]!.receive({
+      busy: false,
+      messages: [],
+      threadId: null,
+      threads: [{ id: 'th-1', title: 'Launch copy' }],
+      folders: [{ id: 'fd-1', label: 'site', path: 'C:/site' }],
+      widgets: [{ id: 'wg-1', title: 'Build', kind: 'progress', data: { value: 40 } }],
+    });
+    expect(u.streams[0]!.url).toContain('thread=main');
+    expect(u.cw.threads.map((thread: any) => thread.title)).toEqual(['Launch copy']);
+    expect(u.cw.folders[0].label).toBe('site');
+    expect(u.cw.widgets[0].title).toBe('Build');
   });
 
   it('updates teammates during a partial reply without replacing the composer', () => {

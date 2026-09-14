@@ -4,8 +4,8 @@ import path from 'node:path';
 import { Script } from 'node:vm';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
-import { sendTelegramDocument, TelegramReplyStream, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
-import { CoworkStore } from '../src/cowork/store.js';
+import { cleanTelegramText, parseTelegramRequestAction, sendTelegramDocument, sendTelegramRequestCard, TelegramReplyStream, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
+import { CoworkStore, type CoworkRequest } from '../src/cowork/store.js';
 import { buildCoworkMessages, runConversationTurn, type CoworkRunnerDeps, type CoworkProgress } from '../src/cowork/runner.js';
 import { executeCoworkTool, stripToolMarkers } from '../src/cowork/tools.js';
 import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
@@ -59,6 +59,35 @@ describe('Telegram live replies', () => {
     expect(chunks.every((c) => c.length <= 3800 && !/[\uD800-\uDBFF]$/.test(c))).toBe(true);
   });
 
+  it('sends clean request cards with inline Telegram actions', async () => {
+    const dirty = 'Working…\n[browse: running]\nTools: browse: completed\n<tool>{"name":"ask_user","params":{}}</tool>\nDone ✓';
+    expect(cleanTelegramText(dirty)).toBe('Working...\nDone done');
+    expect(parseTelegramRequestAction('cwreq:cr-1:answer:1')).toEqual({ requestId: 'cr-1', action: 'answer', optionIndex: 1 });
+    const request: CoworkRequest = {
+      id: 'cr-1',
+      conversationId: 'cc-1',
+      agentId: 'ca-1',
+      kind: 'question',
+      title: 'Which region?',
+      detail: 'Pick the deploy target.',
+      options: ['EU', 'US'],
+      status: 'open',
+      createdAt: new Date().toISOString(),
+    };
+    const { calls, fetchImpl } = telegramMock();
+    await sendTelegramRequestCard(fetchImpl, token, '42', request, 'Ada');
+    expect(calls[0]!.method).toBe('sendMessage');
+    expect(calls[0]!.body['text']).toContain('Question');
+    expect(calls[0]!.body['text']).toContain('1. EU');
+    expect(calls[0]!.body['text']).not.toContain('<tool>');
+    expect(calls[0]!.body['reply_markup']).toEqual({
+      inline_keyboard: [
+        [{ text: 'EU', callback_data: 'cwreq:cr-1:answer:0' }],
+        [{ text: 'US', callback_data: 'cwreq:cr-1:answer:1' }],
+      ],
+    });
+  });
+
   it('retries rate limits and reports final delivery failures', async () => {
     vi.useFakeTimers();
     let count = 0;
@@ -96,6 +125,48 @@ describe('Telegram live replies', () => {
     expect(got).toEqual(['42:hello']);
     expect(count).toBe(2);
     expect(poller.chats()[0]!.id).toBe('42');
+  });
+
+  it('routes Telegram inline callbacks and acknowledges the button tap', async () => {
+    const calls: { method: string; body: Record<string, unknown> }[] = [];
+    const callbacks: { from: string; data: string; chatId: string; callbackId: string; messageId?: number }[] = [];
+    let polls = 0;
+    const api: TelegramFetch = async (url, init) => {
+      const method = url.split('/').at(-1)!;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      calls.push({ method, body });
+      if (method === 'getUpdates') {
+        polls++;
+        if (polls === 1) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              ok: true,
+              result: [{ update_id: 40, callback_query: { id: 'cb-1', data: 'cwreq:cr-1:approve', message: { message_id: 9, chat: { id: 42 } }, from: { first_name: 'Ada' } } }],
+            }),
+          };
+        }
+        return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+      }
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: {} }) };
+    };
+    const poller = new TelegramPoller({
+      token,
+      chatId: '42',
+      fetchImpl: api,
+      onMessage: () => {},
+      onCallback: (from, data, chatId, callbackId, messageId) => {
+        callbacks.push({ from, data, chatId, callbackId, messageId });
+        return 'Approved';
+      },
+    });
+    poller.start();
+    await vi.waitFor(() => expect(calls.some((call) => call.method === 'answerCallbackQuery')).toBe(true));
+    poller.stop();
+    expect(callbacks).toEqual([{ from: 'Ada', data: 'cwreq:cr-1:approve', chatId: '42', callbackId: 'cb-1', messageId: 9 }]);
+    const answer = calls.find((call) => call.method === 'answerCallbackQuery')!;
+    expect(answer.body).toEqual({ callback_query_id: 'cb-1', text: 'Approved', show_alert: false });
   });
 
   it('coalesces updates while a Telegram request is slow', async () => {
@@ -307,9 +378,27 @@ describe('cowork streaming and tool execution', () => {
   it('reports tool budget exhaustion instead of pretending unexecuted tools succeeded', async () => {
     const client = { complete: async () => '<tool>{"name":"unknown","params":{}}</tool>' };
     const result = await runConversationTurn(setup('budget', client));
-    expect(result.messages[0]!.text).toContain('Work is incomplete');
-    expect(result.messages[0]!.tools).toHaveLength(24);
-    expect(result.messages[0]!.tools!.every((t) => !t.ok)).toBe(true);
+    const checkpoints = result.messages.filter((m) => m.role === 'system' && m.text.includes('continuing automatically'));
+    expect(checkpoints).toHaveLength(3);
+    const final = result.messages.filter((m) => m.role === 'agent').at(-1)!;
+    expect(final.text).toContain('Work is incomplete');
+    expect(final.tools).toHaveLength(24 * 4);
+    expect(final.tools!.every((t) => !t.ok)).toBe(true);
+  });
+
+  it('keeps working across a budget segment until the task finishes', async () => {
+    let calls = 0;
+    const client = {
+      complete: async () => {
+        calls += 1;
+        return calls <= 24 ? '<tool>{"name":"unknown","params":{}}</tool>' : 'Done after continuing.';
+      },
+    };
+    const result = await runConversationTurn(setup('budget-finish', client));
+    expect(result.messages.some((m) => m.role === 'system' && m.text.includes('continuing automatically'))).toBe(true);
+    const final = result.messages.filter((m) => m.role === 'agent').at(-1)!;
+    expect(final.text).toBe('Done after continuing.');
+    expect(final.tools).toHaveLength(24);
   });
 
   it('routes names with spaces and reserves a chief synthesis turn', async () => {

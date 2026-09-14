@@ -4,8 +4,9 @@ import type { ToolContext } from '../tools/tools.js';
 import { excerpt } from '../util.js';
 import { coworkToolDocs, executeCoworkTool, parseToolCalls, stripToolMarkers, type CoworkToolScope } from './tools.js';
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers } from '../llm/llm.js';
+import { compactHistory } from '../agent/compaction.js';
 import type { CoworkMemory } from './memory.js';
-import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMission, CoworkStore } from './store.js';
+import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMission, CoworkStore, CoworkThread } from './store.js';
 import { BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL } from '../skills/builtin.js';
 import type { ToolResult } from '../types.js';
 
@@ -28,6 +29,14 @@ const MAX_AGENT_MESSAGES_PER_TRIGGER = 5;
  */
 const MAX_PARALLEL_WORKERS = 4;
 const MAX_TOOL_ROUNDS_PER_TURN = 24;
+/**
+ * Tool budget segments per chat turn. Hitting the round budget no longer ends
+ * the work: the runner announces a checkpoint and continues automatically in a
+ * fresh segment (old tool results are compacted first), so long chains like
+ * "scaffold → write files → verify → fix" finish without the user re-prompting.
+ * Only when every segment is spent does the turn stop and report incomplete.
+ */
+const MAX_TOOL_CONTINUATIONS = 3;
 const TRANSCRIPT_MESSAGES = 40;
 const MAX_TRANSCRIPT_CHARS = 24_000;
 
@@ -68,6 +77,16 @@ export interface CoworkProgress {
   text: string;
   tool?: string;
   toolOk?: boolean;
+  /** Public HTTP origin only; never expose URL credentials or query strings. */
+  webUrl?: string;
+}
+
+export function coworkWebOrigin(tool: string, params: Record<string, unknown>): string | undefined {
+  if (!['browse', 'web_fetch', 'web_search', 'search_web'].includes(tool) || typeof params.url !== 'string') return undefined;
+  try {
+    const url = new URL(params.url);
+    return /^https?:$/.test(url.protocol) && !url.username && !url.password ? url.origin : undefined;
+  } catch { return undefined; }
 }
 
 export interface TurnResult {
@@ -90,7 +109,7 @@ function resolveChief(conversation: CoworkConversation, members: CoworkAgent[]):
   return members.find((m) => m.id === conversation.chiefId) ?? members.find((m) => m.chiefOfStaff) ?? members[0];
 }
 
-function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], deps?: CoworkRunnerDeps, mission?: CoworkMission): string {
+function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], deps?: CoworkRunnerDeps, mission?: CoworkMission, thread?: CoworkThread): string {
   const now = new Date();
   const parts: string[] = [
     `You are "${agent.name}"${agent.tagline ? ` — ${agent.tagline}` : ''}, a teammate in Agent Gitu's cowork mode.`,
@@ -161,6 +180,19 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
   } else {
     parts.push(`You are in a direct one-on-one chat with the user. Be helpful and concise.`);
   }
+  const folders = conversation.folders ?? [];
+  if (folders.length > 0) {
+    parts.push(
+      `TAGGED FOLDERS (the team works on these; absolute paths are allowed for file, shell and browse tools):\n` +
+        folders.map((folder) => `- ${folder.label}: ${folder.path}`).join('\n') +
+        `\nTag another folder with folder_manage when the user asks to work somewhere else.`,
+    );
+  }
+  if (thread) {
+    parts.push(
+      `CURRENT THREAD: "${thread.title}"${thread.topic ? ` — ${thread.topic}` : ''}. Keep this work on this thread's topic; unrelated work belongs in another thread.`,
+    );
+  }
   const docs = coworkToolDocs(agent, Boolean(deps?.browser));
   if (docs) {
     parts.push(
@@ -223,8 +255,14 @@ function currentMembers(conversation: CoworkConversation, deps: CoworkRunnerDeps
   return current.memberIds.map((id) => agentById(deps, id)).filter((agent): agent is CoworkAgent => Boolean(agent));
 }
 
-export function buildCoworkMessages(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], history: CoworkMessage[], deps?: CoworkRunnerDeps): LlmMessage[] {
-  return [{ role: 'system', content: systemPrompt(agent, conversation, members, deps) }, ...transcript(history, deps?.store)];
+export function buildCoworkMessages(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], history: CoworkMessage[], deps?: CoworkRunnerDeps, thread?: CoworkThread): LlmMessage[] {
+  return [{ role: 'system', content: systemPrompt(agent, conversation, members, deps, undefined, thread) }, ...transcript(history, deps?.store)];
+}
+
+/** Look up the active thread for prompt context, tolerating stale in-memory conversations. */
+function activeThread(conversation: CoworkConversation, deps: CoworkRunnerDeps, threadId?: string): CoworkThread | undefined {
+  if (!threadId) return undefined;
+  return deps.store?.getThread(conversation.id, threadId) ?? conversation.threads?.find((thread) => thread.id === threadId);
 }
 
 /** Run one agent's turn: LLM → tools → LLM … until a marker-free reply. */
@@ -234,27 +272,30 @@ async function agentTurn(input: {
   members: CoworkAgent[];
   history: CoworkMessage[];
   deps: CoworkRunnerDeps;
+  threadId?: string;
   append: (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>) => CoworkMessage;
 }): Promise<void> {
   if (input.deps.withAgent) {
     return input.deps.withAgent(input.agent, () => agentTurn({ ...input, deps: { ...input.deps, withAgent: undefined } }));
   }
-  const { agent, conversation, members, history, deps, append } = input;
+  const { agent, conversation, members, history, deps, append, threadId } = input;
   const client = deps.resolveLlm(agent);
   const supportsImages = await deps.supportsImagesFor?.(agent) ?? true;
   const llm = resilientLlm(client, { label: `cowork ${agent.name}` });
-  const messages = buildCoworkMessages(agent, conversation, members, history, deps);
+  const messages = buildCoworkMessages(agent, conversation, members, history, deps, activeThread(conversation, deps, threadId));
   const seenInbox = new Set((deps.store?.inboxFor(agent.id) ?? []).map((item) => item.id));
   const usedTools: { name: string; ok: boolean }[] = [];
   const artifactIds: string[] = [];
   let ctx: ToolContext | undefined;
+  const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, computerFor: deps.computerFor, signal: deps.signal, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, threadId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
   let reply = '';
-  const progress = (text: string, tool?: string, toolOk?: boolean) => deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk });
+  const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string) => deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk, webUrl });
+  let continuations = 0;
 
   try {
-  for (let round = 0; round <= MAX_TOOL_ROUNDS_PER_TURN; round++) {
+  for (let segmentRounds = 0; ; ) {
     deps.signal?.throwIfAborted();
     let streamed = '';
     const opts = {
@@ -276,14 +317,11 @@ async function agentTurn(input: {
     deps.signal?.throwIfAborted();
     const calls = parseToolCalls(reply);
     if (calls.length === 0 && !/<tool[\s>]/i.test(reply) && findXmlCallStart(compactDialectMarkers(reply)) < 0) break;
-    if (round === MAX_TOOL_ROUNDS_PER_TURN) {
-      reply = 'Tool budget reached. Work is incomplete; the last requested actions were not executed.';
-      break;
-    }
     messages.push({ role: 'assistant', content: reply });
     if (calls.length === 0) {
       messages.push({ role: 'user', content: 'Invalid tool marker. Use valid JSON with name and an object params, enclosed in <tool>...</tool>, or finish with plain text.' });
     }
+    let waitingForUser = false;
     for (const [index, call] of calls.entries()) {
       deps.signal?.throwIfAborted();
       if (index >= 4) {
@@ -294,7 +332,7 @@ async function agentTurn(input: {
         continue;
       }
       ctx ??= deps.toolContext(agent);
-      progress(stripToolMarkers(reply), call.tool);
+      progress(stripToolMarkers(reply), call.tool, undefined, coworkWebOrigin(call.tool, call.params));
       const result = await executeCoworkTool(
         ctx,
         call.tool,
@@ -304,14 +342,30 @@ async function agentTurn(input: {
       );
       usedTools.push({ name: call.tool, ok: result.ok });
       recordToolResult(scope, call.tool, result);
-      progress(stripToolMarkers(reply), call.tool, result.ok);
+      progress(stripToolMarkers(reply), call.tool, result.ok, coworkWebOrigin(call.tool, call.params));
       messages.push(toolResultMessage(call.tool, result, supportsImages));
       if (result.ok && ['ask_user', 'request_permission'].includes(call.tool)) {
         reply = stripToolMarkers(reply) || 'I’m waiting for your response to the card above.';
-        round = MAX_TOOL_ROUNDS_PER_TURN;
+        waitingForUser = true;
         break;
       }
     }
+    if (waitingForUser) break;
+    segmentRounds += 1;
+    if (segmentRounds < MAX_TOOL_ROUNDS_PER_TURN) continue;
+    if (continuations >= MAX_TOOL_CONTINUATIONS) {
+      reply = 'Tool budget reached. Work is incomplete; the last requested actions were not executed.';
+      break;
+    }
+    continuations += 1;
+    const segment = continuations + 1;
+    // Keep the continuation visible and honest: the conversation records the
+    // checkpoint while the model receives a lean, compacted context.
+    append({ role: 'system', agentId: agent.id, via: 'web', text: `${agent.name} reached the per-segment tool budget and is continuing automatically (segment ${segment}/${MAX_TOOL_CONTINUATIONS + 1}).` });
+    progress(`Continuing automatically (segment ${segment}/${MAX_TOOL_CONTINUATIONS + 1})…`);
+    compactHistory(messages, (text) => progress(text), { keepRecent: 8 });
+    messages.push({ role: 'user', content: `CONTINUE (segment ${segment}/${MAX_TOOL_CONTINUATIONS + 1}): the task is not finished. Do not repeat completed actions; continue from the latest tool results and finish the work.` });
+    segmentRounds = 0;
   }
 
   const text = stripToolMarkers(reply) || '(no reply)';
@@ -333,14 +387,16 @@ export async function runConversationTurn(input: {
   history: CoworkMessage[];
   trigger: CoworkMessage;
   deps: CoworkRunnerDeps;
+  /** Topic thread this turn belongs to; absent means the Main thread. */
+  threadId?: string;
   append: (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>) => CoworkMessage;
 }): Promise<TurnResult> {
-  const { conversation, history, trigger, deps, append } = input;
+  const { conversation, history, trigger, deps, append, threadId } = input;
   let members = currentMembers(conversation, deps);
   if (members.length === 0) return { messages: [], error: 'No team members in this conversation' };
   const messages: CoworkMessage[] = [];
   const track = (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>): CoworkMessage => {
-    const stored = append(m);
+    const stored = append(threadId ? { ...m, threadId } : m);
     messages.push(stored);
     return stored;
   };
@@ -350,7 +406,7 @@ export async function runConversationTurn(input: {
     if (conversation.kind === 'dm' || forced) {
       const agent = forced ?? members[0]!;
       deps.onWorking?.(agent);
-      await agentTurn({ agent, conversation, members, history, deps, append: track });
+      await agentTurn({ agent, conversation, members, history, deps, threadId, append: track });
       return { messages };
     }
 
@@ -378,7 +434,7 @@ export async function runConversationTurn(input: {
       await Promise.all(batch.map(async (agent) => {
         deps.onWorking?.(agent);
         try {
-          await agentTurn({ agent, conversation, members, history: historyAtStart, deps, append: track });
+          await agentTurn({ agent, conversation, members, history: historyAtStart, deps, threadId, append: track });
         } catch (err) {
           deps.signal?.throwIfAborted();
           const failed = track({ role: 'agent', agentId: agent.id, agentName: agent.name, text: `Could not complete my part: ${(err as Error).message}`, via: 'web' });
@@ -412,6 +468,7 @@ export async function runConversationTurn(input: {
           },
         ],
         deps,
+        threadId,
         append: track,
       });
     }
@@ -464,8 +521,9 @@ export async function runMissionSession(input: {
     const supportsImages = await deps.supportsImagesFor?.(agent) ?? true;
     const llm = resilientLlm(client, { label: `mission ${agent.name}` });
     const artifactIds: string[] = [];
+    const taggedFolders = (deps.store?.getConversation(mission.conversationId)?.folders ?? []).map((folder) => folder.path);
     const scope: CoworkToolScope | undefined =
-      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
     let ctx: ToolContext | undefined;
     const messages: LlmMessage[] = [
       // The transcript is deliberately not included: missions run in their own
@@ -512,7 +570,7 @@ export async function runMissionSession(input: {
         }
         deps.signal?.throwIfAborted();
         ctx ??= deps.toolContext(agent);
-        deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: stripToolMarkers(reply), tool: call.tool });
+        deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: stripToolMarkers(reply), tool: call.tool, webUrl: coworkWebOrigin(call.tool, call.params) });
         const result = await executeCoworkTool(
           ctx,
           call.tool,
@@ -522,7 +580,7 @@ export async function runMissionSession(input: {
         );
         recordToolResult(scope, call.tool, result);
         messages.push(toolResultMessage(call.tool, result, supportsImages));
-        deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok });
+        deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok, webUrl: coworkWebOrigin(call.tool, call.params) });
         if (result.ok && ['ask_user', 'request_permission'].includes(call.tool)) { waiting = true; break; }
       }
       if (waiting) break;

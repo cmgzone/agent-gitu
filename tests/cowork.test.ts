@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm, type LlmClient } from '../src/llm/llm.js';
-import { CoworkStore } from '../src/cowork/store.js';
+import { CoworkStore, type CoworkConversation } from '../src/cowork/store.js';
 import { buildCoworkMessages, runConversationTurn, runMissionSession, type CoworkRunnerDeps } from '../src/cowork/runner.js';
 import { parseToolCalls, stripToolMarkers } from '../src/cowork/tools.js';
-import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, TelegramPoller } from '../src/cowork/telegram.js';
+import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, TelegramPoller, type TelegramFetch } from '../src/cowork/telegram.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { McpManager } from '../src/mcp/client.js';
 import { MemoryStore } from '../src/memory/memory-store.js';
@@ -114,6 +114,48 @@ describe('CoworkStore', () => {
     store.saveUserProfile({ name: 'Ada', about: 'Building a mobile app', preferences: 'Short answers' });
     const reloaded = new CoworkStore(file);
     expect(reloaded.userProfile()).toEqual({ name: 'Ada', about: 'Building a mobile app', preferences: 'Short answers' });
+  });
+
+  it('tags folders, scopes threads, and pins sanitized widgets', () => {
+    const file = path.join(tempHome('workspace-features'), 'cowork.json');
+    const store = new CoworkStore(file);
+    const agent = store.saveAgent(makeAgentInput('curator'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+
+    const folderDir = mkdtempSync(path.join(tmpdir(), 'cowork-folder-'));
+    const folder = store.addFolder({ conversationId: conv.id, path: folderDir, label: 'site', agentId: agent.id });
+    expect(folder.label).toBe('site');
+    expect(store.folders(conv.id)).toHaveLength(1);
+    // Tagging the same path twice is idempotent (case-insensitive on Windows).
+    expect(store.addFolder({ conversationId: conv.id, path: folderDir }).id).toBe(folder.id);
+    expect(store.removeFolder(conv.id, folder.id)).toBe(true);
+    expect(store.folders(conv.id)).toHaveLength(0);
+
+    const thread = store.addThread({ conversationId: conv.id, title: 'Launch copy', topic: 'Copy only' });
+    expect(store.addThread({ conversationId: conv.id, title: 'launch copy' }).id).toBe(thread.id);
+    const main = store.appendMessage(conv.id, { role: 'user', text: 'main work', via: 'web' });
+    const inThread = store.appendMessage(conv.id, { role: 'user', text: 'thread work', via: 'web', threadId: thread.id });
+    expect(main.seq).toBe(1);
+    expect(inThread.seq).toBe(2);
+    expect(store.messages(conv.id, 0, null).map((m) => m.text)).toEqual(['main work']);
+    expect(store.messages(conv.id, 0, thread.id).map((m) => m.text)).toEqual(['thread work']);
+    expect(store.messages(conv.id)).toHaveLength(2);
+    expect(store.deleteThread(conv.id, thread.id)).toBe(true);
+    expect(store.messages(conv.id)).toHaveLength(1);
+
+    const widget = store.saveWidget({ conversationId: conv.id, title: 'Deploy', kind: 'progress', data: { label: 'Files', value: 140 } });
+    expect(widget.data).toEqual({ label: 'Files', value: 100 });
+    const updated = store.saveWidget({ conversationId: conv.id, title: 'deploy', kind: 'list', data: { items: [{ text: 'Draft', done: true }, { text: '' }, { text: '<b>x</b>' }] } });
+    expect(updated.id).toBe(widget.id);
+    expect(updated.data).toEqual({ items: [{ text: 'Draft', done: true }, { text: '<b>x</b>', done: false }] });
+    expect(store.deleteWidget(widget.id)).toBe(true);
+
+    // Raw HTML-ish text stays inert data; the sidebar renders it escaped.
+    const safe = store.saveWidget({ conversationId: conv.id, title: '<img src=x onerror=1>', kind: 'text', data: { text: '<script>alert(1)</script>' } });
+    expect(safe.data).toEqual({ text: '<script>alert(1)</script>' });
+    const reloaded = new CoworkStore(file);
+    expect(reloaded.widgets(conv.id)).toHaveLength(1);
+    expect(reloaded.getWidget(safe.id)!.title).toBe('<img src=x onerror=1>');
   });
 
   it('enforces conversation member rules', () => {
@@ -490,6 +532,56 @@ describe('cowork capability tools', () => {
     expect(selfDelete.ok).toBe(false);
   });
 
+  it('folder_manage, widget_manage and chief groups/threads work end to end', async () => {
+    const featureStore = new CoworkStore(path.join(tempHome('tools-workspace'), 'cowork.json'));
+    const featureMemory = CoworkMemory.forWorkspace();
+    const chief = featureStore.saveAgent(makeAgentInput('chief-ws', { chiefOfStaff: true }));
+    const writer = featureStore.saveAgent(makeAgentInput('writer-ws'));
+    const conv = featureStore.saveConversation({ kind: 'group', memberIds: [chief.id, writer.id], chiefId: chief.id });
+    const workspaceScope = { store: featureStore, agent: chief, memory: featureMemory, conversationId: conv.id };
+    const chiefPerms = { allowShell: false, allowWrites: false, allowConfig: false, chief: true, browser: false };
+
+    const folderDir = mkdtempSync(path.join(tmpdir(), 'cowork-tool-folder-'));
+    const added = await executeCoworkTool(noopCtx, 'folder_manage', { action: 'add', path: folderDir, label: 'site' }, chiefPerms, workspaceScope);
+    expect(added.ok).toBe(true);
+    expect(featureStore.folders(conv.id)).toHaveLength(1);
+    const listed = await executeCoworkTool(noopCtx, 'folder_manage', { action: 'list' }, chiefPerms, workspaceScope);
+    expect(listed.output).toContain('site');
+    const missing = await executeCoworkTool(noopCtx, 'folder_manage', { action: 'add', path: path.join(folderDir, 'nope') }, chiefPerms, workspaceScope);
+    expect(missing.ok).toBe(false);
+
+    const widget = await executeCoworkTool(noopCtx, 'widget_manage', { action: 'create', title: 'Status', kind: 'stats', data: { items: [{ label: 'Tests', value: '12/12' }] } }, chiefPerms, workspaceScope);
+    expect(widget.ok).toBe(true);
+    expect(featureStore.widgets(conv.id)[0]!.data).toEqual({ items: [{ label: 'Tests', value: '12/12' }] });
+    const deleted = await executeCoworkTool(noopCtx, 'widget_manage', { action: 'delete', title: 'status' }, chiefPerms, workspaceScope);
+    expect(deleted.ok).toBe(true);
+    expect(featureStore.widgets(conv.id)).toHaveLength(0);
+
+    const group = await executeCoworkTool(noopCtx, 'team_manage', { action: 'create_group', title: 'Launch room', members: ['writer-ws'] }, chiefPerms, workspaceScope);
+    expect(group.ok).toBe(true);
+    const createdGroup = featureStore.listConversations().find((c) => c.title === 'Launch room');
+    expect(createdGroup?.memberIds).toEqual(expect.arrayContaining([chief.id, writer.id]));
+    const thread = await executeCoworkTool(noopCtx, 'team_manage', { action: 'create_thread', title: 'Launch copy' }, chiefPerms, workspaceScope);
+    expect(thread.ok).toBe(true);
+    expect(featureStore.threads(conv.id)[0]!.title).toBe('Launch copy');
+  });
+
+  it('lets host tools work inside a tagged folder outside the agent workspace', async () => {
+    const guardStore = new CoworkStore(path.join(tempHome('tools-guard'), 'cowork.json'));
+    const agent = guardStore.saveAgent(makeAgentInput('host-ws', { useHostComputer: true }));
+    const conv = guardStore.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const outside = mkdtempSync(path.join(tmpdir(), 'cowork-outside-'));
+    const perms = { allowShell: false, allowWrites: true, allowConfig: false, chief: false, browser: false };
+    const baseScope = { store: guardStore, agent, memory: CoworkMemory.forWorkspace(), conversationId: conv.id };
+    const target = path.join(outside, 'notes.md');
+
+    const blocked = await executeCoworkTool(realToolContext(), 'write_file', { path: target, content: 'hi' }, perms, { ...baseScope, taggedFolders: [] });
+    expect(blocked.ok).toBe(false);
+    const allowed = await executeCoworkTool(realToolContext(), 'write_file', { path: target, content: 'hi' }, perms, { ...baseScope, taggedFolders: [outside] });
+    expect(allowed.ok).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe('hi');
+  });
+
   it('gates MCP/skill/connection setup behind allowConfig', async () => {
     const agent = store.saveAgent(makeAgentInput('config-user'));
     const no = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false };
@@ -645,8 +737,8 @@ describe('cowork server routes', () => {
   });
 
   let serverInstance: HermesServer | undefined;
-  async function startServer(llm: LlmClient): Promise<string> {
-    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm });
+  async function startServer(llm: LlmClient, extra: Partial<ConstructorParameters<typeof HermesServer>[0]> = {}): Promise<string> {
+    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm, ...extra });
     servers.push(server);
     serverInstance = server;
     const port = await server.start();
@@ -710,6 +802,46 @@ describe('cowork server routes', () => {
     expect(gone.messages).toHaveLength(0);
   });
 
+  it('tags folders, isolates threads, and exposes widgets over HTTP', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'Working on it.']));
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('http-widget'));
+    const agent = created.json['agent'] as { id: string };
+    const convRes = await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] });
+    const conv = convRes.json['conversation'] as { id: string };
+
+    const folderDir = mkdtempSync(path.join(tmpdir(), 'cowork-http-folder-'));
+    const folder = await post(base, `/api/cowork/conversations/${conv.id}/folders`, { path: folderDir, label: 'site' });
+    expect(folder.status).toBe(200);
+    const folders = (await fetch(`${base}/api/cowork/conversations/${conv.id}/folders`).then((r) => r.json())) as { folders: { label: string }[] };
+    expect(folders.folders[0]!.label).toBe('site');
+
+    const thread = await post(base, `/api/cowork/conversations/${conv.id}/threads`, { title: 'Launch copy', topic: 'copy only' });
+    expect(thread.status).toBe(200);
+    const threadId = (thread.json['thread'] as { id: string }).id;
+    const sendMain = await post(base, `/api/cowork/conversations/${conv.id}/messages`, { text: 'main topic' });
+    expect(sendMain.status).toBe(202);
+    const sendThread = await post(base, `/api/cowork/conversations/${conv.id}/messages`, { text: 'thread topic', threadId });
+    expect(sendThread.status).toBe(202);
+    await waitFor(async () => {
+      const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages?thread=${threadId}`).then((r) => r.json())) as { messages: { role: string }[] };
+      return d.messages.some((m) => m.role === 'agent') ? d : undefined;
+    });
+    const mainView = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { messages: { text: string }[] };
+    expect(mainView.messages.some((m) => m.text.includes('main topic'))).toBe(true);
+    expect(mainView.messages.some((m) => m.text.includes('thread topic'))).toBe(false);
+    const threadView = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages?thread=${threadId}`).then((r) => r.json())) as { messages: { text: string }[]; threads: { id: string }[] };
+    expect(threadView.messages.some((m) => m.text.includes('thread topic'))).toBe(true);
+    expect(threadView.threads[0]!.id).toBe(threadId);
+
+    const widget = await post(base, `/api/cowork/conversations/${conv.id}/widgets`, { title: 'Build', kind: 'progress', data: { label: 'Build', value: 30 } });
+    expect(widget.status).toBe(200);
+    const widgetId = (widget.json['widget'] as { id: string }).id;
+    const widgets = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { widgets: { id: string; title: string }[] };
+    expect(widgets.widgets.some((w) => w.id === widgetId)).toBe(true);
+    const widgetDelete = await fetch(`${base}/api/cowork/widgets/${widgetId}`, { method: 'DELETE' });
+    expect(widgetDelete.status).toBe(200);
+  });
+
   it('serves attachments, hides Telegram tokens and applies interactive host permission', async () => {
     const base = await startServer(new ScriptedMockLlm([() => 'I reviewed the attached file.']));
     const created = await post(base, '/api/cowork/agents', makeAgentInput('artifact-agent'));
@@ -741,6 +873,78 @@ describe('cowork server routes', () => {
     const approved = await post(base, `/api/cowork/requests/${request.id}`, { action: 'approve' });
     expect(approved.status).toBe(200);
     expect((approved.json['agent'] as { useHostComputer: boolean }).useHostComputer).toBe(true);
+  });
+
+  it('mirrors cowork questions and approvals to Telegram and accepts Telegram responses', async () => {
+    const telegramCalls: { method: string; body: Record<string, unknown> }[] = [];
+    const telegramFetch: TelegramFetch = async (url, init) => {
+      const method = url.split('/').at(-1)!;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      telegramCalls.push({ method, body });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: { message_id: telegramCalls.length } }) };
+    };
+    const llm = new ScriptedMockLlm([
+      () => 'Need a region. <tool>{"name":"ask_user","params":{"question":"Which region?","detail":"Pick a deployment target.","options":["EU","US"]}}</tool>',
+      () => 'Using EU now.',
+      () => 'Writes enabled now.',
+    ]);
+    const base = await startServer(llm, { telegramFetch });
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('telegram-card-agent', { allowWrites: false }));
+    const agent = created.json['agent'] as { id: string; allowWrites: boolean };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const internals = serverInstance as unknown as {
+      cowork: () => CoworkStore;
+      handleCoworkTelegramRequestText: (conversation: CoworkConversation, text: string) => Promise<boolean>;
+      sendCoworkRequestCards: (conversation: CoworkConversation) => Promise<void>;
+      resolveCoworkTelegramCallback: (conversationId: string, data: string) => string;
+    };
+    const store = internals.cowork();
+    const telegramConversation = store.updateConversation(conv.id, {
+      telegram: { enabled: true, token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ', chatId: '42', chatTitle: 'Ops' },
+    })!;
+
+    const sent = await post(base, `/api/cowork/conversations/${conv.id}/messages`, { text: 'ask me before choosing' });
+    expect(sent.status).toBe(202);
+    const question = await waitFor(async () => {
+      const request = store.requests(conv.id).find((candidate) => candidate.kind === 'question');
+      const card = telegramCalls.find((call) => call.method === 'sendMessage' && String(call.body['text']).includes('Which region?') && call.body['reply_markup']);
+      return request && card ? { request, card } : undefined;
+    });
+    expect(question.card.body['text']).toContain('Question');
+    expect(question.card.body['text']).not.toContain('<tool>');
+    expect(question.card.body['reply_markup']).toEqual({
+      inline_keyboard: [
+        [{ text: 'EU', callback_data: `cwreq:${question.request.id}:answer:0` }],
+        [{ text: 'US', callback_data: `cwreq:${question.request.id}:answer:1` }],
+      ],
+    });
+    expect(store.getRequest(question.request.id)?.telegramNotifiedAt).toBeTruthy();
+
+    expect(await internals.handleCoworkTelegramRequestText(telegramConversation, '1')).toBe(true);
+    expect(store.getRequest(question.request.id)?.status).toBe('answered');
+    expect(store.getRequest(question.request.id)?.response).toBe('EU');
+    await waitFor(async () => {
+      const view = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; messages: { role: string; text: string }[] };
+      return !view.busy && view.messages.some((message) => message.text === 'Using EU now.') ? true : undefined;
+    });
+    expect(telegramCalls.some((call) => call.method === 'sendMessage' && call.body['text'] === 'Recorded: EU.')).toBe(true);
+
+    const permission = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'permission', title: 'Allow writes', detail: 'Edit files in the workspace.', permission: 'writes' });
+    await internals.sendCoworkRequestCards(telegramConversation);
+    const approvalCard = telegramCalls.find((call) => call.method === 'sendMessage' && String(call.body['text']).includes('Approval needed') && String(call.body['text']).includes('Allow writes'));
+    expect(approvalCard?.body['reply_markup']).toEqual({
+      inline_keyboard: [[
+        { text: 'Allow', callback_data: `cwreq:${permission.id}:approve` },
+        { text: 'Deny', callback_data: `cwreq:${permission.id}:deny` },
+      ]],
+    });
+    expect(internals.resolveCoworkTelegramCallback(conv.id, `cwreq:${permission.id}:approve`)).toBe('Recorded: approved.');
+    expect(store.getRequest(permission.id)?.status).toBe('approved');
+    expect(store.getAgent(agent.id)?.allowWrites).toBe(true);
+    await waitFor(async () => {
+      const view = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; messages: { role: string; text: string }[] };
+      return !view.busy && view.messages.some((message) => message.text === 'Writes enabled now.') ? true : undefined;
+    });
   });
 
   it('accepts and actually answers a second send after the current turn', async () => {

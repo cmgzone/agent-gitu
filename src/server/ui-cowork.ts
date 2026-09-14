@@ -1,3 +1,5 @@
+import { CHARACTER_CSS, CHARACTER_JS } from './ui-characters.js';
+
 /**
  * Cowork mode UI: a messaging-app style surface (agent roster, DMs, group
  * chats, Telegram/schedule panels) rendered inside the existing web app.
@@ -52,6 +54,25 @@ export const COWORK_CSS = String.raw`
   .cw-chat-head .chip svg { width: 12px; height: 12px; }
   .cw-info-toggle { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; flex: none; }
   .cw-info-toggle:hover { color: var(--text); border-color: var(--accent); }
+  .cw-threads { display: flex; align-items: center; gap: 6px; padding: 7px 16px; border-bottom: 1px solid var(--border); overflow-x: auto; min-height: 38px; }
+  .cw-thread { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 999px; padding: 3px 12px; font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+  .cw-thread:hover { color: var(--text); border-color: var(--accent); }
+  .cw-thread.cur { color: #fff; background: var(--run-dim); border-color: rgba(91,168,255,.45); }
+  .cw-thread.new { border-style: dashed; }
+  .cw-thread-del { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; }
+  .cw-thread-del:hover { color: var(--err); }
+  .cw-thread-del svg { width: 12px; height: 12px; }
+  .cw-widget-ico { background: rgba(143,128,255,.14); color: var(--accent); }
+  .cw-widget-ico svg { width: 15px; height: 15px; }
+  .cw-widget-body { display: flex; flex-direction: column; gap: 7px; }
+  .cw-widget-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12.5px; border-bottom: 1px dashed var(--border); padding: 3px 0; }
+  .cw-widget-row:last-child { border-bottom: 0; }
+  .cw-widget-row .v { color: var(--text); font-weight: 600; }
+  .cw-widget-row .l { color: var(--muted); }
+  .cw-widget-row.done .l { text-decoration: line-through; opacity: .65; }
+  .cw-widget-bar { height: 8px; border-radius: 999px; background: var(--card2); border: 1px solid var(--border); overflow: hidden; }
+  .cw-widget-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--accent), var(--run)); }
+  .cw-widget-text { font-size: 12.5px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
   .cw-msgs { flex: 1; overflow-y: auto; padding: 18px 20px 8px; display: flex; flex-direction: column; gap: 12px; }
   .cw-row { display: flex; gap: 9px; max-width: 86%; }
   .cw-row.me { align-self: flex-end; flex-direction: row-reverse; max-width: 74%; }
@@ -204,12 +225,14 @@ export const COWORK_CSS = String.raw`
   @media (max-width: 720px) { .cw-msgs { padding: 14px 12px 8px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-head { padding: 8px 12px; gap: 7px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw.rail-open .cw-rail { transform: none; } }
+  ${CHARACTER_CSS}
 `;
 
 export const COWORK_JS = String.raw`
+  ${CHARACTER_JS}
   // ==================== COWORK MODE ====================
   var CW_COLORS = ['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b'];
-  var CW_SHAPES = ['orb', 'cube', 'visor', 'antenna', 'bot'];
+  var CW_SHAPES = ['orb', 'jelly', 'cat', 'sprout', 'ufo', 'cube', 'visor', 'antenna', 'bot'];
   // Neutral starting points for the INSTRUCTIONS field only. They never fill
   // the name (users name their own agents) and carry no branding.
   var CW_TEMPLATES = [
@@ -232,14 +255,24 @@ export const COWORK_JS = String.raw`
     stop: CW_SVG_OPEN + '<rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
     send: CW_SVG_OPEN + '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
     target: CW_SVG_OPEN + '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>'
+    ,folder: CW_SVG_OPEN + '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>'
+    ,check: CW_SVG_OPEN + '<polyline points="20 6 9 17 4 12"/></svg>'
+    ,bolt: CW_SVG_OPEN + '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>'
+    ,globe: CW_SVG_OPEN + '<circle cx="12" cy="12" r="9"/><line x1="3" y1="12" x2="21" y2="12"/><path d="M12 3a13.5 13.5 0 0 1 0 18a13.5 13.5 0 0 1 0-18z"/></svg>'
+    ,link: CW_SVG_OPEN + '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>'
     ,file: CW_SVG_OPEN + '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>'
     ,paperclip: CW_SVG_OPEN + '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [] };
-    return S.cw;
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null };
+    var cw = S.cw;
+    if (!cw.threads) cw.threads = [];
+    if (!cw.folders) cw.folders = [];
+    if (!cw.widgets) cw.widgets = [];
+    if (cw.threadId === undefined) cw.threadId = null;
+    return cw;
   }
   function cwStopPoll() {
     var cw = S.cw;
@@ -275,6 +308,8 @@ export const COWORK_JS = String.raw`
       '<rect x="9" y="26" width="14" height="5" rx="1.5" fill="rgba(0,0,0,.45)"/></svg>';
   }
   function cwAvaImg(avatar) {
+    var character = cwCharacterSvg(avatar);
+    if (character) return character;
     if (avatar && avatar.shape === 'orb') return cwAvaSvg(avatar);
     var url = cwAvaDataUrl(avatar);
     return url ? '<img src="' + url + '" alt="">' : cwAvaSvg(avatar);
@@ -380,6 +415,14 @@ export const COWORK_JS = String.raw`
         (c.schedule && c.schedule.enabled ? '<span class="cw-flag" title="Scheduled messages active">' + cwIcon('clock') + '</span>' : '') +
         '</button>';
     });
+    html += '<div class="cw-sec">WIDGETS</div>';
+    if (!cw.widgets.length) html += '<div class="cw-empty-note">No widgets yet. Teammates pin live progress cards here; you can add one too.</div>';
+    cw.widgets.forEach(function (w) {
+      html += '<button class="cw-item cw-widget" data-widget="' + esc(w.id) + '" title="' + esc(w.title) + '">' +
+        '<span class="cw-ava cw-widget-ico">' + cwWidgetIcon(w) + '</span>' +
+        '<span class="cw-item-main"><span class="cw-item-name">' + esc(w.title) + '</span><span class="cw-item-sub">' + esc(cwWidgetSummary(w)) + '</span></span></button>';
+    });
+    html += '<button class="cw-item" id="cwNewWidget" style="opacity:.85">' + cwIcon('plus') + '<span class="cw-item-main"><span class="cw-item-name">New widget</span><span class="cw-item-sub">a live card for the active chat</span></span></button>';
     el.innerHTML = html;
     el.querySelectorAll('[data-agent]').forEach(function (b) {
       b.onclick = function () { cwOpenDm(b.getAttribute('data-agent')); };
@@ -387,6 +430,17 @@ export const COWORK_JS = String.raw`
     el.querySelectorAll('[data-conv]').forEach(function (b) {
       b.onclick = function () { cwOpenConv(b.getAttribute('data-conv')); };
     });
+    el.querySelectorAll('[data-widget]').forEach(function (b) {
+      b.onclick = function () { cwWidgetModal(b.getAttribute('data-widget')); };
+    });
+    var newWidget = $('cwNewWidget');
+    if (newWidget) {
+      newWidget.onclick = function () {
+        var conv = cwActiveConv();
+        if (!conv) { toast('Open a chat first', true); return; }
+        cwNewWidgetModal(conv);
+      };
+    }
   }
 
   function cwOpenDm(agentId) {
@@ -399,10 +453,14 @@ export const COWORK_JS = String.raw`
       .catch(function (e) { toast(e.message, true); });
   }
 
-  function cwOpenConv(id) {
+  function cwOpenConv(id, threadId) {
     var cw = cwEnsure();
     cwStopPoll();
     cw.active = id;
+    cw.threadId = threadId || null;
+    cw.threads = [];
+    cw.folders = [];
+    cw.widgets = [];
     cw.msgs = [];
     cw.lastSeq = 0;
     cw.busy = false;
@@ -410,10 +468,6 @@ export const COWORK_JS = String.raw`
     cw.progress = null;
     cw.progresses = [];
     cw.queued = 0;
-    cw.artifacts = [];
-    cw.todos = [];
-    cw.requests = [];
-    cw.pendingFiles = [];
     cw.artifacts = [];
     cw.todos = [];
     cw.requests = [];
@@ -426,6 +480,92 @@ export const COWORK_JS = String.raw`
     cwStartStream(id);
     cwPoll();
     cw.timer = setInterval(cwPoll, 2000);
+  }
+
+  /** Switch between the Main thread and a topic thread; restarts the stream. */
+  function cwSwitchThread(threadId) {
+    var cw = cwEnsure();
+    if (cw.threadId === (threadId || null)) return;
+    cwStopPoll();
+    cw.threadId = threadId || null;
+    cw.msgs = [];
+    cw.lastSeq = 0;
+    cw.busy = false;
+    cw.working = null;
+    cw.progress = null;
+    cw.progresses = [];
+    cw.queued = 0;
+    cw.artifacts = [];
+    cw.todos = [];
+    cw.requests = [];
+    cw.pendingFiles = [];
+    cwRenderRail();
+    cwRenderChat();
+    cwStartStream(cw.active);
+    cwPoll();
+    cw.timer = setInterval(cwPoll, 2000);
+  }
+
+  function cwRenderThreads() {
+    var cw = cwEnsure();
+    var el = $('cwThreads');
+    if (!el) return;
+    var html = '<button class="cw-thread' + (!cw.threadId ? ' cur' : '') + '" data-thread="" title="Main conversation">Main</button>';
+    (cw.threads || []).forEach(function (thread) {
+      html += '<button class="cw-thread' + (cw.threadId === thread.id ? ' cur' : '') + '" data-thread="' + esc(thread.id) + '" title="' + esc(thread.topic || thread.title) + '">' + esc(thread.title) + '</button>';
+      if (cw.threadId === thread.id) html += '<button class="cw-thread-del" data-delthread="' + esc(thread.id) + '" title="Delete this thread">' + cwIcon('close') + '</button>';
+    });
+    html += '<button class="cw-thread new" id="cwNewThread">' + cwIcon('plus') + ' Thread</button>';
+    el.innerHTML = html;
+    el.querySelectorAll('[data-thread]').forEach(function (b) {
+      b.onclick = function () { cwSwitchThread(b.getAttribute('data-thread') || null); };
+    });
+    el.querySelectorAll('[data-delthread]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-delthread');
+        if (!confirm('Delete this thread and its messages?')) return;
+        api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/threads/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function () {
+            cw.threads = (cw.threads || []).filter(function (thread) { return thread.id !== id; });
+            cwSwitchThread(null);
+            toast('Thread deleted');
+          })
+          .catch(function (e) { toast(e.message, true); });
+      };
+    });
+    var add = $('cwNewThread');
+    if (add) add.onclick = cwNewThreadModal;
+  }
+
+  function cwNewThreadModal() {
+    var cw = cwEnsure();
+    var conv = cwActiveConv();
+    if (!conv) return;
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML =
+      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">New thread</span><span style="flex:1"></span><button class="btn ghost" id="cwThCancel">Cancel</button></div>' +
+      '<div class="cw-body">' +
+        '<label>Thread title</label><input type="text" id="cwThTitle" maxlength="120" placeholder="Launch copy">' +
+        '<label>Topic / brief (optional)</label><textarea id="cwThTopic" rows="2" placeholder="Only landing-page copy; leave pricing alone"></textarea>' +
+        '<div class="cw-note">Threads keep unrelated topics apart. This thread gets its own messages and its own reply from the team; the Main thread stays clean.</div>' +
+      '</div>' +
+      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwThSave">Create thread</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#cwThCancel').onclick = function () { modal.remove(); };
+    modal.querySelector('#cwThSave').onclick = function () {
+      var title = $('cwThTitle').value.trim();
+      if (!title) { toast('Give the thread a title', true); return; }
+      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/threads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title, topic: $('cwThTopic').value.trim() }) })
+        .then(function (d) {
+          modal.remove();
+          cw.threads = (cw.threads || []).concat([d.thread]);
+          cwRenderThreads();
+          cwSwitchThread(d.thread.id);
+        })
+        .catch(function (e) { toast(e.message, true); });
+    };
+    setTimeout(function () { var t = $('cwThTitle'); if (t) t.focus(); }, 0);
   }
 
   function cwRenderChat() {
@@ -452,6 +592,7 @@ export const COWORK_JS = String.raw`
     }
     var members = cwConvMembers(conv);
     var chief = conv.chiefId ? cwAgentById(conv.chiefId) : null;
+    var activeThread = cw.threadId ? (cw.threads || []).filter(function (t) { return t.id === cw.threadId; })[0] : null;
     var headAva = conv.kind === 'group'
       ? '<span class="cw-ava" style="background:rgba(143,128,255,.14);border:1px solid var(--border2);color:var(--muted)">' + cwIcon('users') + '</span>'
       : (members[0] ? cwAva(members[0]) : '<span class="cw-ava"></span>');
@@ -466,6 +607,7 @@ export const COWORK_JS = String.raw`
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') +
         '<button class="cw-info-toggle" id="cwInfoBtn">' + (cw.infoOpen ? 'Hide panel' : 'Chat panel') + '</button>' +
       '</div>' +
+      '<div class="cw-threads" id="cwThreads"></div>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<div class="cw-typing" id="cwTyping" hidden></div>' +
       '<div class="cw-composer-wrap">' +
@@ -474,7 +616,7 @@ export const COWORK_JS = String.raw`
         '<div class="cw-mentions" id="cwMentions"' + (conv.kind === 'group' ? '' : ' hidden') + '></div>' +
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwAttach" title="Attach documents or files" aria-label="Attach files">' + cwIcon('paperclip') + '</button>' +
-        '<textarea id="cwInput" rows="1" placeholder="' + (conv.kind === 'group' ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + '"></textarea>' +
+        '<textarea id="cwInput" rows="1" placeholder="' + (conv.kind === 'group' ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button></div>' +
       '</div>';
     $('cwInfoBtn').onclick = function () { cw.infoOpen = !cw.infoOpen; $('cwInfo').style.display = cw.infoOpen ? 'block' : 'none'; $('cwInfoBtn').textContent = cw.infoOpen ? 'Hide panel' : 'Chat panel'; };
@@ -487,6 +629,7 @@ export const COWORK_JS = String.raw`
     $('cwAttach').onclick = function () { $('cwFile').click(); };
     $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };
     $('cwSend').onclick = cwSend;
+    cwRenderThreads();
     cwRenderMembers();
     cwRenderMsgs();
     cwRenderWork();
@@ -702,11 +845,22 @@ export const COWORK_JS = String.raw`
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
     var ps = cw.busy ? ((cw.progresses && cw.progresses.length) ? cw.progresses : (cw.progress ? [cw.progress] : [])) : [];
     live.hidden = ps.length === 0;
-    if (!ps.length) { live.innerHTML = ''; return; }
-    live.innerHTML = ps.map(function (p) {
-      var tool = p.tool ? '<div class="cw-tools">' + esc(p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed')) + '</div>' : '';
-      return '<div class="cw-row">' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span>working…</span></div><div style="white-space:pre-wrap">' + esc(p.text || 'Working…') + '</div>' + tool + '</div></div>';
-    }).join('');
+    if (!ps.length) { live.innerHTML = ''; live._progressKey = null; return; }
+    // Keep the avatar nodes alive across deltas so their animation never restarts.
+    var key = JSON.stringify(ps.map(function (p) { var a = cwAgentById(p.agentId); return [p.agentId, p.agentName, a && a.avatar]; }));
+    if (live._progressKey !== key) {
+      live.innerHTML = ps.map(function (p) {
+        return '<div class="cw-row">' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span>working…</span></div><div class="cw-progress-text" style="white-space:pre-wrap"></div><div class="cw-tools cw-progress-tool"></div></div></div>';
+      }).join('');
+      live._progressKey = key;
+    }
+    var texts = live.querySelectorAll('.cw-progress-text');
+    var tools = live.querySelectorAll('.cw-progress-tool');
+    ps.forEach(function (p, i) {
+      texts[i].textContent = p.text || 'Working…';
+      var html = cwWebActivity(p) || (p.tool ? esc(p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed')) : '');
+      if (tools[i]._html !== html) { tools[i].innerHTML = html; tools[i]._html = html; }
+    });
     if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
   }
 
@@ -742,6 +896,10 @@ export const COWORK_JS = String.raw`
           '<div class="cw-actions"><button class="btn dark" id="cwSchSave">Save schedule</button></div>' +
         '</div>',
       bind: function () {
+        // cw must be the state object: the page also has a DOM element with
+        // id="cw", and bare cw in this scope resolves to that element (or
+        // throws), so saving the gateway used to crash on cw.convs.map.
+        var cw = cwEnsure();
         $('cwTgFind').onclick = function () {
           var token = $('cwTgToken').value.trim();
           if (!token && !tg.tokenSaved) { toast('Paste the bot token first', true); return; }
@@ -770,6 +928,157 @@ export const COWORK_JS = String.raw`
             .catch(function (e) { toast(e.message, true); });
         };
       }
+    };
+  }
+
+  function cwWidgetIcon(w) {
+    var byKind = { stats: 'bolt', list: 'check', progress: 'target', links: 'globe', text: 'file' };
+    return cwIcon(w && w.icon ? w.icon : byKind[(w && w.kind) || 'text'] || 'bolt');
+  }
+
+  function cwWidgetSummary(w) {
+    var d = (w && w.data) || {};
+    if (w.kind === 'stats') { var first = (d.items || [])[0]; return first ? first.label + ': ' + first.value + ((d.items || []).length > 1 ? ' +' + ((d.items || []).length - 1) : '') : 'no stats yet'; }
+    if (w.kind === 'list') { var items = d.items || []; var done = items.filter(function (i) { return i.done; }).length; return items.length ? done + '/' + items.length + ' done' : 'empty list'; }
+    if (w.kind === 'progress') return (Math.max(0, Math.min(100, Number(d.value) || 0))) + '%' + (d.label ? ' · ' + d.label : '');
+    if (w.kind === 'links') { var links = d.items || []; return links.length + ' link' + (links.length === 1 ? '' : 's'); }
+    var text = String(d.text || '');
+    return text.length > 60 ? text.slice(0, 60) + '…' : (text || 'empty');
+  }
+
+  function cwWidgetBodyHtml(w) {
+    var d = (w && w.data) || {};
+    if (w.kind === 'stats') return '<div class="cw-widget-body">' + ((d.items || []).map(function (item) { return '<div class="cw-widget-row"><span class="l">' + esc(item.label) + '</span><span class="v">' + esc(item.value) + '</span></div>'; }).join('') || '<div class="meta">No stats yet.</div>') + '</div>';
+    if (w.kind === 'list') return '<div class="cw-widget-body">' + ((d.items || []).map(function (item) { return '<div class="cw-widget-row' + (item.done ? ' done' : '') + '"><span class="l">' + esc(item.text) + '</span><span class="v">' + (item.done ? '✓' : '') + '</span></div>'; }).join('') || '<div class="meta">Empty list.</div>') + '</div>';
+    if (w.kind === 'progress') { var value = Math.max(0, Math.min(100, Number(d.value) || 0)); return '<div class="cw-widget-body"><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)"><span>' + esc(d.label || 'Progress') + '</span><span>' + value + '%</span></div><div class="cw-widget-bar"><i style="width:' + value + '%"></i></div></div>'; }
+    if (w.kind === 'links') return '<div class="cw-widget-body">' + ((d.items || []).map(function (item) { return '<div class="cw-widget-row"><a class="l" href="' + esc(item.url) + '" target="_blank" rel="noopener noreferrer">' + esc(item.label) + '</a></div>'; }).join('') || '<div class="meta">No links yet.</div>') + '</div>';
+    return '<div class="cw-widget-text">' + esc(d.text || '') + '</div>';
+  }
+
+  function cwWidgetModal(id) {
+    var cw = cwEnsure();
+    var widget = null;
+    (cw.widgets || []).forEach(function (w) { if (w.id === id) widget = w; });
+    if (!widget) { toast('Widget not found', true); return; }
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML =
+      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">' + esc(widget.title) + '</span><span style="flex:1"></span><button class="btn ghost" id="cwWgClose">Close</button></div>' +
+      '<div class="cw-body">' + cwWidgetBodyHtml(widget) +
+        '<div class="cw-note">Updated ' + esc(shortDate(widget.updatedAt || widget.createdAt)) + (widget.createdByAgentId ? ' by ' + esc((cwAgentById(widget.createdByAgentId) || {}).name || 'a teammate') : '') + '. Teammates refresh this with widget_manage.</div>' +
+      '</div>' +
+      '<div class="cw-foot"><button class="btn red" id="cwWgDel">Delete widget</button><span style="flex:1"></span><button class="btn ghost" id="cwWgDone">Done</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#cwWgClose').onclick = function () { modal.remove(); };
+    modal.querySelector('#cwWgDone').onclick = function () { modal.remove(); };
+    modal.querySelector('#cwWgDel').onclick = function () {
+      if (!confirm('Delete widget "' + widget.title + '"?')) return;
+      api('/api/cowork/widgets/' + encodeURIComponent(widget.id), { method: 'DELETE' })
+        .then(function () { modal.remove(); cw.widgets = (cw.widgets || []).filter(function (w) { return w.id !== widget.id; }); cwRenderRail(); toast('Widget deleted'); })
+        .catch(function (e) { toast(e.message, true); });
+    };
+  }
+
+  function cwParseWidgetText(kind, text) {
+    var lines = String(text || '').split('\n');
+    if (kind === 'stats') return { items: lines.map(function (line) { var parts = line.split(/[:|]/); return { label: (parts[0] || '').trim(), value: (parts.slice(1).join(':') || '').trim() }; }).filter(function (item) { return item.label; }) };
+    if (kind === 'list') return { items: lines.map(function (line) { var done = /^\s*(?:\[x\]|x\s+|✓\s*)/i.test(line); return { text: line.replace(/^\s*(?:\[x\]|x\s+|✓\s*)/i, '').trim(), done: done }; }).filter(function (item) { return item.text; }) };
+    if (kind === 'progress') { var parts = String(text || '').split('|'); var value = parseInt(parts[parts.length - 1], 10); if (!isFinite(value)) value = parseInt(parts[0], 10); return { label: parts.length > 1 ? parts[0].trim() : 'Progress', value: isFinite(value) ? value : 0 }; }
+    if (kind === 'links') return { items: lines.map(function (line) { var parts = line.split('|'); return parts.length > 1 ? { label: parts[0].trim(), url: parts.slice(1).join('|').trim() } : { label: line.trim(), url: line.trim() }; }).filter(function (item) { return item.label && /^https?:\/\//i.test(item.url); }) };
+    return { text: String(text || '') };
+  }
+
+  function cwNewWidgetModal(conv) {
+    var cw = cwEnsure();
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML =
+      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">New widget</span><span style="flex:1"></span><button class="btn ghost" id="cwWnCancel">Cancel</button></div>' +
+      '<div class="cw-body">' +
+        '<div class="cw-2col"><div><label>Title</label><input type="text" id="cwWnTitle" maxlength="120" placeholder="Launch status"></div>' +
+        '<div><label>Kind</label><select id="cwWnKind"><option value="text">Text</option><option value="stats">Stats — Label: value</option><option value="list">Checklist — x item = done</option><option value="progress">Progress — Label | percent</option><option value="links">Links — Label | https://...</option></select></div></div>' +
+        '<label>Content</label><textarea id="cwWnBody" rows="5" placeholder="What should this card show?"></textarea>' +
+        '<div class="cw-note">Widgets live in the cowork sidebar and refresh live when teammates call widget_manage.</div>' +
+      '</div>' +
+      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwWnSave">Create widget</button></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('#cwWnCancel').onclick = function () { modal.remove(); };
+    modal.querySelector('#cwWnSave').onclick = function () {
+      var title = $('cwWnTitle').value.trim();
+      if (!title) { toast('Give the widget a title', true); return; }
+      var kind = $('cwWnKind').value;
+      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/widgets', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title, kind: kind, data: cwParseWidgetText(kind, $('cwWnBody').value) }) })
+        .then(function (d) { modal.remove(); cw.widgets = (cw.widgets || []).filter(function (w) { return w.id !== d.widget.id; }).concat([d.widget]); cwRenderRail(); toast('Widget added to the sidebar'); })
+        .catch(function (e) { toast(e.message, true); });
+    };
+  }
+
+  function cwFoldersHtml(conv) {
+    var cw = cwEnsure();
+    var folders = (cw.folders && cw.folders.length ? cw.folders : conv.folders) || [];
+    return '<h4>TAGGED FOLDERS</h4><div class="cw-card">' +
+      (folders.length
+        ? folders.map(function (folder) {
+            return '<div class="cw-mrow"><span class="ico">' + cwIcon('folder') + '</span><span class="nm" title="' + esc(folder.path) + '">' + esc(folder.label) + ' <span class="tg">' + esc(folder.path) + '</span></span>' +
+              '<button data-untag="' + esc(folder.id) + '" title="Untag folder">' + cwIcon('close') + '</button></div>';
+          }).join('')
+        : '<div class="meta">No folders tagged yet. Tag a project folder and the team works inside it.</div>') +
+      '<button class="btn ghost" id="cwTagFolder" style="width:100%;margin-top:6px">Tag folder</button></div>';
+  }
+
+  function cwBindFolders(el, conv) {
+    el.querySelectorAll('[data-untag]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-untag');
+        api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/folders/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function () {
+            cwEnsure().folders = (cwEnsure().folders || []).filter(function (folder) { return folder.id !== id; });
+            cwRenderInfo();
+            toast('Folder untagged');
+          })
+          .catch(function (e) { toast(e.message, true); });
+      };
+    });
+    var tag = $('cwTagFolder');
+    if (tag) tag.onclick = function () { cwFolderModal(conv); };
+  }
+
+  function cwFolderModal(conv) {
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML =
+      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">Tag a folder</span><span style="flex:1"></span><button class="btn ghost" id="cwFdCancel">Cancel</button></div>' +
+      '<div class="cw-body"><div class="meta" id="cwFdPath">Loading…</div><div id="cwFdList" style="max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin:6px 0"></div>' +
+      '<label>Label (optional)</label><input type="text" id="cwFdLabel" maxlength="80" placeholder="site"></div>' +
+      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwFdSave">Tag this folder</button></div></div>';
+    document.body.appendChild(modal);
+    var current = '';
+    function load(p) {
+      api('/api/browse?path=' + encodeURIComponent(p || '')).then(function (d) {
+        current = d.atRoot ? '' : d.path;
+        $('cwFdPath').textContent = d.atRoot ? 'This computer — pick a drive' : d.path;
+        var html = '';
+        if (!d.atRoot && d.path) html += '<div class="frow" data-up="1"><span class="ico">' + cwIcon('folder') + '</span>..</div>';
+        html += (d.dirs || []).map(function (n) { var leaf = String(n).split(/[\\/]/).filter(Boolean).pop() || n; return '<div class="frow" data-dir="' + esc(n) + '" title="' + esc(n) + '"><span class="ico">' + cwIcon('folder') + '</span>' + esc(leaf) + '</div>'; }).join('');
+        var box = $('cwFdList');
+        box.innerHTML = html || '<div class="meta" style="padding:8px">No subfolders</div>';
+        var up = box.querySelector('[data-up]');
+        if (up) up.onclick = function () { load(current.replace(/[\\/][^\\/]*$/, '')); };
+        box.querySelectorAll('[data-dir]').forEach(function (row) { row.onclick = function () { load(row.getAttribute('data-dir')); }; });
+      }).catch(function (e) { toast(e.message, true); });
+    }
+    load('');
+    modal.querySelector('#cwFdCancel').onclick = function () { modal.remove(); };
+    modal.querySelector('#cwFdSave').onclick = function () {
+      if (!current) { toast('Pick a folder first', true); return; }
+      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/folders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: current, label: $('cwFdLabel').value.trim() }) })
+        .then(function (d) {
+          modal.remove();
+          cwEnsure().folders = (cwEnsure().folders || []).filter(function (folder) { return folder.id !== d.folder.id; }).concat([d.folder]);
+          cwRenderInfo();
+          toast('Folder tagged: ' + d.folder.label);
+        })
+        .catch(function (e) { toast(e.message, true); });
     };
   }
 
@@ -872,11 +1181,12 @@ export const COWORK_JS = String.raw`
         '<div style="margin-top:10px;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:8px">Persistent memory: <b>' + ((cw.memoryCounts || {})[a.id] || 0) + '</b> facts <button class="btn ghost" id="cwMemClear" style="padding:2px 8px;font-size:11px">Clear</button></div>' +
         '<div class="cw-actions"><button class="btn ghost" id="cwEditAgent">Edit profile</button></div></div>' +
         cwMissionsHtml(conv) +
-        cwComputerHtml(a) + gw.html +
+        cwComputerHtml(a) + cwFoldersHtml(conv) + gw.html +
         '<div class="cw-actions"><button class="btn red" id="cwDelAgent">Delete teammate</button></div>';
       gw.bind();
       cwBindMissions(el, conv);
       cwBindComputers(el);
+      cwBindFolders(el, conv);
       $('cwMemClear').onclick = function () {
         if (!confirm('Erase everything ' + a.name + ' has remembered across conversations?')) return;
         api('/api/cowork/agents/' + encodeURIComponent(a.id) + '/memory', { method: 'DELETE' }).then(function () {
@@ -904,7 +1214,7 @@ export const COWORK_JS = String.raw`
           '<button data-remove="' + esc(m.id) + '" title="Remove from group">' + cwIcon('close') + '</button></div>';
       }).join('') +
       '<button class="btn ghost" id="cwAddMember" style="width:100%;margin-top:6px">Add member</button></div>' +
-      cwMissionsHtml(conv) + members.map(cwComputerHtml).join('') + gw.html +
+      cwMissionsHtml(conv) + members.map(cwComputerHtml).join('') + cwFoldersHtml(conv) + gw.html +
       '<div class="cw-actions"><button class="btn red" id="cwDelConv">Delete chat</button></div>';
     el.querySelectorAll('[data-chief]').forEach(function (b) {
       b.onclick = function () {
@@ -927,6 +1237,7 @@ export const COWORK_JS = String.raw`
     gw.bind();
     cwBindMissions(el, conv);
     cwBindComputers(el);
+    cwBindFolders(el, conv);
     $('cwDelConv').onclick = function () {
       if (!confirm('Delete this chat and its whole transcript?')) return;
       api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'DELETE' }).then(function () {
@@ -1007,7 +1318,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     if (typeof EventSource !== 'function') return;
     var generation = cw.generation;
-    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq);
+    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq + '&thread=' + encodeURIComponent(cw.threadId || 'main'));
     cw.stream = stream;
     function current() { return S.active === 'cowork' && cw.active === convId && cw.generation === generation && cw.stream === stream; }
     stream.onopen = function () { if (current()) cw.streamOpen = true; };
@@ -1046,15 +1357,23 @@ export const COWORK_JS = String.raw`
     cw.missions = d.missions || [];
     var artifactsChanged = JSON.stringify(cw.artifacts || []) !== JSON.stringify(d.artifacts || []);
     var workChanged = JSON.stringify(cw.todos || []) !== JSON.stringify(d.todos || []) || JSON.stringify(cw.requests || []) !== JSON.stringify(d.requests || []);
+    var threadsChanged = JSON.stringify(cw.threads || []) !== JSON.stringify(d.threads || []);
+    var foldersChanged = JSON.stringify(cw.folders || []) !== JSON.stringify(d.folders || []);
+    var widgetsChanged = JSON.stringify(cw.widgets || []) !== JSON.stringify(d.widgets || []);
     cw.artifacts = d.artifacts || [];
     cw.todos = d.todos || [];
     cw.requests = d.requests || [];
-    if (rosterChanged) { cwRenderRail(); cwRenderMembers(); }
+    if (d.threads) cw.threads = d.threads;
+    if (d.folders) cw.folders = d.folders;
+    if (d.widgets) cw.widgets = d.widgets;
+    if (rosterChanged || widgetsChanged) cwRenderRail();
+    if (threadsChanged) cwRenderThreads();
+    if (rosterChanged) cwRenderMembers();
     if (added || rosterChanged || artifactsChanged) cwRenderMsgs(); else cwRenderProgress();
     if (workChanged || rosterChanged) cwRenderWork();
     cwRenderTyping();
     if (missionsChanged) { cwRenderMissionBadge(); cwRenderInfo(); }
-    if (rosterChanged || (wasBusy && !cw.busy)) cwRenderInfo();
+    if (rosterChanged || foldersChanged || (wasBusy && !cw.busy)) cwRenderInfo();
   }
 
   function cwPoll() {
@@ -1074,7 +1393,7 @@ export const COWORK_JS = String.raw`
       }
     if (cw.streamOpen) return Promise.resolve();
     if (cw.pollPromise) return cw.pollPromise;
-    var request = api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages?after=' + cw.lastSeq + '&rosterRevision=' + (cw.rosterRevision === undefined ? -1 : cw.rosterRevision)).then(function (d) {
+    var request = api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages?after=' + cw.lastSeq + '&rosterRevision=' + (cw.rosterRevision === undefined ? -1 : cw.rosterRevision) + '&thread=' + encodeURIComponent(cw.threadId || 'main')).then(function (d) {
       if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork' || cw.streamOpen) return;
       cwApplySnapshot(d);
     }).catch(function () {}).finally(function () { if (cw.pollPromise === request) cw.pollPromise = null; });
@@ -1098,7 +1417,7 @@ export const COWORK_JS = String.raw`
       for (var i = 0; i < cw.agents.length; i++) if (cw.working && cw.agents[i].name === cw.working) agent = cw.agents[i];
       el.innerHTML = '<span class="dots"><i></i><i></i><i></i></span> ' + (agent ? cwAva(agent, 18) + ' <b>' + esc(agent.name) + '</b> is thinking…' : 'the team is thinking…');
       if (parallel.length > 1) el.textContent = parallel.length + ' teammates working in parallel: ' + parallel.join(', ');
-      else if (cw.progress) el.innerHTML = '<span class="cw-live-status busy">' + esc(cw.progress.agentName + (cw.progress.tool ? ' · ' + cw.progress.tool.replace(/_/g, ' ') : ' is writing…')) + '</span>';
+      else if (cw.progress) el.innerHTML = '<span class="cw-live-status busy">' + esc(cw.progress.agentName) + '</span> ' + (cwWebActivity(cw.progress) || esc(cw.progress.tool ? cw.progress.tool.replace(/_/g, ' ') : 'is writing…'));
       if (cw.queued) el.innerHTML += '<span>' + cw.queued + ' queued</span>';
       el.hidden = false;
       btn.classList.add('stop');
@@ -1134,7 +1453,7 @@ export const COWORK_JS = String.raw`
     input.style.height = 'auto';
     cw.pendingFiles = [];
     cwRenderPending();
-    api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, files: files }) })
+    api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, files: files, threadId: cw.threadId || undefined }) })
       .then(function () { cwPoll(); })
       .catch(function (e) { cw.pendingFiles = files.concat(cw.pendingFiles || []).slice(0, 4); cwRenderPending(); toast(e.message, true); cwPoll(); });
   }
@@ -1173,9 +1492,10 @@ export const COWORK_JS = String.raw`
         '<div class="cw-avrow">' +
           '<span class="cw-avprev" id="cwAmAvaWrap">' + cwAvaImg(d.avatar) + '</span>' +
           '<div class="cw-avopts">' +
-            '<div class="cw-shapes" id="cwAmShapes">' + CW_SHAPES.map(function (s) { return '<button type="button" data-shape="' + s + '"' + (s === d.avatar.shape ? ' class="cur"' : '') + '>' + s + '</button>'; }).join('') + '</div>' +
+            '<div class="cw-shapes" id="cwAmShapes" role="group" aria-label="Bot character">' + CW_SHAPES.map(function (s) { return '<button type="button" data-shape="' + s + '" aria-pressed="' + (s === d.avatar.shape) + '"' + (s === d.avatar.shape ? ' class="cur"' : '') + '><span class="cw-shape-preview">' + cwAvaImg({ shape: s, color: d.avatar.color }) + '</span>' + CW_CHARACTER_NAMES[s] + '</button>'; }).join('') + '</div>' +
             '<div class="cw-colors" id="cwAmColors">' + CW_COLORS.map(function (c) { return '<button type="button" data-color="' + c + '" style="background:' + c + '"' + (c === d.avatar.color ? ' class="cur"' : '') + ' aria-label="color ' + c + '"></button>'; }).join('') + '</div>' +
-            '<div class="cw-avhint">A lively orb or a voxel character, with motion that follows your teammate’s activity.</div>' +
+            '<div class="cw-avhint">A little personality, always in motion. Watch your bot bounce, blink and wiggle while it works.</div>' +
+            '<button type="button" class="cw-preview-work" id="cwAmWork" aria-pressed="false">Preview working animation</button>' +
           '</div>' +
         '</div>' +
         (!isEdit ? '<label>Starting points — fill instructions only, then make it yours</label><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '">' + esc(t.label) + '</button>'; }).join('') + '</div>' : '') +
@@ -1199,12 +1519,20 @@ export const COWORK_JS = String.raw`
     function refreshPreview() {
       var wrap = modal.querySelector('#cwAmAvaWrap');
       if (wrap) wrap.innerHTML = cwAvaImg(d.avatar);
+      modal.querySelectorAll('[data-shape]').forEach(function (b) { b.querySelector('.cw-shape-preview').innerHTML = cwAvaImg({ shape: b.getAttribute('data-shape'), color: d.avatar.color }); });
     }
+    modal.querySelector('#cwAmWork').onclick = function () {
+      var working = this.getAttribute('aria-pressed') !== 'true';
+      this.setAttribute('aria-pressed', String(working));
+      this.textContent = working ? 'Preview idle animation' : 'Preview working animation';
+      modal.querySelector('#cwAmAvaWrap').classList.toggle('working', working);
+    };
     modal.querySelectorAll('[data-shape]').forEach(function (b) {
       b.onclick = function () {
         d.avatar.shape = b.getAttribute('data-shape');
-        modal.querySelectorAll('[data-shape]').forEach(function (x) { x.classList.remove('cur'); });
+        modal.querySelectorAll('[data-shape]').forEach(function (x) { x.classList.remove('cur'); x.setAttribute('aria-pressed', 'false'); });
         b.classList.add('cur');
+        b.setAttribute('aria-pressed', 'true');
         refreshPreview();
       };
     });

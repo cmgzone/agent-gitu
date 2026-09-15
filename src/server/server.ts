@@ -17,9 +17,9 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient } from '../llm/llm.js';
-import { CoworkStore, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
+import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
-import { runConversationTurn, runMissionSession, type CoworkProgress } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { CoworkComputer } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
@@ -925,6 +925,33 @@ export class GituServer {
     return resolveImageSupport({ providerId: resolved.providerId, model: resolved.model, timeoutMs: 2_000 });
   }
 
+  /** Turn a trigger message's artifacts into model input: images become vision
+   *  parts, text-like files are inlined (bounded), everything else is named so
+   *  the agent can fetch it with receive_file. */
+  private coworkTriggerMedia(artifactIds: string[] | undefined): CoworkTriggerMedia[] {
+    const store = this.cowork();
+    const media: CoworkTriggerMedia[] = [];
+    let textBudget = 24_000;
+    for (const id of artifactIds ?? []) {
+      const artifact = store.getArtifact(id);
+      const filePath = store.artifactPath(id);
+      if (!artifact || !filePath) continue;
+      const item: CoworkTriggerMedia = { name: artifact.name, mime: artifact.mime };
+      if (/^image\/(png|jpeg|gif|webp)$/i.test(artifact.mime)) {
+        // Vision input is bounded far below the storage cap: a huge image would
+        // only burn context, so bigger ones are named for the agent to fetch.
+        if (artifact.size <= 2_000_000) item.dataUrl = `data:${artifact.mime};base64,${readFileSync(filePath).toString('base64')}`;
+      } else if (isTextLikeFile(artifact.name, artifact.mime)) {
+        const text = readFileSync(filePath, 'utf8');
+        const slice = text.slice(0, Math.min(12_000, textBudget));
+        textBudget -= slice.length;
+        item.text = slice.length < text.length ? `${slice}\n…[truncated]` : slice;
+      }
+      media.push(item);
+    }
+    return media;
+  }
+
   private startCoworkLifecycle(): void {
     for (const conv of this.cowork().listConversations()) this.startCoworkPoller(conv);
     // Due scheduled messages are dispatched on a coarse tick; each tick is
@@ -1232,6 +1259,7 @@ export class GituServer {
         history,
         trigger,
         threadId,
+        media: this.coworkTriggerMedia(trigger.artifactIds),
         deps: {
           forceAgentId: run.forceAgentId,
           agents: store.listAgents(),
@@ -1983,7 +2011,9 @@ export class GituServer {
         return true;
       }
       if (method === 'POST') {
-        const body = await this.readBody(req);
+        // Attachments arrive as base64 data URLs, so the body is ~4/3 the file
+        // size; the default 1 MB route limit would reject a 750 KB file.
+        const body = await this.readBody(req, Math.ceil(MAX_ARTIFACT_BYTES * 1.4) + 20_000);
         const artifactIds: string[] = [];
         try {
           const files = Array.isArray(body['files']) ? (body['files'] as Record<string, unknown>[]).slice(0, 4) : [];
@@ -2104,10 +2134,12 @@ export class GituServer {
       const artifact = store.getArtifact(artifactPreviewMatch[1]!);
       const filePath = store.artifactPath(artifactPreviewMatch[1]!);
       if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
-      // PDFs and raster images are handed straight to the browser's own viewer.
-      // SVG is not: a standalone SVG document can run scripts, so it goes through
-      // the inert <img> preview page instead.
-      const rawViewer = /^application\/pdf\b/i.test(artifact.mime) || (/^image\//i.test(artifact.mime) && !/^image\/svg\+xml/i.test(artifact.mime));
+      // PDFs, raster images, audio and video are handed straight to the browser's
+      // own viewer/player. SVG is not: a standalone SVG document can run scripts,
+      // so it goes through the inert <img> preview page instead.
+      const rawViewer = /^application\/pdf\b/i.test(artifact.mime)
+        || (/^image\//i.test(artifact.mime) && !/^image\/svg\+xml/i.test(artifact.mime))
+        || /^(audio|video)\//i.test(artifact.mime);
       if (rawViewer) {
         this.sendLocalFile(res, filePath, artifact.name, artifact.mime, true);
         return true;

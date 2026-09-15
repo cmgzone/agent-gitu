@@ -114,6 +114,9 @@ export const COWORK_CSS = String.raw`
   .cw-pending button { border: 0; background: transparent; color: var(--muted); padding: 0; line-height: 1; }
   .cw-files { display: grid; gap: 7px; margin-top: 8px; }
   .cw-file { display: flex; align-items: center; gap: 9px; min-width: 230px; max-width: 520px; border: 1px solid var(--border2); background: var(--card2); border-radius: 10px; padding: 8px 10px; }
+  .cw-thumb { display: block; max-width: 240px; max-height: 170px; border-radius: 8px; border: 1px solid var(--border2); object-fit: cover; margin-bottom: 6px; }
+  .cw-media { display: block; width: 250px; max-width: 100%; height: 34px; margin-bottom: 6px; }
+  .cw-media[controls] { height: 40px; }
   .cw-file-ico { color: var(--accent); display: inline-flex; flex: none; }
   .cw-file-ico svg { width: 20px; height: 20px; }
   .cw-file-main { flex: 1; min-width: 0; }
@@ -687,11 +690,20 @@ export const COWORK_JS = String.raw`
   // Every artifact has a preview route: PDFs and images render in the browser's
   // own viewer, documents render as sanitized text/table pages, and exotic
   // binaries get an info card with a download link. So Open is always offered.
+  // Images draw inline thumbnails; audio/video render inline players. Both load
+  // through the artifact route with ?inline=1 (same-origin, nosniff).
   function cwFilesHtml(ids) {
     var files = (ids || []).map(cwArtifact).filter(Boolean);
     if (!files.length) return '';
     return '<div class="cw-files">' + files.map(function (file) {
+      var inline = '/api/cowork/artifacts/' + encodeURIComponent(file.id) + '?inline=1';
+      var mime = file.mime || '';
+      var media = '';
+      if (/^image\/(png|jpeg|gif|webp)/i.test(mime)) media = '<img class="cw-thumb" loading="lazy" alt="' + esc(file.name) + '" src="' + inline + '">';
+      else if (/^audio\//i.test(mime)) media = '<audio class="cw-media" controls preload="none" src="' + inline + '"></audio>';
+      else if (/^video\//i.test(mime)) media = '<video class="cw-media" controls preload="metadata" src="' + inline + '"></video>';
       return '<div class="cw-file"><span class="cw-file-ico">' + cwIcon('file') + '</span><span class="cw-file-main">' +
+        media +
         '<span class="cw-file-name" title="' + esc(file.name) + '">' + esc(file.name) + '</span><span class="cw-file-meta">' + esc(cwBytes(file.size)) + '</span></span>' +
         '<span class="cw-file-actions"><button class="btn ghost" data-cwpreview="' + esc(file.id) + '">Open</button>' +
         '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a></span></div>';
@@ -778,7 +790,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     var room = Math.max(0, 4 - (cw.pendingFiles || []).length);
     files.slice(0, room).forEach(function (file) {
-      if (file.size > 2097152) { toast(file.name + ' is larger than 2 MB', true); return; }
+      if (file.size > 20000000) { toast(file.name + ' is larger than 20 MB', true); return; }
       var reader = new FileReader();
       reader.onload = function () { cw.pendingFiles.push({ name: file.name, type: file.type || '', dataUrl: String(reader.result || '') }); cwRenderPending(); };
       reader.onerror = function () { toast('Could not read ' + file.name, true); };

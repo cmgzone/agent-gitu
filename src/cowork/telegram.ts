@@ -1,5 +1,5 @@
 import { excerpt } from '../util.js';
-import type { CoworkRequest } from './store.js';
+import { MAX_ARTIFACT_BYTES, type CoworkRequest } from './store.js';
 
 /**
  * Telegram message gateway for cowork conversations. One long-polling bot per
@@ -34,6 +34,12 @@ export interface TelegramUpdate {
     caption?: string;
     document?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number };
     photo?: { file_id?: string; file_size?: number; width?: number; height?: number }[];
+    voice?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number; duration?: number };
+    audio?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number; duration?: number };
+    video?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number; duration?: number };
+    video_note?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number; duration?: number };
+    animation?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number; duration?: number };
+    sticker?: { file_id?: string; file_name?: string; mime_type?: string; file_size?: number; is_animated?: boolean; is_video?: boolean };
   };
   callback_query?: {
     id: string;
@@ -109,7 +115,7 @@ async function downloadTelegramFile(fetchImpl: TelegramFetch | undefined, token:
   if (!response.arrayBuffer) throw new TelegramError('Telegram file download did not provide binary data.');
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length === 0) throw new TelegramError('Telegram file was empty.');
-  if (bytes.length > 2_000_000) throw new TelegramError('Telegram file exceeds the 2 MB Cowork limit.');
+  if (bytes.length > MAX_ARTIFACT_BYTES) throw new TelegramError(`Telegram file exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit.`);
   return { name, mime, dataBase64: bytes.toString('base64') };
 }
 
@@ -496,12 +502,24 @@ export class TelegramPoller {
           try {
             const document = message.document;
             const photo = message.photo?.at(-1);
+            // Voice notes, audio, video, video notes, animations and stickers all
+            // arrive as downloadable files, same as documents and photos.
+            const track = message.audio ?? message.voice ?? message.video_note;
+            const clip = message.video ?? message.animation;
+            const sticker = message.sticker;
+            const kind = message.voice ? 'voice' : message.video_note ? 'video-note' : message.audio ? 'audio' : message.video ? 'video' : message.animation ? 'animation' : 'sticker';
             const selected = document?.file_id
               ? { id: document.file_id, name: document.file_name || 'telegram-document', mime: document.mime_type || 'application/octet-stream', size: document.file_size }
               : photo?.file_id
                 ? { id: photo.file_id, name: `telegram-photo-${message.message_id}.jpg`, mime: 'image/jpeg', size: photo.file_size }
-                : undefined;
-            if (selected?.size && selected.size > 2_000_000) throw new TelegramError('Telegram file exceeds the 2 MB Cowork limit.');
+                : track?.file_id
+                  ? { id: track.file_id, name: track.file_name || `telegram-${kind}-${message.message_id}`, mime: track.mime_type || 'audio/ogg', size: track.file_size }
+                  : clip?.file_id
+                    ? { id: clip.file_id, name: clip.file_name || `telegram-${kind}-${message.message_id}.mp4`, mime: clip.mime_type || 'video/mp4', size: clip.file_size }
+                    : sticker?.file_id
+                      ? { id: sticker.file_id, name: sticker.file_name || `telegram-${kind}-${message.message_id}`, mime: sticker.mime_type || 'image/webp', size: sticker.file_size }
+                      : undefined;
+            if (selected?.size && selected.size > MAX_ARTIFACT_BYTES) throw new TelegramError(`Telegram file exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit.`);
             const file = selected ? await downloadTelegramFile(fetchImpl, this.options.token, selected.id, selected.name, selected.mime) : undefined;
             const text = message.text || message.caption || (file ? `Attached ${file.name}` : '');
             if (text || file) await this.options.onMessage(from, text, String(message.chat?.id ?? ''), file);

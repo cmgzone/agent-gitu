@@ -271,6 +271,11 @@ function emptyCoworkData(): CoworkData {
 
 const MAX_MESSAGES_PER_CONVERSATION = 2_000;
 
+/** Per-artifact ceiling (storage, Telegram download, share_file). Telegram bots
+ *  can hand back at most 20 MB through getFile, so this is the practical cap for
+ *  media the team exchanges; model input is bounded separately. */
+export const MAX_ARTIFACT_BYTES = 20_000_000;
+
 export class CoworkStore {
   private data: CoworkData = emptyCoworkData();
   private loaded = false;
@@ -800,7 +805,7 @@ export class CoworkStore {
     const name = safeArtifactName(input.name);
     const bytes = Buffer.from(String(input.dataBase64 ?? '').replace(/\s+/g, ''), 'base64');
     if (bytes.length === 0) throw new Error('Artifact is empty');
-    if (bytes.length > 2_000_000) throw new Error('Artifact exceeds the 2 MB Cowork limit');
+    if (bytes.length > MAX_ARTIFACT_BYTES) throw new Error(`Artifact exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit`);
     const id = input.id && /^[a-z0-9-]{8,80}$/i.test(input.id) ? input.id : `cf-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`;
     const storageName = `${id}-${name}`;
     const dir = this.artifactDir(conversation.id);

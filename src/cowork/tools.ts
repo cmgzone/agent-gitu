@@ -24,6 +24,7 @@ import {
   validateToolParams,
 } from '../tools/tools.js';
 import type { CoworkAgent, CoworkStore, CoworkWidgetKind } from './store.js';
+import { MAX_ARTIFACT_BYTES } from './store.js';
 import type { CoworkMemory } from './memory.js';
 import type { CoworkComputer } from './computer.js';
 import { ProjectGuardError } from '../guard/project-guard.js';
@@ -303,7 +304,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const abs = ctx.guard.resolve(requested);
         const info = statSync(abs);
         if (!info.isFile()) return { ok: false, output: 'share_file path is not a file.' };
-        if (info.size > 2_000_000) return { ok: false, output: 'share_file exceeds the 2 MB Cowork limit.' };
+        if (info.size > MAX_ARTIFACT_BYTES) return { ok: false, output: `share_file exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit.` };
         const artifact = scope.store.addArtifact({ conversationId: scope.conversationId, agentId: scope.agent.id, name: path.basename(abs), dataBase64: readFileSync(abs).toString('base64') });
         (scope.artifactIds ??= []).push(artifact.id);
         return { ok: true, output: `Presented ${artifact.name}. Artifact id: ${artifact.id}.` };

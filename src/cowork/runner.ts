@@ -94,6 +94,16 @@ export interface TurnResult {
   error?: string;
 }
 
+/** Attachments on the trigger message, resolved into model input by the server:
+ *  images carry a data URL (used only by vision-capable models), text-like
+ *  files carry extracted contents, everything else is named. */
+export interface CoworkTriggerMedia {
+  name: string;
+  mime: string;
+  dataUrl?: string;
+  text?: string;
+}
+
 function mentionNames(text: string, members: CoworkAgent[]): CoworkAgent[] {
   const found: CoworkAgent[] = [];
   const ordered = [...members].sort((a, b) => b.name.length - a.name.length);
@@ -240,6 +250,31 @@ function toolResultMessage(tool: string, result: ToolResult, supportsImages = tr
   return { role: 'user', content: result.image && supportsImages ? [{ type: 'text', text }, { type: 'image_url', image_url: { url: result.image } }] : text };
 }
 
+/** Turn resolved attachments into one user message: images become vision parts
+ *  for models that accept them, text-like files are inlined, and everything
+ *  else is at least named so the agent can fetch it with receive_file. */
+function mediaMessage(media: CoworkTriggerMedia[] | undefined, supportsImages: boolean): LlmMessage | undefined {
+  if (!media || media.length === 0) return undefined;
+  const lines: string[] = ['ATTACHED MEDIA (from the latest user message):'];
+  const images: string[] = [];
+  for (const item of media) {
+    if (item.dataUrl && supportsImages) {
+      lines.push(`- IMAGE ${item.name} (${item.mime}) is attached below. Describe only what is actually visible; never invent details.`);
+      images.push(item.dataUrl);
+    } else if (item.dataUrl) {
+      lines.push(`- IMAGE ${item.name} (${item.mime}): this model cannot view images — ask the user to describe it or use tools on the file.`);
+    } else if (item.text !== undefined) {
+      lines.push(`- FILE ${item.name} (${item.mime}) contents:\n${item.text}`);
+    } else {
+      lines.push(`- FILE ${item.name} (${item.mime}): binary attachment — use receive_file to copy it where you can work on it.`);
+    }
+  }
+  const text = lines.join('\n');
+  return images.length > 0
+    ? { role: 'user', content: [{ type: 'text', text }, ...images.map((url) => ({ type: 'image_url' as const, image_url: { url } }))] }
+    : { role: 'user', content: text };
+}
+
 function recordToolResult(scope: CoworkToolScope | undefined, tool: string, result: ToolResult): void {
   if (!scope?.conversationId || ['conversation_history', 'todo_manage', 'use_skill', 'list_skills'].includes(tool)) return;
   scope.store.recordWork({ conversationId: scope.conversationId, agentId: scope.agent.id, tool, ok: result.ok, output: result.output });
@@ -255,8 +290,11 @@ function currentMembers(conversation: CoworkConversation, deps: CoworkRunnerDeps
   return current.memberIds.map((id) => agentById(deps, id)).filter((agent): agent is CoworkAgent => Boolean(agent));
 }
 
-export function buildCoworkMessages(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], history: CoworkMessage[], deps?: CoworkRunnerDeps, thread?: CoworkThread): LlmMessage[] {
-  return [{ role: 'system', content: systemPrompt(agent, conversation, members, deps, undefined, thread) }, ...transcript(history, deps?.store)];
+export function buildCoworkMessages(agent: CoworkAgent, conversation: CoworkConversation, members: CoworkAgent[], history: CoworkMessage[], deps?: CoworkRunnerDeps, thread?: CoworkThread, media?: CoworkTriggerMedia[], mediaSupportsImages = true): LlmMessage[] {
+  const messages: LlmMessage[] = [{ role: 'system', content: systemPrompt(agent, conversation, members, deps, undefined, thread) }, ...transcript(history, deps?.store)];
+  const attachments = mediaMessage(media, mediaSupportsImages);
+  if (attachments) messages.push(attachments);
+  return messages;
 }
 
 /** Look up the active thread for prompt context, tolerating stale in-memory conversations. */
@@ -273,6 +311,8 @@ async function agentTurn(input: {
   history: CoworkMessage[];
   deps: CoworkRunnerDeps;
   threadId?: string;
+  /** Attachments resolved from the trigger message (images, extracted text). */
+  media?: CoworkTriggerMedia[];
   append: (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>) => CoworkMessage;
 }): Promise<void> {
   if (input.deps.withAgent) {
@@ -282,7 +322,7 @@ async function agentTurn(input: {
   const client = deps.resolveLlm(agent);
   const supportsImages = await deps.supportsImagesFor?.(agent) ?? true;
   const llm = resilientLlm(client, { label: `cowork ${agent.name}` });
-  const messages = buildCoworkMessages(agent, conversation, members, history, deps, activeThread(conversation, deps, threadId));
+  const messages = buildCoworkMessages(agent, conversation, members, history, deps, activeThread(conversation, deps, threadId), input.media, supportsImages);
   const seenInbox = new Set((deps.store?.inboxFor(agent.id) ?? []).map((item) => item.id));
   const usedTools: { name: string; ok: boolean }[] = [];
   const artifactIds: string[] = [];
@@ -389,6 +429,8 @@ export async function runConversationTurn(input: {
   deps: CoworkRunnerDeps;
   /** Topic thread this turn belongs to; absent means the Main thread. */
   threadId?: string;
+  /** Attachments on the trigger message, resolved into model input. */
+  media?: CoworkTriggerMedia[];
   append: (m: Omit<CoworkMessage, 'seq' | 'id' | 'ts'>) => CoworkMessage;
 }): Promise<TurnResult> {
   const { conversation, history, trigger, deps, append, threadId } = input;
@@ -406,7 +448,7 @@ export async function runConversationTurn(input: {
     if (conversation.kind === 'dm' || forced) {
       const agent = forced ?? members[0]!;
       deps.onWorking?.(agent);
-      await agentTurn({ agent, conversation, members, history, deps, threadId, append: track });
+      await agentTurn({ agent, conversation, members, history, deps, threadId, media: input.media, append: track });
       return { messages };
     }
 
@@ -434,7 +476,7 @@ export async function runConversationTurn(input: {
       await Promise.all(batch.map(async (agent) => {
         deps.onWorking?.(agent);
         try {
-          await agentTurn({ agent, conversation, members, history: historyAtStart, deps, threadId, append: track });
+          await agentTurn({ agent, conversation, members, history: historyAtStart, deps, threadId, media: input.media, append: track });
         } catch (err) {
           deps.signal?.throwIfAborted();
           const failed = track({ role: 'agent', agentId: agent.id, agentName: agent.name, text: `Could not complete my part: ${(err as Error).message}`, via: 'web' });
@@ -469,6 +511,7 @@ export async function runConversationTurn(input: {
         ],
         deps,
         threadId,
+        media: input.media,
         append: track,
       });
     }

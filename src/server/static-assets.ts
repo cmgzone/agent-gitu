@@ -69,7 +69,7 @@ export function mimeForFile(name: string, supplied?: string): string {
 }
 
 export function isPreviewableMime(mime: string): boolean {
-  return /^(text\/plain|text\/markdown|text\/csv|application\/json|application\/pdf|image\/(png|jpeg|gif|webp))(;|$)/i.test(mime);
+  return /^(text\/plain|text\/markdown|text\/csv|application\/json|application\/pdf|image\/(png|jpeg|gif|webp)|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+)(;|$)/i.test(mime);
 }
 
 export function isTextLikeFile(name: string, mime: string): boolean {

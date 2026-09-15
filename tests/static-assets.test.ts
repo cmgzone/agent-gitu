@@ -13,6 +13,8 @@ describe('static asset policy', () => {
     expect(mimeForFile('upload.bin', 'text/plain; charset=utf-8')).toBe('text/plain');
     expect(mimeForFile('upload.bin', 'application/x-executable')).toBe('application/octet-stream');
     expect(isPreviewableMime('image/png')).toBe(true);
+    expect(isPreviewableMime('audio/ogg')).toBe(true);
+    expect(isPreviewableMime('video/mp4')).toBe(true);
     expect(isPreviewableMime('application/zip')).toBe(false);
     expect(isTextLikeFile('src/main.ts', 'application/octet-stream')).toBe(true);
   });

@@ -171,6 +171,23 @@ describe('Cowork UI live updates', () => {
     expect(u.context.cwFilesHtml(['cf-zip'])).toContain('data-cwpreview="cf-zip"');
   });
 
+  it('renders media artifacts inline: image thumbnails and audio/video players', () => {
+    const u = ui();
+    u.cw.artifacts = [
+      { id: 'cf-img', name: 'shot.png', mime: 'image/png', size: 10 },
+      { id: 'cf-aud', name: 'clip.mp3', mime: 'audio/mpeg', size: 10 },
+      { id: 'cf-vid', name: 'clip.mp4', mime: 'video/mp4', size: 10 },
+      { id: 'cf-doc', name: 'report.pdf', mime: 'application/pdf', size: 10 },
+    ];
+    const html = u.context.cwFilesHtml(['cf-img', 'cf-aud', 'cf-vid', 'cf-doc']);
+    expect(html).toContain('<img class="cw-thumb"');
+    expect(html).toContain('/api/cowork/artifacts/cf-img?inline=1');
+    expect(html).toContain('<audio class="cw-media" controls');
+    expect(html).toContain('<video class="cw-media" controls');
+    // PDFs stay on the Open/Preview path; only real media streams inline.
+    expect(html).not.toContain('cf-doc?inline=1');
+  });
+
   it('uses polling when streaming fails and rejects a stale poll once streaming resumes', async () => {
     const u = ui();
     let resolve!: (value: unknown) => void;

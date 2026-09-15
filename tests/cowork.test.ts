@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm, type LlmClient } from '../src/llm/llm.js';
-import { CoworkStore, type CoworkConversation } from '../src/cowork/store.js';
+import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation } from '../src/cowork/store.js';
 import { buildCoworkMessages, runConversationTurn, runMissionSession, type CoworkRunnerDeps } from '../src/cowork/runner.js';
 import { parseToolCalls, stripToolMarkers } from '../src/cowork/tools.js';
 import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, TelegramPoller, type TelegramFetch } from '../src/cowork/telegram.js';
@@ -52,6 +52,18 @@ describe('CoworkStore', () => {
     expect(reloaded.messages(conv.id).map((m) => m.seq)).toEqual([m1.seq, m2.seq]);
     expect(m2.seq).toBeGreaterThan(m1.seq);
     expect(reloaded.messages(conv.id, m1.seq)).toHaveLength(1);
+  });
+
+  it('stores media far above the old 2 MB ceiling', () => {
+    const file = path.join(tempHome('large-artifact'), 'cowork.json');
+    const store = new CoworkStore(file);
+    const agent = store.saveAgent(makeAgentInput('media-owner'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    expect(MAX_ARTIFACT_BYTES).toBe(20_000_000);
+    const bytes = Buffer.alloc(3_000_000, 7);
+    const artifact = store.addArtifact({ conversationId: conv.id, name: 'clip.mp4', mime: 'video/mp4', dataBase64: bytes.toString('base64') });
+    expect(artifact.size).toBe(3_000_000);
+    expect(store.artifactPath(artifact.id)).toBeTruthy();
   });
 
   it('persists shared artifacts, todos and user decision requests', () => {
@@ -846,7 +858,8 @@ describe('cowork server routes', () => {
   });
 
   it('serves attachments, hides Telegram tokens and applies interactive host permission', async () => {
-    const base = await startServer(new ScriptedMockLlm([() => 'I reviewed the attached file.']));
+    const llmPrompts: unknown[][] = [];
+    const base = await startServer(new ScriptedMockLlm([(_call, messages) => { llmPrompts.push(messages); return 'I reviewed the attached file.'; }]));
     const created = await post(base, '/api/cowork/agents', makeAgentInput('artifact-agent'));
     const agent = created.json['agent'] as { id: string; useHostComputer: boolean };
     const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
@@ -862,12 +875,13 @@ describe('cowork server routes', () => {
         { name: 'brief.md', type: 'text/markdown', dataUrl: `data:text/markdown;base64,${Buffer.from('# Brief').toString('base64')}` },
         { name: 'report.pdf', type: 'application/pdf', dataUrl: `data:application/pdf;base64,${Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF').toString('base64')}` },
         { name: 'bundle.zip', type: 'application/zip', dataUrl: `data:application/zip;base64,${Buffer.from('PK\u0003\u0004').toString('base64')}` },
+        { name: 'photo.png', type: 'image/png', dataUrl: `data:image/png;base64,${Buffer.from('fakepng').toString('base64')}` },
       ],
     });
     expect(upload.status).toBe(202);
     const view = await waitFor(async () => {
       const data = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; artifacts: { id: string; name: string }[]; messages: { artifactIds?: string[] }[] };
-      return !data.busy && data.artifacts.length === 3 ? data : undefined;
+      return !data.busy && data.artifacts.length === 4 ? data : undefined;
     });
     const brief = view.artifacts.find((artifact) => artifact.name === 'brief.md')!;
     const report = view.artifacts.find((artifact) => artifact.name === 'report.pdf')!;
@@ -891,10 +905,44 @@ describe('cowork server routes', () => {
     expect(await zipPreview.text()).toContain('Archive');
 
     const store = (serverInstance as unknown as { cowork: () => CoworkStore }).cowork();
+    // Audio goes straight to the browser's player, and uploads reach the model:
+    // images as vision parts, text files inline, binaries named only.
+    const audio = store.addArtifact({ conversationId: conv.id, name: 'clip.mp3', mime: 'audio/mpeg', dataBase64: Buffer.from('id3').toString('base64') });
+    const audioPreview = await fetch(`${base}/api/cowork/artifacts/${audio.id}/preview`);
+    expect(audioPreview.status).toBe(200);
+    expect(audioPreview.headers.get('content-type')).toContain('audio/mpeg');
+    expect(audioPreview.headers.get('content-disposition')).toContain('inline');
+    const prompt = JSON.stringify(llmPrompts.at(-1));
+    expect(prompt).toContain('ATTACHED MEDIA');
+    expect(prompt).toContain('# Brief');
+    expect(prompt).toContain('data:image/png;base64,');
+    expect(prompt).toContain('report.pdf');
+    expect(prompt).toContain('bundle.zip');
+    expect(prompt).not.toContain('%PDF-1.4');
     const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'permission', title: 'Allow host', detail: 'Work in Agent Gitu workspace', permission: 'host' });
     const approved = await post(base, `/api/cowork/requests/${request.id}`, { action: 'approve' });
     expect(approved.status).toBe(200);
     expect((approved.json['agent'] as { useHostComputer: boolean }).useHostComputer).toBe(true);
+  });
+
+  it('accepts a large attachment body instead of the 1 MB route default', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'Stored it.']));
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('big-file-agent'));
+    const agent = created.json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    // base64 inflates by 4/3, so this body is ~1.6 MB: above the 1 MB default.
+    const big = Buffer.alloc(1_200_000, 3).toString('base64');
+    const upload = await post(base, `/api/cowork/conversations/${conv.id}/messages`, {
+      text: 'recorded a take',
+      files: [{ name: 'take.wav', type: 'audio/wav', dataUrl: `data:audio/wav;base64,${big}` }],
+    });
+    expect(upload.status).toBe(202);
+    const view = await waitFor(async () => {
+      const data = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; artifacts: { name: string; size: number }[] };
+      return !data.busy && data.artifacts.length ? data : undefined;
+    });
+    expect(view.artifacts[0]!.name).toBe('take.wav');
+    expect(view.artifacts[0]!.size).toBe(1_200_000);
   });
 
   it('mirrors cowork questions and approvals to Telegram and accepts Telegram responses', async () => {

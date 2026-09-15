@@ -302,6 +302,11 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   read (legacy Office binaries, archives, exotic formats) get an identity card
   with a download button instead of a dead end. Scripts, macros, embedded
   objects and external resources never execute.
+- **Media in chat** — attach up to four files per message (20 MB each) of any
+  type from the composer, or send documents, photos, voice notes, audio, video
+  and stickers from Telegram. Images reach vision-capable teammates as real
+  image input, text-like files are inlined into the prompt, images draw inline
+  thumbnails, and audio and video play right in the transcript.
 - **Browser skills for every provider** — the built-in `browser-workflow` skill
   teaches page inspection, navigation, forms, verification and sign-in handoff.
   Screenshots reach models that support images; text-only models use page

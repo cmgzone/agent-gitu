@@ -446,3 +446,90 @@ describe('cowork streaming and tool execution', () => {
     expect(result.messages.at(-1)!.text).toContain('partial success');
   });
 });
+
+describe('cowork uploaded media', () => {
+  function setup(name: string, client: Partial<LlmClient>, overrides: Partial<CoworkRunnerDeps> = {}) {
+    const store = new CoworkStore(path.join(root, name + '.json'));
+    const agent = store.saveAgent({ name, systemPrompt: 'Help the user.' });
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const trigger = store.appendMessage(conversation.id, { role: 'user', text: 'help', via: 'web' });
+    const deps: CoworkRunnerDeps = { agents: [agent], resolveLlm: () => client as LlmClient, toolContext: () => ({}) as ToolContext, ...overrides };
+    return { conversation, trigger, deps, history: [trigger], append: (m: Parameters<CoworkStore['appendMessage']>[1]) => store.appendMessage(conversation.id, m) };
+  }
+
+  it('hands uploads to the model: images as vision parts, text inline, binaries named', async () => {
+    const seen: LlmMessage[][] = [];
+    const client = { complete: async (messages: LlmMessage[]) => { seen.push(messages); return 'Got it.'; } };
+    await runConversationTurn({
+      ...setup('media', client),
+      media: [
+        { name: 'photo.png', mime: 'image/png', dataUrl: 'data:image/png;base64,AAAA' },
+        { name: 'notes.txt', mime: 'text/plain', text: 'line one\nline two' },
+        { name: 'bundle.zip', mime: 'application/zip' },
+      ],
+    });
+    const last = seen[0]!.at(-1)!;
+    expect(last.role).toBe('user');
+    const prompt = JSON.stringify(last.content);
+    expect(prompt).toContain('ATTACHED MEDIA');
+    expect(prompt).toContain('line one');
+    expect(prompt).toContain('bundle.zip');
+    expect(prompt).toContain('data:image/png;base64,AAAA');
+    expect(prompt).toContain('image_url');
+  });
+
+  it('tells text-only models they cannot see uploaded images', async () => {
+    const seen: LlmMessage[][] = [];
+    const client = { complete: async (messages: LlmMessage[]) => { seen.push(messages); return 'Got it.'; } };
+    await runConversationTurn({
+      ...setup('media-blind', client, { supportsImagesFor: () => false }),
+      media: [{ name: 'photo.png', mime: 'image/png', dataUrl: 'data:image/png;base64,AAAA' }],
+    });
+    const last = seen[0]!.at(-1)!;
+    expect(typeof last.content).toBe('string');
+    expect(last.content as string).toContain('cannot view images');
+    expect(last.content as string).not.toContain('data:image/png');
+  });
+
+  it('accepts voice notes, video and stickers from Telegram like documents', async () => {
+    const received: { text: string; file?: { name: string; mime: string } }[] = [];
+    let polls = 0;
+    const bytes = new TextEncoder().encode('media');
+    const fetchImpl: TelegramFetch = async (url, init) => {
+      if (url.includes('/file/')) return { ok: true, status: 200, text: async () => '', arrayBuffer: async () => bytes.buffer };
+      if (url.endsWith('/getFile')) return { ok: true, status: 200, text: async () => '{"ok":true,"result":{"file_path":"media/file"}}' };
+      polls++;
+      if (polls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            ok: true,
+            result: [
+              { update_id: 90, message: { message_id: 11, date: Date.now() / 1000, chat: { id: 42 }, from: { first_name: 'Ada' }, caption: 'Listen', voice: { file_id: 'v1', mime_type: 'audio/ogg', file_size: bytes.length } } },
+              { update_id: 91, message: { message_id: 12, date: Date.now() / 1000, chat: { id: 42 }, from: { first_name: 'Ada' }, video: { file_id: 'vid1', mime_type: 'video/mp4', file_size: bytes.length } } },
+              { update_id: 92, message: { message_id: 13, date: Date.now() / 1000, chat: { id: 42 }, from: { first_name: 'Ada' }, sticker: { file_id: 'st1', mime_type: 'image/webp', file_size: bytes.length } } },
+            ],
+          }),
+        };
+      }
+      return new Promise((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new Error('aborted'))));
+    };
+    const poller = new TelegramPoller({
+      token,
+      chatId: '42',
+      fetchImpl,
+      initialOffset: 88,
+      onMessage: (_from, text, _chat, file) => received.push({ text, file: file ? { name: file.name, mime: file.mime } : undefined }),
+    });
+    poller.start();
+    await vi.waitFor(() => expect(received).toHaveLength(3));
+    poller.stop();
+    expect(received.map((item) => item.file!.mime)).toEqual(['audio/ogg', 'video/mp4', 'image/webp']);
+    expect(received[0]!.file!.name).toBe('telegram-voice-11');
+    expect(received[0]!.text).toBe('Listen');
+    expect(received[1]!.file!.name).toBe('telegram-video-12.mp4');
+    expect(received[1]!.text).toBe('Attached telegram-video-12.mp4');
+    expect(received[2]!.file!.name).toBe('telegram-sticker-13');
+  });
+});

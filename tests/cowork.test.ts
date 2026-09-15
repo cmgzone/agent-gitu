@@ -130,6 +130,9 @@ describe('CoworkStore', () => {
     expect(store.addFolder({ conversationId: conv.id, path: folderDir }).id).toBe(folder.id);
     expect(store.removeFolder(conv.id, folder.id)).toBe(true);
     expect(store.folders(conv.id)).toHaveLength(0);
+    // An empty path must not silently tag the process working directory.
+    expect(() => store.addFolder({ conversationId: conv.id, path: '   ' })).toThrow('Folder path is required');
+    expect(store.folders(conv.id)).toHaveLength(0);
 
     const thread = store.addThread({ conversationId: conv.id, title: 'Launch copy', topic: 'Copy only' });
     expect(store.addThread({ conversationId: conv.id, title: 'launch copy' }).id).toBe(thread.id);
@@ -855,18 +858,37 @@ describe('cowork server routes', () => {
 
     const upload = await post(base, `/api/cowork/conversations/${conv.id}/messages`, {
       text: 'Review this',
-      files: [{ name: 'brief.md', type: 'text/markdown', dataUrl: `data:text/markdown;base64,${Buffer.from('# Brief').toString('base64')}` }],
+      files: [
+        { name: 'brief.md', type: 'text/markdown', dataUrl: `data:text/markdown;base64,${Buffer.from('# Brief').toString('base64')}` },
+        { name: 'report.pdf', type: 'application/pdf', dataUrl: `data:application/pdf;base64,${Buffer.from('%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF').toString('base64')}` },
+        { name: 'bundle.zip', type: 'application/zip', dataUrl: `data:application/zip;base64,${Buffer.from('PK\u0003\u0004').toString('base64')}` },
+      ],
     });
     expect(upload.status).toBe(202);
     const view = await waitFor(async () => {
       const data = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; artifacts: { id: string; name: string }[]; messages: { artifactIds?: string[] }[] };
-      return !data.busy && data.artifacts.length ? data : undefined;
+      return !data.busy && data.artifacts.length === 3 ? data : undefined;
     });
-    expect(view.artifacts[0]!.name).toBe('brief.md');
-    expect(view.messages.some((message) => message.artifactIds?.includes(view.artifacts[0]!.id))).toBe(true);
-    const preview = await fetch(`${base}/api/cowork/artifacts/${view.artifacts[0]!.id}/preview`);
+    const brief = view.artifacts.find((artifact) => artifact.name === 'brief.md')!;
+    const report = view.artifacts.find((artifact) => artifact.name === 'report.pdf')!;
+    const bundle = view.artifacts.find((artifact) => artifact.name === 'bundle.zip')!;
+    expect(view.messages.some((message) => message.artifactIds?.includes(brief.id))).toBe(true);
+    const preview = await fetch(`${base}/api/cowork/artifacts/${brief.id}/preview`);
     expect(preview.status).toBe(200);
     expect(await preview.text()).toContain('# Brief');
+
+    // PDFs go to the browser's own viewer: inline bytes, not the HTML page.
+    const pdfPreview = await fetch(`${base}/api/cowork/artifacts/${report.id}/preview`);
+    expect(pdfPreview.status).toBe(200);
+    expect(pdfPreview.headers.get('content-type')).toContain('application/pdf');
+    expect(pdfPreview.headers.get('content-disposition')).toContain('inline');
+    expect(await pdfPreview.text()).toContain('%PDF-1.4');
+
+    // Files the previewer cannot render still answer 200 with a download card.
+    const zipPreview = await fetch(`${base}/api/cowork/artifacts/${bundle.id}/preview`);
+    expect(zipPreview.status).toBe(200);
+    expect(zipPreview.headers.get('content-type')).toContain('text/html');
+    expect(await zipPreview.text()).toContain('Archive');
 
     const store = (serverInstance as unknown as { cowork: () => CoworkStore }).cowork();
     const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'permission', title: 'Allow host', detail: 'Work in Agent Gitu workspace', permission: 'host' });
@@ -945,6 +967,47 @@ describe('cowork server routes', () => {
       const view = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { busy: boolean; messages: { role: string; text: string }[] };
       return !view.busy && view.messages.some((message) => message.text === 'Writes enabled now.') ? true : undefined;
     });
+  });
+
+  it('pushes open request cards for a second chat that reuses the same bot token', async () => {
+    const telegramCalls: { method: string; body: Record<string, unknown> }[] = [];
+    const telegramFetch: TelegramFetch = async (url, init) => {
+      const method = url.split('/').at(-1)!;
+      // Fail polling so the single poller backs off instead of hammering a mock.
+      if (method === 'getUpdates') throw new Error('offline in tests');
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {};
+      telegramCalls.push({ method, body });
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, result: { message_id: telegramCalls.length } }) };
+    };
+    const base = await startServer(new ScriptedMockLlm([() => 'noted']), { telegramFetch });
+    const createdOne = await post(base, '/api/cowork/agents', makeAgentInput('ops-lead'));
+    const createdTwo = await post(base, '/api/cowork/agents', makeAgentInput('ops-helper'));
+    const lead = createdOne.json['agent'] as { id: string };
+    const helper = createdTwo.json['agent'] as { id: string };
+    const convOne = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [lead.id] })).json['conversation'] as { id: string };
+    const convTwo = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [helper.id] })).json['conversation'] as { id: string };
+
+    // The first chat claims the bot; one poller serves every linked chat.
+    await post(base, `/api/cowork/conversations/${convOne.id}`, { telegram: { enabled: true, token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ', chatId: '42', chatTitle: 'Ops' } });
+
+    const store = (serverInstance as unknown as { cowork: () => CoworkStore }).cowork();
+    const question = store.addRequest({ conversationId: convTwo.id, agentId: helper.id, kind: 'question', title: 'Which mirror?', detail: 'Pick a download mirror.', options: ['EU', 'US'] });
+
+    // Linking the second chat to the same bot must still push its open cards.
+    await post(base, `/api/cowork/conversations/${convTwo.id}`, { telegram: { enabled: true, token: '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ', chatId: '43', chatTitle: 'Ops 2' } });
+    await waitFor(async () => {
+      const card = telegramCalls.find((call) => call.method === 'sendMessage' && String(call.body['text']).includes('Which mirror?') && call.body['reply_markup']);
+      return card ? true : undefined;
+    });
+    const card = telegramCalls.find((call) => call.method === 'sendMessage' && String(call.body['text']).includes('Which mirror?') && call.body['reply_markup'])!;
+    expect(card.body['chat_id']).toBe('43');
+    expect(card.body['reply_markup']).toEqual({
+      inline_keyboard: [
+        [{ text: 'EU', callback_data: `cwreq:${question.id}:answer:0` }],
+        [{ text: 'US', callback_data: `cwreq:${question.id}:answer:1` }],
+      ],
+    });
+    expect(store.getRequest(question.id)?.telegramNotifiedAt).toBeTruthy();
   });
 
   it('accepts and actually answers a second send after the current turn', async () => {

@@ -1091,7 +1091,12 @@ export class GituServer {
     this.stopCoworkPoller('');
     const tg = conv.telegram;
     if (!tg?.enabled || !tg.token || !tg.chatId) return;
-    if (this.coworkPollers.has(tg.token)) return;
+    if (this.coworkPollers.has(tg.token)) {
+      // One poller per bot token serves every linked chat, so a second chat that
+      // reuses the token still has to push its own open request cards.
+      void this.sendCoworkRequestCards(conv);
+      return;
+    }
     const poller = new TelegramPoller({
       token: tg.token,
       chatId: '*',
@@ -2099,14 +2104,24 @@ export class GituServer {
       const artifact = store.getArtifact(artifactPreviewMatch[1]!);
       const filePath = store.artifactPath(artifactPreviewMatch[1]!);
       if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
-      if (artifact.mime === 'application/pdf' || /^image\//i.test(artifact.mime)) {
+      // PDFs and raster images are handed straight to the browser's own viewer.
+      // SVG is not: a standalone SVG document can run scripts, so it goes through
+      // the inert <img> preview page instead.
+      const rawViewer = /^application\/pdf\b/i.test(artifact.mime) || (/^image\//i.test(artifact.mime) && !/^image\/svg\+xml/i.test(artifact.mime));
+      if (rawViewer) {
         this.sendLocalFile(res, filePath, artifact.name, artifact.mime, true);
         return true;
       }
       try {
         const html = coworkDocumentPreview(filePath, artifact);
-        if (!html) { this.sendJson(res, 415, { error: 'preview unavailable for this file type' }); return true; }
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'x-content-type-options': 'nosniff' });
+        // img-src data: lets the SVG preview draw its inert data URL; everything
+        // else (scripts, frames, network) stays blocked by default-src 'none'.
+        res.writeHead(200, {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'private, no-store',
+          'content-security-policy': "default-src 'none'; img-src data:; style-src 'unsafe-inline'",
+          'x-content-type-options': 'nosniff',
+        });
         res.end(html);
       } catch (err) {
         this.sendJson(res, 422, { error: `document preview failed: ${(err as Error).message}` });

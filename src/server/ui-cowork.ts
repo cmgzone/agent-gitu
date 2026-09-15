@@ -684,17 +684,16 @@ export const COWORK_JS = String.raw`
     return (value / 1048576).toFixed(1) + ' MB';
   }
 
-  function cwCanPreview(file) {
-    return /^(image\/|text\/|application\/pdf|application\/json)/i.test(file.mime || '') || /\.(md|markdown|csv|json|txt|log|docx|xlsx|pptx)$/i.test(file.name || '');
-  }
-
+  // Every artifact has a preview route: PDFs and images render in the browser's
+  // own viewer, documents render as sanitized text/table pages, and exotic
+  // binaries get an info card with a download link. So Open is always offered.
   function cwFilesHtml(ids) {
     var files = (ids || []).map(cwArtifact).filter(Boolean);
     if (!files.length) return '';
     return '<div class="cw-files">' + files.map(function (file) {
       return '<div class="cw-file"><span class="cw-file-ico">' + cwIcon('file') + '</span><span class="cw-file-main">' +
         '<span class="cw-file-name" title="' + esc(file.name) + '">' + esc(file.name) + '</span><span class="cw-file-meta">' + esc(cwBytes(file.size)) + '</span></span>' +
-        '<span class="cw-file-actions">' + (cwCanPreview(file) ? '<button class="btn ghost" data-cwpreview="' + esc(file.id) + '">Open</button>' : '') +
+        '<span class="cw-file-actions"><button class="btn ghost" data-cwpreview="' + esc(file.id) + '">Open</button>' +
         '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a></span></div>';
     }).join('') + '</div>';
   }
@@ -709,11 +708,16 @@ export const COWORK_JS = String.raw`
   function cwPreviewFile(id) {
     var file = cwArtifact(id);
     if (!file) { toast('That file is no longer available', true); return; }
+    // Chrome and Electron draw PDFs with the built-in viewer, and a bare sandbox
+    // attribute blocks that plugin, so PDFs load unsandboxed. Everything else
+    // stays sandboxed (allow-downloads keeps the fallback page's download link
+    // working) on top of the server's Content-Security-Policy.
+    var isPdf = /^application\/pdf/i.test(file.mime || '') || /\.pdf$/i.test(file.name || '');
     var modal = document.createElement('div');
     modal.className = 'modal cw-modal cw-doc-modal';
     modal.innerHTML = '<div class="box" style="display:flex;flex-direction:column"><div class="bar"><span>' + esc(file.name) + '</span><span style="flex:1"></span>' +
       '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a><button class="btn ghost" data-close>Close</button></div>' +
-      '<iframe class="cw-doc-frame" title="Document preview" sandbox src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview"></iframe></div>';
+      '<iframe class="cw-doc-frame" title="Document preview"' + (isPdf ? '' : ' sandbox="allow-downloads"') + ' src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview"></iframe></div>';
     document.body.appendChild(modal);
     modal.querySelector('[data-close]').onclick = function () { modal.remove(); };
   }

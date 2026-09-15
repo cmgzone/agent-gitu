@@ -156,11 +156,16 @@ export function telegramChunks(text: string): string[] {
 export function cleanTelegramText(text: string, fallback = 'Working...'): string {
   const cleaned = String(text ?? '')
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    // A marker alone on its line takes the whole line with it, otherwise the
+    // stripped marker leaves an empty line behind in the Telegram message.
+    .replace(/^[^\S\n]*<tool\b[\s\S]*?<\/tool>[^\S\n]*\n?/gim, '')
     .replace(/<tool\b[^>]*>[\s\S]*?<\/tool>/gi, '')
     .replace(/<tool[\s\S]*$/i, '')
     .replace(/<\/?tool[^>]*>/gi, '')
-    .replace(/^\s*\[[\w.-]+:\s*(?:running|completed|failed)\]\s*$/gim, '')
-    .replace(/^\s*Tools:\s.*$/gim, '')
+    // Progress/system lines vanish including their line ending, and the leading
+    // \s* is kept inside a single line so they cannot swallow a blank separator.
+    .replace(/^[^\S\n]*\[[\w.-]+:\s*(?:running|completed|failed)\][^\S\n]*\n?/gim, '')
+    .replace(/^[^\S\n]*Tools:[^\n]*\n?/gim, '')
     .replace(/^```[^\n]*\n?/gm, '')
     .replace(/`([^`\n]+)`/g, '$1')
     .replace(/\*\*([^*\n]+)\*\*/g, '$1')

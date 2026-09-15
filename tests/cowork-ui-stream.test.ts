@@ -31,9 +31,18 @@ function ui() {
     receive(data: unknown) { this.onmessage?.({ data: JSON.stringify(data) }); }
   }
   const api = vi.fn();
+  const modals: { className: string; innerHTML: string }[] = [];
   const context = createContext({
     S: { active: 'cowork', cw }, window: { addEventListener: vi.fn() },
-    document: { createElement: () => ({}) }, $: (id: string) => elements[id],
+    document: {
+      createElement: () => {
+        const element = { className: '', innerHTML: '', querySelector: () => ({ onclick: null }), remove: vi.fn(), appendChild: vi.fn() };
+        modals.push(element);
+        return element;
+      },
+      body: { appendChild: vi.fn() },
+    },
+    $: (id: string) => elements[id],
     EventSource: Stream, clearInterval: vi.fn(), api, toast: vi.fn(),
     esc: (s: unknown) => String(s ?? ''),
   });
@@ -41,7 +50,7 @@ function ui() {
   // Keep the actual snapshot, roster and stream lifecycle code. Rendering the
   // surrounding panels is covered by the browser fixture.
   for (const name of ['cwRenderRail', 'cwRenderMsgs', 'cwRenderInfo', 'cwRenderTyping', 'cwRenderProgress']) context[name] = vi.fn();
-  return { context, cw: context.S.cw, input, mentions, streams, api, gateway };
+  return { context, cw: context.S.cw, input, mentions, streams, api, gateway, modals };
 }
 
 describe('Cowork UI live updates', () => {
@@ -143,6 +152,23 @@ describe('Cowork UI live updates', () => {
     u.streams[1]!.onopen?.();
     u.streams[1]!.receive({ busy: true, messages: [{ seq: 1, text: 'Current reply' }] });
     expect(u.cw.msgs.map((m: any) => m.text)).toEqual(['Current reply']);
+  });
+
+  it('opens PDF previews without the sandbox attribute that blocks the built-in viewer', () => {
+    const u = ui();
+    u.cw.artifacts = [{ id: 'cf-pdf', name: 'report.pdf', mime: 'application/pdf', size: 2048 }];
+    u.context.cwPreviewFile('cf-pdf');
+    const modal = u.modals.at(-1)!;
+    expect(modal.innerHTML).toContain('/api/cowork/artifacts/cf-pdf/preview');
+    expect(modal.innerHTML).not.toContain('sandbox');
+  });
+
+  it('keeps other previews sandboxed and offers Open for every file type', () => {
+    const u = ui();
+    u.cw.artifacts = [{ id: 'cf-zip', name: 'bundle.zip', mime: 'application/zip', size: 512 }];
+    u.context.cwPreviewFile('cf-zip');
+    expect(u.modals.at(-1)!.innerHTML).toContain('sandbox="allow-downloads"');
+    expect(u.context.cwFilesHtml(['cf-zip'])).toContain('data-cwpreview="cf-zip"');
   });
 
   it('uses polling when streaming fails and rejects a stale poll once streaming resumes', async () => {

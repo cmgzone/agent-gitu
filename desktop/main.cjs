@@ -61,7 +61,12 @@ function ensureBrowserWin() {
     icon: APP_ICON_PATH,
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
-    webPreferences: { backgroundThrottling: false },
+    webPreferences: {
+      backgroundThrottling: false,
+      // Agents are often asked to read a PDF on the web; the built-in viewer is a
+      // plugin, so Chromium only renders it when plugins are enabled.
+      plugins: true,
+    },
   });
   consoleLog = [];
   browserWin.webContents.on('console-message', (...args) => {
@@ -557,6 +562,11 @@ function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // Chromium draws PDFs with its internal viewer, which Electron treats as a
+      // plugin and disables by default. Without this the cowork document modal
+      // shows a blank frame for every PDF an agent generates. Isolation stays
+      // on (contextIsolation + the preview page's own CSP).
+      plugins: true,
     },
   });
 

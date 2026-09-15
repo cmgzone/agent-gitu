@@ -295,6 +295,13 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   automatically presents an Open/Download card. This app service creates files
   in the Agent Gitu workspace even when the teammate uses a private computer;
   `receive_file` can transfer the shared artifact into that computer.
+- **Document previews** — the Open card renders a safe local page for every
+  artifact: PDFs and raster images go to the browser's own viewer, SVG is drawn
+  as an inert image, DOCX/XLSX/PPTX are extracted into text and tables, and
+  text, code, markup and config files are shown escaped. Types that cannot be
+  read (legacy Office binaries, archives, exotic formats) get an identity card
+  with a download button instead of a dead end. Scripts, macros, embedded
+  objects and external resources never execute.
 - **Browser skills for every provider** — the built-in `browser-workflow` skill
   teaches page inspection, navigation, forms, verification and sign-in handoff.
   Screenshots reach models that support images; text-only models use page

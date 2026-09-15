@@ -49,9 +49,47 @@ describe('Cowork document preview', () => {
     expect(coworkDocumentPreview(pptx, artifact('launch.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'))).toContain('Launch plan');
   });
 
-  it('returns no preview for unsupported legacy binaries', () => {
-    const file = path.join(root, 'legacy.doc');
-    writeFileSync(file, 'binary');
-    expect(coworkDocumentPreview(file, artifact('legacy.doc', 'application/msword'))).toBeUndefined();
+  it('previews text-like files by extension even without a text mime type', () => {
+    const file = path.join(root, 'main.ts');
+    writeFileSync(file, 'export const x = 1;\n<b>not html</b>');
+    const html = coworkDocumentPreview(file, artifact('main.ts', 'application/octet-stream'));
+    expect(html).toContain('&lt;b&gt;not html&lt;/b&gt;');
+    expect(html).toContain("default-src 'none'");
+    expect(html).not.toContain('<script>');
+  });
+
+  it('draws SVG as an inert data URL image instead of a scriptable document', () => {
+    const file = path.join(root, 'logo.svg');
+    writeFileSync(file, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    const html = coworkDocumentPreview(file, artifact('logo.svg', 'image/svg+xml'));
+    expect(html).toContain('src="data:image/svg+xml;base64,');
+    expect(html).toContain('img-src data:');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('alert(1)');
+  });
+
+  it('offers a download card instead of a dead end for types it cannot render', () => {
+    const legacy = path.join(root, 'legacy.doc');
+    writeFileSync(legacy, 'binary');
+    const doc = coworkDocumentPreview(legacy, artifact('legacy.doc', 'application/msword'));
+    expect(doc).toContain('legacy.doc');
+    expect(doc).toContain('href="/api/cowork/artifacts/cf-preview"');
+    expect(doc).not.toContain('<script>');
+
+    const zip = path.join(root, 'bundle.zip');
+    writeFileSync(zip, 'PK');
+    expect(coworkDocumentPreview(zip, artifact('bundle.zip', 'application/zip'))).toContain('Archive');
+
+    const pdf = path.join(root, 'report.pdf');
+    writeFileSync(pdf, '%PDF-1.4');
+    expect(coworkDocumentPreview(pdf, artifact('report.pdf', 'application/pdf'))).toContain('Download this file');
+  });
+
+  it('still returns a useful page when a document is damaged', () => {
+    const broken = path.join(root, 'broken.docx');
+    writeFileSync(broken, 'not a zip archive');
+    const html = coworkDocumentPreview(broken, artifact('broken.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'));
+    expect(html).toContain('could not be parsed');
+    expect(html).toContain('broken.docx');
   });
 });

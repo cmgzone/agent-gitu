@@ -512,8 +512,9 @@ export class CoworkStore {
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation) throw new Error('Conversation not found');
     if (input.agentId && !data.agents.some((agent) => agent.id === input.agentId)) throw new Error('Tagging agent not found');
-    const folderPath = path.resolve(String(input.path ?? '').trim());
-    if (!folderPath) throw new Error('Folder path is required');
+    const requestedPath = String(input.path ?? '').trim();
+    if (!requestedPath) throw new Error('Folder path is required');
+    const folderPath = path.resolve(requestedPath);
     const existing = (conversation.folders ?? []).find((tag) => path.resolve(tag.path).toLowerCase() === folderPath.toLowerCase());
     if (existing) return existing;
     const label = (input.label ?? '').trim().slice(0, 80) || path.basename(folderPath) || folderPath;

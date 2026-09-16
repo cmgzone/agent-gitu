@@ -31,7 +31,7 @@ export interface CodingEventEnvelope {
 /**
  * The payload union — the transport-neutral vocabulary both interfaces render.
  *
- * `run_started`, the three `test_*` events and `checkpoint_created` have no
+ * `run_started`, the test events and the checkpoint events have no
  * source in the legacy text stream at all: the runtime never announced them as
  * lines. `command_finished.exitCode` is different — the executor now emits it
  * natively from the tool result, while the text shim can only recover ok plus a
@@ -67,6 +67,9 @@ export type PolicyDenialReason = 'approval_required' | 'risk_policy' | 'project_
  */
 export type OperationBlockReason = 'loop_detected' | 'repeated_skill_operation' | 'edit_pressure' | 'budget_exhausted' | 'prerequisite_missing' | 'other';
 
+/** Why a checkpoint was rolled back. */
+export type CheckpointRestoreReason = 'recovery' | 'verification_failure' | 'user_request' | 'specialist_failure' | 'other';
+
 export type CodingEventPayload =
   | { type: 'run_started'; goal: string; workspace?: string }
   | { type: 'plan_created'; steps: number }
@@ -82,9 +85,22 @@ export type CodingEventPayload =
    * particular nonzero codes as meaningful.
    */
   | { type: 'command_finished'; command: string; ok: boolean; exitCode?: number; durationMs?: number }
-  | { type: 'test_started'; suite?: string }
-  | { type: 'test_failed'; count: number }
-  | { type: 'test_passed'; count: number }
+  /**
+   * One terminal event per test run. A single command can produce
+   * `142 passed, 3 failed, 7 skipped`, which is not a binary outcome — so the
+   * counts ride on one `test_finished` rather than two event types, and a
+   * consumer renders what it knows about.
+   */
+  | { type: 'test_started'; command: string; framework?: string }
+  | {
+      type: 'test_finished';
+      command: string;
+      status: 'passed' | 'failed';
+      passed?: number;
+      failed?: number;
+      skipped?: number;
+      durationMs?: number;
+    }
   | { type: 'approval_required'; approvalId: string; tool?: string; why?: string }
   /** Published by whichever surface resolved the request first. Exactly one
    *  approval object exists per session; this is how the other surfaces learn
@@ -102,7 +118,13 @@ export type CodingEventPayload =
   | { type: 'policy_denied'; reason: PolicyDenialReason; tool?: string; operation?: string; detail?: string }
   | { type: 'operation_blocked'; reason: OperationBlockReason; tool?: string; operation?: string; detail?: string }
   | { type: 'evidence_recorded'; evidenceId: string; passed: boolean; kind?: string }
-  | { type: 'checkpoint_created'; id: string }
+  | { type: 'checkpoint_created'; checkpointId: string; label?: string; gitSha?: string }
+  /**
+   * Emitted when a checkpoint is rolled back — "Gitu detected a bad change and
+   * restored checkpoint cp_017". `gitSha` stays optional because a future
+   * container/VM checkpoint may not be Git-backed.
+   */
+  | { type: 'checkpoint_restored'; checkpointId: string; gitSha?: string; reason?: CheckpointRestoreReason }
   | { type: 'recovering'; message: string; attempt?: number; maxAttempts?: number }
   | { type: 'completed'; summary: string }
   | { type: 'failed'; reason: string }
@@ -134,14 +156,14 @@ export const CODING_EVENT_TYPES = [
   'command_started',
   'command_finished',
   'test_started',
-  'test_failed',
-  'test_passed',
+  'test_finished',
   'approval_required',
   'approval_resolved',
   'policy_denied',
   'operation_blocked',
   'evidence_recorded',
   'checkpoint_created',
+  'checkpoint_restored',
   'recovering',
   'completed',
   'failed',
@@ -164,9 +186,9 @@ export const CODING_EVENT_TYPES = [
 export const NATIVE_ONLY_EVENT_TYPES = [
   'run_started',
   'test_started',
-  'test_failed',
-  'test_passed',
+  'test_finished',
   'checkpoint_created',
+  'checkpoint_restored',
   'policy_denied',
   'operation_blocked',
 ] as const satisfies readonly CodingEventType[];

@@ -30,7 +30,11 @@ class Element {
     contains: (value: string) => this.className.split(/\s+/).includes(value),
   };
   get isConnected(): boolean { return this.attached || !!this.parent?.isConnected; }
-  get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
+  // DOM order is children interleaved with this node's own text runs, but the
+  // naive parser in innerHTML cannot interleave (a text run after </b> lands in
+  // this.text). Appending this.text last keeps real DOM order for the shapes
+  // these tests create.
+  get textContent(): string { return this.children.map(child => child.textContent).join('') + this.text; }
   set textContent(value: string) { this.text = value; this.children = []; }
   set innerHTML(value: string) {
     this.children = []; this.text = '';
@@ -125,7 +129,8 @@ function renderer() {
   new Script(code).runInContext(context);
   return {
     stream, session, context, narrationClosures: () => narrationClosures,
-    event: (i: number, text: string, t?: string) => context.appendEvent('run', { i, text, ...(t ? { t } : {}) }),
+    event: (i: number, text: string, t?: string, typed?: Record<string, unknown>) =>
+      context.appendEvent('run', { i, text, ...(t ? { t } : {}), ...(typed ? { typed } : {}) }),
     rows: () => stream.querySelectorAll('.tool-call'),
     group: () => stream.querySelector('.tl-tool-group')!,
   };
@@ -224,6 +229,74 @@ describe('UI — parallel tool lifecycle', () => {
     expect(r.group().querySelector('.tool-group-state')!.textContent).toBe('Needs attention');
     expect(r.rows()[0].querySelector('.tl-out')!.open).toBe(true);
     expect(r.rows()[0].querySelector('pre')!.textContent).toBe('Assertion failed');
+  });
+
+  it('renders evidence pills from the typed companion and falls back to the prose parse', () => {
+    // The typed companion carries the real verdict, the id, and the kind as
+    // separate fields; the prose line is the fallback for rows without one.
+    const r = renderer();
+    // Typed row: a passing line whose LABEL contains FAIL would fool a substring
+    // check — the pill must come from the structured verdict.
+    r.event(0, 'evidence ev-1 PASS (test)', '2026-01-01T12:00:00.000Z', { type: 'evidence_recorded', evidenceId: 'ev-1', passed: true, kind: 'test' });
+    let pill = r.stream.querySelector('.ev-pill');
+    expect(pill.classList.contains('pass')).toBe(true);
+    // The check/cross rides the pill as an HTML entity (innerHTML), so match
+    // the entity rather than the decoded glyph.
+    expect(pill.textContent).toContain('&#10003;');
+    expect(pill.textContent).toContain('test ev-1 passed');
+    expect(pill.textContent).not.toContain('(test)');
+
+    // Typed failing row.
+    r.event(1, 'evidence ev-2 FAIL (typecheck)', undefined, { type: 'evidence_recorded', evidenceId: 'ev-2', passed: false, kind: 'typecheck' });
+    const pills = r.stream.querySelectorAll('.ev-pill');
+    pill = pills[pills.length - 1];
+    expect(pill.classList.contains('fail')).toBe(true);
+    expect(pill.textContent).toContain('&#10005;');
+    expect(pill.textContent).toContain('typecheck ev-2 failed');
+
+    // Untyped row (old database, or a line the classifier demoted): the prose
+    // parse must still decide the pill.
+    r.event(2, 'evidence ev-3 FAIL (build)');
+    pill = r.stream.querySelectorAll('.ev-pill')[2];
+    expect(pill.classList.contains('fail')).toBe(true);
+    expect(pill.textContent).toContain('FAIL');
+    r.event(3, 'evidence ev-4 PASS (lint)');
+    pill = r.stream.querySelectorAll('.ev-pill')[3];
+    expect(pill.classList.contains('pass')).toBe(true);
+
+    // Typed decides where prose is unreliable: the legacy classifier needs the
+    // PASS/FAIL token in a fixed shape, so a future emitter that changes the
+    // line's wording would demote it to log — the companion still renders the
+    // verdict pill. (Also: the prose parse cannot be trusted to read a verdict
+    // out of free text, as the id itself could contain the token.)
+    r.event(4, 'evidence', undefined, { type: 'evidence_recorded', evidenceId: 'ev-5', passed: true, kind: 'command' });
+    pill = r.stream.querySelectorAll('.ev-pill')[4];
+    expect(pill.classList.contains('pass')).toBe(true);
+    expect(pill.textContent).toContain('command ev-5 passed');
+  });
+
+  it('renders plan rows from the typed companion and falls back to the prose parse', () => {
+    const r = renderer();
+    r.event(0, 'plan     3 steps', undefined, { type: 'plan_created', steps: 3 });
+    let row = r.stream.querySelectorAll('.tl-meta')[0];
+    expect(row.textContent).toContain('plan 3 steps — review it, then approve to build');
+
+    // The follow-up distinction is prose-only today; the fallback must keep it.
+    r.event(1, 'plan     2 follow-up steps');
+    row = r.stream.querySelectorAll('.tl-meta')[1];
+    expect(row.textContent).toContain('plan 2 follow-up steps');
+
+    // Singular. The typed companion must decide when prose is unreliable — a
+    // future emitter may stop padding the keyword to a fixed column, which
+    // would leave the legacy classifier's regex nothing to match.
+    r.event(2, 'plan 1 steps', undefined, { type: 'plan_created', steps: 1 });
+    row = r.stream.querySelectorAll('.tl-meta')[2];
+    expect(row.textContent).toContain('plan 1 step —');
+    // And a row whose prose carries no count at all still renders from the
+    // companion rather than saying "0 steps".
+    r.event(3, 'plan', undefined, { type: 'plan_created', steps: 7 });
+    row = r.stream.querySelectorAll('.tl-meta')[3];
+    expect(row.textContent).toContain('plan 7 steps —');
   });
 
   it('stamps an inserted row with its own event time', () => {

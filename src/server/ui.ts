@@ -3660,12 +3660,25 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     var meta = document.createElement('div');
     if (tag === 'evidence') {
-      var isPass = body.indexOf('PASS') >= 0;
+      // The typed companion carries the real verdict — a substring check for
+      // PASS could misread a passing line whose label merely contains FAIL — plus the
+      // id and kind as separate fields. The prose parse stays for rows without a
+      // companion: old databases, or a row the classifier demoted to log.
+      var evTyped = ev.typed && ev.typed.type === 'evidence_recorded' ? ev.typed : null;
+      var isPass = evTyped ? evTyped.passed === true : body.indexOf('PASS') >= 0;
+      var evBody = evTyped
+        ? (evTyped.kind ? evTyped.kind + ' ' : '') + String(evTyped.evidenceId || '') + (isPass ? ' passed' : ' failed')
+        : body;
       meta.className = 'tl-row tl-ev';
-      meta.innerHTML = '<span class="tl-dot dot-ev"></span><div class="tl-body"><span class="ev-pill ' + (isPass ? 'pass' : 'fail') + '">' + (isPass ? '&#10003; ' : '&#10005; ') + esc(body) + '</span></div>';
+      meta.innerHTML = '<span class="tl-dot dot-ev"></span><div class="tl-body"><span class="ev-pill ' + (isPass ? 'pass' : 'fail') + '">' + (isPass ? '&#10003; ' : '&#10005; ') + esc(evBody) + '</span></div>';
     } else if (tag === 'plan') {
+      // Same companion rule: the count and the follow-up distinction are
+      // structured on the event; the regex on the line is the fallback.
+      var planTyped = ev.typed && ev.typed.type === 'plan_created' ? ev.typed : null;
+      var followUp = planTyped ? false : / follow-up steps$/.test(body);
+      var stepCount = planTyped ? planTyped.steps : parseInt(body, 10) || 0;
       meta.className = 'tl-row tl-meta';
-      meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>plan</b> ' + esc(body) + ' — review it, then approve to build</div>';
+      meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>plan</b> ' + esc(stepCount + (followUp ? ' follow-up' : '') + (stepCount === 1 ? ' step' : ' steps')) + ' — review it, then approve to build</div>';
     } else if (tag === 'subagent') {
       meta.className = 'tl-row tl-meta subagent-note';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>specialist</b> ' + esc(body) + '</div>';

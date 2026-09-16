@@ -1,4 +1,5 @@
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
+import type { CodingEventSink } from '../coding/events.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine } from '../context/context-engine.js';
 import { EvidenceEngine, classifyEvidenceKind, commandsMatch, hasRegressionProof, isWeakEvidenceLink } from '../evidence/evidence.js';
@@ -230,6 +231,17 @@ export interface GituConfig {
   conversationHistory?: LlmMessage[];
   autoLearn?: boolean;
   onEvent?: (event: string) => void;
+  /**
+   * Typed guarantee events — policy denials, loop blocks, and the like — emitted
+   * natively by the gate that made the decision (project boundary, user
+   * instruction, risk policy, loop detector).
+   *
+   * Deliberately separate from `onEvent`: that stream is prose for a live log,
+   * while these are the authoritative record of a control-system decision, each
+   * with a machine-readable reason code. Both are emitted; neither replaces the
+   * other until the text stream is retired.
+   */
+  onCodingEvent?: CodingEventSink;
 }
 
 export type AskUserHandler = (questions: AskUserQuestion[]) => Promise<string>;
@@ -542,7 +554,7 @@ export class Gitu {
       this.config.connections,
       // The agent-facing memory tool: reads are scoped to this project, so
       // specialist-private memories stay invisible to the main agent.
-      { memory, memoryContext: { projectId: guard.lock.name }, signal: () => this.abortController?.signal },
+      { memory, memoryContext: { projectId: guard.lock.name }, signal: () => this.abortController?.signal, onCodingEvent: this.config.onCodingEvent },
     );
     // The server owns and reuses its index. A direct Gitu run owns the index
     // it creates, so it must close it even when the run exits early or fails.

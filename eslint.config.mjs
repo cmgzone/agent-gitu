@@ -36,6 +36,7 @@ export default tseslint.config(
       'src/agent/quality-metrics.ts',
       'src/cli/presenter.ts',
       'src/cli.ts',
+      'src/coding/**/*.ts',
       'src/context/change-signals.ts',
       'src/context/code-index.ts',
       'src/context/context-engine.ts',

@@ -4,6 +4,7 @@ import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkd
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
+import { createGitu } from '../coding/gitu-factory.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -4327,41 +4328,43 @@ export class GituServer {
         ),
       ].join('\n');
     };
-    const gitu = new Gitu({
-      cwd: opts.projectPath ?? this.config.cwd,
-      index,
-      llm: trackedLlm,
-      mode: opts.mode,
-      autoApprove: opts.autoApprove ?? false,
-      autoLearn: opts.autoLearn ?? true,
-      criteria: opts.criteria,
-      scopeFiles: opts.scope,
-      extraConstraints: opts.constraints,
-      effort: opts.effort,
-      actionProtocolMode: opts.actionProtocolMode,
-      skills,
-      mcp,
-      connections: this.connections,
-      lsp,
-      subagents,
-      agentsSection: agentStore.renderForPrompt() || undefined,
-      specialists: agentStore.list().map((a) => ({ name: a.name, role: a.role })),
-      resume: opts.resume,
-      conversationHistory: opts.conversationHistory,
-      browser: this.browserImpl(),
-      images: opts.images,
-      attachments: opts.attachments,
-      // Full-precedence resolution (provider live /models → catalog → name
-      // heuristic) so any vision-capable model actually receives the attached
-      // images instead of having them silently skipped at run time.
-      supportsImages: await resolveImageSupport({
-        providerId: session.provider,
-        model: opts.model ?? session.model,
-        catalog,
-      }),
-      contextWindowTokens,
-      modelCapability,
-      prerequisiteRecovery: { providers: [this.connections.asPrerequisiteProvider()] },
+    const gitu = createGitu(
+      {
+        workspaceRoot: opts.projectPath ?? this.config.cwd,
+        llm: trackedLlm,
+        index,
+        mode: opts.mode,
+        autoApprove: opts.autoApprove,
+        autoLearn: opts.autoLearn,
+        requirePlanReview: opts.review,
+        criteria: opts.criteria,
+        scopeFiles: opts.scope,
+        extraConstraints: opts.constraints,
+        effort: opts.effort,
+        actionProtocolMode: opts.actionProtocolMode,
+        // Full-precedence resolution (provider live /models → catalog → name
+        // heuristic) so any vision-capable model actually receives the attached
+        // images instead of having them silently skipped at run time.
+        supportsImages: await resolveImageSupport({
+          providerId: session.provider,
+          model: opts.model ?? session.model,
+          catalog,
+        }),
+        contextWindowTokens,
+        modelCapability,
+        resume: opts.resume,
+        conversationHistory: opts.conversationHistory,
+        images: opts.images,
+        attachments: opts.attachments,
+      },
+      {
+        skills,
+        mcp,
+        connections: this.connections,
+        lsp,
+        subagents,
+        agents: agentStore,
+        browser: this.browserImpl(),
       universalRegistry,
       connectionContext: () => `${universalCapabilityContext()}\n\n${this.connections.renderForAgent()}`,
       connectionActionHandler: async ({ connectionId, operationId }) => {
@@ -4471,7 +4474,6 @@ export class GituServer {
             }
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
-      requirePlanReview: opts.review ?? true,
       planReviewHandler: (input) =>
         new Promise((resolve) => {
           const waiter: PlanReviewWaiter = {
@@ -4506,7 +4508,8 @@ export class GituServer {
         }
         this.pushEvent(session, text, !text.startsWith('browseshot '));
       },
-    });
+      },
+    );
     activeGitu = gitu;
     session.gitu = gitu;
     // Steered messages that arrived during the prelude (before this attach)

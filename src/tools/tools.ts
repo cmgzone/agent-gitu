@@ -1110,10 +1110,14 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
     const child = execFile(shell, args, execOpts, (err, stdout, stderr) => {
         cancelDeadline();
         ctx.signal?.removeEventListener('abort', cancel);
-        let exitCode = 0;
+        // Only an OS-reported code is a fact. A timeout, a cancellation or a
+        // spawn failure leaves no exit status at all, so the structured field
+        // stays absent instead of inventing one; the legacy text below keeps its
+        // previous display value so existing output is unchanged.
+        let osExitCode: number | undefined;
         if (err) {
           const code = (err as { code?: unknown }).code;
-          exitCode = typeof code === 'number' ? code : 1;
+          osExitCode = typeof code === 'number' ? code : undefined;
         }
         const body = [stdout, stderr].filter(Boolean).join('\n--- stderr ---\n');
         const output = excerpt(body || '(no output)', 4000);
@@ -1121,8 +1125,8 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
           const msg = timedOut ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : ctx.signal?.aborted ? ' (cancelled; process tree terminated)' : '';
           resolve({
             ok: false,
-            exitCode,
-            output: `${output}\n[exit ${exitCode}${msg}]`,
+            ...(osExitCode !== undefined ? { exitCode: osExitCode } : {}),
+            output: `${output}\n[exit ${osExitCode ?? 1}${msg}]`,
             errorSignature: errorSignature(body || err.message),
           });
         } else {
@@ -1130,7 +1134,9 @@ export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>
           if (stderrFailed) {
             resolve({
               ok: false,
-              exitCode: 1,
+              // The process did exit 0; calling this a failure is this layer's
+              // reading of its stderr, so the raw fact is still reported as 0.
+              exitCode: 0,
               output: `${output}\n[exit 0 but stderr indicates failure]`,
               errorSignature: errorSignature(stderr),
             });

@@ -9,6 +9,7 @@ import type { PolicyEngine } from '../policy/policy.js';
 import { InstructionPolicyEngine } from '../policy/instruction-policy.js';
 import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
+import type { CodingEventPayload, CodingEventSink } from '../coding/events.js';
 import type { ActionRecord, MemoryRetrievalContext, ToolResult } from '../types.js';
 import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -96,19 +97,32 @@ export class Executor {
     private readonly backgroundAgentStatus?: BackgroundAgentStatusFn,
     private readonly runtimeCapabilities?: RuntimeCapabilitySupplier,
     private readonly connections?: ConnectionRegistry,
-    options?: { memory?: MemoryStore; memoryContext?: MemoryRetrievalContext; signal?: () => AbortSignal | undefined },
+    options?: {
+      memory?: MemoryStore;
+      memoryContext?: MemoryRetrievalContext;
+      signal?: () => AbortSignal | undefined;
+      /** Typed guarantee events. Each gate reports what it decided, where it
+       *  decided it; the runtime stamps the envelope and owns the cursor. */
+      onCodingEvent?: CodingEventSink;
+    },
   ) {
     this.memory = options?.memory;
     this.memoryContext = options?.memoryContext;
     this.signal = options?.signal;
+    this.onCodingEvent = options?.onCodingEvent;
   }
 
   private readonly memory?: MemoryStore;
   private readonly signal?: () => AbortSignal | undefined;
   private readonly memoryContext?: MemoryRetrievalContext;
+  private readonly onCodingEvent?: CodingEventSink;
 
   private emit(event: string): void {
     this.onEvent?.(event);
+  }
+
+  private emitCoding(event: CodingEventPayload): void {
+    this.onCodingEvent?.(event);
   }
 
   /**
@@ -190,6 +204,7 @@ export class Executor {
         durationMs: Date.now() - started,
       });
       this.emit(`denied   ${summary} (${boundaryMessage})`);
+      this.emitCoding({ type: 'policy_denied', reason: 'project_guard', tool: req.tool, operation: summary, detail: boundaryMessage });
       return { record, result: { ok: false, output: boundaryMessage }, deniedByPolicy: boundaryMessage };
     }
 
@@ -211,6 +226,7 @@ export class Executor {
         durationMs: Date.now() - started,
       });
       this.emit(`denied   ${summary} (${message})`);
+      this.emitCoding({ type: 'policy_denied', reason: 'user_instruction', tool: req.tool, operation: summary, detail: message });
       return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
@@ -234,6 +250,7 @@ export class Executor {
           durationMs: Date.now() - started,
         });
         this.emit(`blocked  ${summary} (repeated skill operation)`);
+        this.emitCoding({ type: 'operation_blocked', reason: 'repeated_skill_operation', tool: req.tool, operation: summary, detail: message });
         return { record, result: { ok: false, output: message, errorSignature: 'skill-operation-repeated' }, blockedByLoop: message };
       }
     }
@@ -246,9 +263,8 @@ export class Executor {
     // LoopDetector is injected at this boundary and older/custom hosts may
     // implement only evaluate(). Keep the cache optimization optional so a
     // newly-added helper cannot crash otherwise valid tool execution.
-    const reusableRead = typeof this.loopDetector.reusableSuccessfulRead === 'function'
-      ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash)
-      : undefined;
+    const reusableRead =
+      typeof this.loopDetector.reusableSuccessfulRead === 'function' ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash) : undefined;
     if (reusableRead) {
       const cached =
         `${CACHED_INVESTIGATION_PREFIX}: ${summary}\n` +
@@ -285,6 +301,7 @@ export class Executor {
         durationMs: Date.now() - started,
       });
       this.emit(`blocked  ${summary} (${loopVerdict.reason ?? 'loop prevention'})`);
+      this.emitCoding({ type: 'operation_blocked', reason: 'loop_detected', tool: req.tool, operation: summary, detail: message });
       return { record, result: { ok: false, output: message }, blockedByLoop: message };
     }
 
@@ -295,8 +312,7 @@ export class Executor {
         const pressure = this.loopDetector.fileEditPressure(this.ledger.data.actions, passedEvidence, file);
         if (pressure.blocked) {
           const message =
-            `EDIT PRESSURE: ${pressure.edits} edits to ${file} with no passing evidence yet. ` +
-            `Run a verification command (test/build/lint/typecheck) before editing further.`;
+            `EDIT PRESSURE: ${pressure.edits} edits to ${file} with no passing evidence yet. ` + `Run a verification command (test/build/lint/typecheck) before editing further.`;
           const record = this.ledger.recordAction({
             stepId,
             tool: req.tool,
@@ -309,6 +325,7 @@ export class Executor {
             durationMs: Date.now() - started,
           });
           this.emit(`blocked  ${summary} (edit pressure)`);
+          this.emitCoding({ type: 'operation_blocked', reason: 'edit_pressure', tool: req.tool, operation: summary, detail: message });
           return { record, result: { ok: false, output: message }, blockedByLoop: message };
         }
       }
@@ -331,10 +348,23 @@ export class Executor {
         durationMs: Date.now() - started,
       });
       this.emit(`denied   ${summary} (${decision.reason})`);
+      this.emitCoding({
+        type: 'policy_denied',
+        // Structural, never parsed out of the reason text: a denial that went
+        // through the approval path is `approval_required`; one refused by tier
+        // policy without consulting approval is `risk_policy`.
+        reason: decision.requiresApproval ? 'approval_required' : 'risk_policy',
+        tool: req.tool,
+        operation: summary,
+        detail: decision.reason,
+      });
       return { record, result: { ok: false, output: message }, deniedByPolicy: message };
     }
 
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
+    // The command lifecycle is emitted natively here, at the dispatch boundary:
+    // the tool reports the execution facts, this layer turns them into events.
+    if (req.tool === 'run_command') this.emitCoding({ type: 'command_started', command: String(req.params['command'] ?? '') });
     const ctx: ToolContext = {
       guard: this.guard,
       cwd: this.guard.lock.repoRoot,
@@ -344,8 +374,18 @@ export class Executor {
         // capabilities are intentionally omitted when no browser bridge was
         // provisioned, so a required browser skill fails closed.
         availableTools: [
-          'read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'web_fetch', 'run_command',
-          'delegate', 'list_skills', 'use_skill', 'use_skill_reference', 'create_skill',
+          'read_file',
+          'write_file',
+          'apply_edit',
+          'list_files',
+          'search_files',
+          'web_fetch',
+          'run_command',
+          'delegate',
+          'list_skills',
+          'use_skill',
+          'use_skill_reference',
+          'create_skill',
           ...(this.browser ? ['browser', 'screenshot'] : []),
         ],
         // Re-evaluate for every action.  Connection setup happens after an
@@ -353,13 +393,7 @@ export class Executor {
         // a valid saved connection look unavailable until the task restarted.
         ...(this.runtimeCapabilities
           ? {
-              availableCapabilities: [
-                ...new Set(
-                  [...this.runtimeCapabilities()]
-                    .map((capability) => String(capability).trim().toLowerCase())
-                    .filter(Boolean),
-                ),
-              ],
+              availableCapabilities: [...new Set([...this.runtimeCapabilities()].map((capability) => String(capability).trim().toLowerCase()).filter(Boolean))],
             }
           : {}),
       },
@@ -514,6 +548,18 @@ export class Executor {
 
     this.emit(`${result.ok ? 'ok       ' : 'error    '} ${summary} (${record.durationMs}ms)`);
     if (result.output) this.emit(`out      ${excerpt(result.output, 900).replace(/\n/g, ' ⏎ ')}`);
+    if (req.tool === 'run_command') {
+      this.emitCoding({
+        type: 'command_finished',
+        command: String(req.params['command'] ?? ''),
+        // `ok` is this layer's interpretation; `exitCode` is the raw fact from
+        // the tool result and is omitted when the process produced no exit
+        // status at all (cancelled before launch, timeout, spawn failure).
+        ok: result.ok,
+        ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+        durationMs: record.durationMs,
+      });
+    }
     return { record, result };
   }
 

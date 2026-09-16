@@ -30,21 +30,8 @@ export { Executor, type ExecuteOutcome, type ExecuteRequest } from './executor/e
 export { ProjectGuard, ProjectGuardError } from './guard/project-guard.js';
 export { TaskLedger } from './ledger/task-ledger.js';
 export { DEFAULT_LOOP_POLICY, LoopDetector, type LoopPolicy, type LoopVerdict } from './loop/loop-detector.js';
-export {
-  OpenAiCompatClient,
-  ScriptedMockLlm,
-  extractJson,
-  type LlmClient,
-  type LlmMessage,
-  LlmError,
-} from './llm/llm.js';
-export {
-  PROVIDERS,
-  ProviderError,
-  resolveLlm,
-  type ProviderSpec,
-  type ResolvedLlm,
-} from './llm/providers.js';
+export { OpenAiCompatClient, ScriptedMockLlm, extractJson, type LlmClient, type LlmMessage, LlmError } from './llm/llm.js';
+export { PROVIDERS, ProviderError, resolveLlm, type ProviderSpec, type ResolvedLlm } from './llm/providers.js';
 export { MemoryStore } from './memory/memory-store.js';
 export {
   ConnectionRegistry,
@@ -123,5 +110,43 @@ export {
   type HermesServerConfig,
   type RunSessionView,
 } from './server/server.js';
+export {
+  CODING_EVENT_TYPES,
+  NATIVE_ONLY_EVENT_TYPES,
+  codingEventType,
+  stampEvent,
+  toCodingEvent,
+  type CodingEvent,
+  type CodingEventEnvelope,
+  type CodingEventPayload,
+  type CodingEventType,
+} from './coding/events.js';
+export {
+  type CodingAgent,
+  type CodingApprovalRequest,
+  type CodingEventListener,
+  type CodingPlanReviewDecision,
+  type CodingPlanReviewRequest,
+  type CodingQuestion,
+  type CodingQuestionsRequest,
+  type CodingRunOptions,
+  type CodingRunResult,
+  type CodingSession,
+  type CodingSessionOptions,
+  type CodingSessionStatus,
+  type CodingSessionView,
+  type CodingUsage,
+} from './coding/contract.js';
+export {
+  MODEL_WORKSPACE_ROOT,
+  describeWorkspace,
+  isLocalWorkspace,
+  normalizeWorkspacePath,
+  workspaceKey,
+  workspacePath,
+  workspaceRepo,
+  type WorkspaceRef,
+} from './coding/workspace.js';
+export { allocateChildBudget, allocatableUsd, budgetExhausted, validateAllocation, type BudgetSpend, type RunBudget } from './coding/budget.js';
 export * from './types.js';
 export { errorSignature, hashParams, normalizeErrorText } from './util.js';

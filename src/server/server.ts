@@ -150,6 +150,27 @@ interface SessionEvent {
   typed?: CodingEvent;
 }
 
+/**
+ * A typed-only stream frame: a native runtime event that has no prose row.
+ *
+ * It deliberately carries no `i`. The client appends a row only when `ev.i`
+ * advances its cursor, so a frame without one is skipped before anything is
+ * rendered or animated — that is what keeps the legacy renderer untouched rather
+ * than merely hidden by its allowlist. `i` is the session row cursor while `seq`
+ * is the runtime log's own counter; reusing one as the other would move the
+ * client's cursor past rows it has not drawn yet, and those rows would be lost.
+ */
+interface NativeEventFrame {
+  /** The log's cursor for this event; `typed.seq` repeats it for readers. */
+  seq: number;
+  /** The log's timestamp, matching the `t` a sibling row carries. */
+  t: string;
+  typed: CodingEvent;
+}
+
+/** What may travel on a session's event stream. */
+type StreamFrame = SessionEvent | NativeEventFrame;
+
 interface RunSession {
   runId: string;
   goal: string;
@@ -173,7 +194,14 @@ interface RunSession {
   fallbackHistory?: string[];
   autoApprove?: boolean;
   events: SessionEvent[];
-  subscribers: Set<(ev: SessionEvent) => void>;
+  /**
+   * Native-only frames, kept so a client that reconnects mid-run still sees the
+   * transitions that have no prose row. In-memory exactly like `events`, and
+   * bounded like the runtime log; durable typed persistence is a schema step of
+   * its own.
+   */
+  nativeFrames: NativeEventFrame[];
+  subscribers: Set<(ev: StreamFrame) => void>;
   approvals: Map<string, ApprovalWaiter>;
   planReview?: PlanReviewWaiter;
   questions?: QuestionsWaiter;
@@ -221,6 +249,8 @@ interface CoworkRequestResolution {
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+/** Matches the runtime log's default retention, so the two stay comparable. */
+const NATIVE_FRAME_CAPACITY = 2_000;
 const MAX_SESSION_FILES_PER_MESSAGE = 8;
 const MAX_SESSION_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
@@ -789,6 +819,10 @@ export class GituServer {
         usage: entry.usage,
         files: entry.files,
         events: Array.isArray(entry.events) ? entry.events : [],
+        // A restart restores prose only: the durable event schema is `(idx, t,
+        // text)`, so typed frames from before it are gone by design. Restoring
+        // them is the persistence step, not this one.
+        nativeFrames: [],
         subscribers: new Set(),
         approvals: new Map(),
       };
@@ -852,6 +886,7 @@ export class GituServer {
       projectPath: root,
       mode: 'standard',
       events: [],
+      nativeFrames: [],
       subscribers: new Set(),
       approvals: new Map(),
       files: [],
@@ -2528,6 +2563,26 @@ export class GituServer {
     for (const send of s.subscribers) send(ev);
   }
 
+  /**
+   * Hand a native-only runtime event to this session's stream.
+   *
+   * Not a `SessionEvent` row: it is not persisted, and it carries no `i`, so the
+   * legacy renderer ignores it entirely. It exists so a consumer that speaks the
+   * typed vocabulary can see the transitions that never had prose —
+   * `command_finished.exitCode` above all, and the approval gate — without a
+   * second SSE channel.
+   *
+   * It is buffered on the session, so it survives a reconnect within this process
+   * and not a restart: restoring it from the store is the durable-persistence
+   * step, which is separate on purpose.
+   */
+  private publishNativeEvent(s: RunSession, event: CodingEvent): void {
+    const frame: NativeEventFrame = { seq: event.seq, t: event.at, typed: event };
+    s.nativeFrames.push(frame);
+    if (s.nativeFrames.length > NATIVE_FRAME_CAPACITY) s.nativeFrames.splice(0, s.nativeFrames.length - NATIVE_FRAME_CAPACITY);
+    for (const send of s.subscribers) send(frame);
+  }
+
   private pushEvent(s: RunSession, text: string, persistDb = true, typed?: CodingEvent): void {
     const prose = text.startsWith('say ') ? text.slice(4) : '';
     if (persistDb && prose.length >= LONG_RESPONSE_DOCUMENT_CHARS) {
@@ -3564,6 +3619,7 @@ export class GituServer {
         mode,
         autoApprove,
         events: [],
+        nativeFrames: [],
         subscribers: new Set(),
         approvals: new Map(),
         files: [],
@@ -3702,7 +3758,12 @@ export class GituServer {
       // Replayed history must render immediately, without replaying typing
       // animations when opening a task or reconnecting its transport.
       for (const ev of session.events) safeWrite(`data: ${JSON.stringify({ ...ev, replay: true })}\n\n`);
-      const send = (ev: SessionEvent): void => {
+      // Native-only frames have no row to be replayed from, so they come back
+      // from the session's own buffer: a client that reconnects mid-run must
+      // still see the command it missed. They carry no `i`, so replaying them
+      // stays silent for the legacy renderer either way.
+      for (const frame of session.nativeFrames) safeWrite(`data: ${JSON.stringify(frame)}\n\n`);
+      const send = (ev: StreamFrame): void => {
         safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       };
       session.subscribers.add(send);
@@ -4391,15 +4452,18 @@ export class GituServer {
         this.pushEvent(session, `approval ${event.approvalId} timed out — denied`);
       }
       // The session stream is a projection of the runtime log, which is the one
-      // record of the run. A row keeps the legacy line verbatim so the UI renders
-      // what it always rendered, and carries the typed event beside it so a card
-      // can stop parsing prose one kind at a time.
+      // record of the run. Every event rides it; only the shape differs.
       //
-      // A native-only transition has no line to project: it stays in the log,
-      // where the consumers that understand it already read it. Inventing prose
-      // for one would put a row on screen that nothing asked for, which is why
-      // this is a filter and not a synthesis.
-      if (event.source === undefined || !isCurrentExecution()) return;
+      // A prose row keeps the legacy line verbatim, so the UI renders what it has
+      // always rendered, and carries the typed event beside it so a card can stop
+      // parsing prose one kind at a time. A native-only transition has no line to
+      // project, so it travels as a typed frame instead: same connection, no row,
+      // and nothing invented for a renderer that has no place to put it.
+      if (!isCurrentExecution()) return;
+      if (event.source === undefined) {
+        this.publishNativeEvent(session, event);
+        return;
+      }
       const ledgerMatch = event.source.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
       if (ledgerMatch) {
         session.taskId = ledgerMatch[1];

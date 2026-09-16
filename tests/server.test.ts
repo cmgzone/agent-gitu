@@ -263,13 +263,17 @@ describe('HermesServer', () => {
     }
     await reader.cancel();
 
-    const rows = raw
+    type Frame = { i?: number; text?: string; typed?: { type: string; source?: string; exitCode?: number } };
+    const frames = raw
       .split('\n\n')
       .map((chunk) => chunk.replace(/^data: /, '').trim())
       .filter((chunk) => chunk.startsWith('{'))
-      .map((chunk) => JSON.parse(chunk) as { text: string; typed?: { type: string; source?: string } });
+      .map((chunk) => JSON.parse(chunk) as Frame);
+    // Rows render; frames are typed-only and must stay invisible to the renderer.
+    const rows = frames.filter((frame): frame is Frame & { text: string } => typeof frame.text === 'string');
+    const nativeFrames = frames.filter((frame) => frame.text === undefined);
 
-    const diagnostics = JSON.stringify(rows.map((row) => [row.text.slice(0, 48), row.typed?.type]));
+    const diagnostics = JSON.stringify(frames.map((frame) => [frame.text?.slice(0, 40) ?? '(frame)', frame.typed?.type]));
 
     // The prose is byte-for-byte what the UI has always received.
     const runRow = rows.find((row) => row.text === 'run      $ node --version — verify');
@@ -288,6 +292,19 @@ describe('HermesServer', () => {
     const evidenceRow = rows.find((row) => row.text.startsWith('evidence ') && row.text.includes('PASS'));
     expect(evidenceRow, diagnostics).toBeTruthy();
     expect(evidenceRow!.typed).toMatchObject({ type: 'evidence_recorded', passed: true });
+
+    // A native-only transition has no prose row, so it travels as a typed frame
+    // on the same connection. This is where `command_finished.exitCode` finally
+    // reaches the wire: the text shim can only recover ok plus a duration, so the
+    // real code exists on the native event alone and must never be parsed back
+    // out of prose.
+    const finishedFrame = nativeFrames.find((frame) => frame.typed?.type === 'command_finished');
+    expect(finishedFrame, diagnostics).toBeTruthy();
+    expect(finishedFrame!.typed).toMatchObject({ type: 'command_finished', ok: true, exitCode: 0 });
+    // No `i` is what keeps it invisible: the client only appends a row when
+    // `ev.i` advances its cursor, so this frame is never passed to the renderer.
+    expect(finishedFrame!.i).toBeUndefined();
+    expect(nativeFrames.some((frame) => frame.typed?.type === 'command_started')).toBe(true);
   }, 30000);
 
   function billingCrashLlm(): ScriptedMockLlm {

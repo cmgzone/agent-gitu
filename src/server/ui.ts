@@ -3915,19 +3915,23 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.typedApprovals = sess.typedApprovals || {};
       sess.typedApprovals[typed.approvalId] = {
         id: typed.approvalId, tool: typed.tool, why: typed.why, summary: typed.summary,
+        requestedAt: typed.requestedAt || frame.t,
       };
     } else if (typed.type === 'approval_resolved') {
       if (sess.typedApprovals) delete sess.typedApprovals[typed.approvalId];
       settled = typed.approvalId;
     } else if (typed.type === 'plan_review_requested') {
       sess.typedPlanReview = {
-        id: typed.requestId, criteria: typed.criteria || [], steps: typed.steps || [], requestedAt: typed.t,
+        id: typed.requestId, criteria: typed.criteria || [], steps: typed.steps || [],
+        // The event's requestedAt is when the agent asked; the frame's transport
+        // stamp only substitutes for a legacy-classified event without one.
+        requestedAt: typed.requestedAt || frame.t,
       };
     } else if (typed.type === 'plan_review_resolved') {
       sess.typedPlanReview = null;
       settled = typed.requestId;
     } else if (typed.type === 'questions_requested') {
-      sess.typedQuestions = { id: typed.requestId, questions: questionDetails(typed), requestedAt: typed.t };
+      sess.typedQuestions = { id: typed.requestId, questions: questionDetails(typed), requestedAt: typed.requestedAt || frame.t };
     } else if (typed.type === 'questions_answered') {
       sess.typedQuestions = null;
       settled = typed.requestId;

@@ -216,7 +216,10 @@ export class GituSessionRuntime {
         });
       });
       pendingApproval = record;
-      log.publishNative({ type: 'approval_required', approvalId, tool: gate.tool, why: gate.why, summary: gate.summary });
+      // The event and the pending record are the same request, so they share one
+      // requestedAt; the envelope's `at` is a publication stamp and can diverge
+      // from it under replay.
+      log.publishNative({ type: 'approval_required', approvalId, tool: gate.tool, why: gate.why, summary: gate.summary, requestedAt: record.requestedAt });
       request.onApprovalRequired?.(record);
       return decided;
     };
@@ -244,7 +247,7 @@ export class GituSessionRuntime {
         });
       });
       pendingPlanReview = record;
-      log.publishNative({ type: 'plan_review_requested', requestId, plan, criteria: input.criteria, steps: input.steps });
+      log.publishNative({ type: 'plan_review_requested', requestId, plan, criteria: input.criteria, steps: input.steps, requestedAt: record.requestedAt });
       request.onPlanReviewRequested?.(record);
       return decided;
     };
@@ -273,6 +276,7 @@ export class GituSessionRuntime {
         requestId,
         questions: questions.map((question) => question.question),
         details: questions,
+        requestedAt: record.requestedAt,
       });
       request.onQuestionsRequested?.(record);
       return decided;

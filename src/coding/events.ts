@@ -118,8 +118,12 @@ export type CodingEventPayload =
     }
   /** The gate's own request, forwarded so a card can render it without reading
    *  the host mirror. `summary` is the detail the requester wants shown; it is
-   *  display payload, never an input to the authorization decision. */
-  | { type: 'approval_required'; approvalId: string; tool?: string; why?: string; summary?: string }
+   *  display payload, never an input to the authorization decision.
+   *  `requestedAt` is when the agent asked, part of the request's meaning; the
+   *  envelope's `at` is a publication stamp and diverges under replay, so a
+   *  consumer that wants request age reads this field and falls back to `at`
+   *  only for an event classified from legacy text. */
+  | { type: 'approval_required'; approvalId: string; tool?: string; why?: string; summary?: string; requestedAt?: string }
   /** Published by whichever surface resolved the request first. Exactly one
    *  approval object exists per session; this is how the other surfaces learn
    *  the request is no longer pending. */
@@ -141,6 +145,7 @@ export type CodingEventPayload =
       plan: string;
       criteria?: string[];
       steps?: { description: string; verification: string }[];
+      requestedAt?: string;
     }
   /** `reason` is the cancellation note when the runtime released the gate, or
    *  'timed out' when the request expired unanswered. */
@@ -156,6 +161,7 @@ export type CodingEventPayload =
       requestId: string;
       questions: string[];
       details?: { question: string; header?: string; options: string[] }[];
+      requestedAt?: string;
     }
   | { type: 'questions_answered'; requestId: string; reason?: string }
   /**

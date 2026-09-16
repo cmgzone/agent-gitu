@@ -88,6 +88,32 @@ describe('typed gate cards', () => {
     expect(merged[0]).toMatchObject({ id: 'appr_1', summary: 'git push --force origin main' });
   });
 
+  it('carries the event requestedAt into card state, falling back to the transport stamp', () => {
+    // A native event carries when the agent asked; only a legacy-classified
+    // event without one borrows the transport timestamp, which diverges under
+    // replay. Cards must surface true request age.
+    const { context, sess } = harness();
+    context.handleTypedFrame(
+      'run1',
+      frame({ type: 'approval_required', approvalId: 'appr_t', tool: 'run_command', why: 'why', requestedAt: '2026-01-01T00:00:00.000Z' }),
+    );
+    expect(context.pendingApprovalsFor(sess, undefined)[0].requestedAt).toBe('2026-01-01T00:00:00.000Z');
+
+    const legacy = harness();
+    legacy.context.handleTypedFrame(
+      'run1',
+      frame({ type: 'approval_required', approvalId: 'appr_l', tool: 'run_command', why: 'why' }, 8),
+    );
+    expect(legacy.context.pendingApprovalsFor(legacy.sess, undefined)[0].requestedAt).toBe('2026-01-01T00:00:00.000Z'); // the frame's t
+
+    const review = harness();
+    review.context.handleTypedFrame(
+      'run1',
+      frame({ type: 'plan_review_requested', requestId: 'pr_t', plan: 'p', requestedAt: '2026-01-02T00:00:00.000Z' }),
+    );
+    expect(review.context.pendingPlanReviewFor(review.sess, undefined)!.requestedAt).toBe('2026-01-02T00:00:00.000Z');
+  });
+
   it('renders the plan review card from the frame and settles it while the mirror lags', () => {
     const { context } = harness();
     context.handleTypedFrame(

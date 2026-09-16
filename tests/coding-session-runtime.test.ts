@@ -267,6 +267,9 @@ describe('GituSessionRuntime approval gate', () => {
     // The gate's own request rides the event, so a card renders it from the one
     // stream instead of reading a host-side mirror of the pending state.
     expect(required).toMatchObject({ tool: 'run_command', why: 'destructive', summary: 'rm -rf build' });
+    // The event and the pending record are one request with one timestamp, so a
+    // card shows true request age instead of a publication stamp.
+    expect(required?.requestedAt).toBe(harness.session.getState().pendingApproval?.requestedAt);
     harness.session.approve(required!.approvalId, true);
     await expect(pending).resolves.toBe(true);
     // A second answer finds no pending approval and does nothing.
@@ -297,6 +300,7 @@ describe('GituSessionRuntime plan review and question gates', () => {
     // agent's own criteria and steps instead of re-parsing the rendered plan.
     expect(requested?.criteria).toEqual(['tests pass']);
     expect(requested?.steps).toEqual([{ description: 'implement', verification: 'npm test' }]);
+    expect(requested?.requestedAt).toBe(harness.session.getState().pendingPlanReview?.requestedAt);
     expect(harness.session.getState().pendingPlanReview?.id).toBe(requested?.requestId);
     harness.session.approvePlan(requested!.requestId, { approved: true });
     await expect(pending).resolves.toMatchObject({ approved: true });
@@ -325,6 +329,7 @@ describe('GituSessionRuntime plan review and question gates', () => {
     // Options ride the event: a question card cannot offer an answer it was
     // never told, and the text projection alone has no options.
     expect(requested?.details).toEqual([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
+    expect(requested?.requestedAt).toBe(harness.session.getState().pendingQuestions?.requestedAt);
     expect(harness.session.getState().pendingQuestions?.id).toBe(requested?.requestId);
     harness.session.answerQuestions(requested!.requestId, 'PostgreSQL');
     await expect(pending).resolves.toBe('PostgreSQL');

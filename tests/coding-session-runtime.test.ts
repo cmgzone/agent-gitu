@@ -37,7 +37,7 @@ function completeReport(goal: string): CompletionReport {
   return { taskId: 't_1', goal, status: 'complete', summary: 'done', changes: [], filesChanged: [], verification: [] };
 }
 
-function makeHarness(options: { report?: CompletionReport; failRun?: Error; approvalTimeoutMs?: number } = {}): Harness {
+function makeHarness(options: { report?: CompletionReport; failRun?: Error; gateTimeoutMs?: number } = {}): Harness {
   const dir = makeProject();
   const engineRequests: GituSessionRequest[] = [];
   const engine = {
@@ -71,7 +71,7 @@ function makeHarness(options: { report?: CompletionReport; failRun?: Error; appr
         connectionRequestHandler: async () => false,
       },
     },
-    approvalTimeoutMs: options.approvalTimeoutMs,
+    gateTimeoutMs: options.gateTimeoutMs,
   });
   return { session, sinks: capturedSinks!, engineRequests, engine };
 }
@@ -100,6 +100,19 @@ describe('GituSessionRuntime lifecycle', () => {
   it('derives the engine cwd from the workspace, never from what the caller guessed', () => {
     const { engineRequests } = makeHarness();
     expect(engineRequests[0]?.engine.options.workspaceRoot).toBe(engineRequests[0]?.workspace.path);
+  });
+
+  it('emits run_started when a run starts, not when the session is created', async () => {
+    const harness = makeHarness();
+    // Creating a session is not starting work: it may sit idle, be resumed, or
+    // be reused. The run lifecycle begins at run().
+    expect(harness.session.events().filter((event) => event.type === 'run_started')).toHaveLength(0);
+    await harness.session.run('Fix the parser');
+    const started = harness.session.events().filter((event) => event.type === 'run_started');
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ goal: 'Fix the parser' });
+    // It precedes the engine's own output, so a consumer sees the boundary first.
+    expect(started[0]?.seq).toBe(1);
   });
 
   it('steers a live run but resumes a settled one', async () => {
@@ -202,11 +215,54 @@ describe('GituSessionRuntime approval gate', () => {
   });
 
   it('times a pending approval out to a denial', async () => {
-    const harness = makeHarness({ approvalTimeoutMs: 20 });
+    const harness = makeHarness({ gateTimeoutMs: 20 });
     const pending = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
     await expect(pending).resolves.toBe(false);
     const resolved = harness.session.events().filter((event) => event.type === 'approval_resolved');
     expect(resolved[0]).toMatchObject({ approved: false, reason: 'timed out' });
+  });
+});
+
+describe('GituSessionRuntime plan review and question gates', () => {
+  it('surfaces a plan review and resolves it as approved', async () => {
+    const harness = makeHarness();
+    const pending = harness.sinks.planReviewHandler({ criteria: ['tests pass'], steps: [{ description: 'implement', verification: 'npm test' }] });
+    const requested = harness.session.events().find((event) => event.type === 'plan_review_requested') as { requestId: string; plan: string } | undefined;
+    expect(requested?.plan).toContain('tests pass');
+    expect(harness.session.getState().pendingPlanReview?.id).toBe(requested?.requestId);
+    harness.session.approvePlan({ approved: true });
+    await expect(pending).resolves.toMatchObject({ approved: true });
+    const resolved = harness.session.events().filter((event) => event.type === 'plan_review_resolved');
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ requestId: requested?.requestId, decision: 'approved' });
+    expect(harness.session.getState().pendingPlanReview).toBeUndefined();
+  });
+
+  it('distinguishes a change request from a bare rejection', async () => {
+    const harness = makeHarness();
+    const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    harness.session.approvePlan({ approved: false, note: 'split the first step' });
+    await expect(pending).resolves.toMatchObject({ approved: false, note: 'split the first step' });
+    expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'changes_requested' });
+  });
+
+  it('surfaces questions and answers them', async () => {
+    const harness = makeHarness();
+    const pending = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
+    const requested = harness.session.events().find((event) => event.type === 'questions_requested') as { requestId: string; questions: string[] } | undefined;
+    expect(requested?.questions).toEqual(['Which database?']);
+    expect(harness.session.getState().pendingQuestions?.id).toBe(requested?.requestId);
+    harness.session.answerQuestions('PostgreSQL');
+    await expect(pending).resolves.toBe('PostgreSQL');
+    expect(harness.session.events().filter((event) => event.type === 'questions_answered')).toHaveLength(1);
+    expect(harness.session.getState().pendingQuestions).toBeUndefined();
+  });
+
+  it('fails a plan review closed when nobody answers', async () => {
+    const harness = makeHarness({ gateTimeoutMs: 20 });
+    const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    await expect(pending).resolves.toMatchObject({ approved: false, note: 'Plan review timed out.' });
+    expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'rejected' });
   });
 });
 
@@ -247,6 +303,10 @@ describe('GituSessionRuntime end to end through the real engine', () => {
 
     expect(result.status).toBe('blocked');
     expect(session.getState().status).toBe('blocked');
+    // The run lifecycle boundary is the runtime's, published at run-time.
+    const runStarted = session.events().filter((event) => event.type === 'run_started');
+    expect(runStarted).toHaveLength(1);
+    expect(runStarted[0]).toMatchObject({ goal: 'Check the Node runtime version' });
     const started = session.events().filter((event) => event.type === 'command_started');
     const finished = session.events().filter((event) => event.type === 'command_finished');
     // Exactly one lifecycle per command: the native event is authoritative and

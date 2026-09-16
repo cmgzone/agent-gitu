@@ -70,6 +70,10 @@ export type OperationBlockReason = 'loop_detected' | 'repeated_skill_operation' 
 /** Why a checkpoint was rolled back. */
 export type CheckpointRestoreReason = 'recovery' | 'verification_failure' | 'user_request' | 'specialist_failure' | 'other';
 
+/** How a plan review was settled. A refusal carrying a note is a request for
+ *  changes — Gitu replans rather than aborting — so it is not a bare rejection. */
+export type PlanReviewDecision = 'approved' | 'rejected' | 'changes_requested';
+
 export type CodingEventPayload =
   | { type: 'run_started'; goal: string; workspace?: string }
   | { type: 'plan_created'; steps: number }
@@ -106,6 +110,23 @@ export type CodingEventPayload =
    *  approval object exists per session; this is how the other surfaces learn
    *  the request is no longer pending. */
   | { type: 'approval_resolved'; approvalId?: string; approved: boolean; tool?: string; reason?: string }
+  /**
+   * Plan review, owned by the runtime like the approval gate. The runtime holds
+   * the pending request and its resolution state; Gitu Workspace, Cowork and
+   * Telegram are views onto it, and the first surface to answer wins.
+   *
+   * `plan` is the rendered plan for display; the structured criteria and steps
+   * live on the pending request a surface reads from session state.
+   */
+  | { type: 'plan_review_requested'; requestId: string; plan: string }
+  | { type: 'plan_review_resolved'; requestId: string; decision: PlanReviewDecision }
+  /**
+   * Clarification questions, owned by the runtime on the same terms. The
+   * structured questions (with their options) live on the pending request;
+   * this carries the question texts so a log stays readable.
+   */
+  | { type: 'questions_requested'; requestId: string; questions: string[] }
+  | { type: 'questions_answered'; requestId: string }
   /**
    * A control system refused an operation. These are the strongest signals in
    * the stream — evidence that the guard, the policy engine or a user
@@ -159,6 +180,10 @@ export const CODING_EVENT_TYPES = [
   'test_finished',
   'approval_required',
   'approval_resolved',
+  'plan_review_requested',
+  'plan_review_resolved',
+  'questions_requested',
+  'questions_answered',
   'policy_denied',
   'operation_blocked',
   'evidence_recorded',
@@ -189,6 +214,10 @@ export const NATIVE_ONLY_EVENT_TYPES = [
   'test_finished',
   'checkpoint_created',
   'checkpoint_restored',
+  'plan_review_requested',
+  'plan_review_resolved',
+  'questions_requested',
+  'questions_answered',
   'policy_denied',
   'operation_blocked',
 ] as const satisfies readonly CodingEventType[];

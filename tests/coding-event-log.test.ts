@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CodingEventLog, NATIVELY_EMITTED_EVENT_TYPES } from '../src/coding/event-log.js';
-import { NATIVE_ONLY_EVENT_TYPES } from '../src/coding/events.js';
+import type { CodingEventType } from '../src/coding/events.js';
+import { NATIVE_ONLY_EVENT_TYPES, toCodingEvent } from '../src/coding/events.js';
 
 describe('CodingEventLog envelopes', () => {
   it('stamps a monotonic cursor on everything it publishes', () => {
@@ -87,6 +88,13 @@ describe('CodingEventLog replay and subscription', () => {
 });
 
 describe('dedup set coherence', () => {
+  const SHIM_DERIVABLE: Partial<Record<CodingEventType, string>> = {
+    command_started: 'run      $ npm test',
+    command_finished: 'ok       $ npm test (10ms)',
+    approval_required: 'approval-required appr_1 [run_command] destructive',
+    approval_resolved: 'approval GRANTED for run_command (ok)',
+  };
+
   it('is a different set from the shim-gap list, and the overlap is the point', () => {
     // `command_started` has a native emitter AND a legacy line that describes
     // it. That overlap is exactly what the suppression rule exists for; the
@@ -95,5 +103,16 @@ describe('dedup set coherence', () => {
     expect(NATIVE_ONLY_EVENT_TYPES).not.toContain('command_started');
     expect(NATIVE_ONLY_EVENT_TYPES).toContain('checkpoint_created');
     expect(NATIVELY_EMITTED_EVENT_TYPES).not.toContain('checkpoint_created');
+  });
+
+  it('classifies every natively-emitted kind as shim-derivable or native-only — never unaccounted for', () => {
+    // The migration invariant: a kind that is natively emitted but neither
+    // derivable from legacy text nor declared native-only has no story for how
+    // its legacy lines are handled, which is how duplicate events are born.
+    for (const kind of NATIVELY_EMITTED_EVENT_TYPES) {
+      const line = SHIM_DERIVABLE[kind];
+      if (line) expect(toCodingEvent(line).type).toBe(kind);
+      else expect(NATIVE_ONLY_EVENT_TYPES).toContain(kind);
+    }
   });
 });

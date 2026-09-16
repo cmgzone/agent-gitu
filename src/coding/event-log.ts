@@ -21,7 +21,19 @@ import { codingEventType, stampEvent, toCodingEvent } from './events.js';
  * rule would silently discard real events. As native coverage grows this set
  * grows with it, until the shim has nothing left to publish.
  */
-export const NATIVELY_EMITTED_EVENT_TYPES = ['policy_denied', 'operation_blocked', 'command_started', 'command_finished'] as const satisfies readonly CodingEventType[];
+export const NATIVELY_EMITTED_EVENT_TYPES = [
+  'policy_denied',
+  'operation_blocked',
+  'command_started',
+  'command_finished',
+  'run_started',
+  'approval_required',
+  'approval_resolved',
+  'plan_review_requested',
+  'plan_review_resolved',
+  'questions_requested',
+  'questions_answered',
+] as const satisfies readonly CodingEventType[];
 
 export interface CodingEventLogOptions {
   /** Override the dedup set. Defaults to `NATIVELY_EMITTED_EVENT_TYPES`. */

@@ -665,8 +665,12 @@ export class GituServer {
    */
   private detachRun(session: RunSession, reason: string): void {
     const gitu = session.gitu;
+    const runtime = session.runtime;
     const lsp = session.lsp;
     session.gitu = undefined;
+    // The engine and its runtime are one generation: detaching one detaches
+    // both, so a stale runtime can never answer for a run that is no longer live.
+    session.runtime = undefined;
     session.lsp = undefined;
     gitu?.stop();
     void lsp?.shutdown().catch(() => {});
@@ -679,8 +683,9 @@ export class GituServer {
     const planReview = session.planReview;
     session.planReview = undefined;
     planReview?.resolve({ approved: false, note: `${reason}.` });
-    for (const approval of session.approvals.values()) approval.resolve(false);
-    session.approvals.clear();
+    // The runtime owns its gates, so cancellation releases the approval gate and
+    // clears its timer in one step. This path no longer knows how an approval ends.
+    void runtime?.cancel(reason);
   }
 
   async start(): Promise<number> {
@@ -2375,6 +2380,14 @@ export class GituServer {
     };
   }
 
+  /**
+   * Drop stale pending input while the run keeps going.
+   *
+   * This is deliberately NOT `cancel`: a reply or correction supersedes a
+   * question, plan review or approval, but the run itself was not stopped. The
+   * runtime settles the approval gate it owns; plan review, questions and the
+   * connection request are not runtime-owned yet and are still released here.
+   */
   private releasePendingInput(session: RunSession, note: string): void {
     const question = session.questions;
     session.questions = undefined;
@@ -2385,16 +2398,21 @@ export class GituServer {
     const plan = session.planReview;
     session.planReview = undefined;
     plan?.resolve({ approved: false, note });
-    for (const approval of session.approvals.values()) approval.resolve(false);
-    session.approvals.clear();
+    session.runtime?.releasePendingGates(note);
   }
 
   private requestChatCredential(session: RunSession, input: ReturnType<typeof credentialChatInput>): Promise<boolean> {
     const previous = session.connection?.requirement;
+    const pauseNote = 'Paused for secure connection setup.';
     const gitu = session.gitu;
+    const runtime = session.runtime;
     session.gitu = undefined;
+    session.runtime = undefined;
     gitu?.stop();
-    this.releasePendingInput(session, 'Paused for secure connection setup.');
+    // Pausing ends this generation, so the runtime settles the approval gate it
+    // owns instead of leaving it pending behind a stopped engine.
+    void runtime?.cancel(pauseNote);
+    this.releasePendingInput(session, pauseNote);
     session.queuedUserMessages = [];
     session.status = 'blocked';
     session.error = undefined;
@@ -3817,8 +3835,12 @@ export class GituServer {
       // a moment to honour cancellation; without this, its late completion
       // can overwrite the user-visible stopped state or keep emitting output.
       const gitu = session.gitu;
+      const runtime = session.runtime;
       const lsp = session.lsp;
       session.gitu = undefined;
+      // Same generation rule as detachRun: never leave a runtime behind that
+      // could resolve a gate for a run the user has stopped.
+      session.runtime = undefined;
       session.lsp = undefined;
       gitu?.stop();
       lsp?.shutdown().catch(() => {});
@@ -3842,8 +3864,9 @@ export class GituServer {
       const planReview = session.planReview;
       session.planReview = undefined;
       planReview?.resolve({ approved: false, note: 'Stopped by user.' });
-      for (const approval of session.approvals.values()) approval.resolve(false);
-      session.approvals.clear();
+      // The runtime owns its gates: cancelling it releases the pending approval
+      // and its timer, so stopping a run no longer restates how approvals end.
+      void runtime?.cancel('Stopped by user.');
 
       this.pushEvent(session, 'stopped by user');
       this.sendJson(res, 200, { ok: true });
@@ -4621,6 +4644,8 @@ export class GituServer {
         session.error = undefined;
         session.finishedAt = undefined;
         session.gitu = undefined;
+        // The continuation attaches its own runtime; this one's run is over.
+        session.runtime = undefined;
         void this.executeRun(session, llm, {
           goal: session.goal,
           mode: session.mode ?? 'standard',
@@ -4670,6 +4695,7 @@ export class GituServer {
             // Detach the old execution before starting the resume. Its finally
             // block then becomes a no-op and cannot overwrite the new state.
             session.gitu = undefined;
+            session.runtime = undefined;
             void this.executeRun(session, next.client, {
               ...opts,
               projectPath: root,

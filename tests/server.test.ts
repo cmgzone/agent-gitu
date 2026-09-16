@@ -741,6 +741,51 @@ describe('HermesServer', () => {
     expect(deniedActions.length).toBe(1);
   }, 30000);
 
+  it('releases a pending approval when the run is stopped', async () => {
+    // Stopping must not leave an approval for a dead run: the runtime releases
+    // the gate, the run exits, and the mirror stops offering an id that nothing
+    // can answer any more.
+    const dir = makeProject('approval-stop');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['cleanup done'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'dangerous cleanup', verification: 'n/a' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped before deciding' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Force push cleanup', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+
+    const waiting = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingApprovals.length > 0 ? s : undefined;
+    });
+    const approvalId = waiting.pendingApprovals[0].id;
+
+    const stop = await fetch(`${base}/api/runs/${created.runId}/stop`, { method: 'POST' }).then((r) => r.json());
+    expect(stop.ok).toBe(true);
+
+    // The runtime settled its gate, so the mirror has nothing left to show.
+    const stopped = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(stopped.status).toBe('blocked');
+    expect(stopped.pendingApprovals).toHaveLength(0);
+
+    // No second resolver survives for the stopped run's approval.
+    const late = await fetch(`${base}/api/approvals/${approvalId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(late.status).toBe(404);
+  }, 30000);
+
   it('pauses for plan review over HTTP and builds after approval', async () => {
     const dir = makeProject('planreview');
     const llm = new ScriptedMockLlm([

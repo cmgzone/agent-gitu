@@ -162,6 +162,45 @@ describe('GituSessionRuntime lifecycle', () => {
     expect(stopped).toBe(true);
   });
 
+  it('releases every pending gate without cancelling the run', async () => {
+    // A reply that supersedes a pending request clears the request but leaves
+    // the work alone. That is a different thing from cancel, which stops the
+    // engine too — so it is a different method rather than a flag on that one.
+    const harness = makeHarness({ startRun: true });
+    let stopped = false;
+    harness.engine.stop = () => {
+      stopped = true;
+    };
+    const approval = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
+    const plan = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    const questions = harness.sinks.askUserHandler([{ question: 'Which database?', options: [] }]);
+
+    harness.session.releasePendingGates('superseded by the user reply');
+
+    await expect(approval).resolves.toBe(false);
+    await expect(plan).resolves.toMatchObject({ approved: false });
+    // Questions keep their documented behaviour: unanswered means defaults.
+    await expect(questions).resolves.toBe('(no answer — proceed with reasonable defaults)');
+
+    expect(stopped).toBe(false);
+    const view = harness.session.getState();
+    expect(view.pendingApproval).toBeUndefined();
+    expect(view.pendingPlanReview).toBeUndefined();
+    expect(view.pendingQuestions).toBeUndefined();
+    // Only cancel reports a stop, and this path must never imply one.
+    expect(harness.session.events().filter((event) => event.type === 'log' && event.text.includes('stop requested'))).toHaveLength(0);
+
+    // The run was left to finish under its own power rather than torn down.
+    expect(view.status).toBe('completed');
+
+    // And the session is still usable: releasing gates is not teardown.
+    const next = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf dist' });
+    const required = harness.session.getState().pendingApproval;
+    expect(required).toBeTruthy();
+    harness.session.approve(required!.id, true);
+    await expect(next).resolves.toBe(true);
+  });
+
   it('refuses a workspace it has no transport for', () => {
     const runtime = new GituSessionRuntime();
     expect(() =>

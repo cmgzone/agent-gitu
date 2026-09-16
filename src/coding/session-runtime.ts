@@ -388,6 +388,11 @@ export class GituSessionRuntime {
         currentEngine?.stop();
         if (status === 'running') log.publishNative({ type: 'log', text: `stop requested — ${note}` });
       },
+      releasePendingGates: (reason) => {
+        // The same release `cancel` performs, minus the engine stop: the run
+        // keeps going and only the stale request stops waiting.
+        releaseGates(reason);
+      },
       approve: (approvalId, approved) => {
         const entry = pendingApprovals.get(approvalId);
         if (!entry) return;

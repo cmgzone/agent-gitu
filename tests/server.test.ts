@@ -720,6 +720,16 @@ describe('HermesServer', () => {
     }).then((r) => r.json());
     expect(denied.ok).toBe(true);
 
+    // The runtime owns resolution, so the approval is settled once and for all:
+    // a later surface asking to grant it must learn it is gone rather than
+    // reaching a second promise that could disagree with the recorded denial.
+    const replay = await fetch(`${base}/api/approvals/${approvalId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(replay.status).toBe(404);
+
     const finished = await waitFor(async () => {
       const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
       return s.status !== 'running' ? s : undefined;

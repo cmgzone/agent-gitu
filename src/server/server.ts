@@ -5,7 +5,7 @@ import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
-import { GituSessionRuntime } from '../coding/session-runtime.js';
+import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -159,6 +159,9 @@ interface RunSession {
   questions?: QuestionsWaiter;
   connection?: ConnectionWaiter;
   gitu?: InstanceType<typeof Gitu>;
+  /** The runtime session that owns this run's gates. Set with `gitu` so it
+   *  shares its staleness rules, and cleared when the run it belongs to ends. */
+  runtime?: GituCodingSession;
   /** LSP servers are kept alive for the whole session (across continuations). */
   lsp?: LspManager;
   report?: CompletionReport;
@@ -4177,16 +4180,21 @@ export class GituServer {
     const approvalMatch = path.match(/^\/api\/approvals\/([\w-]+)$/);
     if (method === 'POST' && approvalMatch) {
       const body = await this.readBody(req);
+      const approvalId = approvalMatch[1]!;
+      const approved = body['approved'] === true;
       for (const session of this.sessions.values()) {
-        const waiter = session.approvals.get(approvalMatch[1]!);
-        if (waiter) {
-          session.approvals.delete(approvalMatch[1]!);
-          const approved = body['approved'] === true;
-          this.pushEvent(session, `approval ${approved ? 'GRANTED' : 'DENIED'} for ${waiter.tool} (${waiter.why})`);
-          waiter.resolve(approved);
-          this.sendJson(res, 200, { ok: true, approved });
-          return;
-        }
+        // The mirror locates the owning session and supplies the wording; the
+        // runtime is what decides. The endpoint therefore resolves the runtime
+        // directly and never writes to the mirror: the mirror is a view of
+        // runtime state, reconciled by the subscription, so the resolution it
+        // shows comes from the runtime rather than from this handler.
+        const waiter = session.approvals.get(approvalId);
+        const runtime = session.runtime;
+        if (!waiter || !runtime) continue;
+        this.pushEvent(session, `approval ${approved ? 'GRANTED' : 'DENIED'} for ${waiter.tool} (${waiter.why})`);
+        runtime.approve(approvalId, approved);
+        this.sendJson(res, 200, { ok: true, approved });
+        return;
       }
       this.sendJson(res, 404, { error: 'approval not found or already resolved' });
       return;
@@ -4312,8 +4320,12 @@ export class GituServer {
      * Reconciled from runtime state, never from an event payload: another
      * surface (Cowork, the CLI) may already have resolved the approval before
      * this process observed the transition, so the runtime's current state —
-     * not its event history — is what the mirror shows. The mirrored entry
-     * carries the answer; the runtime decides it.
+     * not its event history — is what the mirror shows.
+     *
+     * `resolve` is reached only by teardown (detach, stop, pause) while those
+     * paths still release gates by hand. The HTTP endpoint resolves the runtime
+     * directly, so this is a second door onto the same single promise, never a
+     * second promise.
      */
     const syncApprovalMirror = (): void => {
       const pending = runtimeSession.getState().pendingApproval;
@@ -4566,6 +4578,7 @@ export class GituServer {
     );
     activeGitu = gitu;
     session.gitu = gitu;
+    session.runtime = runtimeSession;
     // Steered messages that arrived during the prelude (before this attach)
     // are buffered on the session — deliver them now so they are not lost.
     const buffered = session.pendingSteer;
@@ -4683,6 +4696,9 @@ export class GituServer {
       );
     } finally {
       if (!isCurrentExecution()) return;
+      // Stop holding a runtime session whose run is over. A superseded run keeps
+      // its replacement's runtime instead, exactly as it keeps its engine.
+      if (session.runtime === runtimeSession) session.runtime = undefined;
       session.finishedAt = nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       this.saveRegistry();

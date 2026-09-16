@@ -110,6 +110,21 @@ function defaultCreateEngine(request: GituSessionRequest, options: GituFactoryOp
   });
 }
 
+/**
+ * A Gitu session, plus the runtime-owned gate handlers.
+ *
+ * Transitional (step 4): a host that still constructs its own engine — as
+ * GituServer does while its run loop is being migrated — wires `gates` into that
+ * engine so the gate *decision path* is runtime-owned, while the host keeps
+ * mirroring visible state for its existing endpoints and UI.
+ *
+ * This accessor disappears once the host runs through `run()`, because then the
+ * runtime builds the engine itself and no host should be holding these.
+ */
+export interface GituCodingSession extends CodingSession {
+  readonly gates: Pick<EngineSinks, 'approvalHandler' | 'planReviewHandler' | 'askUserHandler'>;
+}
+
 export class GituSessionRuntime {
   private readonly createEngine: NonNullable<GituSessionRuntimeOptions['createEngine']>;
 
@@ -117,7 +132,7 @@ export class GituSessionRuntime {
     this.createEngine = options.createEngine ?? defaultCreateEngine;
   }
 
-  createSession(request: GituSessionRequest): CodingSession {
+  createSession(request: GituSessionRequest): GituCodingSession {
     // A container or remote workspace needs a transport this runtime does not
     // have yet. Refusing loudly beats silently running against the wrong cwd.
     if (!isLocalWorkspace(request.workspace)) {
@@ -377,6 +392,7 @@ export class GituSessionRuntime {
       },
       events: (sinceSeq) => log.events(sinceSeq),
       subscribe: (listener: CodingEventListener) => log.subscribe(listener),
+      gates: { approvalHandler, planReviewHandler, askUserHandler },
     };
   }
 }

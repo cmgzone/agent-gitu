@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Gitu } from '../src/agent/gitu.js';
 import type { CodingRunResult, CodingSession } from '../src/coding/contract.js';
-import { GituSessionRuntime, type GituSessionRequest } from '../src/coding/session-runtime.js';
+import { GituSessionRuntime, type GituCodingSession, type GituSessionRequest } from '../src/coding/session-runtime.js';
 import type { GituFactoryOptions } from '../src/coding/gitu-factory.js';
 import { ConnectionRegistry } from '../src/connections/connections.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
@@ -29,6 +29,7 @@ function makeProject(): string {
 
 interface Harness {
   session: CodingSession;
+  gates: GituCodingSession['gates'];
   sinks: { onEvent: (line: string) => void; onCodingEvent: (event: any) => void; approvalHandler: any; planReviewHandler: any; askUserHandler: any };
   engineRequests: { request: GituSessionRequest; options: GituFactoryOptions }[];
   engine: any;
@@ -78,7 +79,7 @@ function makeHarness(options: { report?: CompletionReport; failRun?: Error; gate
   // built — which now happens per run. So gate/stream tests opt into starting
   // one, and it must happen before the harness literal reads the sink reference.
   if (options.startRun) void session.run('Fix the parser');
-  return { session, sinks: capturedSinks!, engineRequests, engine };
+  return { session, gates: session.gates, sinks: capturedSinks!, engineRequests, engine };
 }
 
 describe('GituSessionRuntime lifecycle', () => {
@@ -306,6 +307,32 @@ describe('GituSessionRuntime plan review and question gates', () => {
     expect(kinds).toContain('approval_resolved');
     expect(kinds).toContain('plan_review_resolved');
     expect(kinds).toContain('questions_answered');
+  });
+});
+
+describe('GituCodingSession.gates — the transitional seam', () => {
+  it('exposes the same gate the runtime resolves, not a copy', async () => {
+    // Step 4: a host that still builds its own engine wires these handlers in so
+    // the gate DECISION path is runtime-owned. The property that matters is that
+    // resolution still lands in the runtime's registry — an exposed wrapper that
+    // kept its own state would silently become a second authority.
+    const harness = makeHarness();
+    expect(typeof harness.gates.approvalHandler).toBe('function');
+    expect(typeof harness.gates.planReviewHandler).toBe('function');
+    expect(typeof harness.gates.askUserHandler).toBe('function');
+
+    const decided = harness.gates.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
+    const required = harness.session.events().find((event) => event.type === 'approval_required') as { approvalId: string } | undefined;
+    expect(required?.approvalId).toBeTruthy();
+    harness.session.approve(required!.approvalId, true);
+    await expect(decided).resolves.toBe(true);
+  });
+
+  it('is the identical handler the runtime hands to its own engine', () => {
+    const harness = makeHarness({ startRun: true });
+    expect(harness.sinks.approvalHandler).toBe(harness.gates.approvalHandler);
+    expect(harness.sinks.planReviewHandler).toBe(harness.gates.planReviewHandler);
+    expect(harness.sinks.askUserHandler).toBe(harness.gates.askUserHandler);
   });
 });
 

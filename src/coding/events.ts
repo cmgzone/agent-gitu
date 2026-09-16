@@ -26,6 +26,17 @@ export interface CodingEventEnvelope {
   seq: number;
   /** ISO timestamp of first publication. */
   at: string;
+  /**
+   * The legacy prose line this event was classified from, verbatim.
+   *
+   * Only legacy-published events carry it; a native emitter reports a transition
+   * and has no line to point at. It exists so a host can keep projecting the
+   * stream a UI already renders — `run      $ npm test` classified to
+   * `command_started` no longer holds its own wording otherwise, and a surface
+   * that has not adopted the typed vocabulary would silently lose the line.
+   * It is a projection aid, not part of the event's meaning.
+   */
+  source?: string;
 }
 
 /**

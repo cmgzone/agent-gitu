@@ -218,6 +218,78 @@ describe('HermesServer', () => {
     await streamRes.body?.cancel();
   }, 30000);
 
+  it('projects the runtime log into the session stream with the typed event attached', async () => {
+    // The run's events are the runtime log, and the session stream is a
+    // projection of it: each row keeps the legacy line the UI renders and
+    // carries the transition the runtime classified it as, so a card can stop
+    // parsing prose without the stream changing shape underneath it.
+    const dir = makeProject('projection');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'verified' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'verify node', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+
+    // The stream replays the session's rows, so the projection can be read back
+    // without racing a live run.
+    const res = await fetch(`${base}/api/runs/${created.runId}/stream`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = '';
+    // The replay is written in one burst and the connection then stays open for
+    // live events, so a read past the burst blocks until the next heartbeat.
+    // Bound each read and stop at the first gap instead of waiting one out.
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const chunk = await Promise.race([reader.read(), new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500))]);
+      if (!chunk?.value) break;
+      raw += decoder.decode(chunk.value, { stream: true });
+    }
+    await reader.cancel();
+
+    const rows = raw
+      .split('\n\n')
+      .map((chunk) => chunk.replace(/^data: /, '').trim())
+      .filter((chunk) => chunk.startsWith('{'))
+      .map((chunk) => JSON.parse(chunk) as { text: string; typed?: { type: string; source?: string } });
+
+    const diagnostics = JSON.stringify(rows.map((row) => [row.text.slice(0, 48), row.typed?.type]));
+
+    // The prose is byte-for-byte what the UI has always received.
+    const runRow = rows.find((row) => row.text === 'run      $ node --version — verify');
+    expect(runRow, diagnostics).toBeTruthy();
+    // A command's transition is owned natively, so the log demotes this line —
+    // the row is prose and the one typed lifecycle event for the command stays
+    // in the log rather than being restated here.
+    expect(runRow!.typed).toMatchObject({ type: 'log', source: 'run      $ node --version — verify' });
+
+    // A kind no native emitter owns keeps its classification on the row, which
+    // is what lets a card migrate off parsing prose, one kind at a time.
+    const planRow = rows.find((row) => /^plan\s+1 steps$/.test(row.text));
+    expect(planRow, diagnostics).toBeTruthy();
+    expect(planRow!.typed).toMatchObject({ type: 'plan_created', steps: 1 });
+
+    const evidenceRow = rows.find((row) => row.text.startsWith('evidence ') && row.text.includes('PASS'));
+    expect(evidenceRow, diagnostics).toBeTruthy();
+    expect(evidenceRow!.typed).toMatchObject({ type: 'evidence_recorded', passed: true });
+  }, 30000);
+
   function billingCrashLlm(): ScriptedMockLlm {
     const boom = () => {
       throw new Error('LLM HTTP 401 (no credits): Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_x/billing — this is a paid model; add credits or subscribe to use it');

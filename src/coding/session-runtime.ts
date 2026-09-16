@@ -91,7 +91,7 @@ export interface GituSessionRequest {
  * gates and stream. Every entry here is a transition the runtime publishes
  * natively, which is why a caller cannot supply any of them.
  */
-interface EngineSinks {
+export interface EngineSinks {
   onEvent: (line: string) => void;
   onCodingEvent: (event: CodingEventPayload) => void;
   approvalHandler: ApprovalHandler;
@@ -149,6 +149,16 @@ function defaultCreateEngine(request: GituSessionRequest, options: GituFactoryOp
  */
 export interface GituCodingSession extends CodingSession {
   readonly gates: Pick<EngineSinks, 'approvalHandler' | 'planReviewHandler' | 'askUserHandler'>;
+  /**
+   * The runtime's own event sinks, for the same transitional reason as `gates`.
+   *
+   * A host that still builds its own engine must report through these rather
+   * than through a private stream of its own: they are what makes the runtime's
+   * log the single record of a run, with the legacy text shimmed and native
+   * events collected in one place. `onEvent` takes a legacy prose line,
+   * `onCodingEvent` a typed payload from a subsystem that reports natively.
+   */
+  readonly sinks: Pick<EngineSinks, 'onEvent' | 'onCodingEvent'>;
 }
 
 export class GituSessionRuntime {
@@ -427,6 +437,7 @@ export class GituSessionRuntime {
       events: (sinceSeq) => log.events(sinceSeq),
       subscribe: (listener: CodingEventListener) => log.subscribe(listener),
       gates: { approvalHandler, planReviewHandler, askUserHandler },
+      sinks: { onEvent: sinks.onEvent, onCodingEvent: sinks.onCodingEvent },
     };
   }
 }

@@ -81,8 +81,11 @@ export class CodingEventLog {
    */
   publishLegacy(line: string): CodingEvent {
     const payload = toCodingEvent(line);
-    if (this.nativeTypes.has(codingEventType(payload))) return this.append({ type: 'log', text: line.trim() });
-    return this.append(payload);
+    // The line is retained on both paths. A classified event still has to be
+    // able to hand a prose consumer the words it was derived from, and the
+    // demoted case keeps it so a projection reads one field either way.
+    if (this.nativeTypes.has(codingEventType(payload))) return this.append({ type: 'log', text: line.trim() }, line);
+    return this.append(payload, line);
   }
 
   /** Replay from `sinceSeq` (exclusive). Absent means the whole retained log. */
@@ -100,9 +103,9 @@ export class CodingEventLog {
     return this.log.length;
   }
 
-  private append(payload: CodingEventPayload): CodingEvent {
+  private append(payload: CodingEventPayload, source?: string): CodingEvent {
     this.seq += 1;
-    const event = stampEvent(payload, this.seq);
+    const event: CodingEvent = source === undefined ? stampEvent(payload, this.seq) : { ...stampEvent(payload, this.seq), source };
     this.log.push(event);
     if (this.log.length > this.capacity) this.log.splice(0, this.log.length - this.capacity);
     for (const listener of this.subscribers) listener(event);

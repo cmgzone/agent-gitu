@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
+import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -130,6 +131,25 @@ export interface RunSessionView {
   files: SessionFileView[];
 }
 
+/**
+ * One row of the session event stream.
+ *
+ * `text` stays the notation the UI already renders. `typed` is the runtime's
+ * classification of the same transition, attached so a card can migrate off
+ * parsing prose without the stream changing shape.
+ */
+interface SessionEvent {
+  i: number;
+  t: string;
+  text: string;
+  /**
+   * Live rows carry this; rows restored from the store do not, because the
+   * durable schema is `(idx, t, text)`. A card that migrates onto `typed` must
+   * therefore keep its prose fallback until the schema moves with it.
+   */
+  typed?: CodingEvent;
+}
+
 interface RunSession {
   runId: string;
   goal: string;
@@ -152,8 +172,8 @@ interface RunSession {
   /** Bound retry/fallback history for the live run; values are provider::model, never credentials. */
   fallbackHistory?: string[];
   autoApprove?: boolean;
-  events: { i: number; t: string; text: string }[];
-  subscribers: Set<(ev: { i: number; t: string; text: string }) => void>;
+  events: SessionEvent[];
+  subscribers: Set<(ev: SessionEvent) => void>;
   approvals: Map<string, ApprovalWaiter>;
   planReview?: PlanReviewWaiter;
   questions?: QuestionsWaiter;
@@ -2487,7 +2507,7 @@ export class GituServer {
     }
   }
 
-  private recordEvent(s: RunSession, text: string, persistDb = true): void {
+  private recordEvent(s: RunSession, text: string, persistDb = true, typed?: CodingEvent): void {
     const memoryKey = memoryPatternNoticeKey(text);
     if (memoryKey && s.events.some((event) => memoryPatternNoticeKey(event.text) === memoryKey)) return;
     // Streaming deltas are intentionally not persisted.  After a restart the
@@ -2495,7 +2515,7 @@ export class GituServer {
     // cursor: reusing it can overwrite an old persisted event (including a
     // user message) and make the SSE client skip it.  Keep event ids strictly
     // monotonic from the highest known id instead.
-    const ev = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text };
+    const ev: SessionEvent = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text, ...(typed ? { typed } : {}) };
     s.events.push(ev);
     if (persistDb && !text.startsWith('tdelta') && !text.startsWith('activity')) {
       try {
@@ -2508,7 +2528,7 @@ export class GituServer {
     for (const send of s.subscribers) send(ev);
   }
 
-  private pushEvent(s: RunSession, text: string, persistDb = true): void {
+  private pushEvent(s: RunSession, text: string, persistDb = true, typed?: CodingEvent): void {
     const prose = text.startsWith('say ') ? text.slice(4) : '';
     if (persistDb && prose.length >= LONG_RESPONSE_DOCUMENT_CHARS) {
       try {
@@ -2520,7 +2540,7 @@ export class GituServer {
         // If document persistence fails, preserve the original response.
       }
     }
-    this.recordEvent(s, text, persistDb);
+    this.recordEvent(s, text, persistDb, typed);
   }
 
   /**
@@ -3682,7 +3702,7 @@ export class GituServer {
       // Replayed history must render immediately, without replaying typing
       // animations when opening a task or reconnecting its transport.
       for (const ev of session.events) safeWrite(`data: ${JSON.stringify({ ...ev, replay: true })}\n\n`);
-      const send = (ev: { i: number; t: string; text: string }): void => {
+      const send = (ev: SessionEvent): void => {
         safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       };
       session.subscribers.add(send);
@@ -4370,6 +4390,27 @@ export class GituServer {
       if (event.type === 'approval_resolved' && event.reason === 'timed out' && event.approvalId) {
         this.pushEvent(session, `approval ${event.approvalId} timed out — denied`);
       }
+      // The session stream is a projection of the runtime log, which is the one
+      // record of the run. A row keeps the legacy line verbatim so the UI renders
+      // what it always rendered, and carries the typed event beside it so a card
+      // can stop parsing prose one kind at a time.
+      //
+      // A native-only transition has no line to project: it stays in the log,
+      // where the consumers that understand it already read it. Inventing prose
+      // for one would put a row on screen that nothing asked for, which is why
+      // this is a filter and not a synthesis.
+      if (event.source === undefined || !isCurrentExecution()) return;
+      const ledgerMatch = event.source.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
+      if (ledgerMatch) {
+        session.taskId = ledgerMatch[1];
+        this.persistSession(session);
+      }
+      const branchMatch = event.source.match(/branch\s+(?:Switched to existing|Created|Already on)\s+(\S+)/);
+      if (branchMatch) {
+        session.branch = branchMatch[1];
+        this.persistSession(session);
+      }
+      this.pushEvent(session, event.source, !event.source.startsWith('browseshot '), event);
     });
     // Keep the per-run universal catalog synchronized with durable connection
     // metadata. A connection can be added or gain a documented operation while
@@ -4583,20 +4624,12 @@ export class GituServer {
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
       approvalHandler: runtimeSession.gates.approvalHandler,
-      onEvent: (text) => {
-        if (!isCurrentExecution()) return;
-        const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
-        if (ledgerMatch) {
-          session.taskId = ledgerMatch[1];
-          this.persistSession(session);
-        }
-        const branchMatch = text.match(/branch\s+(?:Switched to existing|Created|Already on)\s+(\S+)/);
-        if (branchMatch) {
-          session.branch = branchMatch[1];
-          this.persistSession(session);
-        }
-        this.pushEvent(session, text, !text.startsWith('browseshot '));
-      },
+      // The engine reports through the runtime's sinks, so its prose and its
+      // native events land in the same log the projection above reads. The
+      // ledger/branch bookkeeping that used to live here now rides that
+      // projection, because it is a reaction to a line, not a second stream.
+      onEvent: (text) => runtimeSession.sinks.onEvent(text),
+      onCodingEvent: (payload) => runtimeSession.sinks.onCodingEvent(payload),
       },
     );
     activeGitu = gitu;

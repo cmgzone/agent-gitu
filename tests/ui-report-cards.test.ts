@@ -176,7 +176,12 @@ describe('UI — narration structuring & technical disclosures', () => {
 
   it('stamps timeline rows with their event time', () => {
     expect(UI_HTML).toContain("stamp.className = 'tl-time'");
-    expect(UI_HTML).toContain('hhmm(ev.t)');
+    // The prose path hands the shared inserter the row's own event time, and the
+    // inserter is the single place that turns a time into a stamp — the typed
+    // refusal cards go through the same door with their frame's time.
+    // (ui-parallel-tools.test.ts proves the stamp lands on the row.)
+    expect(UI_HTML).toContain('insertTimelineNode(sess, el, ev && ev.t)');
+    expect(UI_HTML).toContain('stamp.textContent = hhmm(iso)');
   });
 
   it('shows the run effort, compact dates, and a two-line blocker clamp', () => {

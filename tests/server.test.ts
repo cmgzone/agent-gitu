@@ -426,6 +426,52 @@ describe('HermesServer', () => {
     });
   }, 60000);
 
+  it('carries a refused action to the stream as a typed frame', async () => {
+    // The UI renders this family from the frame, because the legacy line cannot
+    // carry what the card shows: the structured reason code, and the gate's own
+    // message rather than a summary of it. The prose row stays exactly as it was
+    // — it is still the transcript, and its typed companion stays a plain log,
+    // since the text adapter refuses to guess a reason from its wording.
+    const dir = makeProject('policy-frames');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['outside file inspected'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'inspect outside file', verification: 'n/a' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'read_file', params: { path: '../../outside.txt' }, reason: 'inspect', expected: 'file contents' },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'the path is outside the workspace' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'inspect a file outside the workspace', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+
+    const { rows, frames, diagnostics } = await readStream(base, created.runId);
+    const denied = frames.find((f) => f.typed?.type === 'policy_denied');
+    expect(denied, diagnostics).toBeTruthy();
+    expect(denied!.typed).toMatchObject({ reason: 'project_guard', tool: 'read_file' });
+    // The gate's message, which the legacy line reduced to a parenthetical.
+    expect(String(denied!.typed!.detail)).toMatch(/boundary/i);
+    expect(denied!.i).toBeUndefined();
+    // Live, not restored: this process raised it.
+    expect(denied!.restored).toBeUndefined();
+
+    const deniedRow = rows.find((row) => row.text.startsWith('denied '));
+    expect(deniedRow, diagnostics).toBeTruthy();
+    // The prose summary names the human form of the call, not the tool: the
+    // tool name, the reason code, and the gate's message are the event's alone.
+    expect(deniedRow!.text).toContain('read ../../outside.txt');
+    expect(deniedRow!.typed).toMatchObject({ type: 'log' });
+  }, 60000);
+
   function billingCrashLlm(): ScriptedMockLlm {
     const boom = () => {
       throw new Error('LLM HTTP 401 (no credits): Insufficient balance. Manage your billing here: https://opencode.ai/workspace/wrk_x/billing — this is a paid model; add credits or subscribe to use it');

@@ -90,6 +90,11 @@ function renderer() {
     document: { createElement: (tag: string) => new Element(tag) },
     updateApproach: () => {}, mascotState: () => {}, mascotPulse: () => {},
     closeThought: () => { narrationClosures++; }, setWorking: () => {}, trimTimeline: () => {}, stickScroll: () => {},
+    hhmm: (iso: string) => 'T' + iso,
+    // No intake or specialist tag matches here; falling through to the generic
+    // meta block is what exercises the evidence row the stamp test uses.
+    INTAKE_TAGS: {} as Record<string, boolean>,
+    SPEC_LIFECYCLE: /(?!)/,
     setupCopyButton: () => {}, icon: () => '',
     setupOutputFolding: (_details: Element, pre: Element, value: string) => { pre.textContent = value; },
     esc: (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -100,14 +105,17 @@ function renderer() {
     'normalizeToolKey', 'activeToolRows', 'findToolRow',
     // Tool-lifecycle matching was hoisted out of appendEvent so the typed
     // command frames can share it; the prose path now calls these top-level too.
-    'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow'];
+    'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow',
+    // Timeline insertion is shared the same way: the prose row and the typed
+    // refusal card must land in the same place, in the same way.
+    'insertTimelineNode'];
   // The two tiny split helpers share a line; their declarations are exact.
   const code = functions.map(name => name === 'splitSummary' || name === 'splitReason'
     ? UI_HTML.match(new RegExp('  function ' + name + '\\([^\\n]+'))![0] : source(name)).join('\n');
   new Script(code).runInContext(context);
   return {
     stream, session, context, narrationClosures: () => narrationClosures,
-    event: (i: number, text: string) => context.appendEvent('run', { i, text }),
+    event: (i: number, text: string, t?: string) => context.appendEvent('run', { i, text, ...(t ? { t } : {}) }),
     rows: () => stream.querySelectorAll('.tool-call'),
     group: () => stream.querySelector('.tl-tool-group')!,
   };
@@ -206,5 +214,31 @@ describe('UI — parallel tool lifecycle', () => {
     expect(r.group().querySelector('.tool-group-state')!.textContent).toBe('Needs attention');
     expect(r.rows()[0].querySelector('.tl-out')!.open).toBe(true);
     expect(r.rows()[0].querySelector('pre')!.textContent).toBe('Assertion failed');
+  });
+
+  it('stamps an inserted row with its own event time', () => {
+    // The timeline stamp moved into the shared inserter when the typed cards
+    // began to use it too, so this proves the prose path still stamps rows —
+    // the insert call and the stamp now live in different functions.
+    const r = renderer();
+    r.event(0, 'evidence ev-20260101-abc123 PASS verification passed', '2026-01-01T12:34:00.000Z');
+    expect(r.stream.querySelector('.tl-time')!.textContent).toBe('T2026-01-01T12:34:00.000Z');
+  });
+
+  it('leaves a refused action to its typed frame instead of drawing a prose card', () => {
+    // A refusal is decided in preflight, before the run row that creates a card,
+    // so the legacy line has never rendered anything: it is the typed
+    // policy_denied/operation_blocked frame that draws the family's card. This
+    // pins that split, so the frame can never become a second rendering of a row
+    // that already drew one.
+    const r = renderer();
+    r.event(0, 'run read_file {"path":"../../outside.txt"} — inspect');
+    const drawn = r.stream.children.length;
+    r.event(1, 'denied   read_file {"path":"../../outside.txt"} (DENIED by project boundary: outside the workspace)');
+    expect(r.stream.children.length).toBe(drawn);
+    // And the active card is untouched — an unmatched refusal must not close an
+    // unrelated working tool.
+    expect(r.rows()[0].dataset.toolState).toBe('working');
+    expect(r.rows()[0].querySelector('.st')!.textContent).not.toContain('denied');
   });
 });

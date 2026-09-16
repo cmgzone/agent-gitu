@@ -441,6 +441,12 @@ export const UI_HTML = String.raw`<!doctype html>
   .chip.bad { color: var(--err); border-color: rgba(255,100,101,.35); background: var(--err-dim); }
   .chip.info { color: var(--run); border-color: rgba(91,168,255,.35); background: var(--run-dim); }
   .chip.warn { color: var(--evidence); border-color: rgba(201,168,106,.4); background: var(--amber-bg); }
+  /* A refused action: the reason code, the operation it refused, and the real
+     detail message — none of which the legacy line carried. Quiet by design:
+     the agent refusing itself is context, not a headline. */
+  .tl-policy .policy-op { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .tl-policy .policy-tool { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .tl-policy .policy-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
   .crit-req { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
   .crit-req code { background: var(--card2); border-radius: 4px; padding: 1px 5px; color: var(--text); }
 
@@ -3146,6 +3152,96 @@ export const UI_HTML = String.raw`<!doctype html>
     }
   }
 
+  // Refused actions, rendered from the typed frames the executor emits at the
+  // gate that refused them. This family had no visible rendering before: a
+  // refusal is decided in preflight, before the run row that would create a
+  // card, so the legacy line only ever looked for a card that cannot exist —
+  // and the text adapter maps it to a plain log row rather than guessing at a
+  // reason from its wording. The structured code, the tool, and the full
+  // detail message exist on the event alone.
+  var POLICY_REASON_LABELS = {
+    project_guard: 'workspace boundary',
+    user_instruction: 'your instruction',
+    approval_required: 'approval',
+    risk_policy: 'risk policy',
+    loop_detected: 'repetition guard',
+    repeated_skill_operation: 'repeated operation',
+    edit_pressure: 'edit pressure',
+    budget_exhausted: 'budget exhausted',
+    prerequisite_missing: 'missing prerequisite',
+  };
+
+  // Presentation only: the code is the fact, the label is how it reads. An
+  // unrecognized code degrades to its own words rather than to nothing, so a
+  // future emitter cannot silently render an empty card.
+  function policyReasonLabel(typed) {
+    var code = String((typed && typed.reason) || '');
+    if (POLICY_REASON_LABELS[code]) return POLICY_REASON_LABELS[code];
+    return code ? code.replace(/_/g, ' ') : 'policy';
+  }
+
+  function policyNoticeHtml(typed) {
+    var blocked = typed.type === 'operation_blocked';
+    var html = '<span class="tl-dot ' + (blocked ? 'dot-blocked' : 'dot-bad') + '"></span><div class="tl-body">' +
+      '<span class="chip ' + (blocked ? 'warn' : 'bad') + '">' + esc(blocked ? 'blocked' : 'denied') + '</span> ' +
+      '<b>' + esc(policyReasonLabel(typed)) + '</b>';
+    var op = String(typed.operation || '').trim();
+    if (op) html += ' <span class="policy-op">' + esc(op) + '</span>';
+    if (typed.tool) html += ' <span class="policy-tool">' + esc(typed.tool) + '</span>';
+    if (typed.detail) html += '<div class="policy-detail">' + esc(String(typed.detail)) + '</div>';
+    return html + ' <span class="chip warn repeat-count">&times;1</span></div>';
+  }
+
+  /**
+   * Insert one timeline node where it belongs: before the working indicator,
+   * with the replay styling and the timestamp stamp the prose path has always
+   * used. Shared, so a typed card lands exactly like a prose row.
+   */
+  function insertTimelineNode(sess, el, iso) {
+    var stream = $('stream');
+    if (!stream) return;
+    // A refused-action card counts *consecutive* refusals, so anything else
+    // drawn in between ends the run of repeats.
+    if (sess && sess.nodes) sess.nodes.lastPolicy = null;
+    if (sess && sess.replaying) el.classList.add('replayed');
+    if (iso && el.classList && el.classList.contains('tl-row')) {
+      var stamp = document.createElement('span');
+      stamp.className = 'tl-time';
+      stamp.textContent = hhmm(iso);
+      stamp.title = new Date(iso).toLocaleString();
+      el.appendChild(stamp);
+    }
+    var working = $('working');
+    if (working) stream.insertBefore(el, working); else stream.appendChild(el);
+    trimTimeline(stream);
+    stickScroll(stream);
+  }
+
+  // A refused action stays true of the run forever, so a restored frame renders
+  // here too — unlike a gate request, whose runtime did not survive the restart.
+  function applyPolicyNotice(runId, typed, frame) {
+    var sess = S.sessions[runId];
+    if (!sess || !sess.nodes) return;
+    var key = String(typed.reason || '') + '|' + String(typed.operation || '');
+    var last = sess.nodes.lastPolicy;
+    if (last && last.key === key && last.el && last.el.isConnected) {
+      last.count += 1;
+      var chip = last.el.querySelector('.repeat-count');
+      if (chip) chip.textContent = '×' + last.count;
+      return;
+    }
+    var el = document.createElement('div');
+    el.className = 'tl-row tl-policy';
+    el.innerHTML = policyNoticeHtml(typed);
+    // A restored notice is history, so it appears without the entrance
+    // animation a live one gets — the same rule replayed rows follow.
+    if (frame && frame.restored) el.classList.add('replayed');
+    insertTimelineNode(sess, el, frame && frame.t);
+    // Set after the insert, which has already cleared it as "something else
+    // was drawn in between".
+    sess.nodes.lastPolicy = { key: key, count: 1, el: el };
+  }
+
   function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
@@ -3179,17 +3275,8 @@ export const UI_HTML = String.raw`<!doctype html>
       text.indexOf('context ') === 0 || text.indexOf('delegate ') === 0 || text.indexOf('subagent ') === 0
     )) return;
 
-    var working = $('working');
     function insert(el) {
-      if (sess.replaying) el.classList.add('replayed');
-      if (ev && ev.t && el.classList && el.classList.contains('tl-row')) {
-        var stamp = document.createElement('span');
-        stamp.className = 'tl-time';
-        stamp.textContent = hhmm(ev.t);
-        stamp.title = new Date(ev.t).toLocaleString();
-        el.appendChild(stamp);
-      }
-      if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream); stickScroll(stream);
+      insertTimelineNode(sess, el, ev && ev.t);
     }
 
     if (text.indexOf('file ') === 0) {
@@ -3911,6 +3998,12 @@ export const UI_HTML = String.raw`<!doctype html>
     // code fact prose cannot express.
     if (typed.type === 'command_started') return;
     if (typed.type === 'command_finished') { applyCommandFinish(runId, typed); return; }
+    // A refused action is a fact about the run, not a request: it renders from a
+    // restored frame too, which is why it is handled before the history guard.
+    if (typed.type === 'policy_denied' || typed.type === 'operation_blocked') {
+      applyPolicyNotice(runId, typed, frame);
+      return;
+    }
     // Everything below is a gate. A restored frame is history: the process that
     // raised its gate did not survive the restart, so a request the log happens
     // to end with was never ours to answer, and a card for it would offer

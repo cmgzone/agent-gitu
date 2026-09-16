@@ -45,6 +45,9 @@ export interface StoredEvent {
   i: number;
   t: string;
   text: string;
+  /** The runtime event this prose line was projected from, when it had one.
+   *  Untyped at the store boundary: the caller owns the payload schema. */
+  typed?: unknown;
 }
 
 /**
@@ -142,25 +145,29 @@ export class SessionStore {
        );`,
     );
     // Existing installations created the sessions table before these fields
-    // existed. SQLite has no ADD COLUMN IF NOT EXISTS, so ignore the harmless
+    // existed, and the events table before rows carried their typed companion.
+    // SQLite has no ADD COLUMN IF NOT EXISTS, so ignore the harmless
     // duplicate-column error on an already-migrated database.
-    for (const column of [
-      'finishedAt TEXT',
-      'mode TEXT',
-      'provider TEXT',
-      'model TEXT',
-      'requestedProvider TEXT',
-      'requestedModel TEXT',
-      'activeProvider TEXT',
-      'activeModel TEXT',
-      'report TEXT',
-      'error TEXT',
-      'usage TEXT',
-      'branch TEXT',
-      'worktreePath TEXT',
+    for (const [table, column] of [
+      ['sessions', 'finishedAt TEXT'],
+      ['sessions', 'mode TEXT'],
+      ['sessions', 'provider TEXT'],
+      ['sessions', 'model TEXT'],
+      ['sessions', 'requestedProvider TEXT'],
+      ['sessions', 'requestedModel TEXT'],
+      ['sessions', 'activeProvider TEXT'],
+      ['sessions', 'activeModel TEXT'],
+      ['sessions', 'report TEXT'],
+      ['sessions', 'error TEXT'],
+      ['sessions', 'usage TEXT'],
+      ['sessions', 'branch TEXT'],
+      ['sessions', 'worktreePath TEXT'],
+      // The typed companion on a prose row. Older rows simply have none and
+      // restore as prose-only, exactly as they always have.
+      ['events', 'typed TEXT'],
     ]) {
       try {
-        this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
       } catch {
         /* column already exists */
       }
@@ -219,7 +226,13 @@ export class SessionStore {
   }
 
   addEvent(runId: string, ev: StoredEvent): void {
-    this.db.prepare(`INSERT OR REPLACE INTO events (runId, idx, t, text) VALUES (?, ?, ?, ?)`).run(runId, ev.i, ev.t, ev.text);
+    // `typed` rides beside the prose so a restored row keeps the structured
+    // event it was projected from, not just the words. Best-effort parse on the
+    // way out: an unreadable companion degrades that row to prose, never fails
+    // the read.
+    this.db
+      .prepare(`INSERT OR REPLACE INTO events (runId, idx, t, text, typed) VALUES (?, ?, ?, ?, ?)`)
+      .run(runId, ev.i, ev.t, ev.text, ev.typed === undefined ? null : JSON.stringify(ev.typed));
   }
 
   /**
@@ -388,7 +401,20 @@ export class SessionStore {
   }
 
   eventsFor(runId: string): StoredEvent[] {
-    return this.db.prepare(`SELECT idx AS i, t, text FROM events WHERE runId = ? ORDER BY idx ASC`).all(runId) as unknown as StoredEvent[];
+    const rows = this.db.prepare(`SELECT idx AS i, t, text, typed FROM events WHERE runId = ? ORDER BY idx ASC`).all(runId) as {
+      i: number;
+      t: string;
+      text: string;
+      typed: string | null;
+    }[];
+    return rows.map((row) => {
+      if (!row.typed) return { i: row.i, t: row.t, text: row.text };
+      try {
+        return { i: row.i, t: row.t, text: row.text, typed: JSON.parse(row.typed) };
+      } catch {
+        return { i: row.i, t: row.t, text: row.text };
+      }
+    });
   }
 
   deleteSessionsForProject(filter: { path?: string; name?: string }): number {

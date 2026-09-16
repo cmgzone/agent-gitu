@@ -768,7 +768,7 @@ describe('HermesServer', () => {
     const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
-    const { frames, diagnostics } = await readStream(secondBase, created.runId);
+    const { rows, frames, diagnostics } = await readStream(secondBase, created.runId);
 
     const finished = frames.find((f) => f.typed?.type === 'command_finished');
     expect(finished, diagnostics).toBeTruthy();
@@ -777,6 +777,16 @@ describe('HermesServer', () => {
     // running process raised. No `i`, so it still never reaches the renderer.
     expect(finished!.restored).toBe(true);
     expect(finished!.i).toBeUndefined();
+
+    // The prose rows come back with their typed companions: the demoted command
+    // row keeps its log classification and source line, so a restored session
+    // carries the same structure a live one projected — not just the words.
+    const runRow = rows.find((row) => row.text === 'run      $ node --version — verify');
+    expect(runRow, diagnostics).toBeTruthy();
+    expect(runRow!.typed).toMatchObject({ type: 'log', source: 'run      $ node --version — verify' });
+    const planRow = rows.find((row) => /^plan\s+1 steps$/.test(row.text));
+    expect(planRow, diagnostics).toBeTruthy();
+    expect(planRow!.typed).toMatchObject({ type: 'plan_created', steps: 1 });
   }, 30000);
 
   it('does not offer an interrupted approval as answerable after a restart', async () => {

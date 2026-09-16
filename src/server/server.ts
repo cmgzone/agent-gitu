@@ -131,12 +131,11 @@ interface SessionEvent {
   t: string;
   text: string;
   /**
-   * Live rows carry this; rows restored from the store do not, because a row's
-   * durable schema is still `(idx, t, text)`. Typed-only frames *are* durable
-   * (see `native_frames`), which is what the UI's cards and the command exit
-   * code read today, so this is narrower than it sounds: it means a card that
-   * someday migrates onto a *row's* `typed` must keep its prose fallback until
-   * that schema moves too.
+   * The runtime event this prose line was projected from. Persisted beside the
+   * row (the store's `events.typed` column), so it survives a restart exactly
+   * like the typed-only frames in `native_frames` do. Rows classified from
+   * legacy text still carry a `log` payload here; the prose line remains the
+   * fallback a consumer reads when the payload is absent.
    */
   typed?: CodingEvent;
 }
@@ -815,7 +814,17 @@ export class GituServer {
         error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : pausedForDiscussion ? undefined : entry.error,
         usage: entry.usage,
         files: entry.files,
-        events: Array.isArray(entry.events) ? entry.events : [],
+        // Restored rows keep their typed companion when they had one; the store
+        // returns the payload untyped, so narrow it here against the shape the
+        // projection writes — type and seq must both be present to be usable.
+        events: (Array.isArray(entry.events) ? entry.events : []).map((event) => ({
+          i: event.i,
+          t: event.t,
+          text: event.text,
+          ...(event.typed && typeof event.typed === 'object' && typeof (event.typed as { type?: unknown }).type === 'string'
+            ? { typed: event.typed as CodingEvent }
+            : {}),
+        })),
         // Prose rows and typed frames both come back, so a restored session
         // rebuilds the typed state a live one has instead of falling back to
         // prose. They return marked `restored`; see `restoredNativeFrames`.

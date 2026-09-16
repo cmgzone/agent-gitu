@@ -95,6 +95,8 @@ function renderer() {
     // meta block is what exercises the evidence row the stamp test uses.
     INTAKE_TAGS: {} as Record<string, boolean>,
     SPEC_LIFECYCLE: /(?!)/,
+    // Client global the recall pool sizes itself against during replay.
+    MAX_REPLAY_EVENTS: 240,
     setupCopyButton: () => {}, icon: () => '',
     setupOutputFolding: (_details: Element, pre: Element, value: string) => { pre.textContent = value; },
     esc: (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -108,7 +110,15 @@ function renderer() {
     'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow',
     // Timeline insertion is shared the same way: the prose row and the typed
     // refusal card must land in the same place, in the same way.
-    'insertTimelineNode'];
+    'insertTimelineNode',
+    // The frame path that upgrades finished cards with the exit fact. It runs
+    // to the gate renderers, which need their own state readers; stubbing the
+    // renderers keeps this harness on the command lifecycle.
+    'handleTypedFrame', 'applyCommandFinish', 'normalizeToolKey', 'applyPolicyNotice',
+    'pendingApprovalsFor', 'pendingPlanReviewFor', 'pendingQuestionsFor'];
+  context.renderApprovals = () => undefined;
+  context.renderPlanReview = () => undefined;
+  context.renderQuestions = () => undefined;
   // The two tiny split helpers share a line; their declarations are exact.
   const code = functions.map(name => name === 'splitSummary' || name === 'splitReason'
     ? UI_HTML.match(new RegExp('  function ' + name + '\\([^\\n]+'))![0] : source(name)).join('\n');
@@ -223,6 +233,32 @@ describe('UI — parallel tool lifecycle', () => {
     const r = renderer();
     r.event(0, 'evidence ev-20260101-abc123 PASS verification passed', '2026-01-01T12:34:00.000Z');
     expect(r.stream.querySelector('.tl-time')!.textContent).toBe('T2026-01-01T12:34:00.000Z');
+  });
+
+  it('badges every restored command the replay rebuilt, not just the last twelve', () => {
+    // On restore, rows replay first and frames arrive right after. The recall
+    // pool the finish frames consult must span the whole visible window — a
+    // 12-entry cap left every earlier restored command without its exit badge.
+    const r = renderer();
+    const commands = 40;
+    // The client holds sess.replaying true across the whole replay burst, as
+    // openStream does; the pool size keys off that flag.
+    r.session.replaying = true;
+    for (let i = 0; i < commands; i++) {
+      r.event(i * 2, `run $ node cmd-${i}.js`);
+      r.event(i * 2 + 1, `ok $ node cmd-${i}.js (10ms)`);
+    }
+    r.session.replaying = false;
+    // All 40 rows replayed, none still working.
+    expect(r.rows()).toHaveLength(commands);
+    expect(r.rows().every((row) => row.dataset.toolState === 'done')).toBe(true);
+
+    // The frames arrive, in order, after the replay.
+    for (let i = 0; i < commands; i++) {
+      r.context.handleTypedFrame('run', { seq: 1000 + i, t: 't', typed: { type: 'command_finished', command: `node cmd-${i}.js`, ok: true, exitCode: 0 } });
+    }
+    const badged = r.rows().filter((row) => row.querySelector('.exit-code'));
+    expect(badged, `all ${commands} commands deserve their exit badge`).toHaveLength(commands);
   });
 
   it('leaves a refused action to its typed frame instead of drawing a prose card', () => {

@@ -3115,11 +3115,15 @@ export const UI_HTML = String.raw`<!doctype html>
     state.nodes.lastOutputTool = row;
     if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
     // Recently finished cards, so a typed frame that arrives just after the
-    // prose line can still upgrade the card it belongs to. Bounded, and only
-    // ever consulted with an exact key match.
+    // prose line can still upgrade the card it belongs to. Only ever consulted
+    // with an exact key match, so a wide pool is safe: the cap exists for the
+    // live case (one pool entry per finished card in a session), while a replay
+    // restores the whole visible window at once and the frames arrive right
+    // after it — a 12-entry pool silently left every earlier restored command
+    // without its exit badge.
     var recent = state.nodes.recentFinished || (state.nodes.recentFinished = []);
     recent.push({ key: normalizeToolKey(key), row: row });
-    if (recent.length > 12) recent.shift();
+    if (recent.length > (state.replaying ? MAX_REPLAY_EVENTS : 12)) recent.shift();
     return row;
   }
 

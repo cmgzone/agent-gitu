@@ -132,15 +132,32 @@ export type CodingEventPayload =
    * `plan` is the rendered plan for display; the structured criteria and steps
    * live on the pending request a surface reads from session state.
    */
-  | { type: 'plan_review_requested'; requestId: string; plan: string }
-  | { type: 'plan_review_resolved'; requestId: string; decision: PlanReviewDecision }
+  /** `plan` is the rendered rendering a log stays readable with; `criteria` and
+   *  `steps` are the structured request the review card edits, and mirror
+   *  `CodingPlanReviewRequest`. */
+  | {
+      type: 'plan_review_requested';
+      requestId: string;
+      plan: string;
+      criteria?: string[];
+      steps?: { description: string; verification: string }[];
+    }
+  /** `reason` is the cancellation note when the runtime released the gate, or
+   *  'timed out' when the request expired unanswered. */
+  | { type: 'plan_review_resolved'; requestId: string; decision: PlanReviewDecision; reason?: string }
   /**
    * Clarification questions, owned by the runtime on the same terms. The
-   * structured questions (with their options) live on the pending request;
-   * this carries the question texts so a log stays readable.
+   * structured questions and their options ride along in `details`, so a card
+   * renders them without reading anything outside the log; `questions` stays the
+   * readable projection. `details` mirrors `CodingQuestion`.
    */
-  | { type: 'questions_requested'; requestId: string; questions: string[] }
-  | { type: 'questions_answered'; requestId: string }
+  | {
+      type: 'questions_requested';
+      requestId: string;
+      questions: string[];
+      details?: { question: string; header?: string; options: string[] }[];
+    }
+  | { type: 'questions_answered'; requestId: string; reason?: string }
   /**
    * A control system refused an operation. These are the strongest signals in
    * the stream — evidence that the guard, the policy engine or a user

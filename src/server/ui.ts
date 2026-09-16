@@ -2189,7 +2189,9 @@ export const UI_HTML = String.raw`<!doctype html>
     // Typed gate state is live-only: native events are not persisted yet, so a
     // restored or re-rendered session must not keep a card whose frames are gone.
     sess.typedApprovals = {};
-    sess.settledApprovals = {};
+    sess.typedPlanReview = null;
+    sess.typedQuestions = null;
+    sess.settledGates = {};
     sess.pendingUserMessages = [];
   }
   // A report belongs to the run that just ended.  Once a user starts another
@@ -3794,9 +3796,33 @@ export const UI_HTML = String.raw`<!doctype html>
     // A resolution frame settles the request at once; the mirror may still list
     // it for another poll interval, and a card the user can still click after
     // another surface answered is exactly the stale gate this removes.
-    var settled = sess.settledApprovals || {};
+    var settled = sess.settledGates || {};
     Object.keys(settled).forEach(function (id) { delete merged[id]; });
     return Object.keys(merged).map(function (id) { return merged[id]; });
+  }
+
+  // The gates that hold one request at a time merge on the same terms: the live
+  // frame wins, the view is the fallback, and a request a frame already settled
+  // is not resurrected by a mirror that still lists it.
+  function pendingGateFor(typed, settled, view) {
+    if (typed) return typed;
+    if (view && settled[view.id]) return null;
+    return view || null;
+  }
+
+  function pendingPlanReviewFor(sess, session) {
+    return pendingGateFor(sess.typedPlanReview || null, sess.settledGates || {}, session && session.pendingPlanReview);
+  }
+
+  function pendingQuestionsFor(sess, session) {
+    return pendingGateFor(sess.typedQuestions || null, sess.settledGates || {}, session && session.pendingQuestions);
+  }
+
+  // The structured questions when the emitter supplied them. A frame that only
+  // carried the text projection still renders, with nothing to offer as options.
+  function questionDetails(typed) {
+    if (typed.details && typed.details.length) return typed.details;
+    return (typed.questions || []).map(function (text) { return { question: text, options: [] }; });
   }
 
   // Native frames for the gate families a card renders. Every action a card
@@ -3807,18 +3833,35 @@ export const UI_HTML = String.raw`<!doctype html>
     var sess = S.sessions[runId];
     var typed = frame && frame.typed;
     if (!sess || !typed) return;
-    if (typed.type !== 'approval_required' && typed.type !== 'approval_resolved') return;
-    sess.typedApprovals = sess.typedApprovals || {};
-    sess.settledApprovals = sess.settledApprovals || {};
+    var settled = null;
     if (typed.type === 'approval_required') {
+      sess.typedApprovals = sess.typedApprovals || {};
       sess.typedApprovals[typed.approvalId] = {
         id: typed.approvalId, tool: typed.tool, why: typed.why, summary: typed.summary,
       };
+    } else if (typed.type === 'approval_resolved') {
+      if (sess.typedApprovals) delete sess.typedApprovals[typed.approvalId];
+      settled = typed.approvalId;
+    } else if (typed.type === 'plan_review_requested') {
+      sess.typedPlanReview = {
+        id: typed.requestId, criteria: typed.criteria || [], steps: typed.steps || [], requestedAt: typed.t,
+      };
+    } else if (typed.type === 'plan_review_resolved') {
+      sess.typedPlanReview = null;
+      settled = typed.requestId;
+    } else if (typed.type === 'questions_requested') {
+      sess.typedQuestions = { id: typed.requestId, questions: questionDetails(typed), requestedAt: typed.t };
+    } else if (typed.type === 'questions_answered') {
+      sess.typedQuestions = null;
+      settled = typed.requestId;
     } else {
-      delete sess.typedApprovals[typed.approvalId];
-      sess.settledApprovals[typed.approvalId] = true;
+      return;
     }
+    sess.settledGates = sess.settledGates || {};
+    if (settled) sess.settledGates[settled] = true;
     renderApprovals(runId, sess.session);
+    renderPlanReview(runId, sess.session);
+    renderQuestions(runId, sess.session);
   }
 
   function renderApprovals(runId, session) {
@@ -3866,7 +3909,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
-    var q = session.pendingQuestions;
+    var q = pendingQuestionsFor(sess, session);
     if (!q) {
       if (sess.qShown) {
         sess.qShown = null;
@@ -3922,7 +3965,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
-    var pr = session.pendingPlanReview;
+    var pr = pendingPlanReviewFor(sess, session);
     if (!pr) {
       if (sess.prShown) {
         sess.prShown = null;

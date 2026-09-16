@@ -289,10 +289,16 @@ describe('GituSessionRuntime plan review and question gates', () => {
   it('surfaces a plan review and resolves it as approved', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['tests pass'], steps: [{ description: 'implement', verification: 'npm test' }] });
-    const requested = harness.session.events().find((event) => event.type === 'plan_review_requested') as { requestId: string; plan: string } | undefined;
+    const requested = harness.session.events().find((event) => event.type === 'plan_review_requested') as
+      | { requestId: string; plan: string; criteria?: string[]; steps?: { description: string; verification: string }[] }
+      | undefined;
     expect(requested?.plan).toContain('tests pass');
+    // The structured request rides the event too, so the review card edits the
+    // agent's own criteria and steps instead of re-parsing the rendered plan.
+    expect(requested?.criteria).toEqual(['tests pass']);
+    expect(requested?.steps).toEqual([{ description: 'implement', verification: 'npm test' }]);
     expect(harness.session.getState().pendingPlanReview?.id).toBe(requested?.requestId);
-    harness.session.approvePlan({ approved: true });
+    harness.session.approvePlan(requested!.requestId, { approved: true });
     await expect(pending).resolves.toMatchObject({ approved: true });
     const resolved = harness.session.events().filter((event) => event.type === 'plan_review_resolved');
     expect(resolved).toHaveLength(1);
@@ -303,7 +309,8 @@ describe('GituSessionRuntime plan review and question gates', () => {
   it('distinguishes a change request from a bare rejection', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
-    harness.session.approvePlan({ approved: false, note: 'split the first step' });
+    const requestId = harness.session.getState().pendingPlanReview!.id;
+    harness.session.approvePlan(requestId, { approved: false, note: 'split the first step' });
     await expect(pending).resolves.toMatchObject({ approved: false, note: 'split the first step' });
     expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'changes_requested' });
   });
@@ -311,10 +318,15 @@ describe('GituSessionRuntime plan review and question gates', () => {
   it('surfaces questions and answers them', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
-    const requested = harness.session.events().find((event) => event.type === 'questions_requested') as { requestId: string; questions: string[] } | undefined;
+    const requested = harness.session.events().find((event) => event.type === 'questions_requested') as
+      | { requestId: string; questions: string[]; details?: { question: string; options: string[] }[] }
+      | undefined;
     expect(requested?.questions).toEqual(['Which database?']);
+    // Options ride the event: a question card cannot offer an answer it was
+    // never told, and the text projection alone has no options.
+    expect(requested?.details).toEqual([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
     expect(harness.session.getState().pendingQuestions?.id).toBe(requested?.requestId);
-    harness.session.answerQuestions('PostgreSQL');
+    harness.session.answerQuestions(requested!.requestId, 'PostgreSQL');
     await expect(pending).resolves.toBe('PostgreSQL');
     expect(harness.session.events().filter((event) => event.type === 'questions_answered')).toHaveLength(1);
     expect(harness.session.getState().pendingQuestions).toBeUndefined();
@@ -324,7 +336,46 @@ describe('GituSessionRuntime plan review and question gates', () => {
     const harness = makeHarness({ gateTimeoutMs: 20, startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
     await expect(pending).resolves.toMatchObject({ approved: false, note: 'Plan review timed out.' });
-    expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'rejected' });
+    expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({
+      decision: 'rejected',
+      reason: 'timed out',
+    });
+  });
+
+  it('fails a question gate closed when nobody answers', async () => {
+    const harness = makeHarness({ gateTimeoutMs: 20, startRun: true });
+    const pending = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL'] }]);
+    await expect(pending).resolves.toBe('(no answer — proceed with reasonable defaults)');
+    // Questions proceed on defaults rather than denying the way an approval or a
+    // plan review does, and the reason is on the event so a host can narrate the
+    // timeout without inventing its own timer to detect it.
+    expect(harness.session.events().find((event) => event.type === 'questions_answered')).toMatchObject({
+      reason: 'timed out',
+    });
+    expect(harness.session.getState().pendingQuestions).toBeUndefined();
+  });
+
+  it('settles only the request a surface names', async () => {
+    // An answer that names a request the runtime is not holding resolves nothing.
+    // Without this, a surface answering late could resolve whatever its successor
+    // happens to be — a different review, or a question asked minutes later.
+    const harness = makeHarness({ startRun: true });
+    const review = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    const questions = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL'] }]);
+    const reviewId = harness.session.getState().pendingPlanReview!.id;
+    const questionsId = harness.session.getState().pendingQuestions!.id;
+
+    harness.session.approvePlan('pr_stale', { approved: true });
+    harness.session.answerQuestions('q_stale', 'SQLite');
+    expect(harness.session.getState().pendingPlanReview?.id).toBe(reviewId);
+    expect(harness.session.getState().pendingQuestions?.id).toBe(questionsId);
+    expect(harness.session.events().filter((event) => event.type === 'plan_review_resolved')).toHaveLength(0);
+    expect(harness.session.events().filter((event) => event.type === 'questions_answered')).toHaveLength(0);
+
+    harness.session.approvePlan(reviewId, { approved: true });
+    harness.session.answerQuestions(questionsId, 'PostgreSQL');
+    await expect(review).resolves.toMatchObject({ approved: true });
+    await expect(questions).resolves.toBe('PostgreSQL');
   });
 
   it('releases every pending gate on cancel instead of leaving it to time out', async () => {

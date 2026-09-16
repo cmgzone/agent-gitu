@@ -173,9 +173,11 @@ export interface CodingSession {
    */
   releasePendingGates(reason: string): void;
   approve(approvalId: string, approved: boolean): void;
-  approvePlan(decision: CodingPlanReviewDecision): void;
+  /** Answers the review with this exact request id. A request a surface does not
+   *  name is never settled, so a late answer cannot resolve its successor. */
+  approvePlan(requestId: string, decision: CodingPlanReviewDecision): void;
   /** Answer the outstanding `CodingQuestionsRequest` (single free-text answer). */
-  answerQuestions(answer: string): void;
+  answerQuestions(requestId: string, answer: string): void;
   /** Replay from `sinceSeq` (exclusive). Absent means the whole retained log. */
   events(sinceSeq?: number): CodingEvent[];
   /** Returns an unsubscribe function. */

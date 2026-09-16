@@ -65,6 +65,42 @@ describe('HermesServer', () => {
     return { base: `http://127.0.0.1:${port}`, server };
   }
 
+  type StreamFrame = { i?: number; text?: string; typed?: { type: string } & Record<string, unknown> };
+
+  /**
+   * Reads one connection's worth of the session stream: the replayed rows, the
+   * native-only frames, and a compact diagnostic of what actually arrived.
+   *
+   * The replay is written in one burst and the connection then stays open for
+   * live events, so a read past the burst blocks until the next heartbeat. Bound
+   * each read and stop at the first gap instead of waiting one out.
+   */
+  async function readStream(base: string, runId: string) {
+    const res = await fetch(`${base}/api/runs/${runId}/stream`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = '';
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const chunk = await Promise.race([reader.read(), new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500))]);
+      if (!chunk?.value) break;
+      raw += decoder.decode(chunk.value, { stream: true });
+    }
+    await reader.cancel();
+    const received = raw
+      .split('\n\n')
+      .map((chunk) => chunk.replace(/^data: /, '').trim())
+      .filter((chunk) => chunk.startsWith('{'))
+      .map((chunk) => JSON.parse(chunk) as StreamFrame);
+    return {
+      received,
+      // Rows render; frames are typed-only and must stay invisible to the renderer.
+      rows: received.filter((f): f is StreamFrame & { text: string } => typeof f.text === 'string'),
+      frames: received.filter((f) => f.text === undefined),
+      diagnostics: JSON.stringify(received.map((f) => [f.text?.slice(0, 40) ?? '(frame)', f.typed?.type])),
+    };
+  }
+
   it('serves the UI and project info', async () => {
     const dir = makeProject('ui');
     const { base } = await startServer(dir, new ScriptedMockLlm([]));
@@ -248,32 +284,7 @@ describe('HermesServer', () => {
 
     // The stream replays the session's rows, so the projection can be read back
     // without racing a live run.
-    const res = await fetch(`${base}/api/runs/${created.runId}/stream`);
-    const reader = res.body!.getReader();
-    const decoder = new TextDecoder();
-    let raw = '';
-    // The replay is written in one burst and the connection then stays open for
-    // live events, so a read past the burst blocks until the next heartbeat.
-    // Bound each read and stop at the first gap instead of waiting one out.
-    const deadline = Date.now() + 8000;
-    while (Date.now() < deadline) {
-      const chunk = await Promise.race([reader.read(), new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500))]);
-      if (!chunk?.value) break;
-      raw += decoder.decode(chunk.value, { stream: true });
-    }
-    await reader.cancel();
-
-    type Frame = { i?: number; text?: string; typed?: { type: string; source?: string; exitCode?: number } };
-    const frames = raw
-      .split('\n\n')
-      .map((chunk) => chunk.replace(/^data: /, '').trim())
-      .filter((chunk) => chunk.startsWith('{'))
-      .map((chunk) => JSON.parse(chunk) as Frame);
-    // Rows render; frames are typed-only and must stay invisible to the renderer.
-    const rows = frames.filter((frame): frame is Frame & { text: string } => typeof frame.text === 'string');
-    const nativeFrames = frames.filter((frame) => frame.text === undefined);
-
-    const diagnostics = JSON.stringify(frames.map((frame) => [frame.text?.slice(0, 40) ?? '(frame)', frame.typed?.type]));
+    const { rows, frames: nativeFrames, diagnostics } = await readStream(base, created.runId);
 
     // The prose is byte-for-byte what the UI has always received.
     const runRow = rows.find((row) => row.text === 'run      $ node --version — verify');
@@ -306,6 +317,103 @@ describe('HermesServer', () => {
     expect(finishedFrame!.i).toBeUndefined();
     expect(nativeFrames.some((frame) => frame.typed?.type === 'command_started')).toBe(true);
   }, 30000);
+
+  it('carries plan-review and question requests to the stream as typed frames', async () => {
+    // The two interactive cards render from the runtime's own request, so the
+    // gates the runtime now owns have to reach the same connection the UI tails —
+    // and the legacy lines the server's old handlers pushed must survive the
+    // move, or the transcript would quietly change.
+    const dir = makeProject('gate-frames');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () =>
+        JSON.stringify({
+          action: {
+            type: 'ask_user',
+            questions: [{ question: 'Which database?', header: 'Storage', options: ['PostgreSQL', 'SQLite'] }],
+          },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'answered, then paused' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Reviewed build', mode: 'fast', review: true }),
+    }).then((r) => r.json());
+
+    const paused = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview ? s : undefined;
+    });
+    const reviewId = paused.pendingPlanReview.id;
+    expect(paused.status).toBe('running');
+
+    const before = await readStream(base, created.runId);
+    const requested = before.frames.find((f) => f.typed?.type === 'plan_review_requested');
+    expect(requested, before.diagnostics).toBeTruthy();
+    // The card edits the agent's own criteria and steps, so the structured
+    // request rides the frame alongside the rendered plan text.
+    expect(requested!.typed).toMatchObject({
+      requestId: reviewId,
+      criteria: ['verification passes'],
+      steps: [{ description: 'run verification', verification: 'node --version' }],
+    });
+    expect(requested!.i).toBeUndefined();
+    expect(before.rows.some((row) => row.text === `plan-review ${reviewId} waiting for your review`)).toBe(true);
+
+    const approved = await fetch(`${base}/api/plan-review/${reviewId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    }).then((r) => r.json());
+    expect(approved.ok).toBe(true);
+
+    // The resolution is on the stream too, so a card that reconnects after the
+    // decision learns the request is settled instead of offering it again. The
+    // run carries on to the next gate rather than ending, so this is read live.
+    const asked = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingQuestions ? s : undefined;
+    }, 30000);
+    const answeredStream = await readStream(base, created.runId);
+    expect(
+      answeredStream.frames.find((f) => f.typed?.type === 'plan_review_resolved')?.typed,
+      answeredStream.diagnostics,
+    ).toMatchObject({ requestId: reviewId, decision: 'approved' });
+
+    // The question card offers only the options the agent gave it, so they ride
+    // the frame rather than being reconstructed from the text projection.
+    const askedFrame = answeredStream.frames.find((f) => f.typed?.type === 'questions_requested');
+    expect(askedFrame, answeredStream.diagnostics).toBeTruthy();
+    expect(askedFrame!.typed).toMatchObject({
+      requestId: asked.pendingQuestions.id,
+      questions: ['Which database?'],
+      details: [{ question: 'Which database?', header: 'Storage', options: ['PostgreSQL', 'SQLite'] }],
+    });
+    expect(answeredStream.rows.some((row) => row.text === 'ask-user waiting for your answers')).toBe(true);
+
+    const replied = await fetch(`${base}/api/answers/${asked.pendingQuestions.id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'PostgreSQL' }),
+    }).then((r) => r.json());
+    expect(replied.ok).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    }, 30000);
+    expect(finished.status).toBe('blocked');
+    expect(finished.pendingQuestions).toBeUndefined();
+    expect(finished.pendingPlanReview).toBeUndefined();
+
+    const after = await readStream(base, created.runId);
+    expect(after.frames.find((f) => f.typed?.type === 'questions_answered')?.typed, after.diagnostics).toMatchObject({
+      requestId: asked.pendingQuestions.id,
+    });
+  }, 60000);
 
   function billingCrashLlm(): ScriptedMockLlm {
     const boom = () => {
@@ -868,6 +976,50 @@ describe('HermesServer', () => {
 
     // No second resolver survives for the stopped run's approval.
     const late = await fetch(`${base}/api/approvals/${approvalId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(late.status).toBe(404);
+  }, 30000);
+
+  it('times an unanswered plan review out to a denial through the runtime', async () => {
+    // The server's own handler used to own this timer. The runtime owns it now,
+    // so an unanswered review must still unwind on its own and still read the
+    // same in the transcript.
+    const dir = makeProject('planreview-timeout');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'review timed out' } }),
+    ]);
+    const server = new HermesServer({ cwd: dir, port: 0, llm, approvalTimeoutMs: 1500 });
+    servers.push(server);
+    const base = `http://127.0.0.1:${await server.start()}`;
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Unanswered build', mode: 'fast', review: true }),
+    }).then((r) => r.json());
+
+    const reviewId = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview?.id as string | undefined;
+    }, 15000);
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview === undefined ? s : undefined;
+    }, 20000);
+
+    const streamed = await readStream(base, created.runId);
+    expect(
+      streamed.rows.some((row) => row.text === `plan-review ${reviewId} timed out — treating as denied`),
+      streamed.diagnostics,
+    ).toBe(true);
+
+    // The timeout settled the one request object, so a late answer resolves
+    // nothing and must not reach a different review.
+    const late = await fetch(`${base}/api/plan-review/${reviewId}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ approved: true }),

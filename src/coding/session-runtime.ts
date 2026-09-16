@@ -232,7 +232,7 @@ export class GituSessionRuntime {
         const timer = setTimeout(() => {
           if (pendingPlanReviews.delete(requestId)) {
             if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
-            log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected' });
+            log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected', reason: 'timed out' });
             resolve({ approved: false, note: 'Plan review timed out.' });
           }
         }, timeoutMs);
@@ -244,7 +244,7 @@ export class GituSessionRuntime {
         });
       });
       pendingPlanReview = record;
-      log.publishNative({ type: 'plan_review_requested', requestId, plan });
+      log.publishNative({ type: 'plan_review_requested', requestId, plan, criteria: input.criteria, steps: input.steps });
       request.onPlanReviewRequested?.(record);
       return decided;
     };
@@ -256,7 +256,7 @@ export class GituSessionRuntime {
         const timer = setTimeout(() => {
           if (pendingQuestionGates.delete(requestId)) {
             if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
-            log.publishNative({ type: 'questions_answered', requestId });
+            log.publishNative({ type: 'questions_answered', requestId, reason: 'timed out' });
             resolve('(no answer — proceed with reasonable defaults)');
           }
         }, timeoutMs);
@@ -268,7 +268,12 @@ export class GituSessionRuntime {
         });
       });
       pendingQuestions = record;
-      log.publishNative({ type: 'questions_requested', requestId, questions: questions.map((question) => question.question) });
+      log.publishNative({
+        type: 'questions_requested',
+        requestId,
+        questions: questions.map((question) => question.question),
+        details: questions,
+      });
       request.onQuestionsRequested?.(record);
       return decided;
     };
@@ -295,13 +300,13 @@ export class GituSessionRuntime {
       for (const [requestId, gate] of [...pendingPlanReviews]) {
         pendingPlanReviews.delete(requestId);
         if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
-        log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected' });
+        log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected', reason });
         gate.resolve({ approved: false, note: `Plan review ${reason}.` });
       }
       for (const [requestId, gate] of [...pendingQuestionGates]) {
         pendingQuestionGates.delete(requestId);
         if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
-        log.publishNative({ type: 'questions_answered', requestId });
+        log.publishNative({ type: 'questions_answered', requestId, reason });
         gate.resolve('(no answer — proceed with reasonable defaults)');
       }
     };
@@ -411,12 +416,11 @@ export class GituSessionRuntime {
         log.publishNative({ type: 'approval_resolved', approvalId, approved });
         entry.resolve(approved);
       },
-      approvePlan: (decision) => {
-        // No id parameter on the contract, and Gitu pauses the run for one
-        // review at a time — so the oldest pending review is the one answered.
-        const entry = pendingPlanReviews.entries().next();
-        if (entry.done) return;
-        const [requestId, gate] = entry.value;
+      approvePlan: (requestId, decision) => {
+        // Keyed by request id, never "whatever is pending now": a second surface
+        // answering first must not make this call settle a different review.
+        const gate = pendingPlanReviews.get(requestId);
+        if (!gate) return;
         pendingPlanReviews.delete(requestId);
         if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
         // Gitu's own language distinguishes a refusal that replans (a note) from
@@ -425,10 +429,9 @@ export class GituSessionRuntime {
         log.publishNative({ type: 'plan_review_resolved', requestId, decision: settled });
         gate.resolve(decision);
       },
-      answerQuestions: (answer) => {
-        const entry = pendingQuestionGates.entries().next();
-        if (entry.done) return;
-        const [requestId, gate] = entry.value;
+      answerQuestions: (requestId, answer) => {
+        const gate = pendingQuestionGates.get(requestId);
+        if (!gate) return;
         pendingQuestionGates.delete(requestId);
         if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
         log.publishNative({ type: 'questions_answered', requestId });

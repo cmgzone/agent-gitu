@@ -87,20 +87,8 @@ export interface SessionFileView {
   previewUrl?: string;
 }
 
-interface QuestionsWaiter extends PendingQuestions {
-  resolve: (answer: string) => void;
-}
-
 interface ConnectionWaiter extends PendingConnection {
   resolve: (saved: boolean) => void;
-}
-
-interface PlanReviewWaiter extends PendingPlanReview {
-  resolve: (decision: { approved: boolean; note?: string; criteria?: string[]; steps?: { description: string; verification: string }[] }) => void;
-}
-
-interface ApprovalWaiter extends PendingApproval {
-  resolve: (approved: boolean) => void;
 }
 
 export interface RunSessionView {
@@ -202,9 +190,11 @@ interface RunSession {
    */
   nativeFrames: NativeEventFrame[];
   subscribers: Set<(ev: StreamFrame) => void>;
-  approvals: Map<string, ApprovalWaiter>;
-  planReview?: PlanReviewWaiter;
-  questions?: QuestionsWaiter;
+  /** Views of the runtime's pending gates, kept for `sessionView()` only. The
+   *  runtime holds the requests; nothing here can answer one. */
+  approvals: Map<string, PendingApproval>;
+  planReview?: PendingPlanReview;
+  questions?: PendingQuestions;
   connection?: ConnectionWaiter;
   gitu?: InstanceType<typeof Gitu>;
   /** The runtime session that owns this run's gates. Set with `gitu` so it
@@ -724,17 +714,13 @@ export class GituServer {
     session.lsp = undefined;
     gitu?.stop();
     void lsp?.shutdown().catch(() => {});
-    const question = session.questions;
-    session.questions = undefined;
-    question?.resolve(`(${reason})`);
     const connection = session.connection;
     session.connection = undefined;
     connection?.resolve(false);
-    const planReview = session.planReview;
-    session.planReview = undefined;
-    planReview?.resolve({ approved: false, note: `${reason}.` });
-    // The runtime owns its gates, so cancellation releases the approval gate and
-    // clears its timer in one step. This path no longer knows how an approval ends.
+    // The runtime owns the approval, plan-review and question gates, so one
+    // cancellation releases them all and clears their timers. This path no
+    // longer knows how any of them ends — only the connection request, which the
+    // runtime does not own yet, is still released here.
     void runtime?.cancel(reason);
   }
 
@@ -2440,19 +2426,14 @@ export class GituServer {
    *
    * This is deliberately NOT `cancel`: a reply or correction supersedes a
    * question, plan review or approval, but the run itself was not stopped. The
-   * runtime settles the approval gate it owns; plan review, questions and the
-   * connection request are not runtime-owned yet and are still released here.
+   * runtime settles the gates it owns — approval, plan review and questions —
+   * while leaving the run live; the connection request is not runtime-owned yet
+   * and is still released here.
    */
   private releasePendingInput(session: RunSession, note: string): void {
-    const question = session.questions;
-    session.questions = undefined;
-    question?.resolve(note);
     const connection = session.connection;
     session.connection = undefined;
     connection?.resolve(false);
-    const plan = session.planReview;
-    session.planReview = undefined;
-    plan?.resolve({ approved: false, note });
     session.runtime?.releasePendingGates(note);
   }
 
@@ -3782,12 +3763,16 @@ export class GituServer {
     if (method === 'POST' && answersMatch) {
       const body = await this.readBody(req);
       for (const session of this.sessions.values()) {
-        if (session.questions && session.questions.id === answersMatch[1]) {
-          const waiter = session.questions;
-          session.questions = undefined;
+        // The mirror locates the owning session; the runtime is what decides. The
+        // endpoint resolves the runtime directly and never writes to the mirror,
+        // which is a view of runtime state reconciled by the subscription.
+        const waiter = session.questions && session.questions.id === answersMatch[1] ? session.questions : undefined;
+        const runtime = session.runtime;
+        if (!waiter || !runtime) continue;
+        {
           const answer = typeof body['answer'] === 'string' ? body['answer'] : '';
           this.pushEvent(session, 'ask-user answered by user');
-          waiter.resolve(answer);
+          runtime.answerQuestions(waiter.id, answer);
           this.sendJson(res, 200, { ok: true });
           return;
         }
@@ -3934,19 +3919,12 @@ export class GituServer {
       session.finishedAt = nowIso();
 
       // A run paused for a question, plan review, or approval is not waiting
-      // on the LLM abort signal.  Resolve those waiters so the cancelled run
-      // can unwind instead of remaining alive until their timeout.
-      const question = session.questions;
-      session.questions = undefined;
-      question?.resolve('(stopped by user)');
+      // on the LLM abort signal. The runtime owns all three gates, so cancelling
+      // it releases them and their timers, and the cancelled run unwinds instead
+      // of remaining alive until they time out.
       const connection = session.connection;
       session.connection = undefined;
       connection?.resolve(false);
-      const planReview = session.planReview;
-      session.planReview = undefined;
-      planReview?.resolve({ approved: false, note: 'Stopped by user.' });
-      // The runtime owns its gates: cancelling it releases the pending approval
-      // and its timer, so stopping a run no longer restates how approvals end.
       void runtime?.cancel('Stopped by user.');
 
       this.pushEvent(session, 'stopped by user');
@@ -4254,9 +4232,12 @@ export class GituServer {
     if (method === 'POST' && planReviewMatch) {
       const body = await this.readBody(req);
       for (const session of this.sessions.values()) {
-        if (session.planReview && session.planReview.id === planReviewMatch[1]) {
-          const waiter = session.planReview;
-          session.planReview = undefined;
+        // As with approvals, the mirror locates the session and the runtime
+        // resolves: one request object, one resolution path.
+        const waiter = session.planReview && session.planReview.id === planReviewMatch[1] ? session.planReview : undefined;
+        const runtime = session.runtime;
+        if (!waiter || !runtime) continue;
+        {
           const steps = Array.isArray(body['steps'])
             ? (body['steps'] as Record<string, unknown>[])
                 .map((s) => ({ description: String(s['description'] ?? '').trim(), verification: String(s['verification'] ?? 'manual check').trim() }))
@@ -4272,7 +4253,7 @@ export class GituServer {
             steps,
           };
           this.pushEvent(session, decision.approved ? 'plan-review approved — building' : 'plan-review changes requested');
-          waiter.resolve(decision);
+          runtime.approvePlan(waiter.id, decision);
           this.sendJson(res, 200, { ok: true });
           return;
         }
@@ -4416,21 +4397,20 @@ export class GituServer {
         this.pushEvent(session, `approval-required ${request.id} [${request.tool}] ${request.why}`);
       },
     });
-    /**
-     * Compatibility mirror only.
-     * GituSessionRuntime owns approval resolution authority.
-     * Remove after the HTTP approval endpoint is migrated.
-     *
-     * Reconciled from runtime state, never from an event payload: another
-     * surface (Cowork, the CLI) may already have resolved the approval before
-     * this process observed the transition, so the runtime's current state —
-     * not its event history — is what the mirror shows.
-     *
-     * `resolve` is reached only by teardown (detach, stop, pause) while those
-     * paths still release gates by hand. The HTTP endpoint resolves the runtime
-     * directly, so this is a second door onto the same single promise, never a
-     * second promise.
-     */
+    // Compatibility mirrors only.
+    // GituSessionRuntime owns resolution authority for all three.
+    //
+    // These carry no way to answer a gate: every resolution path — HTTP, cancel,
+    // release — goes to the runtime, so the types no longer offer a second one.
+    // They exist because `sessionView()` still publishes the pending gates for a
+    // surface that has no live frames to render from (a restored session, or a
+    // client whose typed state was reset); they go away once the UI reads gates
+    // from the typed stream alone.
+    //
+    // Reconciled from runtime state, never from an event payload: another surface
+    // (Cowork, the CLI) may already have resolved the gate before this process
+    // observed the transition, so the runtime's current state — not its event
+    // history — is what these show.
     const syncApprovalMirror = (): void => {
       const pending = runtimeSession.getState().pendingApproval;
       session.approvals.clear();
@@ -4441,15 +4421,40 @@ export class GituServer {
         why: pending.why,
         summary: pending.summary ?? '',
         requestedAt: pending.requestedAt,
-        resolve: (approved) => runtimeSession.approve(pending.id, approved),
       });
+    };
+    const syncPlanReviewMirror = (): void => {
+      const pending = runtimeSession.getState().pendingPlanReview;
+      session.planReview = pending
+        ? { id: pending.id, criteria: pending.criteria, steps: pending.steps, requestedAt: pending.requestedAt }
+        : undefined;
+    };
+    const syncQuestionsMirror = (): void => {
+      const pending = runtimeSession.getState().pendingQuestions;
+      session.questions = pending
+        ? { id: pending.id, questions: pending.questions, requestedAt: pending.requestedAt }
+        : undefined;
     };
     runtimeSession.subscribe((event) => {
       syncApprovalMirror();
-      // The runtime settles a timed-out approval itself; keep the legacy line so
-      // the transcript reads exactly as it did under server-owned gates.
+      syncPlanReviewMirror();
+      syncQuestionsMirror();
+      // A gate the runtime owns has no server-side handler left to narrate it, so
+      // these lines are emitted from the runtime's own events. They are the same
+      // lines the handlers used to push, in the same order, so the transcript
+      // reads exactly as it did under server-owned gates.
+      if (event.type === 'plan_review_requested') this.pushEvent(session, `plan-review ${event.requestId} waiting for your review`);
+      if (event.type === 'questions_requested') this.pushEvent(session, 'ask-user waiting for your answers');
+      // The runtime settles a timed-out gate itself; keep the legacy line so the
+      // transcript reads exactly as it did under server-owned gates.
       if (event.type === 'approval_resolved' && event.reason === 'timed out' && event.approvalId) {
         this.pushEvent(session, `approval ${event.approvalId} timed out — denied`);
+      }
+      if (event.type === 'plan_review_resolved' && event.reason === 'timed out') {
+        this.pushEvent(session, `plan-review ${event.requestId} timed out — treating as denied`);
+      }
+      if (event.type === 'questions_answered' && event.reason === 'timed out') {
+        this.pushEvent(session, 'ask-user timed out — agent will assume defaults');
       }
       // The session stream is a projection of the runtime log, which is the one
       // record of the run. Every event rides it; only the shape differs.
@@ -4655,38 +4660,11 @@ export class GituServer {
       connectionOperationHandler,
       connectionRecoveryCheck,
       connectionRequestHandler,
-      askUserHandler: (questions) =>
-        new Promise<string>((resolve) => {
-          const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };
-          session.questions = waiter;
-          this.pushEvent(session, `ask-user waiting for your answers`);
-          setTimeout(() => {
-            if (session.questions === waiter) {
-              session.questions = undefined;
-              this.pushEvent(session, 'ask-user timed out — agent will assume defaults');
-              resolve('(no answer — proceed with reasonable defaults)');
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
-      planReviewHandler: (input) =>
-        new Promise((resolve) => {
-          const waiter: PlanReviewWaiter = {
-            id: shortId('pr'),
-            criteria: input.criteria,
-            steps: input.steps,
-            requestedAt: nowIso(),
-            resolve,
-          };
-          session.planReview = waiter;
-          this.pushEvent(session, `plan-review ${waiter.id} waiting for your review`);
-          setTimeout(() => {
-            if (session.planReview === waiter) {
-              session.planReview = undefined;
-              this.pushEvent(session, `plan-review ${waiter.id} timed out — treating as denied`);
-              resolve({ approved: false, note: 'Plan review timed out.' });
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
+      // Every gate the engine can pause on is runtime-owned, so the runtime is
+      // the single request authority and the session-scoped mirrors above are
+      // views of it rather than competing stores.
+      askUserHandler: runtimeSession.gates.askUserHandler,
+      planReviewHandler: runtimeSession.gates.planReviewHandler,
       approvalHandler: runtimeSession.gates.approvalHandler,
       // The engine reports through the runtime's sinks, so its prose and its
       // native events land in the same log the projection above reads. The

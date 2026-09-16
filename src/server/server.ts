@@ -4,7 +4,7 @@ import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkd
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
-import { createGitu } from '../coding/gitu-factory.js';
+import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -4328,6 +4328,102 @@ export class GituServer {
         ),
       ].join('\n');
     };
+    // Connection handlers used by the engine. Declared by name so the run body
+    // reads as configuration plus wiring; the closures themselves are unchanged.
+    const connectionActionHandler: GituFactoryDependencies['connectionActionHandler'] = async ({ connectionId, operationId }) => {
+      // Live read path: resolve FIRST (existing or catalog-backed/documented
+      // safe GET auto-registers and persists), then execute. No approval
+      // channel, no credential prompt, no manual registration request.
+      const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
+      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+    };
+    // The recovery controller may run ONE read-only operation on its own
+    // when the model spirals — never a write: approval stays mandatory.
+    const safestProviderRead: GituFactoryDependencies['safestProviderRead'] = (preferredConnectionId) => this.connections.safestRead(preferredConnectionId);
+    const connectionOperationHandler: GituFactoryDependencies['connectionOperationHandler'] = async (proposal) => {
+      const profile = this.connections.get(proposal.connectionId);
+      const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
+      if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
+      const op = normalizeConnectionOperation(proposal.operation);
+      if (!op) throw new Error('The proposed provider operation is malformed.');
+      // Safe GET/read operations NEVER enter the approval channel: they
+      // resolve through the capability resolver (register-if-missing under
+      // the existing credential) and execute immediately, like a
+      // connection_action. Only non-read proposals go to operation approval.
+      if (op.risk === 'read' && op.method === 'GET') {
+        const result = await this.connections.resolveAndExecuteRead({
+          connectionId: profile.id,
+          operation: op,
+          capability: op.capability,
+          documented: Boolean(proposal.documentationUrl || profile.documentationUrl || catalogCapabilityDeclared(profile.provider, op.capability)),
+        });
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      }
+      const capabilityDeclared = profile.capabilities.includes(op.capability);
+      // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
+      // connection resolves from verified official documentation (the catalog)
+      // or the proposal's claimed documentationUrl — it never requires the
+      // user to re-enter a credential.
+      if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, op.capability) && !proposal.documentationUrl) {
+        throw new Error(
+          `Saved connection "${profile.label}" does not declare capability "${op.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
+            `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
+        );
+      }
+      const documentedCapability = !capabilityDeclared;
+      const existing = this.connections.operation(profile.id, op.id);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
+        throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
+      }
+      const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
+      const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
+      const approved = await requestApproval({
+        tool: `connection:${profile.provider}`,
+        why: `External ${op.risk} operation — ${proposal.reason}`,
+        summary: [
+          `Connection: ${profile.label} (${profile.id})`,
+          `Operation: ${op.label}`,
+          `Request: ${op.method} ${op.path}`,
+          `Required capability: ${op.capability}`,
+          `Risk: ${op.risk}`,
+          `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
+          `Body:\n${bodyText}`,
+        ].join('\n'),
+      });
+      if (!approved) throw new Error('User denied the provider operation.');
+      // Registration happens only after approval. It makes the immutable
+      // documented operation discoverable in future tasks, but every write
+      // still returns through this approval path before invocation.
+      const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
+      const result = await this.connections.invoke(profile.id, registered.id, body);
+      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+    };
+    // The secure form is framed by WHAT the user is being asked to change:
+    // 'reauth' only after a positively classified authentication failure,
+    // 'setup' for a genuinely first-time connection.
+    const connectionRecoveryCheck: GituFactoryDependencies['connectionRecoveryCheck'] = (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite);
+    const connectionRequestHandler: GituFactoryDependencies['connectionRequestHandler'] = (prerequisite) =>
+      new Promise<boolean>((resolve) => {
+        const decision = this.connections.connectionRecoveryDecision(prerequisite);
+        const waiter: ConnectionWaiter = {
+          id: shortId('conn'),
+          requirement: {
+            ...this.connections.requirementFor(prerequisite),
+            requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
+          },
+          requestedAt: nowIso(),
+          resolve,
+        };
+        session.connection = waiter;
+        this.pushEvent(session, `connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
+        setTimeout(() => {
+          if (session.connection === waiter) {
+            session.connection = undefined;
+            this.pushEvent(session, 'connection setup timed out — prerequisite remains unresolved');
+            resolve(false);
+          }
+        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+      });
     const gitu = createGitu(
       {
         workspaceRoot: opts.projectPath ?? this.config.cwd,
@@ -4367,100 +4463,11 @@ export class GituServer {
         browser: this.browserImpl(),
       universalRegistry,
       connectionContext: () => `${universalCapabilityContext()}\n\n${this.connections.renderForAgent()}`,
-      connectionActionHandler: async ({ connectionId, operationId }) => {
-        // Live read path: resolve FIRST (existing or catalog-backed/documented
-        // safe GET auto-registers and persists), then execute. No approval
-        // channel, no credential prompt, no manual registration request.
-        const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
-        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-      },
-      // The recovery controller may run ONE read-only operation on its own
-      // when the model spirals — never a write: approval stays mandatory.
-      safestProviderRead: (preferredConnectionId) => this.connections.safestRead(preferredConnectionId),
-      connectionOperationHandler: async (proposal) => {
-        const profile = this.connections.get(proposal.connectionId);
-        const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
-        if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
-        const op = normalizeConnectionOperation(proposal.operation);
-        if (!op) throw new Error('The proposed provider operation is malformed.');
-        // Safe GET/read operations NEVER enter the approval channel: they
-        // resolve through the capability resolver (register-if-missing under
-        // the existing credential) and execute immediately, like a
-        // connection_action. Only non-read proposals go to operation approval.
-        if (op.risk === 'read' && op.method === 'GET') {
-          const result = await this.connections.resolveAndExecuteRead({
-            connectionId: profile.id,
-            operation: op,
-            capability: op.capability,
-            documented: Boolean(proposal.documentationUrl || profile.documentationUrl || catalogCapabilityDeclared(profile.provider, op.capability)),
-          });
-          return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-        }
-        const capabilityDeclared = profile.capabilities.includes(op.capability);
-        // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
-        // connection resolves from verified official documentation (the catalog)
-        // or the proposal's claimed documentationUrl — it never requires the
-        // user to re-enter a credential.
-        if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, op.capability) && !proposal.documentationUrl) {
-          throw new Error(
-            `Saved connection "${profile.label}" does not declare capability "${op.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
-              `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
-          );
-        }
-        const documentedCapability = !capabilityDeclared;
-        const existing = this.connections.operation(profile.id, op.id);
-        if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
-          throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
-        }
-        const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
-        const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
-        const approved = await requestApproval({
-          tool: `connection:${profile.provider}`,
-          why: `External ${op.risk} operation — ${proposal.reason}`,
-          summary: [
-            `Connection: ${profile.label} (${profile.id})`,
-            `Operation: ${op.label}`,
-            `Request: ${op.method} ${op.path}`,
-            `Required capability: ${op.capability}`,
-            `Risk: ${op.risk}`,
-            `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
-            `Body:\n${bodyText}`,
-          ].join('\n'),
-        });
-        if (!approved) throw new Error('User denied the provider operation.');
-        // Registration happens only after approval. It makes the immutable
-        // documented operation discoverable in future tasks, but every write
-        // still returns through this approval path before invocation.
-        const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
-        const result = await this.connections.invoke(profile.id, registered.id, body);
-        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-      },
-      // The secure form is framed by WHAT the user is being asked to change:
-      // 'reauth' only after a positively classified authentication failure,
-      // 'setup' for a genuinely first-time connection.
-      connectionRecoveryCheck: (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite),
-      connectionRequestHandler: (prerequisite) =>
-        new Promise<boolean>((resolve) => {
-          const decision = this.connections.connectionRecoveryDecision(prerequisite);
-          const waiter: ConnectionWaiter = {
-            id: shortId('conn'),
-            requirement: {
-              ...this.connections.requirementFor(prerequisite),
-              requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
-            },
-            requestedAt: nowIso(),
-            resolve,
-          };
-          session.connection = waiter;
-          this.pushEvent(session, `connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
-          setTimeout(() => {
-            if (session.connection === waiter) {
-              session.connection = undefined;
-              this.pushEvent(session, 'connection setup timed out — prerequisite remains unresolved');
-              resolve(false);
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
+      connectionActionHandler,
+      safestProviderRead,
+      connectionOperationHandler,
+      connectionRecoveryCheck,
+      connectionRequestHandler,
       askUserHandler: (questions) =>
         new Promise<string>((resolve) => {
           const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };

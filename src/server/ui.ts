@@ -447,6 +447,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-policy .policy-op { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
   .tl-policy .policy-tool { font-family: var(--mono); font-size: 11px; color: var(--faint); }
   .tl-policy .policy-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+  .tl-meta .recover-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
   .crit-req { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
   .crit-req code { background: var(--card2); border-radius: 4px; padding: 1px 5px; color: var(--text); }
 
@@ -3205,8 +3206,9 @@ export const UI_HTML = String.raw`<!doctype html>
     var stream = $('stream');
     if (!stream) return;
     // A refused-action card counts *consecutive* refusals, so anything else
-    // drawn in between ends the run of repeats.
-    if (sess && sess.nodes) sess.nodes.lastPolicy = null;
+    // drawn in between ends the run of repeats. Recovery retries follow the
+    // same rule via lastRecover.
+    if (sess && sess.nodes) { sess.nodes.lastPolicy = null; sess.nodes.lastRecover = null; }
     if (sess && sess.replaying) el.classList.add('replayed');
     if (iso && el.classList && el.classList.contains('tl-row')) {
       var stamp = document.createElement('span');
@@ -3520,6 +3522,73 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
 
+    // A model retry is the moment Gitu noticed a failure and is actively
+    // correcting it — the run is NOT frozen and NOT repeating the same
+    // mistake. That distinction is trust-critical, so it renders for normal
+    // users from the typed companion (attempt, maxAttempts, the real reason)
+    // whenever one exists. The classifier has attached it to recover rows
+    // all along; old restored rows without one still fall through to the
+    // allowlist fallback below, unchanged. Developer mode keeps the raw
+    // line: this arm is the calm human rendering, not the diagnostic.
+    // Consecutive retries of the same cause collapse in place (the same
+    // ×N convention the refusal card and the recovery ladder use).
+    if (text.indexOf('recover ') === 0) {
+      closeThought(runId);
+      if (devMode()) {
+        // Developer mode keeps the raw diagnostic line: this arm is the calm
+        // human rendering, not the diagnostic. Fall through to the allowlist
+        // view below instead of returning.
+        sess.nodes.lastRecover = null;
+      } else {
+      var recTyped = ev.typed && ev.typed.type === 'recovering' ? ev.typed : null;
+      // Same-cause collapse: the cause is the structured message when the
+      // companion has one, else the prose detail. A DIFFERENT cause (or any
+      // other row drawn in between — insert() clears lastRecover) starts a
+      // new card, so the count can only ever mean consecutive.
+      var recBody = text.replace(/^recover\s+/, '');
+      var recCause = recTyped && recTyped.message ? String(recTyped.message) : recBody;
+      var lastRec = sess.nodes.lastRecover;
+      if (lastRec && lastRec.el && lastRec.el.isConnected && lastRec.cause === recCause) {
+        lastRec.count++;
+        var recChip = lastRec.el.querySelector('.repeat-count');
+        if (recChip) recChip.textContent = '×' + lastRec.count;
+        // Retries escalate: 1/3 then 2/3 changes the numbers even when the
+        // cause is identical. Without a companion the prose may not carry
+        // counts either; the card then says only "retrying".
+        var recUp = lastRec.el.querySelector('.recover-nums');
+        if (recUp) {
+          var recA = recTyped && typeof recTyped.attempt === 'number' ? recTyped.attempt : (lastRec.attempt || 1) + 1;
+          var recM = recTyped && typeof recTyped.maxAttempts === 'number' ? recTyped.maxAttempts : lastRec.max;
+          recUp.textContent = recM ? 'retry ' + recA + ' of ' + recM : '';
+          lastRec.attempt = recA; lastRec.max = recM || 0;
+        }
+        stickScroll(stream);
+        return;
+      }
+      var recEl = document.createElement('div');
+      recEl.className = 'tl-row tl-meta';
+      var recHtml = '<span class="tl-dot dot-note"></span><div class="tl-body">' +
+        '<span class="chip warn">\u21BB</span> <b>recovering</b>';
+      if (recTyped && typeof recTyped.attempt === 'number' && typeof recTyped.maxAttempts === 'number') {
+        recHtml += ' <span class="recover-nums">retry ' + recTyped.attempt + ' of ' + recTyped.maxAttempts + '</span>';
+      } else if (recTyped && typeof recTyped.attempt === 'number') {
+        recHtml += ' <span class="recover-nums">retry ' + recTyped.attempt + '</span>';
+      }
+      var recDetail = recTyped && recTyped.message ? String(recTyped.message) : recBody;
+      if (recDetail) recHtml += '<div class="recover-detail">' + esc(recDetail) + '</div>';
+      recHtml += ' <span class="chip warn repeat-count">\u00D71</span>';
+      recEl.innerHTML = recHtml;
+      // Set after the insert, which has already cleared lastRecover as
+      // "something else was drawn in between" — the same ordering the
+      // refused-action card documents.
+      insert(recEl);
+      sess.nodes.lastRecover = { cause: recCause, count: 1, el: recEl, attempt: recTyped && typeof recTyped.attempt === 'number' ? recTyped.attempt : 1, max: recTyped && typeof recTyped.maxAttempts === 'number' ? recTyped.maxAttempts : 0 };
+      setWorking('Recovering' + (recDetail ? ' — ' + shortText(recDetail, 90) : '') + '…');
+      stickScroll(stream);
+      return;
+      }
+    }
+
     // Machine bookkeeping (diff snapshots, specialist checkpoints) accumulates
     // into ONE collapsed group instead of narrating over the agent's work —
     // and is Developer-only: normal users never see internal activity.
@@ -3710,6 +3779,7 @@ export const UI_HTML = String.raw`<!doctype html>
     } else {
       sess.nodes.lastWarn = null;
       sess.nodes.lastRecovery = null;
+      sess.nodes.lastRecover = null;
       // ARCHITECTURAL RULE — the timeline is allowlisted. The tags above are
       // explicitly designed UI; ANY other (future, internal) event tag is
       // hidden for normal users and shown only in Developer mode. A newly

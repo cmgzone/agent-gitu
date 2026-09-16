@@ -98,6 +98,9 @@ function renderer() {
     // No intake or specialist tag matches here; falling through to the generic
     // meta block is what exercises the evidence row the stamp test uses.
     INTAKE_TAGS: {} as Record<string, boolean>,
+    // Tests run as a normal user (devMode false): the recovering arm renders
+    // its calm card instead of falling through to the raw diagnostic line.
+    devMode: () => false,
     SPEC_LIFECYCLE: /(?!)/,
     // Client global the recall pool sizes itself against during replay.
     MAX_REPLAY_EVENTS: 240,
@@ -119,6 +122,8 @@ function renderer() {
     // to the gate renderers, which need their own state readers; stubbing the
     // renderers keeps this harness on the command lifecycle.
     'handleTypedFrame', 'applyCommandFinish', 'normalizeToolKey', 'applyPolicyNotice',
+    // The recovering arm truncates the cause for the working indicator.
+    'shortText',
     'pendingApprovalsFor', 'pendingPlanReviewFor', 'pendingQuestionsFor'];
   context.renderApprovals = () => undefined;
   context.renderPlanReview = () => undefined;
@@ -332,6 +337,65 @@ describe('UI — parallel tool lifecycle', () => {
     }
     const badged = r.rows().filter((row) => row.querySelector('.exit-code'));
     expect(badged, `all ${commands} commands deserve their exit badge`).toHaveLength(commands);
+  });
+
+  it('renders recovering cards from the typed companion and falls back to the prose line', () => {
+    // A model retry is the moment the agent notices a failure and corrects it;
+    // the run is neither frozen nor repeating itself. The typed companion
+    // carries the attempt, the max, and the real cause; the prose line is the
+    // fallback for rows without one (old databases, demoted classifications).
+    const r = renderer();
+    // Typed row: retry numbers from the payload, not the text.
+    r.event(0, 'recover  model reply was malformed — retry 2/3 in 1.0s', undefined, { type: 'recovering', message: 'model reply was malformed', attempt: 2, maxAttempts: 3 });
+    let row = r.stream.querySelectorAll('.tl-meta')[0];
+    expect(row.textContent).toContain('recovering');
+    expect(row.textContent).toContain('retry 2 of 3');
+    expect(row.textContent).toContain('model reply was malformed');
+
+    // Typed row whose prose carries no retry count: the companion decides.
+    // (Distinct cause — a same-cause retry would collapse into the card above.)
+    r.event(1, 'recover  something failed', undefined, { type: 'recovering', message: 'something failed', attempt: 1, maxAttempts: 4 });
+    row = r.stream.querySelectorAll('.tl-meta')[1];
+    expect(row.textContent).toContain('retry 1 of 4');
+
+    // The reason text lives on the payload; prose can be vague.
+    r.event(2, 'recover  failed — retry 3/4', undefined, { type: 'recovering', message: 'the real reason: provider 500', attempt: 3, maxAttempts: 4 });
+    row = r.stream.querySelectorAll('.tl-meta')[2];
+    expect(row.textContent).toContain('the real reason: provider 500');
+
+    // Malformed/short prose still renders correctly from typed data: the tag
+    // prefix matches but the line has no usable detail after it.
+    r.event(3, 'recover  ', undefined, { type: 'recovering', message: 'bad reply shape', attempt: 2, maxAttempts: 5 });
+    row = r.stream.querySelectorAll('.tl-meta')[3];
+    expect(row.textContent).toContain('retry 2 of 5');
+    expect(row.textContent).toContain('bad reply shape');
+
+    // Consecutive retries of the same cause collapse in place, escalating the
+    // retry numbers (1/4 then 2/4) instead of stacking cards.
+    r.event(4, 'recover  provider 500 — retry 1/4 in 1.0s', undefined, { type: 'recovering', message: 'provider 500', attempt: 1, maxAttempts: 4 });
+    r.event(5, 'recover  provider 500 — retry 2/4 in 2.0s', undefined, { type: 'recovering', message: 'provider 500', attempt: 2, maxAttempts: 4 });
+    const metas = r.stream.querySelectorAll('.tl-meta');
+    expect(metas.length).toBe(5); // no sixth card — event 5 collapsed into event 4's
+    const coll = metas[4];
+    expect(coll.textContent).toContain('retry 2 of 4');
+    expect(coll.textContent).toContain('\u00D72');
+
+    // A different cause starts a new card even when it is also a retry.
+    r.event(6, 'recover  other cause — retry 1/3', undefined, { type: 'recovering', message: 'other cause', attempt: 1, maxAttempts: 3 });
+    expect(r.stream.querySelectorAll('.tl-meta').length).toBe(6);
+  });
+
+  it('renders untyped recover rows from prose without fabricating structure', () => {
+    // Untyped rows (old restored databases) have no counts to render as the
+    // structured numbers — the fallback shows the raw line as the cause and
+    // must not re-parse prose into the typed card's "retry N of M" shape.
+    const r = renderer();
+    r.event(0, 'recover  something failed — retry 2/3 in 1.0s');
+    const row = r.stream.querySelectorAll('.tl-meta')[0];
+    expect(row.textContent).toContain('recovering');
+    expect(row.textContent).toContain('something failed — retry 2/3 in 1.0s');
+    // No fabricated numbers: the retry phrase survives only as raw detail.
+    expect(row.querySelector('.recover-nums')).toBeNull();
   });
 
   it('leaves a refused action to its typed frame instead of drawing a prose card', () => {

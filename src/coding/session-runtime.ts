@@ -216,7 +216,7 @@ export class GituSessionRuntime {
         });
       });
       pendingApproval = record;
-      log.publishNative({ type: 'approval_required', approvalId, tool: gate.tool, why: gate.why });
+      log.publishNative({ type: 'approval_required', approvalId, tool: gate.tool, why: gate.why, summary: gate.summary });
       request.onApprovalRequired?.(record);
       return decided;
     };

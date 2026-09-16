@@ -116,7 +116,10 @@ export type CodingEventPayload =
       skipped?: number;
       durationMs?: number;
     }
-  | { type: 'approval_required'; approvalId: string; tool?: string; why?: string }
+  /** The gate's own request, forwarded so a card can render it without reading
+   *  the host mirror. `summary` is the detail the requester wants shown; it is
+   *  display payload, never an input to the authorization decision. */
+  | { type: 'approval_required'; approvalId: string; tool?: string; why?: string; summary?: string }
   /** Published by whichever surface resolved the request first. Exactly one
    *  approval object exists per session; this is how the other surfaces learn
    *  the request is no longer pending. */

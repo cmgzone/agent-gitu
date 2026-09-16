@@ -260,8 +260,13 @@ describe('GituSessionRuntime approval gate', () => {
   it('surfaces a pending approval and lets the first answer win', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
-    const required = harness.session.events().find((event) => event.type === 'approval_required') as { approvalId: string } | undefined;
+    const required = harness.session.events().find((event) => event.type === 'approval_required') as
+      | { approvalId: string; tool?: string; why?: string; summary?: string }
+      | undefined;
     expect(required?.approvalId).toBeTruthy();
+    // The gate's own request rides the event, so a card renders it from the one
+    // stream instead of reading a host-side mirror of the pending state.
+    expect(required).toMatchObject({ tool: 'run_command', why: 'destructive', summary: 'rm -rf build' });
     harness.session.approve(required!.approvalId, true);
     await expect(pending).resolves.toBe(true);
     // A second answer finds no pending approval and does nothing.

@@ -2027,6 +2027,14 @@ export const UI_HTML = String.raw`<!doctype html>
         S.reconnecting = false;
         setWorking(sess.session && sess.session.status === 'running' ? 'Thinking…' : null);
       }
+      // A native frame carries seq (the runtime log cursor) and never i (the
+      // rendered-row cursor), so it updates typed state here instead of moving
+      // the cursor. The legacy prose row for the same transition still renders
+      // separately, and neither is derived from the other.
+      if (ev.i == null) {
+        handleTypedFrame(runId, ev);
+        return;
+      }
       if (sess.lastIndex == null) sess.lastIndex = -1;
       if (ev.i > sess.lastIndex) {
         sess.lastIndex = ev.i;
@@ -2178,6 +2186,10 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.qShown = null;
     sess.prShown = null;
     sess.apprShown = {};
+    // Typed gate state is live-only: native events are not persisted yet, so a
+    // restored or re-rendered session must not keep a card whose frames are gone.
+    sess.typedApprovals = {};
+    sess.settledApprovals = {};
     sess.pendingUserMessages = [];
   }
   // A report belongs to the run that just ended.  Once a user starts another
@@ -3770,13 +3782,52 @@ export const UI_HTML = String.raw`<!doctype html>
     stickScroll(stream, true);
   }
 
+  // A live frame and the polled session view are two views of the same pending
+  // request. They are merged on the runtime request id, so the frame renders the
+  // card immediately and the poll catching up neither duplicates it (the render
+  // key is remembered) nor removes it.
+  function pendingApprovalsFor(sess, session) {
+    var merged = {};
+    var typed = sess.typedApprovals || {};
+    Object.keys(typed).forEach(function (id) { merged[id] = typed[id]; });
+    ((session && session.pendingApprovals) || []).forEach(function (a) { if (!merged[a.id]) merged[a.id] = a; });
+    // A resolution frame settles the request at once; the mirror may still list
+    // it for another poll interval, and a card the user can still click after
+    // another surface answered is exactly the stale gate this removes.
+    var settled = sess.settledApprovals || {};
+    Object.keys(settled).forEach(function (id) { delete merged[id]; });
+    return Object.keys(merged).map(function (id) { return merged[id]; });
+  }
+
+  // Native frames for the gate families a card renders. Every action a card
+  // offers posts the request id it was rendered for — never "whatever is pending
+  // now" — so a second surface (Cowork, the Chief of Staff) answering first
+  // cannot make this card resolve a different request.
+  function handleTypedFrame(runId, frame) {
+    var sess = S.sessions[runId];
+    var typed = frame && frame.typed;
+    if (!sess || !typed) return;
+    if (typed.type !== 'approval_required' && typed.type !== 'approval_resolved') return;
+    sess.typedApprovals = sess.typedApprovals || {};
+    sess.settledApprovals = sess.settledApprovals || {};
+    if (typed.type === 'approval_required') {
+      sess.typedApprovals[typed.approvalId] = {
+        id: typed.approvalId, tool: typed.tool, why: typed.why, summary: typed.summary,
+      };
+    } else {
+      delete sess.typedApprovals[typed.approvalId];
+      sess.settledApprovals[typed.approvalId] = true;
+    }
+    renderApprovals(runId, sess.session);
+  }
+
   function renderApprovals(runId, session) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
     sess.apprShown = sess.apprShown || {};
     var pending = {};
-    (session.pendingApprovals || []).forEach(function (a) {
+    pendingApprovalsFor(sess, session).forEach(function (a) {
       pending[a.id] = true;
       if (sess.apprShown[a.id]) return;
       sess.apprShown[a.id] = true;

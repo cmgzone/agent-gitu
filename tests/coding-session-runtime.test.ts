@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { Gitu } from '../src/agent/gitu.js';
 import type { CodingRunResult, CodingSession } from '../src/coding/contract.js';
 import { GituSessionRuntime, type GituSessionRequest } from '../src/coding/session-runtime.js';
+import type { GituFactoryOptions } from '../src/coding/gitu-factory.js';
 import { ConnectionRegistry } from '../src/connections/connections.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import type { CompletionReport } from '../src/types.js';
@@ -28,8 +29,8 @@ function makeProject(): string {
 
 interface Harness {
   session: CodingSession;
-  sinks: { onEvent: (line: string) => void; onCodingEvent: (event: any) => void; approvalHandler: any };
-  engineRequests: GituSessionRequest[];
+  sinks: { onEvent: (line: string) => void; onCodingEvent: (event: any) => void; approvalHandler: any; planReviewHandler: any; askUserHandler: any };
+  engineRequests: { request: GituSessionRequest; options: GituFactoryOptions }[];
   engine: any;
 }
 
@@ -37,42 +38,46 @@ function completeReport(goal: string): CompletionReport {
   return { taskId: 't_1', goal, status: 'complete', summary: 'done', changes: [], filesChanged: [], verification: [] };
 }
 
-function makeHarness(options: { report?: CompletionReport; failRun?: Error; gateTimeoutMs?: number } = {}): Harness {
+function makeHarness(options: { report?: CompletionReport; failRun?: Error; gateTimeoutMs?: number; engines?: 'fresh'; startRun?: boolean } = {}): Harness {
   const dir = makeProject();
-  const engineRequests: GituSessionRequest[] = [];
-  const engine = {
+  const engineRequests: Harness['engineRequests'] = [];
+  const makeEngine = () => ({
     run: async (goal: string) => {
       if (options.failRun) throw options.failRun;
       return { ledger: { data: { taskId: 't_1' } }, report: options.report ?? completeReport(goal) };
     },
     queueMessage: () => {},
     stop: () => {},
-  };
+  });
+  const engine = makeEngine();
   let capturedSinks: Harness['sinks'] | undefined;
   const runtime = new GituSessionRuntime({
-    createEngine: (request, sinks) => {
-      engineRequests.push(request);
+    createEngine: (request, runOptions, sinks) => {
+      engineRequests.push({ request, options: runOptions });
       capturedSinks = sinks;
-      return engine as unknown as Gitu;
+      return (options.engines === 'fresh' ? makeEngine() : engine) as unknown as Gitu;
     },
   });
   const session = runtime.createSession({
     goal: 'Fix the parser',
     workspace: { type: 'host', path: dir },
-    engine: {
-      options: { workspaceRoot: 'C:\\wrong-on-purpose', llm: new ScriptedMockLlm([() => '{}']), mode: 'fast' },
-      deps: {
-        connections: new ConnectionRegistry(),
-        connectionContext: () => 'connections: none',
-        connectionActionHandler: async () => ({ message: 'ok' }),
-        safestProviderRead: () => undefined,
-        connectionOperationHandler: async () => ({ message: 'ok' }),
-        connectionRecoveryCheck: () => ({ action: 'setup-new', reason: 'none' }),
-        connectionRequestHandler: async () => false,
-      },
+    // A deliberately wrong root: the runtime must override it from the workspace.
+    runOptions: () => ({ workspaceRoot: 'C:\\wrong-on-purpose', llm: new ScriptedMockLlm([() => '{}']), mode: 'fast' }),
+    deps: {
+      connections: new ConnectionRegistry(),
+      connectionContext: () => 'connections: none',
+      connectionActionHandler: async () => ({ message: 'ok' }),
+      safestProviderRead: () => undefined,
+      connectionOperationHandler: async () => ({ message: 'ok' }),
+      connectionRecoveryCheck: () => ({ action: 'setup-new', reason: 'none' }),
+      connectionRequestHandler: async () => false,
     },
     gateTimeoutMs: options.gateTimeoutMs,
   });
+  // Gates only exist during a run, and the sinks are captured when the engine is
+  // built — which now happens per run. So gate/stream tests opt into starting
+  // one, and it must happen before the harness literal reads the sink reference.
+  if (options.startRun) void session.run('Fix the parser');
   return { session, sinks: capturedSinks!, engineRequests, engine };
 }
 
@@ -99,7 +104,7 @@ describe('GituSessionRuntime lifecycle', () => {
 
   it('derives the engine cwd from the workspace, never from what the caller guessed', () => {
     const { engineRequests } = makeHarness();
-    expect(engineRequests[0]?.engine.options.workspaceRoot).toBe(engineRequests[0]?.workspace.path);
+    expect(engineRequests[0]?.options.workspaceRoot).toBe(engineRequests[0]?.request.workspace.path);
   });
 
   it('emits run_started when a run starts, not when the session is created', async () => {
@@ -113,6 +118,18 @@ describe('GituSessionRuntime lifecycle', () => {
     expect(started[0]).toMatchObject({ goal: 'Fix the parser' });
     // It precedes the engine's own output, so a consumer sees the boundary first.
     expect(started[0]?.seq).toBe(1);
+  });
+
+  it('builds a fresh engine per run and numbers the attempts', async () => {
+    // The engine is per run while the session persists — that is what lets a
+    // continuation carry its own resume context and usage client.
+    const harness = makeHarness({ engines: 'fresh' });
+    await harness.session.run('Fix the parser');
+    await harness.session.run('Fix the parser again');
+    expect(harness.engineRequests).toHaveLength(2);
+    expect(harness.engineRequests.map((entry) => entry.options.mode)).toEqual(['fast', 'fast']);
+    // Rebuilding must not resurrect an old cwd: both runs derive it from the workspace.
+    expect(harness.engineRequests.every((entry) => entry.options.workspaceRoot === entry.request.workspace.path)).toBe(true);
   });
 
   it('steers a live run but resumes a settled one', async () => {
@@ -135,7 +152,7 @@ describe('GituSessionRuntime lifecycle', () => {
   });
 
   it('stops the engine on cancel', async () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ startRun: true });
     let stopped = false;
     harness.engine.stop = () => {
       stopped = true;
@@ -150,7 +167,8 @@ describe('GituSessionRuntime lifecycle', () => {
       runtime.createSession({
         goal: 'Fix it',
         workspace: { type: 'container', containerId: 'abc', path: '/workspace' },
-        engine: { options: { workspaceRoot: '/workspace', llm: new ScriptedMockLlm([() => '{}']), mode: 'fast' }, deps: {} as never },
+        deps: {} as never,
+        runOptions: () => ({ workspaceRoot: '/workspace', llm: new ScriptedMockLlm([() => '{}']), mode: 'fast' }),
       }),
     ).toThrow(/container workspace yet/);
   });
@@ -158,10 +176,11 @@ describe('GituSessionRuntime lifecycle', () => {
 
 describe('GituSessionRuntime event stream', () => {
   it('publishes native payloads as reported and classifies legacy lines', () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ startRun: true });
     harness.sinks.onCodingEvent({ type: 'policy_denied', reason: 'project_guard', tool: 'write_file' });
     harness.sinks.onEvent('lines    src/cli.ts +12 lines');
-    const events = harness.session.events();
+    // The run boundary precedes them; this test is about classification.
+    const events = harness.session.events().filter((event) => event.type !== 'run_started');
     expect(events.map((event) => event.type)).toEqual(['policy_denied', 'file_changed']);
   });
 
@@ -171,7 +190,7 @@ describe('GituSessionRuntime event stream', () => {
     const callerOnCodingEvent = () => {};
     const seen: { sinks: Harness['sinks'] }[] = [];
     const runtime = new GituSessionRuntime({
-      createEngine: (request, sinks) => {
+      createEngine: (request, runOptions, sinks) => {
         seen.push({ sinks });
         return { run: async () => ({ ledger: { data: {} }, report: completeReport(request.goal) }) } as unknown as Gitu;
       },
@@ -179,20 +198,18 @@ describe('GituSessionRuntime event stream', () => {
     runtime.createSession({
       goal: 'Fix it',
       workspace: { type: 'host', path: dir },
-      engine: {
-        options: { workspaceRoot: dir, llm: new ScriptedMockLlm([() => '{}']), mode: 'fast' },
-        deps: {
-          connections: new ConnectionRegistry(),
-          connectionContext: () => '',
-          connectionActionHandler: async () => ({ message: '' }),
-          safestProviderRead: () => undefined,
-          connectionOperationHandler: async () => ({ message: '' }),
-          connectionRecoveryCheck: () => ({ action: 'setup-new', reason: '' }),
-          connectionRequestHandler: async () => false,
-          onEvent: callerOnEvent,
-          onCodingEvent: callerOnCodingEvent,
-        } as never,
-      },
+      runOptions: () => ({ workspaceRoot: dir, llm: new ScriptedMockLlm([() => '{}']), mode: 'fast' }),
+      deps: {
+        connections: new ConnectionRegistry(),
+        connectionContext: () => '',
+        connectionActionHandler: async () => ({ message: '' }),
+        safestProviderRead: () => undefined,
+        connectionOperationHandler: async () => ({ message: '' }),
+        connectionRecoveryCheck: () => ({ action: 'setup-new', reason: '' }),
+        connectionRequestHandler: async () => false,
+        onEvent: callerOnEvent,
+        onCodingEvent: callerOnCodingEvent,
+      } as never,
     });
     expect(seen[0]?.sinks.onEvent).not.toBe(callerOnEvent);
     expect(seen[0]?.sinks.onCodingEvent).not.toBe(callerOnCodingEvent);
@@ -201,7 +218,7 @@ describe('GituSessionRuntime event stream', () => {
 
 describe('GituSessionRuntime approval gate', () => {
   it('surfaces a pending approval and lets the first answer win', async () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
     const required = harness.session.events().find((event) => event.type === 'approval_required') as { approvalId: string } | undefined;
     expect(required?.approvalId).toBeTruthy();
@@ -215,7 +232,7 @@ describe('GituSessionRuntime approval gate', () => {
   });
 
   it('times a pending approval out to a denial', async () => {
-    const harness = makeHarness({ gateTimeoutMs: 20 });
+    const harness = makeHarness({ gateTimeoutMs: 20, startRun: true });
     const pending = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
     await expect(pending).resolves.toBe(false);
     const resolved = harness.session.events().filter((event) => event.type === 'approval_resolved');
@@ -225,7 +242,7 @@ describe('GituSessionRuntime approval gate', () => {
 
 describe('GituSessionRuntime plan review and question gates', () => {
   it('surfaces a plan review and resolves it as approved', async () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['tests pass'], steps: [{ description: 'implement', verification: 'npm test' }] });
     const requested = harness.session.events().find((event) => event.type === 'plan_review_requested') as { requestId: string; plan: string } | undefined;
     expect(requested?.plan).toContain('tests pass');
@@ -239,7 +256,7 @@ describe('GituSessionRuntime plan review and question gates', () => {
   });
 
   it('distinguishes a change request from a bare rejection', async () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
     harness.session.approvePlan({ approved: false, note: 'split the first step' });
     await expect(pending).resolves.toMatchObject({ approved: false, note: 'split the first step' });
@@ -247,7 +264,7 @@ describe('GituSessionRuntime plan review and question gates', () => {
   });
 
   it('surfaces questions and answers them', async () => {
-    const harness = makeHarness();
+    const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
     const requested = harness.session.events().find((event) => event.type === 'questions_requested') as { requestId: string; questions: string[] } | undefined;
     expect(requested?.questions).toEqual(['Which database?']);
@@ -259,10 +276,36 @@ describe('GituSessionRuntime plan review and question gates', () => {
   });
 
   it('fails a plan review closed when nobody answers', async () => {
-    const harness = makeHarness({ gateTimeoutMs: 20 });
+    const harness = makeHarness({ gateTimeoutMs: 20, startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
     await expect(pending).resolves.toMatchObject({ approved: false, note: 'Plan review timed out.' });
     expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'rejected' });
+  });
+
+  it('releases every pending gate on cancel instead of leaving it to time out', async () => {
+    // A stopped run must not leave a surface staring at a gate that will never
+    // be answered: detach/reconnect paths depend on this being immediate.
+    const harness = makeHarness({ startRun: true });
+    const approval = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
+    const plan = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    const questions = harness.sinks.askUserHandler([{ question: 'Which database?', options: [] }]);
+
+    await harness.session.cancel('run deleted');
+
+    await expect(approval).resolves.toBe(false);
+    await expect(plan).resolves.toMatchObject({ approved: false });
+    // Questions are the documented exception: they proceed on defaults rather
+    // than denying, because an unanswered question does not stop the action.
+    await expect(questions).resolves.toBe('(no answer — proceed with reasonable defaults)');
+
+    const view = harness.session.getState();
+    expect(view.pendingApproval).toBeUndefined();
+    expect(view.pendingPlanReview).toBeUndefined();
+    expect(view.pendingQuestions).toBeUndefined();
+    const kinds = harness.session.events().map((event) => event.type);
+    expect(kinds).toContain('approval_resolved');
+    expect(kinds).toContain('plan_review_resolved');
+    expect(kinds).toContain('questions_answered');
   });
 });
 
@@ -283,21 +326,19 @@ describe('GituSessionRuntime end to end through the real engine', () => {
     const session = runtime.createSession({
       goal: 'Check the Node runtime version',
       workspace: { type: 'host', path: dir },
-      engine: {
-        options: { workspaceRoot: dir, llm, mode: 'fast', criteria: ['node --version runs'], autoApprove: true, requirePlanReview: false },
-        deps: {
-          connections: new ConnectionRegistry(),
-          connectionContext: () => '',
-          connectionActionHandler: async () => ({ message: '' }),
-          safestProviderRead: () => undefined,
-          connectionOperationHandler: async () => ({ message: '' }),
-          connectionRecoveryCheck: () => ({ action: 'setup-new', reason: '' }),
-          connectionRequestHandler: async () => false,
-          // The caller still believes it owns the legacy stream. Under the
-          // runtime it is retired, not merely bypassed.
-          onEvent: (line) => callerLegacy.push(line),
-        } as never,
-      },
+      runOptions: () => ({ workspaceRoot: dir, llm, mode: 'fast', criteria: ['node --version runs'], autoApprove: true, requirePlanReview: false }),
+      deps: {
+        connections: new ConnectionRegistry(),
+        connectionContext: () => '',
+        connectionActionHandler: async () => ({ message: '' }),
+        safestProviderRead: () => undefined,
+        connectionOperationHandler: async () => ({ message: '' }),
+        connectionRecoveryCheck: () => ({ action: 'setup-new', reason: '' }),
+        connectionRequestHandler: async () => false,
+        // The caller still believes it owns the legacy stream. Under the
+        // runtime it is retired, not merely bypassed.
+        onEvent: (line) => callerLegacy.push(line),
+      } as never,
     });
     const result = await session.run('Check the Node runtime version');
 

@@ -37,29 +37,37 @@ import type {
 import type { CodingEventPayload, PlanReviewDecision } from './events.js';
 import { CodingEventLog, type CodingEventLogOptions } from './event-log.js';
 import { createGitu, type GituFactoryDependencies, type GituFactoryOptions } from './gitu-factory.js';
-import type { LlmClient } from '../llm/llm.js';
 import { describeWorkspace, isLocalWorkspace, workspacePath, type WorkspaceRef } from './workspace.js';
 
 export interface GituSessionRequest {
   goal: string;
   workspace: WorkspaceRef;
   /**
-   * Factory inputs for this session. The runtime owns both event sinks, the
-   * approval gate and the plan/question gates, so a caller's `onEvent`,
-   * `onCodingEvent`, `approvalHandler`, `planReviewHandler` and
-   * `askUserHandler` are ignored — supplying them there would publish the same
-   * transition twice.
+   * Host services stable for the whole session — connections, skills, MCP,
+   * browser. The runtime owns both event sinks and all three gates, so those
+   * are omitted here: supplying them would publish the same transition twice.
    */
-  engine: {
-    options: Omit<GituFactoryOptions, 'llm'> & { llm: LlmClient };
-    deps: Omit<GituFactoryDependencies, 'onEvent' | 'onCodingEvent' | 'approvalHandler' | 'planReviewHandler' | 'askUserHandler'>;
-  };
+  deps: Omit<GituFactoryDependencies, 'onEvent' | 'onCodingEvent' | 'approvalHandler' | 'planReviewHandler' | 'askUserHandler'>;
+  /**
+   * Per-run engine options, including the LLM.
+   *
+   * Called once per run and once per continuation, because the engine is built
+   * per run while the session persists. A continuation resumes its task with
+   * its own conversation history and its own usage-tracking client, which is
+   * exactly what the server does today. `attempt` counts runs in this session,
+   * starting at 1.
+   *
+   * The returned `workspaceRoot` is ignored: the runtime derives it from
+   * `workspace` so the engine's cwd and the session view can never disagree.
+   */
+  runOptions: (run: { goal: string; attempt: number }) => GituFactoryOptions;
   /** Attribution for memories and the UI; wiring into memory scoping lands with
    *  server adoption. */
   agentId?: string;
   requestedBy?: string;
   /** How long any pending gate (approval, plan review, questions) waits before
-   *  the runtime denies it. Gates fail closed, never open. */
+   *  the runtime settles it. Two gates deny, one proceeds on defaults — see
+   *  `releaseGates` for why those are not the same class of behaviour. */
   gateTimeoutMs?: number;
   /** Surfaces a pending approval. The runtime owns the answer. */
   onApprovalRequired?: (request: CodingApprovalRequest) => void;
@@ -85,24 +93,21 @@ interface EngineSinks {
 
 export interface GituSessionRuntimeOptions {
   /**
-   * Engine construction. Defaults to the extracted Gitu factory; injectable so
-   * tests can drive the runtime without a real engine.
+   * Engine construction, invoked once per run. Defaults to the extracted Gitu
+   * factory; injectable so tests can drive the runtime without a real engine.
    */
-  createEngine?: (request: GituSessionRequest, sinks: EngineSinks) => Gitu;
+  createEngine?: (request: GituSessionRequest, options: GituFactoryOptions, sinks: EngineSinks) => Gitu;
 }
 
-function defaultCreateEngine(request: GituSessionRequest, sinks: EngineSinks): Gitu {
-  return createGitu(
-    { ...request.engine.options, llm: request.engine.options.llm },
-    {
-      ...request.engine.deps,
-      onEvent: sinks.onEvent,
-      onCodingEvent: sinks.onCodingEvent,
-      approvalHandler: sinks.approvalHandler,
-      planReviewHandler: sinks.planReviewHandler,
-      askUserHandler: sinks.askUserHandler,
-    },
-  );
+function defaultCreateEngine(request: GituSessionRequest, options: GituFactoryOptions, sinks: EngineSinks): Gitu {
+  return createGitu(options, {
+    ...request.deps,
+    onEvent: sinks.onEvent,
+    onCodingEvent: sinks.onCodingEvent,
+    approvalHandler: sinks.approvalHandler,
+    planReviewHandler: sinks.planReviewHandler,
+    askUserHandler: sinks.askUserHandler,
+  });
 }
 
 export class GituSessionRuntime {
@@ -121,9 +126,6 @@ export class GituSessionRuntime {
       );
     }
     const workspaceRoot = workspacePath(request.workspace);
-    // Derived, not trusted: the engine's cwd and the session view must agree,
-    // so a caller cannot hand the runtime one workspace and the engine another.
-    const engineRequest: GituSessionRequest = { ...request, engine: { ...request.engine, options: { ...request.engine.options, workspaceRoot } } };
     const log = new CodingEventLog(request.eventLog);
     const id = shortId('run');
     const startedAt = nowIso();
@@ -220,13 +222,51 @@ export class GituSessionRuntime {
       return decided;
     };
 
-    const engine = this.createEngine(engineRequest, {
+    /**
+     * Fail every pending gate closed.
+     *
+     * Approvals and plan reviews deny the action; questions answer with the
+     * engine's own "proceed with reasonable defaults" value. That difference is
+     * deliberate and is NOT one class of behaviour: a denied approval stops the
+     * action, while an unanswered question lets the run continue on stated
+     * assumptions. Do not "unify" them without changing engine semantics too.
+     *
+     * Called on cancel, so a stopped run can never leave a gate hanging until
+     * its timeout, and safe to call with nothing pending.
+     */
+    const releaseGates = (reason: string): void => {
+      for (const [approvalId, gate] of [...pendingApprovals]) {
+        pendingApprovals.delete(approvalId);
+        if (pendingApproval?.id === approvalId) pendingApproval = undefined;
+        log.publishNative({ type: 'approval_resolved', approvalId, approved: false, reason });
+        gate.resolve(false);
+      }
+      for (const [requestId, gate] of [...pendingPlanReviews]) {
+        pendingPlanReviews.delete(requestId);
+        if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
+        log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected' });
+        gate.resolve({ approved: false, note: `Plan review ${reason}.` });
+      }
+      for (const [requestId, gate] of [...pendingQuestionGates]) {
+        pendingQuestionGates.delete(requestId);
+        if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
+        log.publishNative({ type: 'questions_answered', requestId });
+        gate.resolve('(no answer — proceed with reasonable defaults)');
+      }
+    };
+
+    const sinks: EngineSinks = {
       onEvent: (line) => log.publishLegacy(line),
       onCodingEvent: (payload) => log.publishNative(payload),
       approvalHandler,
       planReviewHandler,
       askUserHandler,
-    });
+    };
+
+    /** The engine for the run in flight. Built per run and cleared when it
+     *  settles, which is what lets `cancel()` and steering target the right one. */
+    let currentEngine: Gitu | undefined;
+    let attempt = 0;
 
     let status: CodingSessionStatus = 'running';
     let error: string | undefined;
@@ -235,6 +275,7 @@ export class GituSessionRuntime {
     let finishedAt: string | undefined;
 
     const execute = async (goal: string): Promise<CodingRunResult> => {
+      attempt += 1;
       // Published after the runtime has accepted the run and gone active, and
       // immediately before the engine sees the goal. Creating a session is not
       // starting work: a session may sit idle, be resumed, or be re-used.
@@ -242,6 +283,12 @@ export class GituSessionRuntime {
       finishedAt = undefined;
       error = undefined;
       log.publishNative({ type: 'run_started', goal, workspace: describeWorkspace(request.workspace) });
+      // Built per run, not per session: a continuation carries its own resume
+      // context and its own usage client. `workspaceRoot` is applied last, so a
+      // caller's run options can never point the engine at another workspace.
+      const options: GituFactoryOptions = { ...request.runOptions({ goal, attempt }), workspaceRoot };
+      const engine = this.createEngine(request, options, sinks);
+      currentEngine = engine;
       try {
         const result = await engine.run(goal);
         taskId = result.ledger.data.taskId;
@@ -254,6 +301,9 @@ export class GituSessionRuntime {
         error = (err as Error).message;
         finishedAt = nowIso();
         return { sessionId: id, status, error };
+      } finally {
+        // Only clear our own engine: a continuation may already have replaced it.
+        if (currentEngine === engine) currentEngine = undefined;
       }
     };
 
@@ -278,17 +328,21 @@ export class GituSessionRuntime {
         // A live run is steered; a settled session resumes its task with the
         // message, which is what the engine's own ledger makes possible.
         if (status === 'running') {
-          engine.queueMessage(message);
+          currentEngine?.queueMessage(message);
           return { sessionId: id, status };
         }
         return execute(message);
       },
       cancel: async (reason) => {
+        const note = reason ?? 'cancelled';
+        // Release first: a stopped run must never leave a gate hanging until its
+        // timeout. Approvals and plan reviews deny; questions proceed on defaults.
+        releaseGates(note);
         // The run promise settles on its own, and the status is set when it
         // does — a consumer never sees a session claim to be running after a
         // stop it asked for but that has not finished unwinding.
-        engine.stop();
-        if (reason && status === 'running') log.publishNative({ type: 'log', text: `stop requested — ${reason}` });
+        currentEngine?.stop();
+        if (status === 'running') log.publishNative({ type: 'log', text: `stop requested — ${note}` });
       },
       approve: (approvalId, approved) => {
         const entry = pendingApprovals.get(approvalId);

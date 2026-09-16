@@ -206,6 +206,41 @@ describe('typed gate cards', () => {
     expect(UI_HTML).toContain("api('/api/plan-review/' + pr.id");
     expect(UI_HTML).toContain("api('/api/answers/' + q.id");
   });
+
+  it('reads a restored frame as history: no gate card, but the exit fact still lands', () => {
+    // After a restart the store replays typed frames beside the prose rows. A
+    // gate request among them was raised by a runtime this process does not
+    // have, so a card for it would offer buttons that resolve nothing — and
+    // would never clear, since no resolution can ever follow.
+    const { context, sess, rendered } = harness();
+    context.handleTypedFrame('run1', {
+      ...frame({ type: 'approval_required', approvalId: 'appr_old', tool: 'run_command', why: 'destructive', summary: 'rm -rf build' }),
+      restored: true,
+    });
+    expect(sess.typedApprovals).toBeUndefined();
+    expect(rendered).toEqual([]);
+    expect(context.pendingApprovalsFor(sess, undefined)).toHaveLength(0);
+
+    // A command frame is not a request: it only enriches the card the replayed
+    // prose rebuilt, so history is exactly when it is useful.
+    const applied: Record<string, unknown>[] = [];
+    context.applyCommandFinish = (_runId: string, typed: Record<string, unknown>) => {
+      applied.push(typed);
+    };
+    context.handleTypedFrame('run1', {
+      ...frame({ type: 'command_finished', command: 'node --version', ok: true, exitCode: 0 }, 11),
+      restored: true,
+    });
+    expect(applied).toHaveLength(1);
+
+    // The mark decides, not the type: the same request arriving live — the
+    // fast path a reconnect uses — still opens the card.
+    context.handleTypedFrame(
+      'run1',
+      frame({ type: 'approval_required', approvalId: 'appr_live', tool: 'run_command', why: 'destructive', summary: 'rm -rf build' }, 12),
+    );
+    expect(sess.typedApprovals?.appr_live).toBeTruthy();
+  });
 });
 
 describe('typed command frames', () => {

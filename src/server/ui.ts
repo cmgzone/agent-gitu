@@ -3899,7 +3899,8 @@ export const UI_HTML = String.raw`<!doctype html>
   // lifecycle. Every gate action a card offers posts the request id it was
   // rendered for — never "whatever is pending now" — so a second surface
   // (Cowork, the Chief of Staff) answering first cannot make this card resolve
-  // a different request.
+  // a different request. Frames marked "restored" are reconstructed from the
+  // store after a restart and are read as history, not as pending work.
   function handleTypedFrame(runId, frame) {
     var sess = S.sessions[runId];
     var typed = frame && frame.typed;
@@ -3910,6 +3911,14 @@ export const UI_HTML = String.raw`<!doctype html>
     // code fact prose cannot express.
     if (typed.type === 'command_started') return;
     if (typed.type === 'command_finished') { applyCommandFinish(runId, typed); return; }
+    // Everything below is a gate. A restored frame is history: the process that
+    // raised its gate did not survive the restart, so a request the log happens
+    // to end with was never ours to answer, and a card for it would offer
+    // buttons that resolve nothing. A live reconnect replays frames without the
+    // mark, and a still-pending gate is in the session view either way — so
+    // ignoring history costs nothing that is actually live. Commands returned
+    // above: their frames only enrich rows the replay has already rebuilt.
+    if (frame.restored) return;
     var settled = null;
     if (typed.type === 'approval_required') {
       sess.typedApprovals = sess.typedApprovals || {};

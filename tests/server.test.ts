@@ -65,7 +65,15 @@ describe('HermesServer', () => {
     return { base: `http://127.0.0.1:${port}`, server };
   }
 
-  type StreamFrame = { i?: number; text?: string; typed?: { type: string } & Record<string, unknown> };
+  type StreamFrame = {
+    i?: number;
+    text?: string;
+    /** A row replayed after (re)connecting: render it without animating. */
+    replay?: boolean;
+    /** A frame rebuilt from the store: it predates this process. */
+    restored?: boolean;
+    typed?: { type: string } & Record<string, unknown>;
+  };
 
   /**
    * Reads one connection's worth of the session stream: the replayed rows, the
@@ -315,6 +323,9 @@ describe('HermesServer', () => {
     // No `i` is what keeps it invisible: the client only appends a row when
     // `ev.i` advances its cursor, so this frame is never passed to the renderer.
     expect(finishedFrame!.i).toBeUndefined();
+    // And no `restored`: this process raised it, so a gate request in it is still
+    // answerable here. Only frames rebuilt from the store carry that mark.
+    expect(finishedFrame!.restored).toBeUndefined();
     expect(nativeFrames.some((frame) => frame.typed?.type === 'command_started')).toBe(true);
   }, 30000);
 
@@ -675,6 +686,105 @@ describe('HermesServer', () => {
     });
     expect(receivedHistory).toBe(true);
     expect(finished.report.summary).toContain('The widget is blue');
+  }, 30000);
+
+  it('restores typed command frames across a restart, marked as history', async () => {
+    // Durable typed events are what let a restored session show the facts prose
+    // cannot carry — the real exit code above all — instead of degrading to the
+    // prose fallback the moment the process ends.
+    const dir = makeProject('frame-restart-command');
+    const first = new HermesServer({
+      cwd: dir,
+      port: 0,
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+        () =>
+          JSON.stringify({
+            action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+          }),
+        () => JSON.stringify({ action: { type: 'request_block', reason: 'verified' } }),
+      ]),
+    });
+    servers.push(first);
+    const firstBase = `http://127.0.0.1:${await first.start()}`;
+    const created = await fetch(`${firstBase}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'verify node', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${firstBase}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    await first.stop();
+
+    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    servers.push(second);
+    const secondBase = `http://127.0.0.1:${await second.start()}`;
+    const { frames, diagnostics } = await readStream(secondBase, created.runId);
+
+    const finished = frames.find((f) => f.typed?.type === 'command_finished');
+    expect(finished, diagnostics).toBeTruthy();
+    expect(finished!.typed).toMatchObject({ type: 'command_finished', ok: true, exitCode: 0 });
+    // Rebuilt from the store, so the client can tell it apart from a frame the
+    // running process raised. No `i`, so it still never reaches the renderer.
+    expect(finished!.restored).toBe(true);
+    expect(finished!.i).toBeUndefined();
+  }, 30000);
+
+  it('does not offer an interrupted approval as answerable after a restart', async () => {
+    // The run was stopped while the runtime held an approval. The request stays
+    // in the log — it is history and the log keeps history — but after the
+    // restart it comes back marked as restored, and the session offers nothing
+    // to answer: no promise anywhere is still waiting behind that id.
+    const dir = makeProject('frame-restart-approval');
+    const first = new HermesServer({
+      cwd: dir,
+      port: 0,
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['cleanup done'] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'dangerous cleanup', verification: 'n/a' }] } }),
+        () =>
+          JSON.stringify({
+            action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
+          }),
+        () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped before deciding' } }),
+      ]),
+    });
+    servers.push(first);
+    const firstBase = `http://127.0.0.1:${await first.start()}`;
+    const created = await fetch(`${firstBase}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Force push cleanup', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+    const waiting = await waitFor(async () => {
+      const s = await fetch(`${firstBase}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingApprovals.length > 0 ? s : undefined;
+    });
+    await first.stop();
+
+    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    servers.push(second);
+    const secondBase = `http://127.0.0.1:${await second.start()}`;
+
+    const restored = await fetch(`${secondBase}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(restored.pendingApprovals).toHaveLength(0);
+
+    const { frames, diagnostics } = await readStream(secondBase, created.runId);
+    const requested = frames.find((f) => f.typed?.type === 'approval_required');
+    expect(requested, diagnostics).toBeTruthy();
+    expect(requested!.restored).toBe(true);
+
+    // And the id really resolves nothing: the mark is how a client avoids
+    // offering a button, this is the server refusing to pretend it works.
+    const late = await fetch(`${secondBase}/api/approvals/${waiting.pendingApprovals[0].id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(late.status).toBe(404);
   }, 30000);
 
   it('retry and edited resends supersede the original message instead of cloning it', async () => {

@@ -294,3 +294,40 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(0);
   }, 30000);
 });
+
+describe('SessionStore — durable typed frames', () => {
+  it('keys frames by their own cursor, keeps the newest, and drops them with their session', () => {
+    // `seq` is the runtime log's cursor and restarts at 1 in every new process,
+    // so frames cannot be keyed by it: a restored frame would collide with an
+    // unrelated later one. The store's own `fid` keeps them apart, and the cap
+    // bounds a long run on disk exactly as the in-memory buffer bounds it.
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-frames-'));
+    const store = new SessionStore(path.join(dir, 'frames.db'));
+    const runId = 'run-frames';
+    store.upsertSession({ runId, goal: 'typed frames', startedAt: new Date().toISOString(), status: 'running' });
+
+    store.addNativeFrame(runId, { t: 't1', typed: { type: 'command_finished', seq: 1, exitCode: 0 } }, 3);
+    store.addNativeFrame(runId, { t: 't2', typed: { type: 'command_finished', seq: 2, exitCode: 1 } }, 3);
+    expect(store.nativeFramesFor(runId).map((f) => f.fid)).toEqual([0, 1]);
+
+    // The next two carry seqs from a second process, which is the collision the
+    // separate cursor exists to prevent.
+    store.addNativeFrame(runId, { t: 't3', typed: { type: 'approval_required', seq: 1, approvalId: 'appr_1' } }, 3);
+    store.addNativeFrame(runId, { t: 't4', typed: { type: 'command_finished', seq: 3, exitCode: 0 } }, 3);
+
+    const frames = store.nativeFramesFor(runId);
+    expect(frames.map((f) => f.fid)).toEqual([1, 2, 3]);
+    expect(frames.map((f) => (f.typed as { type: string }).type)).toEqual([
+      'command_finished',
+      'approval_required',
+      'command_finished',
+    ]);
+    // The payload comes back whole, timestamps included.
+    expect(frames.at(-1)).toMatchObject({ t: 't4', typed: { seq: 3, exitCode: 0 } });
+
+    // A removed session must not leave typed history behind for its id.
+    expect(store.deleteSession(runId)).toBe(true);
+    expect(store.nativeFramesFor(runId)).toEqual([]);
+    store.close();
+  });
+});

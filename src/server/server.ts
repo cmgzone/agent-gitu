@@ -131,9 +131,12 @@ interface SessionEvent {
   t: string;
   text: string;
   /**
-   * Live rows carry this; rows restored from the store do not, because the
-   * durable schema is `(idx, t, text)`. A card that migrates onto `typed` must
-   * therefore keep its prose fallback until the schema moves with it.
+   * Live rows carry this; rows restored from the store do not, because a row's
+   * durable schema is still `(idx, t, text)`. Typed-only frames *are* durable
+   * (see `native_frames`), which is what the UI's cards and the command exit
+   * code read today, so this is narrower than it sounds: it means a card that
+   * someday migrates onto a *row's* `typed` must keep its prose fallback until
+   * that schema moves too.
    */
   typed?: CodingEvent;
 }
@@ -154,6 +157,14 @@ interface NativeEventFrame {
   /** The log's timestamp, matching the `t` a sibling row carries. */
   t: string;
   typed: CodingEvent;
+  /**
+   * This event predates the current process, restored from the store.
+   *
+   * A claim about time, not about transport: the runtime that raised any gate in
+   * here is gone, so a restored gate request is history and must not open a card
+   * nothing can answer. A live reconnect replays frames without the mark.
+   */
+  restored?: true;
 }
 
 /** What may travel on a session's event stream. */
@@ -805,10 +816,10 @@ export class GituServer {
         usage: entry.usage,
         files: entry.files,
         events: Array.isArray(entry.events) ? entry.events : [],
-        // A restart restores prose only: the durable event schema is `(idx, t,
-        // text)`, so typed frames from before it are gone by design. Restoring
-        // them is the persistence step, not this one.
-        nativeFrames: [],
+        // Prose rows and typed frames both come back, so a restored session
+        // rebuilds the typed state a live one has instead of falling back to
+        // prose. They return marked `restored`; see `restoredNativeFrames`.
+        nativeFrames: this.restoredNativeFrames(entry.runId),
         subscribers: new Set(),
         approvals: new Map(),
       };
@@ -2547,21 +2558,45 @@ export class GituServer {
   /**
    * Hand a native-only runtime event to this session's stream.
    *
-   * Not a `SessionEvent` row: it is not persisted, and it carries no `i`, so the
-   * legacy renderer ignores it entirely. It exists so a consumer that speaks the
-   * typed vocabulary can see the transitions that never had prose —
-   * `command_finished.exitCode` above all, and the approval gate — without a
-   * second SSE channel.
+   * Not a `SessionEvent` row: it carries no `i`, so the legacy renderer ignores
+   * it entirely. It exists so a consumer that speaks the typed vocabulary can
+   * see the transitions that never had prose — `command_finished.exitCode` above
+   * all, and the gate families — without a second SSE channel.
    *
-   * It is buffered on the session, so it survives a reconnect within this process
-   * and not a restart: restoring it from the store is the durable-persistence
-   * step, which is separate on purpose.
+   * Buffered on the session and written to the store, so it survives both a
+   * reconnect and a restart. Both bounds are the same one, for the same reason:
+   * a long run's early frames are not worth unbounded memory or disk.
    */
   private publishNativeEvent(s: RunSession, event: CodingEvent): void {
     const frame: NativeEventFrame = { seq: event.seq, t: event.at, typed: event };
     s.nativeFrames.push(frame);
     if (s.nativeFrames.length > NATIVE_FRAME_CAPACITY) s.nativeFrames.splice(0, s.nativeFrames.length - NATIVE_FRAME_CAPACITY);
+    // Best-effort like every other write here: a failed append must not break a run.
+    try {
+      this.db().addNativeFrame(s.runId, { t: frame.t, typed: frame.typed }, NATIVE_FRAME_CAPACITY);
+    } catch {
+      /* persistence must never break the run */
+    }
     for (const send of s.subscribers) send(frame);
+  }
+
+  /**
+   * Rebuild a session's typed frames after a restart.
+   *
+   * `seq` is the runtime log's cursor and restarts at 1 in every new process, so
+   * frames are stored under their own `fid`; the payload's `seq` is carried
+   * through unchanged for readers that want it. Each comes back marked
+   * `restored`, which is what stops a historical gate request from opening a
+   * card: whatever the log ends with, no runtime survived the restart to answer.
+   */
+  private restoredNativeFrames(runId: string): NativeEventFrame[] {
+    const frames: NativeEventFrame[] = [];
+    for (const stored of this.db().nativeFramesFor(runId)) {
+      const typed = stored.typed as CodingEvent | null;
+      if (!typed || typeof typed !== 'object' || typeof typed.type !== 'string' || typeof typed.seq !== 'number') continue;
+      frames.push({ seq: typed.seq, t: stored.t, typed, restored: true });
+    }
+    return frames;
   }
 
   private pushEvent(s: RunSession, text: string, persistDb = true, typed?: CodingEvent): void {
@@ -3742,7 +3777,9 @@ export class GituServer {
       // Native-only frames have no row to be replayed from, so they come back
       // from the session's own buffer: a client that reconnects mid-run must
       // still see the command it missed. They carry no `i`, so replaying them
-      // stays silent for the legacy renderer either way.
+      // stays silent for the legacy renderer either way. A frame restored from
+      // the store keeps its mark: only a frame from this process may open a gate
+      // card, because only this process still holds the request behind it.
       for (const frame of session.nativeFrames) safeWrite(`data: ${JSON.stringify(frame)}\n\n`);
       const send = (ev: StreamFrame): void => {
         safeWrite(`data: ${JSON.stringify(ev)}\n\n`);

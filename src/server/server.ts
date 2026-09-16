@@ -5,6 +5,7 @@ import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
+import { GituSessionRuntime } from '../coding/session-runtime.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -33,11 +34,11 @@ import { SessionStore, type SessionUsage, type StoredSessionFile } from './sessi
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
-import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionRequirement } from '../connections/connections.js';
+import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
-import type { CompletionReport } from '../types.js';
+import type { CompletionReport, RiskTier } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
@@ -204,6 +205,22 @@ const MAX_ATTACHMENT_TEXT_EXCERPT = 12_000;
 const LONG_RESPONSE_DOCUMENT_CHARS = 6_000;
 
 /**
+ * Informational classification for the shared approval gate.
+ *
+ * The connection subsystem has already decided that an operation needs
+ * approval; this only labels the request for the single gate that now carries
+ * it. It must never be read as authorization — the connection subsystem remains
+ * authoritative about whether approval is required at all, and read-only
+ * operations never reach the approval channel in the first place.
+ */
+function connectionRiskToApprovalTier(risk: ConnectionOperationRisk): RiskTier {
+  // read → safe, every write class → moderate. `reversible-write` and
+  // `destructive` deliberately share the moderate label: this tier carries no
+  // authorization weight, so it must not be used to rank write severity.
+  return risk === 'read' ? 'safe' : 'moderate';
+}
+
+/**
  * Memory promotion notices are informational transcript events.  A resumed
  * run can replay the same compaction history, so treat a notice as an
  * idempotent event keyed by its normalized claim.
@@ -231,6 +248,9 @@ export class GituServer {
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
   private readonly connections = new ConnectionRegistry();
+  /** Runtime-owned session guarantees. Approval resolution authority lives here;
+   *  the run path keeps a compatibility mirror for the existing endpoint and UI. */
+  private readonly gituRuntime = new GituSessionRuntime();
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
   private store?: SessionStore;
@@ -4272,26 +4292,50 @@ export class GituServer {
     // Provider writes always require an individual approval. This intentionally
     // does not consult autoApprove: a model's ability to select a provider
     // operation must never become blanket authority over user infrastructure.
-    const requestApproval = (request: { tool: string; why: string; summary: string }) =>
-      new Promise<boolean>((resolve) => {
-        const waiter: ApprovalWaiter = {
-          id: shortId('appr'),
-          tool: request.tool,
-          why: request.why,
-          summary: request.summary,
-          requestedAt: nowIso(),
-          resolve,
-        };
-        session.approvals.set(waiter.id, waiter);
-        this.pushEvent(session, `approval-required ${waiter.id} [${request.tool}] ${request.why}`);
-        setTimeout(() => {
-          if (session.approvals.has(waiter.id)) {
-            session.approvals.delete(waiter.id);
-            this.pushEvent(session, `approval ${waiter.id} timed out — denied`);
-            resolve(false);
-          }
-        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+    //
+    // The runtime owns approval resolution: the engine is handed the runtime's
+    // gate, so there is exactly one approval promise per request. The server
+    // keeps a compatibility mirror below for its existing endpoint and UI.
+    const runtimeSession = this.gituRuntime.createSession({
+      goal: opts.goal,
+      workspace: { type: 'host', path: opts.projectPath ?? this.config.cwd },
+      gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
+      onApprovalRequired: (request) => {
+        this.pushEvent(session, `approval-required ${request.id} [${request.tool}] ${request.why}`);
+      },
+    });
+    /**
+     * Compatibility mirror only.
+     * GituSessionRuntime owns approval resolution authority.
+     * Remove after the HTTP approval endpoint is migrated.
+     *
+     * Reconciled from runtime state, never from an event payload: another
+     * surface (Cowork, the CLI) may already have resolved the approval before
+     * this process observed the transition, so the runtime's current state —
+     * not its event history — is what the mirror shows. The mirrored entry
+     * carries the answer; the runtime decides it.
+     */
+    const syncApprovalMirror = (): void => {
+      const pending = runtimeSession.getState().pendingApproval;
+      session.approvals.clear();
+      if (!pending) return;
+      session.approvals.set(pending.id, {
+        id: pending.id,
+        tool: pending.tool,
+        why: pending.why,
+        summary: pending.summary ?? '',
+        requestedAt: pending.requestedAt,
+        resolve: (approved) => runtimeSession.approve(pending.id, approved),
       });
+    };
+    runtimeSession.subscribe((event) => {
+      syncApprovalMirror();
+      // The runtime settles a timed-out approval itself; keep the legacy line so
+      // the transcript reads exactly as it did under server-owned gates.
+      if (event.type === 'approval_resolved' && event.reason === 'timed out' && event.approvalId) {
+        this.pushEvent(session, `approval ${event.approvalId} timed out — denied`);
+      }
+    });
     // Keep the per-run universal catalog synchronized with durable connection
     // metadata. A connection can be added or gain a documented operation while
     // this run is paused; the next model turn must see and invoke it immediately.
@@ -4377,8 +4421,11 @@ export class GituServer {
       }
       const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
       const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
-      const approved = await requestApproval({
+      const approved = await runtimeSession.gates.approvalHandler({
         tool: `connection:${profile.provider}`,
+        // Informational label only: the connection subsystem already decided
+        // this operation needs approval, and never reads the tier back.
+        tier: connectionRiskToApprovalTier(op.risk),
         why: `External ${op.risk} operation — ${proposal.reason}`,
         summary: [
           `Connection: ${profile.label} (${profile.id})`,
@@ -4500,7 +4547,7 @@ export class GituServer {
             }
           }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
         }),
-      approvalHandler: requestApproval,
+      approvalHandler: runtimeSession.gates.approvalHandler,
       onEvent: (text) => {
         if (!isCurrentExecution()) return;
         const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);

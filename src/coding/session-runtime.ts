@@ -46,8 +46,13 @@ export interface GituSessionRequest {
    * Host services stable for the whole session — connections, skills, MCP,
    * browser. The runtime owns both event sinks and all three gates, so those
    * are omitted here: supplying them would publish the same transition twice.
+   *
+   * Optional for a host that is only part-way migrated: `GituServer` still
+   * builds its own engine, so it creates a session purely to own the gates and
+   * wires `gates` into that engine. A session created that way cannot run, and
+   * says so instead of constructing an engine with no host services.
    */
-  deps: Omit<GituFactoryDependencies, 'onEvent' | 'onCodingEvent' | 'approvalHandler' | 'planReviewHandler' | 'askUserHandler'>;
+  deps?: Omit<GituFactoryDependencies, 'onEvent' | 'onCodingEvent' | 'approvalHandler' | 'planReviewHandler' | 'askUserHandler'>;
   /**
    * Per-run engine options, including the LLM.
    *
@@ -59,8 +64,11 @@ export interface GituSessionRequest {
    *
    * The returned `workspaceRoot` is ignored: the runtime derives it from
    * `workspace` so the engine's cwd and the session view can never disagree.
+   *
+   * Optional on the same terms as `deps`: a gate-ownership session never builds
+   * an engine, so it has no per-run options to offer.
    */
-  runOptions: (run: { goal: string; attempt: number }) => GituFactoryOptions;
+  runOptions?: (run: { goal: string; attempt: number }) => GituFactoryOptions;
   /** Attribution for memories and the UI; wiring into memory scoping lands with
    *  server adoption. */
   agentId?: string;
@@ -99,9 +107,27 @@ export interface GituSessionRuntimeOptions {
   createEngine?: (request: GituSessionRequest, options: GituFactoryOptions, sinks: EngineSinks) => Gitu;
 }
 
+/**
+ * The engine-construction inputs.
+ *
+ * A session that exists only to own gates — the transitional shape while a host
+ * still builds its own engine — has neither, and being asked to run is a
+ * programming error worth naming rather than an empty engine worth guessing at.
+ */
+function requireEngineInputs(request: GituSessionRequest): {
+  deps: NonNullable<GituSessionRequest['deps']>;
+  runOptions: NonNullable<GituSessionRequest['runOptions']>;
+} {
+  if (!request.deps || !request.runOptions) {
+    throw new Error('This session was created for gate ownership only; supply `deps` and `runOptions` for the runtime to build and run an engine.');
+  }
+  return { deps: request.deps, runOptions: request.runOptions };
+}
+
 function defaultCreateEngine(request: GituSessionRequest, options: GituFactoryOptions, sinks: EngineSinks): Gitu {
+  const { deps } = requireEngineInputs(request);
   return createGitu(options, {
-    ...request.deps,
+    ...deps,
     onEvent: sinks.onEvent,
     onCodingEvent: sinks.onCodingEvent,
     approvalHandler: sinks.approvalHandler,
@@ -290,6 +316,9 @@ export class GituSessionRuntime {
     let finishedAt: string | undefined;
 
     const execute = async (goal: string): Promise<CodingRunResult> => {
+      // Resolved before any state moves: a session that cannot start a run must
+      // not publish `run_started` or report itself as running.
+      const { runOptions } = requireEngineInputs(request);
       attempt += 1;
       // Published after the runtime has accepted the run and gone active, and
       // immediately before the engine sees the goal. Creating a session is not
@@ -301,7 +330,7 @@ export class GituSessionRuntime {
       // Built per run, not per session: a continuation carries its own resume
       // context and its own usage client. `workspaceRoot` is applied last, so a
       // caller's run options can never point the engine at another workspace.
-      const options: GituFactoryOptions = { ...request.runOptions({ goal, attempt }), workspaceRoot };
+      const options: GituFactoryOptions = { ...runOptions({ goal, attempt }), workspaceRoot };
       const engine = this.createEngine(request, options, sinks);
       currentEngine = engine;
       try {

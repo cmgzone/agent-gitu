@@ -396,6 +396,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-call-head .why { flex: 0 2 auto; max-width: 36%; }
   .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; flex: none; border: 0; color: var(--faint); font: 11px var(--mono); background: transparent; }
   .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
+  .exit-code { font: 10px var(--mono); color: var(--faint); flex: none; }
+  .exit-code.bad { color: var(--err); }
   .tool-chevron { color: var(--faint); transition: transform .18s ease; }
   .tl-cmd[aria-expanded=true] .tool-chevron { transform: rotate(90deg); }
   .tool-call .tl-out { margin: 0; }
@@ -2990,6 +2992,160 @@ export const UI_HTML = String.raw`<!doctype html>
     return /^(?:tdelta |thought |say |user-msg |activity (?:reasoning|content|tool)|think(?:\s|$)|evidence |plan |criteria |hypothesis |decision |ask-user|approval-required|queued |stopped |continue |done )/.test(String(text || ''));
   }
 
+  // Tool lifecycle matching, shared by the legacy prose path and the typed
+  // command frames. Matching on the stable parameter summary keeps parallel
+  // rows independent and also handles completions that arrive out of order.
+  // The duration suffix is only present on post-execution events; preflight
+  // errors/denials do not own a running card and must not accidentally close
+  // the previous one.
+  function terminalToolSummary(value) {
+    var m = /^(.*?)(?:\s+\(\d+ms\))$/.exec(String(value || '').trim());
+    return m ? m[1].trim() : '';
+  }
+  function normalizeToolKey(value) {
+    return String(value || '').replace(/^\$\s*/, '').replace(/\s+/g, ' ').trim();
+  }
+  function activeToolRows(state) {
+    var rows = state && state.nodes && state.nodes.toolRows;
+    if (!rows) return [];
+    // The timeline is bounded; drop cards evicted by trimTimeline so the
+    // lifecycle queue cannot retain detached DOM nodes forever.
+    state.nodes.toolRows = rows.filter(function (row) { return row && row.isConnected && row.dataset.toolState === 'working'; });
+    return state.nodes.toolRows;
+  }
+  function findToolRow(state, hint, allowFallback, exactOnly) {
+    if (!state || !state.nodes) return null;
+    var rows = activeToolRows(state);
+    var raw = String(hint || '').trim();
+    var key = normalizeToolKey(raw);
+    var exact = null;
+    for (var ri = 0; ri < rows.length; ri++) {
+      var rowKey = String(rows[ri].dataset.toolKey || '');
+      if (raw && (rowKey === raw || normalizeToolKey(rowKey) === key)) { exact = rows[ri]; break; }
+    }
+    if (exact) return exact;
+    // A path-only lines event can match an edit; only accept an unambiguous
+    // partial match after looking for every exact command match first. This
+    // also recovers the prose summary's 160-character truncation: a typed
+    // frame carries the full command, the card key holds the truncated one,
+    // and containment is what re-links them.
+    var partial = rows.filter(function (row) {
+      var candidate = normalizeToolKey(row.dataset.toolKey || '');
+      return key && candidate && (candidate.indexOf(key) >= 0 || key.indexOf(candidate) >= 0);
+    });
+    if (partial.length === 1) return partial[0];
+    // Typed frames always carry the exact command, so they stop here: a frame
+    // for a command the timeline never saw (replay without frames, a foreign
+    // emitter) must not stamp an unrelated card. The fallbacks below exist for
+    // legacy prose events that had no reliable correlation.
+    if (exactOnly) return null;
+    // A single active row is unambiguous even for older/replayed events.
+    if (rows.length === 1) return rows[0];
+    // Old persisted parallel events did not carry a correlation id. FIFO is
+    // the least surprising recovery for those rows; new events match above.
+    return allowFallback && state.nodes.parallelPending && rows.length ? rows[0] : null;
+  }
+
+  // Apply one terminal outcome to a tool card. info.durationMs comes from the
+  // prose suffix or the typed event; info.exitCode is the raw fact from the
+  // executor's typed event, shown as its own badge and never inferred back out
+  // of prose. An absent code stays absent — no exit status, no badge.
+  function applyToolOutcome(row, status, info) {
+    var dotEl = row.querySelector('.tl-dot');
+    var stEl = row.querySelector('.st');
+    if (status === 'ok') {
+      if (dotEl) dotEl.className = 'tl-dot dot-ok';
+      if (stEl) { stEl.className = 'st st-ok'; stEl.innerHTML = '&#10003; ok'; }
+    } else if (status === 'error') {
+      if (dotEl) dotEl.className = 'tl-dot dot-bad';
+      if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; error'; }
+      row.classList.add('done-bad');
+    } else if (status === 'denied') {
+      if (dotEl) dotEl.className = 'tl-dot dot-bad';
+      if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; denied'; }
+      row.classList.add('done-bad');
+    } else {
+      if (dotEl) dotEl.className = 'tl-dot dot-blocked';
+      if (stEl) { stEl.className = 'st st-warn'; stEl.innerHTML = '&#10005; blocked'; }
+    }
+    row.dataset.toolState = 'done';
+    row.dataset.toolStatus = status;
+    var outputLabel = row.querySelector('.output-label');
+    if (outputLabel) outputLabel.textContent = 'Output';
+    var outputPre = row.querySelector('pre');
+    if (outputPre && outputPre.textContent === 'Waiting for tool output…') outputPre.textContent = 'Tool ' + (status === 'ok' ? 'completed' : status) + '. No output was returned.';
+    var duration = row.querySelector('.tool-duration');
+    if (duration && info.durationMs != null) {
+      var ms = Number(info.durationMs);
+      duration.textContent = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+    }
+    if (info.exitCode !== undefined) {
+      var head = row.querySelector('.tl-cmd');
+      var badge = head && head.querySelector('.exit-code');
+      if (head && !badge) {
+        badge = document.createElement('span');
+        var durEl = head.querySelector('.tool-duration');
+        if (durEl) head.insertBefore(badge, durEl); else head.appendChild(badge);
+      }
+      if (badge) {
+        badge.className = 'exit-code' + (info.exitCode === 0 ? '' : ' bad');
+        badge.textContent = 'exit ' + info.exitCode;
+      }
+    }
+    var detailsEl = row.querySelector('details');
+    if (detailsEl && status !== 'ok') detailsEl.open = true;
+    refreshToolActivityGroup(toolActivityGroupForRow(row));
+  }
+
+  // Finish the working card matching info.key. Returns the row, or null when
+  // nothing is waiting on that key.
+  function finishToolCard(state, status, info) {
+    var key = String((info && info.key) || '').trim();
+    if (!key) return null;
+    var row = findToolRow(state, key, true, info && info.exactOnly);
+    if (!row) return null;
+    applyToolOutcome(row, status, info);
+    state.nodes.lastTool = row;
+    state.nodes.lastOutputTool = row;
+    if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
+    // Recently finished cards, so a typed frame that arrives just after the
+    // prose line can still upgrade the card it belongs to. Bounded, and only
+    // ever consulted with an exact key match.
+    var recent = state.nodes.recentFinished || (state.nodes.recentFinished = []);
+    recent.push({ key: normalizeToolKey(key), row: row });
+    if (recent.length > 12) recent.shift();
+    return row;
+  }
+
+  // The legacy prose terminal line (ok … / error …), parsed from the text.
+  function finishToolRow(state, status, eventBody) {
+    var key = terminalToolSummary(eventBody);
+    if (!key) return null;
+    var elapsed = /\((\d+)ms\)$/.exec(eventBody);
+    return finishToolCard(state, status, { key: key, durationMs: elapsed ? Number(elapsed[1]) : undefined });
+  }
+
+  // The typed command frame carries the raw command and the real exit code.
+  // The prose line normally finished the card moments earlier — the executor
+  // emits them adjacently, prose first — so the frame's job is to upgrade that
+  // card with the exit fact, not to build a card of its own: prose keeps the
+  // reason text the typed start does not carry, and replayed/restored sessions
+  // have prose rows but no frames. Nothing to match means nothing to do.
+  function applyCommandFinish(runId, typed) {
+    var sess = S.sessions[runId];
+    if (!sess || !typed || typed.type !== 'command_finished') return;
+    var status = typed.ok ? 'ok' : 'error';
+    var info = { key: typed.command, durationMs: typed.durationMs, exitCode: typed.exitCode, exactOnly: true };
+    if (finishToolCard(sess, status, info)) return;
+    var recent = sess.nodes.recentFinished || [];
+    for (var i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].row.isConnected && recent[i].key === normalizeToolKey(typed.command)) {
+        applyToolOutcome(recent[i].row, status, info);
+        return;
+      }
+    }
+  }
+
   function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
@@ -3309,92 +3465,6 @@ export const UI_HTML = String.raw`<!doctype html>
     closeThought(runId);
     var tag = text.split(' ')[0];
     var body = text.slice(tag.length).trim();
-
-    // Tool lifecycle events carry the same parameter summary as their run
-    // event.  Matching on that stable key keeps parallel rows independent and
-    // also handles completions that arrive out of order.  The duration suffix
-    // is only present on post-execution events; preflight errors/denials do not
-    // own a running card and must not accidentally close the previous one.
-    function terminalToolSummary(value) {
-      var m = /^(.*?)(?:\s+\(\d+ms\))$/.exec(String(value || '').trim());
-      return m ? m[1].trim() : '';
-    }
-    function normalizeToolKey(value) {
-      return String(value || '').replace(/^\$\s*/, '').replace(/\s+/g, ' ').trim();
-    }
-    function activeToolRows(state) {
-      var rows = state && state.nodes && state.nodes.toolRows;
-      if (!rows) return [];
-      // The timeline is bounded; drop cards evicted by trimTimeline so the
-      // lifecycle queue cannot retain detached DOM nodes forever.
-      state.nodes.toolRows = rows.filter(function (row) { return row && row.isConnected && row.dataset.toolState === 'working'; });
-      return state.nodes.toolRows;
-    }
-    function findToolRow(state, hint, allowFallback) {
-      if (!state || !state.nodes) return null;
-      var rows = activeToolRows(state);
-      var raw = String(hint || '').trim();
-      var key = normalizeToolKey(raw);
-      var exact = null;
-      for (var ri = 0; ri < rows.length; ri++) {
-        var rowKey = String(rows[ri].dataset.toolKey || '');
-        if (raw && (rowKey === raw || normalizeToolKey(rowKey) === key)) { exact = rows[ri]; break; }
-      }
-      if (exact) return exact;
-      // A path-only lines event can match an edit; only accept an unambiguous
-      // partial match after looking for every exact command match first.
-      var partial = rows.filter(function (row) {
-        var candidate = normalizeToolKey(row.dataset.toolKey || '');
-        return key && candidate && (candidate.indexOf(key) >= 0 || key.indexOf(candidate) >= 0);
-      });
-      if (partial.length === 1) return partial[0];
-      // A single active row is unambiguous even for older/replayed events.
-      if (rows.length === 1) return rows[0];
-      // Old persisted parallel events did not carry a correlation id. FIFO is
-      // the least surprising recovery for those rows; new events match above.
-      return allowFallback && state.nodes.parallelPending && rows.length ? rows[0] : null;
-    }
-    function finishToolRow(state, status, eventBody) {
-      var key = terminalToolSummary(eventBody);
-      if (!key) return null;
-      var row = findToolRow(state, key, true);
-      if (!row) return null;
-      var dotEl = row.querySelector('.tl-dot');
-      var stEl = row.querySelector('.st');
-      if (status === 'ok') {
-        if (dotEl) dotEl.className = 'tl-dot dot-ok';
-        if (stEl) { stEl.className = 'st st-ok'; stEl.innerHTML = '&#10003; ok'; }
-      } else if (status === 'error') {
-        if (dotEl) dotEl.className = 'tl-dot dot-bad';
-        if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; error'; }
-        row.classList.add('done-bad');
-      } else if (status === 'denied') {
-        if (dotEl) dotEl.className = 'tl-dot dot-bad';
-        if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; denied'; }
-        row.classList.add('done-bad');
-      } else {
-        if (dotEl) dotEl.className = 'tl-dot dot-blocked';
-        if (stEl) { stEl.className = 'st st-warn'; stEl.innerHTML = '&#10005; blocked'; }
-      }
-      row.dataset.toolState = 'done';
-      row.dataset.toolStatus = status;
-      var outputLabel = row.querySelector('.output-label');
-      if (outputLabel) outputLabel.textContent = 'Output';
-      var outputPre = row.querySelector('pre');
-      if (outputPre && outputPre.textContent === 'Waiting for tool output…') outputPre.textContent = 'Tool ' + (status === 'ok' ? 'completed' : status) + '. No output was returned.';
-      var duration = row.querySelector('.tool-duration');
-      var elapsed = /\((\d+)ms\)$/.exec(eventBody);
-      if (duration && elapsed) {
-        var ms = Number(elapsed[1]);
-        duration.textContent = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
-      }
-      if (status !== 'ok') row.querySelector('details').open = true;
-      state.nodes.lastTool = row;
-      state.nodes.lastOutputTool = row;
-      if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
-      refreshToolActivityGroup(toolActivityGroupForRow(row));
-      return row;
-    }
 
     // End-of-run status echo from the server ("run finished: failed/blocked/...").
     // The "run " prefix would otherwise render as a fake tool card with an
@@ -3825,14 +3895,21 @@ export const UI_HTML = String.raw`<!doctype html>
     return (typed.questions || []).map(function (text) { return { question: text, options: [] }; });
   }
 
-  // Native frames for the gate families a card renders. Every action a card
-  // offers posts the request id it was rendered for — never "whatever is pending
-  // now" — so a second surface (Cowork, the Chief of Staff) answering first
-  // cannot make this card resolve a different request.
+  // Native frames for the gate families a card renders, plus the command
+  // lifecycle. Every gate action a card offers posts the request id it was
+  // rendered for — never "whatever is pending now" — so a second surface
+  // (Cowork, the Chief of Staff) answering first cannot make this card resolve
+  // a different request.
   function handleTypedFrame(runId, frame) {
     var sess = S.sessions[runId];
     var typed = frame && frame.typed;
     if (!sess || !typed) return;
+    // Commands are display-only: the prose run row already built their card
+    // (it carries the reason text, which the typed start does not), so the
+    // start frame is a no-op and the finish frame only contributes the exit
+    // code fact prose cannot express.
+    if (typed.type === 'command_started') return;
+    if (typed.type === 'command_finished') { applyCommandFinish(runId, typed); return; }
     var settled = null;
     if (typed.type === 'approval_required') {
       sess.typedApprovals = sess.typedApprovals || {};

@@ -97,7 +97,10 @@ function renderer() {
   const functions = ['toolKind', 'humanToolSummary', 'splitSummary', 'splitReason', 'workingTextFor',
     'toolActivityGroupForRow', 'toolActivityHint', 'refreshToolActivityGroup', 'sealToolActivityGroup',
     'createToolActivityGroup', 'ensureToolActivityGroup', 'followActiveToolActivity', 'toolActivityBoundary', 'appendEvent',
-    'normalizeToolKey', 'activeToolRows', 'findToolRow'];
+    'normalizeToolKey', 'activeToolRows', 'findToolRow',
+    // Tool-lifecycle matching was hoisted out of appendEvent so the typed
+    // command frames can share it; the prose path now calls these top-level too.
+    'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow'];
   // The two tiny split helpers share a line; their declarations are exact.
   const code = functions.map(name => name === 'splitSummary' || name === 'splitReason'
     ? UI_HTML.match(new RegExp('  function ' + name + '\\([^\\n]+'))![0] : source(name)).join('\n');

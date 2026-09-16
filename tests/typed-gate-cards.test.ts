@@ -13,6 +13,12 @@ const CARD_JS = UI_HTML.slice(
   UI_HTML.indexOf('  function renderApprovals('),
 );
 
+/** The hoisted tool-lifecycle helpers, shared by prose and typed frames. */
+const TOOL_JS = UI_HTML.slice(
+  UI_HTML.indexOf('  function terminalToolSummary('),
+  UI_HTML.indexOf('  function appendEvent(runId, ev) {'),
+);
+
 type Question = { question: string; header?: string; options: string[] };
 
 type CardSession = {
@@ -26,6 +32,9 @@ function harness() {
   const rendered: string[] = [];
   const context = createContext({});
   new Script(CARD_JS).runInContext(context);
+  // Command frames are consumed by the tool-card path (a separate slice); this
+  // harness stubs it out to test the gate families in isolation.
+  context.applyCommandFinish = () => undefined;
   const sess: CardSession = {};
   context.S = { sessions: { run1: sess } };
   context.renderApprovals = () => {
@@ -170,5 +179,110 @@ describe('typed gate cards', () => {
     expect(UI_HTML).toContain("data-appr=\"' + esc(a.id) + '\"");
     expect(UI_HTML).toContain("api('/api/plan-review/' + pr.id");
     expect(UI_HTML).toContain("api('/api/answers/' + q.id");
+  });
+});
+
+describe('typed command frames', () => {
+  /** A stub tool card: the prose path built it, the frame path upgrades it. */
+  function toolHarness() {
+    const context = createContext({});
+    // Defined outside the extracted slice; a no-op stub keeps the harness to
+    // the lifecycle logic under test.
+    context.refreshToolActivityGroup = () => undefined;
+    context.toolActivityGroupForRow = () => null;
+    // The exit badge is the one DOM node applyToolOutcome creates itself.
+    context.document = { createElement: () => ({ className: '', textContent: '' }) };
+    new Script(TOOL_JS).runInContext(context);
+    const head = {
+      createdBadge: undefined as { className: string; textContent: string } | undefined,
+      querySelector: () => null,
+      insertBefore: function (badge: { className: string; textContent: string }) {
+        head.createdBadge = badge;
+      },
+      appendChild: function (badge: { className: string; textContent: string }) {
+        head.createdBadge = badge;
+      },
+    };
+    const durationEl = { textContent: '0s' };
+    const detailsEl = { open: false };
+    const row = {
+      // One stable stub per selector: applyToolOutcome must mutate the same
+      // nodes the assertions read back.
+      querySelector: (sel: string) => {
+        if (sel === '.tl-dot') return { className: 'tl-dot dot-run' };
+        if (sel === '.st') return { className: 'st st-run' };
+        if (sel === '.tool-duration') return durationEl;
+        if (sel === '.output-label') return { textContent: 'Output · waiting for result' };
+        if (sel === 'pre') return { textContent: 'Waiting for tool output…' };
+        if (sel === '.tl-cmd') return head;
+        if (sel === 'details') return detailsEl;
+        return null;
+      },
+      classList: { add: () => undefined },
+      dataset: { toolKey: 'node --version', toolState: 'working' } as Record<string, string>,
+      isConnected: true,
+    };
+    const state = { nodes: { toolRows: [row] } as Record<string, unknown> };
+    context.S = { sessions: { run1: state } };
+    return { context, row, head, state };
+  }
+
+  it('applies the real exit code as its own badge, ok and failing alike', () => {
+    const { context, row, head } = toolHarness();
+    context.applyToolOutcome(row, 'ok', { exitCode: 0, durationMs: 1840 });
+    expect(row.dataset.toolState).toBe('done');
+    expect(row.dataset.toolStatus).toBe('ok');
+    expect(row.querySelector('.tool-duration').textContent).toBe('1.8s');
+    // The badge is the point of this increment: the raw fact from the tool
+    // result, not a value inferred back out of the ok/error prose line.
+    expect(head.createdBadge!.className).toBe('exit-code');
+    expect(head.createdBadge!.textContent).toBe('exit 0');
+
+    const bad = toolHarness();
+    context.applyToolOutcome(bad.row, 'error', { exitCode: 3, durationMs: 220 });
+    expect(bad.head.createdBadge!.className).toBe('exit-code bad');
+    expect(bad.head.createdBadge!.textContent).toBe('exit 3');
+    // A failing command opens its output disclosure, as the prose path always did.
+    expect(bad.row.querySelector('details').open).toBe(true);
+  });
+
+  it('shows no badge when the process never produced an exit status', () => {
+    // Timeout, cancellation, spawn failure: exitCode is genuinely absent, and
+    // manufacturing a 1 would be inventing a fact.
+    const { context, row, head } = toolHarness();
+    context.applyToolOutcome(row, 'error', { durationMs: 60_000 });
+    expect(row.dataset.toolStatus).toBe('error');
+    expect(head.createdBadge).toBeUndefined();
+  });
+
+  it('upgrades the prose-finished card by exact command match', () => {
+    // The executor emits prose and its typed event adjacently, prose first, so
+    // the frame usually finds the card already finished. The prose line must
+    // still do the finishing (state, duration); the frame then re-finds that
+    // same card by key and adds only the exit fact prose cannot express.
+    const { context, row, head, state } = toolHarness();
+    const finished = context.finishToolRow(state, 'ok', '$ node --version (1840ms)');
+    expect(finished).toBe(row);
+    expect(row.dataset.toolState).toBe('done');
+    expect(head.createdBadge).toBeUndefined(); // prose alone never invents a code
+
+    context.applyCommandFinish('run1', { type: 'command_finished', command: 'node --version', ok: true, exitCode: 0, durationMs: 1840 });
+    expect(head.createdBadge!.textContent).toBe('exit 0');
+    expect(row.dataset.toolState).toBe('done'); // upgraded, not resurrected
+  });
+
+  it('does nothing for a command the timeline never saw', () => {
+    // Typed frames always carry the exact command, so they match exactly: a
+    // frame for a command the timeline never saw (replay without frames, a
+    // foreign emitter) must not stamp its exit code onto an unrelated working
+    // card — which is exactly what the prose fallback would have done.
+    const { context, row, head, state } = toolHarness();
+    context.applyCommandFinish('run1', { type: 'command_finished', command: 'npm install', ok: false, exitCode: 1 });
+    expect(head.createdBadge).toBeUndefined();
+    expect(row.dataset.toolState).toBe('working');
+    // Prose keeps the fallback: a legacy terminal line with the same loose
+    // correlation may finish the single active row, as it always did.
+    context.finishToolRow(state, 'ok', '$ npm install (10ms)');
+    expect(row.dataset.toolState).toBe('done');
   });
 });

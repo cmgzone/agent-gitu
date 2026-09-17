@@ -24,7 +24,17 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient } from '../llm/llm.js';
-import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
+import {
+  CoworkStore,
+  MAX_ARTIFACT_BYTES,
+  type CoworkBudgetData,
+  type CoworkConversation,
+  type CoworkMessage,
+  type CoworkAgent,
+  type CoworkWidgetKind,
+  type CoworkMission,
+  type CoworkRequest,
+} from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { CoworkComputer } from '../cowork/computer.js';
@@ -348,6 +358,8 @@ export class GituServer {
   private readonly delegationPools = new Map<string, BudgetAccount>();
   /** Per-mission envelopes, allocated inside their conversation's pool. */
   private readonly missionAccounts = new Map<string, BudgetAccount>();
+  /** The envelope section as last written, so unchanged state is not rewritten. */
+  private budgetsPersisted = '';
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
   private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
@@ -871,6 +883,7 @@ export class GituServer {
   }
 
   async stop(): Promise<void> {
+    this.persistBudgets();
     this.scheduler?.stop();
     await this.stopCoworkLifecycle();
     for (const idx of this.indexWatchers.values()) {
@@ -1097,9 +1110,12 @@ export class GituServer {
 
   /** A mission plus its live envelope, so a card can show what is left of it. */
   private coworkMissionView(mission: CoworkMission) {
-    const account = this.missionAccounts.get(mission.id);
-    if (!account) return mission;
-    return { ...mission, budgetSpentUsd: Math.round((account.spend().costUsd ?? 0) * 100) / 100 };
+    // No live account yet (a restarted host, or one that never ran it): the
+    // written-down record is still the mission's truth, so read it rather than
+    // materializing an account just to render a card.
+    const spend = this.missionAccounts.get(mission.id)?.spend().costUsd ?? this.cowork().budgetRecords().missions[mission.id]?.spend.costUsd;
+    if (spend === undefined) return mission;
+    return { ...mission, budgetSpentUsd: Math.round(spend * 100) / 100 };
   }
 
   /** Browser snapshots expose connection state, never the reusable bot secret. */
@@ -1200,6 +1216,9 @@ export class GituServer {
         const release = this.delegatedSessionResources.get(sessionId);
         this.delegatedSessionResources.delete(sessionId);
         release?.();
+        // A settled run is the natural place to write spend: it is where the
+        // charges stop, and where a restart would otherwise lose them.
+        this.persistBudgets();
       },
       onChange: (conversationId) => this.publishCowork(conversationId),
     });
@@ -1233,11 +1252,18 @@ export class GituServer {
   private missionAccountFor(mission: CoworkMission): BudgetAccount {
     let account = this.missionAccounts.get(mission.id);
     if (!account) {
-      account = this.delegationPoolFor(mission.conversationId).allocate(
-        mission.budget
-          ? { maxCostUsd: mission.budget.maxCostUsd, ...(mission.budget.reserveUsd !== undefined ? { reserveUsd: mission.budget.reserveUsd } : {}) }
-          : {},
-      );
+      const pool = this.delegationPoolFor(mission.conversationId);
+      const saved = this.cowork().budgetRecords().missions[mission.id];
+      // A restored mission keeps the grant it actually held, which may be less
+      // than it asked for (the pool clamps). Re-allocating instead would re-clamp
+      // it against what the pool has *left* and shrink a live ceiling.
+      account = saved
+        ? createBudgetAccount(saved.budget, pool, saved.spend)
+        : pool.allocate(
+            mission.budget
+              ? { maxCostUsd: mission.budget.maxCostUsd, ...(mission.budget.reserveUsd !== undefined ? { reserveUsd: mission.budget.reserveUsd } : {}) }
+              : {},
+          );
       this.missionAccounts.set(mission.id, account);
     }
     return account;
@@ -1248,6 +1274,44 @@ export class GituServer {
     for (const id of this.missionAccounts.keys()) {
       if (!this.cowork().getMission(id)) this.missionAccounts.delete(id);
     }
+  }
+
+  /** Envelopes as they are written down: the grant, and what it has spent. */
+  private budgetSnapshot(): CoworkBudgetData {
+    const records = (accounts: Map<string, BudgetAccount>) =>
+      Object.fromEntries(
+        [...accounts].map(([id, account]) => {
+          const spend = account.spend();
+          return [id, { budget: { ...account.budget }, spend: { costUsd: spend.costUsd ?? 0, turns: spend.turns ?? 0, subagents: spend.subagents ?? 0 } }];
+        }),
+      );
+    return { pools: records(this.delegationPools), missions: records(this.missionAccounts) };
+  }
+
+  /**
+   * Write the envelopes down if anything moved.
+   *
+   * Called at boundaries — a settled session, a raise, a tick, shutdown — rather
+   * than on every charge, and skips the write when nothing changed, because the
+   * document is shared with the transcript.
+   *
+   * This merges rather than replaces: a host only holds accounts for the scopes
+   * it has touched, so writing just those would erase the records of every chat
+   * and mission it has not looked at yet — which is exactly the state a restarted
+   * host is in.
+   */
+  private persistBudgets(): void {
+    const saved = this.cowork().budgetRecords();
+    const live = this.budgetSnapshot();
+    const records: CoworkBudgetData = { pools: { ...saved.pools, ...live.pools }, missions: { ...saved.missions, ...live.missions } };
+    // A record whose scope is gone is not history worth keeping: ids are unique,
+    // but a deleted chat's ceiling has nothing left to bound.
+    for (const id of Object.keys(records.pools)) if (!this.cowork().getConversation(id)) delete records.pools[id];
+    for (const id of Object.keys(records.missions)) if (!this.cowork().getMission(id)) delete records.missions[id];
+    const snapshot = JSON.stringify(records);
+    if (snapshot === this.budgetsPersisted) return;
+    this.budgetsPersisted = snapshot;
+    this.cowork().saveBudgetRecords(records);
   }
 
   /**
@@ -1340,6 +1404,7 @@ export class GituServer {
         (mission.status === 'failed' ? ' — resuming the mission.' : '.'),
     });
     this.publishCowork(mission.conversationId);
+    this.persistBudgets();
     return { mission: store.getMission(mission.id)!, ...(poolRaisedUsd !== undefined ? { poolRaisedUsd } : {}) };
   }
 
@@ -1372,10 +1437,19 @@ export class GituServer {
   private delegationPoolFor(conversationId: string): BudgetAccount {
     let pool = this.delegationPools.get(conversationId);
     if (!pool) {
-      pool = createBudgetAccount({
-        maxCostUsd: this.config.coworkDelegationMaxCostUsd ?? DEFAULT_DELEGATION_BUDGET_USD,
-        maxTurns: this.config.coworkDelegationMaxTurns,
-      });
+      // A saved pool comes back with the grant it actually held — including a
+      // top-up a person granted — and with its spend, so a restart does not hand
+      // the chat a fresh allowance. Only a conversation with no history falls
+      // back to the configured default.
+      const saved = this.cowork().budgetRecords().pools[conversationId];
+      pool = createBudgetAccount(
+        saved?.budget ?? {
+          maxCostUsd: this.config.coworkDelegationMaxCostUsd ?? DEFAULT_DELEGATION_BUDGET_USD,
+          maxTurns: this.config.coworkDelegationMaxTurns,
+        },
+        undefined,
+        saved?.spend,
+      );
       this.delegationPools.set(conversationId, pool);
     }
     return pool;
@@ -2182,6 +2256,7 @@ export class GituServer {
         this.coworkRuns.delete(conversationId);
         this.publishCowork(conversationId);
       }
+      this.persistBudgets();
     }
   }
 
@@ -2214,6 +2289,9 @@ export class GituServer {
     const store = this.cowork();
     const now = Date.now();
     this.pruneMissionAccounts();
+    // Spend can move without a session settling (a delegation cancelled midway,
+    // for instance), so the tick bounds how much a crash could lose.
+    this.persistBudgets();
     // 1. Due missions get a work session.
     for (const mission of store.missions()) {
       if (mission.status !== 'running') continue;

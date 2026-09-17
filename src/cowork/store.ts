@@ -247,6 +247,24 @@ export interface CoworkRequest {
   resolvedAt?: string;
 }
 
+/**
+ * A spend envelope as it survives a restart: the grant, and what it has spent.
+ *
+ * Spend is the reason this is durable at all — a ceiling that resets when the
+ * process restarts is not a ceiling, it is a suggestion, and unattended work is
+ * exactly what keeps running across restarts.
+ */
+export interface CoworkBudgetRecord {
+  budget: { maxCostUsd?: number; maxTurns?: number; maxSubagents?: number; reserveUsd?: number };
+  spend: { costUsd: number; turns: number; subagents: number };
+}
+
+/** Envelopes by scope: a conversation's pool, and each mission's allocation. */
+export interface CoworkBudgetData {
+  pools: Record<string, CoworkBudgetRecord>;
+  missions: Record<string, CoworkBudgetRecord>;
+}
+
 export interface CoworkData {
   agents: CoworkAgent[];
   conversations: CoworkConversation[];
@@ -263,6 +281,8 @@ export interface CoworkData {
   workLog: CoworkWorkEntry[];
   /** Agent-authored sidebar widgets, scoped to their conversation. */
   widgets: CoworkWidget[];
+  /** Spend envelopes, so ceilings survive a restart with their spend. */
+  budgets?: CoworkBudgetData;
 }
 
 export interface CoworkWorkEntry {
@@ -275,6 +295,46 @@ export interface CoworkWorkEntry {
 }
 
 export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
+
+/** Accept only a well-formed envelope; a damaged record must not become a grant. */
+function sanitizeBudgetRecord(value: unknown): CoworkBudgetRecord | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as { budget?: unknown; spend?: unknown };
+  const rawBudget = record.budget && typeof record.budget === 'object' ? (record.budget as Record<string, unknown>) : {};
+  const rawSpend = record.spend && typeof record.spend === 'object' ? (record.spend as Record<string, unknown>) : {};
+  const amount = (input: unknown): number | undefined => (typeof input === 'number' && Number.isFinite(input) && input >= 0 ? input : undefined);
+  const spent = (input: unknown): number => amount(input) ?? 0;
+  const budget = {
+    maxCostUsd: amount(rawBudget['maxCostUsd']),
+    maxTurns: amount(rawBudget['maxTurns']),
+    maxSubagents: amount(rawBudget['maxSubagents']),
+    reserveUsd: amount(rawBudget['reserveUsd']),
+  };
+  return { budget, spend: { costUsd: spent(rawSpend['costUsd']), turns: spent(rawSpend['turns']), subagents: spent(rawSpend['subagents']) } };
+}
+
+function sanitizeBudgets(value: unknown): CoworkBudgetData | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const source = value as { pools?: unknown; missions?: unknown };
+  const records = (input: unknown): Record<string, CoworkBudgetRecord> => {
+    if (!input || typeof input !== 'object') return {};
+    const out: Record<string, CoworkBudgetRecord> = {};
+    for (const [id, entry] of Object.entries(input as Record<string, unknown>)) {
+      const record = sanitizeBudgetRecord(entry);
+      if (record) out[id] = record;
+    }
+    return out;
+  };
+  return { pools: records(source.pools), missions: records(source.missions) };
+}
+
+/** Drop envelopes whose scope is gone, so a deleted chat or teammate cannot
+ *  leave a spend record behind that a future id could inherit. */
+function pruneBudgets(budgets: CoworkBudgetData | undefined, conversationIds: Set<string>, missionIds: Set<string>): CoworkBudgetData | undefined {
+  if (!budgets) return budgets;
+  const keep = (source: Record<string, CoworkBudgetRecord>, ids: Set<string>) => Object.fromEntries(Object.entries(source).filter(([id]) => ids.has(id)));
+  return { pools: keep(budgets.pools, conversationIds), missions: keep(budgets.missions, missionIds) };
+}
 
 function taskKey(text: string): string {
   return text.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!]+$/, '');
@@ -330,6 +390,7 @@ export class CoworkStore {
         requests: Array.isArray(parsed.requests) ? parsed.requests : [],
         workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
         widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
+        budgets: sanitizeBudgets(parsed.budgets),
       };
       // Repair older documents: conversations gain well-formed folders/threads.
       for (const conversation of this.data.conversations) {
@@ -417,6 +478,25 @@ export class CoworkStore {
     return agent;
   }
 
+  /** The persisted spend envelopes: conversation pools and mission allocations. */
+  budgetRecords(): CoworkBudgetData {
+    const data = this.load();
+    return { pools: { ...(data.budgets?.pools ?? {}) }, missions: { ...(data.budgets?.missions ?? {}) } };
+  }
+
+  /**
+   * Replace the persisted envelopes.
+   *
+   * The host owns the live accounts and writes the whole section at once — the
+   * store cannot charge or re-grant, and a field-level update could leave a
+   * ceiling disagreeing with its spend. Merging what it holds over what it
+   * loaded is therefore the caller's job.
+   */
+  saveBudgetRecords(records: CoworkBudgetData): void {
+    this.load().budgets = records;
+    this.save();
+  }
+
   deleteAgent(id: string): boolean {
     const data = this.load();
     if (!data.agents.some((a) => a.id === id)) return false;
@@ -441,6 +521,7 @@ export class CoworkStore {
     data.requests = data.requests.filter((request) => request.agentId !== id && conversationIds.has(request.conversationId));
     data.workLog = data.workLog.filter((entry) => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
+    data.budgets = pruneBudgets(data.budgets, conversationIds, new Set(data.missions.map((mission) => mission.id)));
     this.save(true);
     return true;
   }
@@ -635,6 +716,7 @@ export class CoworkStore {
     data.requests = data.requests.filter((request) => request.conversationId !== id);
     data.artifacts = data.artifacts.filter((artifact) => artifact.conversationId !== id);
     data.widgets = data.widgets.filter((widget) => widget.conversationId !== id);
+    data.budgets = pruneBudgets(data.budgets, new Set(data.conversations.map((conversation) => conversation.id)), new Set(data.missions.map((mission) => mission.id)));
     rmSync(this.artifactDir(id), { recursive: true, force: true });
     this.save(true);
     return true;

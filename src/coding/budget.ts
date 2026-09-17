@@ -185,9 +185,14 @@ function childEnvelope(requested: RunBudget, remaining: BudgetSpend, parentReser
  * The parent is charged whenever this account is, which is what makes a pool of
  * delegations (one host ceiling, many sessions) enforceable rather than a set of
  * independent caps that each look affordable on their own.
+ *
+ * `carried` restores spend that already happened under this same grant — a
+ * durable record read back after a restart. It is deliberately not charged to the
+ * parent: the parent restores its own record of the same money, and charging it
+ * again here would double-count what it already knows it spent.
  */
-export function createBudgetAccount(budget: RunBudget, parent?: BudgetAccount): BudgetAccount {
-  const spent: BudgetSpend = { costUsd: 0, turns: 0, subagents: 0 };
+export function createBudgetAccount(budget: RunBudget, parent?: BudgetAccount, carried?: BudgetSpend): BudgetAccount {
+  const spent: BudgetSpend = { costUsd: carried?.costUsd ?? 0, turns: carried?.turns ?? 0, subagents: carried?.subagents ?? 0 };
   // The ceiling moves on `regrant`, so read it through a binding rather than the
   // parameter: every other closure has to see the current grant, not the first.
   let current = budget;

@@ -779,6 +779,40 @@ describe('cowork autonomy layer', () => {
     expect(create({ budgetUsd: Number.NaN }).budget).toBeUndefined();
   });
 
+  it('persists spend envelopes, and drops them with the scope they belonged to', () => {
+    const file = path.join(tempHome('budget-records'), 'cowork.json');
+    const store = new CoworkStore(file);
+    const agent = store.saveAgent(makeAgentInput('budget-keeper'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const mission = store.createMission({ conversationId: conv.id, agentId: agent.id, goal: 'Spend it', criteria: [] });
+    store.saveBudgetRecords({
+      pools: { [conv.id]: { budget: { maxCostUsd: 5 }, spend: { costUsd: 1.25, turns: 3, subagents: 0 } } },
+      missions: { [mission.id]: { budget: { maxCostUsd: 2 }, spend: { costUsd: 2, turns: 4, subagents: 0 } } },
+    });
+
+    const reloaded = new CoworkStore(file);
+    expect(reloaded.budgetRecords().pools[conv.id]).toEqual({ budget: { maxCostUsd: 5 }, spend: { costUsd: 1.25, turns: 3, subagents: 0 } });
+    expect(reloaded.budgetRecords().missions[mission.id]!.spend.costUsd).toBe(2);
+
+    // A deleted chat takes its pool and its missions' envelopes with it, so a
+    // future id could never inherit someone else's history.
+    reloaded.deleteConversation(conv.id);
+    expect(reloaded.budgetRecords().pools[conv.id]).toBeUndefined();
+    expect(reloaded.budgetRecords().missions[mission.id]).toBeUndefined();
+  });
+
+  it('ignores a damaged spend envelope rather than granting it', () => {
+    const file = path.join(tempHome('bad-budget'), 'cowork.json');
+    writeFileSync(file, JSON.stringify({ budgets: { pools: { chat_1: { budget: { maxCostUsd: 'free' }, spend: { costUsd: -5, turns: 2 } } } } }));
+    const pool = new CoworkStore(file).budgetRecords().pools['chat_1'];
+    // An unusable grant is dropped, not reinterpreted, and impossible spend
+    // cannot become negative headroom.
+    expect(pool).toBeDefined();
+    expect(pool!.budget.maxCostUsd).toBeUndefined();
+    expect(pool!.spend.costUsd).toBe(0);
+    expect(pool!.spend.turns).toBe(2);
+  });
+
   it('lets a mission work turn delegate engineering with the mission attached', async () => {
     const store = new CoworkStore(path.join(tempHome('mission-delegation'), 'cowork.json'));
     const agent = store.saveAgent(makeAgentInput('mission-delegator', { allowWrites: true }));
@@ -1480,6 +1514,65 @@ describe('cowork server routes', () => {
     expect(capped.status).toBe(400);
     expect(String(capped.json['error'])).toContain('not about money');
     expect((await view()).missions.find((m) => m.id === mission.id)!.status).toBe('failed');
+  });
+
+  it('keeps the spent envelope of a chat across a restart', async () => {
+    let calls = 0;
+    const llm: LlmClient = {
+      name: 'restart-budget-mock',
+      complete: async () => {
+        calls += 1;
+        return 'Still working. {"status":"working","progress":"kept going","criteriaMet":[false]}';
+      },
+      completeStream: async (_messages, _options, delta) => {
+        calls += 1;
+        const text = 'Still working. {"status":"working","progress":"kept going","criteriaMet":[false]}';
+        delta(text);
+        return text;
+      },
+    };
+    const internalsOf = () =>
+      serverInstance as unknown as {
+        executeMissionSession: (id: string) => Promise<void>;
+        cowork: () => CoworkStore;
+        missionAccountFor: (mission: CoworkMission) => BudgetAccount;
+      };
+    const base = await startServer(llm, { coworkDelegationMaxCostUsd: 1 });
+    const agent = (await post(base, '/api/cowork/agents', makeAgentInput('restart-mission-worker'))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const mission = (
+      await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Write the report', criteria: [], budgetUsd: 1 })
+    ).json['mission'] as { id: string };
+    // An injected client has no catalog price, so spend the mission's dollar the
+    // way a priced call would have.
+    internalsOf().missionAccountFor(internalsOf().cowork().getMission(mission.id)!).charge({ costUsd: 1 });
+    // A settled session is what writes the envelope down.
+    await internalsOf().executeMissionSession(mission.id);
+    await missionIdle(base, conv.id);
+    expect((await missionView(base, conv.id)).missions.find((m) => m.id === mission.id)!.budgetSpentUsd).toBe(1);
+
+    // Restart: a new server over the same home, with a *larger* configured
+    // default. The saved grant and its spend win — a restart must not hand the
+    // chat a fresh allowance, and a config change must not reopen a spent one.
+    const restarted = await startServer(llm, { coworkDelegationMaxCostUsd: 100 });
+    const after = await missionView(restarted, conv.id);
+    expect(after.missions.find((m) => m.id === mission.id)!.budgetSpentUsd).toBe(1);
+    const second = (await post(restarted, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Write more', criteria: [] })).json[
+      'mission'
+    ] as { id: string };
+    await internalsOf().executeMissionSession(second.id);
+    await missionIdle(restarted, conv.id);
+    const refused = (await missionView(restarted, conv.id)).missions.find((m) => m.id === second.id)!;
+    expect(refused.status).toBe('failed');
+    expect(refused.result).toContain('budget');
+    expect(calls).toBe(0);
+
+    // And the mission's own spend came back with it: re-granting exactly what it
+    // already spent is refused, which only holds if the restored account carries
+    // the dollar rather than merely displaying it.
+    const sameMoney = await post(restarted, `/api/cowork/missions/${mission.id}/budget`, { budgetUsd: 1 });
+    expect(sameMoney.status).toBe(400);
+    expect(String(sameMoney.json['error'])).toContain('would not buy another turn');
   });
 
   it('lets a spent mission be given more money and resume', async () => {

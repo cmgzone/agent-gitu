@@ -217,6 +217,19 @@ describe('regrant', () => {
     expect(pool.spend().costUsd).toBeCloseTo(1.5);
   });
 
+  it('restores carried spend without charging the parent for it twice', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 5 });
+    pool.charge({ costUsd: 1 }); // the pool's own record of that same dollar
+    const restored = createBudgetAccount({ maxCostUsd: 3 }, pool, { costUsd: 1, turns: 2, subagents: 0 });
+    expect(restored.spend()).toEqual({ costUsd: 1, turns: 2, subagents: 0 });
+    expect(restored.remaining().costUsd).toBeCloseTo(2);
+    // A durable record read back is the same money, not new spend: the parent
+    // already counted it, and charging it again would invent a dollar.
+    expect(pool.spend().costUsd).toBeCloseTo(1);
+    expect(restored.charge({ costUsd: 2 })).toBe(false);
+    expect(pool.spend().costUsd).toBeCloseTo(3);
+  });
+
   it('cannot lift a re-granted child above the ceiling it sits under', () => {
     const pool = createBudgetAccount({ maxCostUsd: 1 });
     const child = pool.allocate({});

@@ -1,3 +1,4 @@
+import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
@@ -877,6 +878,7 @@ export const UI_HTML = String.raw`<!doctype html>
   ${UI_RESPONSE_JS}
   ${UI_CONNECTIONS_JS}
   ${CHAT_CREDENTIAL_HELPERS_JS}
+  ${UI_MODEL_CATALOG_JS}
   var S = {
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     modelsLoaded: false,
@@ -1502,13 +1504,9 @@ export const UI_HTML = String.raw`<!doctype html>
 
   function modelOptionsHtml() {
     var out = '';
-    S.models.forEach(function (p) {
-      if (!providerIsUsable(p)) return;
-      var defaultInfo = null;
-      for (var d = 0; d < p.models.length; d++) if (p.models[d].id === p.defaultModel) defaultInfo = p.models[d];
-      out += '<option value="' + esc(p.id + '::' + p.defaultModel) + '">' + esc(p.id + ' / ' + titleCase(p.defaultModel)) + (isFreeModelId(p.defaultModel) ? ' (free)' : '') + (defaultInfo ? ' — ' + esc(modelMetaText(defaultInfo)) : '') + '</option>';
-      p.models.forEach(function (m) {
-        if (m.id === p.defaultModel) return;
+    catalogModelGroups(undefined, '', true).forEach(function (g) {
+      var p = g.p;
+      g.models.forEach(function (m) {
         out += '<option value="' + esc(p.id + '::' + m.id) + '">' + esc(p.id + ' / ' + titleCase(m.id)) + (m.free ? ' (free)' : '') + ' — ' + esc(modelMetaText(m)) + '</option>';
       });
     });
@@ -1559,18 +1557,7 @@ export const UI_HTML = String.raw`<!doctype html>
     return esc(text.slice(0, idx)) + '<mark>' + esc(text.slice(idx, idx + q.length)) + '</mark>' + esc(text.slice(idx + q.length));
   }
   function modelMenuGroups(query) {
-    var q = String(query || '').toLowerCase().trim();
-    var out = [];
-    S.models.forEach(function (p) {
-      if (!providerIsUsable(p)) return;
-      var matched = [];
-      p.models.forEach(function (m) {
-        if (q && modelSearchText(p, m).indexOf(q) < 0) return;
-        matched.push(m);
-      });
-      if (matched.length) out.push({ p: p, models: matched });
-    });
-    return out;
+    return catalogModelGroups(undefined, query, true);
   }
   function renderModelMenu(query) {
     var list = $('modelList');
@@ -4644,8 +4631,8 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   function refreshModels() {
-    api('/api/models')
-      .then(function (data) { S.models = data.providers; S.modelsLoaded = true; ensureUsableModelSelection(); renderSettings(); })
+    loadModelCatalog(true)
+      .then(function () { renderSettings(); })
       .catch(function () { renderSettings(); });
   }
 
@@ -4823,13 +4810,12 @@ export const UI_HTML = String.raw`<!doctype html>
             .then(function () { toast('Fallback models saved'); });
         }).catch(function (e) { toast((e && e.message) || 'Could not save fallbacks', true); });
       };
-      Promise.all([api('/api/models'), api('/api/keys').catch(function () { return { stored: [] }; })]).then(function (res) {
-        var d = res[0];
+      Promise.all([loadModelCatalog(), api('/api/keys').catch(function () { return { stored: [] }; })]).then(function (res) {
         var stored = (res[1] && res[1].stored) || [];
         var body = $('provBody');
         if (!body || S.setSection !== 'providers') return;
         var cur = S.sel.model || '';
-        var prov = (d.providers || []).slice().sort(function (a, b) { return Number(providerIsUsable(b)) - Number(providerIsUsable(a)); });
+        var prov = S.models.slice().sort(function (a, b) { return Number(providerIsUsable(b)) - Number(providerIsUsable(a)); });
         var readyCount = prov.filter(providerIsUsable).length;
         if ($('providerSummary')) $('providerSummary').textContent = readyCount + ' ready · ' + (prov.length - readyCount) + ' need setup';
         body.innerHTML = prov.map(function (p, i) {
@@ -4950,10 +4936,8 @@ export const UI_HTML = String.raw`<!doctype html>
           var q = (wrap.querySelector('.model-menu input').value || '').toLowerCase().trim();
           var list = wrap.querySelector('.model-list');
           var curVal = S.sel.model || '';
-          var matched = (p.models || []).filter(function (m) {
-            if (!q) return true;
-            return modelSearchText(p, m).indexOf(q) >= 0;
-          });
+          var group = catalogModelGroups(p.id, q)[0];
+          var matched = group ? group.models : [];
           var count = wrap.querySelector('.model-count');
           if (count) count.textContent = matched.length + (matched.length === 1 ? ' model' : ' models') + (q ? (matched.length === 1 ? ' matches' : ' match') : '');
           list.innerHTML = matched.map(function (m) {
@@ -5171,19 +5155,11 @@ export const UI_HTML = String.raw`<!doctype html>
         renderSidebar();
       };
     } else if (S.setSection === 'agents') {
-      Promise.all([api('/api/agents'), api('/api/models')]).then(function (res) {
+      Promise.all([api('/api/agents'), loadModelCatalog()]).then(function (res) {
         var agents = res[0].agents || [];
-        var provs = res[1].providers || [];
+        if (S.setSection !== 'agents') return;
         function modelOptions(sel) {
-          var out = '<option value="">(default model)</option>';
-          provs.forEach(function (p) {
-            out += '<optgroup label="' + esc(p.id) + (p.hasKey ? '' : ' (no key)') + '">';
-            (p.models || []).forEach(function (m) {
-              out += '<option value="' + esc(p.id + '::' + m.id) + '"' + (sel === p.id + '::' + m.id ? ' selected' : '') + '>' + esc(m.id) + (m.vision ? ' ◉' : '') + (m.free ? ' (free)' : '') + '</option>';
-            });
-            out += '</optgroup>';
-          });
-          return out;
+          return '<option value="">(default model)</option>' + catalogSelectOptions(undefined, sel);
         }
         b.innerHTML = '<h1>Specialist agents</h1>' +
           '<p style="color:var(--muted);font-size:12.5px">Named worker agents that the main agent can run in parallel with the delegate tool on big projects. The main agent uses the <b>Agent ID / Name</b> to delegate tasks. Each agent can use a different provider, model, and reasoning effort.</p>' +
@@ -5464,10 +5440,7 @@ export const UI_HTML = String.raw`<!doctype html>
       if (np !== S.settings.projectPath) { S.settings.projectPath = np; persist(); updateProjChip(); }
       S.lastProjectPath = heal(S.lastProjectPath);
     }).catch(function () {});
-    api('/api/models').then(function (data) {
-      S.models = data.providers;
-      S.modelsLoaded = true;
-      ensureUsableModelSelection();
+    loadModelCatalog().then(function () {
       if (S.active === 'home') openHome();
     }).catch(function () { S.modelsLoaded = true; if (S.active === 'home') openHome(); });
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});

@@ -27,7 +27,8 @@ import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRe
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
-import { ProviderError, allProviderSpecs, cachedLiveModels, fetchModelCatalog, freeModelFallback, isFreeModel, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, resolveSupportedImages, usageCostUsd } from '../llm/providers.js';
+import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
+import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
@@ -2850,72 +2851,9 @@ export class GituServer {
     }
 
     if (method === 'GET' && path === '/api/models') {
-      const catalogPromise = fetchModelCatalog();
-      const subscriptionPromise = (this.config.codexSubscriptionInfo ?? codexSubscriptionInfo)();
-      const providerRows = await Promise.all(
-        Object.values(allProviderSpecs()).map(async (spec) => {
-          if (spec.auth === 'chatgpt-subscription') {
-            const subscription = await subscriptionPromise;
-            const models: { id: string; vision?: boolean }[] = subscription.models.length > 0
-              ? subscription.models.map((model) => ({ id: model.id, vision: model.vision }))
-              : spec.models.map((id) => ({ id }));
-            return { spec, keyInfo: undefined, models, live: subscription.models.length > 0, subscription };
-          }
-          const keyInfo = providerKey(spec);
-          const staticInfo = spec.models.map((id) => ({ id }));
-          let models: { id: string; vision?: boolean }[] = staticInfo;
-          let live = false;
-          if (keyInfo || spec.publicModels) {
-            // Shared cache — run-time image resolution must see the same
-            // modality data this picker reports to the UI.
-            const fetched = await cachedLiveModels({
-              baseUrl: spec.baseUrl,
-              apiKey: keyInfo?.key ?? '',
-              timeoutMs: 6000,
-            });
-            if (fetched && fetched.length > 0) {
-              models = fetched;
-              live = true;
-            }
-          }
-          return { spec, keyInfo, models, live, subscription: undefined };
-        }),
-      );
-      const catalog = await catalogPromise;
-      const providers = providerRows.map(({ spec, keyInfo, models, live, subscription }) => {
-        return {
-          id: spec.id,
-          label: spec.label,
-          defaultModel: spec.defaultModel,
-          hasKey: Boolean(keyInfo),
-          auth: spec.auth ?? 'api-key',
-          signedIn: subscription?.signedIn ?? false,
-          planType: subscription?.planType,
-          available: subscription?.available ?? true,
-          usable: Boolean(keyInfo) || Boolean(subscription?.signedIn),
-          publicModels: Boolean(spec.publicModels),
-          live,
-          models: models.map((mi) => ({
-            id: mi.id,
-            // Provider's own live modality wins; the models.dev catalog and the
-            // offline name heuristic are fallbacks for providers that do not
-            // publish modality — so image support works for any current or
-            // future provider without maintaining name patterns.
-            vision: mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id),
-            free: isFreeModel(mi.id),
-            metadata: modelMetadataFor(catalog, spec.id, mi.id),
-          })),
-          effortLevels: spec.effortLevels,
-          effortLabels: spec.effortLabels,
-          maxEffort: spec.maxEffort ?? 'collapses-to-high',
-          keyEnvVars: spec.keyEnvVars,
-          baseUrl: spec.baseUrl,
-          custom: Boolean(spec.custom),
-          toolMode: spec.toolMode ?? 'auto',
-        };
-      });
-      const usableProvider = providers.find((p) => p.usable);
-      this.sendJson(res, 200, { providers, defaultProvider: usableProvider?.id ?? 'alibaba' });
+      this.sendJson(res, 200, await resolveModelCatalog({
+        codexSubscriptionInfo: this.config.codexSubscriptionInfo,
+      }));
       return;
     }
 

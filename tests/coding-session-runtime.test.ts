@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { Gitu } from '../src/agent/gitu.js';
 import type { CodingRunResult, CodingSession } from '../src/coding/contract.js';
 import { GituSessionRuntime, type GituCodingSession, type GituSessionRequest } from '../src/coding/session-runtime.js';
+import { createBudgetAccount, type BudgetAccount, type RunBudget } from '../src/coding/budget.js';
 import type { GituFactoryOptions } from '../src/coding/gitu-factory.js';
 import { ConnectionRegistry } from '../src/connections/connections.js';
-import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmClient, type LlmUsage } from '../src/llm/llm.js';
 import type { CompletionReport } from '../src/types.js';
 
 /**
@@ -486,5 +487,155 @@ describe('GituSessionRuntime end to end through the real engine', () => {
     const demoted = session.events().filter((event) => event.type === 'log' && (event as { text: string }).text.includes('node --version'));
     expect(demoted.length).toBeGreaterThanOrEqual(1);
     expect(callerLegacy).toHaveLength(0);
+  });
+});
+
+/**
+ * Budget enforcement.
+ *
+ * A delegation is unattended money, so the session that spends it must be the
+ * thing that stops it. These drive the engine's own model calls through the LLM
+ * the runtime hands it — the only place spend is visible — and assert the three
+ * behaviours that make an allocation real: a spent session refuses to start,
+ * a run stops mid-flight when its last dollar is gone, and a session inside a
+ * parent pool can never be given more than the pool has left.
+ */
+describe('GituSessionRuntime budget enforcement', () => {
+  const pricing = (usage: LlmUsage): number => usage.inputTokens * 0.0001;
+
+  function budgetHarness(options: { budget?: RunBudget; parent?: BudgetAccount; costOf?: (usage: LlmUsage) => number | undefined; callsPerRun?: number } = {}) {
+    const dir = makeProject();
+    const granted: BudgetAccount[] = [];
+    const stopped = { count: 0 };
+    const usage = { inputTokens: 1_000, outputTokens: 0, cachedTokens: 0 };
+    const stub: LlmClient = {
+      name: 'stub',
+      complete: async (_messages, opts) => {
+        opts?.onUsage?.(usage);
+        return '{}';
+      },
+      completeStream: async (_messages, opts) => {
+        opts?.onUsage?.(usage);
+        return '{}';
+      },
+    };
+    const runtime = new GituSessionRuntime({
+      createEngine: (_request, runOptions) =>
+        ({
+          run: async () => {
+            for (let call = 0; call < (options.callsPerRun ?? 3); call += 1) {
+              // A real engine keeps working until it is told to stop; the fake
+              // must not call the model after a stop, or it would be testing a
+              // charge that no engine would ever make.
+              if (stopped.count > 0) break;
+              await runOptions.llm.complete([{ role: 'user', content: 'go' }], {});
+            }
+            return {
+              ledger: { data: { taskId: 't_1' } },
+              report: { taskId: 't_1', goal: 'g', status: 'complete', summary: 'done', changes: [], filesChanged: [], verification: [] },
+            };
+          },
+          stop: () => {
+            stopped.count += 1;
+          },
+          queueMessage: () => undefined,
+        }) as unknown as Gitu,
+    });
+    const session = runtime.createSession({
+      goal: 'Fix the parser',
+      workspace: { type: 'host', path: dir },
+      budget: options.budget,
+      parentBudget: options.parent,
+      costOf: options.costOf,
+      runOptions: (run) => {
+        granted.push(run.budget);
+        return { workspaceRoot: dir, llm: stub, mode: 'fast' };
+      },
+      deps: {
+        connections: new ConnectionRegistry(),
+        connectionContext: () => 'connections: none',
+        connectionActionHandler: async () => ({ message: 'ok' }),
+        safestProviderRead: () => undefined,
+        connectionOperationHandler: async () => ({ message: 'ok' }),
+        connectionRecoveryCheck: () => ({ action: 'setup-new', reason: 'none' }),
+        connectionRequestHandler: async () => false,
+      },
+    });
+    return { session, granted, stopped };
+  }
+
+  it('stops the run when its turn allocation is spent', async () => {
+    const { session, stopped } = budgetHarness({ budget: { maxTurns: 2 } });
+    const result = await session.run('Fix the parser');
+
+    expect(result.status).toBe('blocked');
+    expect(result.error).toMatch(/^budget exhausted/);
+    expect(stopped.count).toBe(1);
+    expect(session.getState().usage?.messages).toBe(2);
+    const blocked = session.events().filter((event) => event.type === 'operation_blocked');
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toMatchObject({ reason: 'budget_exhausted' });
+    expect((blocked[0] as { detail: string }).detail).toContain('0 of 2 turns left');
+  });
+
+  it('stops the run when its money is spent, pricing each call through the host', async () => {
+    const { session, stopped } = budgetHarness({ budget: { maxCostUsd: 0.05 }, costOf: pricing });
+    const result = await session.run('Fix the parser');
+
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('budget exhausted — $0.0000 of $0.05 left');
+    // $0.10 for the first call against a $0.05 ceiling: the second never happens.
+    expect(stopped.count).toBe(1);
+    expect(session.getState().usage?.messages).toBe(1);
+    expect(session.getState().usage?.costUsd).toBeCloseTo(0.1);
+    expect(session.getState().usage?.costIncomplete).toBeUndefined();
+  });
+
+  it('marks a session whose calls the host could not price as incompletely accounted', async () => {
+    const { session } = budgetHarness({ budget: { maxTurns: 1 } });
+    await session.run('Fix the parser');
+    expect(session.getState().usage?.messages).toBe(1);
+    expect(session.getState().usage?.costUsd).toBeUndefined();
+    expect(session.getState().usage?.costIncomplete).toBe(true);
+  });
+
+  it('refuses to start a run when the allocation is already spent', async () => {
+    const { session, granted } = budgetHarness({ budget: { maxTurns: 1 }, callsPerRun: 1 });
+    await session.run('Fix the parser');
+    const result = await session.run('Fix the parser again');
+
+    // No engine was built for the second run: nothing was accepted, so nothing
+    // is reported as running.
+    expect(granted).toHaveLength(1);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toMatch(/^budget exhausted/);
+    expect(session.events().filter((event) => event.type === 'run_started')).toHaveLength(1);
+    expect(session.events().filter((event) => event.type === 'operation_blocked')).toHaveLength(2);
+  });
+
+  it('clamps a session to what its parent pool has left and charges the pool', async () => {
+    const pool = createBudgetAccount({ maxCostUsd: 1, maxTurns: 10 });
+    const { session, granted } = budgetHarness({ budget: { maxCostUsd: 9, maxTurns: 99 }, parent: pool, costOf: pricing, callsPerRun: 2 });
+
+    const result = await session.run('Fix the parser');
+    expect(result.status).toBe('completed');
+    // The ask was $9 and 99 turns; the pool is what decided.
+    expect(granted[0]?.budget.maxCostUsd).toBe(1);
+    expect(granted[0]?.budget.maxTurns).toBe(10);
+    // Both calls happened, and both are visible to the pool that granted them.
+    expect(pool.spend()).toMatchObject({ turns: 2, costUsd: 0.2 });
+    expect(pool.remaining().costUsd).toBeCloseTo(0.8);
+  });
+
+  it('refuses a second session that the pool can no longer afford', async () => {
+    const pool = createBudgetAccount({ maxCostUsd: 0.05 });
+    const first = budgetHarness({ budget: { maxCostUsd: 1 }, parent: pool, costOf: pricing, callsPerRun: 1 });
+    await first.session.run('Fix the parser');
+    expect(pool.exhausted()).toBe(true);
+
+    const second = budgetHarness({ budget: { maxCostUsd: 1 }, parent: pool, costOf: pricing, callsPerRun: 1 });
+    const result = await second.session.run('Fix the parser');
+    expect(result.status).toBe('blocked');
+    expect(second.granted).toHaveLength(0);
   });
 });

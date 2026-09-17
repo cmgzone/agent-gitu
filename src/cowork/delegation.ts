@@ -39,6 +39,7 @@ import type {
   CodingRunResult,
   CodingSession,
 } from '../coding/contract.js';
+import type { BudgetAccount, RunBudget } from '../coding/budget.js';
 import type { CodingEvent } from '../coding/events.js';
 import type { WorkspaceRef } from '../coding/workspace.js';
 import type { ToolResult } from '../types.js';
@@ -61,6 +62,14 @@ export interface DelegationRunOptions {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Wall-clock cap for the delegated run, in minutes. */
   timeoutMinutes: number;
+  /**
+   * What the teammate asks this task may cost, in USD.
+   *
+   * A request, never an authorization: the runtime clamps it to what the host's
+   * delegation pool has left, so asking for more than the pool holds buys the
+   * pool's remainder rather than more money.
+   */
+  maxCostUsd?: number;
 }
 
 /** Per-run engine inputs the runtime needs and only the host can supply. */
@@ -73,6 +82,10 @@ export interface DelegationSessionInput {
   /** Human label for whoever delegated the work. */
   requestedBy?: string;
   runOptions: DelegationRunOptions;
+  /** The teammate's requested allocation for this task, when it asked for one. */
+  budget?: RunBudget;
+  /** The host's pool of delegated spend; the request is clamped inside it. */
+  parentBudget?: BudgetAccount;
   /** The runtime surfaces each gate here; the runtime still owns resolution. */
   onApprovalRequired: (request: CodingApprovalRequest) => void;
   onPlanReviewRequested: (request: CodingPlanReviewRequest) => void;
@@ -83,7 +96,22 @@ export interface CoworkDelegationDeps {
   /** The workspace a delegated run executes against — `host` for a teammate
    *  working on the user's machine. */
   workspaceFor: (scope: DelegationScope) => WorkspaceRef;
-  /** Creates the runtime session for one delegated task. */
+  /**
+   * The host's pool of delegated spend. Every delegation draws a child
+   * allocation from it, so one expensive task leaves less for the next and an
+   * exhausted pool refuses new work instead of quietly spending on.
+   */
+  budgetPool?: (scope: DelegationScope) => BudgetAccount | undefined;
+  /**
+   * Creates the runtime session for one delegated task.
+   *
+   * Synchronous on purpose: the session must exist before the first gate can be
+   * raised, and a gate is raised the moment the engine starts moving. A host
+   * that needs to look something up (provider pricing, say) should warm it
+   * before this call rather than make the whole path async — an async boundary
+   * here is exactly the window in which a gate would have no session to answer
+   * through.
+   */
   createSession: (input: DelegationSessionInput) => CodingSession;
   /**
    * Surfaces a runtime-owned gate as a cowork request card. Returns the card's
@@ -159,12 +187,22 @@ export function parseDelegationParams(params: Record<string, unknown>): { ok: tr
     }
     timeoutMinutes = Math.min(Math.round(timeoutInput), MAX_TIMEOUT_MINUTES);
   }
+  const costInput = params['maxCostUsd'];
+  if (costInput !== undefined && (typeof costInput !== 'number' || !Number.isFinite(costInput) || costInput <= 0)) {
+    return { ok: false, error: 'gitu_task "maxCostUsd" must be a positive dollar amount (it is a ceiling for this task, not a spend target).' };
+  }
   return {
     ok: true,
     // The model is the teammate's own, resolved by the host: a delegated session
     // speaks with the same provider the delegating agent does, so accepting a
     // `provider`/`model` here would let the caller silently switch it.
-    value: { goal, mode, effort: effortInput as DelegationRunOptions['effort'], timeoutMinutes },
+    value: {
+      goal,
+      mode,
+      effort: effortInput as DelegationRunOptions['effort'],
+      timeoutMinutes,
+      maxCostUsd: costInput as number | undefined,
+    },
   };
 }
 
@@ -277,6 +315,11 @@ export class CoworkDelegation {
         agentId: scope.agent.id,
         requestedBy: scope.agent.name,
         runOptions,
+        // The request is what the teammate asked for; the pool is what the host
+        // allows. The runtime clamps one to the other, so no caller can widen
+        // its own allocation by asking.
+        budget: runOptions.maxCostUsd !== undefined ? { maxCostUsd: runOptions.maxCostUsd } : undefined,
+        parentBudget: this.deps.budgetPool?.(scope),
         onApprovalRequired: (approval) => {
           const detail = [approval.why, approval.summary].filter(Boolean).join('\n\n');
           gates.set(surface(`Approve ${approval.tool || 'a gated action'} for @${scope.agent.name}?`, detail, ['Approve', 'Deny']), {
@@ -416,7 +459,11 @@ export class CoworkDelegation {
 export function delegationResultSummary(result: CodingRunResult): string {
   const report = result.report;
   if (result.status === 'failed' || !report) {
-    return `Engineering task failed (${result.status})${result.error ? `: ${result.error}` : '.'}`;
+    // A blocked run is not a failed one: nothing went wrong with the work, the
+    // session was not allowed to do it. The teammate must be told the difference
+    // so it reports an allocation problem instead of a broken repository.
+    const verb = result.status === 'blocked' ? 'stopped' : 'failed';
+    return `Engineering task ${verb} (${result.status})${result.error ? `: ${result.error}` : '.'}`;
   }
   const lines = [
     `Engineering task ${report.status === 'complete' ? 'completed' : report.status} (session ${result.sessionId}, task ${report.taskId}).`,

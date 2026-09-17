@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allocateChildBudget, allocatableUsd, budgetExhausted, validateAllocation } from '../src/coding/budget.js';
+import { allocateChildBudget, allocatableUsd, budgetExhausted, createBudgetAccount, validateAllocation } from '../src/coding/budget.js';
 
 describe('allocatableUsd', () => {
   it('withholds the recovery reserve from the allocatable envelope', () => {
@@ -83,5 +83,95 @@ describe('budgetExhausted', () => {
 
   it('never stops a dimension that has no ceiling', () => {
     expect(budgetExhausted({}, { costUsd: 1_000, turns: 10_000, subagents: 100 })).toBe(false);
+  });
+});
+
+describe('BudgetAccount', () => {
+  it('records spend it is charged and reports what is left', () => {
+    const account = createBudgetAccount({ maxCostUsd: 2, maxTurns: 10 });
+    expect(account.charge({ costUsd: 0.5, turns: 2 })).toBe(true);
+    expect(account.spend()).toEqual({ costUsd: 0.5, turns: 2, subagents: 0 });
+    expect(account.remaining()).toEqual({ costUsd: 1.5, turns: 8, subagents: undefined });
+    expect(account.exhausted()).toBe(false);
+  });
+
+  it('keeps recording the charge that used the allocation up, then says so', () => {
+    const account = createBudgetAccount({ maxCostUsd: 1 });
+    // The money is already spent by the time a caller can observe it, so the
+    // overrun is recorded rather than hidden; the return value is the signal.
+    expect(account.charge({ costUsd: 1.5 })).toBe(false);
+    expect(account.spend().costUsd).toBeCloseTo(1.5);
+    expect(account.remaining().costUsd).toBe(0);
+    expect(account.exhausted()).toBe(true);
+  });
+
+  it('never calls an account with no ceilings exhausted, however much it spends', () => {
+    const account = createBudgetAccount({});
+    expect(account.charge({ costUsd: 900, turns: 4_000 })).toBe(true);
+    expect(account.remaining()).toEqual({ costUsd: undefined, turns: undefined, subagents: undefined });
+  });
+
+  it('clamps a child allocation to what the parent has left', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 5 });
+    pool.charge({ costUsd: 3 });
+    const child = pool.allocate({ maxCostUsd: 4 });
+    expect(child.budget.maxCostUsd).toBeCloseTo(2);
+    expect(child.exhausted()).toBe(false);
+  });
+
+  it('holds the parent reserve back from what a child may be given', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 5, reserveUsd: 1 });
+    const child = pool.allocate({ maxCostUsd: 9 });
+    expect(child.budget.maxCostUsd).toBeCloseTo(4);
+  });
+
+  it('charges every ancestor, so a sibling allocated later gets only what is left', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 1 });
+    const first = pool.allocate({ maxCostUsd: 1 });
+    expect(first.charge({ costUsd: 0.6 })).toBe(true);
+    const second = pool.allocate({ maxCostUsd: 1 });
+    expect(second.budget.maxCostUsd).toBeCloseTo(0.4);
+    expect(second.charge({ costUsd: 0.4 })).toBe(false);
+    expect(pool.spend().costUsd).toBeCloseTo(1);
+    expect(pool.exhausted()).toBe(true);
+    // An allocation made earlier still reports itself spent: the chain is what
+    // stops work, not each child's own snapshot of the ceiling.
+    expect(first.exhausted()).toBe(true);
+  });
+
+  it('stops a child whose own envelope still has room once the pool is spent', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 1 });
+    const first = pool.allocate({ maxCostUsd: 1 });
+    const second = pool.allocate({ maxCostUsd: 1 });
+    expect(first.charge({ costUsd: 0.7 })).toBe(true);
+    // Both snapshots said $1 — an allocation is what was left when it was made,
+    // so the pool, not the snapshot, is what actually has money.
+    expect(second.charge({ costUsd: 0.5 })).toBe(false);
+    expect(pool.spend().costUsd).toBeCloseTo(1.2);
+  });
+
+  it('reports exhaustion up a chain even when the child was given the full pool', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 2 });
+    const child = pool.allocate({ maxCostUsd: 2 });
+    expect(child.charge({ costUsd: 1 })).toBe(true);
+    expect(child.charge({ costUsd: 1 })).toBe(false);
+    expect(child.exhausted()).toBe(true);
+  });
+
+  it('defaults an unbounded request to the parent remaining, never to more', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 3, maxTurns: 20 });
+    const child = pool.allocate({});
+    expect(child.budget.maxCostUsd).toBe(3);
+    expect(child.budget.maxTurns).toBe(20);
+  });
+
+  it('answers canAllocate from what is actually left', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 2 });
+    expect(pool.canAllocate({ maxCostUsd: 2 })).toBe(true);
+    expect(pool.canAllocate({ maxCostUsd: 3 })).toBe(false);
+    expect(pool.canAllocate({ maxTurns: 10 })).toBe(true);
+    pool.charge({ costUsd: 0.5 });
+    expect(pool.canAllocate({ maxCostUsd: 2 })).toBe(false);
+    expect(pool.canAllocate({ maxCostUsd: 1.5 })).toBe(true);
   });
 });

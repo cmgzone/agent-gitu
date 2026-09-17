@@ -12,6 +12,7 @@ import {
   type DelegationScope,
   type DelegationSessionInput,
 } from '../src/cowork/delegation.js';
+import { createBudgetAccount } from '../src/coding/budget.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { coworkToolDocs, executeCoworkTool, type CoworkToolScope, type CoworkToolPerms } from '../src/cowork/tools.js';
 import type { ToolContext } from '../src/tools/tools.js';
@@ -100,8 +101,10 @@ function setup(name: string) {
   const progress: string[] = [];
   const closed: string[] = [];
   const settled: string[] = [];
+  const pool = createBudgetAccount({ maxCostUsd: 1, maxTurns: 50 });
   const delegation = new CoworkDelegation({
     workspaceFor: () => ({ type: 'host', path: '/tmp/ws' }),
+    budgetPool: () => pool,
     createSession: (input) => {
       inputs.push(input);
       return fake.session;
@@ -118,7 +121,7 @@ function setup(name: string) {
       progress.push(text);
     },
   });
-  return { store, agent, conversation, scope, delegation, fake, inputs, progress, closed, settled };
+  return { store, agent, conversation, scope, delegation, fake, inputs, progress, closed, settled, pool };
 }
 
 /** Start a delegated run without awaiting it, so a gate can be raised mid-flight. */
@@ -135,6 +138,10 @@ describe('gitu_task parameters', () => {
     expect(parseDelegationParams({ goal: 'x', timeoutMinutes: 0 }).ok).toBe(false);
     expect(parseDelegationParams({ goal: 'x', timeoutMinutes: -5 }).ok).toBe(false);
     expect(parseDelegationParams({ goal: 'x', timeoutMinutes: 'soon' }).ok).toBe(false);
+    // A cost ceiling is a ceiling: zero or negative would mean "never run".
+    expect(parseDelegationParams({ goal: 'x', maxCostUsd: 0 }).ok).toBe(false);
+    expect(parseDelegationParams({ goal: 'x', maxCostUsd: -1 }).ok).toBe(false);
+    expect(parseDelegationParams({ goal: 'x', maxCostUsd: 'cheap' }).ok).toBe(false);
   });
 
   it('defaults to a real agent run with a 30-minute cap and clamps beyond 3 hours', () => {
@@ -144,6 +151,8 @@ describe('gitu_task parameters', () => {
     });
     const clamped = parseDelegationParams({ goal: 'x', mode: 'fast', effort: 'low', timeoutMinutes: 999 });
     expect(clamped.ok && clamped.value).toEqual({ goal: 'x', mode: 'fast', effort: 'low', timeoutMinutes: 180 });
+    const priced = parseDelegationParams({ goal: 'x', maxCostUsd: 0.25 });
+    expect(priced.ok && priced.value.maxCostUsd).toBe(0.25);
   });
 });
 
@@ -283,6 +292,38 @@ describe('delegated gates', () => {
   it('returns undefined for a card the delegation does not own', () => {
     const s = setup('foreign');
     expect(s.delegation.resolve('req-someone-else', 'answer', 'yes')).toBeUndefined();
+  });
+});
+
+describe('delegated allocation', () => {
+  it('passes the asked-for ceiling on and hands the runtime the pool it is clamped to', async () => {
+    const s = setup('budget');
+    const running = start(s, { goal: 'fix the build', maxCostUsd: 0.25 });
+    expect(s.inputs[0]!.budget).toEqual({ maxCostUsd: 0.25 });
+    expect(s.inputs[0]!.parentBudget).toBe(s.pool);
+    s.fake.finish({ sessionId: 'run_1', status: 'completed', report: report() });
+    await running;
+  });
+
+  it('hands over the pool even when the teammate named no ceiling', async () => {
+    const s = setup('budget-default');
+    const running = start(s);
+    // No request is not "no limit": the pool is still what decides.
+    expect(s.inputs[0]!.budget).toBeUndefined();
+    expect(s.inputs[0]!.parentBudget).toBe(s.pool);
+    s.fake.finish({ sessionId: 'run_1', status: 'completed', report: report() });
+    await running;
+  });
+
+  it('reports a budget stop as a stop, not as broken work', async () => {
+    const s = setup('budget-stop');
+    const running = start(s);
+    // The runtime refuses or stops the session; the teammate must hear which.
+    s.fake.finish({ sessionId: 'run_1', status: 'blocked', error: 'budget exhausted — $0.0000 of $0.05 left' });
+    const result = await running;
+    expect(result.ok).toBe(false);
+    expect(result.output).toBe('Engineering task stopped (blocked): budget exhausted — $0.0000 of $0.05 left');
+    expect(delegationResultSummary({ sessionId: 'run_1', status: 'blocked' })).toBe('Engineering task stopped (blocked).');
   });
 });
 

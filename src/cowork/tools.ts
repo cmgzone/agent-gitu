@@ -119,7 +119,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   {
     name: 'gitu_task',
     doc:
-      'Hand real repository engineering to Agent Gitu — it plans, edits code, runs commands and verifies, in this workspace, as a colleague engineer. params: {"goal":"fix the failing auth tests and explain the cause","mode":"agent|fast|standard","effort":"low|medium|high|max","timeoutMinutes":30}. Blocks until the work finishes and returns the completion summary. It asks the user directly (plan review and dangerous-action approvals appear as cards) — it never inherits your permissions, so never promise the user that a dangerous action is already allowed.',
+      'Hand real repository engineering to Agent Gitu — it plans, edits code, runs commands and verifies, in this workspace, as a colleague engineer. params: {"goal":"fix the failing auth tests and explain the cause","mode":"agent|fast|standard","effort":"low|medium|high|max","timeoutMinutes":30,"maxCostUsd":2}. Blocks until the work finishes and returns the completion summary. It asks the user directly (plan review and dangerous-action approvals appear as cards) — it never inherits your permissions, so never promise the user that a dangerous action is already allowed. maxCostUsd is a ceiling for this task, clamped to the user\'s own delegation budget; the task stops when the ceiling is reached.',
     gate: 'writes',
   },
   { name: 'browse', doc: 'Drive the browser: navigate/evidence/screenshot/click/fill/select/press/type/scroll/back/forward/reload/wait. params: {"action":"navigate","url":"https://example.com"} | {"action":"evidence"} | {"action":"click","selector":"..."} | {"action":"fill","selector":"...","text":"..."}. Browser workflow skill is included.', gate: 'browser' },

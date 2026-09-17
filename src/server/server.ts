@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
+import { createBudgetAccount, type BudgetAccount } from '../coding/budget.js';
 import type { CodingSession } from '../coding/contract.js';
 import { workspacePath } from '../coding/workspace.js';
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
@@ -237,6 +238,17 @@ export interface GituServerConfig {
   autoInstallLsp?: boolean;
   browser?: BrowserBridge;
   telegramFetch?: TelegramFetch;
+  /**
+   * Ceiling for delegated engineering spend, per conversation (USD).
+   *
+   * This is the pool every `gitu_task` draws from: each delegated session is a
+   * child allocation clamped to what is left, so one expensive task leaves less
+   * for the next and an exhausted pool refuses new work instead of spending on.
+   * A teammate may ask for less via `maxCostUsd`; it can never ask for more.
+   */
+  coworkDelegationMaxCostUsd?: number;
+  /** Turn ceiling for delegated engineering, per conversation. */
+  coworkDelegationMaxTurns?: number;
   /** Injectable for tests; production queries the local Codex runtime. */
   codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
   startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
@@ -253,6 +265,14 @@ interface CoworkRequestResolution {
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Default ceiling for one conversation's delegated engineering.
+ *
+ * Deliberately finite: the alternative — no ceiling — makes an unattended team
+ * able to spend without limit, and a delegation that is refused is a far better
+ * failure than a bill nobody saw coming.
+ */
+const DEFAULT_DELEGATION_BUDGET_USD = 5;
 /** Matches the runtime log's default retention, so the two stay comparable. */
 const NATIVE_FRAME_CAPACITY = 2_000;
 const MAX_SESSION_FILES_PER_MESSAGE = 8;
@@ -324,6 +344,8 @@ export class GituServer {
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
   /** Engineering delegation: `gitu_task` → a fresh Agent Gitu session. */
   private delegationService?: CoworkDelegation;
+  /** Per-conversation pools of delegated spend, so siblings compete for money. */
+  private readonly delegationPools = new Map<string, BudgetAccount>();
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
   private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
@@ -1152,6 +1174,7 @@ export class GituServer {
         const agent = this.cowork().getAgent(scope.agent.id);
         return { type: 'host', path: agent ? this.coworkToolContext(agent).cwd : ensureGituHome().workspace };
       },
+      budgetPool: (scope) => (scope.conversationId ? this.delegationPoolFor(scope.conversationId) : undefined),
       createSession: (input) => this.createDelegatedSession(input),
       // A delegated gate is a real decision the user has to make, so it rides the
       // existing request-card surface as a question card. The card is the view;
@@ -1175,6 +1198,26 @@ export class GituServer {
   }
 
   /**
+   * The conversation's pool of delegated spend.
+   *
+   * Scoped to the conversation rather than the process on purpose: a ceiling
+   * that never refills would eventually refuse every delegation on a long-lived
+   * server, while one that refills per turn would defeat the ceiling entirely.
+   * A conversation is the unit of work a person can see and reason about.
+   */
+  private delegationPoolFor(conversationId: string): BudgetAccount {
+    let pool = this.delegationPools.get(conversationId);
+    if (!pool) {
+      pool = createBudgetAccount({
+        maxCostUsd: this.config.coworkDelegationMaxCostUsd ?? DEFAULT_DELEGATION_BUDGET_USD,
+        maxTurns: this.config.coworkDelegationMaxTurns,
+      });
+      this.delegationPools.set(conversationId, pool);
+    }
+    return pool;
+  }
+
+  /**
    * Build the runtime session for one delegated task.
    *
    * Deliberately the same shape as the workspace run: the runtime builds the
@@ -1191,6 +1234,22 @@ export class GituServer {
       throw new Error('Engineering delegation needs a workspace this machine can execute in. Switch the teammate to “My computer” mode; the private computer has no coding runtime yet.');
     }
     const root = workspacePath(input.workspace);
+    // Pricing is the host's to know — it owns the catalog and the credential — so
+    // the runtime enforces money against a cost function supplied here rather
+    // than guessing at provider prices. An injected client has no catalog
+    // identity, so those sessions enforce turn ceilings only.
+    const resolved = this.config.llm
+      ? { client: this.config.llm, providerId: agent.provider ?? '', model: agent.model ?? '' }
+      : resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: root });
+    // The catalog is read per call rather than captured: it is warmed when the
+    // delegation is wired up, so a price that arrives mid-run still applies, and
+    // a session that runs before pricing is known is accounted as unpriced
+    // instead of being priced wrongly. Turn ceilings apply either way.
+    void fetchModelCatalog().catch(() => undefined);
+    const priceOf = (usage: LlmUsage | undefined, providerId: string, model: string): number | undefined =>
+      usage ? usageCostUsd(modelMetadataFor(peekModelCatalog(), providerId, model), usage) : undefined;
+    /** The account the runtime granted this session, assigned when it builds the run. */
+    const budgetRef: { current?: BudgetAccount } = {};
     let ignorePaths: string[] | undefined;
     try {
       ignorePaths = ProjectGuard.detect(root).lock.ignorePaths;
@@ -1219,7 +1278,13 @@ export class GituServer {
                 const available = agentStore.list().map((a) => `"${a.name}"`).join(', ');
                 throw new Error(`unknown specialist agent "${name}". Available agents: [${available || 'none'}].`);
               }
-              return resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root }).client;
+              const specialist = resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root });
+              // Specialist work is charged to the delegation's own account: a
+              // fan-out must not be able to outspend what the user granted
+              // without ever tripping that grant.
+              return new UsageTrackingClient(specialist.client, (usage) => {
+                budgetRef.current?.charge({ turns: 1, ...(priceOf(usage, specialist.providerId, specialist.model) !== undefined ? { costUsd: priceOf(usage, specialist.providerId, specialist.model)! } : {}) });
+              });
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
@@ -1232,6 +1297,11 @@ export class GituServer {
       agentId: input.agentId,
       requestedBy: input.requestedBy,
       gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
+      // The teammate's request, clamped by the runtime to this conversation's
+      // pool: a caller can always ask for less and never for more.
+      budget: input.budget,
+      parentBudget: input.parentBudget,
+      costOf: (usage) => priceOf(usage, resolved.providerId, resolved.model),
       onApprovalRequired: input.onApprovalRequired,
       onPlanReviewRequested: input.onPlanReviewRequested,
       onQuestionsRequested: input.onQuestionsRequested,
@@ -1255,17 +1325,21 @@ export class GituServer {
       },
       // No auto-approve and no auto-skipped review: a teammate cannot grant
       // itself authority over the user's machine by delegating to an engineer.
-      runOptions: () => ({
-        // Ignored by the runtime, which derives the engine's cwd from `workspace`
-        // so the two can never disagree; required by the factory's contract.
-        workspaceRoot: root,
-        llm: this.coworkLlm(agent),
-        mode: input.runOptions.mode,
-        effort: input.runOptions.effort,
-        index,
-        autoApprove: false,
-        requirePlanReview: true,
-      }),
+      runOptions: ({ budget }) => {
+        budgetRef.current = budget;
+        return {
+          // Ignored by the runtime, which derives the engine's cwd from
+          // `workspace` so the two can never disagree; the factory's contract
+          // requires it anyway.
+          workspaceRoot: root,
+          llm: resolved.client,
+          mode: input.runOptions.mode,
+          effort: input.runOptions.effort,
+          index,
+          autoApprove: false,
+          requirePlanReview: true,
+        };
+      },
     });
     this.delegatedSessionResources.set(session.id, () => mcp.killAll());
     return session;

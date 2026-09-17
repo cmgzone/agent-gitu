@@ -20,9 +20,11 @@
  */
 
 import { Gitu, type AskUserHandler, type PlanReviewHandler } from '../agent/gitu.js';
+import { UsageTrackingClient, type LlmClient, type LlmUsage } from '../llm/llm.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, shortId } from '../util.js';
+import { createBudgetAccount, type BudgetAccount, type RunBudget } from './budget.js';
 import type {
   CodingApprovalRequest,
   CodingEventListener,
@@ -68,7 +70,31 @@ export interface GituSessionRequest {
    * Optional on the same terms as `deps`: a gate-ownership session never builds
    * an engine, so it has no per-run options to offer.
    */
-  runOptions?: (run: { goal: string; attempt: number }) => GituFactoryOptions;
+  runOptions?: (run: { goal: string; attempt: number; budget: BudgetAccount }) => GituFactoryOptions;
+  /**
+   * The session's allocation. The runtime is where it is enforced: a session
+   * whose allocation is spent refuses to start, and a run that spends its last
+   * dollar stops rather than running until a wall-clock cap notices.
+   *
+   * `RunBudget` alone is a plan; the runtime turns it into an account, which is
+   * what makes a *hierarchy* real. Two sessions sharing one pool cannot each
+   * believe they own the whole ceiling.
+   */
+  budget?: RunBudget;
+  /**
+   * An enclosing allocation this session draws from — a mission, a host pool of
+   * delegated work, or a parent agent. The session's own `budget` is clamped to
+   * what that account has left, and everything this session spends is charged to
+   * it, so a sibling that spends first shrinks what the next session may be
+   * given.
+   */
+  parentBudget?: BudgetAccount;
+  /**
+   * Price one model call, in USD. Optional because pricing belongs to the host
+   * (it owns the catalog and the credential); a session without it still
+   * enforces turn ceilings instead of claiming to enforce money it cannot see.
+   */
+  costOf?: (usage: LlmUsage) => number | undefined;
   /** Attribution for memories and the UI; wiring into memory scoping lands with
    *  server adoption. */
   agentId?: string;
@@ -181,6 +207,20 @@ export class GituSessionRuntime {
     const id = shortId('run');
     const startedAt = nowIso();
     const timeoutMs = request.gateTimeoutMs ?? 120_000;
+
+    /**
+     * The session's allocation, created once and drawn down by every run and
+     * continuation — a continuation is the same work, so it spends the same
+     * money. A parent account is what makes the hierarchy enforceable: this
+     * session's ceiling is what the parent had left, and each charge here is
+     * also charged there.
+     */
+    const requestedBudget: RunBudget = request.budget ?? {};
+    const account = request.parentBudget ? request.parentBudget.allocate(requestedBudget) : createBudgetAccount(requestedBudget);
+    const tokens = { inputTokens: 0, outputTokens: 0, cachedTokens: 0, messages: 0 };
+    let spentCostUsd = 0;
+    let pricedCalls = 0;
+    let unpricedCalls = 0;
 
     /**
      * Pending gates. Every map is keyed by request id, and the first surface to
@@ -334,10 +374,80 @@ export class GituSessionRuntime {
     let report: CompletionReport | undefined;
     let finishedAt: string | undefined;
 
+    /** Set once when a run is stopped by its allocation, not by the engine. */
+    let budgetStop: string | undefined;
+
+    /**
+     * What is left of the allocation, in the words a person reading a task log
+     * needs. Used both to refuse a run up front and to explain a mid-run stop.
+     */
+    const exhaustionDetail = (): string => {
+      const remaining = account.remaining();
+      const parts: string[] = [];
+      if (remaining.costUsd !== undefined) parts.push(`$${remaining.costUsd.toFixed(4)} of $${(account.budget.maxCostUsd ?? 0).toFixed(2)} left`);
+      if (remaining.turns !== undefined) parts.push(`${remaining.turns} of ${account.budget.maxTurns ?? 0} turns left`);
+      return `budget exhausted — ${parts.join(', ') || 'the allocation has no room left'}`;
+    };
+
+    /**
+     * Stop the run because its allocation is spent.
+     *
+     * Enforced inside the runtime rather than by the caller: a surface that has
+     * already handed over the goal is not in a position to notice that the money
+     * ran out, and the engine cannot see the allocation at all. Idempotent, so a
+     * burst of charges cannot publish the block twice.
+     */
+    const stopForBudget = (): void => {
+      if (budgetStop) return;
+      budgetStop = exhaustionDetail();
+      status = 'blocked';
+      error = budgetStop;
+      log.publishNative({ type: 'operation_blocked', reason: 'budget_exhausted', detail: budgetStop });
+      releaseGates(budgetStop);
+      currentEngine?.stop();
+    };
+
+    /**
+     * Charge one model call: a turn always, its cost when the host can price it.
+     *
+     * `charge` records the spend either way — the tokens are already spent by the
+     * time this runs, so the only decision left is whether to keep going.
+     */
+    const accountCall = (usage: LlmUsage | undefined): void => {
+      tokens.messages += 1;
+      let cost: number | undefined;
+      if (usage) {
+        tokens.inputTokens += usage.inputTokens;
+        tokens.outputTokens += usage.outputTokens;
+        tokens.cachedTokens += usage.cachedTokens;
+        cost = request.costOf?.(usage);
+      }
+      if (cost === undefined) unpricedCalls += 1;
+      else {
+        pricedCalls += 1;
+        spentCostUsd += cost;
+      }
+      if (!account.charge({ turns: 1, ...(cost !== undefined ? { costUsd: cost } : {}) })) stopForBudget();
+    };
+
+    /** Every model call the engine makes is charged, including retries. */
+    const accounted = (llm: LlmClient): LlmClient => new UsageTrackingClient(llm, accountCall);
+
     const execute = async (goal: string): Promise<CodingRunResult> => {
       // Resolved before any state moves: a session that cannot start a run must
       // not publish `run_started` or report itself as running.
       const { runOptions } = requireEngineInputs(request);
+      // A spent allocation refuses the run outright. No engine is built and no
+      // `run_started` is published, because the runtime never accepted the work.
+      if (account.exhausted()) {
+        const detail = exhaustionDetail();
+        status = 'blocked';
+        error = detail;
+        finishedAt = nowIso();
+        log.publishNative({ type: 'operation_blocked', reason: 'budget_exhausted', detail });
+        return { sessionId: id, status, error: detail };
+      }
+      budgetStop = undefined;
       attempt += 1;
       // Published after the runtime has accepted the run and gone active, and
       // immediately before the engine sees the goal. Creating a session is not
@@ -349,7 +459,10 @@ export class GituSessionRuntime {
       // Built per run, not per session: a continuation carries its own resume
       // context and its own usage client. `workspaceRoot` is applied last, so a
       // caller's run options can never point the engine at another workspace.
-      const options: GituFactoryOptions = { ...runOptions({ goal, attempt }), workspaceRoot };
+      // The LLM is wrapped last, so every call this run makes is charged to the
+      // session's allocation whatever the host handed in.
+      const base = runOptions({ goal, attempt, budget: account });
+      const options: GituFactoryOptions = { ...base, workspaceRoot, llm: accounted(base.llm) };
       const engine = this.createEngine(request, options, sinks);
       currentEngine = engine;
       try {
@@ -357,8 +470,16 @@ export class GituSessionRuntime {
         taskId = result.ledger.data.taskId;
         report = result.report;
         status = result.report.status === 'complete' ? 'completed' : result.report.status === 'blocked' ? 'blocked' : 'failed';
+        // The engine's report cannot see the allocation, so a run stopped for
+        // budget reports that — not a generic stall — to whoever asked for it.
+        if (budgetStop) {
+          status = 'blocked';
+          error = budgetStop;
+        } else {
+          error = undefined;
+        }
         finishedAt = nowIso();
-        return { sessionId: id, status, report, error: undefined };
+        return { sessionId: id, status, report, error };
       } catch (err) {
         status = 'failed';
         error = (err as Error).message;
@@ -385,6 +506,13 @@ export class GituSessionRuntime {
         pendingQuestions,
         report,
         error,
+        usage: {
+          ...tokens,
+          ...(pricedCalls > 0 ? { costUsd: spentCostUsd } : {}),
+          // Honest about mixed accounting: an unpriced call means the session's
+          // real spend is higher than the number shown.
+          ...(unpricedCalls > 0 ? { costIncomplete: true } : {}),
+        },
       }),
       run: (goal) => execute(goal),
       continue: async (message) => {

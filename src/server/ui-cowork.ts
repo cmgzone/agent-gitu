@@ -1117,6 +1117,7 @@ export const COWORK_JS = String.raw`
         (m.result ? '<div class="p ok">' + esc(m.result.slice(0, 300)) + '</div>' : '') +
         (m.blockers ? '<div class="p warn">' + esc(m.blockers.slice(0, 220)) + '</div>' : '') +
         (m.status === 'running' || m.status === 'blocked' ? '<button class="btn ghost" data-cancelmission="' + esc(m.id) + '">Cancel mission</button>' : '') +
+        (m.status === 'failed' && m.stoppedForBudget ? '<button class="btn ghost" data-raisemission="' + esc(m.id) + '">Add $5 and resume</button>' : '') +
         '</div>';
     }).join('');
     return '<h4>MISSIONS</h4>' +
@@ -1131,6 +1132,23 @@ export const COWORK_JS = String.raw`
       b.onclick = function () {
         if (!confirm('Cancel this mission? Its progress is kept in the transcript.')) return;
         api('/api/cowork/missions/' + encodeURIComponent(b.getAttribute('data-cancelmission')), { method: 'DELETE' }).catch(function (e) { toast(e.message, true); });
+      };
+    });
+    el.querySelectorAll('[data-raisemission]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-raisemission');
+        var mission = null;
+        (cwEnsure().missions || []).forEach(function (m) { if (m.id === id) mission = m; });
+        // The API takes a total, not an increment, so +$5 on whatever it was
+        // granted — or on what it already spent when it had no ceiling.
+        var from = Number(mission && mission.budget ? mission.budget.maxCostUsd : 0) || Number(mission && mission.budgetSpentUsd) || 0;
+        api('/api/cowork/missions/' + encodeURIComponent(id) + '/budget', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ budgetUsd: Math.round((from + 5) * 100) / 100 }),
+        })
+          .then(function () { toast('Budget raised — the mission is resuming'); })
+          .catch(function (e) { toast(e.message, true); });
       };
     });
   }

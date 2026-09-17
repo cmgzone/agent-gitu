@@ -121,7 +121,7 @@ export function budgetExhausted(budget: RunBudget, spent: BudgetSpend): boolean 
  *      sibling's allocation shrinks as earlier siblings spend.
  */
 export interface BudgetAccount {
-  /** The plan this account was created from, exactly as granted. */
+  /** The plan this account currently runs under, as last granted. */
   readonly budget: RunBudget;
   /** Spend recorded here, including everything charged by descendants. */
   spend(): BudgetSpend;
@@ -140,6 +140,16 @@ export interface BudgetAccount {
    * receiving the parent's full ceiling.
    */
   allocate(requested: RunBudget): BudgetAccount;
+  /**
+   * The same work, granted a new ceiling — in place, so the account keeps its
+   * identity and its place in the chain above and below it.
+   *
+   * Spend already recorded here carries over, so work given more money resumes
+   * inside one envelope instead of starting a second one that would forget what
+   * the first already cost. Whatever ceiling sits above is unchanged and still
+   * bounds this account, so a re-granted child cannot escape its parent.
+   */
+  regrant(budget: RunBudget): BudgetAccount;
   /** True when every ceiling in `requested` fits what this account can hand out. */
   canAllocate(requested: RunBudget): boolean;
 }
@@ -178,25 +188,37 @@ function childEnvelope(requested: RunBudget, remaining: BudgetSpend, parentReser
  */
 export function createBudgetAccount(budget: RunBudget, parent?: BudgetAccount): BudgetAccount {
   const spent: BudgetSpend = { costUsd: 0, turns: 0, subagents: 0 };
+  // The ceiling moves on `regrant`, so read it through a binding rather than the
+  // parameter: every other closure has to see the current grant, not the first.
+  let current = budget;
   const account: BudgetAccount = {
-    budget,
+    get budget() {
+      return current;
+    },
     spend: () => ({ ...spent }),
     remaining: () => ({
-      costUsd: budget.maxCostUsd === undefined ? undefined : Math.max(0, budget.maxCostUsd - (spent.costUsd ?? 0)),
-      turns: budget.maxTurns === undefined ? undefined : Math.max(0, budget.maxTurns - (spent.turns ?? 0)),
-      subagents: budget.maxSubagents === undefined ? undefined : Math.max(0, budget.maxSubagents - (spent.subagents ?? 0)),
+      costUsd: current.maxCostUsd === undefined ? undefined : Math.max(0, current.maxCostUsd - (spent.costUsd ?? 0)),
+      turns: current.maxTurns === undefined ? undefined : Math.max(0, current.maxTurns - (spent.turns ?? 0)),
+      subagents: current.maxSubagents === undefined ? undefined : Math.max(0, current.maxSubagents - (spent.subagents ?? 0)),
     }),
-    exhausted: () => budgetExhausted(budget, spent) || Boolean(parent?.exhausted()),
+    exhausted: () => budgetExhausted(current, spent) || Boolean(parent?.exhausted()),
     charge: (delta) => {
       spent.costUsd = (spent.costUsd ?? 0) + (delta.costUsd ?? 0);
       spent.turns = (spent.turns ?? 0) + (delta.turns ?? 0);
       spent.subagents = (spent.subagents ?? 0) + (delta.subagents ?? 0);
       const room = parent ? parent.charge(delta) : true;
-      return room && !budgetExhausted(budget, spent);
+      return room && !budgetExhausted(current, spent);
     },
-    allocate: (requested) => createBudgetAccount(childEnvelope(requested, account.remaining(), budget.reserveUsd), account),
+    allocate: (requested) => createBudgetAccount(childEnvelope(requested, account.remaining(), current.reserveUsd), account),
+    // In place, so an account keeps its identity: children already charging it
+    // still propagate here, and it still propagates to the parent it was drawn
+    // from. A replacement object would silently strand both.
+    regrant: (next) => {
+      current = next;
+      return account;
+    },
     canAllocate: (requested) => {
-      const envelope = childEnvelope(requested, account.remaining(), budget.reserveUsd);
+      const envelope = childEnvelope(requested, account.remaining(), current.reserveUsd);
       // `childEnvelope` never widens a dimension, so "fits" means the caller's
       // own request survived clamping unchanged and something is left to spend.
       if (requested.maxCostUsd !== undefined && envelope.maxCostUsd !== requested.maxCostUsd) return false;

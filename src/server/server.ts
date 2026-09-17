@@ -1281,10 +1281,66 @@ export class GituServer {
   private stopMissionForBudget(missionId: string, conversationId: string, account: BudgetAccount): string {
     const store = this.cowork();
     const detail = this.missionBudgetStop(account);
-    store.updateMission(missionId, { status: 'failed', finishedAt: new Date().toISOString(), result: detail, nextWakeAt: undefined });
+    store.updateMission(missionId, { status: 'failed', finishedAt: new Date().toISOString(), result: detail, nextWakeAt: undefined, stoppedForBudget: true });
     store.appendMessage(conversationId, { role: 'system', via: 'web', text: detail });
     this.publishCowork(conversationId);
     return detail;
+  }
+
+  /**
+   * Give a mission more money and put it back to work.
+   *
+   * `budgetUsd` is the mission's new *total* ceiling rather than an increment, so
+   * the arithmetic stays visible to whoever grants it. The account is re-granted
+   * in place — its spend carries over, and it keeps charging the pool above it,
+   * which is why that pool is topped up by the same room: a grant the pool could
+   * not cover would be accepted here and then refuse the very next session.
+   */
+  private raiseMissionBudget(mission: CoworkMission, budgetUsd: number): { mission: CoworkMission; poolRaisedUsd?: number } | { error: string } {
+    if (mission.status === 'done' || mission.status === 'cancelled') {
+      return { error: `That mission is already ${mission.status} — start a new mission instead.` };
+    }
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return { error: 'budgetUsd must be a positive dollar amount.' };
+    const ceiling = Math.round(budgetUsd * 100) / 100;
+    const account = this.missionAccountFor(mission);
+    const spent = Math.round((account.spend().costUsd ?? 0) * 100) / 100;
+    if (ceiling <= spent) {
+      return { error: `That mission already spent $${spent.toFixed(2)} — a $${ceiling.toFixed(2)} ceiling would not buy another turn.` };
+    }
+    const pool = this.delegationPoolFor(mission.conversationId);
+    const left = pool.remaining();
+    // A non-money ceiling is not the user's to move, and pretending money fixes
+    // it would resume the mission straight into the same refusal.
+    if ((left.turns !== undefined && left.turns <= 0) || (left.subagents !== undefined && left.subagents <= 0)) {
+      return { error: 'That chat has hit a delegated-work limit that is not about money, so raising the mission budget would not let it continue.' };
+    }
+    const room = Math.round((ceiling - spent) * 100) / 100;
+    let poolRaisedUsd: number | undefined;
+    if (left.costUsd !== undefined && left.costUsd < room) {
+      poolRaisedUsd = Math.round((room - left.costUsd) * 100) / 100;
+      pool.regrant({ ...pool.budget, maxCostUsd: Math.round(((pool.budget.maxCostUsd ?? 0) + poolRaisedUsd) * 100) / 100 });
+    }
+    const reserveUsd = mission.budget?.reserveUsd;
+    const budget = { maxCostUsd: ceiling, ...(reserveUsd !== undefined ? { reserveUsd: Math.min(reserveUsd, ceiling) } : {}) };
+    account.regrant(budget);
+    const store = this.cowork();
+    store.updateMission(mission.id, {
+      budget,
+      stoppedForBudget: false,
+      ...(mission.status === 'failed'
+        ? { status: 'running', finishedAt: undefined, result: undefined, nextWakeAt: new Date().toISOString() }
+        : {}),
+    });
+    store.appendMessage(mission.conversationId, {
+      role: 'system',
+      via: 'web',
+      text:
+        `Budget raised to $${ceiling.toFixed(2)}` +
+        (poolRaisedUsd !== undefined ? ` (this chat's delegation budget topped up by $${poolRaisedUsd.toFixed(2)})` : '') +
+        (mission.status === 'failed' ? ' — resuming the mission.' : '.'),
+    });
+    this.publishCowork(mission.conversationId);
+    return { mission: store.getMission(mission.id)!, ...(poolRaisedUsd !== undefined ? { poolRaisedUsd } : {}) };
   }
 
   /**
@@ -2095,6 +2151,7 @@ export class GituServer {
           finishedAt: new Date().toISOString(),
           result: `${detail} Last progress: ${result.progress}`,
           nextWakeAt: undefined,
+          stoppedForBudget: true,
         });
         await appendNotice(detail);
       } else {
@@ -2691,6 +2748,23 @@ export class GituServer {
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
       }
+      return true;
+    }
+
+    const missionBudgetMatch = path.match(/^\/api\/cowork\/missions\/([\w-]+)\/budget$/);
+    if (missionBudgetMatch && method === 'POST') {
+      const mission = store.getMission(missionBudgetMatch[1]!);
+      if (!mission) {
+        this.sendJson(res, 404, { error: 'no such mission' });
+        return true;
+      }
+      const body = await this.readBody(req);
+      const raised = this.raiseMissionBudget(mission, Number(body['budgetUsd']));
+      if ('error' in raised) {
+        this.sendJson(res, 400, { error: raised.error });
+        return true;
+      }
+      this.sendJson(res, 200, { ok: true, mission: raised.mission, poolRaisedUsd: raised.poolRaisedUsd });
       return true;
     }
 

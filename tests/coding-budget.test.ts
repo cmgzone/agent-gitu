@@ -175,3 +175,55 @@ describe('BudgetAccount', () => {
     expect(pool.canAllocate({ maxCostUsd: 1.5 })).toBe(true);
   });
 });
+
+describe('regrant', () => {
+  it('carries the spend already made, so more money resumes the same work', () => {
+    const account = createBudgetAccount({ maxCostUsd: 1 });
+    expect(account.charge({ costUsd: 1 })).toBe(false);
+    expect(account.exhausted()).toBe(true);
+    const granted = account.regrant({ maxCostUsd: 3 });
+    // Same allocation, new ceiling: $1 already spent leaves $2 to spend.
+    expect(granted).toBe(account);
+    expect(account.budget.maxCostUsd).toBe(3);
+    expect(account.spend()).toEqual({ costUsd: 1, turns: 0, subagents: 0 });
+    expect(account.remaining().costUsd).toBeCloseTo(2);
+    expect(account.exhausted()).toBe(false);
+    expect(account.charge({ costUsd: 1 })).toBe(true);
+    expect(account.charge({ costUsd: 1 })).toBe(false);
+  });
+
+  it('re-grants a child inside its parent and keeps charging that pool', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 3 });
+    const child = pool.allocate({ maxCostUsd: 1 });
+    expect(child.charge({ costUsd: 1 })).toBe(false);
+    // The mission case: the child's own ceiling was the binding one, so this is
+    // the account that has to grow.
+    child.regrant({ maxCostUsd: 2 });
+    expect(child.exhausted()).toBe(false);
+    expect(child.charge({ costUsd: 0.5 })).toBe(true);
+    // And the money still lands on the pool that granted it.
+    expect(pool.spend().costUsd).toBeCloseTo(1.5);
+  });
+
+  it('keeps allocations made before a pool grant charging that same pool', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 1 });
+    const child = pool.allocate({ maxCostUsd: 1 });
+    child.charge({ costUsd: 1 });
+    pool.regrant({ maxCostUsd: 3 });
+    // The child's own slice stays spent — a grant to the pool is not a grant to
+    // work already drawn from it — but its spend has to land on this pool, which
+    // only an account that kept its identity can do.
+    expect(child.charge({ costUsd: 0.5 })).toBe(false);
+    expect(pool.spend().costUsd).toBeCloseTo(1.5);
+  });
+
+  it('cannot lift a re-granted child above the ceiling it sits under', () => {
+    const pool = createBudgetAccount({ maxCostUsd: 1 });
+    const child = pool.allocate({});
+    child.regrant({ maxCostUsd: 50 });
+    expect(child.budget.maxCostUsd).toBe(50);
+    // Generous on paper, still bounded by the pool that granted it.
+    expect(child.charge({ costUsd: 1 })).toBe(false);
+    expect(child.exhausted()).toBe(true);
+  });
+});

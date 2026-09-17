@@ -174,6 +174,12 @@ export interface CoworkMission {
    * recovery reserve); stated inline so the store stays self-contained.
    */
   budget?: { maxCostUsd: number; reserveUsd?: number };
+  /**
+   * Set when the mission stopped because its envelope ran out, so a host can
+   * offer to raise it and the mission can be resumed rather than restarted.
+   * Unlike being blocked on input, this is the one stop that more money fixes.
+   */
+  stoppedForBudget?: boolean;
   nextWakeAt?: string;
   createdAt: string;
   finishedAt?: string;

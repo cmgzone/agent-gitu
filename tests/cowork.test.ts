@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm, type LlmClient } from '../src/llm/llm.js';
-import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation } from '../src/cowork/store.js';
+import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMission } from '../src/cowork/store.js';
+import type { BudgetAccount } from '../src/coding/budget.js';
 import { buildCoworkMessages, runConversationTurn, runMissionSession, type CoworkRunnerDeps } from '../src/cowork/runner.js';
 import { parseToolCalls, stripToolMarkers } from '../src/cowork/tools.js';
 import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, TelegramPoller, type TelegramFetch } from '../src/cowork/telegram.js';
@@ -842,6 +843,21 @@ describe('cowork server routes', () => {
     return `http://127.0.0.1:${port}`;
   }
 
+  /** Wait until the conversation has no turn or mission session in flight. */
+  async function missionIdle(base: string, conversationId: string): Promise<void> {
+    await waitFor(async () => {
+      const d = (await fetch(`${base}/api/cowork/conversations/${conversationId}/messages`).then((r) => r.json())) as { busy: boolean };
+      return !d.busy ? true : undefined;
+    });
+  }
+
+  async function missionView(base: string, conversationId: string) {
+    return (await fetch(`${base}/api/cowork/conversations/${conversationId}/messages`).then((r) => r.json())) as {
+      messages: { text: string }[];
+      missions: { id: string; status: string; result?: string; nextWakeAt?: string; budgetSpentUsd?: number; stoppedForBudget?: boolean }[];
+    };
+  }
+
   async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 15_000): Promise<T> {
     const start = Date.now();
     for (;;) {
@@ -1431,17 +1447,8 @@ describe('cowork server routes', () => {
 
     const runSession = (id: string): Promise<void> =>
       (serverInstance as unknown as { executeMissionSession: (id: string) => Promise<void> }).executeMissionSession(id);
-    const idle = async () => {
-      await waitFor(async () => {
-        const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { busy: boolean };
-        return !d.busy ? true : undefined;
-      });
-    };
-    const view = async () =>
-      (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as {
-        messages: { text: string }[];
-        missions: { id: string; status: string; result?: string; nextWakeAt?: string; budgetSpentUsd?: number }[];
-      };
+    const idle = () => missionIdle(base, conv.id);
+    const view = () => missionView(base, conv.id);
 
     await runSession(mission.id);
     await idle();
@@ -1467,6 +1474,83 @@ describe('cowork server routes', () => {
     expect(refused.status).toBe('failed');
     expect(refused.result).toContain('budget');
     expect(calls).toBe(2);
+
+    // Money cannot move a delegated-work limit that was never about money.
+    const capped = await post(base, `/api/cowork/missions/${mission.id}/budget`, { budgetUsd: 5 });
+    expect(capped.status).toBe(400);
+    expect(String(capped.json['error'])).toContain('not about money');
+    expect((await view()).missions.find((m) => m.id === mission.id)!.status).toBe('failed');
+  });
+
+  it('lets a spent mission be given more money and resume', async () => {
+    let calls = 0;
+    const script = [
+      'Working. <tool>{"name":"agent_memory","params":{"action":"remember","text":"after the raise"}}</tool>',
+      'Draft written. {"status":"working","progress":"created the draft","criteriaMet":[false]}',
+    ];
+    const llm: LlmClient = {
+      name: 'mission-raise-mock',
+      complete: async () => {
+        const text = script[Math.min(calls, script.length - 1)]!;
+        calls += 1;
+        return text;
+      },
+      completeStream: async (_messages, _options, delta) => {
+        const text = script[Math.min(calls, script.length - 1)]!;
+        calls += 1;
+        delta(text);
+        return text;
+      },
+    };
+    // A pool of exactly the mission's grant, so the raise has to reach the pool
+    // too — a grant the pool could not cover would refuse the next session.
+    const base = await startServer(llm, { coworkDelegationMaxCostUsd: 1 });
+    const agent = (await post(base, '/api/cowork/agents', makeAgentInput('raised-mission-worker'))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const mission = (
+      await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Write the report', criteria: [], budgetUsd: 1 })
+    ).json['mission'] as { id: string };
+
+    const internals = serverInstance as unknown as {
+      executeMissionSession: (id: string) => Promise<void>;
+      cowork: () => CoworkStore;
+      missionAccountFor: (mission: CoworkMission) => BudgetAccount;
+    };
+    // An injected client has no catalog price, so put the envelope exactly where
+    // a real dollar of spend leaves it: the mission's own ceiling (and, through
+    // it, the pool above).
+    internals.missionAccountFor(internals.cowork().getMission(mission.id)!).charge({ costUsd: 1 });
+
+    await internals.executeMissionSession(mission.id);
+    await missionIdle(base, conv.id);
+    let seen = await missionView(base, conv.id);
+    const stopped = seen.missions.find((m) => m.id === mission.id)!;
+    expect(stopped.status).toBe('failed');
+    expect(stopped.stoppedForBudget).toBe(true);
+    expect(calls).toBe(0);
+
+    // A ceiling that does not clear what it already spent buys nothing.
+    const tooSmall = await post(base, `/api/cowork/missions/${mission.id}/budget`, { budgetUsd: 1 });
+    expect(tooSmall.status).toBe(400);
+    expect(String(tooSmall.json['error'])).toContain('would not buy another turn');
+    expect((await missionView(base, conv.id)).missions.find((m) => m.id === mission.id)!.status).toBe('failed');
+
+    const raised = await post(base, `/api/cowork/missions/${mission.id}/budget`, { budgetUsd: 2 });
+    expect(raised.status).toBe(200);
+    expect((raised.json['mission'] as { status: string; budget?: { maxCostUsd: number } }).status).toBe('running');
+    expect((raised.json['mission'] as { budget: { maxCostUsd: number } }).budget.maxCostUsd).toBe(2);
+    expect(raised.json['poolRaisedUsd']).toBeCloseTo(1);
+
+    // The resume is real: the next session runs instead of refusing again.
+    await internals.executeMissionSession(mission.id);
+    await missionIdle(base, conv.id);
+    seen = await missionView(base, conv.id);
+    const resumed = seen.missions.find((m) => m.id === mission.id)!;
+    expect(calls).toBe(2);
+    expect(resumed.status).toBe('running');
+    expect(resumed.stoppedForBudget).toBe(false);
+    expect(seen.messages.some((m) => m.text.includes('Budget raised to $2.00'))).toBe(true);
+    expect(seen.messages.some((m) => m.text.startsWith('[mission]'))).toBe(true);
   });
 
   it('aborts an active mission when it is cancelled and does not schedule a retry', async () => {

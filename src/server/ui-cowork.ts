@@ -15,6 +15,15 @@ import { CHARACTER_CSS, CHARACTER_JS } from './ui-characters.js';
  */
 
 export const COWORK_CSS = String.raw`
+  .cw-message-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+  .cw-message-actions button { font-size: 11px; color: var(--muted); background: transparent; border: 1px solid var(--border2); border-radius: 5px; padding: 3px 7px; }
+  .cw-message-actions button:hover, .cw-message-actions button:focus-visible { color: var(--text); border-color: var(--accent); }
+  .cw-message-actions button:disabled { opacity: .45; cursor: not-allowed; }
+  .cw-message-status, .cw-message-refs { font-size: 11px; color: var(--muted); }
+  .cw-message-status.failed { color: var(--bad, #f87171); }
+  .cw-message-refs { margin-top: 6px; overflow-wrap: anywhere; }
+  .cw-references > span { max-width: 280px; }
+
   /* ---- Cowork mode ---- */
   body.cowork .sb, body.cowork .mobile-nav-btn, body.cowork .vresize, body.cowork .topbar { display: none !important; }
   .cw { flex: 1; display: flex; min-height: 0; width: 100%; background: var(--bg); }
@@ -269,8 +278,13 @@ export const COWORK_JS = String.raw`
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null };
     var cw = S.cw;
+    if (!cw.lastChange) cw.lastChange = 0;
+    if (!cw.outbox) cw.outbox = Object.create(null);
+    if (!cw.messageLocks) cw.messageLocks = Object.create(null);
+    if (!cw.removedMessages) cw.removedMessages = Object.create(null);
+    if (!cw.referencedMessageIds) cw.referencedMessageIds = [];
     if (!cw.threads) cw.threads = [];
     if (!cw.folders) cw.folders = [];
     if (!cw.widgets) cw.widgets = [];
@@ -464,8 +478,10 @@ export const COWORK_JS = String.raw`
     cw.threads = [];
     cw.folders = [];
     cw.widgets = [];
-    cw.msgs = [];
+    cw.msgs = cwLocalMessages();
     cw.lastSeq = 0;
+    cw.lastChange = 0;
+    cw.referencedMessageIds = [];
     cw.busy = false;
     cw.working = null;
     cw.progress = null;
@@ -491,8 +507,10 @@ export const COWORK_JS = String.raw`
     if (cw.threadId === (threadId || null)) return;
     cwStopPoll();
     cw.threadId = threadId || null;
-    cw.msgs = [];
+    cw.msgs = cwLocalMessages();
     cw.lastSeq = 0;
+    cw.lastChange = 0;
+    cw.referencedMessageIds = [];
     cw.busy = false;
     cw.working = null;
     cw.progress = null;
@@ -616,6 +634,7 @@ export const COWORK_JS = String.raw`
       '<div class="cw-composer-wrap">' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-pending" id="cwPending"></div>' +
+        '<div class="cw-pending cw-references" id="cwReferences" aria-label="Referenced messages"></div>' +
         '<div class="cw-mentions" id="cwMentions"' + (conv.kind === 'group' ? '' : ' hidden') + '></div>' +
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwAttach" title="Attach documents or files" aria-label="Attach files">' + cwIcon('paperclip') + '</button>' +
@@ -637,6 +656,7 @@ export const COWORK_JS = String.raw`
     cwRenderMsgs();
     cwRenderWork();
     cwRenderPending();
+    cwRenderReferences();
     cwRenderInfo();
     cwRenderTyping();
   }
@@ -799,6 +819,80 @@ export const COWORK_JS = String.raw`
     if (files.length > room) toast('You can attach up to 4 files at once', true);
   }
 
+  function cwLocalMessages() {
+    var cw = cwEnsure();
+    return Object.keys(cw.outbox).map(function (id) { return cw.outbox[id]; }).filter(function (entry) {
+      return entry.conversationId === cw.active && (entry.payload.threadId || null) === (cw.threadId || null);
+    }).map(function (entry) { return entry.message; });
+  }
+
+  function cwMessage(id) {
+    return cwEnsure().msgs.find(function (m) { return m.id === id; });
+  }
+
+  // A seq-only fallback keeps older servers/fixtures working. Real rows always
+  // reconcile by logical id, including the optimistic row before POST returns.
+  function cwMergeMessage(m, fromSnapshot) {
+    var cw = cwEnsure();
+    // Only snapshots cover every row up to the cursor. Mutation responses can
+    // arrive before intervening rows, so must not advance the polling cursor.
+    if (fromSnapshot) cw.lastSeq = Math.max(cw.lastSeq, m.seq || 0);
+    if (m.id && cw.removedMessages[cw.active + '/' + m.id]) return false;
+    var at = cw.msgs.findIndex(function (old) { return m.id ? old.id === m.id : !old.id && old.seq === m.seq; });
+    var old = at >= 0 ? cw.msgs[at] : null;
+    if (old && !old.localOnly && ((m.changeSeq || 0) < (old.changeSeq || 0) || (m.revision || 0) < (old.revision || 0) || (m.attempt || 0) < (old.attempt || 0))) return false;
+    if (m.id) delete cw.outbox[m.id];
+    if (at >= 0) cw.msgs[at] = m; else cw.msgs.push(m);
+    cw.msgs.sort(function (a, b) { return (a.seq || Infinity) - (b.seq || Infinity); });
+    return true;
+  }
+
+  function cwRemoveMessage(id) {
+    var cw = cwEnsure();
+    cw.removedMessages[cw.active + '/' + id] = true;
+    delete cw.outbox[id];
+    cw.msgs = cw.msgs.filter(function (m) { return m.id !== id; });
+    cw.referencedMessageIds = cw.referencedMessageIds.filter(function (ref) { return ref !== id; });
+    cwRenderReferences();
+  }
+
+  function cwReferenceLabel(id) {
+    var m = cwMessage(id);
+    return m ? (m.role === 'user' ? 'You' : m.agentName || 'Message') + ': ' + (m.text || 'Attachment').slice(0, 80) : 'Message ' + id;
+  }
+
+  function cwRenderReferences() {
+    var cw = cwEnsure(), el = $('cwReferences');
+    if (!el) return;
+    el.innerHTML = cw.referencedMessageIds.map(function (id) {
+      return '<span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(cwReferenceLabel(id)) + '</span><button data-cwunreference="' + esc(id) + '" aria-label="Remove reference" title="Remove reference">×</button></span>';
+    }).join('');
+    el.querySelectorAll('[data-cwunreference]').forEach(function (b) { b.onclick = function () {
+      cw.referencedMessageIds = cw.referencedMessageIds.filter(function (id) { return id !== b.getAttribute('data-cwunreference'); });
+      cwRenderReferences();
+    }; });
+  }
+
+  function cwMessageActive(m) { return m.status === 'sending' || m.status === 'retrying' || !!cwEnsure().messageLocks[m.id]; }
+
+  function cwMessageActionsHtml(m) {
+    if (!m.id) return '';
+    var active = cwMessageActive(m);
+    function button(action, label, disabled) { return '<button data-cwmessage="' + esc(m.id) + '" data-cwaction="' + action + '"' + (disabled ? ' disabled' : '') + '>' + label + '</button>'; }
+    var refs = (m.referencedMessageIds || []).map(function (id) { return esc(cwReferenceLabel(id)); });
+    var html = refs.length ? '<div class="cw-message-refs">References: ' + refs.join(' · ') + '</div>' : '';
+    if (m.localOnly && m.files && m.files.length) html += '<div class="cw-message-refs">Attachments: ' + m.files.map(function (f) { return esc(f.name); }).join(', ') + '</div>';
+    html += '<div class="cw-message-actions">' + button('copy', 'Copy', false);
+    if (m.role === 'user') {
+      html += button('edit', 'Edit', active);
+      if (m.status === 'failed') html += button('retry', 'Retry', active);
+    }
+    html += button('reference', 'Reference', !!m.localOnly) + button('delete', 'Delete', active);
+    if (m.role === 'user' && m.status) html += '<span role="status" class="cw-message-status ' + esc(m.status) + '">' + esc(m.localOnly && m.status === 'failed' ? 'Delivery unconfirmed' : m.status) + '</span>';
+    if (m.revision) html += '<span class="cw-message-status">Edited</span>';
+    return html + '</div>';
+  }
+
   function cwBubbleHtml(m) {
     var conv = cwActiveConv();
     var members = conv ? cwConvMembers(conv) : [];
@@ -808,7 +902,7 @@ export const COWORK_JS = String.raw`
       var via = '';
       if (m.via === 'telegram') via = ' · Telegram' + (m.from ? ' — ' + esc(m.from) : '');
       else if (m.via === 'schedule') via = ' · schedule';
-      return '<div class="cw-row me"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(m.text, members) + cwFilesHtml(m.artifactIds) + '</div></div>';
+      return '<div class="cw-row me"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(m.text, members) + cwFilesHtml(m.artifactIds) + cwMessageActionsHtml(m) + '</div></div>';
     }
     var toolChips = '';
     if (m.tools && m.tools.length > 0) {
@@ -816,7 +910,7 @@ export const COWORK_JS = String.raw`
     }
     return '<div class="cw-row">' + cwAva(agent || { name: m.agentName || 'agent', avatar: { color: '#8f80ff', shape: 'cube' } }) +
       '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(m.agentName || 'agent') + '</span><span class="tg">' + cwTime(m.ts) + '</span></div>' +
-      cwBody(m.text, members) + toolChips + cwFilesHtml(m.artifactIds) + '</div></div>';
+      cwBody(m.text, members) + toolChips + cwFilesHtml(m.artifactIds) + cwMessageActionsHtml(m) + '</div></div>';
   }
 
   function cwTime(ts) {
@@ -849,6 +943,9 @@ export const COWORK_JS = String.raw`
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
     wrap.innerHTML = cw.msgs.map(function (m) { return cwBubbleHtml(m); }).join('') + '<div id="cwLive" hidden></div>';
     cwBindFileCards(wrap);
+    wrap.querySelectorAll('[data-cwaction]').forEach(function (b) { b.onclick = function () {
+      cwMessageAction(b.getAttribute('data-cwaction'), b.getAttribute('data-cwmessage'));
+    }; });
     cwRenderProgress();
     if (nearBottom || cw.msgs.length <= 2) wrap.scrollTop = wrap.scrollHeight;
   }
@@ -1334,7 +1431,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     if (typeof EventSource !== 'function') return;
     var generation = cw.generation;
-    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq + '&thread=' + encodeURIComponent(cw.threadId || 'main'));
+    var stream = new EventSource('/api/cowork/conversations/' + encodeURIComponent(convId) + '/stream?after=' + cw.lastSeq + '&change=' + (cw.lastChange || 0) + '&thread=' + encodeURIComponent(cw.threadId || 'main'));
     cw.stream = stream;
     function current() { return S.active === 'cowork' && cw.active === convId && cw.generation === generation && cw.stream === stream; }
     stream.onopen = function () { if (current()) cw.streamOpen = true; };
@@ -1347,6 +1444,7 @@ export const COWORK_JS = String.raw`
 
   function cwApplySnapshot(d) {
     var cw = cwEnsure();
+    if (typeof d.messageChangeSeq === 'number' && d.messageChangeSeq < cw.lastChange) return;
     var rosterChanged = false;
     if (d.roster) {
       rosterChanged = JSON.stringify(cw.agents) !== JSON.stringify(d.roster.agents) || JSON.stringify(cw.convs) !== JSON.stringify(d.roster.conversations);
@@ -1359,10 +1457,16 @@ export const COWORK_JS = String.raw`
       cwRenderRail(); cwRenderChat(); return;
     }
     var added = false;
-    (d.messages || []).forEach(function (m) {
-      if (m.seq <= cw.lastSeq) return;
-      cw.msgs.push(m); cw.lastSeq = m.seq; added = true;
-    });
+    // Ignore older change-feed payloads, but allow equal cursors (busy/progress
+    // can change without a message mutation). Never move the cursor backwards.
+    if (typeof d.messageChangeSeq !== 'number' || d.messageChangeSeq >= cw.lastChange) {
+      (d.messages || []).concat(d.messageUpdates || []).forEach(function (m) {
+        if (cwMergeMessage(m, true)) added = true;
+      });
+      (d.removedMessageIds || []).forEach(function (id) { cwRemoveMessage(id); added = true; });
+      if (typeof d.messageChangeSeq === 'number') cw.lastChange = Math.max(cw.lastChange, d.messageChangeSeq);
+    }
+    if (added) cwRenderReferences();
     var wasBusy = cw.busy;
     cw.busy = Boolean(d.busy);
     cw.working = d.working || null;
@@ -1409,7 +1513,7 @@ export const COWORK_JS = String.raw`
       }
     if (cw.streamOpen) return Promise.resolve();
     if (cw.pollPromise) return cw.pollPromise;
-    var request = api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages?after=' + cw.lastSeq + '&rosterRevision=' + (cw.rosterRevision === undefined ? -1 : cw.rosterRevision) + '&thread=' + encodeURIComponent(cw.threadId || 'main')).then(function (d) {
+    var request = api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages?after=' + cw.lastSeq + '&change=' + (cw.lastChange || 0) + '&rosterRevision=' + (cw.rosterRevision === undefined ? -1 : cw.rosterRevision) + '&thread=' + encodeURIComponent(cw.threadId || 'main')).then(function (d) {
       if (cw.active !== convId || cw.generation !== generation || S.active !== 'cowork' || cw.streamOpen) return;
       cwApplySnapshot(d);
     }).catch(function () {}).finally(function () { if (cw.pollPromise === request) cw.pollPromise = null; });
@@ -1457,21 +1561,164 @@ export const COWORK_JS = String.raw`
       .catch(function (e) { toast(e.message, true); });
   }
 
+  function cwPostLocal(entry) {
+    var cw = cwEnsure(), id = entry.payload.id;
+    if (cw.messageLocks[id]) return Promise.resolve();
+    cw.messageLocks[id] = true;
+    entry.message.status = 'sending';
+    cwRenderMsgs();
+    function visible() { return cw.active === entry.conversationId && (cw.threadId || null) === (entry.payload.threadId || null); }
+    return api('/api/cowork/conversations/' + encodeURIComponent(entry.conversationId) + '/messages', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(entry.payload)
+    }).then(function (d) {
+      if (d.message) {
+        delete cw.outbox[id];
+        if (visible()) cwMergeMessage(d.message);
+      }
+    }).catch(function (e) {
+      // A snapshot may already have confirmed storage despite a lost response.
+      // Only an unconfirmed row replays POST; stored failures use /retry.
+      if (cw.outbox[id] === entry) {
+        entry.message.status = 'failed';
+        if (visible()) {
+          entry.payload.referencedMessageIds.forEach(function (ref) {
+            if (!cw.removedMessages[entry.conversationId + '/' + ref] && cw.referencedMessageIds.indexOf(ref) < 0) cw.referencedMessageIds.push(ref);
+          });
+          cwRenderReferences();
+        }
+      }
+      toast(e.message, true);
+    }).finally(function () {
+      delete cw.messageLocks[id];
+      if (visible()) { cwRenderMsgs(); cwPoll(); }
+    });
+  }
+
   function cwSend() {
-    var cw = cwEnsure();
-    var input = $('cwInput');
+    var cw = cwEnsure(), input = $('cwInput');
     if (!input) return;
-    var text = input.value.trim();
-    var files = (cw.pendingFiles || []).slice();
+    var text = input.value.trim(), files = (cw.pendingFiles || []).slice();
     if (!text && !files.length) return;
     if (!cw.active) { toast('Open a chat first', true); return; }
+    var id = crypto.randomUUID();
+    var payload = { id: id, text: text, files: files, threadId: cw.threadId || null, referencedMessageIds: cw.referencedMessageIds.slice() };
+    var entry = { conversationId: cw.active, payload: payload, message: {
+      id: id, text: text, role: 'user', via: 'web', ts: new Date().toISOString(),
+      status: 'sending', revision: 0, attempt: 0, localOnly: true,
+      threadId: payload.threadId, referencedMessageIds: payload.referencedMessageIds, files: files
+    } };
+    cw.outbox[id] = entry;
+    cw.msgs.push(entry.message);
     input.value = '';
     input.style.height = 'auto';
     cw.pendingFiles = [];
+    cw.referencedMessageIds = [];
     cwRenderPending();
-    api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text, files: files, threadId: cw.threadId || undefined }) })
-      .then(function () { cwPoll(); })
-      .catch(function (e) { cw.pendingFiles = files.concat(cw.pendingFiles || []).slice(0, 4); cwRenderPending(); toast(e.message, true); cwPoll(); });
+    cwRenderReferences();
+    return cwPostLocal(entry);
+  }
+
+  // Mutation responses are scoped to their original view; late responses must
+  // not inject a row into a different conversation/thread.
+  function cwMutateMessage(m, method, suffix, body) {
+    var cw = cwEnsure(), convId = cw.active, threadId = cw.threadId || null;
+    if (cw.messageLocks[m.id]) return Promise.resolve(false);
+    cw.messageLocks[m.id] = true;
+    cwRenderMsgs();
+    return api('/api/cowork/conversations/' + encodeURIComponent(convId) + '/messages/' + encodeURIComponent(m.id) + suffix, {
+      method: method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body)
+    }).then(function (d) {
+      if (method === 'DELETE') { cw.removedMessages[convId + '/' + m.id] = true; delete cw.outbox[m.id]; }
+      if (cw.active === convId && (cw.threadId || null) === threadId) {
+        if (method === 'DELETE') cwRemoveMessage(m.id);
+        else if (d.message) cwMergeMessage(d.message);
+      }
+      return true;
+    }).catch(function (e) {
+      // A confirmed not-found is also a successful deletion of an unsent row;
+      // network errors and active-message rejections must retain it.
+      var missing = e.message === '404' || /^message not found$/i.test(e.message || '');
+      try { missing = missing || /^message not found$/i.test(JSON.parse(e.message).error || ''); } catch (_) {}
+      if (method === 'DELETE' && m.localOnly && missing) {
+        delete cw.outbox[m.id];
+        cw.removedMessages[convId + '/' + m.id] = true;
+        if (cw.active === convId && (cw.threadId || null) === threadId) cwRemoveMessage(m.id);
+        return true;
+      }
+      throw e;
+    }).finally(function () {
+      delete cw.messageLocks[m.id];
+      if (cw.active === convId && (cw.threadId || null) === threadId) { cwRenderMsgs(); cwRenderReferences(); cwPoll(); }
+    });
+  }
+
+  function cwMessageAction(action, id) {
+    var cw = cwEnsure(), m = cwMessage(id);
+    if (!m) return;
+    if (action === 'copy') {
+      if (typeof navigator === 'undefined' || !navigator.clipboard) { toast('Clipboard unavailable in this browser', true); return; }
+      return navigator.clipboard.writeText(m.text || '').then(function () { toast('Copied'); }).catch(function (e) { toast(e.message, true); });
+    }
+    if (action === 'reference') {
+      if (m.localOnly) return;
+      if (cw.referencedMessageIds.indexOf(id) < 0) cw.referencedMessageIds.push(id);
+      cwRenderReferences();
+      var input = $('cwInput'); if (input) input.focus();
+      return;
+    }
+    if (cwMessageActive(m)) return;
+    if (action === 'edit' && m.role === 'user') return cwEditMessageModal(m);
+    if (action === 'retry' && m.role === 'user' && m.status === 'failed') {
+      if (cw.outbox[id]) return cwPostLocal(cw.outbox[id]);
+      return cwMutateMessage(m, 'POST', '/retry', { attempt: m.attempt || 0 }).catch(function (e) { toast(e.message, true); });
+    }
+    if (action === 'delete' && confirm('Delete this message?')) {
+      // Even an unconfirmed send may have reached the server. DELETE verifies
+      // that it is not active before discarding the retained payload.
+      return cwMutateMessage(m, 'DELETE', '').catch(function (e) { toast(e.message, true); });
+    }
+  }
+
+  function cwEditMessageModal(m) {
+    var cw = cwEnsure(), convId = cw.active, threadId = cw.threadId || null;
+    var revision = m.revision || 0, local = !!m.localOnly;
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML = '<div class="box" role="dialog" aria-modal="true" aria-labelledby="cwEditTitle">' +
+      '<div class="bar"><span id="cwEditTitle">Edit message</span><span style="flex:1"></span><button class="btn ghost" id="cwEditCancel">Cancel</button></div>' +
+      '<div class="cw-body"><label for="cwEditText">Message</label><textarea id="cwEditText" rows="6"></textarea>' +
+      '<div class="cw-note">Saving changes does not run the team. Attachments and references stay unchanged.</div></div>' +
+      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwEditSave">Save changes</button></div></div>';
+    document.body.appendChild(modal);
+    var input = modal.querySelector('#cwEditText'), save = modal.querySelector('#cwEditSave');
+    input.value = m.text || '';
+    function close() { modal.remove(); var composer = $('cwInput'); if (composer) composer.focus(); }
+    modal.querySelector('#cwEditCancel').onclick = close;
+    modal.onkeydown = function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+      if (e.key === 'Tab') {
+        var first = modal.querySelector('#cwEditCancel'), last = save.disabled ? input : save;
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    save.onclick = function () {
+      var current = cwMessage(m.id), text = input.value.trim();
+      if (cw.active !== convId || (cw.threadId || null) !== threadId || !current) { toast('This message is no longer open', true); close(); return; }
+      if (cwMessageActive(current)) { toast('Wait until delivery finishes before editing', true); return; }
+      if ((current.revision || 0) !== revision || !!current.localOnly !== local) { toast('Message changed. Reopen the editor for the latest version.', true); return; }
+      if (!text && !(current.artifactIds || []).length && !(current.files || []).length) { toast('Enter a message', true); return; }
+      if (local && cw.outbox[m.id]) {
+        cw.outbox[m.id].payload.text = text;
+        current.text = text;
+        cwRenderMsgs(); close(); return;
+      }
+      save.disabled = true;
+      return cwMutateMessage(current, 'PATCH', '', { text: text, revision: revision }).then(function (ok) {
+        if (ok) close();
+      }).catch(function (e) { toast(e.message, true); }).finally(function () { save.disabled = false; });
+    };
+    input.focus();
   }
 
   // ------------------- modals -------------------

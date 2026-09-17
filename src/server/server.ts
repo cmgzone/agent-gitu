@@ -20,7 +20,7 @@ import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient } from '../llm/llm.js';
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
-import { runConversationTurn, runMissionSession, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { CoworkComputer } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
@@ -840,14 +840,20 @@ export class GituServer {
     };
   }
 
-  private coworkView(conversationId: string, after = 0, rosterRevision = -1, threadId: string | null = null) {
+  private coworkView(conversationId: string, after = 0, rosterRevision = -1, threadId: string | null = null, sinceChange = 0) {
     const store = this.cowork();
     const run = this.coworkRuns.get(conversationId);
     const missions = store.missions(conversationId);
     const activeMissions = missions.filter((mission) => mission.status === 'running' || mission.status === 'blocked');
     const recentMissions = missions.filter((mission) => mission.status !== 'running' && mission.status !== 'blocked').slice(0, 20);
+    // Edits, retries, status changes and deletions arrive as updates on the
+    // existing rows, so a live client never renders a second copy of a message.
+    const changes = store.messageChanges(conversationId, after, sinceChange, threadId);
     return {
       messages: store.messages(conversationId, after, threadId),
+      messageUpdates: changes.updates,
+      removedMessageIds: changes.removed,
+      messageChangeSeq: changes.changeSeq,
       threadId,
       threads: store.threads(conversationId),
       folders: store.folders(conversationId),
@@ -1167,26 +1173,77 @@ export class GituServer {
   }
 
   /** Public entry: append a user-side message and start the team's response. */
-  private dispatchCoworkMessage(conversationId: string, text: string, via: CoworkMessage['via'], from?: string, artifactIds?: string[], threadId?: string): { ok: boolean; queued?: boolean; error?: string } {
+  private dispatchCoworkMessage(
+    conversationId: string,
+    text: string,
+    via: CoworkMessage['via'],
+    from?: string,
+    artifactIds?: string[],
+    threadId?: string,
+    meta?: { id?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[] },
+  ): { ok: boolean; queued?: boolean; error?: string; message?: CoworkMessage } {
     const store = this.cowork();
     const conv = store.getConversation(conversationId);
     if (!conv) return { ok: false, error: 'conversation not found' };
     if (threadId && !store.getThread(conversationId, threadId)) return { ok: false, error: 'thread not found in this conversation' };
     const trimmed = text.trim().slice(0, 20_000);
     if (!trimmed) return { ok: false, error: 'text is required' };
+    const prior = meta?.id ? store.getMessage(conversationId, meta.id) : undefined;
+    if (prior) return { ok: true, message: prior };
+    const trigger = store.appendMessage(conversationId, {
+      id: meta?.id,
+      role: 'user',
+      text: trimmed,
+      via,
+      from,
+      artifactIds,
+      threadId,
+      // A mention mirrors the structure the router already honours in the text.
+      mentionedAgentIds: meta?.mentionedAgentIds ?? this.coworkMentions(conv, trimmed),
+      referencedMessageIds: meta?.referencedMessageIds,
+    });
+    return { ...this.beginCoworkTurn(conversationId, trigger), message: trigger };
+  }
+
+  /** @mentions resolved against this conversation's members (structure, not text). */
+  private coworkMentions(conversation: CoworkConversation, text: string): string[] {
+    const store = this.cowork();
+    const members = conversation.memberIds
+      .map((id) => store.getAgent(id))
+      .filter((agent): agent is CoworkAgent => Boolean(agent));
+    return mentionNames(text, members).map((agent) => agent.id);
+  }
+
+  /**
+   * Queue or start the team's response to one logical message. The caller has
+   * already stored that message (fresh send, edit or retry), so this never
+   * appends a second copy: an edit or retry keeps the same message id.
+   */
+  private beginCoworkTurn(conversationId: string, trigger: CoworkMessage): { ok: boolean; queued?: boolean; error?: string } {
+    const store = this.cowork();
     const run = this.coworkRuns.get(conversationId);
     if (run?.busy) {
-      if (run.abort.signal.aborted) return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
-      if (run.queue.length >= 50) return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
-      run.queue.push(store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds, threadId }));
+      if (run.abort.signal.aborted) {
+        store.setMessageStatus(conversationId, trigger.id, 'failed');
+        this.publishCowork(conversationId);
+        return { ok: false, error: 'The team is stopping. Retry when it is idle.' };
+      }
+      if (run.queue.length >= 50) {
+        store.setMessageStatus(conversationId, trigger.id, 'failed');
+        this.publishCowork(conversationId);
+        return { ok: false, error: 'The conversation queue is full. Please wait for the team.' };
+      }
+      const queued = run.queue.find((message) => message.id === trigger.id);
+      // Editing or retrying a message that is still queued updates that slot.
+      if (queued) Object.assign(queued, trigger);
+      else run.queue.push(trigger);
       this.publishCowork(conversationId);
       return { ok: true, queued: true };
     }
-    const trigger = store.appendMessage(conversationId, { role: 'user', text: trimmed, via, from, artifactIds, threadId });
     // A user reply in a conversation with a blocked mission is guidance for it.
     for (const mission of store.missions(conversationId)) {
       if (mission.status !== 'blocked') continue;
-      store.updateMission(mission.id, { status: 'running', guidance: [...mission.guidance, trimmed].slice(-10), nextWakeAt: new Date(Date.now() + 5_000).toISOString() });
+      store.updateMission(mission.id, { status: 'running', guidance: [...mission.guidance, trigger.text].slice(-10), nextWakeAt: new Date(Date.now() + 5_000).toISOString() });
       store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Mission unblocked — your reply was added as guidance.` });
     }
     const abort = new AbortController();
@@ -1197,11 +1254,64 @@ export class GituServer {
       .finally(() => {
         const current = this.coworkRuns.get(conversationId);
         if (current?.abort === abort) {
+          for (const message of store.messages(conversationId)) {
+            if (message.role === 'user' && (message.status === 'sending' || message.status === 'retrying')) {
+              store.setMessageStatus(conversationId, message.id, 'failed');
+            }
+          }
           this.coworkRuns.delete(conversationId);
           this.publishCowork(conversationId);
         }
       });
     return { ok: true };
+  }
+
+  /**
+   * Edit one of the user's messages: same id, revision + 1, then the team
+   * answers the revised message. Nothing is inserted, nothing is cloned.
+   */
+  private editCoworkMessage(
+    conversationId: string,
+    messageId: string,
+    patch: { text?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[] },
+  ): { ok: boolean; queued?: boolean; error?: string; message?: CoworkMessage } {
+    const store = this.cowork();
+    const existing = store.getMessage(conversationId, messageId);
+    if (!existing) return { ok: false, error: 'message not found' };
+    if (existing.role !== 'user') return { ok: false, error: 'only your own messages can be edited' };
+    if (existing.status === 'sending' || existing.status === 'retrying') return { ok: false, error: 'Wait for delivery before editing' };
+    if (patch.text !== undefined && patch.mentionedAgentIds === undefined) {
+      patch.mentionedAgentIds = this.coworkMentions(store.getConversation(conversationId)!, patch.text);
+    }
+    let revised: CoworkMessage | undefined;
+    try {
+      revised = store.reviseMessage(conversationId, messageId, patch);
+    } catch (err) {
+      return { ok: false, error: (err as Error).message };
+    }
+    if (!revised) return { ok: false, error: 'message not found' };
+    this.publishCowork(conversationId);
+    return { ok: true, message: revised };
+  }
+
+  /** Retry/resend: same id, attempt + 1, same citations. Never a second row. */
+  private retryCoworkMessage(conversationId: string, messageId: string): { ok: boolean; queued?: boolean; error?: string; message?: CoworkMessage } {
+    const store = this.cowork();
+    const existing = store.getMessage(conversationId, messageId);
+    if (!existing) return { ok: false, error: 'message not found' };
+    if (existing.role !== 'user') return { ok: false, error: 'only your own messages can be retried' };
+    if (existing.status === 'sending' || existing.status === 'retrying') return { ok: true, message: existing };
+    const retried = store.retryMessage(conversationId, messageId)!;
+    return { message: retried, ...this.beginCoworkTurn(conversationId, retried) };
+  }
+
+  /** Delete one logical message — including any pending queue slot. */
+  private deleteCoworkMessage(conversationId: string, messageId: string): boolean {
+    const run = this.coworkRuns.get(conversationId);
+    if (run) run.queue = run.queue.filter((message) => message.id !== messageId);
+    const removed = this.cowork().deleteMessage(conversationId, messageId);
+    if (removed) this.publishCowork(conversationId);
+    return removed;
   }
 
   /** Rendered persistent-memory block for one agent's prompt. */
@@ -1256,11 +1366,14 @@ export class GituServer {
         }
       };
       try {
-      await runConversationTurn({
+      const turn = await runConversationTurn({
         conversation: conv,
         history,
         trigger,
         threadId,
+        // Referenced messages reach the team as structured context (id, author,
+        // neighbours) — never as text pasted into the new message.
+        references: renderReferencedMessages(store, conversationId, trigger),
         media: this.coworkTriggerMedia(trigger.artifactIds),
         deps: {
           forceAgentId: run.forceAgentId,
@@ -1320,7 +1433,12 @@ export class GituServer {
           return stored;
         },
       });
+      // Delivery state of the logical message, never its identity.
+      if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, turn.error ? 'failed' : 'sent');
       await this.sendCoworkRequestCards(conv);
+      } catch (err) {
+        if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, 'failed');
+        throw err;
       } finally {
         run.working = undefined;
         run.progress = undefined;
@@ -1960,9 +2078,12 @@ export class GituServer {
       if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
       const streamParams = new URL(req.url ?? '/', 'http://localhost').searchParams;
       let after = Math.max(0, Number(streamParams.get('after')) || 0);
+      const sinceChange = Math.max(0, Number(streamParams.get('change')) || 0);
       const rawThread = streamParams.get('thread');
       const streamThread: string | null = !rawThread || rawThread === 'main' ? null : rawThread;
       let rosterRevision = -1;
+      // Client's message-change cursor: mutations since it arrive as updates.
+      let lastChange = sinceChange;
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive', 'x-accel-buffering': 'no' });
       res.flushHeaders();
       const subscribers = this.coworkSubscribers.get(convId) ?? new Set<() => void>();
@@ -1972,8 +2093,9 @@ export class GituServer {
         if (res.writableEnded || res.destroyed) return;
         // Reconnect slow clients rather than buffering unbounded token updates.
         if (res.writableLength > 1_000_000) { res.destroy(); return; }
-        const snapshot = this.coworkView(convId, after, rosterRevision, streamThread);
+        const snapshot = this.coworkView(convId, after, rosterRevision, streamThread, lastChange);
         if (snapshot.messages.length) after = snapshot.messages[snapshot.messages.length - 1]!.seq;
+        lastChange = snapshot.messageChangeSeq;
         rosterRevision = snapshot.rosterRevision;
         // A disconnected viewer must never fail an agent's tool or reply.
         try {
@@ -2007,15 +2129,30 @@ export class GituServer {
         const params = new URL(req.url ?? '/', 'http://localhost').searchParams;
         const after = Number(params.get('after') ?? 0) || 0;
         const rosterRevision = Number(params.get('rosterRevision') ?? -1);
+        const sinceChange = Number(params.get('change') ?? 0) || 0;
         const rawThread = params.get('thread');
         const viewThread: string | null = !rawThread || rawThread === 'main' ? null : rawThread;
-        this.sendJson(res, 200, this.coworkView(convId, Math.max(0, after), rosterRevision, viewThread));
+        this.sendJson(res, 200, this.coworkView(convId, Math.max(0, after), rosterRevision, viewThread, Math.max(0, sinceChange)));
         return true;
       }
       if (method === 'POST') {
         // Attachments arrive as base64 data URLs, so the body is ~4/3 the file
         // size; the default 1 MB route limit would reject a 750 KB file.
         const body = await this.readBody(req, Math.ceil(MAX_ARTIFACT_BYTES * 1.4) + 20_000);
+        if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
+        const id = body['id'];
+        if (id !== undefined && (typeof id !== 'string' || !/^[\w-]{1,160}$/.test(id))) {
+          this.sendJson(res, 400, { error: 'Invalid message id' }); return true;
+        }
+        // A lost HTTP response must not duplicate attachments or execution.
+        const prior = typeof id === 'string' ? store.getMessage(convId, id) : undefined;
+        if (prior) { this.sendJson(res, 200, { ok: true, message: prior }); return true; }
+        if (typeof id === 'string' && store.messageChanges(convId).removed.includes(id)) {
+          this.sendJson(res, 409, { error: 'Message was deleted' }); return true;
+        }
+        if (body['threadId'] && !store.getThread(convId, String(body['threadId']))) {
+          this.sendJson(res, 400, { error: 'thread not found' }); return true;
+        }
         const artifactIds: string[] = [];
         try {
           const files = Array.isArray(body['files']) ? (body['files'] as Record<string, unknown>[]).slice(0, 4) : [];
@@ -2031,8 +2168,61 @@ export class GituServer {
         const attached = artifactIds.map((id) => store.getArtifact(id)?.name).filter(Boolean);
         const text = String(body['text'] ?? '').trim() || (attached.length ? `Attached ${attached.join(', ')}` : '');
         const threadId = typeof body['threadId'] === 'string' && body['threadId'] ? body['threadId'] : undefined;
-        const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined, threadId);
-        this.sendJson(res, result.ok ? 202 : 409, result.ok ? { ok: true, queued: result.queued ?? false } : { error: result.error });
+        const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined, threadId, {
+          id: typeof id === 'string' ? id : undefined,
+          referencedMessageIds: Array.isArray(body['referencedMessageIds']) ? body['referencedMessageIds'].map(String) : undefined,
+          mentionedAgentIds: Array.isArray(body['mentionedAgentIds']) ? body['mentionedAgentIds'].map(String) : undefined,
+        });
+        this.sendJson(res, result.ok ? 202 : 409, { ...result, queued: result.queued ?? false });
+        return true;
+      }
+      return false;
+    }
+
+    // One logical message: edit, retry and delete all preserve its identity.
+    const messageMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/messages\/([\w-]+)(?:\/(retry))?$/);
+    if (messageMatch) {
+      const convId = messageMatch[1]!;
+      const messageId = messageMatch[2]!;
+      if (!store.getConversation(convId)) { this.sendJson(res, 404, { error: 'conversation not found' }); return true; }
+      if (method === 'PATCH' && !messageMatch[3]) {
+        const body = await this.readBody(req);
+        const current = store.getMessage(convId, messageId);
+        if (!current) { this.sendJson(res, 404, { error: 'message not found' }); return true; }
+        if (!Number.isSafeInteger(body['revision']) || body['revision'] !== current.revision) {
+          this.sendJson(res, 409, { error: 'Message revision changed; reload before editing', message: current }); return true;
+        }
+        if (typeof body['text'] !== 'string' || !body['text'].trim()) {
+          this.sendJson(res, 400, { error: 'text is required' }); return true;
+        }
+        const result = this.editCoworkMessage(convId, messageId, {
+          ...(typeof body['text'] === 'string' ? { text: body['text'] } : {}),
+          ...(Array.isArray(body['referencedMessageIds']) ? { referencedMessageIds: body['referencedMessageIds'].map(String) } : {}),
+          ...(Array.isArray(body['mentionedAgentIds']) ? { mentionedAgentIds: body['mentionedAgentIds'].map(String) } : {}),
+        });
+        this.sendJson(res, result.ok ? 202 : 400, result.ok ? { ok: true, queued: result.queued ?? false, message: result.message } : { error: result.error });
+        return true;
+      }
+      if (method === 'POST' && messageMatch[3] === 'retry') {
+        const body = await this.readBody(req);
+        const current = store.getMessage(convId, messageId);
+        if (!current) { this.sendJson(res, 404, { error: 'message not found' }); return true; }
+        const attempt = body['attempt'];
+        if (typeof attempt !== 'number' || !Number.isSafeInteger(attempt) || attempt < 0 || attempt > current.attempt) {
+          this.sendJson(res, 409, { error: 'Invalid delivery attempt' }); return true;
+        }
+        if (attempt < current.attempt) { this.sendJson(res, 200, { ok: true, message: current }); return true; }
+        const result = this.retryCoworkMessage(convId, messageId);
+        this.sendJson(res, result.ok ? 202 : 400, result.ok ? { ok: true, queued: result.queued ?? false, message: result.message } : { error: result.error });
+        return true;
+      }
+      if (method === 'DELETE' && !messageMatch[3]) {
+        const current = store.getMessage(convId, messageId);
+        if (current?.status === 'sending' || current?.status === 'retrying') {
+          this.sendJson(res, 409, { error: 'Wait for delivery before deleting' }); return true;
+        }
+        const removed = this.deleteCoworkMessage(convId, messageId);
+        this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'message not found' });
         return true;
       }
       return false;

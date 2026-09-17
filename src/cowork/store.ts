@@ -45,8 +45,13 @@ export interface CoworkAgent {
   createdAt: string;
 }
 
+/** Delivery state of one logical message. */
+export type CoworkMessageStatus = 'sending' | 'sent' | 'failed' | 'retrying';
+
 export interface CoworkMessage {
-  /** Monotonic per-conversation sequence; doubles as the polling cursor. */
+  /** Stable conversation scope, supplied by the store. */
+  conversationId: string;
+  /** Monotonic per-conversation append sequence; edits keep this position. */
   seq: number;
   id: string;
   role: 'user' | 'agent' | 'system';
@@ -63,6 +68,39 @@ export interface CoworkMessage {
   /** Thread this message belongs to; absent means the Main thread. */
   threadId?: string;
   ts: string;
+  /**
+   * Stable logical identity. An edit produces the SAME message with
+   * `revision + 1`; a retry/resend produces the SAME message with
+   * `attempt + 1`. Neither ever inserts a second message.
+   */
+  revision: number;
+  attempt: number;
+  /** Delivery state of this logical message. */
+  status: CoworkMessageStatus;
+  /** Prior messages this message cites — a structured edge, never pasted text. */
+  referencedMessageIds?: string[];
+  /** Agents explicitly addressed by this message (@mention). */
+  mentionedAgentIds?: string[];
+  /** Per-conversation change sequence: appends and every mutation bump it, so
+   *  a live client can update rows in place instead of refetching them. */
+  changeSeq: number;
+}
+
+/** Append input. Counters are accepted for compatibility but never trusted. */
+export type CoworkMessageInput = Omit<CoworkMessage, 'conversationId' | 'seq' | 'id' | 'ts' | 'revision' | 'attempt' | 'status' | 'changeSeq'> & {
+  id?: string;
+  ts?: string;
+  revision?: number;
+  attempt?: number;
+  status?: CoworkMessageStatus;
+};
+
+/** A deleted message and the change cursor at deletion time. Live clients use
+ *  it to drop exactly those rows without refetching the whole transcript. */
+export interface CoworkMessageTombstone {
+  id: string;
+  changeSeq: number;
+  threadId?: string;
 }
 
 export interface CoworkTelegramConfig {
@@ -237,6 +275,8 @@ export interface CoworkData {
   conversations: CoworkConversation[];
   /** Messages are keyed by conversation id to keep the document navigable. */
   messages: Record<string, CoworkMessage[]>;
+  /** Deleted/evicted ids retained durably for replay protection and reconciliation. */
+  messageTombstones: Record<string, CoworkMessageTombstone[]>;
   /** Shared "about the user" context injected into every teammate. */
   userProfile?: CoworkUserProfile;
   missions: CoworkMission[];
@@ -259,7 +299,7 @@ export interface CoworkWorkEntry {
   ts: string;
 }
 
-export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
+export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, messageTombstones: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
 
 function taskKey(text: string): string {
   return text.normalize('NFKC').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[.!]+$/, '');
@@ -270,6 +310,11 @@ function emptyCoworkData(): CoworkData {
 }
 
 const MAX_MESSAGES_PER_CONVERSATION = 2_000;
+const MESSAGE_STATUSES = new Set<CoworkMessageStatus>(['sending', 'sent', 'failed', 'retrying']);
+/** A message may cite a bounded set of prior messages and address a bounded
+ *  set of teammates; the limits keep one message from flooding the prompt. */
+const MAX_REFERENCED_MESSAGES = 8;
+const MAX_MENTIONED_AGENTS = 12;
 
 /** Per-artifact ceiling (storage, Telegram download, share_file). Telegram bots
  *  can hand back at most 20 MB through getFile, so this is the practical cap for
@@ -279,6 +324,9 @@ export const MAX_ARTIFACT_BYTES = 20_000_000;
 export class CoworkStore {
   private data: CoworkData = emptyCoworkData();
   private loaded = false;
+  /** Highest per-conversation change sequence handed out in this process; the
+   *  durable floor is re-derived from stored messages and tombstones. */
+  private changeSeqs = new Map<string, number>();
   /** Process-local roster version; message appends do not change it. */
   rosterRevision = 0;
 
@@ -300,6 +348,7 @@ export class CoworkStore {
         agents: Array.isArray(parsed.agents) ? parsed.agents : [],
         conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
         messages: parsed.messages && typeof parsed.messages === 'object' ? parsed.messages : {},
+        messageTombstones: parsed.messageTombstones && typeof parsed.messageTombstones === 'object' ? parsed.messageTombstones : {},
         userProfile: parsed.userProfile && typeof parsed.userProfile === 'object'
           ? {
               name: typeof parsed.userProfile.name === 'string' ? parsed.userProfile.name : undefined,
@@ -331,6 +380,33 @@ export class CoworkStore {
       }
       this.data.todos = [...unique.values()];
       for (const agent of this.data.agents) agent.skills = [...new Set(['browser-workflow', ...(agent.skills ?? [])])];
+      // Preserve existing mutation cursors: array order is append order, not
+      // change order. Assign only missing cursors above the durable high-water.
+      for (const [conversationId, tombstones] of Object.entries(this.data.messageTombstones)) {
+        this.data.messageTombstones[conversationId] = Array.isArray(tombstones)
+          ? tombstones.filter((entry) => entry && typeof entry.id === 'string' && Number.isSafeInteger(entry.changeSeq) && entry.changeSeq > 0)
+          : [];
+      }
+      let identityChanged = false;
+      for (const [conversationId, list] of Object.entries(this.data.messages)) {
+        if (!Array.isArray(list)) { this.data.messages[conversationId] = []; continue; }
+        let change = this.messageChangeCursor(conversationId);
+        for (const message of list) {
+          const before = JSON.stringify(message);
+          message.conversationId = conversationId;
+          message.revision = Number.isFinite(message.revision) ? Math.max(0, Math.trunc(message.revision)) : 0;
+          message.attempt = Number.isFinite(message.attempt) ? Math.max(0, Math.trunc(message.attempt)) : 0;
+          message.status = MESSAGE_STATUSES.has(message.status) ? message.status : 'sent';
+          if (!Number.isSafeInteger(message.changeSeq) || message.changeSeq <= 0) message.changeSeq = ++change;
+          if (message.status === 'sending' || message.status === 'retrying') {
+            message.status = 'failed';
+            message.changeSeq = ++change;
+          }
+          identityChanged ||= before !== JSON.stringify(message);
+        }
+        this.changeSeqs.set(conversationId, change);
+      }
+      if (identityChanged) this.save();
     } catch {
       // A corrupt file must not wipe the team silently: keep defaults in
       // memory; the next successful save replaces the damaged document.
@@ -601,7 +677,13 @@ export class CoworkStore {
     if (!conversation?.threads?.some((thread) => thread.id === threadId)) return false;
     conversation.threads = conversation.threads.filter((thread) => thread.id !== threadId);
     const list = data.messages[conversationId];
-    if (list) data.messages[conversationId] = list.filter((message) => message.threadId !== threadId);
+    if (list) {
+      const tombstones = (data.messageTombstones[conversationId] ??= []);
+      for (const message of list.filter((entry) => entry.threadId === threadId)) {
+        tombstones.push({ id: message.id, threadId, changeSeq: this.nextChangeSeq(conversationId) });
+      }
+      data.messages[conversationId] = list.filter((message) => message.threadId !== threadId);
+    }
     conversation.updatedAt = new Date().toISOString();
     this.save(true);
     return true;
@@ -633,6 +715,149 @@ export class CoworkStore {
     const all = this.load().messages[conversationId] ?? [];
     const scoped = threadId === undefined ? all : all.filter((m) => (threadId === null ? !m.threadId : m.threadId === threadId));
     return afterSeq > 0 ? scoped.filter((m) => m.seq > afterSeq) : [...scoped];
+  }
+
+  /** One message by id. Identity survives edits, retries and status changes. */
+  getMessage(conversationId: string, messageId: string): CoworkMessage | undefined {
+    return (this.load().messages[conversationId] ?? []).find((message) => message.id === messageId);
+  }
+
+  /** Highest change sequence handed out for a conversation so far. */
+  messageChangeCursor(conversationId: string): number {
+    const data = this.load();
+    let highest = this.changeSeqs.get(conversationId) ?? 0;
+    for (const message of data.messages[conversationId] ?? []) {
+      if (Number.isSafeInteger(message.changeSeq) && message.changeSeq > highest) highest = message.changeSeq;
+      if (Number.isSafeInteger(message.seq) && message.seq > highest) highest = message.seq;
+    }
+    for (const tombstone of data.messageTombstones[conversationId] ?? []) {
+      if (tombstone.changeSeq > highest) highest = tombstone.changeSeq;
+    }
+    return highest;
+  }
+
+  /**
+   * Messages a live client already knows that changed since its cursor, plus the
+   * ids it must drop. Appended messages stay in `messages(afterSeq)`; mutations
+   * (edit, retry, status) and deletions travel here instead, so an edit updates
+   * the existing row rather than arriving as a second message.
+   */
+  messageChanges(conversationId: string, afterSeq = 0, sinceChange = 0, threadId?: string | null): { updates: CoworkMessage[]; removed: string[]; changeSeq: number } {
+    const data = this.load();
+    const changeSeq = this.messageChangeCursor(conversationId);
+    sinceChange = Number.isFinite(sinceChange) && sinceChange >= 0 && sinceChange <= changeSeq ? sinceChange : 0;
+    const inThread = (value: { threadId?: string }): boolean => (threadId === undefined ? true : threadId === null ? !value.threadId : value.threadId === threadId);
+    const known = afterSeq > 0 ? (data.messages[conversationId] ?? []).filter((message) => message.seq <= afterSeq) : [];
+    return {
+      updates: known.filter((message) => message.changeSeq > sinceChange && inThread(message)).map((message) => ({ ...message })),
+      removed: (data.messageTombstones[conversationId] ?? [])
+        .filter((tombstone) => tombstone.changeSeq > sinceChange && inThread(tombstone))
+        .map((tombstone) => tombstone.id),
+      changeSeq,
+    };
+  }
+
+  /**
+   * Edit: the SAME message id gains a revision. Text and citation edges change;
+   * identity, position and conversation history do not.
+   */
+  reviseMessage(
+    conversationId: string,
+    messageId: string,
+    patch: { text?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[] },
+  ): CoworkMessage | undefined {
+    const list = this.load().messages[conversationId] ?? [];
+    const message = list.find((entry) => entry.id === messageId);
+    if (!message) return undefined;
+    if (patch.text !== undefined) {
+      const text = patch.text.trim().slice(0, 20_000);
+      if (!text) throw new Error('text is required');
+      message.text = text;
+    }
+    if (patch.referencedMessageIds !== undefined) {
+      const references = this.resolveReferences(list, message.id, patch.referencedMessageIds);
+      if (references) message.referencedMessageIds = references;
+      else delete message.referencedMessageIds;
+    }
+    if (patch.mentionedAgentIds !== undefined) {
+      message.mentionedAgentIds = this.resolveMentions(conversationId, patch.mentionedAgentIds) ?? [];
+    }
+    message.revision += 1;
+    message.changeSeq = this.nextChangeSeq(conversationId);
+    this.save();
+    return message;
+  }
+
+  /** Retry: the SAME message id gains an attempt. The delivery attempt changes,
+   *  never the message identity — and citation edges are preserved. */
+  retryMessage(conversationId: string, messageId: string): CoworkMessage | undefined {
+    const message = this.getMessage(conversationId, messageId);
+    if (!message) return undefined;
+    message.attempt += 1;
+    message.status = 'retrying';
+    message.changeSeq = this.nextChangeSeq(conversationId);
+    this.save();
+    return message;
+  }
+
+  /** Delivery state only: never a revision, never a second message. */
+  setMessageStatus(conversationId: string, messageId: string, status: CoworkMessageStatus): CoworkMessage | undefined {
+    const message = this.getMessage(conversationId, messageId);
+    if (!message || message.status === status) return message;
+    message.status = status;
+    message.changeSeq = this.nextChangeSeq(conversationId);
+    this.save();
+    return message;
+  }
+
+  /** Remove one logical message and record a tombstone for live clients. */
+  deleteMessage(conversationId: string, messageId: string): boolean {
+    const data = this.load();
+    const list = data.messages[conversationId];
+    if (!list) return false;
+    const index = list.findIndex((entry) => entry.id === messageId);
+    if (index < 0) return false;
+    const removed = list[index]!;
+    const changeSeq = this.nextChangeSeq(conversationId);
+    list.splice(index, 1);
+    const tombstones = (data.messageTombstones[conversationId] ??= []);
+    tombstones.push({ id: removed.id, changeSeq, threadId: removed.threadId });
+    this.save();
+    return true;
+  }
+
+  private nextChangeSeq(conversationId: string): number {
+    const next = this.messageChangeCursor(conversationId) + 1;
+    this.changeSeqs.set(conversationId, next);
+    return next;
+  }
+
+  /** Citation edges must point at messages that exist in THIS conversation. */
+  private resolveReferences(list: CoworkMessage[], selfId: string, ids: string[] | undefined): string[] | undefined {
+    if (!ids || ids.length === 0) return undefined;
+    const known = new Set(list.map((message) => message.id));
+    const out: string[] = [];
+    for (const id of ids) {
+      const value = String(id).trim();
+      if (!value || value === selfId || !known.has(value) || out.includes(value)) continue;
+      out.push(value);
+      if (out.length >= MAX_REFERENCED_MESSAGES) break;
+    }
+    return out.length > 0 ? out : undefined;
+  }
+
+  /** Mentions must name members of THIS conversation. */
+  private resolveMentions(conversationId: string, ids: string[] | undefined): string[] | undefined {
+    if (!ids || ids.length === 0) return undefined;
+    const members = new Set(this.load().conversations.find((conversation) => conversation.id === conversationId)?.memberIds ?? []);
+    const out: string[] = [];
+    for (const id of ids) {
+      const value = String(id).trim();
+      if (!value || !members.has(value) || out.includes(value)) continue;
+      out.push(value);
+      if (out.length >= MAX_MENTIONED_AGENTS) break;
+    }
+    return out.length > 0 ? out : undefined;
   }
 
   // ------------------------------------------------------------ user profile
@@ -1015,18 +1240,44 @@ export class CoworkStore {
   // Memory now lives in the shared MemoryStore (same architecture as the main
   // agent — typed entries, lifecycle, isolation). See cowork/memory.ts.
 
-  appendMessage(conversationId: string, message: Omit<CoworkMessage, 'seq' | 'id' | 'ts'> & { id?: string; ts?: string }): CoworkMessage {
+  appendMessage(conversationId: string, message: CoworkMessageInput): CoworkMessage {
     const data = this.load();
     if (!data.conversations.some((c) => c.id === conversationId)) throw new Error(`Conversation ${conversationId} not found`);
     const list = (data.messages[conversationId] ??= []);
+    const id = message.id ?? `cm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`;
+    if ((data.messageTombstones[conversationId] ?? []).some((entry) => entry.id === id)) {
+      throw new Error(`Message ${id} was deleted`);
+    }
+    const existing = list.find((entry) => entry.id === id);
+    if (existing) return existing;
+    const changeSeq = this.nextChangeSeq(conversationId);
+    // Citation edges and mentions are resolved, never trusted: the spread must
+    // not carry unvalidated ids onto the stored message.
+    const { referencedMessageIds: rawReferences, mentionedAgentIds: rawMentions, ...rest } = message;
     const stored: CoworkMessage = {
-      ...message,
-      id: message.id ?? `cm-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`,
-      seq: list.length > 0 ? list[list.length - 1]!.seq + 1 : 1,
+      ...rest,
+      id,
+      conversationId,
+      seq: changeSeq,
       ts: message.ts ?? new Date().toISOString(),
+      // A fresh send starts at revision 0 / attempt 0; only a real edit or retry
+      // advances those counters, so the logical message is never duplicated.
+      revision: 0,
+      attempt: 0,
+      status: message.status ?? (message.role === 'user' ? 'sending' : 'sent'),
+      changeSeq,
     };
+    const references = this.resolveReferences(list, id, rawReferences);
+    if (references) stored.referencedMessageIds = references;
+    const mentions = this.resolveMentions(conversationId, rawMentions);
+    if (rawMentions !== undefined) stored.mentionedAgentIds = mentions ?? [];
     list.push(stored);
-    if (list.length > MAX_MESSAGES_PER_CONVERSATION) list.splice(0, list.length - MAX_MESSAGES_PER_CONVERSATION);
+    if (list.length > MAX_MESSAGES_PER_CONVERSATION) {
+      const tombstones = (data.messageTombstones[conversationId] ??= []);
+      for (const evicted of list.splice(0, list.length - MAX_MESSAGES_PER_CONVERSATION)) {
+        tombstones.push({ id: evicted.id, threadId: evicted.threadId, changeSeq });
+      }
+    }
     const conv = data.conversations.find((c) => c.id === conversationId);
     if (conv) conv.updatedAt = stored.ts;
     this.save();

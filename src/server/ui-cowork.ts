@@ -1517,7 +1517,7 @@ export const COWORK_JS = String.raw`
         (!isEdit ? '<label>Starting points — fill instructions only, then make it yours</label><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '">' + esc(t.label) + '</button>'; }).join('') + '</div>' : '') +
         '<label>Personality &amp; instructions (the system prompt)</label><textarea id="cwAmPrompt" placeholder="Who is this agent, how does it think and answer?">' + esc(d.systemPrompt) + '</textarea>' +
         '<div class="cw-2col"><div><label>Model provider</label><select id="cwAmProv"><option value="">Server default</option>' + (S.models || []).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === d.provider ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>'; }).join('') + '</select></div>' +
-        '<div><label>Model</label><select id="cwAmModel"><option value="">Provider default</option></select></div></div>' +
+        '<div><label for="cwAmModel">Model</label><input type="text" id="cwAmModelSearch" placeholder="Search models…" aria-label="Search models for the selected provider" aria-controls="cwAmModel" autocomplete="off" spellcheck="false" style="margin-bottom:6px"><select id="cwAmModel" aria-describedby="cwAmModelCount"><option value="">Provider default</option></select><div id="cwAmModelCount" class="meta" role="status" aria-live="polite"></div></div></div>' +
         '<div class="cw-2col"><div><label>Effort</label><select id="cwAmEffort"><option value="">default</option><option value="low"' + (d.effort === 'low' ? ' selected' : '') + '>low</option><option value="medium"' + (d.effort === 'medium' ? ' selected' : '') + '>medium</option><option value="high"' + (d.effort === 'high' ? ' selected' : '') + '>high</option><option value="max"' + (d.effort === 'max' ? ' selected' : '') + '>max</option></select></div>' +
         '<div><label>Chief of staff</label><div class="cw-check" style="margin-top:8px"><input type="checkbox" id="cwAmChief"' + (d.chiefOfStaff ? ' checked' : '') + '> <span>Preselect as chief in new groups</span></div></div></div>' +
         '<label>Skills (loaded from the shared skill library)</label><div class="cw-skills" id="cwAmSkills">' +
@@ -1576,14 +1576,37 @@ export const COWORK_JS = String.raw`
     });
     var provSel = modal.querySelector('#cwAmProv');
     var modelSel = modal.querySelector('#cwAmModel');
+    var modelSearch = modal.querySelector('#cwAmModelSearch');
+    var modelCount = modal.querySelector('#cwAmModelCount');
     var fillModels = function () {
       var pid = provSel.value;
-      var prov = null;
-      (S.models || []).forEach(function (p) { if (p.id === pid) prov = p; });
-      modelSel.innerHTML = '<option value="">Provider default</option>' + (prov ? (prov.models || []).map(function (m) { return '<option value="' + esc(m.id) + '"' + (m.id === d.model ? ' selected' : '') + '>' + esc(m.id) + '</option>'; }).join('') : '');
+      var query = modelSearch.value;
+      var group = catalogModelGroups(pid, query)[0];
+      var matches = group ? group.models : [];
+      var options = catalogSelectOptions(pid, d.model, query);
+      // Filtering must not silently replace an existing choice with the default.
+      if (d.model && !matches.some(function (m) { return m.id === d.model; })) {
+        options = '<option value="' + esc(d.model) + '" selected>' + esc(d.model) + ' (current selection)</option>' + options;
+      }
+      modelSel.innerHTML = '<option value="">Provider default</option>' + options;
+      modelSearch.disabled = !pid;
+      modelCount.textContent = !pid ? 'Choose a provider to search models' :
+        (matches.length ? matches.length + (matches.length === 1 ? ' model' : ' models') + (query.trim() ? ' match' : '') : 'No models match your search') +
+        (d.model && !matches.some(function (m) { return m.id === d.model; }) ? ' · current selection kept' : '');
     };
-    provSel.onchange = function () { d.model = ''; fillModels(); };
+    modelSearch.oninput = fillModels;
+    provSel.onchange = function () { d.model = ''; modelSearch.value = ''; fillModels(); };
+    modelSel.onchange = function () { d.model = modelSel.value; fillModels(); };
     fillModels();
+    loadModelCatalog().then(function () {
+      if (!modal.isConnected) return;
+      var pid = provSel.value;
+      d.model = modelSel.value || d.model;
+      provSel.innerHTML = '<option value="">Server default</option>' + S.models.map(function (p) {
+        return '<option value="' + esc(p.id) + '"' + (p.id === pid ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>';
+      }).join('');
+      fillModels();
+    }).catch(function () { if (modal.isConnected) toast('Could not refresh models; showing the last catalog', true); });
     modal.querySelector('#cwAmCancel').onclick = function () { modal.remove(); };
     modal.querySelector('#cwAmSave').onclick = function () {
       var body = {

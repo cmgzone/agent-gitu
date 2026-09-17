@@ -762,6 +762,60 @@ describe('cowork autonomy layer', () => {
     expect(result.progress).toContain('Acceptance criteria remain incomplete');
   });
 
+  it('gives a mission a cost envelope, and none when it asked for no budget', () => {
+    const store = new CoworkStore(path.join(tempHome('mission-envelope'), 'cowork.json'));
+    const agent = store.saveAgent(makeAgentInput('budget-worker'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const create = (extra: Record<string, unknown>) =>
+      store.createMission({ conversationId: conv.id, agentId: agent.id, goal: 'Ship it', criteria: [], ...extra });
+    // Cents precision: a mission is a spend ceiling, not a budget plan.
+    expect(create({ budgetUsd: 2.5, reserveUsd: 0.5 }).budget).toEqual({ maxCostUsd: 2.5, reserveUsd: 0.5 });
+    expect(create({ budgetUsd: 1.239 }).budget).toEqual({ maxCostUsd: 1.24 });
+    // No budget is not "unlimited": the mission draws from the pool instead.
+    expect(create({}).budget).toBeUndefined();
+    expect(create({ budgetUsd: 0 }).budget).toBeUndefined();
+    expect(create({ budgetUsd: -5 }).budget).toBeUndefined();
+    expect(create({ budgetUsd: Number.NaN }).budget).toBeUndefined();
+  });
+
+  it('lets a mission work turn delegate engineering with the mission attached', async () => {
+    const store = new CoworkStore(path.join(tempHome('mission-delegation'), 'cowork.json'));
+    const agent = store.saveAgent(makeAgentInput('mission-delegator', { allowWrites: true }));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const mission = store.createMission({ conversationId: conv.id, agentId: agent.id, goal: 'Ship the fix', criteria: [], budgetUsd: 3 });
+    const scopes: { missionId?: string }[] = [];
+    const delegated: Record<string, unknown>[] = [];
+    const delegation = {
+      run: async (scope: { missionId?: string }, params: Record<string, unknown>) => {
+        scopes.push(scope);
+        delegated.push(params);
+        return { ok: true, output: 'Engineering task completed (session run_1).' };
+      },
+    } as unknown as CoworkDelegation;
+    await runMissionSession({
+      mission,
+      agent,
+      deps: {
+        agents: [agent],
+        resolveLlm: () =>
+          new ScriptedMockLlm([
+            () => 'Delegating. <tool>{"name":"gitu_task","params":{"goal":"fix the failing build"}}</tool>',
+            () => '{"status":"working","progress":"handed the fix to an engineer","criteriaMet":[]}',
+          ]),
+        toolContext: () => realToolContext(),
+        store,
+        memory: CoworkMemory.forWorkspace(),
+        delegation,
+      },
+      append: (message) => store.appendMessage(conv.id, message),
+    });
+    expect(delegated).toEqual([{ goal: 'fix the failing build' }]);
+    // The mission id is what makes the delegation draw from the mission's own
+    // envelope rather than the conversation's pool.
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]!.missionId).toBe(mission.id);
+  });
+
 });
 
 describe('cowork server routes', () => {
@@ -1343,6 +1397,76 @@ describe('cowork server routes', () => {
     const unblocked = view2.missions.find((m) => m.id === blockedMission.id)!;
     expect(unblocked.status).toBe('running');
     expect(unblocked.guidance.some((g) => g.includes('.env'))).toBe(true);
+  });
+
+  it('stops a mission when its envelope is spent, and refuses the next one', async () => {
+    let calls = 0;
+    const script = [
+      'Working. <tool>{"name":"agent_memory","params":{"action":"remember","text":"mission spend"}}</tool>',
+      'Draft written. {"status":"working","progress":"created the draft","criteriaMet":[false]}',
+    ];
+    const llm: LlmClient = {
+      name: 'mission-budget-mock',
+      complete: async () => {
+        const text = script[Math.min(calls, script.length - 1)]!;
+        calls += 1;
+        return text;
+      },
+      completeStream: async (_messages, _options, delta) => {
+        const text = script[Math.min(calls, script.length - 1)]!;
+        calls += 1;
+        delta(text);
+        return text;
+      },
+    };
+    // An injected client has no catalog price, so the enforceable bound here is
+    // charged model calls — the pool's turn ceiling stands in for money.
+    const base = await startServer(llm, { coworkDelegationMaxTurns: 2 });
+    const agent = (await post(base, '/api/cowork/agents', makeAgentInput('budget-mission-worker'))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const mission = (
+      await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Write the report', criteria: ['report exists'], budgetUsd: 1 })
+    ).json['mission'] as { id: string; budget?: { maxCostUsd: number } };
+    expect(mission.budget).toEqual({ maxCostUsd: 1 });
+
+    const runSession = (id: string): Promise<void> =>
+      (serverInstance as unknown as { executeMissionSession: (id: string) => Promise<void> }).executeMissionSession(id);
+    const idle = async () => {
+      await waitFor(async () => {
+        const d = (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as { busy: boolean };
+        return !d.busy ? true : undefined;
+      });
+    };
+    const view = async () =>
+      (await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json())) as {
+        messages: { text: string }[];
+        missions: { id: string; status: string; result?: string; nextWakeAt?: string; budgetSpentUsd?: number }[];
+      };
+
+    await runSession(mission.id);
+    await idle();
+    let seen = await view();
+    const stopped = seen.missions.find((m) => m.id === mission.id)!;
+    expect(stopped.status).toBe('failed');
+    expect(stopped.result).toContain('Mission stopped');
+    expect(stopped.nextWakeAt).toBeUndefined();
+    expect(seen.messages.some((m) => m.text.includes('Mission stopped'))).toBe(true);
+    // The envelope is live: the card can show what the mission actually spent.
+    expect(typeof stopped.budgetSpentUsd).toBe('number');
+    expect(calls).toBe(2);
+
+    // The envelope lives inside the conversation's pool, so a sibling mission is
+    // refused before it can spend anything of its own.
+    const second = (await post(base, `/api/cowork/conversations/${conv.id}/missions`, { goal: 'Write more', criteria: [], budgetUsd: 1 })).json[
+      'mission'
+    ] as { id: string };
+    await runSession(second.id);
+    await idle();
+    seen = await view();
+    const refused = seen.missions.find((m) => m.id === second.id)!;
+    expect(refused.status).toBe('failed');
+    expect(refused.result).toContain('budget');
+    expect(calls).toBe(2);
   });
 
   it('aborts an active mission when it is cancelled and does not schedule a retry', async () => {

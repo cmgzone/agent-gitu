@@ -31,15 +31,8 @@
  * LLM, the workspace and the connection registry.
  */
 
-import type {
-  CodingApprovalRequest,
-  CodingPlanReviewDecision,
-  CodingPlanReviewRequest,
-  CodingQuestionsRequest,
-  CodingRunResult,
-  CodingSession,
-} from '../coding/contract.js';
 import type { BudgetAccount, RunBudget } from '../coding/budget.js';
+import type { CodingApprovalRequest, CodingPlanReviewDecision, CodingPlanReviewRequest, CodingQuestionsRequest, CodingRunResult, CodingSession } from '../coding/contract.js';
 import type { CodingEvent } from '../coding/events.js';
 import type { WorkspaceRef } from '../coding/workspace.js';
 import type { ToolResult } from '../types.js';
@@ -54,6 +47,9 @@ export interface DelegationScope {
   agent: Pick<CoworkAgent, 'id' | 'name'>;
   store: CoworkStore;
   conversationId?: string;
+  /** The mission this turn belongs to, when the turn is mission work. The
+   *  delegation draws its money from the mission's envelope when set. */
+  missionId?: string;
   signal?: AbortSignal;
 }
 
@@ -84,7 +80,8 @@ export interface DelegationSessionInput {
   runOptions: DelegationRunOptions;
   /** The teammate's requested allocation for this task, when it asked for one. */
   budget?: RunBudget;
-  /** The host's pool of delegated spend; the request is clamped inside it. */
+  /** The account this delegation draws from — the mission's or the
+   *  conversation's; the runtime clamps the request inside it. */
   parentBudget?: BudgetAccount;
   /** The runtime surfaces each gate here; the runtime still owns resolution. */
   onApprovalRequired: (request: CodingApprovalRequest) => void;
@@ -97,9 +94,12 @@ export interface CoworkDelegationDeps {
    *  working on the user's machine. */
   workspaceFor: (scope: DelegationScope) => WorkspaceRef;
   /**
-   * The host's pool of delegated spend. Every delegation draws a child
-   * allocation from it, so one expensive task leaves less for the next and an
-   * exhausted pool refuses new work instead of quietly spending on.
+   * The account a delegation draws from, for this scope.
+   *
+   * The host resolves the *hierarchy* here: a mission-scoped turn draws from the
+   * mission's allocation inside the conversation's pool, everything else from
+   * the conversation's pool directly. Returning undefined means no ceiling —
+   * which the delegation passes through honestly rather than inventing one.
    */
   budgetPool?: (scope: DelegationScope) => BudgetAccount | undefined;
   /**

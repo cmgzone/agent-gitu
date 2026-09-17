@@ -165,6 +165,15 @@ export interface CoworkMission {
   guidance: string[];
   turns: number;
   maxTurns: number;
+  /**
+   * The mission's spend envelope.
+   *
+   * `maxTurns` above counts work sessions; this bounds what the mission may
+   * *cost* — the mission agent's own model calls and every `gitu_task` it
+   * delegates draw from one allocation. Structurally a `RunBudget` (cost plus
+   * recovery reserve); stated inline so the store stays self-contained.
+   */
+  budget?: { maxCostUsd: number; reserveUsd?: number };
   nextWakeAt?: string;
   createdAt: string;
   finishedAt?: string;
@@ -667,7 +676,7 @@ export class CoworkStore {
     return this.load().missions.find((m) => m.id === id);
   }
 
-  createMission(input: { conversationId: string; agentId: string; goal: string; criteria: string[]; maxTurns?: number }): CoworkMission {
+  createMission(input: { conversationId: string; agentId: string; goal: string; criteria: string[]; maxTurns?: number; budgetUsd?: number; reserveUsd?: number }): CoworkMission {
     const data = this.load();
     if (!data.conversations.some((c) => c.id === input.conversationId)) throw new Error('Conversation not found');
     if (!data.agents.some((a) => a.id === input.agentId)) throw new Error('Unknown agent for mission');
@@ -684,6 +693,17 @@ export class CoworkStore {
       guidance: [],
       turns: 0,
       maxTurns: Math.max(1, Math.min(50, Math.floor(input.maxTurns ?? 12))),
+      // Absent means "draw from the conversation pool without its own ceiling",
+      // not "unlimited": the pool the mission draws from is finite either way.
+      budget:
+        input.budgetUsd !== undefined && Number.isFinite(input.budgetUsd) && input.budgetUsd > 0
+          ? {
+              maxCostUsd: Math.max(0.01, Math.round(input.budgetUsd * 100) / 100),
+              ...(input.reserveUsd !== undefined && Number.isFinite(input.reserveUsd) && input.reserveUsd > 0
+                ? { reserveUsd: Math.round(input.reserveUsd * 100) / 100 }
+                : {}),
+            }
+          : undefined,
       nextWakeAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };

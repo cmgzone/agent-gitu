@@ -58,6 +58,9 @@ export interface CoworkToolScope {
   conversationId?: string;
   /** Topic thread the current turn belongs to; absent means the Main thread. */
   threadId?: string;
+  /** Mission this turn belongs to, when it is mission work. Determines which
+   *  envelope delegated engineering draws from. */
+  missionId?: string;
   signal?: AbortSignal;
   computerFor?: (agentId: string) => CoworkComputer;
   /** Set after the first host fallback in a turn (virtual computer unavailable). */

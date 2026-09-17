@@ -346,6 +346,8 @@ export class GituServer {
   private delegationService?: CoworkDelegation;
   /** Per-conversation pools of delegated spend, so siblings compete for money. */
   private readonly delegationPools = new Map<string, BudgetAccount>();
+  /** Per-mission envelopes, allocated inside their conversation's pool. */
+  private readonly missionAccounts = new Map<string, BudgetAccount>();
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
   private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
@@ -1093,6 +1095,13 @@ export class GituServer {
     for (const send of this.coworkSubscribers.get(conversationId) ?? []) send();
   }
 
+  /** A mission plus its live envelope, so a card can show what is left of it. */
+  private coworkMissionView(mission: CoworkMission) {
+    const account = this.missionAccounts.get(mission.id);
+    if (!account) return mission;
+    return { ...mission, budgetSpentUsd: Math.round((account.spend().costUsd ?? 0) * 100) / 100 };
+  }
+
   /** Browser snapshots expose connection state, never the reusable bot secret. */
   private coworkConversationView(conversation: CoworkConversation) {
     const telegram = conversation.telegram;
@@ -1122,7 +1131,7 @@ export class GituServer {
       progresses: run?.busy ? Object.values(run.progresses ?? {}) : [],
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
-      missions: [...activeMissions, ...recentMissions],
+      missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
       artifacts: store.artifacts(conversationId),
       todos: store.todos(conversationId),
       requests: store.requests(conversationId).filter((request) => request.status === 'open' || (request.resolvedAt && Date.now() - Date.parse(request.resolvedAt) < 86_400_000)),
@@ -1174,7 +1183,7 @@ export class GituServer {
         const agent = this.cowork().getAgent(scope.agent.id);
         return { type: 'host', path: agent ? this.coworkToolContext(agent).cwd : ensureGituHome().workspace };
       },
-      budgetPool: (scope) => (scope.conversationId ? this.delegationPoolFor(scope.conversationId) : undefined),
+      budgetPool: (scope) => this.delegationBudgetFor(scope.missionId, scope.conversationId),
       createSession: (input) => this.createDelegatedSession(input),
       // A delegated gate is a real decision the user has to make, so it rides the
       // existing request-card surface as a question card. The card is the view;
@@ -1195,6 +1204,105 @@ export class GituServer {
       onChange: (conversationId) => this.publishCowork(conversationId),
     });
     return this.delegationService;
+  }
+
+  /**
+   * The account a delegated task draws from.
+   *
+   * Mission work draws from the mission's envelope — allocated inside the
+   * conversation's pool, so a mission bounds its own spend without escaping the
+   * conversation's — while everything else draws from the pool directly. The
+   * mission is resolved from the id rather than trusted from the caller, so a
+   * stale scope falls back to the pool instead of inventing an envelope.
+   */
+  private delegationBudgetFor(missionId: string | undefined, conversationId: string | undefined): BudgetAccount | undefined {
+    const mission = missionId ? this.cowork().getMission(missionId) : undefined;
+    if (mission) return this.missionAccountFor(mission);
+    return conversationId ? this.delegationPoolFor(conversationId) : undefined;
+  }
+
+  /**
+   * The mission's spend envelope inside its conversation's pool.
+   *
+   * Allocated once and cached: spend accumulates across the mission's work
+   * sessions, and every charge here propagates up to the pool, so a mission can
+   * never outspend what the conversation actually has left. A mission that named
+   * no budget of its own still gets a slice — the pool's remaining at first
+   * touch — because unattended work is exactly what the pool exists to bound.
+   */
+  private missionAccountFor(mission: CoworkMission): BudgetAccount {
+    let account = this.missionAccounts.get(mission.id);
+    if (!account) {
+      account = this.delegationPoolFor(mission.conversationId).allocate(
+        mission.budget
+          ? { maxCostUsd: mission.budget.maxCostUsd, ...(mission.budget.reserveUsd !== undefined ? { reserveUsd: mission.budget.reserveUsd } : {}) }
+          : {},
+      );
+      this.missionAccounts.set(mission.id, account);
+    }
+    return account;
+  }
+
+  /** Drop envelopes for missions that no longer exist (deleted conversations/teammates). */
+  private pruneMissionAccounts(): void {
+    for (const id of this.missionAccounts.keys()) {
+      if (!this.cowork().getMission(id)) this.missionAccounts.delete(id);
+    }
+  }
+
+  /**
+   * Why a mission stopped spending, phrased for the person who decides next.
+   *
+   * Reported as the mission's result: the envelope is spent, so waking the
+   * mission again could only spend more, and a vague "paused" would hide that.
+   */
+  private missionBudgetStop(account: BudgetAccount): string {
+    const spent = (account.spend().costUsd ?? 0).toFixed(2);
+    const ceiling = account.budget.maxCostUsd;
+    // Its own slice still having room means the pool behind it is what ran out —
+    // naming the mission's ceiling there would point at the wrong number.
+    if (ceiling === undefined || (account.remaining().costUsd ?? 0) > 0) {
+      return `Mission stopped — the conversation's delegation budget is exhausted after $${spent} of mission spend.`;
+    }
+    return `Mission stopped — its $${ceiling.toFixed(2)} budget is exhausted ($${spent} spent, including anything it delegated).`;
+  }
+
+  /** Price one model call from the live catalog; undefined when it cannot be priced. */
+  private priceUsage(usage: LlmUsage | undefined, providerId: string, model: string): number | undefined {
+    return usage ? usageCostUsd(modelMetadataFor(peekModelCatalog(), providerId, model), usage) : undefined;
+  }
+
+  /**
+   * Record that a mission's envelope is spent, and tell the conversation.
+   *
+   * Deliberately terminal: the money is gone, so waking the mission again could
+   * only spend more — unlike a blocked-on-input pause, no reply can refill it.
+   */
+  private stopMissionForBudget(missionId: string, conversationId: string, account: BudgetAccount): string {
+    const store = this.cowork();
+    const detail = this.missionBudgetStop(account);
+    store.updateMission(missionId, { status: 'failed', finishedAt: new Date().toISOString(), result: detail, nextWakeAt: undefined });
+    store.appendMessage(conversationId, { role: 'system', via: 'web', text: detail });
+    this.publishCowork(conversationId);
+    return detail;
+  }
+
+  /**
+   * The mission agent's own model client, charged to the mission's envelope.
+   *
+   * A mission's own thinking and its delegated engineering share one account, so
+   * neither can quietly outspend the other. When a charge exhausts the envelope
+   * the session is aborted: the mission is out of money, and the next wake
+   * reports that instead of starting work nobody can pay for.
+   */
+  private coworkMissionLlm(agent: CoworkAgent, account: BudgetAccount, onExhausted: () => void): LlmClient {
+    const base = this.coworkLlm(agent);
+    const providerId = agent.provider ?? '';
+    const model = agent.model ?? '';
+    return new UsageTrackingClient(base, (usage) => {
+      const cost = this.priceUsage(usage, providerId, model);
+      if (!account.charge({ turns: 1, ...(cost !== undefined ? { costUsd: cost } : {}) })) onExhausted();
+    });
   }
 
   /**
@@ -1247,7 +1355,7 @@ export class GituServer {
     // instead of being priced wrongly. Turn ceilings apply either way.
     void fetchModelCatalog().catch(() => undefined);
     const priceOf = (usage: LlmUsage | undefined, providerId: string, model: string): number | undefined =>
-      usage ? usageCostUsd(modelMetadataFor(peekModelCatalog(), providerId, model), usage) : undefined;
+      this.priceUsage(usage, providerId, model);
     /** The account the runtime granted this session, assigned when it builds the run. */
     const budgetRef: { current?: BudgetAccount } = {};
     let ignorePaths: string[] | undefined;
@@ -1858,6 +1966,9 @@ export class GituServer {
       this.publishCowork(conversationId);
       return;
     }
+    // The mission's envelope, shared by its own model calls and everything it
+    // delegates. Spent money is checked before a session is allowed to start.
+    const account = this.missionAccountFor(mission);
     const abort = new AbortController();
     this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [], missionId });
     this.publishCowork(conversationId);
@@ -1888,12 +1999,17 @@ export class GituServer {
       }
     };
     try {
+      // Money, not work: a spent envelope means no session may start at all.
+      if (account.exhausted()) {
+        await finishStream(this.stopMissionForBudget(missionId, conversationId, account));
+        return;
+      }
       const result = await runMissionSession({
         mission,
         agent,
         deps: {
           agents: store.listAgents(),
-          resolveLlm: (a) => this.coworkLlm(a),
+          resolveLlm: (a) => this.coworkMissionLlm(a, account, () => abort.abort(new Error('Mission budget exhausted.'))),
           toolContext: (a) => this.coworkToolContext(a),
           computerFor: (agentId) => this.coworkComputer(agentId),
           delegation: this.delegation(),
@@ -1968,10 +2084,29 @@ export class GituServer {
           nextWakeAt: undefined,
         });
         await appendNotice(`Mission stopped — turn budget of ${fresh.maxTurns} sessions ran out. Last progress: ${result.progress}`, result.artifactIds);
+      } else if (account.exhausted()) {
+        // The session finished, but spent the last of the envelope: report the
+        // stop now rather than waking into a refusal nobody sees.
+        const detail = this.missionBudgetStop(account);
+        store.updateMission(missionId, {
+          status: 'failed',
+          progress: result.progress,
+          turns,
+          finishedAt: new Date().toISOString(),
+          result: `${detail} Last progress: ${result.progress}`,
+          nextWakeAt: undefined,
+        });
+        await appendNotice(detail);
       } else {
         store.updateMission(missionId, { progress: result.progress, turns, nextWakeAt: new Date(Date.now() + 20_000).toISOString() });
       }
     } catch (err) {
+      // Budget exhaustion is not a transient failure: waking again cannot refill
+      // the envelope, so the mission stops with the budget as its result.
+      if (account.exhausted() && store.getMission(missionId)?.status === 'running') {
+        await finishStream(this.stopMissionForBudget(missionId, conversationId, account));
+        return;
+      }
       const currentMission = store.getMission(missionId);
       if (currentMission?.status === 'running') {
         store.updateMission(missionId, { nextWakeAt: new Date(Date.now() + (abort.signal.aborted ? 120_000 : 60_000)).toISOString() });
@@ -2021,6 +2156,7 @@ export class GituServer {
   private coworkAutonomyTick(): void {
     const store = this.cowork();
     const now = Date.now();
+    this.pruneMissionAccounts();
     // 1. Due missions get a work session.
     for (const mission of store.missions()) {
       if (mission.status !== 'running') continue;
@@ -2545,6 +2681,10 @@ export class GituServer {
           goal: String(body['goal'] ?? ''),
           criteria: Array.isArray(body['criteria']) ? body['criteria'].map(String) : [],
           maxTurns: Number(body['maxTurns']) || 12,
+          // The mission's own spend envelope; absent means it draws from the
+          // conversation's delegation pool without a second ceiling.
+          budgetUsd: Number(body['budgetUsd']) || undefined,
+          reserveUsd: Number(body['reserveUsd']) || undefined,
         });
         this.publishCowork(conversation.id);
         this.sendJson(res, 200, { ok: true, mission });

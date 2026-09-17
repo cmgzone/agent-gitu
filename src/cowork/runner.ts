@@ -569,7 +569,7 @@ export async function runMissionSession(input: {
     const artifactIds: string[] = [];
     const taggedFolders = (deps.store?.getConversation(mission.conversationId)?.folders ?? []).map((folder) => folder.path);
     const scope: CoworkToolScope | undefined =
-      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, missionId: mission.id, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
     let ctx: ToolContext | undefined;
     const messages: LlmMessage[] = [
       // The transcript is deliberately not included: missions run in their own

@@ -17,6 +17,7 @@ import { HermesServer } from '../src/server/server.js';
 import type { ToolContext } from '../src/tools/tools.js';
 import { executeCoworkTool } from '../src/cowork/tools.js';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
+import type { CoworkDelegation } from '../src/cowork/delegation.js';
 
 // Cowork data must never touch a real user home during tests.
 const TEST_HOME = mkdtempSync(path.join(tmpdir(), 'cowork-home-'));
@@ -275,6 +276,33 @@ describe('cowork runner', () => {
     expect(last.tools).toBeDefined();
     expect(last.tools![0]!.name).toBe('list_files');
     expect(last.tools![0]!.ok).toBe(true);
+  });
+
+  it('hands a gitu_task call to the delegation service', async () => {
+    const agent = store.saveAgent(makeAgentInput('delegator', { allowWrites: true }));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'fix the failing build', via: 'web' });
+    const delegated: Record<string, unknown>[] = [];
+    const delegation = {
+      run: async (_scope: unknown, params: Record<string, unknown>) => {
+        delegated.push(params);
+        return { ok: true, output: 'Engineering task completed (session run_1, task task-1).' };
+      },
+    } as unknown as CoworkDelegation;
+    const script = [
+      'On it — giving this to an engineer. <tool>{"name":"gitu_task","params":{"goal":"fix the failing build"}}</tool>',
+      'The engineer finished; I will verify the changes.',
+    ];
+    await runConversationTurn({
+      conversation: conv,
+      history: store.messages(conv.id),
+      trigger,
+      deps: depsFor(script, { store, memory: CoworkMemory.forWorkspace(), delegation, toolContext: () => ({ cwd: '.' } as ToolContext) }),
+      append: (m) => store.appendMessage(conv.id, m),
+    });
+    expect(delegated).toEqual([{ goal: 'fix the failing build' }]);
+    const last = store.messages(conv.id).at(-1)!;
+    expect(last.tools![0]).toEqual({ name: 'gitu_task', ok: true });
   });
 
   it('chains group turns through @mentions and stops at the budget', async () => {

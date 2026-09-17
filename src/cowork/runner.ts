@@ -5,6 +5,7 @@ import { excerpt } from '../util.js';
 import { coworkToolDocs, executeCoworkTool, parseToolCalls, stripToolMarkers, type CoworkToolScope } from './tools.js';
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers } from '../llm/llm.js';
 import { compactHistory } from '../agent/compaction.js';
+import type { CoworkDelegation } from './delegation.js';
 import type { CoworkMemory } from './memory.js';
 import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMission, CoworkStore, CoworkThread } from './store.js';
 import { BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL } from '../skills/builtin.js';
@@ -48,6 +49,8 @@ export interface CoworkRunnerDeps {
   toolContext: (agent: CoworkAgent) => ToolContext;
   /** Isolated computer tool dispatcher; never falls back to the host shell. */
   computerFor?: CoworkToolScope['computerFor'];
+  /** Engineering delegation — hands a task to an Agent Gitu session. */
+  delegation?: CoworkDelegation;
   onProgress?: (progress: CoworkProgress) => void;
   withAgent?: (agent: CoworkAgent, work: () => Promise<void>) => Promise<void>;
   /** Backing store for chief team management. Optional in tests. */
@@ -329,7 +332,7 @@ async function agentTurn(input: {
   let ctx: ToolContext | undefined;
   const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, threadId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, threadId, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
   let reply = '';
   const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string) => deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk, webUrl });
   let continuations = 0;

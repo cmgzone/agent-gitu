@@ -6,6 +6,9 @@ import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
+import type { CodingSession } from '../coding/contract.js';
+import { workspacePath } from '../coding/workspace.js';
+import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
@@ -37,6 +40,7 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
+import type { ApprovalHandler } from '../policy/policy.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport, RiskTier } from '../types.js';
@@ -318,6 +322,10 @@ export class GituServer {
   private readonly coworkComputers = new Map<string, CoworkComputer>();
   private readonly coworkBrowserLease = new CoworkBrowserLease();
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
+  /** Engineering delegation: `gitu_task` → a fresh Agent Gitu session. */
+  private delegationService?: CoworkDelegation;
+  /** Per-delegated-session teardown (MCP clients), released when the run settles. */
+  private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
   private readonly coworkStreams = new Set<http.ServerResponse>();
 
@@ -877,6 +885,152 @@ export class GituServer {
     return idx;
   }
 
+  /**
+   * The engine's five connection handlers, built once per run.
+   *
+   * Extracted so the delegated-session path can hand an engine the same
+   * handlers the workspace run does. Only three things vary between callers:
+   * which approval gate a provider write resolves through (always the owning
+   * runtime's, so the request stays runtime-owned), where a pending secure-setup
+   * waiter lives, and where the resulting prose line goes.
+   */
+  private buildConnectionHandlers(input: {
+    approvalHandler: ApprovalHandler;
+    /** Owner of the pending secure-setup waiter. */
+    slot: { connection?: ConnectionWaiter };
+    emit: (text: string) => void;
+  }): Pick<
+    GituFactoryDependencies,
+    'connectionActionHandler' | 'safestProviderRead' | 'connectionOperationHandler' | 'connectionRecoveryCheck' | 'connectionRequestHandler'
+  > {
+    const connectionActionHandler: GituFactoryDependencies['connectionActionHandler'] = async ({ connectionId, operationId }) => {
+      // Live read path: resolve FIRST (existing or catalog-backed/documented
+      // safe GET auto-registers and persists), then execute. No approval
+      // channel, no credential prompt, no manual registration request.
+      const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
+      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+    };
+    // The recovery controller may run ONE read-only operation on its own
+    // when the model spirals — never a write: approval stays mandatory.
+    const safestProviderRead: GituFactoryDependencies['safestProviderRead'] = (preferredConnectionId) => this.connections.safestRead(preferredConnectionId);
+    const connectionOperationHandler: GituFactoryDependencies['connectionOperationHandler'] = async (proposal) => {
+      const profile = this.connections.get(proposal.connectionId);
+      const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
+      if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
+      const op = normalizeConnectionOperation(proposal.operation);
+      if (!op) throw new Error('The proposed provider operation is malformed.');
+      // Safe GET/read operations NEVER enter the approval channel: they
+      // resolve through the capability resolver (register-if-missing under
+      // the existing credential) and execute immediately, like a
+      // connection_action. Only non-read proposals go to operation approval.
+      if (op.risk === 'read' && op.method === 'GET') {
+        const result = await this.connections.resolveAndExecuteRead({
+          connectionId: profile.id,
+          operation: op,
+          capability: op.capability,
+          documented: Boolean(proposal.documentationUrl || profile.documentationUrl || catalogCapabilityDeclared(profile.provider, op.capability)),
+        });
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      }
+      const capabilityDeclared = profile.capabilities.includes(op.capability);
+      // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
+      // connection resolves from verified official documentation (the catalog)
+      // or the proposal's claimed documentationUrl — it never requires the
+      // user to re-enter a credential.
+      if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, op.capability) && !proposal.documentationUrl) {
+        throw new Error(
+          `Saved connection "${profile.label}" does not declare capability "${op.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
+            `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
+        );
+      }
+      const documentedCapability = !capabilityDeclared;
+      const existing = this.connections.operation(profile.id, op.id);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
+        throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
+      }
+      const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
+      const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
+      const approved = await input.approvalHandler({
+        tool: `connection:${profile.provider}`,
+        // Informational label only: the connection subsystem already decided
+        // this operation needs approval, and never reads the tier back.
+        tier: connectionRiskToApprovalTier(op.risk),
+        why: `External ${op.risk} operation — ${proposal.reason}`,
+        summary: [
+          `Connection: ${profile.label} (${profile.id})`,
+          `Operation: ${op.label}`,
+          `Request: ${op.method} ${op.path}`,
+          `Required capability: ${op.capability}`,
+          `Risk: ${op.risk}`,
+          `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
+          `Body:\n${bodyText}`,
+        ].join('\n'),
+      });
+      if (!approved) throw new Error('User denied the provider operation.');
+      // Registration happens only after approval. It makes the immutable
+      // documented operation discoverable in future tasks, but every write
+      // still returns through this approval path before invocation.
+      const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
+      const result = await this.connections.invoke(profile.id, registered.id, body);
+      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+    };
+    // The secure form is framed by WHAT the user is being asked to change:
+    // 'reauth' only after a positively classified authentication failure,
+    // 'setup' for a genuinely first-time connection.
+    const connectionRecoveryCheck: GituFactoryDependencies['connectionRecoveryCheck'] = (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite);
+    const connectionRequestHandler: GituFactoryDependencies['connectionRequestHandler'] = (prerequisite) =>
+      new Promise<boolean>((resolve) => {
+        const decision = this.connections.connectionRecoveryDecision(prerequisite);
+        const waiter: ConnectionWaiter = {
+          id: shortId('conn'),
+          requirement: {
+            ...this.connections.requirementFor(prerequisite),
+            requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
+          },
+          requestedAt: nowIso(),
+          resolve,
+        };
+        input.slot.connection = waiter;
+        input.emit(`connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
+        setTimeout(() => {
+          if (input.slot.connection === waiter) {
+            input.slot.connection = undefined;
+            input.emit('connection setup timed out — prerequisite remains unresolved');
+            resolve(false);
+          }
+        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+      });
+    return { connectionActionHandler, safestProviderRead, connectionOperationHandler, connectionRecoveryCheck, connectionRequestHandler };
+  }
+
+  /**
+   * Mirror durable connection metadata into a per-run capability registry.
+   *
+   * A connection can be added or gain a documented operation while a run is
+   * paused, so the caller re-syncs before rendering the agent context rather
+   * than trusting the snapshot it built at the start.
+   */
+  private syncUniversalConnections(registry: UniversalCapabilityRegistry): void {
+    for (const capability of registry.list()) {
+      if (capability.source === 'connection') registry.unregister(capability.id);
+    }
+    for (const profile of this.connections.list()) {
+      if (!profile.hasCredential) continue;
+      registry.registerConnection(
+        profile.id,
+        profile.operations,
+        async (operation, body) => {
+          const registered = this.connections.operation(profile.id, operation.id);
+          if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
+          const result = await this.connections.invoke(profile.id, registered.id, body);
+          if (!result.ok) throw new Error(result.message);
+          return result.data;
+        },
+        profile.provider,
+      );
+    }
+  }
+
   private async startCronRun(root: string, job: CronJob): Promise<string | undefined> {
     let llm: LlmClient;
     try {
@@ -983,6 +1137,151 @@ export class GituServer {
 
   /** Host context is only for trusted skills/connections/MCP. File, shell and
    * browser calls are intercepted by the private computer dispatcher. */
+  /**
+   * Cowork's engineering delegation.
+   *
+   * A teammate calling `gitu_task` gets a `GituSessionRuntime` session — the
+   * same engine, the same gates and the same typed stream the Gitu workspace
+   * runs on. The session is composed here because the composition root is the
+   * only place that knows the connection registry, the specialist roster and
+   * the teammate's workspace.
+   */
+  private delegation(): CoworkDelegation {
+    this.delegationService ??= new CoworkDelegation({
+      workspaceFor: (scope) => {
+        const agent = this.cowork().getAgent(scope.agent.id);
+        return { type: 'host', path: agent ? this.coworkToolContext(agent).cwd : ensureGituHome().workspace };
+      },
+      createSession: (input) => this.createDelegatedSession(input),
+      // A delegated gate is a real decision the user has to make, so it rides the
+      // existing request-card surface as a question card. The card is the view;
+      // the runtime still owns the request and its resolution.
+      openRequest: ({ scope, title, detail, options }) => {
+        if (!scope.conversationId) throw new Error('Delegation requires a conversation.');
+        return this.cowork().addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title, detail, options });
+      },
+      closeRequest: (requestId) => {
+        if (this.cowork().getRequest(requestId)?.status === 'open') this.cowork().resolveRequest(requestId, 'dismissed');
+      },
+      progress: ({ conversationId, agentId, text }) => this.publishDelegatedProgress(conversationId, agentId, text),
+      sessionSettled: (sessionId) => {
+        const release = this.delegatedSessionResources.get(sessionId);
+        this.delegatedSessionResources.delete(sessionId);
+        release?.();
+      },
+      onChange: (conversationId) => this.publishCowork(conversationId),
+    });
+    return this.delegationService;
+  }
+
+  /**
+   * Build the runtime session for one delegated task.
+   *
+   * Deliberately the same shape as the workspace run: the runtime builds the
+   * engine, the connection handlers are the shared builders, and every gate is
+   * runtime-owned. Two host services are intentionally absent for now: LSP (its
+   * lifecycle is session-owned and a delegated session has no teardown that
+   * stops it) and the workspace `RunBudget` (it has no engine consumer yet, so
+   * the enforceable bound here is the delegation's wall-clock cap).
+   */
+  private createDelegatedSession(input: DelegationSessionInput): CodingSession {
+    const agent = this.cowork().getAgent(input.agentId);
+    if (!agent) throw new Error('That teammate no longer exists.');
+    if (!agent.useHostComputer) {
+      throw new Error('Engineering delegation needs a workspace this machine can execute in. Switch the teammate to “My computer” mode; the private computer has no coding runtime yet.');
+    }
+    const root = workspacePath(input.workspace);
+    let ignorePaths: string[] | undefined;
+    try {
+      ignorePaths = ProjectGuard.detect(root).lock.ignorePaths;
+    } catch {
+      /* not a locked project: the index watches everything */
+    }
+    const index = this.sharedIndex(root, ignorePaths);
+    const agentStore = new AgentStore();
+    const skills = SkillStore.forProject(root);
+    const mcp = McpManager.forProject(root);
+    const universalRegistry = new UniversalCapabilityRegistry();
+    this.syncUniversalConnections(universalRegistry);
+    // The session does not exist yet, but nothing here runs before `run()` does:
+    // the engine reaches these handlers only once the runtime has built it, by
+    // which point the session is assigned. The indirection is what keeps one
+    // approval promise per request — the delegated run's own gate.
+    let session: GituCodingSession | undefined;
+    const emit = (text: string): void => session?.sinks.onEvent(text);
+    const subagents =
+      agentStore.list().length > 0
+        ? new SubAgentRunner({
+            cwd: root,
+            resolveLlm: (name) => {
+              const def = agentStore.get(name);
+              if (!def) {
+                const available = agentStore.list().map((a) => `"${a.name}"`).join(', ');
+                throw new Error(`unknown specialist agent "${name}". Available agents: [${available || 'none'}].`);
+              }
+              return resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root }).client;
+            },
+            agentRole: (name) => agentStore.get(name)?.role,
+            agentEffort: (name) => agentStore.get(name)?.effort,
+            onEvent: (text) => emit(text),
+          })
+        : undefined;
+    session = this.gituRuntime.createSession({
+      goal: input.goal,
+      workspace: input.workspace,
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
+      onApprovalRequired: input.onApprovalRequired,
+      onPlanReviewRequested: input.onPlanReviewRequested,
+      onQuestionsRequested: input.onQuestionsRequested,
+      deps: {
+        skills,
+        mcp,
+        agents: agentStore,
+        subagents,
+        browser: this.browserImpl(),
+        universalRegistry,
+        connections: this.connections,
+        connectionContext: () => this.connections.renderForAgent(),
+        // A secure-connection setup raised mid-delegation has no credential form
+        // to answer it (that form is the workspace UI's), so it times out exactly
+        // as it does when nobody answers the workspace run's own prompt.
+        ...this.buildConnectionHandlers({
+          approvalHandler: (gate) => (session ? session.gates.approvalHandler(gate) : Promise.resolve(false)),
+          slot: {},
+          emit,
+        }),
+      },
+      // No auto-approve and no auto-skipped review: a teammate cannot grant
+      // itself authority over the user's machine by delegating to an engineer.
+      runOptions: () => ({
+        // Ignored by the runtime, which derives the engine's cwd from `workspace`
+        // so the two can never disagree; required by the factory's contract.
+        workspaceRoot: root,
+        llm: this.coworkLlm(agent),
+        mode: input.runOptions.mode,
+        effort: input.runOptions.effort,
+        index,
+        autoApprove: false,
+        requirePlanReview: true,
+      }),
+    });
+    this.delegatedSessionResources.set(session.id, () => mcp.killAll());
+    return session;
+  }
+
+  /** Liveness line from a delegated run, surfaced in the conversation's progress. */
+  private publishDelegatedProgress(conversationId: string, agentId: string, text: string): void {
+    const run = this.coworkRuns.get(conversationId);
+    if (!run) return;
+    const progress: CoworkProgress = { agentId, agentName: this.cowork().getAgent(agentId)?.name ?? agentId, text };
+    run.progresses ??= {};
+    run.progresses[agentId] = progress;
+    run.progress = progress;
+    this.publishCowork(conversationId);
+  }
+
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(agent.id);
     if (!context) {
@@ -1082,6 +1381,8 @@ export class GituServer {
     if (!request || request.status !== 'open') return { ok: false, statusCode: 404, error: 'request not found or already answered' };
     const action = actionInput.toLowerCase();
     const response = responseInput.trim();
+    const delegated = this.resolveDelegationCard(request, action, response);
+    if (delegated) return delegated;
     let status: Exclude<CoworkRequest['status'], 'open'>;
     if (request.kind === 'permission') {
       if (action !== 'approve' && action !== 'deny') return { ok: false, statusCode: 400, error: 'action must be approve or deny' };
@@ -1115,6 +1416,27 @@ export class GituServer {
       store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
     }
     return { ok: true, statusCode: 200, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined, answer, status };
+  }
+
+  /**
+   * Resolve a request card that stands for a runtime-owned delegation gate.
+   *
+   * Returns `undefined` for every other card, so both transports can call it
+   * before their own kind handling: an approval, plan review or question raised
+   * by a delegated engineer is answered through the runtime that raised it, and
+   * the delegating teammate is never woken — its turn is still blocked inside
+   * the tool call, which is what the answer unblocks.
+   */
+  private resolveDelegationCard(request: CoworkRequest, action: string, response: string): CoworkRequestResolution | undefined {
+    const resolved = this.delegation().resolve(request.id, action, response);
+    if (!resolved) return undefined;
+    if (!resolved.ok) return { ok: false, statusCode: 400, error: resolved.error };
+    const store = this.cowork();
+    const card = store.resolveRequest(request.id, resolved.resolution.status, resolved.resolution.answer);
+    if (!card) return { ok: false, statusCode: 404, error: 'request not found or already answered' };
+    store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `Engineering delegation ${resolved.resolution.status}: ${resolved.resolution.answer}.` });
+    this.publishCowork(request.conversationId);
+    return { ok: true, statusCode: 200, request: card, agent: store.getAgent(request.agentId), answer: resolved.resolution.answer, status: resolved.resolution.status };
   }
 
   private coworkTelegramQuestionAnswer(request: CoworkRequest, text: string): string {
@@ -1356,6 +1678,7 @@ export class GituServer {
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
           computerFor: (agentId) => this.coworkComputer(agentId),
+          delegation: this.delegation(),
           withAgent: (agent, work) => this.withCoworkAgent(agent.id, abort.signal, work),
           store,
           memory: this.coworkMemory(),
@@ -1499,6 +1822,7 @@ export class GituServer {
           resolveLlm: (a) => this.coworkLlm(a),
           toolContext: (a) => this.coworkToolContext(a),
           computerFor: (agentId) => this.coworkComputer(agentId),
+          delegation: this.delegation(),
           withAgent: (a, work) => this.withCoworkAgent(a.id, abort.signal, work),
           store,
           memory: this.coworkMemory(),
@@ -2182,6 +2506,14 @@ export class GituServer {
       }
       const action = String(body['action'] ?? '').toLowerCase();
       const response = String(body['response'] ?? '').trim();
+      // A card standing for a delegated runtime gate is resolved by the runtime,
+      // not by the generic path below: the delegating teammate is still blocked
+      // inside its tool call and must not be woken with a follow-up.
+      const delegated = this.resolveDelegationCard(request, action, response);
+      if (delegated) {
+        this.sendJson(res, delegated.statusCode, delegated.ok ? { ok: true, request: delegated.request, agent: delegated.agent } : { error: delegated.error });
+        return true;
+      }
       let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
       if (request.kind === 'permission') {
         if (action !== 'approve' && action !== 'deny') { this.sendJson(res, 400, { error: 'action must be approve or deny' }); return true; }
@@ -4531,26 +4863,7 @@ export class GituServer {
     // metadata. A connection can be added or gain a documented operation while
     // this run is paused; the next model turn must see and invoke it immediately.
     const universalRegistry = new UniversalCapabilityRegistry();
-    const syncUniversalConnections = (): void => {
-      for (const capability of universalRegistry.list()) {
-        if (capability.source === 'connection') universalRegistry.unregister(capability.id);
-      }
-      for (const profile of this.connections.list()) {
-        if (!profile.hasCredential) continue;
-        universalRegistry.registerConnection(
-          profile.id,
-          profile.operations,
-          async (operation, body) => {
-            const registered = this.connections.operation(profile.id, operation.id);
-            if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
-            const result = await this.connections.invoke(profile.id, registered.id, body);
-            if (!result.ok) throw new Error(result.message);
-            return result.data;
-          },
-          profile.provider,
-        );
-      }
-    };
+    const syncUniversalConnections = (): void => this.syncUniversalConnections(universalRegistry);
     syncUniversalConnections();
     const universalCapabilityContext = (): string => {
       syncUniversalConnections();
@@ -4563,105 +4876,14 @@ export class GituServer {
         ),
       ].join('\n');
     };
-    // Connection handlers used by the engine. Declared by name so the run body
-    // reads as configuration plus wiring; the closures themselves are unchanged.
-    const connectionActionHandler: GituFactoryDependencies['connectionActionHandler'] = async ({ connectionId, operationId }) => {
-      // Live read path: resolve FIRST (existing or catalog-backed/documented
-      // safe GET auto-registers and persists), then execute. No approval
-      // channel, no credential prompt, no manual registration request.
-      const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
-      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-    };
-    // The recovery controller may run ONE read-only operation on its own
-    // when the model spirals — never a write: approval stays mandatory.
-    const safestProviderRead: GituFactoryDependencies['safestProviderRead'] = (preferredConnectionId) => this.connections.safestRead(preferredConnectionId);
-    const connectionOperationHandler: GituFactoryDependencies['connectionOperationHandler'] = async (proposal) => {
-      const profile = this.connections.get(proposal.connectionId);
-      const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
-      if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
-      const op = normalizeConnectionOperation(proposal.operation);
-      if (!op) throw new Error('The proposed provider operation is malformed.');
-      // Safe GET/read operations NEVER enter the approval channel: they
-      // resolve through the capability resolver (register-if-missing under
-      // the existing credential) and execute immediately, like a
-      // connection_action. Only non-read proposals go to operation approval.
-      if (op.risk === 'read' && op.method === 'GET') {
-        const result = await this.connections.resolveAndExecuteRead({
-          connectionId: profile.id,
-          operation: op,
-          capability: op.capability,
-          documented: Boolean(proposal.documentationUrl || profile.documentationUrl || catalogCapabilityDeclared(profile.provider, op.capability)),
-        });
-        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-      }
-      const capabilityDeclared = profile.capabilities.includes(op.capability);
-      // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
-      // connection resolves from verified official documentation (the catalog)
-      // or the proposal's claimed documentationUrl — it never requires the
-      // user to re-enter a credential.
-      if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, op.capability) && !proposal.documentationUrl) {
-        throw new Error(
-          `Saved connection "${profile.label}" does not declare capability "${op.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
-            `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
-        );
-      }
-      const documentedCapability = !capabilityDeclared;
-      const existing = this.connections.operation(profile.id, op.id);
-      if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
-        throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
-      }
-      const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
-      const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
-      const approved = await runtimeSession.gates.approvalHandler({
-        tool: `connection:${profile.provider}`,
-        // Informational label only: the connection subsystem already decided
-        // this operation needs approval, and never reads the tier back.
-        tier: connectionRiskToApprovalTier(op.risk),
-        why: `External ${op.risk} operation — ${proposal.reason}`,
-        summary: [
-          `Connection: ${profile.label} (${profile.id})`,
-          `Operation: ${op.label}`,
-          `Request: ${op.method} ${op.path}`,
-          `Required capability: ${op.capability}`,
-          `Risk: ${op.risk}`,
-          `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
-          `Body:\n${bodyText}`,
-        ].join('\n'),
-      });
-      if (!approved) throw new Error('User denied the provider operation.');
-      // Registration happens only after approval. It makes the immutable
-      // documented operation discoverable in future tasks, but every write
-      // still returns through this approval path before invocation.
-      const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
-      const result = await this.connections.invoke(profile.id, registered.id, body);
-      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-    };
-    // The secure form is framed by WHAT the user is being asked to change:
-    // 'reauth' only after a positively classified authentication failure,
-    // 'setup' for a genuinely first-time connection.
-    const connectionRecoveryCheck: GituFactoryDependencies['connectionRecoveryCheck'] = (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite);
-    const connectionRequestHandler: GituFactoryDependencies['connectionRequestHandler'] = (prerequisite) =>
-      new Promise<boolean>((resolve) => {
-        const decision = this.connections.connectionRecoveryDecision(prerequisite);
-        const waiter: ConnectionWaiter = {
-          id: shortId('conn'),
-          requirement: {
-            ...this.connections.requirementFor(prerequisite),
-            requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
-          },
-          requestedAt: nowIso(),
-          resolve,
-        };
-        session.connection = waiter;
-        this.pushEvent(session, `connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
-        setTimeout(() => {
-          if (session.connection === waiter) {
-            session.connection = undefined;
-            this.pushEvent(session, 'connection setup timed out — prerequisite remains unresolved');
-            resolve(false);
-          }
-        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-      });
+    // Connection handlers used by the engine. The closures now live in
+    // `buildConnectionHandlers`, so the delegated-session path runs the same
+    // ones; only the approval gate, the waiter slot and the event sink differ.
+    const connectionHandlers = this.buildConnectionHandlers({
+      approvalHandler: runtimeSession.gates.approvalHandler,
+      slot: session,
+      emit: (text) => this.pushEvent(session, text),
+    });
     const gitu = createGitu(
       {
         workspaceRoot: opts.projectPath ?? this.config.cwd,
@@ -4701,11 +4923,7 @@ export class GituServer {
         browser: this.browserImpl(),
       universalRegistry,
       connectionContext: () => `${universalCapabilityContext()}\n\n${this.connections.renderForAgent()}`,
-      connectionActionHandler,
-      safestProviderRead,
-      connectionOperationHandler,
-      connectionRecoveryCheck,
-      connectionRequestHandler,
+      ...connectionHandlers,
       // Every gate the engine can pause on is runtime-owned, so the runtime is
       // the single request authority and the session-scoped mirrors above are
       // views of it rather than competing stores.

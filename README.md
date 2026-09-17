@@ -42,21 +42,22 @@ Lock project → criteria → context pack → plan →
 
 ### The guarantees
 
-| Mechanism                           | What it prevents                                                                                                                                                        |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **ProjectGuard**                    | Editing the wrong project / files outside scope                                                                                                                         |
-| **TaskLedger**                      | Forgetting what was tried; lost state between turns                                                                                                                     |
-| **EvidenceEngine + gate**           | Saying "done" without proof                                                                                                                                             |
-| **Workspace fingerprint**           | Citing stale evidence as fresh (any later edit invalidates it)                                                                                                          |
-| **LoopDetector**                    | Repeating the same failing action forever                                                                                                                               |
-| **MalformedCallTracker**            | Burning turns on a spiral of schema-broken tool calls                                                                                                                   |
-| **PolicyEngine**                    | Unapproved destructive commands (fail-closed tiers)                                                                                                                     |
-| **CheckpointManager**               | Irreversible damage (git branch + snapshot per step)                                                                                                                    |
-| **Specialist evidence gate**        | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract                                                                         |
-| **Adaptive effort planner**         | Runaway cost on open-ended work: per-task budgets cap turns and specialist delegations by task complexity                                                               |
-| **Risk-based specialist selection** | Using the wrong specialist (or any specialist) for low-risk work: risk classifier → right-sized roster, with domain review gates for security/payments/data             |
-| **Task↔session↔git binding**        | Resuming a task in the wrong working tree or on the wrong branch                                                                                                        |
-| **LSP intelligence layer**          | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies |
+| Mechanism                           | What it prevents                                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **ProjectGuard**                    | Editing the wrong project / files outside scope                                                                                                                                 |
+| **TaskLedger**                      | Forgetting what was tried; lost state between turns                                                                                                                             |
+| **EvidenceEngine + gate**           | Saying "done" without proof                                                                                                                                                     |
+| **Workspace fingerprint**           | Citing stale evidence as fresh (any later edit invalidates it)                                                                                                                  |
+| **LoopDetector**                    | Repeating the same failing action forever                                                                                                                                       |
+| **MalformedCallTracker**            | Burning turns on a spiral of schema-broken tool calls                                                                                                                           |
+| **PolicyEngine**                    | Unapproved destructive commands (fail-closed tiers)                                                                                                                             |
+| **CheckpointManager**               | Irreversible damage (git branch + snapshot per step)                                                                                                                            |
+| **Specialist evidence gate**        | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract                                                                                 |
+| **Adaptive effort planner**         | Runaway cost on open-ended work: per-task budgets cap turns and specialist delegations by task complexity                                                                       |
+| **Risk-based specialist selection** | Using the wrong specialist (or any specialist) for low-risk work: risk classifier → right-sized roster, with domain review gates for security/payments/data                     |
+| **Task↔session↔git binding**        | Resuming a task in the wrong working tree or on the wrong branch                                                                                                                |
+| **LSP intelligence layer**          | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies         |
+| **Chief of staff**                  | Unattended agents stalling on their own gates, or granting themselves authority: an explicit authority policy decides routine requests, everything high-impact escalates to you |
 
 Web UI runs and `gitu run` bootstrap missing built-in language servers on first
 LSP use (once per server); progress is streamed into the run (or printed by the
@@ -209,6 +210,7 @@ tests/        unit + end-to-end (mock LLM) suites
 - [x] Electron desktop shell (offline, in-app browser for visual verification)
 - [x] Deeper context: import graphs, semantic search, edit history signals
 - [x] Quality scoring and token cost-per-verified-criterion telemetry
+- [x] Chief of staff: policy-bounded auto-resolution of approvals, plan reviews and clarification questions for delegated work
 - [ ] External baseline benchmark vs OpenCode/Codex
 
 ## Web UI
@@ -332,6 +334,24 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   executes through the same dispatcher as other providers and stays out of chat.
   Incomplete calls are never executed. ChatGPT subscription instructions use
   runtime configuration, with instruction files for large Windows contexts.
+- **Chief of staff** — delegated engineering (`gitu_task`) is unattended, so
+  every gate it raises is offered to a chief of staff before it reaches you. The
+  chief decides only what the session's **authority policy** names as routine
+  (verification and inspection commands), approves a plan whose every step names
+  its verification, sends an unverified plan back for replanning, and answers a
+  question a standing rule covers. Everything else escalates to you as a request
+  card: production deployments, destructive data operations, credential material,
+  force pushes, privilege escalation, external provider or MCP writes, and any
+  session down to the last of its budget. High-impact vetoes are final and are
+  never offered to a judgment layer. Questions the standing rules do not cover are
+  answered by a **model advisor**: one bounded call, made with the delegating
+  teammate's own provider and charged to the mission's envelope (a spent envelope
+  buys no answers), and it may only _answer_ — a reply that claims an approval is
+  discarded, and an answer is information, so what the agent does next still faces
+  its own gates. Each decision is recorded with who decided and why, and shown in
+  the conversation. Configure it per host with `chiefOfStaff: { policy, advisor }`
+  (`advisor: false` for policy-only, or supply your own), or `false` to turn the
+  chief off (interactive runs keep every gate for you by design).
 - **Long commands and verification** — commands have no implicit deadline;
   positive `timeoutMs` values are respected without a ten-minute cap. Stop
   cancels the process tree. The main agent accepts relevant document/browser

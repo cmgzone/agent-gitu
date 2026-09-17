@@ -25,6 +25,7 @@ import type { ApprovalHandler } from '../policy/policy.js';
 import type { CompletionReport } from '../types.js';
 import { nowIso, shortId } from '../util.js';
 import { createBudgetAccount, type BudgetAccount, type RunBudget } from './budget.js';
+import { describeChiefDecision, type ChiefContext, type ChiefDecision, type ChiefRequest, type ChiefRequestKind, type ChiefResolver } from './chief.js';
 import type {
   CodingApprovalRequest,
   CodingEventListener,
@@ -109,6 +110,25 @@ export interface GituSessionRequest {
   onPlanReviewRequested?: (request: CodingPlanReviewRequest) => void;
   /** Surfaces pending questions. The runtime owns the answer. */
   onQuestionsRequested?: (request: CodingQuestionsRequest) => void;
+  /**
+   * An automated resolver for gated requests — a chief of staff.
+   *
+   * It is consulted for every request before the person sees it, and it is a
+   * surface like any other: a decision that settles a request goes through the
+   * runtime's own resolution path, so the request keeps exactly one promise and
+   * the first answer still wins. An escalation is a decision too — it is what puts
+   * the request in front of the person, which is why an unattended session with a
+   * chief does not stall the way one without any surface does.
+   *
+   * Optional: without it the runtime behaves exactly as it did before a chief
+   * existed, surfacing every request to the person.
+   *
+   * The gate's own timeout keeps running while the chief is consulted, exactly as it
+   * does while a person is: a chief that takes longer than the gate's lifetime
+   * reaches a request that has already denied itself, and its late decision is
+   * dropped rather than published as a resolution nobody made.
+   */
+  chief?: ChiefResolver;
   eventLog?: CodingEventLogOptions;
 }
 
@@ -237,16 +257,164 @@ export class GituSessionRuntime {
     let pendingPlanReview: CodingPlanReviewRequest | undefined;
     let pendingQuestions: CodingQuestionsRequest | undefined;
 
+    /**
+     * Settle one gate — the only code that resolves one.
+     *
+     * Whoever decided (the person, a timeout, a teardown, the chief) goes through
+     * these three helpers, which is what makes "the first surface to answer wins" a
+     * property of the code rather than of every caller's discipline: the second
+     * answer finds the id gone and does nothing. Each returns whether it settled
+     * the request, so a caller with something else to say about a request that was
+     * already gone can stay quiet instead of narrating a resolution it did not make.
+     *
+     * `settled` is passed explicitly for a plan review rather than derived here,
+     * because a release publishes the decision the engine will read as a bare
+     * rejection even though the value it receives carries a note.
+     */
+    const settleApproval = (approvalId: string, approved: boolean, reason?: string): boolean => {
+      const gate = pendingApprovals.get(approvalId);
+      if (!gate) return false;
+      pendingApprovals.delete(approvalId);
+      if (pendingApproval?.id === approvalId) pendingApproval = undefined;
+      log.publishNative({ type: 'approval_resolved', approvalId, approved, ...(reason !== undefined ? { reason } : {}) });
+      gate.resolve(approved);
+      return true;
+    };
+
+    const settlePlanReview = (requestId: string, decision: CodingPlanReviewDecision, settled: PlanReviewDecision, reason?: string): boolean => {
+      const gate = pendingPlanReviews.get(requestId);
+      if (!gate) return false;
+      pendingPlanReviews.delete(requestId);
+      if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
+      log.publishNative({ type: 'plan_review_resolved', requestId, decision: settled, ...(reason !== undefined ? { reason } : {}) });
+      gate.resolve(decision);
+      return true;
+    };
+
+    const settleQuestions = (requestId: string, answer: string, reason?: string): boolean => {
+      const gate = pendingQuestionGates.get(requestId);
+      if (!gate) return false;
+      pendingQuestionGates.delete(requestId);
+      if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
+      log.publishNative({ type: 'questions_answered', requestId, ...(reason !== undefined ? { reason } : {}) });
+      gate.resolve(answer);
+      return true;
+    };
+
+    /**
+     * What the chief may consider beyond the request itself.
+     *
+     * Read per request rather than captured, because the budget moves while a run
+     * works: the chief's spend guard has to see what is left now, not what was left
+     * when the session started.
+     */
+    const chiefContext = (): ChiefContext => {
+      const remaining = account.remaining();
+      return {
+        sessionId: id,
+        goal: request.goal,
+        ...(request.agentId !== undefined ? { agentId: request.agentId } : {}),
+        ...(request.requestedBy !== undefined ? { requestedBy: request.requestedBy } : {}),
+        budget: {
+          ...(remaining.costUsd !== undefined ? { remainingUsd: remaining.costUsd } : {}),
+          ...(account.budget.maxCostUsd !== undefined ? { ceilingUsd: account.budget.maxCostUsd } : {}),
+        },
+      };
+    };
+
+    /**
+     * What the chief did, on the record.
+     *
+     * Every request it was offered produces exactly one of these, escalation
+     * included: a request that reached a person without saying why it was not
+     * routine would be indistinguishable from one nobody looked at.
+     */
+    const announceChief = (requestKind: ChiefRequestKind, requestId: string, decision: ChiefDecision): void => {
+      log.publishNative({ type: 'chief_decided', requestKind, requestId, action: decision.action, detail: describeChiefDecision(decision) });
+    };
+
+    /** Whether a gate is still waiting, by kind — a chief's decision applies only to a live request. */
+    const gateIsPending = (kind: ChiefRequestKind, requestId: string): boolean =>
+      kind === 'approval' ? pendingApprovals.has(requestId) : kind === 'plan_review' ? pendingPlanReviews.has(requestId) : pendingQuestionGates.has(requestId);
+
+    /**
+     * Apply a decision to the kind of request it was made about.
+     *
+     * Returns the decision that took effect, which is the chief's own when it
+     * settled the request and an escalation when its reply cannot settle one —
+     * `answer` to an approval, say. Only a resolver that ignored the request's kind
+     * can produce the second case, and correcting it here is what keeps a
+     * cross-kind reply from settling a request with an answer meant for another.
+     */
+    const applyChiefDecision = (kind: ChiefRequestKind, requestId: string, decision: ChiefDecision): ChiefDecision => {
+      const mismatched = (): ChiefDecision => ({ action: 'escalate', reason: `a chief's ${decision.action} reply cannot settle this request, so it stays yours` });
+      if (kind === 'approval') {
+        if (decision.action === 'approve') return settleApproval(requestId, true, decision.reason) ? decision : mismatched();
+        if (decision.action === 'reject') return settleApproval(requestId, false, decision.reason) ? decision : mismatched();
+        return mismatched();
+      }
+      if (kind === 'plan_review') {
+        // Gitu's own language distinguishes a refusal that replans (a note) from a
+        // bare rejection, so the chief's two refusals map onto exactly that pair.
+        if (decision.action === 'approve') return settlePlanReview(requestId, { approved: true }, 'approved', decision.reason) ? decision : mismatched();
+        if (decision.action === 'request_changes') return settlePlanReview(requestId, { approved: false, note: decision.note }, 'changes_requested', decision.note) ? decision : mismatched();
+        if (decision.action === 'reject') return settlePlanReview(requestId, { approved: false }, 'rejected', decision.reason) ? decision : mismatched();
+        return mismatched();
+      }
+      if (decision.action === 'answer') return settleQuestions(requestId, decision.answer, 'answered by the chief of staff') ? decision : mismatched();
+      return mismatched();
+    };
+
+    /**
+     * Offer a gated request to the chief, and surface it to the person only if the
+     * chief did not settle it.
+     *
+     * The chief sees the request before the person does, because a card the chief is
+     * about to settle would otherwise appear and vanish, and a person who had begun
+     * answering it would be answering a request that no longer exists. So an
+     * escalation — the chief's explicit "yours" — is what puts a request in front of
+     * them; anything else is recorded as a `chief_decided` event and the request is
+     * already settled by the time the person could have seen it.
+     *
+     * A request that is already gone (a stop, or a release, or another surface
+     * answering first) is left alone: the chief's late reply must not resurface a
+     * request whose resolution has been published, and it must not claim one either.
+     */
+    const offerToChief = (input: { kind: ChiefRequestKind; requestId: string; request: ChiefRequest }, surface: () => void): void => {
+      const chief = request.chief;
+      if (!chief) {
+        surface();
+        return;
+      }
+      void chief.decide({ request: input.request, context: chiefContext() }).then(
+        (decision) => {
+          // A request another surface already settled (a stop, a release, an answer)
+          // is left alone: the chief's late reply must neither resurface a request
+          // whose resolution is on the record nor narrate a decision it did not make.
+          if (!gateIsPending(input.kind, input.requestId)) return;
+          const effective = decision.action === 'escalate' ? decision : applyChiefDecision(input.kind, input.requestId, decision);
+          // The settle above already published what the request became, so this event
+          // adds who decided and why — the resolution standing on its own is exactly
+          // what makes an automated decision indistinguishable from an unexplained one.
+          announceChief(input.kind, input.requestId, effective);
+          if (effective.action === 'escalate') surface();
+        },
+        (err: unknown) => {
+          // A resolver that failed made no decision. The request is still the
+          // person's, and saying why is better than a silent stall.
+          if (!gateIsPending(input.kind, input.requestId)) return;
+          announceChief(input.kind, input.requestId, { action: 'escalate', reason: `the chief of staff could not be consulted (${(err as Error).message})` });
+          surface();
+        },
+      );
+    };
+
     const approvalHandler: ApprovalHandler = (gate) => {
       const approvalId = shortId('appr');
       const record: CodingApprovalRequest = { id: approvalId, tool: gate.tool, why: gate.why, summary: gate.summary, requestedAt: nowIso() };
       const decided = new Promise<boolean>((resolve) => {
         const timer = setTimeout(() => {
-          if (pendingApprovals.delete(approvalId)) {
-            if (pendingApproval?.id === approvalId) pendingApproval = undefined;
-            log.publishNative({ type: 'approval_resolved', approvalId, approved: false, reason: 'timed out' });
-            resolve(false);
-          }
+          settleApproval(approvalId, false, 'timed out');
         }, timeoutMs);
         pendingApprovals.set(approvalId, {
           resolve: (approved) => {
@@ -260,7 +428,7 @@ export class GituSessionRuntime {
       // requestedAt; the envelope's `at` is a publication stamp and can diverge
       // from it under replay.
       log.publishNative({ type: 'approval_required', approvalId, tool: gate.tool, why: gate.why, summary: gate.summary, requestedAt: record.requestedAt });
-      request.onApprovalRequired?.(record);
+      offerToChief({ kind: 'approval', requestId: approvalId, request: { kind: 'approval', request: record, tier: gate.tier } }, () => request.onApprovalRequired?.(record));
       return decided;
     };
 
@@ -273,11 +441,7 @@ export class GituSessionRuntime {
       ].join('\n');
       const decided = new Promise<CodingPlanReviewDecision>((resolve) => {
         const timer = setTimeout(() => {
-          if (pendingPlanReviews.delete(requestId)) {
-            if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
-            log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected', reason: 'timed out' });
-            resolve({ approved: false, note: 'Plan review timed out.' });
-          }
+          settlePlanReview(requestId, { approved: false, note: 'Plan review timed out.' }, 'rejected', 'timed out');
         }, timeoutMs);
         pendingPlanReviews.set(requestId, {
           resolve: (decision) => {
@@ -288,7 +452,7 @@ export class GituSessionRuntime {
       });
       pendingPlanReview = record;
       log.publishNative({ type: 'plan_review_requested', requestId, plan, criteria: input.criteria, steps: input.steps, requestedAt: record.requestedAt });
-      request.onPlanReviewRequested?.(record);
+      offerToChief({ kind: 'plan_review', requestId, request: { kind: 'plan_review', request: record } }, () => request.onPlanReviewRequested?.(record));
       return decided;
     };
 
@@ -297,11 +461,7 @@ export class GituSessionRuntime {
       const record: CodingQuestionsRequest = { id: requestId, questions, requestedAt: nowIso() };
       const decided = new Promise<string>((resolve) => {
         const timer = setTimeout(() => {
-          if (pendingQuestionGates.delete(requestId)) {
-            if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
-            log.publishNative({ type: 'questions_answered', requestId, reason: 'timed out' });
-            resolve('(no answer — proceed with reasonable defaults)');
-          }
+          settleQuestions(requestId, '(no answer — proceed with reasonable defaults)', 'timed out');
         }, timeoutMs);
         pendingQuestionGates.set(requestId, {
           resolve: (answer) => {
@@ -318,7 +478,7 @@ export class GituSessionRuntime {
         details: questions,
         requestedAt: record.requestedAt,
       });
-      request.onQuestionsRequested?.(record);
+      offerToChief({ kind: 'questions', requestId, request: { kind: 'questions', request: record } }, () => request.onQuestionsRequested?.(record));
       return decided;
     };
 
@@ -335,24 +495,11 @@ export class GituSessionRuntime {
      * its timeout, and safe to call with nothing pending.
      */
     const releaseGates = (reason: string): void => {
-      for (const [approvalId, gate] of [...pendingApprovals]) {
-        pendingApprovals.delete(approvalId);
-        if (pendingApproval?.id === approvalId) pendingApproval = undefined;
-        log.publishNative({ type: 'approval_resolved', approvalId, approved: false, reason });
-        gate.resolve(false);
-      }
-      for (const [requestId, gate] of [...pendingPlanReviews]) {
-        pendingPlanReviews.delete(requestId);
-        if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
-        log.publishNative({ type: 'plan_review_resolved', requestId, decision: 'rejected', reason });
-        gate.resolve({ approved: false, note: `Plan review ${reason}.` });
-      }
-      for (const [requestId, gate] of [...pendingQuestionGates]) {
-        pendingQuestionGates.delete(requestId);
-        if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
-        log.publishNative({ type: 'questions_answered', requestId, reason });
-        gate.resolve('(no answer — proceed with reasonable defaults)');
-      }
+      for (const approvalId of [...pendingApprovals.keys()]) settleApproval(approvalId, false, reason);
+      // A released review publishes as 'rejected' while handing the engine a note:
+      // the engine reads that pair as "stop this plan", which is what a release is.
+      for (const requestId of [...pendingPlanReviews.keys()]) settlePlanReview(requestId, { approved: false, note: `Plan review ${reason}.` }, 'rejected', reason);
+      for (const requestId of [...pendingQuestionGates.keys()]) settleQuestions(requestId, '(no answer — proceed with reasonable defaults)', reason);
     };
 
     const sinks: EngineSinks = {
@@ -540,34 +687,19 @@ export class GituSessionRuntime {
         // keeps going and only the stale request stops waiting.
         releaseGates(reason);
       },
+      // Keyed by request id throughout, never "whatever is pending now": a second
+      // surface answering first must not make a late call settle a different request.
       approve: (approvalId, approved) => {
-        const entry = pendingApprovals.get(approvalId);
-        if (!entry) return;
-        pendingApprovals.delete(approvalId);
-        if (pendingApproval?.id === approvalId) pendingApproval = undefined;
-        log.publishNative({ type: 'approval_resolved', approvalId, approved });
-        entry.resolve(approved);
+        settleApproval(approvalId, approved);
       },
       approvePlan: (requestId, decision) => {
-        // Keyed by request id, never "whatever is pending now": a second surface
-        // answering first must not make this call settle a different review.
-        const gate = pendingPlanReviews.get(requestId);
-        if (!gate) return;
-        pendingPlanReviews.delete(requestId);
-        if (pendingPlanReview?.id === requestId) pendingPlanReview = undefined;
         // Gitu's own language distinguishes a refusal that replans (a note) from
         // a bare rejection, so the code follows it rather than flattening both.
         const settled: PlanReviewDecision = decision.approved ? 'approved' : decision.note ? 'changes_requested' : 'rejected';
-        log.publishNative({ type: 'plan_review_resolved', requestId, decision: settled });
-        gate.resolve(decision);
+        settlePlanReview(requestId, decision, settled);
       },
       answerQuestions: (requestId, answer) => {
-        const gate = pendingQuestionGates.get(requestId);
-        if (!gate) return;
-        pendingQuestionGates.delete(requestId);
-        if (pendingQuestions?.id === requestId) pendingQuestions = undefined;
-        log.publishNative({ type: 'questions_answered', requestId });
-        gate.resolve(answer);
+        settleQuestions(requestId, answer);
       },
       events: (sinceSeq) => log.events(sinceSeq),
       subscribe: (listener: CodingEventListener) => log.subscribe(listener),

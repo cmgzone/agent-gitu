@@ -33,6 +33,10 @@ export const NATIVELY_EMITTED_EVENT_TYPES = [
   'plan_review_resolved',
   'questions_requested',
   'questions_answered',
+  // A chief's decision is announced only natively: no prose line in the legacy
+  // stream describes who answered a request, so there is nothing to deduplicate
+  // against — it is listed so the shim can never become a second author of it.
+  'chief_decided',
 ] as const satisfies readonly CodingEventType[];
 
 export interface CodingEventLogOptions {

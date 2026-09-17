@@ -87,6 +87,13 @@ export interface DelegationSessionInput {
   onApprovalRequired: (request: CodingApprovalRequest) => void;
   onPlanReviewRequested: (request: CodingPlanReviewRequest) => void;
   onQuestionsRequested: (request: CodingQuestionsRequest) => void;
+  /**
+   * Whatever the delegation knows about where this work came from — a mission, a
+   * conversation. It is context for the session's own resolver (a chief of staff
+   * decides in the terms the person granted authority in) and never authorization:
+   * it is labels, not permissions.
+   */
+  scope?: Record<string, string>;
 }
 
 export interface CoworkDelegationDeps {
@@ -225,6 +232,13 @@ export function delegationProgressFor(event: CodingEvent): string | undefined {
     // Only failures: a successful command is already announced by its start line.
     case 'command_finished':
       return event.ok ? undefined : `Command failed${event.exitCode !== undefined ? ` (exit ${event.exitCode})` : ''}: ${event.command}`;
+    // Who decided a gate, and why it was not routine when it was not. An escalation
+    // also produces a request card; this line is what makes the card's arrival
+    // legible in the conversation the person was already reading.
+    case 'chief_decided':
+      return event.action === 'escalate'
+        ? `Needs your decision (${event.requestKind.replace(/_/g, ' ')}): ${clipProgress(event.detail)}`
+        : `Handled automatically (${event.action.replace(/_/g, ' ')}): ${clipProgress(event.detail)}`;
     case 'policy_denied':
       return `Blocked by policy (${event.reason})${event.detail ? `: ${event.detail}` : ''}`;
     case 'operation_blocked':
@@ -243,6 +257,11 @@ export function delegationProgressFor(event: CodingEvent): string | undefined {
     default:
       return undefined;
   }
+}
+
+/** Progress lines are a glance, not a transcript: a decision's own words are clipped. */
+function clipProgress(text: string): string {
+  return text.length <= 140 ? text : `${text.slice(0, 139)}…`;
 }
 
 /** True when a gate card's action or typed answer is an affirmative. */
@@ -320,6 +339,12 @@ export class CoworkDelegation {
         // its own allocation by asking.
         budget: runOptions.maxCostUsd !== undefined ? { maxCostUsd: runOptions.maxCostUsd } : undefined,
         parentBudget: this.deps.budgetPool?.(scope),
+        // Only what is actually known is labelled: an absent mission must not become
+        // the string "undefined" in a decision record a person reads back.
+        scope: {
+          ...(scope.missionId ? { missionId: scope.missionId } : {}),
+          ...(scope.conversationId ? { conversationId: scope.conversationId } : {}),
+        },
         onApprovalRequired: (approval) => {
           const detail = [approval.why, approval.summary].filter(Boolean).join('\n\n');
           gates.set(surface(`Approve ${approval.tool || 'a gated action'} for @${scope.agent.name}?`, detail, ['Approve', 'Deny']), {
@@ -350,7 +375,10 @@ export class CoworkDelegation {
     const run: DelegationRun = { session: active, conversationId: scope.conversationId, agentId: scope.agent.id, gates, settled: false };
     this.runs.set(active.id, run);
 
-    const unsubscribe = active.subscribe((event) => this.reportProgress(run, event));
+    const unsubscribe = active.subscribe((event) => {
+      this.closeSettledCard(run, event);
+      this.reportProgress(run, event);
+    });
     const onAbort = (): void => {
       void active.cancel('the conversation stopped');
     };
@@ -440,6 +468,30 @@ export class CoworkDelegation {
       cancelled += 1;
     }
     return cancelled;
+  }
+
+  /**
+   * Close a card whose runtime gate settled somewhere else.
+   *
+   * The runtime is the authority on a request, so when a chief of staff decides it,
+   * or a release cancels it, or another surface answers first, the card this
+   * conversation put in front of the person is stale. Closing it keeps the card a
+   * view: an open card whose buttons resolve nothing is a worse lie than no card.
+   */
+  private closeSettledCard(run: DelegationRun, event: CodingEvent): void {
+    const requestId =
+      event.type === 'approval_resolved'
+        ? event.approvalId
+        : event.type === 'plan_review_resolved' || event.type === 'questions_answered'
+          ? event.requestId
+          : undefined;
+    if (!requestId) return;
+    for (const [cardId, gate] of [...run.gates]) {
+      if (gate.requestId !== requestId) continue;
+      run.gates.delete(cardId);
+      this.gates.delete(cardId);
+      this.deps.closeRequest?.(cardId);
+    }
   }
 
   private reportProgress(run: DelegationRun, event: CodingEvent): void {

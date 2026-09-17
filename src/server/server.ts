@@ -7,7 +7,11 @@ import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
 import { createBudgetAccount, type BudgetAccount } from '../coding/budget.js';
+import type { ChiefResolver } from '../coding/chief.js';
 import type { CodingSession } from '../coding/contract.js';
+import { ChiefOfStaff, type ChiefAdvisor } from '../chief/chief.js';
+import { modelChiefAdvisor } from '../chief/advisor.js';
+import { resolveAuthorityPolicy, type AuthorityPolicy, type AuthorityPolicyPatch } from '../chief/authority.js';
 import { workspacePath } from '../coding/workspace.js';
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import type { CodingEvent } from '../coding/events.js';
@@ -259,9 +263,40 @@ export interface GituServerConfig {
   coworkDelegationMaxCostUsd?: number;
   /** Turn ceiling for delegated engineering, per conversation. */
   coworkDelegationMaxTurns?: number;
+  /**
+   * A chief of staff for delegated (unattended) engineering.
+   *
+   * Delegated work is the case the chief exists for: nobody is watching the
+   * workspace, so a gate that waits for a person stalls and is then denied, and a
+   * mission that cannot get past its first approval is a mission that never ran.
+   * The chief settles what this host's authority policy calls routine and escalates
+   * the rest as the request card a person already answers from — it sees requests it
+   * may not decide, never the other way round.
+   *
+   * `false` disables it. A user-facing workspace run is never given a chief: the
+   * person is right there, and their own approval is the point.
+   */
+  chiefOfStaff?: ChiefOfStaffConfig | false;
   /** Injectable for tests; production queries the local Codex runtime. */
   codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
   startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
+}
+
+/**
+ * How this host configures the chief of a delegated session.
+ *
+ * `policy` is where the host narrows or extends what a chief may decide alone; the
+ * defaults are deliberately narrow (see `DEFAULT_AUTHORITY_POLICY`). `advisor` is
+ * the judgment layer, consulted only for a question the standing answers do not
+ * cover and allowed only to answer — never to grant. It defaults to a model call
+ * made with the delegating teammate's own provider and charged to the mission's
+ * envelope; supply your own to replace it, or `false` to run policy-only.
+ */
+export interface ChiefOfStaffConfig {
+  policy?: AuthorityPolicyPatch;
+  advisor?: ChiefAdvisor | false;
+  /** Wall-clock cap for one model answer; a hung provider must not hold a gate. */
+  advisorTimeoutMs?: number;
 }
 
 interface CoworkRequestResolution {
@@ -1226,6 +1261,62 @@ export class GituServer {
   }
 
   /**
+   * The chief a delegated session answers to, or undefined when this host runs
+   * without one.
+   *
+   * One instance per delegation, because its decision record *is* the task's short
+   * history: the same command twice in one task is answered from the first decision
+   * instead of being re-litigated, and the record is what lets a person read back
+   * what an unattended engineer was allowed to do without them.
+   *
+   * `llm` is the client the delegated session itself speaks with, so the chief's
+   * judgment call is priced and charged exactly like the work it is answering
+   * questions about: the same model, the same catalog entry, the same envelope.
+   */
+  private chiefFor(input: DelegationSessionInput, llm: { client: LlmClient; providerId: string; model: string }): ChiefResolver | undefined {
+    const config = this.config.chiefOfStaff;
+    if (config === false) return undefined;
+    const agent = this.cowork().getAgent(input.agentId);
+    // Resolved once and handed to both, so the policy the chief enforces and the
+    // policy the advisor is told about can never drift apart.
+    const policy = resolveAuthorityPolicy(config?.policy);
+    const advisor = config?.advisor === false ? undefined : (config?.advisor ?? this.modelAdvisorFor(input, llm, policy, config));
+    return new ChiefOfStaff({
+      policy,
+      ...(advisor ? { advisor } : {}),
+      // Labels for the decision record, not permissions: what is known is named.
+      scope: { ...(input.scope ?? {}), ...(agent ? { teammate: agent.name } : {}) },
+    });
+  }
+
+  /**
+   * The default judgment layer: one bounded model call, charged to the delegation's
+   * own envelope.
+   *
+   * A question a mission asks is part of that mission's cost, so the call draws on
+   * the same allocation the work does — a mission that has spent its grant cannot
+   * buy more answers, and the envelope a person granted is the only bound on what it
+   * may ask. When the host supplied no delegation pool there is no account to charge,
+   * and the call is made unaccounted rather than refused: the runtime's own budget is
+   * what bounds the work, and the chief must not invent a ceiling nobody set.
+   */
+  private modelAdvisorFor(input: DelegationSessionInput, llm: { client: LlmClient; providerId: string; model: string }, policy: AuthorityPolicy, config: ChiefOfStaffConfig | undefined): ChiefAdvisor {
+    const conversationId = input.scope?.['conversationId'];
+    return modelChiefAdvisor({
+      llm: llm.client,
+      providerId: llm.providerId,
+      model: llm.model,
+      priceOf: (usage) => this.priceUsage(usage, llm.providerId, llm.model),
+      ...(input.parentBudget ? { account: input.parentBudget } : {}),
+      policy,
+      ...(config?.advisorTimeoutMs !== undefined ? { timeoutMs: config.advisorTimeoutMs } : {}),
+      // A declined answer is worth one line in the conversation: the question is about
+      // to appear as a card, and "the chief could not answer" is why.
+      ...(conversationId ? { onEvent: (text: string) => this.publishDelegatedProgress(conversationId, input.agentId, text) } : {}),
+    });
+  }
+
+  /**
    * The account a delegated task draws from.
    *
    * Mission work draws from the mission's envelope — allocated inside the
@@ -1535,6 +1626,10 @@ export class GituServer {
       agentId: input.agentId,
       requestedBy: input.requestedBy,
       gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
+      // The chief sees every gate before the person's card does, and settles what the
+      // host's authority policy calls routine. Without it the run behaves exactly as
+      // it did before a chief existed: every gate waits for the person.
+      chief: this.chiefFor(input, resolved),
       // The teammate's request, clamped by the runtime to this conversation's
       // pool: a caller can always ask for less and never for more.
       budget: input.budget,

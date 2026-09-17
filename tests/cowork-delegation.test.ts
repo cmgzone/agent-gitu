@@ -167,11 +167,63 @@ describe('delegation progress projection', () => {
     expect(emit({ type: 'command_finished', command: 'npm test', ok: true, exitCode: 0 })).toBeUndefined();
     expect(emit({ type: 'command_finished', command: 'npm test', ok: false, exitCode: 2 })).toBe('Command failed (exit 2): npm test');
     expect(emit({ type: 'policy_denied', reason: 'risk_policy', detail: 'rm -rf' })).toBe('Blocked by policy (risk_policy): rm -rf');
+    expect(emit({ type: 'chief_decided', requestKind: 'approval', requestId: 'appr-1', action: 'approve', detail: 'routine command: npm test' })).toBe(
+      'Handled automatically (approve): routine command: npm test',
+    );
+    expect(emit({ type: 'chief_decided', requestKind: 'plan_review', requestId: 'pr-1', action: 'escalate', detail: 'production deployment' })).toBe(
+      'Needs your decision (plan review): production deployment',
+    );
     expect(emit({ type: 'recovering', message: 'model reply was malformed', attempt: 2, maxAttempts: 3 })).toBe('Recovering (2/3): model reply was malformed');
     expect(emit({ type: 'evidence_recorded', evidenceId: 'ev-1', passed: true })).toBeUndefined();
     expect(emit({ type: 'evidence_recorded', evidenceId: 'ev-1', passed: false })).toBe('Verification failed: ev-1');
     expect(emit({ type: 'log', text: 'some prose' })).toBeUndefined();
     expect(emit({ type: 'completed', summary: 'done' })).toBe('Finished: done');
+  });
+});
+
+describe('delegated gates a chief settles', () => {
+  it('closes the card when the runtime settles the gate without the person', async () => {
+    const s = setup('settled-elsewhere');
+    const running = start(s);
+    const input = s.inputs[0]!;
+    input.onApprovalRequired({ id: 'appr-1', tool: 'run_command', why: 'unrecognized command (fail closed)', summary: '{"command":"npm test"}', requestedAt: at });
+    const card = s.store.requests(s.conversation.id)[0]!;
+
+    // The runtime — a chief of staff — answered it. The card is a view of the
+    // request, so it must stop offering buttons that resolve nothing.
+    s.fake.session.emit({ type: 'approval_resolved', approvalId: 'appr-1', approved: true, reason: "routine command under this session's authority policy: npm test" });
+    expect(s.closed).toEqual([card.id]);
+    expect(s.delegation.resolve(card.id, 'answer', 'Approve')).toBeUndefined();
+    expect(s.fake.approvals).toEqual([]);
+
+    s.fake.finish({ sessionId: 'run_1', status: 'completed', report: report() });
+    await expect(running).resolves.toMatchObject({ ok: true });
+  });
+
+  it('leaves the card open while the gate is still pending', async () => {
+    const s = setup('still-pending');
+    const running = start(s);
+    const input = s.inputs[0]!;
+    input.onApprovalRequired({ id: 'appr-1', tool: 'run_command', why: 'EScalated', requestedAt: at });
+    const card = s.store.requests(s.conversation.id)[0]!;
+    // A chief's *decision to escalate* resolves no gate: it is what put the request in
+    // front of the person in the first place.
+    s.fake.session.emit({ type: 'chief_decided', requestKind: 'approval', requestId: 'appr-1', action: 'escalate', detail: 'recursive delete' });
+    expect(s.closed).toEqual([]);
+    expect(s.delegation.resolve(card.id, 'answer', 'Approve')).toMatchObject({ ok: true, resolution: { status: 'approved' } });
+    expect(s.fake.approvals).toEqual([{ id: 'appr-1', approved: true }]);
+
+    s.fake.finish({ sessionId: 'run_1', status: 'completed', report: report() });
+    await running;
+  });
+
+  it('labels the session with the mission and conversation the work came from', async () => {
+    const s = setup('scope');
+    const running = s.delegation.run({ ...s.scope, missionId: 'm_1' } as never, { goal: 'fix the build' });
+    // Labels for the session's own resolver, never permissions.
+    expect(s.inputs[0]!.scope).toEqual({ missionId: 'm_1', conversationId: s.conversation.id });
+    s.fake.finish({ sessionId: 'run_1', status: 'completed', report: report() });
+    await running;
   });
 });
 

@@ -7,6 +7,7 @@ import { renderDecisions } from './architecture.js';
 import { agentWorkflowPrompt } from './agent-workflow.js';
 import { DOCUMENT_TOOL_DOC } from '../tools/productivity.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
+import { loadOutputStyle } from './output-style.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
 //
@@ -418,7 +419,12 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
 - Plans answer: what are we building, how will it work, which files/surfaces are involved, how is each part verified.
 - DYNAMIC REPLANNING: when execution or a user correction makes the plan wrong, revise_step ONLY the affected step. Replace obsolete todos with replaceTodos, mark rejected steps cancelled, and append/reactivate the requested replacement. Do not leave the old provider or approach active. Check off toggle_todo as you complete each subtask.
-- The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.`;
+- The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.` + outputStyleSection();
+}
+
+/** Presentation contract appended to every orchestrator system prompt. */
+function outputStyleSection(): string {
+  return `\n\nOUTPUT STYLE (presentation contract for every user-visible reply — your summaries and chat replies are rendered as Markdown):\n${loadOutputStyle()}\n`;
 }
 
 export interface TaskStateScope {

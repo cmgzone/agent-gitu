@@ -63,6 +63,7 @@ import {
   type VerifiedDiffSnapshot,
 } from '../types.js';
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
+import { applyOutputHygiene } from './output-style.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { agentVerificationGate, agentWorkflowPrompt, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
@@ -987,7 +988,7 @@ export class Gitu {
         );
         const parsedReply = parseReplyAction(reply);
         const cutAt = proseCutIndex(reply);
-        const prose = (parsedReply && cutAt >= 0 ? reply.slice(0, cutAt) : reply).trim();
+        const prose = applyOutputHygiene((parsedReply && cutAt >= 0 ? reply.slice(0, cutAt) : reply).trim());
         if (prose) this.emit(`say ${prose}`);
         ledger.setStatus('completed');
         ledger.completeActiveWorkPhase();
@@ -2575,8 +2576,8 @@ export class Gitu {
             }
             case 'complete': {
               if (conversationControl) {
-                completionInput = { summary: action.summary, risks: action.risks ?? [], followUps: action.followUps ?? [] };
-                if (preservePausedWork) this.emit(`say ${action.summary}`);
+                completionInput = { summary: applyOutputHygiene(action.summary), risks: action.risks ?? [], followUps: action.followUps ?? [] };
+                if (preservePausedWork) this.emit(`say ${applyOutputHygiene(action.summary)}`);
                 conversationCompleted = true;
                 exitReason = preservePausedWork ? 'blocked' : 'complete';
                 break;
@@ -2948,7 +2949,7 @@ export class Gitu {
                 }
               }
               completionInput = {
-                summary: action.summary,
+                summary: applyOutputHygiene(action.summary),
                 risks: action.risks ?? [],
                 followUps: action.followUps ?? [],
               };

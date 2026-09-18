@@ -25,6 +25,7 @@ import { CoworkComputer } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
+import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
 import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
@@ -185,6 +186,19 @@ export interface GituServerConfig {
   /** Injectable for tests; production queries the local Codex runtime. */
   codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
   startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
+  /**
+   * Delegated Chief-of-Staff authority. Absent means no automatic resolution:
+   * every Cowork request stays open for the user, which is the default.
+   *
+   * When present, the Chief answers ONLY requests a policy entry already
+   * delegates (exact question match plus a prior-decision reference) inside the
+   * delegated conversation and active mission. Permissions, recommendations,
+   * unmatched text and anything over budget escalate to the user unchanged.
+   */
+  chiefAuthority?: ChiefAuthorityPolicy;
+  /** Trusted host facts for the authority check (mission activity, spend). A
+   *  missing or incomplete context fails closed — the Chief then escalates. */
+  chiefContext?: (request: CoworkRequest) => ChiefResolverContext | undefined;
 }
 
 interface CoworkRequestResolution {
@@ -1107,6 +1121,40 @@ export class GituServer {
     return true;
   }
 
+  /**
+   * The Chief-of-Staff pass over open requests, run before Telegram cards so an
+   * escalated request is the only thing the user is asked about.
+   *
+   * It DECIDES here and APPLIES through `resolveCoworkRequestAction`, the same
+   * path Web and Telegram use — one request object, one applier, first resolver
+   * wins. A request the policy does not delegate is left untouched.
+   */
+  private resolveChiefRequests(conversationId: string): void {
+    const policy = this.config.chiefAuthority;
+    if (!policy?.enabled) return;
+    const store = this.cowork();
+    for (const request of store.requests(conversationId)) {
+      if (request.status !== 'open') continue;
+      const { decision, decisionId } = evaluateChiefAuthority(store, request, policy, this.config.chiefContext?.(request));
+      if (decision.action !== 'answer') continue;
+      // Audit BEFORE applying: the attribution must exist even if a human
+      // resolves the request first (in which case the apply below is a no-op).
+      store.appendMessage(conversationId, {
+        role: 'system',
+        via: 'agent',
+        text: `Chief of Staff resolved the ${request.kind} "${request.title}" using delegated decision ${decisionId}: ${decision.answer}.`,
+      });
+      this.resolveCoworkRequestAction(request.id, 'answer', decision.answer);
+    }
+  }
+
+  /** Surface requests after a turn: the Chief decides what it owns, then the
+   *  remaining open requests reach the user through their normal surfaces. */
+  private async surfaceCoworkRequests(conversation: CoworkConversation): Promise<void> {
+    this.resolveChiefRequests(conversation.id);
+    await this.sendCoworkRequestCards(conversation);
+  }
+
   private async sendCoworkRequestCards(conversation: CoworkConversation): Promise<void> {
     const tg = conversation.telegram;
     if (!tg?.enabled || !tg.token || !tg.chatId) return;
@@ -1129,7 +1177,7 @@ export class GituServer {
     if (this.coworkPollers.has(tg.token)) {
       // One poller per bot token serves every linked chat, so a second chat that
       // reuses the token still has to push its own open request cards.
-      void this.sendCoworkRequestCards(conv);
+      void this.surfaceCoworkRequests(conv);
       return;
     }
     const poller = new TelegramPoller({
@@ -1162,7 +1210,7 @@ export class GituServer {
     });
     this.coworkPollers.set(tg.token, poller);
     poller.start();
-    void this.sendCoworkRequestCards(conv);
+    void this.surfaceCoworkRequests(conv);
   }
 
   private stopCoworkPoller(conversationId: string): void {
@@ -1417,7 +1465,7 @@ export class GituServer {
             try {
               await stream?.finish(telegramAgentMessage(message.agentName, message.text));
               await sendArtifacts(message);
-              await this.sendCoworkRequestCards(conv);
+              await this.surfaceCoworkRequests(conv);
             }
             catch (err) {
               this.recordCoworkTelegramError(conversationId, (err as Error).message);
@@ -1435,7 +1483,7 @@ export class GituServer {
       });
       // Delivery state of the logical message, never its identity.
       if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, turn.error ? 'failed' : 'sent');
-      await this.sendCoworkRequestCards(conv);
+      await this.surfaceCoworkRequests(conv);
       } catch (err) {
         if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, 'failed');
         throw err;
@@ -1550,7 +1598,7 @@ export class GituServer {
             if (current?.abort === abort) current.progress = undefined;
             this.publishCowork(conversationId);
             await finishStream(telegramAgentMessage(message.agentName, message.text));
-            await this.sendCoworkRequestCards(conversation);
+            await this.surfaceCoworkRequests(conversation);
           },
         },
         append: (message) => {
@@ -1560,7 +1608,7 @@ export class GituServer {
           return stored;
         },
       });
-      await this.sendCoworkRequestCards(conversation);
+      await this.surfaceCoworkRequests(conversation);
       const fresh = store.getMission(missionId);
       if (!fresh || fresh.status !== 'running') return;
       const turns = fresh.turns + 1;

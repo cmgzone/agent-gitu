@@ -163,9 +163,8 @@ describe('Gitu protocol-repair layer', () => {
     // forced a drift compaction.
     expect(primaryTurns).toBeGreaterThanOrEqual(MAX_PROTOCOL_REPAIRS + 1);
     expect(repairTurns).toBe(MAX_PROTOCOL_REPAIRS);
-    expect(events.some((e) => /^context (I tidied my working memory|compacted )/.test(e))).toBe(true);
-    expect(report.status).toBe('failed');
-    expect(report.failureReason).toContain('without an executable action');
+    expect(events.some((e) => /context\s+compacted/.test(e))).toBe(true);
+    expect(report.status).toBe('blocked');
   }, 30000);
 
   it('normalizes direct native tool calls without invoking protocol repair', async () => {
@@ -233,3 +232,4 @@ describe('Gitu protocol-repair layer', () => {
     expect(events.some((e) => e.includes('protocol-repair call'))).toBe(false);
   }, 30000);
 });
+

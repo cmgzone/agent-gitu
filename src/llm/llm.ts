@@ -1226,9 +1226,20 @@ export function extractJson(text: string): unknown {
       else if (ch === '}') {
         depth -= 1;
         if (depth === 0) {
+          const span = trimmed.slice(start, i + 1);
           try {
-            return JSON.parse(trimmed.slice(start, i + 1));
+            return JSON.parse(span);
           } catch {
+            // Lenient retry: models commonly emit a trailing comma before the
+            // closing brace/bracket, which JSON.parse rejects outright.
+            const cleaned = span.replace(/,\s*([}\]])/g, '$1');
+            if (cleaned !== span) {
+              try {
+                return JSON.parse(cleaned);
+              } catch {
+                /* fall through — try the next opening brace */
+              }
+            }
             break; // this span is not JSON — try the next opening brace
           }
         }
@@ -1238,6 +1249,15 @@ export function extractJson(text: string): unknown {
   try {
     return JSON.parse(trimmed);
   } catch {
+    // Same lenient retry for a whole-reply object with trailing commas.
+    const cleaned = trimmed.replace(/,\s*([}\]])/g, '$1');
+    if (cleaned !== trimmed) {
+      try {
+        return JSON.parse(cleaned);
+      } catch {
+        /* not recoverable */
+      }
+    }
     return undefined;
   }
 }

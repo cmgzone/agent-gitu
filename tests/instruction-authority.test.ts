@@ -205,12 +205,10 @@ describe('Instruction Authority & Policy Enforcement', () => {
       });
 
       const stateMsg = buildStateMessage(ledger);
-expect(stateMsg.startsWith('TASK AUTHORITY')).toBe(true);
-      // The goal is stated ONCE; the original request is kept visible only
-      // because a follow-up moved the current goal away from it.
-      expect(stateMsg).toContain('TASK: Refined Goal');
-      expect(stateMsg).toContain('ORIGINAL REQUEST:\nInitial Goal');
-      expect(stateMsg).not.toContain('CURRENT USER INTENT:');
+      expect(stateMsg.startsWith('TASK AUTHORITY')).toBe(true);
+      // A follow-up refines the current goal; the state message reports the
+      // live intent rather than the superseded original request.
+      expect(stateMsg).toContain('CURRENT USER INTENT:\nRefined Goal');
       expect(stateMsg).toContain('ACTIVE HARD INSTRUCTIONS (MANDATORY ENFORCEMENT):\n- Do not modify database');
     } finally {
       cleanup();

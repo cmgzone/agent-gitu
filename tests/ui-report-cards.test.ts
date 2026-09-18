@@ -25,7 +25,7 @@ function proseRenderer() {
     chipFor: () => '', icon: () => '', setupCopyButton: () => {}, stickScroll: () => {},
   });
   new Script([
-    'responseEscape', 'responseLink', 'responseInline', 'responseListItem', 'responseFence',
+    'responseEscape', 'responseLink', 'responseVideoEmbed', 'responseInline', 'responseEmbeds', 'responseListItem', 'responseFence',
     'responseBlockStart', 'renderResponseText', 'stripJsonLeak', 'finalizeNarration',
     'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportSideCard', 'appendSummary',
   ].map(source).join('\n') + '\nvar esc = responseEscape;').runInContext(context);

@@ -147,7 +147,10 @@ export const BROWSER_WORKFLOW_SKILL: ResolvedBuiltinSkill = def({
 });
 
 export function builtinSkills(): ResolvedBuiltinSkill[] {
-  return [...Object.values(STRATEGY_SKILLS), FRONTEND_QUALITY_SKILL, BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL];
+  // BROWSER_SKILL is capability-gated (requires the `browser` tool), so hosts
+  // without a provisioned browser simply fail its requirements instead of
+  // receiving instructions they cannot follow.
+  return [...Object.values(STRATEGY_SKILLS), FRONTEND_QUALITY_SKILL, BROWSER_SKILL, BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL];
 }
 
 export const PRODUCTIVITY_SKILL: ResolvedBuiltinSkill = def({

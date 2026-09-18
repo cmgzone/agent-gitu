@@ -1173,17 +1173,33 @@ export class Gitu {
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
+        let flushTimer: ReturnType<typeof setTimeout> | undefined;
         const flush = (): void => {
+          if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = undefined;
+          }
           if (pending) this.emit(`tdelta ${pending}`);
           pending = '';
           lastFlush = Date.now();
         };
         const sink = (chunk: string): void => {
           pending += chunk;
-          if (pending.length >= 32 || Date.now() - lastFlush > 50) flush();
+          // Flush a small threshold immediately; otherwise queue a short timer.
+          // Providers stall for seconds between deltas, and waiting for the NEXT
+          // delta left narration invisible until the turn ended.
+          if (pending.length >= 24 || Date.now() - lastFlush > 50) {
+            flush();
+            return;
+          }
+          if (!flushTimer) flushTimer = setTimeout(flush, 25);
         };
         let streamer = createProseStreamer(sink);
         const resetProse = (): void => {
+          if (flushTimer) {
+            clearTimeout(flushTimer);
+            flushTimer = undefined;
+          }
           pending = '';
           streamer = createProseStreamer(sink);
         };

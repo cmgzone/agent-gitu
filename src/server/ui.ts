@@ -5180,7 +5180,6 @@ export const UI_HTML = String.raw`<!doctype html>
           };
         });
       }).catch(function () {});
-      }).catch(function () {});
       $('cwSetProfileSave').onclick = function () {
         var btn = this;
         btn.disabled = true; btn.textContent = 'Saving…';

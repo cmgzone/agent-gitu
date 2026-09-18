@@ -54,12 +54,10 @@ Do not turn a local bug into a repository survey; widen only when the evidence r
     taskKind: 'refactor',
     description: 'Investigation strategy for refactors: targeted mapping before moving anything.',
     instructions: `TASK STRATEGY — refactor. Map before you move anything:
-1. lsp_definition for each symbol you plan to touch.
-2. lsp_references to enumerate call sites for THOSE symbols — the refactor's blast radius, not the whole codebase.
-3. read_file the implementations; note the public API surface.
-4. Edit in small reversible steps; rely on the post-edit LSP diagnostics check.
-5. Run the full test/typecheck/build commands before claiming completion.
-If LSP reports "unavailable", use search_files/read_file to trace callers instead.`,
+1. lsp_definition each symbol you plan to touch; lsp_references for THOSE symbols — the blast radius, not the whole codebase.
+2. read_file the implementations; note the public API surface.
+3. Edit in small reversible steps; run the full test/typecheck/build commands before claiming completion.
+If LSP reports "unavailable", trace callers with search_files/read_file instead.`,
   }),
 
   'test-failure': def({
@@ -80,11 +78,10 @@ Avoid repeated reads of unchanged evidence; once the cause is clear, act. If LSP
     taskKind: 'explore',
     description: 'Investigation strategy for exploration: map structure first, read selectively.',
     instructions: `TASK STRATEGY — exploration. Map first, read selectively:
-1. lsp_symbols on the entry points to see the structure.
-2. Use the project lock's entrypoints to pick the files to start from.
-3. Follow the call chain with lsp_definition/lsp_references from the entry point.
-4. read_file only the symbols that matter; do not read whole files by default.
-If LSP reports "unavailable", use search_files/read_file to trace the chain instead.`,
+1. lsp_symbols on the project lock's entrypoints to see the structure.
+2. Follow the call chain with lsp_definition/lsp_references.
+3. read_file only the symbols that matter — never whole files by default.
+If LSP reports "unavailable", trace the chain with search_files/read_file.`,
   }),
 
   feature: def({
@@ -92,11 +89,9 @@ If LSP reports "unavailable", use search_files/read_file to trace the chain inst
     taskKind: 'feature',
     description: 'Investigation strategy for new features: ground in the integration points first.',
     instructions: `TASK STRATEGY — new feature. Ground yourself before building:
-1. Find the integration points: lsp_symbols + read_file on the files you will extend.
-2. lsp_definition/lsp_references to see the existing APIs you must match.
-3. Implement in small steps; rely on the post-edit LSP diagnostics check.
-4. Verify with the real test/typecheck/build commands.
-If LSP reports "unavailable", use search_files/read_file to find the integration points instead.`,
+1. Find the integration points: lsp_symbols + read_file on the files you will extend; lsp_definition/lsp_references for the APIs you must match.
+2. Implement in small steps; verify with the real test/typecheck/build commands.
+If LSP reports "unavailable", find the integration points with search_files/read_file.`,
   }),
 };
 
@@ -119,6 +114,22 @@ export const FRONTEND_QUALITY_SKILL: ResolvedBuiltinSkill = def({
 - Accessibility basics: semantic elements, labels bound to inputs, visible focus styles, text contrast ≥4.5:1, and keyboard-operable controls.
 - Verify the real interaction path, not just the render: exercise primary actions and inspect final screenshots/evidence for misplaced, misleading, unrequested, duplicated, or nonfunctional controls.
 - Ship complete requested views with real content structure—no lorem ipsum, TODO placeholders, or unrelated sections unless explicitly requested.`,
+});
+
+/** Browser workflow: available only when the host has provisioned Chromium. */
+export const BROWSER_SKILL: ResolvedBuiltinSkill = def({
+  name: 'browser',
+  description: 'Drive the in-app Chromium browser to verify UI behavior, responsive layouts, accessibility, and visual details.',
+  keywords: ['browser', 'chromium', 'ui', 'frontend', 'visual', 'screenshot', 'responsive', 'accessibility'],
+  requires: { tools: ['browser'] },
+  instructions: `BROWSER WORKFLOW (requires the in-app Chromium browser):
+The callable tool names "browse" and "browser" are exact aliases. Prefer the canonical "browse" name below.
+1. Start with browse {"action":"navigate","url":"http://localhost:3000"} and confirm the page state before interacting.
+2. Prefer browse {"action":"evidence"} after navigation and edits for DOM, accessibility, overflow, clipping, and console checks.
+3. Exercise the requested interaction path with browse click/fill/select/press/type/scroll/wait actions; do not treat a screenshot alone as proof that behavior works.
+4. Check responsive behavior with evidence viewports ["mobile","tablet","desktop"] when the task affects layout.
+5. Use browse {"action":"screenshot"} when a visual criterion needs pixels, and ground visual claims in the captured result.
+6. If the browser is unavailable, report the missing capability and use the strongest non-browser verification available; never claim browser verification passed.`
 });
 
 /** All built-in skills, in stable order. */

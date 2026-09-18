@@ -10,12 +10,12 @@ const FILE_EDIT_TOOLS = new Set(['write_file', 'apply_edit', 'run_command']);
 
 /** paramsSummary of a successful screenshot action ("browse screenshot"). */
 function isScreenshotAction(a: ActionRecord): boolean {
-  return a.tool === 'browse' && a.status === 'success' && /screenshot/.test(a.paramsSummary);
+  return (a.tool === 'browse' || a.tool === 'browser') && a.status === 'success' && /screenshot/.test(a.paramsSummary);
 }
 
 /** paramsSummary of a successful structured evidence pass ("browse evidence"). */
 function isEvidenceAction(a: ActionRecord): boolean {
-  return a.tool === 'browse' && a.status === 'success' && /evidence/.test(a.paramsSummary);
+  return (a.tool === 'browse' || a.tool === 'browser') && a.status === 'success' && /evidence/.test(a.paramsSummary);
 }
 
 /**

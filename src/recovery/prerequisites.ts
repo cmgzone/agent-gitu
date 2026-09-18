@@ -362,6 +362,90 @@ export function inferMissingPrerequisite(reason: string, requiredFor = 'continue
   };
 }
 
+export type BlockRequestRejectionCode =
+  | 'NO_EXTERNAL_PREREQUISITE'
+  | 'AGENT_RECOVERABLE'
+  | 'COMPLETION_ESCAPE';
+
+export type BlockRequestEvaluation =
+  | { allowed: true; prerequisite: MissingPrerequisite }
+  | { allowed: false; code: BlockRequestRejectionCode; message: string };
+
+const COMPLETION_ESCAPE_RE =
+  /\b(?:done|finished|complete|completed|wrapped\s+up|wrap\s+up|gave\s+up|giving\s+up|stop(?:ped)?|paused?|ending?|scenario\s+complete|test\s+complete|check\s+complete)\b/i;
+const AGENT_RECOVERABLE_RE =
+  /\b(?:bug|broken\s+logic|build|compile|lint|typecheck|test\s+fail|verification|evidence|implementation|source\s+code|skill|browser|chromium|adapter|runtime|tool|action|package|module|dependency|install(?:ation|ed|ing)?|schema|parse|protocol)\b/i;
+const INTERNAL_RECOVERY_STATE_RE =
+  /\b(?:recovery[-\s]?state|recovery\s+(?:api|operation|transition)|resume[-\s]?suspended|suspended\s+(?:task|step|problem)|host\s+runtime|unregistered|unsupported\s+recovery|clear(?:ing)?\s+(?:the\s+)?(?:active\s+)?recovery)\b/i;
+
+/**
+ * Validate a model-requested terminal block before the expensive prerequisite
+ * resolver runs. BLOCKED is reserved for a concrete external prerequisite;
+ * completion sentinels and implementation/runtime problems are agent failures,
+ * not work the user can unblock by supplying a value.
+ */
+export function evaluateBlockRequest(reason: string, structured?: MissingPrerequisite): BlockRequestEvaluation {
+  const text = String(reason ?? '').replace(/\s+/g, ' ').trim();
+  const prerequisite = structured ?? inferMissingPrerequisite(text, text || 'continue the task');
+
+  // A model can invent a valid-looking prerequisite shape around an internal
+  // recovery-state problem (for example, "resume-suspended-step"). The
+  // shape alone must not turn an unsupported runtime action into a user-facing
+  // blocker. Inspect every non-secret field before allowing the resolver to
+  // open a connection/configuration flow.
+  if (
+    prerequisite &&
+    INTERNAL_RECOVERY_STATE_RE.test(
+      [prerequisite.id, prerequisite.description, prerequisite.requiredFor, ...(prerequisite.capabilities ?? []), ...(prerequisite.hints ?? [])].join(' '),
+    )
+  ) {
+    return {
+      allowed: false,
+      code: 'AGENT_RECOVERABLE',
+      message:
+        `The request_block describes an internal recovery-state/runtime capability (${prerequisite.description}), not something the user can provide. ` +
+        'Use a supported Agent Gitu action or surface the runtime failure as an internal stop; do not open a credential or connection blocker.',
+    };
+  }
+
+  if (prerequisite?.kind === 'dependency') {
+    return {
+      allowed: false,
+      code: 'AGENT_RECOVERABLE',
+      message:
+        `A missing dependency is an implementation problem, not a user-owned prerequisite (${prerequisite.description}). ` +
+        'Install it with the available tools, choose an existing alternative, or report a concrete policy/permission prerequisite.',
+    };
+  }
+
+  if (prerequisite) return { allowed: true, prerequisite };
+
+  if (COMPLETION_ESCAPE_RE.test(text)) {
+    return {
+      allowed: false,
+      code: 'COMPLETION_ESCAPE',
+      message: `The request_block reason "${text || '(empty)'}" is a stop/completion phrase, not an external prerequisite.`,
+    };
+  }
+
+  if (AGENT_RECOVERABLE_RE.test(text)) {
+    return {
+      allowed: false,
+      code: 'AGENT_RECOVERABLE',
+      message:
+        `The request_block reason "${text || '(empty)'}" describes an agent/runtime problem without a concrete external prerequisite. ` +
+        'It must be repaired, worked around, or surfaced as an internal failure rather than assigned to the user.',
+    };
+  }
+
+  return {
+    allowed: false,
+    code: 'NO_EXTERNAL_PREREQUISITE',
+    message:
+      `The request_block reason "${text || '(empty)'}" does not identify a credential, connection, permission, target, service, resource, or configuration the user can provide.`,
+  };
+}
+
 export function formatBlockedPrerequisite(resolution: PrerequisiteResolution): string {
   const attempts = resolution.attempts.map((attempt) => `- ${attempt.strategy}: ${attempt.outcome}`).join('\n');
   return `Need: ${resolution.prerequisite.description} for ${resolution.prerequisite.requiredFor}.\nTried:\n${attempts || '- no authorized recovery strategy was available'}\nRemaining ambiguity: ${resolution.message}`;

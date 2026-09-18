@@ -1,4 +1,4 @@
-import { execFile, execFileSync, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
+import { execFile, execFileSync, spawn, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
@@ -33,6 +33,7 @@ export interface ToolContext {
   delegate?: DelegateFn;
   delegateBackground?: BackgroundDelegateFn;
   backgroundAgentStatus?: BackgroundAgentStatusFn;
+  backgroundCommands?: BackgroundCommandRegistry;
 }
 
 export interface DelegateSpec {
@@ -58,6 +59,9 @@ export const KNOWN_TOOL_NAMES = new Set([
   'search_files',
   'web_fetch',
   'browse',
+  // Compatibility alias used by the bundled browser skill and by models that
+  // naturally call the capability by its advertised name.
+  'browser',
   'delegate',
   'agent_status',
   'list_skills',
@@ -77,6 +81,17 @@ export const KNOWN_TOOL_NAMES = new Set([
   'lsp_hover',
   'lsp_symbols',
 ]);
+
+const BROWSER_TOOL_NAMES = new Set(['browse', 'browser']);
+
+/**
+ * Parser-known tools are not necessarily provisioned by the current host.
+ * Keep capability advertising derived from the same registry that dispatches
+ * actions so a skill can never be declared usable while its tool is absent.
+ */
+export function runtimeToolNames(browserAvailable: boolean): string[] {
+  return [...KNOWN_TOOL_NAMES].filter((name) => browserAvailable || !BROWSER_TOOL_NAMES.has(name));
+}
 
 const MAX_FILE_BYTES = 512 * 1024;
 const MAX_LIST_ENTRIES = 400;
@@ -140,7 +155,7 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: pathErr,
-          schema: `write_file({ path: string, content: string })`,
+          schema: `write_file({ path: string, content: string, scratch?: boolean })`,
           correction: `Provide a valid file path string relative to the project root, e.g. write_file({ "path": "src/file.ts", "content": "..." }).`,
         };
       }
@@ -148,8 +163,16 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: `Missing or invalid "content" parameter (must be a string).`,
-          schema: `write_file({ path: string, content: string })`,
+          schema: `write_file({ path: string, content: string, scratch?: boolean })`,
           correction: `Provide the full file content as a string.`,
+        };
+      }
+      if (p['scratch'] !== undefined && typeof p['scratch'] !== 'boolean') {
+        return {
+          valid: false,
+          error: `Invalid "scratch" parameter (must be a boolean).`,
+          schema: `write_file({ path: string, content: string, scratch?: boolean })`,
+          correction: `Set "scratch": true only for throwaway diagnostic files; omit it for real project files.`,
         };
       }
       return { valid: true };
@@ -242,8 +265,24 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: cmdErr,
-          schema: `run_command({ command: string, timeoutMs?: number })`,
+          schema: `run_command({ command: string, timeoutMs?: number, background?: boolean, startupWaitMs?: number })`,
           correction: `Provide a valid command string to run, e.g. run_command({ "command": "npm test" }).`,
+        };
+      }
+      if (p['background'] !== undefined && typeof p['background'] !== 'boolean') {
+        return {
+          valid: false,
+          error: `Parameter "background" must be a boolean.`,
+          schema: `run_command({ command: string, timeoutMs?: number, background?: boolean, startupWaitMs?: number })`,
+          correction: `Use background:true only for a long-running server or watcher.`,
+        };
+      }
+      if (p['startupWaitMs'] !== undefined && (typeof p['startupWaitMs'] !== 'number' || !Number.isFinite(p['startupWaitMs'] as number))) {
+        return {
+          valid: false,
+          error: `Parameter "startupWaitMs" must be a finite number.`,
+          schema: `run_command({ command: string, background: true, startupWaitMs?: number })`,
+          correction: `Provide a startup grace period in milliseconds, e.g. 1500.`,
         };
       }
       return { valid: true };
@@ -398,7 +437,8 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
       }
       return { valid: true };
     }
-    case 'browse': {
+    case 'browse':
+    case 'browser': {
       const BROWSER_ACTIONS = ['navigate', 'back', 'forward', 'reload', 'screenshot', 'evidence', 'click', 'hover', 'scroll', 'type', 'fill', 'select', 'press', 'wait'] as const;
       const action = p['action'] === undefined ? (p['url'] !== undefined ? 'navigate' : 'screenshot') : String(p['action']);
       if (!BROWSER_ACTIONS.includes(action as (typeof BROWSER_ACTIONS)[number])) {
@@ -1086,9 +1126,106 @@ export async function toolLspSymbols(ctx: ToolContext, params: Record<string, un
   return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
 }
 
+/** Managed long-running commands (dev servers/watchers) scoped to one Executor. */
+export class BackgroundCommandRegistry {
+  private readonly children = new Map<number, ReturnType<typeof spawn>>();
+
+  start(command: string, cwd: string, startupWaitMs = 1500): Promise<ToolResult> {
+    const waitMs = Math.min(10_000, Math.max(100, Number.isFinite(startupWaitMs) ? startupWaitMs : 1500));
+    const isWindows = process.platform === 'win32';
+    const shell = isWindows ? 'powershell.exe' : '/bin/sh';
+    const args = isWindows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
+
+    return new Promise((resolve) => {
+      const child = spawn(shell, args, {
+        cwd,
+        windowsHide: true,
+        detached: !isWindows,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let startupOutput = '';
+      let settled = false;
+      const append = (chunk: unknown): void => {
+        startupOutput = `${startupOutput}${String(chunk)}`.slice(-12_000);
+      };
+      child.stdout?.on('data', append);
+      child.stderr?.on('data', append);
+
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        if (!child.pid) {
+          resolve({ ok: false, output: 'Background command failed to obtain a process id.', errorSignature: 'background-process-start-failed' });
+          return;
+        }
+        this.children.set(child.pid, child);
+        resolve({
+          ok: true,
+          exitCode: 0,
+          output:
+            `BACKGROUND PROCESS STARTED (pid ${child.pid}); it is still running after ${waitMs}ms. ` +
+            `Verify readiness separately (for example with browse or a health request).` +
+            (startupOutput.trim() ? `\nSTARTUP OUTPUT:\n${excerpt(startupOutput, 2500)}` : ''),
+        });
+      }, waitMs);
+
+      child.once('error', (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({ ok: false, output: `Background command failed to start: ${err.message}`, errorSignature: 'background-process-start-failed' });
+      });
+      child.once('exit', (code, signal) => {
+        if (child.pid) this.children.delete(child.pid);
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve({
+          ok: false,
+          exitCode: code ?? 1,
+          output:
+            `Background command exited during its ${waitMs}ms startup window (exit ${code ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).` +
+            (startupOutput.trim() ? `\n${excerpt(startupOutput, 3000)}` : ''),
+          errorSignature: 'background-process-exited',
+        });
+      });
+    });
+  }
+
+  dispose(): void {
+    const isWindows = process.platform === 'win32';
+    for (const [pid, child] of this.children) {
+      try {
+        if (isWindows) {
+          execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+        } else {
+          try {
+            process.kill(-pid, 'SIGTERM');
+          } catch {
+            child.kill('SIGTERM');
+          }
+        }
+      } catch {
+        /* Process already exited. */
+      }
+    }
+    this.children.clear();
+  }
+}
+
 export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
   const command = String(params['command'] ?? '');
   if (!command) return Promise.resolve(fail('run_command: missing "command"'));
+  if (params['background'] === true) {
+    if (!ctx.backgroundCommands) {
+      return Promise.resolve({
+        ok: false,
+        output: 'run_command background:true requires an executor-managed background process registry.',
+        errorSignature: 'background-command-unavailable',
+      });
+    }
+    return ctx.backgroundCommands.start(command, ctx.cwd, Number(params['startupWaitMs'] ?? 1500));
+  }
   let timeoutMs: number;
   try { timeoutMs = commandTimeout(params['timeoutMs']); }
   catch (err) { return Promise.resolve(fail((err as Error).message)); }
@@ -1371,10 +1508,15 @@ export function toolUpdateConnection(ctx: ToolContext, params: Record<string, un
 }
 
 export function toolUseSkill(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
-  if (!ctx.skills) return fail('skills not available');
+  if (!ctx.skills) return { ok: false, output: 'skills not available', errorSignature: 'skills-unavailable' };
   const activation = ctx.skills.activate(String(params['name'] ?? ''), ctx.skillContext);
   if (!activation.ok || !activation.skill || !activation.identity) {
-    return fail(activation.message ?? `Unknown skill: ${params['name']}. Use list_skills to see existing ones, or create it yourself with create_skill.`);
+    const output = activation.message ?? `Unknown skill: ${params['name']}. Use list_skills to see existing ones, or create it yourself with create_skill.`;
+    return {
+      ok: false,
+      output,
+      errorSignature: activation.code === 'SKILL_REQUIREMENTS_UNMET' ? 'skill-requirements-unmet' : 'unknown-skill',
+    };
   }
   const { skill, identity } = activation;
   return { ok: true, output: `SKILL ${skill.name}@${identity.version} [${identity.scope}, ${identity.contentHash.slice(0, 12)}]: ${skill.description}\n${skill.instructions}` };
@@ -1483,7 +1625,11 @@ export function formatPageDiagnostics(shot: { consoleErrors?: string[]; textDige
 
 export async function toolBrowse(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
   if (!ctx.browser || !ctx.browser.available()) {
-    return fail('browse: no in-app browser connected (run the desktop app: npm run app)');
+    return {
+      ok: false,
+      output: 'browse: no in-app browser connected (run the desktop app: npm run app)',
+      errorSignature: 'browser-unavailable',
+    };
   }
   const action = String(params['action'] ?? (params['url'] ? 'navigate' : 'screenshot'));
   try {

@@ -527,7 +527,7 @@ export function evaluateInstructionGate(
       continue;
     }
     if (verification?.type === 'browser' || verification?.type === 'visual') {
-      if (!actions.some((a) => a.status === 'success' && ['browse', 'screenshot'].includes(a.tool ?? '') && a.createdAt > inst.createdAt)) {
+      if (!actions.some((a) => a.status === 'success' && ['browse', 'browser'].includes(a.tool ?? '') && a.createdAt > inst.createdAt)) {
         findings.unmetRequirements.push(inst.text);
       }
       continue;

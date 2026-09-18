@@ -150,6 +150,36 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     toolMode: 'auto',
     capabilities: { streamingTools: true },
   },
+  gemini: {
+    id: 'gemini',
+    label: 'Google AI Studio (Gemini API, OpenAI-compatible)',
+    // The documented OpenAI-compatibility layer: chat/completions and /models
+    // under one Bearer-authenticated base URL (the AI Studio API key).
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    keyEnvVars: ['HERMES_GEMINI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+    defaultModel: 'gemini-3.7-flash',
+    // Offline seed only — a configured key also loads the live /models listing
+    // through the compatibility layer, so new Gemini releases appear in the
+    // picker without a Gitu update.
+    models: [
+      'gemini-3.7-flash',
+      'gemini-3.7-flash-lite',
+      'gemini-3.6-flash',
+      'gemini-3.6-flash-lite',
+      'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-pro',
+      'gemini-3-pro',
+    ],
+    // The compatibility layer accepts reasoning_effort low|medium|high (mapped
+    // to Gemini thinking budgets). There is no distinct max level.
+    effortLevels: ['low', 'medium', 'high'],
+    // Native function calling works through the compatibility layer; tool-call
+    // DELTAS vary across compat providers, so tool turns use a single
+    // non-streamed request (same proven shape as DeepSeek).
+    toolMode: 'auto',
+    capabilities: { streamingTools: false },
+  },
   chatgpt: {
     id: 'chatgpt',
     label: 'ChatGPT subscription (via Codex)',
@@ -362,6 +392,8 @@ const MODEL_CATALOG_RETRY_MS = 60 * 1000;
 const CATALOG_PROVIDER_IDS: Record<string, string> = {
   'opencode-zen': 'opencode',
   'opencode-go': 'opencode-go',
+  // models.dev catalogs Google's models under "google", not "gemini".
+  gemini: 'google',
 };
 
 let catalogCache: ModelCatalog | undefined;

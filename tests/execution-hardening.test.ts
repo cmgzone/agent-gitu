@@ -65,6 +65,15 @@ describe('oracle quality (scenario D: trivial oracles detected)', () => {
     expect(v.diagnostics.some((d) => d.rule === 'echoes-expected')).toBe(true);
   });
 
+  it('rejects the logged node inline sentinel pattern before execution', () => {
+    const v = evaluateOracleQuality({
+      command: 'node --input-type=commonjs -e "const payload={status:\'STEP6_CONTRACT_PASS\'};process.stdout.write(JSON.stringify(payload))"',
+      criterionText: 'recovery contract works',
+    });
+    expect(v.strength).toBe('INVALID');
+    expect(v.diagnostics.some((d) => d.rule === 'echoes-expected')).toBe(true);
+  });
+
   it('rejects a command that copies the expected value directly', () => {
     const v = evaluateOracleQuality({ command: 'assert 42 42', criterionText: 'adds numbers', expected: '42' });
     expect(v.strength).toBe('INVALID');

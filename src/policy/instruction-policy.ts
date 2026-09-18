@@ -75,7 +75,7 @@ function evaluateStructured(
       return { allowed: true };
     }
     case 'network': {
-      if (tool === 'web_fetch' || tool === 'browse') return deny('prohibits external web operations');
+      if (tool === 'web_fetch' || tool === 'browse' || tool === 'browser') return deny('prohibits external web operations');
       return { allowed: true };
     }
     case 'package_install': {
@@ -167,7 +167,7 @@ export class InstructionPolicyEngine {
         lower.includes("don't use web_fetch") ||
         lower.includes('no external requests')
       ) {
-        if (tool === 'web_fetch' || tool === 'browse') {
+        if (tool === 'web_fetch' || tool === 'browse' || tool === 'browser') {
           return {
             allowed: false,
             reason: `USER INSTRUCTION VIOLATION: Hard user instruction "${inst.text}" prohibits external web operations.`,

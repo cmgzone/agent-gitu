@@ -1,4 +1,4 @@
-import { commandsMatch, evidenceKindForType, isTrivialEvidenceCommand } from '../evidence/evidence.js';
+import { commandsMatch, evidenceKindForType, isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
 import type { CriterionEvidenceType, EvidenceKind, TaskLedgerData } from '../types.js';
 
 /**
@@ -148,6 +148,14 @@ export function validateSpecialistEvidence(
       }
       if (!detail.passed) {
         rejected.push({ criterionId: entry.criterionId, evidenceId: evId, reason: 'evidence did not pass' });
+        continue;
+      }
+      if (detail.command && isManufacturedEvidenceCommand(detail.command)) {
+        rejected.push({
+          criterionId: entry.criterionId,
+          evidenceId: evId,
+          reason: `evidence command "${detail.command}" manufactures its own output and is not independent proof`,
+        });
         continue;
       }
       if (expectedCriterion.verification) {

@@ -8,7 +8,7 @@ import { ConnectionInvocationError } from '../src/connections/connections.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import { ScriptedMockLlm, type LlmClient, type LlmMessage, type LlmTurnResult } from '../src/llm/llm.js';
-import { CapabilityAwareResolver, type PrerequisiteProvider } from '../src/recovery/prerequisites.js';
+import { CapabilityAwareResolver, evaluateBlockRequest, type PrerequisiteProvider } from '../src/recovery/prerequisites.js';
 import { RecoveryRisk, type MissingPrerequisite } from '../src/types.js';
 
 const roots: string[] = [];
@@ -37,6 +37,49 @@ const postgres: MissingPrerequisite = {
   hints: ['DATABASE_URL'],
   riskIfWrong: 'high',
 };
+
+describe('request_block validity gate', () => {
+  it('accepts only concrete external prerequisites', () => {
+    expect(evaluateBlockRequest('DATABASE_URL missing').allowed).toBe(true);
+    expect(evaluateBlockRequest('requires credentials I do not have').allowed).toBe(true);
+
+    const explicit = evaluateBlockRequest('Need the user to choose a deployment target', {
+      id: 'target-choice',
+      kind: 'target',
+      description: 'deployment target',
+      requiredFor: 'publish the application',
+    });
+    expect(explicit.allowed).toBe(true);
+  });
+
+  it('rejects completion phrases and internal agent problems', () => {
+    expect(evaluateBlockRequest('browser runtime check complete')).toMatchObject({ allowed: false, code: 'COMPLETION_ESCAPE' });
+    expect(evaluateBlockRequest('the Chromium adapter is not registered in the action runtime')).toMatchObject({ allowed: false, code: 'AGENT_RECOVERABLE' });
+    expect(evaluateBlockRequest('wrapped up')).toMatchObject({ allowed: false, code: 'COMPLETION_ESCAPE' });
+  });
+
+  it('rejects a structured fake prerequisite for an unsupported recovery-state action', () => {
+    const result = evaluateBlockRequest('the suspended task cannot be resumed', {
+      id: 'host-recovery-state-transition',
+      kind: 'resource',
+      description: 'Enable a supported recovery-state repair operation',
+      requiredFor: 'Clear the active recovery suspension and resume the suspended step',
+      capabilities: ['recovery-state-clear', 'resume-suspended-step'],
+      hints: ['The attempted recovery operation is unregistered'],
+    });
+    expect(result).toMatchObject({ allowed: false, code: 'AGENT_RECOVERABLE' });
+  });
+
+  it('does not turn a missing dependency into user-owned work', () => {
+    expect(evaluateBlockRequest('package is not installed')).toMatchObject({ allowed: false, code: 'AGENT_RECOVERABLE' });
+    expect(evaluateBlockRequest('dependency missing', {
+      id: 'dep',
+      kind: 'dependency',
+      description: 'Playwright',
+      requiredFor: 'browser verification',
+    })).toMatchObject({ allowed: false, code: 'AGENT_RECOVERABLE' });
+  });
+});
 
 function provider(input: Partial<PrerequisiteProvider> = {}): PrerequisiteProvider {
   return {

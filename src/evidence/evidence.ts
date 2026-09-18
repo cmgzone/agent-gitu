@@ -28,6 +28,39 @@ export function isTrivialEvidenceCommand(command: string): boolean {
   return segments.every(isTrivialSegment);
 }
 
+/**
+ * True when a command manufactures the value it later presents as proof.
+ *
+ * These commands are still useful as diagnostics, but a successful exit only
+ * proves that the shell/runtime can print a literal. It does not observe the
+ * application, execute a test, or make a falsifiable assertion. Keep this
+ * deliberately conservative: an inline script that reads state, invokes a
+ * child process, or contains a real failing assertion is not rejected here.
+ */
+export function isManufacturedEvidenceCommand(command: string): boolean {
+  const c = command.trim();
+  if (!c) return true;
+
+  // Direct shell output is the simplest form of self-authored proof.
+  if (/^(?:echo|printf|write-host|write-output)\b/i.test(c)) return true;
+
+  const inlineRuntime =
+    /^(?:node(?:\.exe)?\b[\s\S]*?\s-(?:e|p)\s+|(?:python|python3|py)(?:\.exe)?\b[\s\S]*?\s-c\s+|(?:powershell|pwsh)(?:\.exe)?\b[\s\S]*?\s-(?:command|c)\s+)/i;
+  if (!inlineRuntime.test(c)) return false;
+
+  // An inline program is manufactured evidence only when it emits output but
+  // has no independent observation and no path that can fail the check.
+  const emitsOutput =
+    /process\.stdout\.write|process\.stderr\.write|console\.(?:log|info)|\bprint\s*\(|\bwrite-(?:output|host)\b|convertto-json|\s\|\s*convertto-json/i.test(c) ||
+    /\s-p\s+/i.test(c);
+  if (!emitsOutput) return false;
+
+  const observesOrCanFail =
+    /\brequire\s*\(|\bimport(?:\s|\{)|\bfrom\s+['"]|child_process|\b(?:spawn|spawnsync|exec|execfile|execfilesync)\s*\(|\b(?:readfile|readfilesync|exists|existssync|stat|statsync|access|accesssync)\s*\(|\bfetch\s*\(|\bhttps?\b|\bassert(?:\.|\s*\()|\bexpect\s*\(|\bthrow\b|\braise\b|\bif\s*\(|process\.exit\s*\(\s*[1-9]|sys\.exit\s*\(\s*[1-9]|\b(?:open|subprocess\.|requests\.)\s*\(|\btest-path\b|\bget-content\b|\bget-item\b|\binvoke-[\w-]+\b|\bcompare-object\b|\bwhere-object\b|\$lastexitcode\b/i.test(c);
+
+  return !observesOrCanFail;
+}
+
 const TRIVIAL_WORDS = new Set([
   'echo', '.', ':', 'true', 'pwd', 'cd', 'ls', 'dir', 'cls', 'whoami', 'hostname',
   'date', 'ver', 'tree', 'sleep', 'start-sleep',
@@ -149,7 +182,7 @@ export function hasRegressionProof(input: RegressionProofInput): boolean {
   const real = (cmd: string | undefined): string | undefined => {
     if (!cmd) return undefined;
     const c = norm(cmd);
-    return c && !isTrivialEvidenceCommand(c) ? c : undefined;
+    return c && !isTrivialEvidenceCommand(c) && !isManufacturedEvidenceCommand(c) ? c : undefined;
   };
   // Latest PASS per command: an earlier green baseline must not hide a later
   // fail -> edit -> pass sequence. Any causal pair must precede this pass.
@@ -259,6 +292,12 @@ export class EvidenceEngine {
     if (!evidence.passed) {
       return { ok: false, reason: `Evidence ${evidenceId} did not pass; it cannot satisfy a criterion.` };
     }
+    if (evidence.command && isManufacturedEvidenceCommand(evidence.command)) {
+      return {
+        ok: false,
+        reason: `Evidence ${evidenceId} is self-authored output ("${evidence.command.trim()}") and cannot verify a criterion. Run a falsifiable check that observes the application or executes its tests.`,
+      };
+    }
     if (evidence.kind === 'command' && evidence.command && isTrivialEvidenceCommand(evidence.command)) {
       return {
         ok: false,
@@ -328,16 +367,29 @@ export class EvidenceEngine {
         }
       }
 
+      const invalidManufactured = c.evidenceIds.some((id) => {
+        const ev = ledger.evidence.find((e) => e.id === id);
+        return Boolean(ev?.command && isManufacturedEvidenceCommand(ev.command));
+      });
       const validEvidence = c.evidenceIds
         .map((id) => ledger.evidence.find((e) => e.id === id))
-        .filter((e): e is Evidence => Boolean(e && e.passed && !e.stale));
+        .filter((e): e is Evidence => Boolean(
+          e &&
+          e.passed &&
+          !e.stale &&
+          (!e.command || !isManufacturedEvidenceCommand(e.command)) &&
+          !(e.kind === 'command' && e.command && isTrivialEvidenceCommand(e.command)),
+        ));
 
       const backed = c.satisfied && validEvidence.length > 0;
       if (backed) {
         satisfiedCount += 1;
       } else {
+        if (c.satisfied && invalidManufactured) c.satisfied = false;
         const hasStale = c.evidenceIds.some((id) => ledger.evidence.find((e) => e.id === id)?.stale);
-        if (hasStale) {
+        if (invalidManufactured) {
+          missing.push(`[INVALID EVIDENCE] ${c.text} (linked command only manufactured its expected output — run a falsifiable application check)`);
+        } else if (hasStale) {
           missing.push(`[STALE EVIDENCE] ${c.text} (workspace was modified after verification ran — re-run ${c.verification || 'test'})`);
         } else {
           missing.push(c.text);

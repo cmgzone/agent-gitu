@@ -187,6 +187,37 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.blockers.some((b) => b.includes('unparseable'))).toBe(false);
   }, 30000);
 
+  it('keeps name parameters across create_skill and use_skill action shapes', async () => {
+    const dir = makeProject('direct-skill-name');
+    const skillName = 'browser-workflow';
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['skill created, loaded, and verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'create and load the browser skill', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          tool: 'create_skill',
+          name: skillName,
+          description: 'Reusable browser verification workflow',
+          instructions: '1. navigate to the page\n2. capture evidence',
+        },
+      }),
+      () => JSON.stringify({ action: { type: 'use_skill', name: skillName } }),
+      () => JSON.stringify({ action: { type: 'run_command', command: 'node --version', reason: 'verify the skill workflow', expected: 'exit 0' } }),
+      (_n, messages) => JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) } }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'browser skill created and loaded', risks: [], followUps: [] } }),
+    ]);
+
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', autoLearn: false, skills: SkillStore.forProject(path.resolve(dir)) });
+    const { ledger, report } = await hermes.run('create and use a browser skill');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.actions.find((a) => a.tool === 'create_skill')?.status).toBe('success');
+    expect(ledger.data.actions.find((a) => a.tool === 'use_skill')?.status).toBe('success');
+    expect(ledger.data.usedSkills).toContain(skillName);
+    expect(SkillStore.forProject(path.resolve(dir)).get(skillName)).toBeTruthy();
+  }, 30000);
+
   it('rejects premature completion until criteria have evidence', async () => {
     const dir = makeProject('premature');
     const llm = new ScriptedMockLlm([
@@ -233,7 +264,82 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(memory.some((m) => m.type === 'failure')).toBe(true);
   }, 30000);
 
-  it('blocks repeated failing actions via loop prevention', async () => {
+  it('corrects one meaningless request_block and continues useful work', async () => {
+    const dir = makeProject('invalid-block');
+    let calls = 0;
+    const llm = new ScriptedMockLlm([
+      (n) => {
+        calls = n + 1;
+        return JSON.stringify({ action: { type: 'set_criteria', criteria: ['browser verification succeeds'] } });
+      },
+      (n) => {
+        calls = n + 1;
+        return JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify in Chromium', verification: 'npm test' }] } });
+      },
+      (n) => {
+        calls = n + 1;
+        return JSON.stringify({ action: { type: 'request_block', reason: 'the qualified Chromium adapter is not registered in the action runtime' } });
+      },
+      (n) => {
+        calls = n + 1;
+        return JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'use a supported verification path', expected: 'Node version' } });
+      },
+      (n, messages) => {
+        calls = n + 1;
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages), justification: 'supported verification passed' } });
+      },
+      (n) => {
+        calls = n + 1;
+        return JSON.stringify({ action: { type: 'complete', summary: 'verification completed through the supported runtime', risks: [], followUps: [] } });
+      },
+    ]);
+
+    const { ledger, report } = await new Hermes({ cwd: dir, llm, mode: 'fast' }).run('verify the app in the browser');
+
+    expect(calls).toBeGreaterThanOrEqual(6);
+    expect(calls).toBeLessThan(10);
+    expect(report.status).toBe('complete');
+    expect(ledger.data.blockers).toEqual([]);
+    expect(ledger.data.actions).toContainEqual(expect.objectContaining({
+      tool: 'request_block',
+      status: 'denied',
+      errorSignature: 'invalid-block-request',
+    }));
+  }, 30000);
+
+  it('records an expected failing reproduction as passing evidence without opening recovery', async () => {
+    const dir = makeProject('expected-reproduction');
+    const command = `node -e "process.exit(1)"`;
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['the failing behavior is reproduced'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'reproduce the bug', verification: command }] } }),
+      () => JSON.stringify({
+        action: {
+          type: 'tool_call',
+          stepId: 'step-1',
+          tool: 'run_command',
+          params: { command },
+          reason: 'capture the failing behavior',
+          expected: 'bug reproduction exits 1',
+          expectation: {
+            description: 'bug reproduction exits 1',
+            assertions: [{ kind: 'equals', target: 'exitCode', expected: 1 }],
+            blocksOnFailure: false,
+          },
+        },
+      }),
+      (_n, messages) => JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages), justification: 'the expected failing reproduction was observed' } }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'reproduction captured', risks: [], followUps: [] } }),
+    ]);
+
+    const { ledger, report } = await new Hermes({ cwd: dir, llm, mode: 'fast' }).run('reproduce the reported failure');
+
+    expect(report.status).toBe('complete');
+    expect(ledger.data.evidence[0]).toMatchObject({ passed: true, exitCode: 1 });
+    expect(ledger.data.blockers).toEqual([]);
+  }, 30000);
+
+  it('stops repeated failing actions as an internal stall, not a user blocker', async () => {
     const dir = makeProject('loopy');
     const failingCall = () => JSON.stringify({
       action: {
@@ -260,8 +366,12 @@ describe('Hermes end-to-end (mock LLM)', () => {
 
     const blockedActions = ledger.data.actions.filter((a) => a.status === 'blocked');
     expect(blockedActions.length).toBeGreaterThanOrEqual(1);
-    expect(blockedActions[0]!.observation).toContain('LOOP PREVENTION');
-    expect(report.status).toBe('blocked');
+    // The loop is prevented at the recovery-runtime strategy layer (records a
+    // blocked action) before the executor-level LOOP PREVENTION ever fires.
+    expect(blockedActions[0]!.observation).toMatch(/LOOP PREVENTION|STRATEGY LOOP BLOCKED/);
+    expect(report.status).toBe('failed');
+    expect(ledger.data.blockers).toEqual([]);
+    expect(report.failureReason).toMatch(/internal agent stop|repeated the same|loop-prevented|recovery-precheck/i);
   }, 60000);
 
   it('streams natural-language updates and records them', async () => {
@@ -321,7 +431,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(reviewed).toBe(2);
     expect(ledger.data.planApproved).toBe(true);
     expect(ledger.data.plan[0]!.description).toBe('user-edited step');
-    expect(ledger.data.status).toBe('blocked');
+    expect(ledger.data.status).toBe('failed');
   }, 30000);
 
   it('requires explicit user approval before accepting an unresolved strict-risk quality warning', async () => {
@@ -489,11 +599,12 @@ describe('Hermes end-to-end (mock LLM)', () => {
     hermes.queueMessage('please focus on the header');
     const runPromise = hermes.run('stop test');
     setTimeout(() => hermes.stop(), 150);
-    const { ledger } = await runPromise;
+    const { ledger, report } = await runPromise;
 
     expect(events.some((e) => e.startsWith('user-msg '))).toBe(true);
-    expect(ledger.data.blockers.some((b) => b.includes('Stopped by user'))).toBe(true);
-    expect(['blocked', 'failed']).toContain(ledger.data.status);
+    expect(report.status).toBe('aborted');
+    expect(ledger.data.status).toBe('aborted');
+    expect(ledger.data.blockers).toEqual([]);
   }, 30000);
 
   it('answers follow-up comments conversationally without forcing task work', async () => {
@@ -508,7 +619,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
       mode: 'fast',
     });
     const { ledger: led1 } = await first.run('original task');
-    expect(led1.data.status).toBe('blocked');
+    expect(led1.data.status).toBe('failed');
 
     const second = new Hermes({
       cwd: dir,
@@ -565,7 +676,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
       }),
     ]);
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', skills: SkillStore.forProject(path.resolve(dir)) });
-    const { ledger } = await hermes.run('set up a deploy flow');
+    const { ledger } = await hermes.run('set up a deploy flow and save the steps as a reusable skill');
 
     expect(ledger.data.status).toBe('completed');
     const learned = ledger.data.actions.find((a) => a.tool === 'create_skill');
@@ -573,6 +684,33 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const store = SkillStore.forProject(path.resolve(dir));
     expect(store.get('deploy-flow')).toBeTruthy();
     expect(store.get('deploy-flow')!.instructions).toContain('dist');
+  }, 30000);
+
+  it('skips the auto-learn LLM call for small single-edit tasks even when enabled', async () => {
+    const dir = makeProject('learn-skip');
+    const events: string[] = [];
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['typo fixed'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'fix typo', verification: 'node --version' }] } }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'write_file', params: { path: 'greeting.txt', content: 'hello' + String.fromCharCode(10) }, reason: 'fix', expected: 'file written' },
+      }),
+      () => JSON.stringify({
+        action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+      }),
+      (_n, messages) => JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: findEvidenceId(messages) } }),
+      // The bug-rigor gate may reject the first completions (fail->edit->pass
+      // pair missing on a typo task); it accepts after repeated rejection.
+      () => JSON.stringify({ action: { type: 'complete', summary: 'typo fixed', risks: [], followUps: [] } }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'typo fixed', risks: [], followUps: [] } }),
+      () => JSON.stringify({ action: { type: 'complete', summary: 'typo fixed', risks: [], followUps: [] } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', skills: SkillStore.forProject(path.resolve(dir)), onEvent: (e) => events.push(e) });
+    const { ledger } = await hermes.run('fix the typo in the greeting file');
+
+    expect(ledger.data.status).toBe('completed');
+    expect(ledger.data.actions.some((a) => a.tool === 'create_skill')).toBe(false);
+    expect(events.some((e) => e.includes('auto-learn skipped'))).toBe(true);
   }, 30000);
 
   it('does not auto-learn or create skills when the user disables it', async () => {
@@ -723,9 +861,10 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
     const { ledger } = await hermes.run('Clean up');
 
-    const denied = ledger.data.actions.filter((a) => a.status === 'denied');
-    expect(denied.length).toBe(1);
-    expect(denied[0]!.observation).toContain('DENIED');
+    const policyDenied = ledger.data.actions.filter((a) => a.status === 'denied' && a.errorSignature !== 'invalid-block-request');
+    expect(policyDenied).toHaveLength(1);
+    expect(policyDenied[0]!.observation).toContain('DENIED');
+    expect(ledger.data.actions).toContainEqual(expect.objectContaining({ tool: 'request_block', errorSignature: 'invalid-block-request' }));
   }, 30000);
 
   it('rejects completion when evidence does not match orchestrator-specified structured criteria', async () => {
@@ -775,7 +914,8 @@ describe('Hermes end-to-end (mock LLM)', () => {
     // ❌ The claim was rejected (event logged)
     expect(events.some((e) => e.includes('claim') && e.includes('does not match'))).toBe(true);
     // ❌ Completion was rejected by the evidence gate
-    expect(report.status).toBe('blocked');
+    expect(report.status).toBe('failed');
+    expect(ledger.data.blockers).toEqual([]);
   }, 30000);
 
   it('accepts completion when evidence matches orchestrator-specified structured criteria', async () => {
@@ -844,7 +984,8 @@ describe('Hermes end-to-end (mock LLM)', () => {
 
     expect(ledger.data.effortPlan?.maxTurns).toBe(20); // low effort budget
     expect(report.status).toBe('failed');
-    expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(true);
+    expect(ledger.data.blockers).toEqual([]);
+    expect(report.failureReason).toContain('effort budget');
     // The identical repeated list_files counts as progress exactly once
     // (first distinct success), buying one budget extension; the stall then
     // fires at the extended cap since nothing new ever succeeds.
@@ -876,9 +1017,9 @@ describe('Hermes end-to-end (mock LLM)', () => {
     // extension carries +10 escalation turns on top of the base 10.
     expect(events.some((e) => /budget extended by \d+ turns/.test(e))).toBe(true);
     expect(events.some((e) => e.includes('wide change surface'))).toBe(true);
-    expect(report.status).toBe('blocked'); // ended by its own request_block, not a stall
+    expect(report.status).toBe('failed'); // invalid completion-sentinel request_block is an internal failure
     expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(false);
-  }, 30000);
+  }, 60000);
 
   it('stops the main execution lane after three unparseable replies', async () => {
     const dir = makeProject('garbage-recovery');
@@ -917,8 +1058,9 @@ describe('Hermes end-to-end (mock LLM)', () => {
     const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', protocolRepairLlm: repairLlm, onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('say something useful');
 
-    expect(report.status).toBe('blocked');
-    expect(ledger.data.blockers.some((b) => b.includes('Main execution lane stopped after 3'))).toBe(true);
+    expect(report.status).toBe('failed');
+    expect(ledger.data.blockers).toEqual([]);
+    expect(report.failureReason).toContain('3 consecutive responses without an executable action');
     expect(events.some((e) => e.includes('main execution lane stopped after 3'))).toBe(true);
   }, 30000);
 

@@ -931,7 +931,7 @@ describe('connection anti-loop progress awareness (regression)', () => {
     expect(ledger.data.blockers.some((b) => b.includes('requested more than three times'))).toBe(false);
   }, 30000);
 
-  it('blocks repeated identical provider reads only when no new state/evidence is produced', async () => {
+  it('stalls repeated identical provider reads without inventing a user blocker', async () => {
     const root = project('block-stalled-reads');
     home();
     let readCount = 0;
@@ -967,11 +967,13 @@ describe('connection anti-loop progress awareness (regression)', () => {
       },
     });
 
-    const { ledger } = await gitu.run('Loop read test');
+    const { ledger, report } = await gitu.run('Loop read test');
     const readInvocations = events.filter((e) => e.includes('coolify/get-app-sv7-envs completed')).length;
     expect(readInvocations).toBe(3);
     expect(events.some((e) => e.includes('repeated saved connection action stopped — coolify:get-app-sv7-envs'))).toBe(true);
-    expect(ledger.data.blockers.some((b) => b.includes('was requested more than three times without a new operation'))).toBe(true);
+    expect(report.status).toBe('failed');
+    expect(report.failureReason).toContain('requested more than three times without a new operation');
+    expect(ledger.data.blockers).toEqual([]);
   }, 30000);
 
   it('does not add a stalled blocker after successful verification reads', async () => {

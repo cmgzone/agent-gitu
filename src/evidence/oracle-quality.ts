@@ -1,4 +1,4 @@
-import { classifyEvidenceKind, commandsMatch, isTrivialEvidenceCommand, isWeakEvidenceLink } from './evidence.js';
+import { classifyEvidenceKind, commandsMatch, isManufacturedEvidenceCommand, isTrivialEvidenceCommand, isWeakEvidenceLink } from './evidence.js';
 import type { AcceptanceCriterion, Evidence } from '../types.js';
 
 /**
@@ -43,7 +43,6 @@ export interface OracleQualityVerdict {
  * preserves the preceding command's failure status and must remain valid. */
 const UNFALSIFIABLE_TAILS = /\|\|\s*(true|exit\s+0)\b|;\s*(true|exit\s+0)\s*$/i;
 /** `echo <expected>` style oracles that manufacture their own success. */
-const ECHO_ORACLE = /^\s*(echo|printf|write-host|console\.log)\b/i;
 /** Commands that read state but assert nothing about it. */
 const READ_ONLY = /^\s*(cat|type|head|tail|less|more|git\s+(status|log|diff|show|ls-files)|ls|dir)\b/i;
 
@@ -73,10 +72,10 @@ export function evaluateOracleQuality(input: {
     return { strength: 'INSUFFICIENT', diagnostics, executable: false };
   }
 
-  if (ECHO_ORACLE.test(command)) {
+  if (isManufacturedEvidenceCommand(command)) {
     diagnostics.push({
       rule: 'echoes-expected',
-      detail: `Verification "${command}" merely prints its own answer instead of exercising the criterion.`,
+      detail: `Verification "${command}" manufactures its own answer instead of observing the application or executing a falsifiable check.`,
     });
     return { strength: 'INVALID', diagnostics, executable: true };
   }
@@ -181,6 +180,10 @@ export function classifyEvidenceRelevance(
       rule: 'wrong-command',
       detail: `Evidence command "${evidence.command}" does not match the pinned verification "${criterion.verification}".`,
     });
+    return { strength: 'INVALID', diagnostics };
+  }
+  if (evidence.command && isManufacturedEvidenceCommand(evidence.command)) {
+    diagnostics.push({ rule: 'manufactured-output', detail: `Evidence command "${evidence.command}" manufactures the output it presents as proof.` });
     return { strength: 'INVALID', diagnostics };
   }
   if (evidence.kind === 'command' && evidence.command && isTrivialEvidenceCommand(evidence.command)) {

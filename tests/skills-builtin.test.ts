@@ -19,10 +19,11 @@ describe('built-in skill tier', () => {
   it('ships strategy + UI expertise as skills, visible through forProject', () => {
     const store = SkillStore.forProject(makeProject());
     const names = store.list().map((s) => s.name);
-    for (const expected of ['strategy-bug-fix', 'strategy-refactor', 'strategy-test-failure', 'strategy-explore', 'strategy-feature', 'frontend-quality-bar']) {
+    for (const expected of ['strategy-bug-fix', 'strategy-refactor', 'strategy-test-failure', 'strategy-explore', 'strategy-feature', 'frontend-quality-bar', 'browser']) {
       expect(names).toContain(expected);
     }
     expect(store.get('strategy-bug-fix')?.scope).toBe('builtin');
+    expect(store.get('browser')?.scope).toBe('builtin');
   });
 
   it('does not add builtins when constructed with the 2-arg form (isolation for embedders)', () => {
@@ -117,5 +118,27 @@ describe('frontend quality bar as a skill', () => {
     expect(prompt).toContain('[ACTIVE IN CURRENT TASK]');
     expect(prompt).toContain('more skill(s) available via list_skills');
     expect(prompt.length).toBeLessThan(700);
+  });
+});
+
+describe('browser workflow as a capability-gated skill', () => {
+  it('loads only when the host provides the browser capability', () => {
+    const store = SkillStore.forProject(makeProject());
+
+    const unavailable = store.activate('browser', { availableTools: ['read_file'] });
+    expect(unavailable.ok).toBe(false);
+    expect(unavailable.code).toBe('SKILL_REQUIREMENTS_UNMET');
+
+    const available = store.activate('browser', { availableTools: ['read_file', 'browser'] });
+    expect(available.ok).toBe(true);
+    expect(available.skill?.instructions).toContain('browse');
+  });
+
+  it('accepts the versioned reference emitted by list_skills', () => {
+    const store = SkillStore.forProject(makeProject());
+
+    expect(store.get('browser@1')?.name).toBe('browser');
+    expect(store.activate('browser@1', { availableTools: ['browser'] }).ok).toBe(true);
+    expect(store.get('browser@2')).toBeUndefined();
   });
 });

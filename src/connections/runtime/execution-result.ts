@@ -8,6 +8,11 @@ export type CapabilitySource = 'connection' | 'mcp' | 'native' | 'cli' | 'plugin
 
 export type ExecutionStatus = 'ok' | 'failed' | 'rejected' | 'cached';
 
+export interface MemoryPolicy {
+  promotable: boolean;
+  stability: 'stable' | 'session' | 'volatile';
+}
+
 export interface ExecutionResult {
   /** Unique correlation ID for the execution lifecycle (e.g. conn-exec-1725345678-abc123) */
   executionId: string;
@@ -30,4 +35,6 @@ export interface ExecutionResult {
   cacheHit: boolean;
   /** Semantic error class when status is 'failed' or 'rejected' */
   errorClass?: string;
+  /** Memory policy governing promotion into long-term MemoryStore */
+  memoryPolicy?: MemoryPolicy;
 }

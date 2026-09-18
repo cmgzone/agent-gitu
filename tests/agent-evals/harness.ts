@@ -81,7 +81,9 @@ export async function runTrapEval(opts: TrapEvalOptions): Promise<EvalRecord> {
     criteriaTotal: ledger.data.acceptanceCriteria.length,
     planStepsDone: ledger.data.plan.filter((s) => s.status === 'done').length,
     planStepsOpen: ledger.data.plan.filter((s) => s.status !== 'done').length,
-    compactions: events.filter((e) => e.startsWith('context compacted')).length,
+    // Matches both the narration sentence and the legacy compacted-history
+// wording so the counter survives presentation changes.
+compactions: events.filter((e) => /^context (I tidied my working memory|compacted )/.test(e)).length,
     escalations: events.filter((e) => e.includes('wide change surface') || e.includes('hard problem') || e.includes('scope escalated')),
     extensions: (ledger.data.budgetExtensions ?? []).map((x) => ({
       turn: x.turn,

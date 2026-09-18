@@ -105,7 +105,8 @@ describe('Hermes — malformed-call spiral protection', () => {
     expect(events.some((e) => e.includes('stall   malformed-call spiral detected'))).toBe(true);
     expect(events.some((e) => e.includes('malformed call streak 2/3 — strategy change injected'))).toBe(true);
     expect(report.status).toBe('failed');
-    expect(ledger.data.blockers.some((b) => b.includes('consecutive malformed tool calls'))).toBe(true);
+    expect(ledger.data.blockers).toEqual([]);
+    expect(report.failureReason).toContain('consecutive malformed tool calls');
     // Exactly three malformed attempts were recorded — this lane stopped at
     // the permanent no-loop threshold.
     const errors = ledger.data.actions.filter((a) => a.status === 'error');
@@ -139,6 +140,32 @@ describe('Hermes — malformed-call spiral protection', () => {
     expect(ledger.data.actions.some((a) => a.status === 'success')).toBe(true);
   }, 30000);
 
+  it('does not turn an invented recovery tool into an active problem', async () => {
+    const dir = makeProject('unknown-recovery-tool');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['node runs'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'verify', verification: 'node --version' }] } }),
+      () => JSON.stringify({ action: { type: 'tool_call', tool: 'repair_recovery_state', params: {}, reason: 'clear the suspended task', expected: 'recovery resumes' } }),
+      () => JSON.stringify({ action: { type: 'tool_call', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify the project', expected: 'exit 0' } }),
+      (_n, messages: LlmMessage[]) => {
+        const text = messages.map((m) => m.content).join('\n');
+        const evId = (text.match(/(ev-\d{8}-[0-9a-f]{6})/) ?? [])[1] ?? 'ev-x';
+        return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evId } });
+      },
+      () => JSON.stringify({ action: { type: 'complete', summary: 'verified', risks: [], followUps: [] } }),
+    ]);
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+
+    const { ledger, report } = await hermes.run('verify node');
+
+    expect(report.status).toBe('complete');
+    expect(hermes.recoveryOrchestrator.problemsDetected).toBe(0);
+    const attempted = ledger.data.actions.find((a) => a.tool === 'repair_recovery_state');
+    expect(attempted).toBeDefined();
+    expect(['denied', 'error']).toContain(attempted!.status);
+    expect(ledger.data.blockers).toEqual([]);
+  }, 30000);
+
   it('catches a mixed meltdown of unparseable replies and malformed calls', async () => {
     const dir = makeProject('mixed');
     const llm = new ScriptedMockLlm([
@@ -160,7 +187,8 @@ describe('Hermes — malformed-call spiral protection', () => {
     // schema gate instead of the unparseable-reply counter — the run is still
     // bounded and still stopped.
     expect(report.status).toBe('failed');
-    expect(ledger.data.blockers.some((b) => b.includes('consecutive malformed tool calls'))).toBe(true);
+    expect(ledger.data.blockers).toEqual([]);
+    expect(report.failureReason).toContain('consecutive malformed tool calls');
     const errors = ledger.data.actions.filter((a) => a.status === 'error');
     expect(errors.length).toBeGreaterThanOrEqual(3);
   }, 30000);
@@ -193,8 +221,10 @@ describe('Hermes — malformed-call spiral protection', () => {
 
     const { report } = await hermes.run('think forever');
 
-    // Three thinking-only replies trip the same lane breaker as other spirals…
-    expect(report.status).toBe('blocked');
+    // Three thinking-only replies trip the same lane breaker as other spirals,
+    // but malformed model output is an internal failure—not a user blocker.
+    expect(report.status).toBe('failed');
+    expect(report.failureReason).toContain('without an executable action');
     expect(events.some((e) => e.includes('only reasoning with no final content'))).toBe(true);
     // …but the recovery guidance names the actual cause (thinking consumed the
     // output budget) and the generic "reply with JSON" advice never appears.

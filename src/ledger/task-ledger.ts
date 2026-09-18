@@ -673,6 +673,10 @@ export class TaskLedger {
   }
 
   trackFile(relPath: string): void {
+    // .hermes/ is agent-private state (scratch diagnostics, artifacts): never
+    // project file changes, whatever tool touched it.
+    const norm = relPath.replace(/\\/g, '/');
+    if (norm === '.hermes' || norm.startsWith('.hermes/')) return;
     if (!this.data.filesChanged.includes(relPath)) {
       this.data.filesChanged.push(relPath);
       this.save();

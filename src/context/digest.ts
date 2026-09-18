@@ -11,7 +11,13 @@
 import type { LlmMessage } from '../llm/llm.js';
 
 export const DIGEST_HEADER_PREFIX = 'COMPACTED HISTORY —';
-export const DIGEST_FAILURES_MARKER = 'KEY FAILURES (do not repeat blindly):';
+/**
+ * Failures in a digest are HISTORY, not current work: the live TASK STATE (and
+ * its ACTIVE PROBLEM section) is the only authority on what is still unresolved.
+ * The marker keeps the machine-readable 'KEY FAILURES' prefix (parsers and
+ * carried-forward digests depend on it) while framing the lifecycle honestly.
+ */
+export const DIGEST_FAILURES_MARKER = 'KEY FAILURES — HISTORICAL (the live TASK STATE alone decides what is still active; resolved/superseded failures are NOT candidates for investigation):';
 export const DIGEST_DECISIONS_MARKER = 'KEY DECISIONS (still binding):';
 export const DIGEST_EVIDENCE_MARKER = 'EVIDENCE ALREADY RECORDED:';
 

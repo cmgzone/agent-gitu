@@ -21,7 +21,7 @@ function fixture() {
     S: { active: 'cowork', cw: { active: 'conv', threadId: null, msgs: [], lastSeq: 0,
       agents: [{ id: 'chief', name: 'Chief' }], convs: [{ id: 'conv', kind: 'group', memberIds: ['chief'] }] } },
     window: { addEventListener: vi.fn() }, document: { createElement: node, body: { appendChild: vi.fn() } },
-    navigator: { clipboard: { writeText: copy } }, crypto: { randomUUID },
+    navigator: { clipboard: { writeText: copy } }, crypto: { randomUUID }, URL,
     $: (id: string) => nodes[id], api, toast: vi.fn(), confirm: () => true,
     esc: (s: unknown) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
     clearInterval: vi.fn(), setInterval: vi.fn(),
@@ -59,6 +59,26 @@ describe('cwBody markdown tables', () => {
     const u = fixture();
     expect(u.context.cwBody('a | b | c', [])).not.toContain('<table');
     expect(u.context.cwBody('| just | one |\n| row | here |', [])).not.toContain('<table');
+  });
+
+  it('embeds YouTube and Vimeo links as inline players in cowork bubbles', () => {
+    const u = fixture();
+    const html = u.context.cwBody('Watch https://www.youtube.com/watch?v=dQw4w9WgXcQ', []);
+    expect(html).toContain('class="cw-embed"');
+    expect(html).toContain('src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"');
+    expect(html).toContain('allowfullscreen');
+    expect(html).toContain('<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"');
+    expect(u.context.cwBody('https://youtu.be/dQw4w9WgXcQ', [])).toContain('youtube-nocookie.com/embed/dQw4w9WgXcQ');
+    expect(u.context.cwBody('https://vimeo.com/123456789', [])).toContain('player.vimeo.com/video/123456789');
+  });
+
+  it('does not embed non-video links or hostile video URLs', () => {
+    const u = fixture();
+    expect(u.context.cwBody('Read https://example.com/docs', [])).not.toContain('cw-embed');
+    expect(u.context.cwBody('https://youtu.be/abc', [])).not.toContain('cw-embed');
+    expect(u.context.cwBody('https://www.youtube.com/watch', [])).not.toContain('cw-embed');
+    expect(u.context.cwBody('https://notyoutube.com/watch?v=dQw4w9WgXcQ', [])).not.toContain('cw-embed');
+    expect(u.context.cwBody('https://youtube.com/watch?v="><script>alert(1)</script>', [])).not.toContain('<script');
   });
 });
 

@@ -51,4 +51,45 @@ describe('Final response rendering', () => {
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
     expect(html).toContain('<strong>&lt;svg onload=alert(1)&gt;</strong>');
   });
+
+  it('embeds YouTube and Vimeo links as players under the paragraph', () => {
+    const watch = render('Watch this: https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+    expect(watch).toContain('src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"');
+    expect(watch).toContain('class="response-embed"');
+    expect(watch).toContain('allowfullscreen');
+    expect(watch).toContain('<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"');
+
+    for (const [url, id] of [
+      ['https://youtu.be/dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+      ['https://www.youtube.com/shorts/abc123XYZ', 'abc123XYZ'],
+      ['https://m.youtube.com/watch?v=dQw4w9WgXcQ', 'dQw4w9WgXcQ'],
+    ] as const) {
+      expect(render(url)).toContain(`https://www.youtube-nocookie.com/embed/${id}`);
+    }
+    expect(render('https://vimeo.com/123456789')).toContain('https://player.vimeo.com/video/123456789');
+  });
+
+  it('embeds a video link inside a list item and deduplicates repeats', () => {
+    const html = render('- Intro\n- https://youtu.be/dQw4w9WgXcQ');
+    expect(html).toContain('<li>Intro</li>');
+    expect(html).toContain('https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ');
+    const twice = render('https://youtu.be/dQw4w9WgXcQ\n\nhttps://youtu.be/dQw4w9WgXcQ');
+    expect(twice.match(/response-embed/g)).toHaveLength(2);
+    expect(twice.match(/youtube-nocookie\.com\/embed\/dQw4w9WgXcQ/g)).toHaveLength(2);
+  });
+
+  it('does not embed non-video links, code-quoted URLs, or hostile ids', () => {
+    expect(render('Read https://example.com/docs')).not.toContain('response-embed');
+    expect(render('`https://youtu.be/dQw4w9WgXcQ`')).not.toContain('response-embed');
+    for (const url of [
+      'https://youtube.com/watch?v="><script>alert(1)</script>',
+      'https://youtu.be/abc',
+      'https://www.youtube.com/watch',
+      'https://notyoutube.com/watch?v=dQw4w9WgXcQ',
+    ]) {
+      const html = render(url);
+      expect(html).not.toContain('response-embed');
+      expect(html).not.toContain('<script');
+    }
+  });
 });

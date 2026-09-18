@@ -106,6 +106,8 @@ export const COWORK_CSS = String.raw`
   .cw-table th, .cw-table td { border: 1px solid var(--border2); padding: 5px 10px; text-align: left; vertical-align: top; }
   .cw-table th { background: var(--card2); font-weight: 600; }
   .cw-table tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+  .cw-embed { margin: 8px 0 4px; }
+  .cw-embed iframe { display: block; width: 100%; max-width: 520px; aspect-ratio: 16 / 9; height: auto; border: 1px solid var(--border2); border-radius: 10px; background: #000; }
   .cw-typing { display: flex; align-items: center; gap: 8px; padding: 2px 22px 10px; font-size: 12px; color: var(--muted); }
   .cw-typing .dots { display: inline-flex; gap: 3px; }
   .cw-typing .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: cwpulse 1.1s infinite; }
@@ -943,6 +945,23 @@ export const COWORK_JS = String.raw`
     return html + '</tbody></table>';
   }
 
+  // A safe YouTube/Vimeo URL -> embeddable player URL; '' for anything else so
+  // the link stays a plain anchor. Strict id charset — no query/fragment leaks in.
+  function cwVideoEmbed(destination) {
+    var url;
+    try { url = new URL(String(destination)); } catch (e) { return ''; }
+    if (!/^https?:$/.test(url.protocol)) return '';
+    var host = url.hostname.toLowerCase().replace(/^www\./, ''), id = '';
+    if (host === 'youtu.be') id = url.pathname.replace(/^\//, '');
+    else if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (url.pathname === '/watch') id = url.searchParams.get('v') || '';
+      else { var m = /^\/(embed|shorts|live)\/([^\/?#]+)/.exec(url.pathname); if (m) id = m[2]; }
+    } else if (host === 'vimeo.com') { var v = /^\/(\d+)/.exec(url.pathname); if (v) id = v[1]; }
+    id = String(id || '');
+    if (host === 'vimeo.com') return /^\d{6,12}$/.test(id) ? 'https://player.vimeo.com/video/' + id : '';
+    return /^[A-Za-z0-9_-]{6,20}$/.test(id) ? 'https://www.youtube-nocookie.com/embed/' + id : '';
+  }
+
   function cwBody(text, members) {
     // Pull pipe tables out of the raw text before escaping; anything left
     // behind is still escaped and line-broken below.
@@ -953,7 +972,21 @@ export const COWORK_JS = String.raw`
       tables.push(html);
       return lead + '\x00TABLE' + (tables.length - 1) + '\x00';
     });
-    var out = esc(stripped);
+    // A video link (YouTube/Vimeo) becomes a real inline player, like the main
+    // chat. Splice placeholders in before escaping — same pattern as tables.
+    var videos = [];
+    var videoStripped = stripped.replace(/https?:\/\/[^\s<]+/g, function (all) {
+      var embed = cwVideoEmbed(all);
+      if (!embed) return all;
+      // The player is an addition, not a replacement: keep the clickable link
+      // too. This HTML is spliced in AFTER escaping (like tables), so it must be
+      // built here with its own escaping and must never be escaped again.
+      var link = '<a href="' + esc(all) + '" target="_blank" rel="noopener noreferrer">' + esc(all) + '</a>';
+      var player = '<div class="cw-embed"><iframe src="' + esc(embed) + '" title="Embedded video" loading="lazy" allowfullscreen referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"></iframe></div>';
+      videos.push(link + player);
+      return '\x00VIDEO' + (videos.length - 1) + '\x00';
+    });
+    var out = esc(videoStripped);
     out = out.replace(/\x60\x60\x60([\s\S]*?)\x60\x60\x60/g, function (all, code) { return '</span><span class="cw-code">' + String(code).replace(/^\n/, '') + '</span><span>'; });
     out = out.replace(/\x60([^\x60\n]+)\x60/g, function (all, code) { return '<code>' + code + '</code>'; });
     out = out.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
@@ -964,6 +997,7 @@ export const COWORK_JS = String.raw`
       out = out.replace(new RegExp('@(' + safe + ')', 'gi'), '<span class="cw-mention">@$1</span>');
     });
     out = out.replace(/\x00TABLE(\d+)\x00/g, function (all, i) { return '</span>' + tables[Number(i)] + '<span>'; });
+    out = out.replace(/\x00VIDEO(\d+)\x00/g, function (all, i) { return '</span>' + videos[Number(i)] + '<span>'; });
     out = out.replace(/\n/g, '<br>');
     return '<span>' + out + '</span>';
   }
@@ -1002,8 +1036,13 @@ export const COWORK_JS = String.raw`
     var texts = live.querySelectorAll('.cw-progress-text');
     var tools = live.querySelectorAll('.cw-progress-tool');
     ps.forEach(function (p, i) {
-      texts[i].textContent = p.text || 'Working…';
-      var html = cwWebActivity(p) || (p.tool ? esc(p.tool + ': ' + (p.toolOk === undefined ? 'running…' : p.toolOk ? 'completed' : 'failed')) : '');
+      // Prefer the agent's streamed prose; when it has not said anything yet,
+      // show WHAT it is doing (the command, file, or page) instead of a bare
+      // "Working…", so the live bubble is never an unexplained spinner.
+      texts[i].textContent = p.text || p.detail || 'Working…';
+      var status = p.tool ? esc(p.tool + (p.toolOk === undefined ? ' — running…' : p.toolOk ? ' — completed' : ' — failed')) : '';
+      var detail = p.detail && p.text ? esc(p.detail) : ''; // detail already shown as text when prose is absent
+      var html = cwWebActivity(p) || [detail, status].filter(Boolean).join(' · ');
       if (tools[i]._html !== html) { tools[i].innerHTML = html; tools[i]._html = html; }
     });
     if (nearBottom) wrap.scrollTop = wrap.scrollHeight;

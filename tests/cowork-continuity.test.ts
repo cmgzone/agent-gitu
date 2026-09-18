@@ -135,6 +135,11 @@ describe('Cowork continuity across providers and restarts', () => {
     expect(result.error).toBeUndefined();
     expect(seen[1]!.at(-1)!.content).toEqual(expect.arrayContaining([{ type: 'image_url', image_url: { url: image } }]));
     expect(new CoworkStore(s.file).workLog(s.conversation.id, s.agent.id)[0]).toMatchObject({ tool: 'browse', ok: true });
+    // The screenshot is also surfaced to the USER as an inline image artifact,
+    // not only fed to the model — the chat bubble renders it via cwFilesHtml.
+    const artifacts = new CoworkStore(s.file).artifacts(s.conversation.id);
+    expect(artifacts.some((a) => a.mime === 'image/png')).toBe(true);
+    expect(result.messages[0]!.artifactIds?.length).toBeGreaterThan(0);
   });
 
   it('wires the desktop browser into Cowork host contexts', async () => {

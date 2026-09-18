@@ -257,6 +257,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .response-prose pre { padding: 8px 0 8px 14px; margin: .8em 0; border-left: 2px solid var(--border2); overflow-x: auto; white-space: pre; }
   .response-code-language { color: var(--faint); font: 10.5px var(--mono); margin-top: 14px; }
   .response-prose a { color: var(--run); text-decoration: underline; text-underline-offset: 3px; }
+  .response-embed { margin: .7em 0 1em; }
+  .response-embed iframe { display: block; width: 100%; max-width: 560px; aspect-ratio: 16 / 9; height: auto; border: 1px solid var(--border2); border-radius: 10px; background: #000; }
   .thought { padding: 9px 0 9px 20px; color: var(--text); white-space: pre-wrap; font-weight: 500; }
   .thought .caret, .tl-note-row .caret { display: inline-block; width: 7px; height: 14px; background: var(--run); vertical-align: -2px; animation: pulse 1s infinite; margin-left: 2px; }
   /* ── Collapsible technical sections ─────────────────────────────────────
@@ -717,6 +719,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .session-file .file-actions a { color: var(--muted); border: 1px solid var(--border); border-radius: 7px; padding: 4px 7px; font-size: 11px; text-decoration: none; }
   .session-file .file-actions a:hover { color: var(--text); border-color: var(--border2); background: var(--hover); }
   .session-file .file-preview { width: 48px; height: 48px; flex: none; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); background: var(--card2); }
+  .session-file.has-media { flex-direction: column; align-items: stretch; }
+  .session-file .file-media { width: 100%; max-height: 300px; border-radius: 8px; border: 1px solid var(--border); background: #000; display: block; }
+  .session-file.has-media audio.file-media { max-height: none; }
 
   .shotmsg { margin: 10px 0 10px 20px; }
   .shotmsg img { display: block; max-width: 340px; width: 100%; border: 1px solid var(--border2); border-radius: 10px; background: var(--card2); box-shadow: 0 2px 10px rgba(0,0,0,.3); margin-top: 4px; }
@@ -2094,6 +2099,22 @@ export const UI_HTML = String.raw`<!doctype html>
       preview.alt = '';
       preview.src = previewUrl;
       card.appendChild(preview);
+    } else if (previewUrl && mime.indexOf('video/') === 0) {
+      card.classList.add('has-media');
+      var video = document.createElement('video');
+      video.className = 'file-media';
+      video.controls = true;
+      video.preload = 'metadata';
+      video.src = previewUrl;
+      card.appendChild(video);
+    } else if (previewUrl && mime.indexOf('audio/') === 0) {
+      card.classList.add('has-media');
+      var audio = document.createElement('audio');
+      audio.className = 'file-media';
+      audio.controls = true;
+      audio.preload = 'none';
+      audio.src = previewUrl;
+      card.appendChild(audio);
     } else {
       var fileIcon = document.createElement('span');
       fileIcon.className = 'file-ico';

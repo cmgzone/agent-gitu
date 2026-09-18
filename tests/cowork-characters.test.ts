@@ -67,6 +67,28 @@ describe('animated teammate characters and web activity', () => {
     expect(u.live.innerHTML).toBe('');
   });
 
+  it('shows the tool detail (command/file) instead of an unexplained "Working…"', () => {
+    const u = ui();
+    // No streamed prose yet — the live bubble must still say WHAT is running.
+    u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: '', tool: 'run_command', detail: '$ npm test' }];
+    u.context.cwRenderProgress();
+    expect(u.text.textContent).toBe('$ npm test');
+    expect(u.tool.innerHTML).toContain('run_command');
+    expect(u.tool.innerHTML).toContain('running');
+
+    // When prose arrives, it leads and the detail moves to the tool row.
+    u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: 'Checking the suite', tool: 'run_command', toolOk: true, detail: '$ npm test' }];
+    u.context.cwRenderProgress();
+    expect(u.text.textContent).toBe('Checking the suite');
+    expect(u.tool.innerHTML).toContain('$ npm test');
+    expect(u.tool.innerHTML).toContain('completed');
+
+    // Reading a file shows the path, not just "reading…".
+    u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: '', tool: 'read_file', detail: 'read src/app.ts' }];
+    u.context.cwRenderProgress();
+    expect(u.text.textContent).toBe('read src/app.ts');
+  });
+
   it('uses only HTTP origins from web tools, omitting credentials and query data', () => {
     expect(coworkWebOrigin('browse', { url: 'https://example.com/search?q=private#fragment' })).toBe('https://example.com');
     for (const url of ['javascript:alert(1)', 'file:///secret', 'https://user:password@example.com', 'not a URL']) {

@@ -1,7 +1,7 @@
 import type { LlmClient, LlmMessage } from '../llm/llm.js';
 import { resilientLlm } from '../llm/resilient.js';
 import type { ToolContext } from '../tools/tools.js';
-import { excerpt } from '../util.js';
+import { excerpt, summarizeParams } from '../util.js';
 import { coworkToolDocs, executeCoworkTool, parseToolCalls, stripToolMarkers, type CoworkToolScope } from './tools.js';
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers } from '../llm/llm.js';
 import { compactHistory } from '../agent/compaction.js';
@@ -80,6 +80,9 @@ export interface CoworkProgress {
   text: string;
   tool?: string;
   toolOk?: boolean;
+  /** One-line summary of what the tool is doing ("$ npm test", "read src/x.ts",
+   *  "browse click #submit") — the detail the plain tool name leaves out. */
+  detail?: string;
   /** Public HTTP origin only; never expose URL credentials or query strings. */
   webUrl?: string;
 }
@@ -395,7 +398,8 @@ async function agentTurn(input: {
   const scope: CoworkToolScope | undefined =
     deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, threadId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
   let reply = '';
-  const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string) => deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk, webUrl });
+  const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string, detail?: string) =>
+    deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk, webUrl, detail });
   let continuations = 0;
 
   try {
@@ -436,7 +440,8 @@ async function agentTurn(input: {
         continue;
       }
       ctx ??= deps.toolContext(agent);
-      progress(stripToolMarkers(reply), call.tool, undefined, coworkWebOrigin(call.tool, call.params));
+      const detail = summarizeParams(call.tool, call.params);
+      progress(stripToolMarkers(reply), call.tool, undefined, coworkWebOrigin(call.tool, call.params), detail);
       const result = await executeCoworkTool(
         ctx,
         call.tool,
@@ -446,7 +451,18 @@ async function agentTurn(input: {
       );
       usedTools.push({ name: call.tool, ok: result.ok });
       recordToolResult(scope, call.tool, result);
-      progress(stripToolMarkers(reply), call.tool, result.ok, coworkWebOrigin(call.tool, call.params));
+      // A screenshot the agent took is proof the user should SEE, not just the
+      // model. Persist it as an image artifact so the chat bubble renders it
+      // inline (cwFilesHtml) instead of leaving the visual check invisible.
+      if (result.ok && result.image && scope?.conversationId && call.tool === 'browse') {
+        const match = /^data:(image\/[a-z0-9.+-]+);base64,([a-z0-9+/=\r\n]+)$/i.exec(result.image);
+        if (match) {
+          const ext = match[1]!.includes('jpeg') ? 'jpg' : match[1]!.split('/')[1]!.replace(/[^a-z0-9]/g, '') || 'png';
+          const artifact = scope.store.addArtifact({ conversationId: scope.conversationId, agentId: agent.id, name: `screenshot-${Date.now().toString(36)}.${ext}`, mime: match[1], dataBase64: match[2]! });
+          (scope.artifactIds ??= []).push(artifact.id);
+        }
+      }
+      progress(stripToolMarkers(reply), call.tool, result.ok, coworkWebOrigin(call.tool, call.params), detail);
       messages.push(toolResultMessage(call.tool, result, supportsImages));
       if (result.ok && ['ask_user', 'request_permission'].includes(call.tool)) {
         reply = stripToolMarkers(reply) || 'I’m waiting for your response to the card above.';

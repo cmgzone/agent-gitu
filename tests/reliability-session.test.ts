@@ -294,3 +294,105 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
     expect(TaskLedger.list(path.resolve(dir))).toHaveLength(0);
   }, 30000);
 });
+
+describe('SessionStore — durable typed frames', () => {
+  it('keys frames by their own cursor, keeps the newest, and drops them with their session', () => {
+    // `seq` is the runtime log's cursor and restarts at 1 in every new process,
+    // so frames cannot be keyed by it: a restored frame would collide with an
+    // unrelated later one. The store's own `fid` keeps them apart, and the cap
+    // bounds a long run on disk exactly as the in-memory buffer bounds it.
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-frames-'));
+    const store = new SessionStore(path.join(dir, 'frames.db'));
+    const runId = 'run-frames';
+    store.upsertSession({ runId, goal: 'typed frames', startedAt: new Date().toISOString(), status: 'running' });
+
+    store.addNativeFrame(runId, { t: 't1', typed: { type: 'command_finished', seq: 1, exitCode: 0 } }, 3);
+    store.addNativeFrame(runId, { t: 't2', typed: { type: 'command_finished', seq: 2, exitCode: 1 } }, 3);
+    expect(store.nativeFramesFor(runId).map((f) => f.fid)).toEqual([0, 1]);
+
+    // The next two carry seqs from a second process, which is the collision the
+    // separate cursor exists to prevent.
+    store.addNativeFrame(runId, { t: 't3', typed: { type: 'approval_required', seq: 1, approvalId: 'appr_1' } }, 3);
+    store.addNativeFrame(runId, { t: 't4', typed: { type: 'command_finished', seq: 3, exitCode: 0 } }, 3);
+
+    const frames = store.nativeFramesFor(runId);
+    expect(frames.map((f) => f.fid)).toEqual([1, 2, 3]);
+    expect(frames.map((f) => (f.typed as { type: string }).type)).toEqual([
+      'command_finished',
+      'approval_required',
+      'command_finished',
+    ]);
+    // The payload comes back whole, timestamps included.
+    expect(frames.at(-1)).toMatchObject({ t: 't4', typed: { seq: 3, exitCode: 0 } });
+
+    // A removed session must not leave typed history behind for its id.
+    expect(store.deleteSession(runId)).toBe(true);
+    expect(store.nativeFramesFor(runId)).toEqual([]);
+    store.close();
+  });
+
+  it('persists a prose row with its typed companion and restores both', () => {
+    // The projection writes the legacy line and the runtime event beside it; the
+    // row must come back with both, so a restored session keeps the structure a
+    // card reads instead of degrading to the words alone.
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-typedrows-'));
+    const store = new SessionStore(path.join(dir, 'rows.db'));
+    const runId = 'run-typed-rows';
+    store.upsertSession({ runId, goal: 'typed rows', startedAt: new Date().toISOString(), status: 'running' });
+
+    store.addEvent(runId, { i: 0, t: 't0', text: 'user-msg verify node' });
+    store.addEvent(runId, {
+      i: 1,
+      t: 't1',
+      text: 'run      $ node --version — verify',
+      typed: { type: 'log', seq: 4, at: 't1', text: 'run      $ node --version — verify' },
+    });
+    store.addEvent(runId, {
+      i: 2,
+      t: 't2',
+      text: 'plan 1 steps',
+      typed: { type: 'plan_created', seq: 5, at: 't2', steps: 1 },
+    });
+
+    const rows = store.eventsFor(runId);
+    expect(rows).toHaveLength(3);
+    // A row with no companion stays companion-less.
+    expect(rows[0]).toEqual({ i: 0, t: 't0', text: 'user-msg verify node' });
+    // A demoted row keeps the log classification and its source line.
+    expect(rows[1]!.typed).toMatchObject({ type: 'log', seq: 4, text: 'run      $ node --version — verify' });
+    // A classified row keeps the structured payload.
+    expect(rows[2]!.typed).toMatchObject({ type: 'plan_created', seq: 5, steps: 1 });
+
+    // Reopening the same database (the restart shape) reads both back too.
+    store.close();
+    const reopened = new SessionStore(path.join(dir, 'rows.db'));
+    expect(reopened.eventsFor(runId)[2]!.typed).toMatchObject({ type: 'plan_created', steps: 1 });
+    reopened.close();
+  });
+
+  it('restores an old database whose rows carry no typed column', () => {
+    // Pre-migration rows must keep restoring: the column is added by ALTER, the
+    // read fills the gap with prose-only rows, and nothing fails.
+    const dir = mkdtempSync(path.join(tmpdir(), 'hermes-oldrows-'));
+    const dbFile = path.join(dir, 'old.db');
+    {
+      const store = new SessionStore(dbFile);
+      store.upsertSession({ runId: 'run-old', goal: 'old rows', startedAt: new Date().toISOString(), status: 'completed' });
+      store.addEvent('run-old', { i: 0, t: 't0', text: 'run      $ node --version — verify' });
+      store.close();
+    }
+    // Strip the column to simulate a database written before it existed.
+    const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (file: string) => { exec: (sql: string) => void; prepare: (sql: string) => { all: (...args: unknown[]) => unknown[] } } };
+    const raw = new DatabaseSync(dbFile);
+    raw.exec(`CREATE TABLE events_old AS SELECT runId, idx, t, text FROM events; DROP TABLE events; ALTER TABLE events_old RENAME TO events;`);
+    const legacyCount = raw.prepare('SELECT COUNT(*) AS n FROM events').all().length;
+    expect(legacyCount).toBe(1);
+    raw.close();
+
+    // The migration adds the column back on open, and the row reads as prose.
+    const store = new SessionStore(dbFile);
+    const rows = store.eventsFor('run-old');
+    expect(rows).toEqual([{ i: 0, t: 't0', text: 'run      $ node --version — verify' }]);
+    store.close();
+  });
+});

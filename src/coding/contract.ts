@@ -160,10 +160,24 @@ export interface CodingSession {
   /** Deliver a follow-up message to a session that is paused or running. */
   continue(message: string): Promise<CodingRunResult>;
   cancel(reason?: string): Promise<void>;
+  /**
+   * Settle every pending gate the way a teardown would — approvals and plan
+   * reviews denied, questions answered with the engine's own default — while the
+   * run itself keeps going.
+   *
+   * This is the "the user replied in prose, or a correction superseded the
+   * question" case: the request has gone stale, so it must stop waiting, but
+   * nothing about the run was cancelled. That is the whole difference from
+   * `cancel`, which stops the engine too, and the reason this exists as its own
+   * method rather than a flag on that one.
+   */
+  releasePendingGates(reason: string): void;
   approve(approvalId: string, approved: boolean): void;
-  approvePlan(decision: CodingPlanReviewDecision): void;
+  /** Answers the review with this exact request id. A request a surface does not
+   *  name is never settled, so a late answer cannot resolve its successor. */
+  approvePlan(requestId: string, decision: CodingPlanReviewDecision): void;
   /** Answer the outstanding `CodingQuestionsRequest` (single free-text answer). */
-  answerQuestions(answer: string): void;
+  answerQuestions(requestId: string, answer: string): void;
   /** Replay from `sinceSeq` (exclusive). Absent means the whole retained log. */
   events(sinceSeq?: number): CodingEvent[];
   /** Returns an unsubscribe function. */

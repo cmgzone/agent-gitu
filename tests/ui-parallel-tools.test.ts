@@ -30,7 +30,11 @@ class Element {
     contains: (value: string) => this.className.split(/\s+/).includes(value),
   };
   get isConnected(): boolean { return this.attached || !!this.parent?.isConnected; }
-  get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
+  // DOM order is children interleaved with this node's own text runs, but the
+  // naive parser in innerHTML cannot interleave (a text run after </b> lands in
+  // this.text). Appending this.text last keeps real DOM order for the shapes
+  // these tests create.
+  get textContent(): string { return this.children.map(child => child.textContent).join('') + this.text; }
   set textContent(value: string) { this.text = value; this.children = []; }
   set innerHTML(value: string) {
     this.children = []; this.text = '';
@@ -90,6 +94,16 @@ function renderer() {
     document: { createElement: (tag: string) => new Element(tag) },
     updateApproach: () => {}, mascotState: () => {}, mascotPulse: () => {},
     closeThought: () => { narrationClosures++; }, setWorking: () => {}, trimTimeline: () => {}, stickScroll: () => {},
+    hhmm: (iso: string) => 'T' + iso,
+    // No intake or specialist tag matches here; falling through to the generic
+    // meta block is what exercises the evidence row the stamp test uses.
+    INTAKE_TAGS: {} as Record<string, boolean>,
+    // Tests run as a normal user (devMode false): the recovering arm renders
+    // its calm card instead of falling through to the raw diagnostic line.
+    devMode: () => false,
+    SPEC_LIFECYCLE: /(?!)/,
+    // Client global the recall pool sizes itself against during replay.
+    MAX_REPLAY_EVENTS: 240,
     setupCopyButton: () => {}, icon: () => '',
     setupOutputFolding: (_details: Element, pre: Element, value: string) => { pre.textContent = value; },
     esc: (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -97,14 +111,31 @@ function renderer() {
   const functions = ['toolKind', 'humanToolSummary', 'splitSummary', 'splitReason', 'workingTextFor',
     'toolActivityGroupForRow', 'toolActivityHint', 'refreshToolActivityGroup', 'sealToolActivityGroup',
     'createToolActivityGroup', 'ensureToolActivityGroup', 'followActiveToolActivity', 'toolActivityBoundary', 'appendEvent',
-    'normalizeToolKey', 'activeToolRows', 'findToolRow'];
+    'normalizeToolKey', 'activeToolRows', 'findToolRow',
+    // Tool-lifecycle matching was hoisted out of appendEvent so the typed
+    // command frames can share it; the prose path now calls these top-level too.
+    'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow',
+    // Timeline insertion is shared the same way: the prose row and the typed
+    // refusal card must land in the same place, in the same way.
+    'insertTimelineNode',
+    // The frame path that upgrades finished cards with the exit fact. It runs
+    // to the gate renderers, which need their own state readers; stubbing the
+    // renderers keeps this harness on the command lifecycle.
+    'handleTypedFrame', 'applyCommandFinish', 'normalizeToolKey', 'applyPolicyNotice',
+    // The recovering arm truncates the cause for the working indicator.
+    'shortText',
+    'pendingApprovalsFor', 'pendingPlanReviewFor', 'pendingQuestionsFor'];
+  context.renderApprovals = () => undefined;
+  context.renderPlanReview = () => undefined;
+  context.renderQuestions = () => undefined;
   // The two tiny split helpers share a line; their declarations are exact.
   const code = functions.map(name => name === 'splitSummary' || name === 'splitReason'
     ? UI_HTML.match(new RegExp('  function ' + name + '\\([^\\n]+'))![0] : source(name)).join('\n');
   new Script(code).runInContext(context);
   return {
     stream, session, context, narrationClosures: () => narrationClosures,
-    event: (i: number, text: string) => context.appendEvent('run', { i, text }),
+    event: (i: number, text: string, t?: string, typed?: Record<string, unknown>) =>
+      context.appendEvent('run', { i, text, ...(t ? { t } : {}), ...(typed ? { typed } : {}) }),
     rows: () => stream.querySelectorAll('.tool-call'),
     group: () => stream.querySelector('.tl-tool-group')!,
   };
@@ -203,5 +234,184 @@ describe('UI — parallel tool lifecycle', () => {
     expect(r.group().querySelector('.tool-group-state')!.textContent).toBe('Needs attention');
     expect(r.rows()[0].querySelector('.tl-out')!.open).toBe(true);
     expect(r.rows()[0].querySelector('pre')!.textContent).toBe('Assertion failed');
+  });
+
+  it('renders evidence pills from the typed companion and falls back to the prose parse', () => {
+    // The typed companion carries the real verdict, the id, and the kind as
+    // separate fields; the prose line is the fallback for rows without one.
+    const r = renderer();
+    // Typed row: a passing line whose LABEL contains FAIL would fool a substring
+    // check — the pill must come from the structured verdict.
+    r.event(0, 'evidence ev-1 PASS (test)', '2026-01-01T12:00:00.000Z', { type: 'evidence_recorded', evidenceId: 'ev-1', passed: true, kind: 'test' });
+    let pill = r.stream.querySelector('.ev-pill');
+    expect(pill.classList.contains('pass')).toBe(true);
+    // The check/cross rides the pill as an HTML entity (innerHTML), so match
+    // the entity rather than the decoded glyph.
+    expect(pill.textContent).toContain('&#10003;');
+    expect(pill.textContent).toContain('test ev-1 passed');
+    expect(pill.textContent).not.toContain('(test)');
+
+    // Typed failing row.
+    r.event(1, 'evidence ev-2 FAIL (typecheck)', undefined, { type: 'evidence_recorded', evidenceId: 'ev-2', passed: false, kind: 'typecheck' });
+    const pills = r.stream.querySelectorAll('.ev-pill');
+    pill = pills[pills.length - 1];
+    expect(pill.classList.contains('fail')).toBe(true);
+    expect(pill.textContent).toContain('&#10005;');
+    expect(pill.textContent).toContain('typecheck ev-2 failed');
+
+    // Untyped row (old database, or a line the classifier demoted): the prose
+    // parse must still decide the pill.
+    r.event(2, 'evidence ev-3 FAIL (build)');
+    pill = r.stream.querySelectorAll('.ev-pill')[2];
+    expect(pill.classList.contains('fail')).toBe(true);
+    expect(pill.textContent).toContain('FAIL');
+    r.event(3, 'evidence ev-4 PASS (lint)');
+    pill = r.stream.querySelectorAll('.ev-pill')[3];
+    expect(pill.classList.contains('pass')).toBe(true);
+
+    // Typed decides where prose is unreliable: the legacy classifier needs the
+    // PASS/FAIL token in a fixed shape, so a future emitter that changes the
+    // line's wording would demote it to log — the companion still renders the
+    // verdict pill. (Also: the prose parse cannot be trusted to read a verdict
+    // out of free text, as the id itself could contain the token.)
+    r.event(4, 'evidence', undefined, { type: 'evidence_recorded', evidenceId: 'ev-5', passed: true, kind: 'command' });
+    pill = r.stream.querySelectorAll('.ev-pill')[4];
+    expect(pill.classList.contains('pass')).toBe(true);
+    expect(pill.textContent).toContain('command ev-5 passed');
+  });
+
+  it('renders plan rows from the typed companion and falls back to the prose parse', () => {
+    const r = renderer();
+    r.event(0, 'plan     3 steps', undefined, { type: 'plan_created', steps: 3 });
+    let row = r.stream.querySelectorAll('.tl-meta')[0];
+    expect(row.textContent).toContain('plan 3 steps — review it, then approve to build');
+
+    // The follow-up distinction is prose-only today; the fallback must keep it.
+    r.event(1, 'plan     2 follow-up steps');
+    row = r.stream.querySelectorAll('.tl-meta')[1];
+    expect(row.textContent).toContain('plan 2 follow-up steps');
+
+    // Singular. The typed companion must decide when prose is unreliable — a
+    // future emitter may stop padding the keyword to a fixed column, which
+    // would leave the legacy classifier's regex nothing to match.
+    r.event(2, 'plan 1 steps', undefined, { type: 'plan_created', steps: 1 });
+    row = r.stream.querySelectorAll('.tl-meta')[2];
+    expect(row.textContent).toContain('plan 1 step —');
+    // And a row whose prose carries no count at all still renders from the
+    // companion rather than saying "0 steps".
+    r.event(3, 'plan', undefined, { type: 'plan_created', steps: 7 });
+    row = r.stream.querySelectorAll('.tl-meta')[3];
+    expect(row.textContent).toContain('plan 7 steps —');
+  });
+
+  it('stamps an inserted row with its own event time', () => {
+    // The timeline stamp moved into the shared inserter when the typed cards
+    // began to use it too, so this proves the prose path still stamps rows —
+    // the insert call and the stamp now live in different functions.
+    const r = renderer();
+    r.event(0, 'evidence ev-20260101-abc123 PASS verification passed', '2026-01-01T12:34:00.000Z');
+    expect(r.stream.querySelector('.tl-time')!.textContent).toBe('T2026-01-01T12:34:00.000Z');
+  });
+
+  it('badges every restored command the replay rebuilt, not just the last twelve', () => {
+    // On restore, rows replay first and frames arrive right after. The recall
+    // pool the finish frames consult must span the whole visible window — a
+    // 12-entry cap left every earlier restored command without its exit badge.
+    const r = renderer();
+    const commands = 40;
+    // The client holds sess.replaying true across the whole replay burst, as
+    // openStream does; the pool size keys off that flag.
+    r.session.replaying = true;
+    for (let i = 0; i < commands; i++) {
+      r.event(i * 2, `run $ node cmd-${i}.js`);
+      r.event(i * 2 + 1, `ok $ node cmd-${i}.js (10ms)`);
+    }
+    r.session.replaying = false;
+    // All 40 rows replayed, none still working.
+    expect(r.rows()).toHaveLength(commands);
+    expect(r.rows().every((row) => row.dataset.toolState === 'done')).toBe(true);
+
+    // The frames arrive, in order, after the replay.
+    for (let i = 0; i < commands; i++) {
+      r.context.handleTypedFrame('run', { seq: 1000 + i, t: 't', typed: { type: 'command_finished', command: `node cmd-${i}.js`, ok: true, exitCode: 0 } });
+    }
+    const badged = r.rows().filter((row) => row.querySelector('.exit-code'));
+    expect(badged, `all ${commands} commands deserve their exit badge`).toHaveLength(commands);
+  });
+
+  it('renders recovering cards from the typed companion and falls back to the prose line', () => {
+    // A model retry is the moment the agent notices a failure and corrects it;
+    // the run is neither frozen nor repeating itself. The typed companion
+    // carries the attempt, the max, and the real cause; the prose line is the
+    // fallback for rows without one (old databases, demoted classifications).
+    const r = renderer();
+    // Typed row: retry numbers from the payload, not the text.
+    r.event(0, 'recover  model reply was malformed — retry 2/3 in 1.0s', undefined, { type: 'recovering', message: 'model reply was malformed', attempt: 2, maxAttempts: 3 });
+    let row = r.stream.querySelectorAll('.tl-meta')[0];
+    expect(row.textContent).toContain('recovering');
+    expect(row.textContent).toContain('retry 2 of 3');
+    expect(row.textContent).toContain('model reply was malformed');
+
+    // Typed row whose prose carries no retry count: the companion decides.
+    // (Distinct cause — a same-cause retry would collapse into the card above.)
+    r.event(1, 'recover  something failed', undefined, { type: 'recovering', message: 'something failed', attempt: 1, maxAttempts: 4 });
+    row = r.stream.querySelectorAll('.tl-meta')[1];
+    expect(row.textContent).toContain('retry 1 of 4');
+
+    // The reason text lives on the payload; prose can be vague.
+    r.event(2, 'recover  failed — retry 3/4', undefined, { type: 'recovering', message: 'the real reason: provider 500', attempt: 3, maxAttempts: 4 });
+    row = r.stream.querySelectorAll('.tl-meta')[2];
+    expect(row.textContent).toContain('the real reason: provider 500');
+
+    // Malformed/short prose still renders correctly from typed data: the tag
+    // prefix matches but the line has no usable detail after it.
+    r.event(3, 'recover  ', undefined, { type: 'recovering', message: 'bad reply shape', attempt: 2, maxAttempts: 5 });
+    row = r.stream.querySelectorAll('.tl-meta')[3];
+    expect(row.textContent).toContain('retry 2 of 5');
+    expect(row.textContent).toContain('bad reply shape');
+
+    // Consecutive retries of the same cause collapse in place, escalating the
+    // retry numbers (1/4 then 2/4) instead of stacking cards.
+    r.event(4, 'recover  provider 500 — retry 1/4 in 1.0s', undefined, { type: 'recovering', message: 'provider 500', attempt: 1, maxAttempts: 4 });
+    r.event(5, 'recover  provider 500 — retry 2/4 in 2.0s', undefined, { type: 'recovering', message: 'provider 500', attempt: 2, maxAttempts: 4 });
+    const metas = r.stream.querySelectorAll('.tl-meta');
+    expect(metas.length).toBe(5); // no sixth card — event 5 collapsed into event 4's
+    const coll = metas[4];
+    expect(coll.textContent).toContain('retry 2 of 4');
+    expect(coll.textContent).toContain('\u00D72');
+
+    // A different cause starts a new card even when it is also a retry.
+    r.event(6, 'recover  other cause — retry 1/3', undefined, { type: 'recovering', message: 'other cause', attempt: 1, maxAttempts: 3 });
+    expect(r.stream.querySelectorAll('.tl-meta').length).toBe(6);
+  });
+
+  it('renders untyped recover rows from prose without fabricating structure', () => {
+    // Untyped rows (old restored databases) have no counts to render as the
+    // structured numbers — the fallback shows the raw line as the cause and
+    // must not re-parse prose into the typed card's "retry N of M" shape.
+    const r = renderer();
+    r.event(0, 'recover  something failed — retry 2/3 in 1.0s');
+    const row = r.stream.querySelectorAll('.tl-meta')[0];
+    expect(row.textContent).toContain('recovering');
+    expect(row.textContent).toContain('something failed — retry 2/3 in 1.0s');
+    // No fabricated numbers: the retry phrase survives only as raw detail.
+    expect(row.querySelector('.recover-nums')).toBeNull();
+  });
+
+  it('leaves a refused action to its typed frame instead of drawing a prose card', () => {
+    // A refusal is decided in preflight, before the run row that creates a card,
+    // so the legacy line has never rendered anything: it is the typed
+    // policy_denied/operation_blocked frame that draws the family's card. This
+    // pins that split, so the frame can never become a second rendering of a row
+    // that already drew one.
+    const r = renderer();
+    r.event(0, 'run read_file {"path":"../../outside.txt"} — inspect');
+    const drawn = r.stream.children.length;
+    r.event(1, 'denied   read_file {"path":"../../outside.txt"} (DENIED by project boundary: outside the workspace)');
+    expect(r.stream.children.length).toBe(drawn);
+    // And the active card is untouched — an unmatched refusal must not close an
+    // unrelated working tool.
+    expect(r.rows()[0].dataset.toolState).toBe('working');
+    expect(r.rows()[0].querySelector('.st')!.textContent).not.toContain('denied');
   });
 });

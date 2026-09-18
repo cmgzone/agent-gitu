@@ -5,9 +5,10 @@ import { describe, expect, it } from 'vitest';
 import { Gitu } from '../src/agent/gitu.js';
 import type { CodingRunResult, CodingSession } from '../src/coding/contract.js';
 import { GituSessionRuntime, type GituCodingSession, type GituSessionRequest } from '../src/coding/session-runtime.js';
+import { createBudgetAccount, type BudgetAccount, type RunBudget } from '../src/coding/budget.js';
 import type { GituFactoryOptions } from '../src/coding/gitu-factory.js';
 import { ConnectionRegistry } from '../src/connections/connections.js';
-import { ScriptedMockLlm } from '../src/llm/llm.js';
+import { ScriptedMockLlm, type LlmClient, type LlmUsage } from '../src/llm/llm.js';
 import type { CompletionReport } from '../src/types.js';
 
 /**
@@ -162,6 +163,45 @@ describe('GituSessionRuntime lifecycle', () => {
     expect(stopped).toBe(true);
   });
 
+  it('releases every pending gate without cancelling the run', async () => {
+    // A reply that supersedes a pending request clears the request but leaves
+    // the work alone. That is a different thing from cancel, which stops the
+    // engine too — so it is a different method rather than a flag on that one.
+    const harness = makeHarness({ startRun: true });
+    let stopped = false;
+    harness.engine.stop = () => {
+      stopped = true;
+    };
+    const approval = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
+    const plan = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    const questions = harness.sinks.askUserHandler([{ question: 'Which database?', options: [] }]);
+
+    harness.session.releasePendingGates('superseded by the user reply');
+
+    await expect(approval).resolves.toBe(false);
+    await expect(plan).resolves.toMatchObject({ approved: false });
+    // Questions keep their documented behaviour: unanswered means defaults.
+    await expect(questions).resolves.toBe('(no answer — proceed with reasonable defaults)');
+
+    expect(stopped).toBe(false);
+    const view = harness.session.getState();
+    expect(view.pendingApproval).toBeUndefined();
+    expect(view.pendingPlanReview).toBeUndefined();
+    expect(view.pendingQuestions).toBeUndefined();
+    // Only cancel reports a stop, and this path must never imply one.
+    expect(harness.session.events().filter((event) => event.type === 'log' && event.text.includes('stop requested'))).toHaveLength(0);
+
+    // The run was left to finish under its own power rather than torn down.
+    expect(view.status).toBe('completed');
+
+    // And the session is still usable: releasing gates is not teardown.
+    const next = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf dist' });
+    const required = harness.session.getState().pendingApproval;
+    expect(required).toBeTruthy();
+    harness.session.approve(required!.id, true);
+    await expect(next).resolves.toBe(true);
+  });
+
   it('refuses a workspace it has no transport for', () => {
     const runtime = new GituSessionRuntime();
     expect(() =>
@@ -221,8 +261,16 @@ describe('GituSessionRuntime approval gate', () => {
   it('surfaces a pending approval and lets the first answer win', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.approvalHandler({ tool: 'run_command', tier: 'dangerous', why: 'destructive', summary: 'rm -rf build' });
-    const required = harness.session.events().find((event) => event.type === 'approval_required') as { approvalId: string } | undefined;
+    const required = harness.session.events().find((event) => event.type === 'approval_required') as
+      | { approvalId: string; tool?: string; why?: string; summary?: string }
+      | undefined;
     expect(required?.approvalId).toBeTruthy();
+    // The gate's own request rides the event, so a card renders it from the one
+    // stream instead of reading a host-side mirror of the pending state.
+    expect(required).toMatchObject({ tool: 'run_command', why: 'destructive', summary: 'rm -rf build' });
+    // The event and the pending record are one request with one timestamp, so a
+    // card shows true request age instead of a publication stamp.
+    expect(required?.requestedAt).toBe(harness.session.getState().pendingApproval?.requestedAt);
     harness.session.approve(required!.approvalId, true);
     await expect(pending).resolves.toBe(true);
     // A second answer finds no pending approval and does nothing.
@@ -245,10 +293,17 @@ describe('GituSessionRuntime plan review and question gates', () => {
   it('surfaces a plan review and resolves it as approved', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['tests pass'], steps: [{ description: 'implement', verification: 'npm test' }] });
-    const requested = harness.session.events().find((event) => event.type === 'plan_review_requested') as { requestId: string; plan: string } | undefined;
+    const requested = harness.session.events().find((event) => event.type === 'plan_review_requested') as
+      | { requestId: string; plan: string; criteria?: string[]; steps?: { description: string; verification: string }[] }
+      | undefined;
     expect(requested?.plan).toContain('tests pass');
+    // The structured request rides the event too, so the review card edits the
+    // agent's own criteria and steps instead of re-parsing the rendered plan.
+    expect(requested?.criteria).toEqual(['tests pass']);
+    expect(requested?.steps).toEqual([{ description: 'implement', verification: 'npm test' }]);
+    expect(requested?.requestedAt).toBe(harness.session.getState().pendingPlanReview?.requestedAt);
     expect(harness.session.getState().pendingPlanReview?.id).toBe(requested?.requestId);
-    harness.session.approvePlan({ approved: true });
+    harness.session.approvePlan(requested!.requestId, { approved: true });
     await expect(pending).resolves.toMatchObject({ approved: true });
     const resolved = harness.session.events().filter((event) => event.type === 'plan_review_resolved');
     expect(resolved).toHaveLength(1);
@@ -259,7 +314,8 @@ describe('GituSessionRuntime plan review and question gates', () => {
   it('distinguishes a change request from a bare rejection', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
-    harness.session.approvePlan({ approved: false, note: 'split the first step' });
+    const requestId = harness.session.getState().pendingPlanReview!.id;
+    harness.session.approvePlan(requestId, { approved: false, note: 'split the first step' });
     await expect(pending).resolves.toMatchObject({ approved: false, note: 'split the first step' });
     expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'changes_requested' });
   });
@@ -267,10 +323,16 @@ describe('GituSessionRuntime plan review and question gates', () => {
   it('surfaces questions and answers them', async () => {
     const harness = makeHarness({ startRun: true });
     const pending = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
-    const requested = harness.session.events().find((event) => event.type === 'questions_requested') as { requestId: string; questions: string[] } | undefined;
+    const requested = harness.session.events().find((event) => event.type === 'questions_requested') as
+      | { requestId: string; questions: string[]; details?: { question: string; options: string[] }[] }
+      | undefined;
     expect(requested?.questions).toEqual(['Which database?']);
+    // Options ride the event: a question card cannot offer an answer it was
+    // never told, and the text projection alone has no options.
+    expect(requested?.details).toEqual([{ question: 'Which database?', options: ['PostgreSQL', 'SQLite'] }]);
+    expect(requested?.requestedAt).toBe(harness.session.getState().pendingQuestions?.requestedAt);
     expect(harness.session.getState().pendingQuestions?.id).toBe(requested?.requestId);
-    harness.session.answerQuestions('PostgreSQL');
+    harness.session.answerQuestions(requested!.requestId, 'PostgreSQL');
     await expect(pending).resolves.toBe('PostgreSQL');
     expect(harness.session.events().filter((event) => event.type === 'questions_answered')).toHaveLength(1);
     expect(harness.session.getState().pendingQuestions).toBeUndefined();
@@ -280,7 +342,46 @@ describe('GituSessionRuntime plan review and question gates', () => {
     const harness = makeHarness({ gateTimeoutMs: 20, startRun: true });
     const pending = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
     await expect(pending).resolves.toMatchObject({ approved: false, note: 'Plan review timed out.' });
-    expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({ decision: 'rejected' });
+    expect(harness.session.events().find((event) => event.type === 'plan_review_resolved')).toMatchObject({
+      decision: 'rejected',
+      reason: 'timed out',
+    });
+  });
+
+  it('fails a question gate closed when nobody answers', async () => {
+    const harness = makeHarness({ gateTimeoutMs: 20, startRun: true });
+    const pending = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL'] }]);
+    await expect(pending).resolves.toBe('(no answer — proceed with reasonable defaults)');
+    // Questions proceed on defaults rather than denying the way an approval or a
+    // plan review does, and the reason is on the event so a host can narrate the
+    // timeout without inventing its own timer to detect it.
+    expect(harness.session.events().find((event) => event.type === 'questions_answered')).toMatchObject({
+      reason: 'timed out',
+    });
+    expect(harness.session.getState().pendingQuestions).toBeUndefined();
+  });
+
+  it('settles only the request a surface names', async () => {
+    // An answer that names a request the runtime is not holding resolves nothing.
+    // Without this, a surface answering late could resolve whatever its successor
+    // happens to be — a different review, or a question asked minutes later.
+    const harness = makeHarness({ startRun: true });
+    const review = harness.sinks.planReviewHandler({ criteria: ['works'], steps: [] });
+    const questions = harness.sinks.askUserHandler([{ question: 'Which database?', options: ['PostgreSQL'] }]);
+    const reviewId = harness.session.getState().pendingPlanReview!.id;
+    const questionsId = harness.session.getState().pendingQuestions!.id;
+
+    harness.session.approvePlan('pr_stale', { approved: true });
+    harness.session.answerQuestions('q_stale', 'SQLite');
+    expect(harness.session.getState().pendingPlanReview?.id).toBe(reviewId);
+    expect(harness.session.getState().pendingQuestions?.id).toBe(questionsId);
+    expect(harness.session.events().filter((event) => event.type === 'plan_review_resolved')).toHaveLength(0);
+    expect(harness.session.events().filter((event) => event.type === 'questions_answered')).toHaveLength(0);
+
+    harness.session.approvePlan(reviewId, { approved: true });
+    harness.session.answerQuestions(questionsId, 'PostgreSQL');
+    await expect(review).resolves.toMatchObject({ approved: true });
+    await expect(questions).resolves.toBe('PostgreSQL');
   });
 
   it('releases every pending gate on cancel instead of leaving it to time out', async () => {
@@ -386,5 +487,155 @@ describe('GituSessionRuntime end to end through the real engine', () => {
     const demoted = session.events().filter((event) => event.type === 'log' && (event as { text: string }).text.includes('node --version'));
     expect(demoted.length).toBeGreaterThanOrEqual(1);
     expect(callerLegacy).toHaveLength(0);
+  });
+});
+
+/**
+ * Budget enforcement.
+ *
+ * A delegation is unattended money, so the session that spends it must be the
+ * thing that stops it. These drive the engine's own model calls through the LLM
+ * the runtime hands it — the only place spend is visible — and assert the three
+ * behaviours that make an allocation real: a spent session refuses to start,
+ * a run stops mid-flight when its last dollar is gone, and a session inside a
+ * parent pool can never be given more than the pool has left.
+ */
+describe('GituSessionRuntime budget enforcement', () => {
+  const pricing = (usage: LlmUsage): number => usage.inputTokens * 0.0001;
+
+  function budgetHarness(options: { budget?: RunBudget; parent?: BudgetAccount; costOf?: (usage: LlmUsage) => number | undefined; callsPerRun?: number } = {}) {
+    const dir = makeProject();
+    const granted: BudgetAccount[] = [];
+    const stopped = { count: 0 };
+    const usage = { inputTokens: 1_000, outputTokens: 0, cachedTokens: 0 };
+    const stub: LlmClient = {
+      name: 'stub',
+      complete: async (_messages, opts) => {
+        opts?.onUsage?.(usage);
+        return '{}';
+      },
+      completeStream: async (_messages, opts) => {
+        opts?.onUsage?.(usage);
+        return '{}';
+      },
+    };
+    const runtime = new GituSessionRuntime({
+      createEngine: (_request, runOptions) =>
+        ({
+          run: async () => {
+            for (let call = 0; call < (options.callsPerRun ?? 3); call += 1) {
+              // A real engine keeps working until it is told to stop; the fake
+              // must not call the model after a stop, or it would be testing a
+              // charge that no engine would ever make.
+              if (stopped.count > 0) break;
+              await runOptions.llm.complete([{ role: 'user', content: 'go' }], {});
+            }
+            return {
+              ledger: { data: { taskId: 't_1' } },
+              report: { taskId: 't_1', goal: 'g', status: 'complete', summary: 'done', changes: [], filesChanged: [], verification: [] },
+            };
+          },
+          stop: () => {
+            stopped.count += 1;
+          },
+          queueMessage: () => undefined,
+        }) as unknown as Gitu,
+    });
+    const session = runtime.createSession({
+      goal: 'Fix the parser',
+      workspace: { type: 'host', path: dir },
+      budget: options.budget,
+      parentBudget: options.parent,
+      costOf: options.costOf,
+      runOptions: (run) => {
+        granted.push(run.budget);
+        return { workspaceRoot: dir, llm: stub, mode: 'fast' };
+      },
+      deps: {
+        connections: new ConnectionRegistry(),
+        connectionContext: () => 'connections: none',
+        connectionActionHandler: async () => ({ message: 'ok' }),
+        safestProviderRead: () => undefined,
+        connectionOperationHandler: async () => ({ message: 'ok' }),
+        connectionRecoveryCheck: () => ({ action: 'setup-new', reason: 'none' }),
+        connectionRequestHandler: async () => false,
+      },
+    });
+    return { session, granted, stopped };
+  }
+
+  it('stops the run when its turn allocation is spent', async () => {
+    const { session, stopped } = budgetHarness({ budget: { maxTurns: 2 } });
+    const result = await session.run('Fix the parser');
+
+    expect(result.status).toBe('blocked');
+    expect(result.error).toMatch(/^budget exhausted/);
+    expect(stopped.count).toBe(1);
+    expect(session.getState().usage?.messages).toBe(2);
+    const blocked = session.events().filter((event) => event.type === 'operation_blocked');
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]).toMatchObject({ reason: 'budget_exhausted' });
+    expect((blocked[0] as { detail: string }).detail).toContain('0 of 2 turns left');
+  });
+
+  it('stops the run when its money is spent, pricing each call through the host', async () => {
+    const { session, stopped } = budgetHarness({ budget: { maxCostUsd: 0.05 }, costOf: pricing });
+    const result = await session.run('Fix the parser');
+
+    expect(result.status).toBe('blocked');
+    expect(result.error).toBe('budget exhausted — $0.0000 of $0.05 left');
+    // $0.10 for the first call against a $0.05 ceiling: the second never happens.
+    expect(stopped.count).toBe(1);
+    expect(session.getState().usage?.messages).toBe(1);
+    expect(session.getState().usage?.costUsd).toBeCloseTo(0.1);
+    expect(session.getState().usage?.costIncomplete).toBeUndefined();
+  });
+
+  it('marks a session whose calls the host could not price as incompletely accounted', async () => {
+    const { session } = budgetHarness({ budget: { maxTurns: 1 } });
+    await session.run('Fix the parser');
+    expect(session.getState().usage?.messages).toBe(1);
+    expect(session.getState().usage?.costUsd).toBeUndefined();
+    expect(session.getState().usage?.costIncomplete).toBe(true);
+  });
+
+  it('refuses to start a run when the allocation is already spent', async () => {
+    const { session, granted } = budgetHarness({ budget: { maxTurns: 1 }, callsPerRun: 1 });
+    await session.run('Fix the parser');
+    const result = await session.run('Fix the parser again');
+
+    // No engine was built for the second run: nothing was accepted, so nothing
+    // is reported as running.
+    expect(granted).toHaveLength(1);
+    expect(result.status).toBe('blocked');
+    expect(result.error).toMatch(/^budget exhausted/);
+    expect(session.events().filter((event) => event.type === 'run_started')).toHaveLength(1);
+    expect(session.events().filter((event) => event.type === 'operation_blocked')).toHaveLength(2);
+  });
+
+  it('clamps a session to what its parent pool has left and charges the pool', async () => {
+    const pool = createBudgetAccount({ maxCostUsd: 1, maxTurns: 10 });
+    const { session, granted } = budgetHarness({ budget: { maxCostUsd: 9, maxTurns: 99 }, parent: pool, costOf: pricing, callsPerRun: 2 });
+
+    const result = await session.run('Fix the parser');
+    expect(result.status).toBe('completed');
+    // The ask was $9 and 99 turns; the pool is what decided.
+    expect(granted[0]?.budget.maxCostUsd).toBe(1);
+    expect(granted[0]?.budget.maxTurns).toBe(10);
+    // Both calls happened, and both are visible to the pool that granted them.
+    expect(pool.spend()).toMatchObject({ turns: 2, costUsd: 0.2 });
+    expect(pool.remaining().costUsd).toBeCloseTo(0.8);
+  });
+
+  it('refuses a second session that the pool can no longer afford', async () => {
+    const pool = createBudgetAccount({ maxCostUsd: 0.05 });
+    const first = budgetHarness({ budget: { maxCostUsd: 1 }, parent: pool, costOf: pricing, callsPerRun: 1 });
+    await first.session.run('Fix the parser');
+    expect(pool.exhausted()).toBe(true);
+
+    const second = budgetHarness({ budget: { maxCostUsd: 1 }, parent: pool, costOf: pricing, callsPerRun: 1 });
+    const result = await second.session.run('Fix the parser');
+    expect(result.status).toBe('blocked');
+    expect(second.granted).toHaveLength(0);
   });
 });

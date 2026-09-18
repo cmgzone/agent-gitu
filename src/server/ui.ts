@@ -400,6 +400,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-call-head .why { flex: 0 2 auto; max-width: 36%; }
   .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; flex: none; border: 0; color: var(--faint); font: 11px var(--mono); background: transparent; }
   .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
+  .exit-code { font: 10px var(--mono); color: var(--faint); flex: none; }
+  .exit-code.bad { color: var(--err); }
   .tool-chevron { color: var(--faint); transition: transform .18s ease; }
   .tl-cmd[aria-expanded=true] .tool-chevron { transform: rotate(90deg); }
   .tool-call .tl-out { margin: 0; }
@@ -443,6 +445,13 @@ export const UI_HTML = String.raw`<!doctype html>
   .chip.bad { color: var(--err); border-color: rgba(255,100,101,.35); background: var(--err-dim); }
   .chip.info { color: var(--run); border-color: rgba(91,168,255,.35); background: var(--run-dim); }
   .chip.warn { color: var(--evidence); border-color: rgba(201,168,106,.4); background: var(--amber-bg); }
+  /* A refused action: the reason code, the operation it refused, and the real
+     detail message — none of which the legacy line carried. Quiet by design:
+     the agent refusing itself is context, not a headline. */
+  .tl-policy .policy-op { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+  .tl-policy .policy-tool { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .tl-policy .policy-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+  .tl-meta .recover-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
   .crit-req { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
   .crit-req code { background: var(--card2); border-radius: 4px; padding: 1px 5px; color: var(--text); }
 
@@ -2021,6 +2030,14 @@ export const UI_HTML = String.raw`<!doctype html>
         S.reconnecting = false;
         setWorking(sess.session && sess.session.status === 'running' ? 'Thinking…' : null);
       }
+      // A native frame carries seq (the runtime log cursor) and never i (the
+      // rendered-row cursor), so it updates typed state here instead of moving
+      // the cursor. The legacy prose row for the same transition still renders
+      // separately, and neither is derived from the other.
+      if (ev.i == null) {
+        handleTypedFrame(runId, ev);
+        return;
+      }
       if (sess.lastIndex == null) sess.lastIndex = -1;
       if (ev.i > sess.lastIndex) {
         sess.lastIndex = ev.i;
@@ -2188,6 +2205,12 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.qShown = null;
     sess.prShown = null;
     sess.apprShown = {};
+    // Typed gate state is live-only: native events are not persisted yet, so a
+    // restored or re-rendered session must not keep a card whose frames are gone.
+    sess.typedApprovals = {};
+    sess.typedPlanReview = null;
+    sess.typedQuestions = null;
+    sess.settledGates = {};
     sess.pendingUserMessages = [];
   }
   // A report belongs to the run that just ended.  Once a user starts another
@@ -2989,6 +3012,255 @@ export const UI_HTML = String.raw`<!doctype html>
     return /^(?:tdelta |thought |say |user-msg |activity (?:reasoning|content|tool)|think(?:\s|$)|evidence |plan |criteria |hypothesis |decision |ask-user|approval-required|queued |stopped |continue |done )/.test(String(text || ''));
   }
 
+  // Tool lifecycle matching, shared by the legacy prose path and the typed
+  // command frames. Matching on the stable parameter summary keeps parallel
+  // rows independent and also handles completions that arrive out of order.
+  // The duration suffix is only present on post-execution events; preflight
+  // errors/denials do not own a running card and must not accidentally close
+  // the previous one.
+  function terminalToolSummary(value) {
+    var m = /^(.*?)(?:\s+\(\d+ms\))$/.exec(String(value || '').trim());
+    return m ? m[1].trim() : '';
+  }
+  function normalizeToolKey(value) {
+    return String(value || '').replace(/^\$\s*/, '').replace(/\s+/g, ' ').trim();
+  }
+  function activeToolRows(state) {
+    var rows = state && state.nodes && state.nodes.toolRows;
+    if (!rows) return [];
+    // The timeline is bounded; drop cards evicted by trimTimeline so the
+    // lifecycle queue cannot retain detached DOM nodes forever.
+    state.nodes.toolRows = rows.filter(function (row) { return row && row.isConnected && row.dataset.toolState === 'working'; });
+    return state.nodes.toolRows;
+  }
+  function findToolRow(state, hint, allowFallback, exactOnly) {
+    if (!state || !state.nodes) return null;
+    var rows = activeToolRows(state);
+    var raw = String(hint || '').trim();
+    var key = normalizeToolKey(raw);
+    var exact = null;
+    for (var ri = 0; ri < rows.length; ri++) {
+      var rowKey = String(rows[ri].dataset.toolKey || '');
+      if (raw && (rowKey === raw || normalizeToolKey(rowKey) === key)) { exact = rows[ri]; break; }
+    }
+    if (exact) return exact;
+    // A path-only lines event can match an edit; only accept an unambiguous
+    // partial match after looking for every exact command match first. This
+    // also recovers the prose summary's 160-character truncation: a typed
+    // frame carries the full command, the card key holds the truncated one,
+    // and containment is what re-links them.
+    var partial = rows.filter(function (row) {
+      var candidate = normalizeToolKey(row.dataset.toolKey || '');
+      return key && candidate && (candidate.indexOf(key) >= 0 || key.indexOf(candidate) >= 0);
+    });
+    if (partial.length === 1) return partial[0];
+    // Typed frames always carry the exact command, so they stop here: a frame
+    // for a command the timeline never saw (replay without frames, a foreign
+    // emitter) must not stamp an unrelated card. The fallbacks below exist for
+    // legacy prose events that had no reliable correlation.
+    if (exactOnly) return null;
+    // A single active row is unambiguous even for older/replayed events.
+    if (rows.length === 1) return rows[0];
+    // Old persisted parallel events did not carry a correlation id. FIFO is
+    // the least surprising recovery for those rows; new events match above.
+    return allowFallback && state.nodes.parallelPending && rows.length ? rows[0] : null;
+  }
+
+  // Apply one terminal outcome to a tool card. info.durationMs comes from the
+  // prose suffix or the typed event; info.exitCode is the raw fact from the
+  // executor's typed event, shown as its own badge and never inferred back out
+  // of prose. An absent code stays absent — no exit status, no badge.
+  function applyToolOutcome(row, status, info) {
+    var dotEl = row.querySelector('.tl-dot');
+    var stEl = row.querySelector('.st');
+    if (status === 'ok') {
+      if (dotEl) dotEl.className = 'tl-dot dot-ok';
+      if (stEl) { stEl.className = 'st st-ok'; stEl.innerHTML = '&#10003; ok'; }
+    } else if (status === 'error') {
+      if (dotEl) dotEl.className = 'tl-dot dot-bad';
+      if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; error'; }
+      row.classList.add('done-bad');
+    } else if (status === 'denied') {
+      if (dotEl) dotEl.className = 'tl-dot dot-bad';
+      if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; denied'; }
+      row.classList.add('done-bad');
+    } else {
+      if (dotEl) dotEl.className = 'tl-dot dot-blocked';
+      if (stEl) { stEl.className = 'st st-warn'; stEl.innerHTML = '&#10005; blocked'; }
+    }
+    row.dataset.toolState = 'done';
+    row.dataset.toolStatus = status;
+    var outputLabel = row.querySelector('.output-label');
+    if (outputLabel) outputLabel.textContent = 'Output';
+    var outputPre = row.querySelector('pre');
+    if (outputPre && outputPre.textContent === 'Waiting for tool output…') outputPre.textContent = 'Tool ' + (status === 'ok' ? 'completed' : status) + '. No output was returned.';
+    var duration = row.querySelector('.tool-duration');
+    if (duration && info.durationMs != null) {
+      var ms = Number(info.durationMs);
+      duration.textContent = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+    }
+    if (info.exitCode !== undefined) {
+      var head = row.querySelector('.tl-cmd');
+      var badge = head && head.querySelector('.exit-code');
+      if (head && !badge) {
+        badge = document.createElement('span');
+        var durEl = head.querySelector('.tool-duration');
+        if (durEl) head.insertBefore(badge, durEl); else head.appendChild(badge);
+      }
+      if (badge) {
+        badge.className = 'exit-code' + (info.exitCode === 0 ? '' : ' bad');
+        badge.textContent = 'exit ' + info.exitCode;
+      }
+    }
+    var detailsEl = row.querySelector('details');
+    if (detailsEl && status !== 'ok') detailsEl.open = true;
+    refreshToolActivityGroup(toolActivityGroupForRow(row));
+  }
+
+  // Finish the working card matching info.key. Returns the row, or null when
+  // nothing is waiting on that key.
+  function finishToolCard(state, status, info) {
+    var key = String((info && info.key) || '').trim();
+    if (!key) return null;
+    var row = findToolRow(state, key, true, info && info.exactOnly);
+    if (!row) return null;
+    applyToolOutcome(row, status, info);
+    state.nodes.lastTool = row;
+    state.nodes.lastOutputTool = row;
+    if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
+    // Recently finished cards, so a typed frame that arrives just after the
+    // prose line can still upgrade the card it belongs to. Only ever consulted
+    // with an exact key match, so a wide pool is safe: the cap exists for the
+    // live case (one pool entry per finished card in a session), while a replay
+    // restores the whole visible window at once and the frames arrive right
+    // after it — a 12-entry pool silently left every earlier restored command
+    // without its exit badge.
+    var recent = state.nodes.recentFinished || (state.nodes.recentFinished = []);
+    recent.push({ key: normalizeToolKey(key), row: row });
+    if (recent.length > (state.replaying ? MAX_REPLAY_EVENTS : 12)) recent.shift();
+    return row;
+  }
+
+  // The legacy prose terminal line (ok … / error …), parsed from the text.
+  function finishToolRow(state, status, eventBody) {
+    var key = terminalToolSummary(eventBody);
+    if (!key) return null;
+    var elapsed = /\((\d+)ms\)$/.exec(eventBody);
+    return finishToolCard(state, status, { key: key, durationMs: elapsed ? Number(elapsed[1]) : undefined });
+  }
+
+  // The typed command frame carries the raw command and the real exit code.
+  // The prose line normally finished the card moments earlier — the executor
+  // emits them adjacently, prose first — so the frame's job is to upgrade that
+  // card with the exit fact, not to build a card of its own: prose keeps the
+  // reason text the typed start does not carry, and replayed/restored sessions
+  // have prose rows but no frames. Nothing to match means nothing to do.
+  function applyCommandFinish(runId, typed) {
+    var sess = S.sessions[runId];
+    if (!sess || !typed || typed.type !== 'command_finished') return;
+    var status = typed.ok ? 'ok' : 'error';
+    var info = { key: typed.command, durationMs: typed.durationMs, exitCode: typed.exitCode, exactOnly: true };
+    if (finishToolCard(sess, status, info)) return;
+    var recent = sess.nodes.recentFinished || [];
+    for (var i = recent.length - 1; i >= 0; i--) {
+      if (recent[i].row.isConnected && recent[i].key === normalizeToolKey(typed.command)) {
+        applyToolOutcome(recent[i].row, status, info);
+        return;
+      }
+    }
+  }
+
+  // Refused actions, rendered from the typed frames the executor emits at the
+  // gate that refused them. This family had no visible rendering before: a
+  // refusal is decided in preflight, before the run row that would create a
+  // card, so the legacy line only ever looked for a card that cannot exist —
+  // and the text adapter maps it to a plain log row rather than guessing at a
+  // reason from its wording. The structured code, the tool, and the full
+  // detail message exist on the event alone.
+  var POLICY_REASON_LABELS = {
+    project_guard: 'workspace boundary',
+    user_instruction: 'your instruction',
+    approval_required: 'approval',
+    risk_policy: 'risk policy',
+    loop_detected: 'repetition guard',
+    repeated_skill_operation: 'repeated operation',
+    edit_pressure: 'edit pressure',
+    budget_exhausted: 'budget exhausted',
+    prerequisite_missing: 'missing prerequisite',
+  };
+
+  // Presentation only: the code is the fact, the label is how it reads. An
+  // unrecognized code degrades to its own words rather than to nothing, so a
+  // future emitter cannot silently render an empty card.
+  function policyReasonLabel(typed) {
+    var code = String((typed && typed.reason) || '');
+    if (POLICY_REASON_LABELS[code]) return POLICY_REASON_LABELS[code];
+    return code ? code.replace(/_/g, ' ') : 'policy';
+  }
+
+  function policyNoticeHtml(typed) {
+    var blocked = typed.type === 'operation_blocked';
+    var html = '<span class="tl-dot ' + (blocked ? 'dot-blocked' : 'dot-bad') + '"></span><div class="tl-body">' +
+      '<span class="chip ' + (blocked ? 'warn' : 'bad') + '">' + esc(blocked ? 'blocked' : 'denied') + '</span> ' +
+      '<b>' + esc(policyReasonLabel(typed)) + '</b>';
+    var op = String(typed.operation || '').trim();
+    if (op) html += ' <span class="policy-op">' + esc(op) + '</span>';
+    if (typed.tool) html += ' <span class="policy-tool">' + esc(typed.tool) + '</span>';
+    if (typed.detail) html += '<div class="policy-detail">' + esc(String(typed.detail)) + '</div>';
+    return html + ' <span class="chip warn repeat-count">&times;1</span></div>';
+  }
+
+  /**
+   * Insert one timeline node where it belongs: before the working indicator,
+   * with the replay styling and the timestamp stamp the prose path has always
+   * used. Shared, so a typed card lands exactly like a prose row.
+   */
+  function insertTimelineNode(sess, el, iso) {
+    var stream = $('stream');
+    if (!stream) return;
+    // A refused-action card counts *consecutive* refusals, so anything else
+    // drawn in between ends the run of repeats. Recovery retries follow the
+    // same rule via lastRecover.
+    if (sess && sess.nodes) { sess.nodes.lastPolicy = null; sess.nodes.lastRecover = null; }
+    if (sess && sess.replaying) el.classList.add('replayed');
+    if (iso && el.classList && el.classList.contains('tl-row')) {
+      var stamp = document.createElement('span');
+      stamp.className = 'tl-time';
+      stamp.textContent = hhmm(iso);
+      stamp.title = new Date(iso).toLocaleString();
+      el.appendChild(stamp);
+    }
+    var working = $('working');
+    if (working) stream.insertBefore(el, working); else stream.appendChild(el);
+    trimTimeline(stream);
+    stickScroll(stream);
+  }
+
+  // A refused action stays true of the run forever, so a restored frame renders
+  // here too — unlike a gate request, whose runtime did not survive the restart.
+  function applyPolicyNotice(runId, typed, frame) {
+    var sess = S.sessions[runId];
+    if (!sess || !sess.nodes) return;
+    var key = String(typed.reason || '') + '|' + String(typed.operation || '');
+    var last = sess.nodes.lastPolicy;
+    if (last && last.key === key && last.el && last.el.isConnected) {
+      last.count += 1;
+      var chip = last.el.querySelector('.repeat-count');
+      if (chip) chip.textContent = '×' + last.count;
+      return;
+    }
+    var el = document.createElement('div');
+    el.className = 'tl-row tl-policy';
+    el.innerHTML = policyNoticeHtml(typed);
+    // A restored notice is history, so it appears without the entrance
+    // animation a live one gets — the same rule replayed rows follow.
+    if (frame && frame.restored) el.classList.add('replayed');
+    insertTimelineNode(sess, el, frame && frame.t);
+    // Set after the insert, which has already cleared it as "something else
+    // was drawn in between".
+    sess.nodes.lastPolicy = { key: key, count: 1, el: el };
+  }
+
   function appendEvent(runId, ev) {
     var stream = $('stream');
     if (!stream) return;
@@ -3022,17 +3294,8 @@ export const UI_HTML = String.raw`<!doctype html>
       text.indexOf('context ') === 0 || text.indexOf('delegate ') === 0 || text.indexOf('subagent ') === 0
     )) return;
 
-    var working = $('working');
     function insert(el) {
-      if (sess.replaying) el.classList.add('replayed');
-      if (ev && ev.t && el.classList && el.classList.contains('tl-row')) {
-        var stamp = document.createElement('span');
-        stamp.className = 'tl-time';
-        stamp.textContent = hhmm(ev.t);
-        stamp.title = new Date(ev.t).toLocaleString();
-        el.appendChild(stamp);
-      }
-      if (working) stream.insertBefore(el, working); else stream.appendChild(el); trimTimeline(stream); stickScroll(stream);
+      insertTimelineNode(sess, el, ev && ev.t);
     }
 
     if (text.indexOf('file ') === 0) {
@@ -3286,6 +3549,73 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
 
+    // A model retry is the moment Gitu noticed a failure and is actively
+    // correcting it — the run is NOT frozen and NOT repeating the same
+    // mistake. That distinction is trust-critical, so it renders for normal
+    // users from the typed companion (attempt, maxAttempts, the real reason)
+    // whenever one exists. The classifier has attached it to recover rows
+    // all along; old restored rows without one still fall through to the
+    // allowlist fallback below, unchanged. Developer mode keeps the raw
+    // line: this arm is the calm human rendering, not the diagnostic.
+    // Consecutive retries of the same cause collapse in place (the same
+    // ×N convention the refusal card and the recovery ladder use).
+    if (text.indexOf('recover ') === 0) {
+      closeThought(runId);
+      if (devMode()) {
+        // Developer mode keeps the raw diagnostic line: this arm is the calm
+        // human rendering, not the diagnostic. Fall through to the allowlist
+        // view below instead of returning.
+        sess.nodes.lastRecover = null;
+      } else {
+      var recTyped = ev.typed && ev.typed.type === 'recovering' ? ev.typed : null;
+      // Same-cause collapse: the cause is the structured message when the
+      // companion has one, else the prose detail. A DIFFERENT cause (or any
+      // other row drawn in between — insert() clears lastRecover) starts a
+      // new card, so the count can only ever mean consecutive.
+      var recBody = text.replace(/^recover\s+/, '');
+      var recCause = recTyped && recTyped.message ? String(recTyped.message) : recBody;
+      var lastRec = sess.nodes.lastRecover;
+      if (lastRec && lastRec.el && lastRec.el.isConnected && lastRec.cause === recCause) {
+        lastRec.count++;
+        var recChip = lastRec.el.querySelector('.repeat-count');
+        if (recChip) recChip.textContent = '×' + lastRec.count;
+        // Retries escalate: 1/3 then 2/3 changes the numbers even when the
+        // cause is identical. Without a companion the prose may not carry
+        // counts either; the card then says only "retrying".
+        var recUp = lastRec.el.querySelector('.recover-nums');
+        if (recUp) {
+          var recA = recTyped && typeof recTyped.attempt === 'number' ? recTyped.attempt : (lastRec.attempt || 1) + 1;
+          var recM = recTyped && typeof recTyped.maxAttempts === 'number' ? recTyped.maxAttempts : lastRec.max;
+          recUp.textContent = recM ? 'retry ' + recA + ' of ' + recM : '';
+          lastRec.attempt = recA; lastRec.max = recM || 0;
+        }
+        stickScroll(stream);
+        return;
+      }
+      var recEl = document.createElement('div');
+      recEl.className = 'tl-row tl-meta';
+      var recHtml = '<span class="tl-dot dot-note"></span><div class="tl-body">' +
+        '<span class="chip warn">\u21BB</span> <b>recovering</b>';
+      if (recTyped && typeof recTyped.attempt === 'number' && typeof recTyped.maxAttempts === 'number') {
+        recHtml += ' <span class="recover-nums">retry ' + recTyped.attempt + ' of ' + recTyped.maxAttempts + '</span>';
+      } else if (recTyped && typeof recTyped.attempt === 'number') {
+        recHtml += ' <span class="recover-nums">retry ' + recTyped.attempt + '</span>';
+      }
+      var recDetail = recTyped && recTyped.message ? String(recTyped.message) : recBody;
+      if (recDetail) recHtml += '<div class="recover-detail">' + esc(recDetail) + '</div>';
+      recHtml += ' <span class="chip warn repeat-count">\u00D71</span>';
+      recEl.innerHTML = recHtml;
+      // Set after the insert, which has already cleared lastRecover as
+      // "something else was drawn in between" — the same ordering the
+      // refused-action card documents.
+      insert(recEl);
+      sess.nodes.lastRecover = { cause: recCause, count: 1, el: recEl, attempt: recTyped && typeof recTyped.attempt === 'number' ? recTyped.attempt : 1, max: recTyped && typeof recTyped.maxAttempts === 'number' ? recTyped.maxAttempts : 0 };
+      setWorking('Recovering' + (recDetail ? ' — ' + shortText(recDetail, 90) : '') + '…');
+      stickScroll(stream);
+      return;
+      }
+    }
+
     // Machine bookkeeping (diff snapshots, specialist checkpoints) accumulates
     // into ONE collapsed group instead of narrating over the agent's work —
     // and is Developer-only: normal users never see internal activity.
@@ -3322,92 +3652,6 @@ export const UI_HTML = String.raw`<!doctype html>
     closeThought(runId);
     var tag = text.split(' ')[0];
     var body = text.slice(tag.length).trim();
-
-    // Tool lifecycle events carry the same parameter summary as their run
-    // event.  Matching on that stable key keeps parallel rows independent and
-    // also handles completions that arrive out of order.  The duration suffix
-    // is only present on post-execution events; preflight errors/denials do not
-    // own a running card and must not accidentally close the previous one.
-    function terminalToolSummary(value) {
-      var m = /^(.*?)(?:\s+\(\d+ms\))$/.exec(String(value || '').trim());
-      return m ? m[1].trim() : '';
-    }
-    function normalizeToolKey(value) {
-      return String(value || '').replace(/^\$\s*/, '').replace(/\s+/g, ' ').trim();
-    }
-    function activeToolRows(state) {
-      var rows = state && state.nodes && state.nodes.toolRows;
-      if (!rows) return [];
-      // The timeline is bounded; drop cards evicted by trimTimeline so the
-      // lifecycle queue cannot retain detached DOM nodes forever.
-      state.nodes.toolRows = rows.filter(function (row) { return row && row.isConnected && row.dataset.toolState === 'working'; });
-      return state.nodes.toolRows;
-    }
-    function findToolRow(state, hint, allowFallback) {
-      if (!state || !state.nodes) return null;
-      var rows = activeToolRows(state);
-      var raw = String(hint || '').trim();
-      var key = normalizeToolKey(raw);
-      var exact = null;
-      for (var ri = 0; ri < rows.length; ri++) {
-        var rowKey = String(rows[ri].dataset.toolKey || '');
-        if (raw && (rowKey === raw || normalizeToolKey(rowKey) === key)) { exact = rows[ri]; break; }
-      }
-      if (exact) return exact;
-      // A path-only lines event can match an edit; only accept an unambiguous
-      // partial match after looking for every exact command match first.
-      var partial = rows.filter(function (row) {
-        var candidate = normalizeToolKey(row.dataset.toolKey || '');
-        return key && candidate && (candidate.indexOf(key) >= 0 || key.indexOf(candidate) >= 0);
-      });
-      if (partial.length === 1) return partial[0];
-      // A single active row is unambiguous even for older/replayed events.
-      if (rows.length === 1) return rows[0];
-      // Old persisted parallel events did not carry a correlation id. FIFO is
-      // the least surprising recovery for those rows; new events match above.
-      return allowFallback && state.nodes.parallelPending && rows.length ? rows[0] : null;
-    }
-    function finishToolRow(state, status, eventBody) {
-      var key = terminalToolSummary(eventBody);
-      if (!key) return null;
-      var row = findToolRow(state, key, true);
-      if (!row) return null;
-      var dotEl = row.querySelector('.tl-dot');
-      var stEl = row.querySelector('.st');
-      if (status === 'ok') {
-        if (dotEl) dotEl.className = 'tl-dot dot-ok';
-        if (stEl) { stEl.className = 'st st-ok'; stEl.innerHTML = '&#10003; ok'; }
-      } else if (status === 'error') {
-        if (dotEl) dotEl.className = 'tl-dot dot-bad';
-        if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; error'; }
-        row.classList.add('done-bad');
-      } else if (status === 'denied') {
-        if (dotEl) dotEl.className = 'tl-dot dot-bad';
-        if (stEl) { stEl.className = 'st st-err'; stEl.innerHTML = '&#10005; denied'; }
-        row.classList.add('done-bad');
-      } else {
-        if (dotEl) dotEl.className = 'tl-dot dot-blocked';
-        if (stEl) { stEl.className = 'st st-warn'; stEl.innerHTML = '&#10005; blocked'; }
-      }
-      row.dataset.toolState = 'done';
-      row.dataset.toolStatus = status;
-      var outputLabel = row.querySelector('.output-label');
-      if (outputLabel) outputLabel.textContent = 'Output';
-      var outputPre = row.querySelector('pre');
-      if (outputPre && outputPre.textContent === 'Waiting for tool output…') outputPre.textContent = 'Tool ' + (status === 'ok' ? 'completed' : status) + '. No output was returned.';
-      var duration = row.querySelector('.tool-duration');
-      var elapsed = /\((\d+)ms\)$/.exec(eventBody);
-      if (duration && elapsed) {
-        var ms = Number(elapsed[1]);
-        duration.textContent = ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
-      }
-      if (status !== 'ok') row.querySelector('details').open = true;
-      state.nodes.lastTool = row;
-      state.nodes.lastOutputTool = row;
-      if (activeToolRows(state).length === 0) state.nodes.parallelPending = false;
-      refreshToolActivityGroup(toolActivityGroupForRow(row));
-      return row;
-    }
 
     // End-of-run status echo from the server ("run finished: failed/blocked/...").
     // The "run " prefix would otherwise render as a fake tool card with an
@@ -3512,12 +3756,25 @@ export const UI_HTML = String.raw`<!doctype html>
     }
     var meta = document.createElement('div');
     if (tag === 'evidence') {
-      var isPass = body.indexOf('PASS') >= 0;
+      // The typed companion carries the real verdict — a substring check for
+      // PASS could misread a passing line whose label merely contains FAIL — plus the
+      // id and kind as separate fields. The prose parse stays for rows without a
+      // companion: old databases, or a row the classifier demoted to log.
+      var evTyped = ev.typed && ev.typed.type === 'evidence_recorded' ? ev.typed : null;
+      var isPass = evTyped ? evTyped.passed === true : body.indexOf('PASS') >= 0;
+      var evBody = evTyped
+        ? (evTyped.kind ? evTyped.kind + ' ' : '') + String(evTyped.evidenceId || '') + (isPass ? ' passed' : ' failed')
+        : body;
       meta.className = 'tl-row tl-ev';
-      meta.innerHTML = '<span class="tl-dot dot-ev"></span><div class="tl-body"><span class="ev-pill ' + (isPass ? 'pass' : 'fail') + '">' + (isPass ? '&#10003; ' : '&#10005; ') + esc(body) + '</span></div>';
+      meta.innerHTML = '<span class="tl-dot dot-ev"></span><div class="tl-body"><span class="ev-pill ' + (isPass ? 'pass' : 'fail') + '">' + (isPass ? '&#10003; ' : '&#10005; ') + esc(evBody) + '</span></div>';
     } else if (tag === 'plan') {
+      // Same companion rule: the count and the follow-up distinction are
+      // structured on the event; the regex on the line is the fallback.
+      var planTyped = ev.typed && ev.typed.type === 'plan_created' ? ev.typed : null;
+      var followUp = planTyped ? false : / follow-up steps$/.test(body);
+      var stepCount = planTyped ? planTyped.steps : parseInt(body, 10) || 0;
       meta.className = 'tl-row tl-meta';
-      meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>plan</b> ' + esc(body) + ' — review it, then approve to build</div>';
+      meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>plan</b> ' + esc(stepCount + (followUp ? ' follow-up' : '') + (stepCount === 1 ? ' step' : ' steps')) + ' — review it, then approve to build</div>';
     } else if (tag === 'subagent') {
       meta.className = 'tl-row tl-meta subagent-note';
       meta.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><b>specialist</b> ' + esc(body) + '</div>';
@@ -3557,6 +3814,7 @@ export const UI_HTML = String.raw`<!doctype html>
     } else {
       sess.nodes.lastWarn = null;
       sess.nodes.lastRecovery = null;
+      sess.nodes.lastRecover = null;
       // ARCHITECTURAL RULE — the timeline is allowlisted. The tags above are
       // explicitly designed UI; ANY other (future, internal) event tag is
       // hidden for normal users and shown only in Developer mode. A newly
@@ -3807,13 +4065,119 @@ export const UI_HTML = String.raw`<!doctype html>
     stickScroll(stream, true);
   }
 
+  // A live frame and the polled session view are two views of the same pending
+  // request. They are merged on the runtime request id, so the frame renders the
+  // card immediately and the poll catching up neither duplicates it (the render
+  // key is remembered) nor removes it.
+  function pendingApprovalsFor(sess, session) {
+    var merged = {};
+    var typed = sess.typedApprovals || {};
+    Object.keys(typed).forEach(function (id) { merged[id] = typed[id]; });
+    ((session && session.pendingApprovals) || []).forEach(function (a) { if (!merged[a.id]) merged[a.id] = a; });
+    // A resolution frame settles the request at once; the mirror may still list
+    // it for another poll interval, and a card the user can still click after
+    // another surface answered is exactly the stale gate this removes.
+    var settled = sess.settledGates || {};
+    Object.keys(settled).forEach(function (id) { delete merged[id]; });
+    return Object.keys(merged).map(function (id) { return merged[id]; });
+  }
+
+  // The gates that hold one request at a time merge on the same terms: the live
+  // frame wins, the view is the fallback, and a request a frame already settled
+  // is not resurrected by a mirror that still lists it.
+  function pendingGateFor(typed, settled, view) {
+    if (typed) return typed;
+    if (view && settled[view.id]) return null;
+    return view || null;
+  }
+
+  function pendingPlanReviewFor(sess, session) {
+    return pendingGateFor(sess.typedPlanReview || null, sess.settledGates || {}, session && session.pendingPlanReview);
+  }
+
+  function pendingQuestionsFor(sess, session) {
+    return pendingGateFor(sess.typedQuestions || null, sess.settledGates || {}, session && session.pendingQuestions);
+  }
+
+  // The structured questions when the emitter supplied them. A frame that only
+  // carried the text projection still renders, with nothing to offer as options.
+  function questionDetails(typed) {
+    if (typed.details && typed.details.length) return typed.details;
+    return (typed.questions || []).map(function (text) { return { question: text, options: [] }; });
+  }
+
+  // Native frames for the gate families a card renders, plus the command
+  // lifecycle. Every gate action a card offers posts the request id it was
+  // rendered for — never "whatever is pending now" — so a second surface
+  // (Cowork, the Chief of Staff) answering first cannot make this card resolve
+  // a different request. Frames marked "restored" are reconstructed from the
+  // store after a restart and are read as history, not as pending work.
+  function handleTypedFrame(runId, frame) {
+    var sess = S.sessions[runId];
+    var typed = frame && frame.typed;
+    if (!sess || !typed) return;
+    // Commands are display-only: the prose run row already built their card
+    // (it carries the reason text, which the typed start does not), so the
+    // start frame is a no-op and the finish frame only contributes the exit
+    // code fact prose cannot express.
+    if (typed.type === 'command_started') return;
+    if (typed.type === 'command_finished') { applyCommandFinish(runId, typed); return; }
+    // A refused action is a fact about the run, not a request: it renders from a
+    // restored frame too, which is why it is handled before the history guard.
+    if (typed.type === 'policy_denied' || typed.type === 'operation_blocked') {
+      applyPolicyNotice(runId, typed, frame);
+      return;
+    }
+    // Everything below is a gate. A restored frame is history: the process that
+    // raised its gate did not survive the restart, so a request the log happens
+    // to end with was never ours to answer, and a card for it would offer
+    // buttons that resolve nothing. A live reconnect replays frames without the
+    // mark, and a still-pending gate is in the session view either way — so
+    // ignoring history costs nothing that is actually live. Commands returned
+    // above: their frames only enrich rows the replay has already rebuilt.
+    if (frame.restored) return;
+    var settled = null;
+    if (typed.type === 'approval_required') {
+      sess.typedApprovals = sess.typedApprovals || {};
+      sess.typedApprovals[typed.approvalId] = {
+        id: typed.approvalId, tool: typed.tool, why: typed.why, summary: typed.summary,
+        requestedAt: typed.requestedAt || frame.t,
+      };
+    } else if (typed.type === 'approval_resolved') {
+      if (sess.typedApprovals) delete sess.typedApprovals[typed.approvalId];
+      settled = typed.approvalId;
+    } else if (typed.type === 'plan_review_requested') {
+      sess.typedPlanReview = {
+        id: typed.requestId, criteria: typed.criteria || [], steps: typed.steps || [],
+        // The event's requestedAt is when the agent asked; the frame's transport
+        // stamp only substitutes for a legacy-classified event without one.
+        requestedAt: typed.requestedAt || frame.t,
+      };
+    } else if (typed.type === 'plan_review_resolved') {
+      sess.typedPlanReview = null;
+      settled = typed.requestId;
+    } else if (typed.type === 'questions_requested') {
+      sess.typedQuestions = { id: typed.requestId, questions: questionDetails(typed), requestedAt: typed.requestedAt || frame.t };
+    } else if (typed.type === 'questions_answered') {
+      sess.typedQuestions = null;
+      settled = typed.requestId;
+    } else {
+      return;
+    }
+    sess.settledGates = sess.settledGates || {};
+    if (settled) sess.settledGates[settled] = true;
+    renderApprovals(runId, sess.session);
+    renderPlanReview(runId, sess.session);
+    renderQuestions(runId, sess.session);
+  }
+
   function renderApprovals(runId, session) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
     sess.apprShown = sess.apprShown || {};
     var pending = {};
-    (session.pendingApprovals || []).forEach(function (a) {
+    pendingApprovalsFor(sess, session).forEach(function (a) {
       pending[a.id] = true;
       if (sess.apprShown[a.id]) return;
       sess.apprShown[a.id] = true;
@@ -3852,7 +4216,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
-    var q = session.pendingQuestions;
+    var q = pendingQuestionsFor(sess, session);
     if (!q) {
       if (sess.qShown) {
         sess.qShown = null;
@@ -3908,7 +4272,7 @@ export const UI_HTML = String.raw`<!doctype html>
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
-    var pr = session.pendingPlanReview;
+    var pr = pendingPlanReviewFor(sess, session);
     if (!pr) {
       if (sess.prShown) {
         sess.prShown = null;

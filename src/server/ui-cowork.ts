@@ -1439,11 +1439,14 @@ export const COWORK_JS = String.raw`
       var agent = cwAgentById(m.agentId);
       return '<div class="cw-mission" data-mission="' + esc(m.id) + '">' +
         '<div class="t">' + esc(m.goal) + '</div>' +
-        '<div class="d">' + statusChip + ' <span class="tg">' + (agent ? '@' + esc(agent.name) : '') + ' · session ' + m.turns + '/' + m.maxTurns + '</span></div>' +
+        '<div class="d">' + statusChip + ' <span class="tg">' + (agent ? '@' + esc(agent.name) : '') + ' · session ' + m.turns + '/' + m.maxTurns + '</span>' +
+        (m.budgetSpentUsd === undefined ? '' : ' <span class="tg">· $' + Number(m.budgetSpentUsd).toFixed(2) + (m.budget ? ' of $' + Number(m.budget.maxCostUsd).toFixed(2) : '') + ' spent</span>') +
+        '</div>' +
         (m.progress ? '<div class="p">' + esc(m.progress.slice(0, 220)) + '</div>' : '') +
         (m.result ? '<div class="p ok">' + esc(m.result.slice(0, 300)) + '</div>' : '') +
         (m.blockers ? '<div class="p warn">' + esc(m.blockers.slice(0, 220)) + '</div>' : '') +
         (m.status === 'running' || m.status === 'blocked' ? '<button class="btn ghost" data-cancelmission="' + esc(m.id) + '">Cancel mission</button>' : '') +
+        (m.status === 'failed' && m.stoppedForBudget ? '<button class="btn ghost" data-raisemission="' + esc(m.id) + '">Add $5 and resume</button>' : '') +
         '</div>';
     }).join('');
     return '<h4>MISSIONS</h4>' +
@@ -1458,6 +1461,23 @@ export const COWORK_JS = String.raw`
       b.onclick = function () {
         if (!confirm('Cancel this mission? Its progress is kept in the transcript.')) return;
         api('/api/cowork/missions/' + encodeURIComponent(b.getAttribute('data-cancelmission')), { method: 'DELETE' }).catch(function (e) { toast(e.message, true); });
+      };
+    });
+    el.querySelectorAll('[data-raisemission]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-raisemission');
+        var mission = null;
+        (cwEnsure().missions || []).forEach(function (m) { if (m.id === id) mission = m; });
+        // The API takes a total, not an increment, so +$5 on whatever it was
+        // granted — or on what it already spent when it had no ceiling.
+        var from = Number(mission && mission.budget ? mission.budget.maxCostUsd : 0) || Number(mission && mission.budgetSpentUsd) || 0;
+        api('/api/cowork/missions/' + encodeURIComponent(id) + '/budget', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ budgetUsd: Math.round((from + 5) * 100) / 100 }),
+        })
+          .then(function () { toast('Budget raised — the mission is resuming'); })
+          .catch(function (e) { toast(e.message, true); });
       };
     });
   }
@@ -1476,7 +1496,8 @@ export const COWORK_JS = String.raw`
             '<div><label>Session budget</label><input type="text" id="cwMmTurns" value="12"></div></div>') +
         '<label>Mission goal — what done looks like</label><textarea id="cwMmGoal" rows="3" placeholder="Build a landing page in my workspace for the coffee brand. Verify it renders."></textarea>' +
         '<label>Acceptance criteria — one per line</label><textarea id="cwMmCriteria" rows="4" placeholder="index.html exists and opens&#10;All links work&#10;A screenshot was reviewed"></textarea>' +
-        '<div class="cw-note">The teammate works in autonomous sessions (in its virtual computer, or on your machine per its permissions), posts progress here after each session, and stops when done, blocked (reply in this chat to unblock it), or out of budget.</div>' +
+        '<label>Spend budget in USD — optional</label><input type="text" id="cwMmCost" placeholder="5 — blank shares this chat\'s delegation budget">' +
+        '<div class="cw-note">The teammate works in autonomous sessions (in its virtual computer, or on your machine per its permissions), posts progress here after each session, and stops when done, blocked (reply in this chat to unblock it), or out of budget. The spend budget covers its own model calls and any engineering it delegates; it is enforced, not advisory.</div>' +
       '</div>' +
       '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwMmSave">Start mission</button></div></div>';
     document.body.appendChild(modal);
@@ -1484,6 +1505,8 @@ export const COWORK_JS = String.raw`
     modal.querySelector('#cwMmSave').onclick = function () {
       var criteria = $('cwMmCriteria').value.split('\n').map(function (c) { return c.trim(); }).filter(Boolean);
       var body = { goal: $('cwMmGoal').value, criteria: criteria, maxTurns: Number($('cwMmTurns').value) || 12 };
+      var spend = Number(String($('cwMmCost').value || '').replace(/[^0-9.]/g, ''));
+      if (spend > 0) body.budgetUsd = spend;
       if (conv.kind === 'group') body.agentId = $('cwMmAgent').value;
       api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/missions', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
         .then(function (d) {

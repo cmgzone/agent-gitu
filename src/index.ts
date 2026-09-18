@@ -122,6 +122,29 @@ export {
   type CodingEventType,
 } from './coding/events.js';
 export {
+  CHIEF_DECISION_ACTIONS,
+  describeChiefDecision,
+  type ChiefContext,
+  type ChiefDecision,
+  type ChiefDecisionAction,
+  type ChiefInput,
+  type ChiefRequest,
+  type ChiefRequestKind,
+  type ChiefResolver,
+} from './coding/chief.js';
+export {
+  ChiefOfStaff,
+  describeChiefRequest,
+  requestSignature,
+  type ChiefAdvisor,
+  type ChiefAdvisorRequest,
+  type ChiefDecisionRecord,
+  type ChiefDecisionSource,
+  type ChiefOfStaffOptions,
+} from './chief/chief.js';
+export { DEFAULT_AUTHORITY_POLICY, resolveAuthorityPolicy, authorityPolicySummary, highImpactSignal, type AuthorityPolicy, type AuthorityPolicyPatch } from './chief/authority.js';
+export { chiefAdvisorPrompt, modelChiefAdvisor, parseChiefAdvisorReply, type ModelChiefAdvisorOptions } from './chief/advisor.js';
+export {
   type CodingAgent,
   type CodingApprovalRequest,
   type CodingEventListener,

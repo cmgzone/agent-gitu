@@ -6,6 +6,7 @@ import { coworkToolDocs, executeCoworkTool, parseToolCalls, stripToolMarkers, ty
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers } from '../llm/llm.js';
 import { compactHistory } from '../agent/compaction.js';
 import { parseReplyAction } from '../agent/action-parser.js';
+import type { CoworkDelegation } from './delegation.js';
 import type { CoworkMemory } from './memory.js';
 import type { CoworkRecall } from './recall.js';
 import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMessageInput, CoworkMission, CoworkStore, CoworkThread } from './store.js';
@@ -50,6 +51,8 @@ export interface CoworkRunnerDeps {
   toolContext: (agent: CoworkAgent) => ToolContext;
   /** Isolated computer tool dispatcher; never falls back to the host shell. */
   computerFor?: CoworkToolScope['computerFor'];
+  /** Engineering delegation — hands a task to an Agent Gitu session. */
+  delegation?: CoworkDelegation;
   onProgress?: (progress: CoworkProgress) => void;
   withAgent?: (agent: CoworkAgent, work: () => Promise<void>) => Promise<void>;
   /** Backing store for chief team management. Optional in tests. */
@@ -407,7 +410,7 @@ async function agentTurn(input: {
   let ctx: ToolContext | undefined;
   const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
   let reply = '';
   const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string, detail?: string) =>
     deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk, webUrl, detail });
@@ -812,7 +815,7 @@ export async function runMissionSession(input: {
     const artifactIds: string[] = [];
     const taggedFolders = (deps.store?.getConversation(mission.conversationId)?.folders ?? []).map((folder) => folder.path);
     const scope: CoworkToolScope | undefined =
-      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: mission.conversationId, missionId: mission.id, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
     let ctx: ToolContext | undefined;
     const messages: LlmMessage[] = [
       // The transcript is deliberately not included: missions run in their own

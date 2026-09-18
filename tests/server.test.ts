@@ -65,6 +65,50 @@ describe('HermesServer', () => {
     return { base: `http://127.0.0.1:${port}`, server };
   }
 
+  type StreamFrame = {
+    i?: number;
+    text?: string;
+    /** A row replayed after (re)connecting: render it without animating. */
+    replay?: boolean;
+    /** A frame rebuilt from the store: it predates this process. */
+    restored?: boolean;
+    typed?: { type: string } & Record<string, unknown>;
+  };
+
+  /**
+   * Reads one connection's worth of the session stream: the replayed rows, the
+   * native-only frames, and a compact diagnostic of what actually arrived.
+   *
+   * The replay is written in one burst and the connection then stays open for
+   * live events, so a read past the burst blocks until the next heartbeat. Bound
+   * each read and stop at the first gap instead of waiting one out.
+   */
+  async function readStream(base: string, runId: string) {
+    const res = await fetch(`${base}/api/runs/${runId}/stream`);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let raw = '';
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      const chunk = await Promise.race([reader.read(), new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 1500))]);
+      if (!chunk?.value) break;
+      raw += decoder.decode(chunk.value, { stream: true });
+    }
+    await reader.cancel();
+    const received = raw
+      .split('\n\n')
+      .map((chunk) => chunk.replace(/^data: /, '').trim())
+      .filter((chunk) => chunk.startsWith('{'))
+      .map((chunk) => JSON.parse(chunk) as StreamFrame);
+    return {
+      received,
+      // Rows render; frames are typed-only and must stay invisible to the renderer.
+      rows: received.filter((f): f is StreamFrame & { text: string } => typeof f.text === 'string'),
+      frames: received.filter((f) => f.text === undefined),
+      diagnostics: JSON.stringify(received.map((f) => [f.text?.slice(0, 40) ?? '(frame)', f.typed?.type])),
+    };
+  }
+
   it('serves the UI and project info', async () => {
     const dir = makeProject('ui');
     const { base } = await startServer(dir, new ScriptedMockLlm([]));
@@ -217,6 +261,216 @@ describe('HermesServer', () => {
     expect(streamRes.headers.get('content-type')).toContain('text/event-stream');
     await streamRes.body?.cancel();
   }, 30000);
+
+  it('projects the runtime log into the session stream with the typed event attached', async () => {
+    // The run's events are the runtime log, and the session stream is a
+    // projection of it: each row keeps the legacy line the UI renders and
+    // carries the transition the runtime classified it as, so a card can stop
+    // parsing prose without the stream changing shape underneath it.
+    const dir = makeProject('projection');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'verified' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'verify node', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+
+    // The stream replays the session's rows, so the projection can be read back
+    // without racing a live run.
+    const { rows, frames: nativeFrames, diagnostics } = await readStream(base, created.runId);
+
+    // The prose is byte-for-byte what the UI has always received.
+    const runRow = rows.find((row) => row.text === 'run      $ node --version — verify');
+    expect(runRow, diagnostics).toBeTruthy();
+    // A command's transition is owned natively, so the log demotes this line —
+    // the row is prose and the one typed lifecycle event for the command stays
+    // in the log rather than being restated here.
+    expect(runRow!.typed).toMatchObject({ type: 'log', source: 'run      $ node --version — verify' });
+
+    // A kind no native emitter owns keeps its classification on the row, which
+    // is what lets a card migrate off parsing prose, one kind at a time.
+    const planRow = rows.find((row) => /^plan\s+1 steps$/.test(row.text));
+    expect(planRow, diagnostics).toBeTruthy();
+    expect(planRow!.typed).toMatchObject({ type: 'plan_created', steps: 1 });
+
+    const evidenceRow = rows.find((row) => row.text.startsWith('evidence ') && row.text.includes('PASS'));
+    expect(evidenceRow, diagnostics).toBeTruthy();
+    expect(evidenceRow!.typed).toMatchObject({ type: 'evidence_recorded', passed: true });
+
+    // A native-only transition has no prose row, so it travels as a typed frame
+    // on the same connection. This is where `command_finished.exitCode` finally
+    // reaches the wire: the text shim can only recover ok plus a duration, so the
+    // real code exists on the native event alone and must never be parsed back
+    // out of prose.
+    const finishedFrame = nativeFrames.find((frame) => frame.typed?.type === 'command_finished');
+    expect(finishedFrame, diagnostics).toBeTruthy();
+    expect(finishedFrame!.typed).toMatchObject({ type: 'command_finished', ok: true, exitCode: 0 });
+    // No `i` is what keeps it invisible: the client only appends a row when
+    // `ev.i` advances its cursor, so this frame is never passed to the renderer.
+    expect(finishedFrame!.i).toBeUndefined();
+    // And no `restored`: this process raised it, so a gate request in it is still
+    // answerable here. Only frames rebuilt from the store carry that mark.
+    expect(finishedFrame!.restored).toBeUndefined();
+    expect(nativeFrames.some((frame) => frame.typed?.type === 'command_started')).toBe(true);
+  }, 30000);
+
+  it('carries plan-review and question requests to the stream as typed frames', async () => {
+    // The two interactive cards render from the runtime's own request, so the
+    // gates the runtime now owns have to reach the same connection the UI tails —
+    // and the legacy lines the server's old handlers pushed must survive the
+    // move, or the transcript would quietly change.
+    const dir = makeProject('gate-frames');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () =>
+        JSON.stringify({
+          action: {
+            type: 'ask_user',
+            questions: [{ question: 'Which database?', header: 'Storage', options: ['PostgreSQL', 'SQLite'] }],
+          },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'answered, then paused' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Reviewed build', mode: 'fast', review: true }),
+    }).then((r) => r.json());
+
+    const paused = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview ? s : undefined;
+    });
+    const reviewId = paused.pendingPlanReview.id;
+    expect(paused.status).toBe('running');
+
+    const before = await readStream(base, created.runId);
+    const requested = before.frames.find((f) => f.typed?.type === 'plan_review_requested');
+    expect(requested, before.diagnostics).toBeTruthy();
+    // The card edits the agent's own criteria and steps, so the structured
+    // request rides the frame alongside the rendered plan text.
+    expect(requested!.typed).toMatchObject({
+      requestId: reviewId,
+      criteria: ['verification passes'],
+      steps: [{ description: 'run verification', verification: 'node --version' }],
+    });
+    expect(requested!.i).toBeUndefined();
+    expect(before.rows.some((row) => row.text === `plan-review ${reviewId} waiting for your review`)).toBe(true);
+
+    const approved = await fetch(`${base}/api/plan-review/${reviewId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    }).then((r) => r.json());
+    expect(approved.ok).toBe(true);
+
+    // The resolution is on the stream too, so a card that reconnects after the
+    // decision learns the request is settled instead of offering it again. The
+    // run carries on to the next gate rather than ending, so this is read live.
+    const asked = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingQuestions ? s : undefined;
+    }, 30000);
+    const answeredStream = await readStream(base, created.runId);
+    expect(
+      answeredStream.frames.find((f) => f.typed?.type === 'plan_review_resolved')?.typed,
+      answeredStream.diagnostics,
+    ).toMatchObject({ requestId: reviewId, decision: 'approved' });
+
+    // The question card offers only the options the agent gave it, so they ride
+    // the frame rather than being reconstructed from the text projection.
+    const askedFrame = answeredStream.frames.find((f) => f.typed?.type === 'questions_requested');
+    expect(askedFrame, answeredStream.diagnostics).toBeTruthy();
+    expect(askedFrame!.typed).toMatchObject({
+      requestId: asked.pendingQuestions.id,
+      questions: ['Which database?'],
+      details: [{ question: 'Which database?', header: 'Storage', options: ['PostgreSQL', 'SQLite'] }],
+    });
+    expect(answeredStream.rows.some((row) => row.text === 'ask-user waiting for your answers')).toBe(true);
+
+    const replied = await fetch(`${base}/api/answers/${asked.pendingQuestions.id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answer: 'PostgreSQL' }),
+    }).then((r) => r.json());
+    expect(replied.ok).toBe(true);
+
+    const finished = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    }, 30000);
+    expect(finished.status).toBe('blocked');
+    expect(finished.pendingQuestions).toBeUndefined();
+    expect(finished.pendingPlanReview).toBeUndefined();
+
+    const after = await readStream(base, created.runId);
+    expect(after.frames.find((f) => f.typed?.type === 'questions_answered')?.typed, after.diagnostics).toMatchObject({
+      requestId: asked.pendingQuestions.id,
+    });
+  }, 60000);
+
+  it('carries a refused action to the stream as a typed frame', async () => {
+    // The UI renders this family from the frame, because the legacy line cannot
+    // carry what the card shows: the structured reason code, and the gate's own
+    // message rather than a summary of it. The prose row stays exactly as it was
+    // — it is still the transcript, and its typed companion stays a plain log,
+    // since the text adapter refuses to guess a reason from its wording.
+    const dir = makeProject('policy-frames');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['outside file inspected'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'inspect outside file', verification: 'n/a' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'read_file', params: { path: '../../outside.txt' }, reason: 'inspect', expected: 'file contents' },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'the path is outside the workspace' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'inspect a file outside the workspace', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+
+    const { rows, frames, diagnostics } = await readStream(base, created.runId);
+    const denied = frames.find((f) => f.typed?.type === 'policy_denied');
+    expect(denied, diagnostics).toBeTruthy();
+    expect(denied!.typed).toMatchObject({ reason: 'project_guard', tool: 'read_file' });
+    // The gate's message, which the legacy line reduced to a parenthetical.
+    expect(String(denied!.typed!.detail)).toMatch(/boundary/i);
+    expect(denied!.i).toBeUndefined();
+    // Live, not restored: this process raised it.
+    expect(denied!.restored).toBeUndefined();
+
+    const deniedRow = rows.find((row) => row.text.startsWith('denied '));
+    expect(deniedRow, diagnostics).toBeTruthy();
+    // The prose summary names the human form of the call, not the tool: the
+    // tool name, the reason code, and the gate's message are the event's alone.
+    expect(deniedRow!.text).toContain('read ../../outside.txt');
+    expect(deniedRow!.typed).toMatchObject({ type: 'log' });
+  }, 60000);
 
   function billingCrashLlm(): ScriptedMockLlm {
     const boom = () => {
@@ -480,6 +734,115 @@ describe('HermesServer', () => {
     expect(finished.report.summary).toContain('The widget is blue');
   }, 30000);
 
+  it('restores typed command frames across a restart, marked as history', async () => {
+    // Durable typed events are what let a restored session show the facts prose
+    // cannot carry — the real exit code above all — instead of degrading to the
+    // prose fallback the moment the process ends.
+    const dir = makeProject('frame-restart-command');
+    const first = new HermesServer({
+      cwd: dir,
+      port: 0,
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+        () =>
+          JSON.stringify({
+            action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
+          }),
+        () => JSON.stringify({ action: { type: 'request_block', reason: 'verified' } }),
+      ]),
+    });
+    servers.push(first);
+    const firstBase = `http://127.0.0.1:${await first.start()}`;
+    const created = await fetch(`${firstBase}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'verify node', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+    await waitFor(async () => {
+      const s = await fetch(`${firstBase}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.status !== 'running' ? s : undefined;
+    });
+    await first.stop();
+
+    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    servers.push(second);
+    const secondBase = `http://127.0.0.1:${await second.start()}`;
+    const { rows, frames, diagnostics } = await readStream(secondBase, created.runId);
+
+    const finished = frames.find((f) => f.typed?.type === 'command_finished');
+    expect(finished, diagnostics).toBeTruthy();
+    expect(finished!.typed).toMatchObject({ type: 'command_finished', ok: true, exitCode: 0 });
+    // Rebuilt from the store, so the client can tell it apart from a frame the
+    // running process raised. No `i`, so it still never reaches the renderer.
+    expect(finished!.restored).toBe(true);
+    expect(finished!.i).toBeUndefined();
+
+    // The prose rows come back with their typed companions: the demoted command
+    // row keeps its log classification and source line, so a restored session
+    // carries the same structure a live one projected — not just the words.
+    const runRow = rows.find((row) => row.text === 'run      $ node --version — verify');
+    expect(runRow, diagnostics).toBeTruthy();
+    expect(runRow!.typed).toMatchObject({ type: 'log', source: 'run      $ node --version — verify' });
+    const planRow = rows.find((row) => /^plan\s+1 steps$/.test(row.text));
+    expect(planRow, diagnostics).toBeTruthy();
+    expect(planRow!.typed).toMatchObject({ type: 'plan_created', steps: 1 });
+  }, 30000);
+
+  it('does not offer an interrupted approval as answerable after a restart', async () => {
+    // The run was stopped while the runtime held an approval. The request stays
+    // in the log — it is history and the log keeps history — but after the
+    // restart it comes back marked as restored, and the session offers nothing
+    // to answer: no promise anywhere is still waiting behind that id.
+    const dir = makeProject('frame-restart-approval');
+    const first = new HermesServer({
+      cwd: dir,
+      port: 0,
+      llm: new ScriptedMockLlm([
+        () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['cleanup done'] } }),
+        () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'dangerous cleanup', verification: 'n/a' }] } }),
+        () =>
+          JSON.stringify({
+            action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
+          }),
+        () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped before deciding' } }),
+      ]),
+    });
+    servers.push(first);
+    const firstBase = `http://127.0.0.1:${await first.start()}`;
+    const created = await fetch(`${firstBase}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Force push cleanup', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+    const waiting = await waitFor(async () => {
+      const s = await fetch(`${firstBase}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingApprovals.length > 0 ? s : undefined;
+    });
+    await first.stop();
+
+    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    servers.push(second);
+    const secondBase = `http://127.0.0.1:${await second.start()}`;
+
+    const restored = await fetch(`${secondBase}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(restored.pendingApprovals).toHaveLength(0);
+
+    const { frames, diagnostics } = await readStream(secondBase, created.runId);
+    const requested = frames.find((f) => f.typed?.type === 'approval_required');
+    expect(requested, diagnostics).toBeTruthy();
+    expect(requested!.restored).toBe(true);
+
+    // And the id really resolves nothing: the mark is how a client avoids
+    // offering a button, this is the server refusing to pretend it works.
+    const late = await fetch(`${secondBase}/api/approvals/${waiting.pendingApprovals[0].id}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(late.status).toBe(404);
+  }, 30000);
+
   it('retry and edited resends supersede the original message instead of cloning it', async () => {
     const dir = makeProject('retry');
     const { base } = await startServer(
@@ -720,6 +1083,16 @@ describe('HermesServer', () => {
     }).then((r) => r.json());
     expect(denied.ok).toBe(true);
 
+    // The runtime owns resolution, so the approval is settled once and for all:
+    // a later surface asking to grant it must learn it is gone rather than
+    // reaching a second promise that could disagree with the recorded denial.
+    const replay = await fetch(`${base}/api/approvals/${approvalId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(replay.status).toBe(404);
+
     const finished = await waitFor(async () => {
       const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
       return s.status !== 'running' ? s : undefined;
@@ -731,6 +1104,95 @@ describe('HermesServer', () => {
     const ledger = await fetch(`${base}/api/tasks/${finished.taskId}`).then((r) => r.json());
     const policyDeniedActions = ledger.actions.filter((a: { status: string; errorSignature?: string }) => a.status === 'denied' && a.errorSignature !== 'invalid-block-request');
     expect(policyDeniedActions.length).toBe(1);
+  }, 30000);
+
+  it('releases a pending approval when the run is stopped', async () => {
+    // Stopping must not leave an approval for a dead run: the runtime releases
+    // the gate, the run exits, and the mirror stops offering an id that nothing
+    // can answer any more.
+    const dir = makeProject('approval-stop');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['cleanup done'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'dangerous cleanup', verification: 'n/a' }] } }),
+      () =>
+        JSON.stringify({
+          action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
+        }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped before deciding' } }),
+    ]);
+    const { base } = await startServer(dir, llm);
+
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Force push cleanup', mode: 'fast', review: false }),
+    }).then((r) => r.json());
+
+    const waiting = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingApprovals.length > 0 ? s : undefined;
+    });
+    const approvalId = waiting.pendingApprovals[0].id;
+
+    const stop = await fetch(`${base}/api/runs/${created.runId}/stop`, { method: 'POST' }).then((r) => r.json());
+    expect(stop.ok).toBe(true);
+
+    // The runtime settled its gate, so the mirror has nothing left to show.
+    const stopped = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+    expect(stopped.status).toBe('blocked');
+    expect(stopped.pendingApprovals).toHaveLength(0);
+
+    // No second resolver survives for the stopped run's approval.
+    const late = await fetch(`${base}/api/approvals/${approvalId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(late.status).toBe(404);
+  }, 30000);
+
+  it('times an unanswered plan review out to a denial through the runtime', async () => {
+    // The server's own handler used to own this timer. The runtime owns it now,
+    // so an unanswered review must still unwind on its own and still read the
+    // same in the transcript.
+    const dir = makeProject('planreview-timeout');
+    const llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
+      () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
+      () => JSON.stringify({ action: { type: 'request_block', reason: 'review timed out' } }),
+    ]);
+    const server = new HermesServer({ cwd: dir, port: 0, llm, approvalTimeoutMs: 1500 });
+    servers.push(server);
+    const base = `http://127.0.0.1:${await server.start()}`;
+    const created = await fetch(`${base}/api/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Unanswered build', mode: 'fast', review: true }),
+    }).then((r) => r.json());
+
+    const reviewId = await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview?.id as string | undefined;
+    }, 15000);
+    await waitFor(async () => {
+      const s = await fetch(`${base}/api/runs/${created.runId}`).then((r) => r.json());
+      return s.pendingPlanReview === undefined ? s : undefined;
+    }, 20000);
+
+    const streamed = await readStream(base, created.runId);
+    expect(
+      streamed.rows.some((row) => row.text === `plan-review ${reviewId} timed out — treating as denied`),
+      streamed.diagnostics,
+    ).toBe(true);
+
+    // The timeout settled the one request object, so a late answer resolves
+    // nothing and must not reach a different review.
+    const late = await fetch(`${base}/api/plan-review/${reviewId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ approved: true }),
+    });
+    expect(late.status).toBe(404);
   }, 30000);
 
   it('pauses for plan review over HTTP and builds after approval', async () => {

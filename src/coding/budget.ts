@@ -99,3 +99,138 @@ export function budgetExhausted(budget: RunBudget, spent: BudgetSpend): boolean 
   if (budget.maxSubagents !== undefined && (spent.subagents ?? 0) >= budget.maxSubagents) return true;
   return false;
 }
+
+/**
+ * A live allocation.
+ *
+ * `RunBudget` is a plan; an account is the plan plus what has actually been
+ * spent, and it is the only thing a caller should make a stop decision from.
+ * Budgets alone cannot answer "may I start another turn?" once two siblings are
+ * spending the same envelope concurrently, and the whole point of the hierarchy
+ * is that a parent's remaining money bounds every child, including children it
+ * has already handed money to.
+ *
+ * Two rules make it safe:
+ *
+ *   1. `charge` is applied, never refused. By the time spend is observable the
+ *      money is already gone; refusing to record it would only hide the overrun.
+ *      The return value is the signal to stop handing out work.
+ *   2. `allocate` clamps to what is left — the parent's ceiling minus its own
+ *      spend and minus the reserve it holds back for recovery. A child is
+ *      therefore structurally incapable of outspending its parent, and the next
+ *      sibling's allocation shrinks as earlier siblings spend.
+ */
+export interface BudgetAccount {
+  /** The plan this account currently runs under, as last granted. */
+  readonly budget: RunBudget;
+  /** Spend recorded here, including everything charged by descendants. */
+  spend(): BudgetSpend;
+  /** What is left of each ceiling; a dimension is `undefined` when uncapped. */
+  remaining(): BudgetSpend;
+  /** True when any ceiling in this account or an ancestor is used up. */
+  exhausted(): boolean;
+  /**
+   * Record spend here and on every ancestor. Returns false once a ceiling in the
+   * chain is used up, which is the caller's signal to stop new work.
+   */
+  charge(delta: BudgetSpend): boolean;
+  /**
+   * A child allocation inside this account's remaining envelope. Spending it is
+   * visible here, so siblings compete for the same money rather than each
+   * receiving the parent's full ceiling.
+   */
+  allocate(requested: RunBudget): BudgetAccount;
+  /**
+   * The same work, granted a new ceiling — in place, so the account keeps its
+   * identity and its place in the chain above and below it.
+   *
+   * Spend already recorded here carries over, so work given more money resumes
+   * inside one envelope instead of starting a second one that would forget what
+   * the first already cost. Whatever ceiling sits above is unchanged and still
+   * bounds this account, so a re-granted child cannot escape its parent.
+   */
+  regrant(budget: RunBudget): BudgetAccount;
+  /** True when every ceiling in `requested` fits what this account can hand out. */
+  canAllocate(requested: RunBudget): boolean;
+}
+
+/**
+ * What `allocate` may hand a child: the remaining ceiling minus the reserve the
+ * *parent* holds back. The reserve belongs to the parent's budget, not to the
+ * request — a child asking for a number must not be able to lift the parent's
+ * recovery hold by leaving it out.
+ */
+function childEnvelope(requested: RunBudget, remaining: BudgetSpend, parentReserveUsd = 0): RunBudget {
+  const budget = requested;
+  const reserve = Math.max(0, parentReserveUsd);
+  const capCost = (value: number | undefined): number | undefined => {
+    if (remaining.costUsd === undefined) return value;
+    const usable = Math.max(0, remaining.costUsd - reserve);
+    return value === undefined ? usable : Math.min(value, usable);
+  };
+  const cap = (value: number | undefined, left: number | undefined): number | undefined =>
+    left === undefined ? value : value === undefined ? left : Math.min(value, left);
+  return {
+    maxCostUsd: capCost(budget.maxCostUsd),
+    maxTurns: cap(budget.maxTurns, remaining.turns),
+    maxSubagents: cap(budget.maxSubagents, remaining.subagents),
+    // A child's own reserve is part of its envelope, so it can never exceed it.
+    reserveUsd: requested.reserveUsd === undefined ? undefined : Math.min(requested.reserveUsd, capCost(requested.maxCostUsd) ?? Number.POSITIVE_INFINITY),
+  };
+}
+
+/**
+ * Create an account for `budget`, optionally inside a parent allocation.
+ *
+ * The parent is charged whenever this account is, which is what makes a pool of
+ * delegations (one host ceiling, many sessions) enforceable rather than a set of
+ * independent caps that each look affordable on their own.
+ *
+ * `carried` restores spend that already happened under this same grant — a
+ * durable record read back after a restart. It is deliberately not charged to the
+ * parent: the parent restores its own record of the same money, and charging it
+ * again here would double-count what it already knows it spent.
+ */
+export function createBudgetAccount(budget: RunBudget, parent?: BudgetAccount, carried?: BudgetSpend): BudgetAccount {
+  const spent: BudgetSpend = { costUsd: carried?.costUsd ?? 0, turns: carried?.turns ?? 0, subagents: carried?.subagents ?? 0 };
+  // The ceiling moves on `regrant`, so read it through a binding rather than the
+  // parameter: every other closure has to see the current grant, not the first.
+  let current = budget;
+  const account: BudgetAccount = {
+    get budget() {
+      return current;
+    },
+    spend: () => ({ ...spent }),
+    remaining: () => ({
+      costUsd: current.maxCostUsd === undefined ? undefined : Math.max(0, current.maxCostUsd - (spent.costUsd ?? 0)),
+      turns: current.maxTurns === undefined ? undefined : Math.max(0, current.maxTurns - (spent.turns ?? 0)),
+      subagents: current.maxSubagents === undefined ? undefined : Math.max(0, current.maxSubagents - (spent.subagents ?? 0)),
+    }),
+    exhausted: () => budgetExhausted(current, spent) || Boolean(parent?.exhausted()),
+    charge: (delta) => {
+      spent.costUsd = (spent.costUsd ?? 0) + (delta.costUsd ?? 0);
+      spent.turns = (spent.turns ?? 0) + (delta.turns ?? 0);
+      spent.subagents = (spent.subagents ?? 0) + (delta.subagents ?? 0);
+      const room = parent ? parent.charge(delta) : true;
+      return room && !budgetExhausted(current, spent);
+    },
+    allocate: (requested) => createBudgetAccount(childEnvelope(requested, account.remaining(), current.reserveUsd), account),
+    // In place, so an account keeps its identity: children already charging it
+    // still propagate here, and it still propagates to the parent it was drawn
+    // from. A replacement object would silently strand both.
+    regrant: (next) => {
+      current = next;
+      return account;
+    },
+    canAllocate: (requested) => {
+      const envelope = childEnvelope(requested, account.remaining(), current.reserveUsd);
+      // `childEnvelope` never widens a dimension, so "fits" means the caller's
+      // own request survived clamping unchanged and something is left to spend.
+      if (requested.maxCostUsd !== undefined && envelope.maxCostUsd !== requested.maxCostUsd) return false;
+      if (requested.maxTurns !== undefined && envelope.maxTurns !== requested.maxTurns) return false;
+      if (requested.maxSubagents !== undefined && envelope.maxSubagents !== requested.maxSubagents) return false;
+      return !account.exhausted();
+    },
+  };
+  return account;
+}

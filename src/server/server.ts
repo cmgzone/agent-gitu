@@ -4,7 +4,17 @@ import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkd
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
-import { createGitu } from '../coding/gitu-factory.js';
+import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
+import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
+import { createBudgetAccount, type BudgetAccount } from '../coding/budget.js';
+import type { ChiefResolver } from '../coding/chief.js';
+import type { CodingSession } from '../coding/contract.js';
+import { ChiefOfStaff, type ChiefAdvisor } from '../chief/chief.js';
+import { modelChiefAdvisor } from '../chief/advisor.js';
+import { resolveAuthorityPolicy, type AuthorityPolicy, type AuthorityPolicyPatch } from '../chief/authority.js';
+import { workspacePath } from '../coding/workspace.js';
+import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
+import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
@@ -18,7 +28,7 @@ import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
-import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
+import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { CoworkComputer } from '../cowork/computer.js';
@@ -39,11 +49,12 @@ import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
 import { PendingSkillStore } from '../skills/pending.js';
 import { CoworkRecall } from '../cowork/recall.js';
-import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionRequirement } from '../connections/connections.js';
+import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
+import type { ApprovalHandler } from '../policy/policy.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import type { ModelContextAttachment } from '../context/model-context.js';
-import type { CompletionReport } from '../types.js';
+import type { CompletionReport, RiskTier } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
@@ -91,20 +102,8 @@ export interface SessionFileView {
   previewUrl?: string;
 }
 
-interface QuestionsWaiter extends PendingQuestions {
-  resolve: (answer: string) => void;
-}
-
 interface ConnectionWaiter extends PendingConnection {
   resolve: (saved: boolean) => void;
-}
-
-interface PlanReviewWaiter extends PendingPlanReview {
-  resolve: (decision: { approved: boolean; note?: string; criteria?: string[]; steps?: { description: string; verification: string }[] }) => void;
-}
-
-interface ApprovalWaiter extends PendingApproval {
-  resolve: (approved: boolean) => void;
 }
 
 export interface RunSessionView {
@@ -135,6 +134,56 @@ export interface RunSessionView {
   files: SessionFileView[];
 }
 
+/**
+ * One row of the session event stream.
+ *
+ * `text` stays the notation the UI already renders. `typed` is the runtime's
+ * classification of the same transition, attached so a card can migrate off
+ * parsing prose without the stream changing shape.
+ */
+interface SessionEvent {
+  i: number;
+  t: string;
+  text: string;
+  /**
+   * The runtime event this prose line was projected from. Persisted beside the
+   * row (the store's `events.typed` column), so it survives a restart exactly
+   * like the typed-only frames in `native_frames` do. Rows classified from
+   * legacy text still carry a `log` payload here; the prose line remains the
+   * fallback a consumer reads when the payload is absent.
+   */
+  typed?: CodingEvent;
+}
+
+/**
+ * A typed-only stream frame: a native runtime event that has no prose row.
+ *
+ * It deliberately carries no `i`. The client appends a row only when `ev.i`
+ * advances its cursor, so a frame without one is skipped before anything is
+ * rendered or animated — that is what keeps the legacy renderer untouched rather
+ * than merely hidden by its allowlist. `i` is the session row cursor while `seq`
+ * is the runtime log's own counter; reusing one as the other would move the
+ * client's cursor past rows it has not drawn yet, and those rows would be lost.
+ */
+interface NativeEventFrame {
+  /** The log's cursor for this event; `typed.seq` repeats it for readers. */
+  seq: number;
+  /** The log's timestamp, matching the `t` a sibling row carries. */
+  t: string;
+  typed: CodingEvent;
+  /**
+   * This event predates the current process, restored from the store.
+   *
+   * A claim about time, not about transport: the runtime that raised any gate in
+   * here is gone, so a restored gate request is history and must not open a card
+   * nothing can answer. A live reconnect replays frames without the mark.
+   */
+  restored?: true;
+}
+
+/** What may travel on a session's event stream. */
+type StreamFrame = SessionEvent | NativeEventFrame;
+
 interface RunSession {
   runId: string;
   goal: string;
@@ -157,13 +206,25 @@ interface RunSession {
   /** Bound retry/fallback history for the live run; values are provider::model, never credentials. */
   fallbackHistory?: string[];
   autoApprove?: boolean;
-  events: { i: number; t: string; text: string }[];
-  subscribers: Set<(ev: { i: number; t: string; text: string }) => void>;
-  approvals: Map<string, ApprovalWaiter>;
-  planReview?: PlanReviewWaiter;
-  questions?: QuestionsWaiter;
+  events: SessionEvent[];
+  /**
+   * Native-only frames, kept so a client that reconnects mid-run still sees the
+   * transitions that have no prose row. In-memory exactly like `events`, and
+   * bounded like the runtime log; durable typed persistence is a schema step of
+   * its own.
+   */
+  nativeFrames: NativeEventFrame[];
+  subscribers: Set<(ev: StreamFrame) => void>;
+  /** Views of the runtime's pending gates, kept for `sessionView()` only. The
+   *  runtime holds the requests; nothing here can answer one. */
+  approvals: Map<string, PendingApproval>;
+  planReview?: PendingPlanReview;
+  questions?: PendingQuestions;
   connection?: ConnectionWaiter;
   gitu?: InstanceType<typeof Gitu>;
+  /** The runtime session that owns this run's gates. Set with `gitu` so it
+   *  shares its staleness rules, and cleared when the run it belongs to ends. */
+  runtime?: GituCodingSession;
   /** LSP servers are kept alive for the whole session (across continuations). */
   lsp?: LspManager;
   report?: CompletionReport;
@@ -191,6 +252,31 @@ export interface GituServerConfig {
   discordFetch?: DiscordFetch;
   /** Discord gateway transport (injectable for tests). */
   discordWebSocketFactory?: DiscordWebSocketFactory;
+  /**
+   * Ceiling for delegated engineering spend, per conversation (USD).
+   *
+   * This is the pool every `gitu_task` draws from: each delegated session is a
+   * child allocation clamped to what is left, so one expensive task leaves less
+   * for the next and an exhausted pool refuses new work instead of spending on.
+   * A teammate may ask for less via `maxCostUsd`; it can never ask for more.
+   */
+  coworkDelegationMaxCostUsd?: number;
+  /** Turn ceiling for delegated engineering, per conversation. */
+  coworkDelegationMaxTurns?: number;
+  /**
+   * A chief of staff for delegated (unattended) engineering.
+   *
+   * Delegated work is the case the chief exists for: nobody is watching the
+   * workspace, so a gate that waits for a person stalls and is then denied, and a
+   * mission that cannot get past its first approval is a mission that never ran.
+   * The chief settles what this host's authority policy calls routine and escalates
+   * the rest as the request card a person already answers from — it sees requests it
+   * may not decide, never the other way round.
+   *
+   * `false` disables it. A user-facing workspace run is never given a chief: the
+   * person is right there, and their own approval is the point.
+   */
+  chiefOfStaff?: ChiefOfStaffConfig | false;
   /** Injectable for tests; production queries the local Codex runtime. */
   codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
   startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
@@ -209,6 +295,23 @@ export interface GituServerConfig {
   chiefContext?: (request: CoworkRequest) => ChiefResolverContext | undefined;
 }
 
+/**
+ * How this host configures the chief of a delegated session.
+ *
+ * `policy` is where the host narrows or extends what a chief may decide alone; the
+ * defaults are deliberately narrow (see `DEFAULT_AUTHORITY_POLICY`). `advisor` is
+ * the judgment layer, consulted only for a question the standing answers do not
+ * cover and allowed only to answer — never to grant. It defaults to a model call
+ * made with the delegating teammate's own provider and charged to the mission's
+ * envelope; supply your own to replace it, or `false` to run policy-only.
+ */
+export interface ChiefOfStaffConfig {
+  policy?: AuthorityPolicyPatch;
+  advisor?: ChiefAdvisor | false;
+  /** Wall-clock cap for one model answer; a hung provider must not hold a gate. */
+  advisorTimeoutMs?: number;
+}
+
 interface CoworkRequestResolution {
   ok: boolean;
   statusCode: number;
@@ -220,11 +323,37 @@ interface CoworkRequestResolution {
 }
 
 const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Default ceiling for one conversation's delegated engineering.
+ *
+ * Deliberately finite: the alternative — no ceiling — makes an unattended team
+ * able to spend without limit, and a delegation that is refused is a far better
+ * failure than a bill nobody saw coming.
+ */
+const DEFAULT_DELEGATION_BUDGET_USD = 5;
+/** Matches the runtime log's default retention, so the two stay comparable. */
+const NATIVE_FRAME_CAPACITY = 2_000;
 const MAX_SESSION_FILES_PER_MESSAGE = 8;
 const MAX_SESSION_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_SESSION_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_EXCERPT = 12_000;
 const LONG_RESPONSE_DOCUMENT_CHARS = 6_000;
+
+/**
+ * Informational classification for the shared approval gate.
+ *
+ * The connection subsystem has already decided that an operation needs
+ * approval; this only labels the request for the single gate that now carries
+ * it. It must never be read as authorization — the connection subsystem remains
+ * authoritative about whether approval is required at all, and read-only
+ * operations never reach the approval channel in the first place.
+ */
+function connectionRiskToApprovalTier(risk: ConnectionOperationRisk): RiskTier {
+  // read → safe, every write class → moderate. `reversible-write` and
+  // `destructive` deliberately share the moderate label: this tier carries no
+  // authorization weight, so it must not be used to rank write severity.
+  return risk === 'read' ? 'safe' : 'moderate';
+}
 
 /**
  * Memory promotion notices are informational transcript events.  A resumed
@@ -254,6 +383,9 @@ export class GituServer {
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
   private readonly connections = new ConnectionRegistry();
+  /** Runtime-owned session guarantees. Approval resolution authority lives here;
+   *  the run path keeps a compatibility mirror for the existing endpoint and UI. */
+  private readonly gituRuntime = new GituSessionRuntime();
   private scheduler?: CronScheduler;
   private cronStore?: CronStore;
   private store?: SessionStore;
@@ -273,6 +405,16 @@ export class GituServer {
   private readonly coworkComputers = new Map<string, CoworkComputer>();
   private readonly coworkBrowserLease = new CoworkBrowserLease();
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
+  /** Engineering delegation: `gitu_task` → a fresh Agent Gitu session. */
+  private delegationService?: CoworkDelegation;
+  /** Per-conversation pools of delegated spend, so siblings compete for money. */
+  private readonly delegationPools = new Map<string, BudgetAccount>();
+  /** Per-mission envelopes, allocated inside their conversation's pool. */
+  private readonly missionAccounts = new Map<string, BudgetAccount>();
+  /** The envelope section as last written, so unchanged state is not rewritten. */
+  private budgetsPersisted = '';
+  /** Per-delegated-session teardown (MCP clients), released when the run settles. */
+  private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
   private readonly coworkStreams = new Set<http.ServerResponse>();
 
@@ -670,22 +812,23 @@ export class GituServer {
    */
   private detachRun(session: RunSession, reason: string): void {
     const gitu = session.gitu;
+    const runtime = session.runtime;
     const lsp = session.lsp;
     session.gitu = undefined;
+    // The engine and its runtime are one generation: detaching one detaches
+    // both, so a stale runtime can never answer for a run that is no longer live.
+    session.runtime = undefined;
     session.lsp = undefined;
     gitu?.stop();
     void lsp?.shutdown().catch(() => {});
-    const question = session.questions;
-    session.questions = undefined;
-    question?.resolve(`(${reason})`);
     const connection = session.connection;
     session.connection = undefined;
     connection?.resolve(false);
-    const planReview = session.planReview;
-    session.planReview = undefined;
-    planReview?.resolve({ approved: false, note: `${reason}.` });
-    for (const approval of session.approvals.values()) approval.resolve(false);
-    session.approvals.clear();
+    // The runtime owns the approval, plan-review and question gates, so one
+    // cancellation releases them all and clears their timers. This path no
+    // longer knows how any of them ends — only the connection request, which the
+    // runtime does not own yet, is still released here.
+    void runtime?.cancel(reason);
   }
 
   async start(): Promise<number> {
@@ -770,7 +913,21 @@ export class GituServer {
         error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : pausedForDiscussion ? undefined : entry.error,
         usage: entry.usage,
         files: entry.files,
-        events: Array.isArray(entry.events) ? entry.events : [],
+        // Restored rows keep their typed companion when they had one; the store
+        // returns the payload untyped, so narrow it here against the shape the
+        // projection writes — type and seq must both be present to be usable.
+        events: (Array.isArray(entry.events) ? entry.events : []).map((event) => ({
+          i: event.i,
+          t: event.t,
+          text: event.text,
+          ...(event.typed && typeof event.typed === 'object' && typeof (event.typed as { type?: unknown }).type === 'string'
+            ? { typed: event.typed as CodingEvent }
+            : {}),
+        })),
+        // Prose rows and typed frames both come back, so a restored session
+        // rebuilds the typed state a live one has instead of falling back to
+        // prose. They return marked `restored`; see `restoredNativeFrames`.
+        nativeFrames: this.restoredNativeFrames(entry.runId),
         subscribers: new Set(),
         approvals: new Map(),
       };
@@ -781,6 +938,7 @@ export class GituServer {
   }
 
   async stop(): Promise<void> {
+    this.persistBudgets();
     this.scheduler?.stop();
     await this.stopCoworkLifecycle();
     for (const idx of this.indexWatchers.values()) {
@@ -819,6 +977,152 @@ export class GituServer {
     return idx;
   }
 
+  /**
+   * The engine's five connection handlers, built once per run.
+   *
+   * Extracted so the delegated-session path can hand an engine the same
+   * handlers the workspace run does. Only three things vary between callers:
+   * which approval gate a provider write resolves through (always the owning
+   * runtime's, so the request stays runtime-owned), where a pending secure-setup
+   * waiter lives, and where the resulting prose line goes.
+   */
+  private buildConnectionHandlers(input: {
+    approvalHandler: ApprovalHandler;
+    /** Owner of the pending secure-setup waiter. */
+    slot: { connection?: ConnectionWaiter };
+    emit: (text: string) => void;
+  }): Pick<
+    GituFactoryDependencies,
+    'connectionActionHandler' | 'safestProviderRead' | 'connectionOperationHandler' | 'connectionRecoveryCheck' | 'connectionRequestHandler'
+  > {
+    const connectionActionHandler: GituFactoryDependencies['connectionActionHandler'] = async ({ connectionId, operationId }) => {
+      // Live read path: resolve FIRST (existing or catalog-backed/documented
+      // safe GET auto-registers and persists), then execute. No approval
+      // channel, no credential prompt, no manual registration request.
+      const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
+      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+    };
+    // The recovery controller may run ONE read-only operation on its own
+    // when the model spirals — never a write: approval stays mandatory.
+    const safestProviderRead: GituFactoryDependencies['safestProviderRead'] = (preferredConnectionId) => this.connections.safestRead(preferredConnectionId);
+    const connectionOperationHandler: GituFactoryDependencies['connectionOperationHandler'] = async (proposal) => {
+      const profile = this.connections.get(proposal.connectionId);
+      const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
+      if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
+      const op = normalizeConnectionOperation(proposal.operation);
+      if (!op) throw new Error('The proposed provider operation is malformed.');
+      // Safe GET/read operations NEVER enter the approval channel: they
+      // resolve through the capability resolver (register-if-missing under
+      // the existing credential) and execute immediately, like a
+      // connection_action. Only non-read proposals go to operation approval.
+      if (op.risk === 'read' && op.method === 'GET') {
+        const result = await this.connections.resolveAndExecuteRead({
+          connectionId: profile.id,
+          operation: op,
+          capability: op.capability,
+          documented: Boolean(proposal.documentationUrl || profile.documentationUrl || catalogCapabilityDeclared(profile.provider, op.capability)),
+        });
+        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+      }
+      const capabilityDeclared = profile.capabilities.includes(op.capability);
+      // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
+      // connection resolves from verified official documentation (the catalog)
+      // or the proposal's claimed documentationUrl — it never requires the
+      // user to re-enter a credential.
+      if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, op.capability) && !proposal.documentationUrl) {
+        throw new Error(
+          `Saved connection "${profile.label}" does not declare capability "${op.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
+            `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
+        );
+      }
+      const documentedCapability = !capabilityDeclared;
+      const existing = this.connections.operation(profile.id, op.id);
+      if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
+        throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
+      }
+      const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
+      const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
+      const approved = await input.approvalHandler({
+        tool: `connection:${profile.provider}`,
+        // Informational label only: the connection subsystem already decided
+        // this operation needs approval, and never reads the tier back.
+        tier: connectionRiskToApprovalTier(op.risk),
+        why: `External ${op.risk} operation — ${proposal.reason}`,
+        summary: [
+          `Connection: ${profile.label} (${profile.id})`,
+          `Operation: ${op.label}`,
+          `Request: ${op.method} ${op.path}`,
+          `Required capability: ${op.capability}`,
+          `Risk: ${op.risk}`,
+          `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
+          `Body:\n${bodyText}`,
+        ].join('\n'),
+      });
+      if (!approved) throw new Error('User denied the provider operation.');
+      // Registration happens only after approval. It makes the immutable
+      // documented operation discoverable in future tasks, but every write
+      // still returns through this approval path before invocation.
+      const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
+      const result = await this.connections.invoke(profile.id, registered.id, body);
+      return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
+    };
+    // The secure form is framed by WHAT the user is being asked to change:
+    // 'reauth' only after a positively classified authentication failure,
+    // 'setup' for a genuinely first-time connection.
+    const connectionRecoveryCheck: GituFactoryDependencies['connectionRecoveryCheck'] = (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite);
+    const connectionRequestHandler: GituFactoryDependencies['connectionRequestHandler'] = (prerequisite) =>
+      new Promise<boolean>((resolve) => {
+        const decision = this.connections.connectionRecoveryDecision(prerequisite);
+        const waiter: ConnectionWaiter = {
+          id: shortId('conn'),
+          requirement: {
+            ...this.connections.requirementFor(prerequisite),
+            requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
+          },
+          requestedAt: nowIso(),
+          resolve,
+        };
+        input.slot.connection = waiter;
+        input.emit(`connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
+        setTimeout(() => {
+          if (input.slot.connection === waiter) {
+            input.slot.connection = undefined;
+            input.emit('connection setup timed out — prerequisite remains unresolved');
+            resolve(false);
+          }
+        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+      });
+    return { connectionActionHandler, safestProviderRead, connectionOperationHandler, connectionRecoveryCheck, connectionRequestHandler };
+  }
+
+  /**
+   * Mirror durable connection metadata into a per-run capability registry.
+   *
+   * A connection can be added or gain a documented operation while a run is
+   * paused, so the caller re-syncs before rendering the agent context rather
+   * than trusting the snapshot it built at the start.
+   */
+  private syncUniversalConnections(registry: UniversalCapabilityRegistry): void {
+    for (const capability of registry.list()) {
+      if (capability.source === 'connection') registry.unregister(capability.id);
+    }
+    for (const profile of this.connections.list()) {
+      if (!profile.hasCredential) continue;
+      registry.registerConnection(
+        profile.id,
+        profile.operations,
+        async (operation, body) => {
+          const registered = this.connections.operation(profile.id, operation.id);
+          if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
+          const result = await this.connections.invoke(profile.id, registered.id, body);
+          if (!result.ok) throw new Error(result.message);
+          return result.data;
+        },
+        profile.provider,
+      );
+    }
+  }
+
   private async startCronRun(root: string, job: CronJob): Promise<string | undefined> {
     let llm: LlmClient;
     try {
@@ -834,6 +1138,7 @@ export class GituServer {
       projectPath: root,
       mode: 'standard',
       events: [],
+      nativeFrames: [],
       subscribers: new Set(),
       approvals: new Map(),
       files: [],
@@ -856,6 +1161,16 @@ export class GituServer {
 
   private publishCowork(conversationId: string): void {
     for (const send of this.coworkSubscribers.get(conversationId) ?? []) send();
+  }
+
+  /** A mission plus its live envelope, so a card can show what is left of it. */
+  private coworkMissionView(mission: CoworkMission) {
+    // No live account yet (a restarted host, or one that never ran it): the
+    // written-down record is still the mission's truth, so read it rather than
+    // materializing an account just to render a card.
+    const spend = this.missionAccounts.get(mission.id)?.spend().costUsd ?? this.cowork().budgetRecords().missions[mission.id]?.spend.costUsd;
+    if (spend === undefined) return mission;
+    return { ...mission, budgetSpentUsd: Math.round(spend * 100) / 100 };
   }
 
   /** Browser snapshots expose connection state, never the reusable bot secret. */
@@ -897,7 +1212,7 @@ export class GituServer {
       progresses: run?.busy ? Object.values(run.progresses ?? {}) : [],
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
-      missions: [...activeMissions, ...recentMissions],
+      missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
       artifacts: store.artifacts(conversationId),
       todos: store.todos(conversationId),
       requests: store.requests(conversationId).filter((request) => request.status === 'open' || (request.resolvedAt && Date.now() - Date.parse(request.resolvedAt) < 86_400_000)),
@@ -934,6 +1249,476 @@ export class GituServer {
 
   /** Host context is only for trusted skills/connections/MCP. File, shell and
    * browser calls are intercepted by the private computer dispatcher. */
+  /**
+   * Cowork's engineering delegation.
+   *
+   * A teammate calling `gitu_task` gets a `GituSessionRuntime` session — the
+   * same engine, the same gates and the same typed stream the Gitu workspace
+   * runs on. The session is composed here because the composition root is the
+   * only place that knows the connection registry, the specialist roster and
+   * the teammate's workspace.
+   */
+  private delegation(): CoworkDelegation {
+    this.delegationService ??= new CoworkDelegation({
+      workspaceFor: (scope) => {
+        const agent = this.cowork().getAgent(scope.agent.id);
+        return { type: 'host', path: agent ? this.coworkToolContext(agent).cwd : ensureGituHome().workspace };
+      },
+      budgetPool: (scope) => this.delegationBudgetFor(scope.missionId, scope.conversationId),
+      createSession: (input) => this.createDelegatedSession(input),
+      // A delegated gate is a real decision the user has to make, so it rides the
+      // existing request-card surface as a question card. The card is the view;
+      // the runtime still owns the request and its resolution.
+      openRequest: ({ scope, title, detail, options }) => {
+        if (!scope.conversationId) throw new Error('Delegation requires a conversation.');
+        return this.cowork().addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title, detail, options });
+      },
+      closeRequest: (requestId) => {
+        if (this.cowork().getRequest(requestId)?.status === 'open') this.cowork().resolveRequest(requestId, 'dismissed');
+      },
+      progress: ({ conversationId, agentId, text }) => this.publishDelegatedProgress(conversationId, agentId, text),
+      sessionSettled: (sessionId) => {
+        const release = this.delegatedSessionResources.get(sessionId);
+        this.delegatedSessionResources.delete(sessionId);
+        release?.();
+        // A settled run is the natural place to write spend: it is where the
+        // charges stop, and where a restart would otherwise lose them.
+        this.persistBudgets();
+      },
+      onChange: (conversationId) => this.publishCowork(conversationId),
+    });
+    return this.delegationService;
+  }
+
+  /**
+   * The chief a delegated session answers to, or undefined when this host runs
+   * without one.
+   *
+   * One instance per delegation, because its decision record *is* the task's short
+   * history: the same command twice in one task is answered from the first decision
+   * instead of being re-litigated, and the record is what lets a person read back
+   * what an unattended engineer was allowed to do without them.
+   *
+   * `llm` is the client the delegated session itself speaks with, so the chief's
+   * judgment call is priced and charged exactly like the work it is answering
+   * questions about: the same model, the same catalog entry, the same envelope.
+   */
+  private chiefFor(input: DelegationSessionInput, llm: { client: LlmClient; providerId: string; model: string }): ChiefResolver | undefined {
+    const config = this.config.chiefOfStaff;
+    if (config === false) return undefined;
+    const agent = this.cowork().getAgent(input.agentId);
+    // Resolved once and handed to both, so the policy the chief enforces and the
+    // policy the advisor is told about can never drift apart.
+    const policy = resolveAuthorityPolicy(config?.policy);
+    const advisor = config?.advisor === false ? undefined : (config?.advisor ?? this.modelAdvisorFor(input, llm, policy, config));
+    return new ChiefOfStaff({
+      policy,
+      ...(advisor ? { advisor } : {}),
+      // Labels for the decision record, not permissions: what is known is named.
+      scope: { ...(input.scope ?? {}), ...(agent ? { teammate: agent.name } : {}) },
+    });
+  }
+
+  /**
+   * The default judgment layer: one bounded model call, charged to the delegation's
+   * own envelope.
+   *
+   * A question a mission asks is part of that mission's cost, so the call draws on
+   * the same allocation the work does — a mission that has spent its grant cannot
+   * buy more answers, and the envelope a person granted is the only bound on what it
+   * may ask. When the host supplied no delegation pool there is no account to charge,
+   * and the call is made unaccounted rather than refused: the runtime's own budget is
+   * what bounds the work, and the chief must not invent a ceiling nobody set.
+   */
+  private modelAdvisorFor(input: DelegationSessionInput, llm: { client: LlmClient; providerId: string; model: string }, policy: AuthorityPolicy, config: ChiefOfStaffConfig | undefined): ChiefAdvisor {
+    const conversationId = input.scope?.['conversationId'];
+    return modelChiefAdvisor({
+      llm: llm.client,
+      providerId: llm.providerId,
+      model: llm.model,
+      priceOf: (usage) => this.priceUsage(usage, llm.providerId, llm.model),
+      ...(input.parentBudget ? { account: input.parentBudget } : {}),
+      policy,
+      ...(config?.advisorTimeoutMs !== undefined ? { timeoutMs: config.advisorTimeoutMs } : {}),
+      // A declined answer is worth one line in the conversation: the question is about
+      // to appear as a card, and "the chief could not answer" is why.
+      ...(conversationId ? { onEvent: (text: string) => this.publishDelegatedProgress(conversationId, input.agentId, text) } : {}),
+    });
+  }
+
+  /**
+   * The account a delegated task draws from.
+   *
+   * Mission work draws from the mission's envelope — allocated inside the
+   * conversation's pool, so a mission bounds its own spend without escaping the
+   * conversation's — while everything else draws from the pool directly. The
+   * mission is resolved from the id rather than trusted from the caller, so a
+   * stale scope falls back to the pool instead of inventing an envelope.
+   */
+  private delegationBudgetFor(missionId: string | undefined, conversationId: string | undefined): BudgetAccount | undefined {
+    const mission = missionId ? this.cowork().getMission(missionId) : undefined;
+    if (mission) return this.missionAccountFor(mission);
+    return conversationId ? this.delegationPoolFor(conversationId) : undefined;
+  }
+
+  /**
+   * The mission's spend envelope inside its conversation's pool.
+   *
+   * Allocated once and cached: spend accumulates across the mission's work
+   * sessions, and every charge here propagates up to the pool, so a mission can
+   * never outspend what the conversation actually has left. A mission that named
+   * no budget of its own still gets a slice — the pool's remaining at first
+   * touch — because unattended work is exactly what the pool exists to bound.
+   */
+  private missionAccountFor(mission: CoworkMission): BudgetAccount {
+    let account = this.missionAccounts.get(mission.id);
+    if (!account) {
+      const pool = this.delegationPoolFor(mission.conversationId);
+      const saved = this.cowork().budgetRecords().missions[mission.id];
+      // A restored mission keeps the grant it actually held, which may be less
+      // than it asked for (the pool clamps). Re-allocating instead would re-clamp
+      // it against what the pool has *left* and shrink a live ceiling.
+      account = saved
+        ? createBudgetAccount(saved.budget, pool, saved.spend)
+        : pool.allocate(
+            mission.budget
+              ? { maxCostUsd: mission.budget.maxCostUsd, ...(mission.budget.reserveUsd !== undefined ? { reserveUsd: mission.budget.reserveUsd } : {}) }
+              : {},
+          );
+      this.missionAccounts.set(mission.id, account);
+    }
+    return account;
+  }
+
+  /** Drop envelopes for missions that no longer exist (deleted conversations/teammates). */
+  private pruneMissionAccounts(): void {
+    for (const id of this.missionAccounts.keys()) {
+      if (!this.cowork().getMission(id)) this.missionAccounts.delete(id);
+    }
+  }
+
+  /** Envelopes as they are written down: the grant, and what it has spent. */
+  private budgetSnapshot(): CoworkBudgetData {
+    const records = (accounts: Map<string, BudgetAccount>) =>
+      Object.fromEntries(
+        [...accounts].map(([id, account]) => {
+          const spend = account.spend();
+          return [id, { budget: { ...account.budget }, spend: { costUsd: spend.costUsd ?? 0, turns: spend.turns ?? 0, subagents: spend.subagents ?? 0 } }];
+        }),
+      );
+    return { pools: records(this.delegationPools), missions: records(this.missionAccounts) };
+  }
+
+  /**
+   * Write the envelopes down if anything moved.
+   *
+   * Called at boundaries — a settled session, a raise, a tick, shutdown — rather
+   * than on every charge, and skips the write when nothing changed, because the
+   * document is shared with the transcript.
+   *
+   * This merges rather than replaces: a host only holds accounts for the scopes
+   * it has touched, so writing just those would erase the records of every chat
+   * and mission it has not looked at yet — which is exactly the state a restarted
+   * host is in.
+   */
+  private persistBudgets(): void {
+    const saved = this.cowork().budgetRecords();
+    const live = this.budgetSnapshot();
+    const records: CoworkBudgetData = { pools: { ...saved.pools, ...live.pools }, missions: { ...saved.missions, ...live.missions } };
+    // A record whose scope is gone is not history worth keeping: ids are unique,
+    // but a deleted chat's ceiling has nothing left to bound.
+    for (const id of Object.keys(records.pools)) if (!this.cowork().getConversation(id)) delete records.pools[id];
+    for (const id of Object.keys(records.missions)) if (!this.cowork().getMission(id)) delete records.missions[id];
+    const snapshot = JSON.stringify(records);
+    if (snapshot === this.budgetsPersisted) return;
+    this.budgetsPersisted = snapshot;
+    this.cowork().saveBudgetRecords(records);
+  }
+
+  /**
+   * Why a mission stopped spending, phrased for the person who decides next.
+   *
+   * Reported as the mission's result: the envelope is spent, so waking the
+   * mission again could only spend more, and a vague "paused" would hide that.
+   */
+  private missionBudgetStop(account: BudgetAccount): string {
+    const spent = (account.spend().costUsd ?? 0).toFixed(2);
+    const ceiling = account.budget.maxCostUsd;
+    // Its own slice still having room means the pool behind it is what ran out —
+    // naming the mission's ceiling there would point at the wrong number.
+    if (ceiling === undefined || (account.remaining().costUsd ?? 0) > 0) {
+      return `Mission stopped — the conversation's delegation budget is exhausted after $${spent} of mission spend.`;
+    }
+    return `Mission stopped — its $${ceiling.toFixed(2)} budget is exhausted ($${spent} spent, including anything it delegated).`;
+  }
+
+  /** Price one model call from the live catalog; undefined when it cannot be priced. */
+  private priceUsage(usage: LlmUsage | undefined, providerId: string, model: string): number | undefined {
+    return usage ? usageCostUsd(modelMetadataFor(peekModelCatalog(), providerId, model), usage) : undefined;
+  }
+
+  /**
+   * Record that a mission's envelope is spent, and tell the conversation.
+   *
+   * Deliberately terminal: the money is gone, so waking the mission again could
+   * only spend more — unlike a blocked-on-input pause, no reply can refill it.
+   */
+  private stopMissionForBudget(missionId: string, conversationId: string, account: BudgetAccount): string {
+    const store = this.cowork();
+    const detail = this.missionBudgetStop(account);
+    store.updateMission(missionId, { status: 'failed', finishedAt: new Date().toISOString(), result: detail, nextWakeAt: undefined, stoppedForBudget: true });
+    store.appendMessage(conversationId, { role: 'system', via: 'web', text: detail });
+    this.publishCowork(conversationId);
+    return detail;
+  }
+
+  /**
+   * Give a mission more money and put it back to work.
+   *
+   * `budgetUsd` is the mission's new *total* ceiling rather than an increment, so
+   * the arithmetic stays visible to whoever grants it. The account is re-granted
+   * in place — its spend carries over, and it keeps charging the pool above it,
+   * which is why that pool is topped up by the same room: a grant the pool could
+   * not cover would be accepted here and then refuse the very next session.
+   */
+  private raiseMissionBudget(mission: CoworkMission, budgetUsd: number): { mission: CoworkMission; poolRaisedUsd?: number } | { error: string } {
+    if (mission.status === 'done' || mission.status === 'cancelled') {
+      return { error: `That mission is already ${mission.status} — start a new mission instead.` };
+    }
+    if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) return { error: 'budgetUsd must be a positive dollar amount.' };
+    const ceiling = Math.round(budgetUsd * 100) / 100;
+    const account = this.missionAccountFor(mission);
+    const spent = Math.round((account.spend().costUsd ?? 0) * 100) / 100;
+    if (ceiling <= spent) {
+      return { error: `That mission already spent $${spent.toFixed(2)} — a $${ceiling.toFixed(2)} ceiling would not buy another turn.` };
+    }
+    const pool = this.delegationPoolFor(mission.conversationId);
+    const left = pool.remaining();
+    // A non-money ceiling is not the user's to move, and pretending money fixes
+    // it would resume the mission straight into the same refusal.
+    if ((left.turns !== undefined && left.turns <= 0) || (left.subagents !== undefined && left.subagents <= 0)) {
+      return { error: 'That chat has hit a delegated-work limit that is not about money, so raising the mission budget would not let it continue.' };
+    }
+    const room = Math.round((ceiling - spent) * 100) / 100;
+    let poolRaisedUsd: number | undefined;
+    if (left.costUsd !== undefined && left.costUsd < room) {
+      poolRaisedUsd = Math.round((room - left.costUsd) * 100) / 100;
+      pool.regrant({ ...pool.budget, maxCostUsd: Math.round(((pool.budget.maxCostUsd ?? 0) + poolRaisedUsd) * 100) / 100 });
+    }
+    const reserveUsd = mission.budget?.reserveUsd;
+    const budget = { maxCostUsd: ceiling, ...(reserveUsd !== undefined ? { reserveUsd: Math.min(reserveUsd, ceiling) } : {}) };
+    account.regrant(budget);
+    const store = this.cowork();
+    store.updateMission(mission.id, {
+      budget,
+      stoppedForBudget: false,
+      ...(mission.status === 'failed'
+        ? { status: 'running', finishedAt: undefined, result: undefined, nextWakeAt: new Date().toISOString() }
+        : {}),
+    });
+    store.appendMessage(mission.conversationId, {
+      role: 'system',
+      via: 'web',
+      text:
+        `Budget raised to $${ceiling.toFixed(2)}` +
+        (poolRaisedUsd !== undefined ? ` (this chat's delegation budget topped up by $${poolRaisedUsd.toFixed(2)})` : '') +
+        (mission.status === 'failed' ? ' — resuming the mission.' : '.'),
+    });
+    this.publishCowork(mission.conversationId);
+    this.persistBudgets();
+    return { mission: store.getMission(mission.id)!, ...(poolRaisedUsd !== undefined ? { poolRaisedUsd } : {}) };
+  }
+
+  /**
+   * The mission agent's own model client, charged to the mission's envelope.
+   *
+   * A mission's own thinking and its delegated engineering share one account, so
+   * neither can quietly outspend the other. When a charge exhausts the envelope
+   * the session is aborted: the mission is out of money, and the next wake
+   * reports that instead of starting work nobody can pay for.
+   */
+  private coworkMissionLlm(agent: CoworkAgent, account: BudgetAccount, onExhausted: () => void): LlmClient {
+    const base = this.coworkLlm(agent);
+    const providerId = agent.provider ?? '';
+    const model = agent.model ?? '';
+    return new UsageTrackingClient(base, (usage) => {
+      const cost = this.priceUsage(usage, providerId, model);
+      if (!account.charge({ turns: 1, ...(cost !== undefined ? { costUsd: cost } : {}) })) onExhausted();
+    });
+  }
+
+  /**
+   * The conversation's pool of delegated spend.
+   *
+   * Scoped to the conversation rather than the process on purpose: a ceiling
+   * that never refills would eventually refuse every delegation on a long-lived
+   * server, while one that refills per turn would defeat the ceiling entirely.
+   * A conversation is the unit of work a person can see and reason about.
+   */
+  private delegationPoolFor(conversationId: string): BudgetAccount {
+    let pool = this.delegationPools.get(conversationId);
+    if (!pool) {
+      // A saved pool comes back with the grant it actually held — including a
+      // top-up a person granted — and with its spend, so a restart does not hand
+      // the chat a fresh allowance. Only a conversation with no history falls
+      // back to the configured default.
+      const saved = this.cowork().budgetRecords().pools[conversationId];
+      pool = createBudgetAccount(
+        saved?.budget ?? {
+          maxCostUsd: this.config.coworkDelegationMaxCostUsd ?? DEFAULT_DELEGATION_BUDGET_USD,
+          maxTurns: this.config.coworkDelegationMaxTurns,
+        },
+        undefined,
+        saved?.spend,
+      );
+      this.delegationPools.set(conversationId, pool);
+    }
+    return pool;
+  }
+
+  /**
+   * Build the runtime session for one delegated task.
+   *
+   * Deliberately the same shape as the workspace run: the runtime builds the
+   * engine, the connection handlers are the shared builders, and every gate is
+   * runtime-owned. Two host services are intentionally absent for now: LSP (its
+   * lifecycle is session-owned and a delegated session has no teardown that
+   * stops it) and the workspace `RunBudget` (it has no engine consumer yet, so
+   * the enforceable bound here is the delegation's wall-clock cap).
+   */
+  private createDelegatedSession(input: DelegationSessionInput): CodingSession {
+    const agent = this.cowork().getAgent(input.agentId);
+    if (!agent) throw new Error('That teammate no longer exists.');
+    if (!agent.useHostComputer) {
+      throw new Error('Engineering delegation needs a workspace this machine can execute in. Switch the teammate to “My computer” mode; the private computer has no coding runtime yet.');
+    }
+    const root = workspacePath(input.workspace);
+    // Pricing is the host's to know — it owns the catalog and the credential — so
+    // the runtime enforces money against a cost function supplied here rather
+    // than guessing at provider prices. An injected client has no catalog
+    // identity, so those sessions enforce turn ceilings only.
+    const resolved = this.config.llm
+      ? { client: this.config.llm, providerId: agent.provider ?? '', model: agent.model ?? '' }
+      : resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: root });
+    // The catalog is read per call rather than captured: it is warmed when the
+    // delegation is wired up, so a price that arrives mid-run still applies, and
+    // a session that runs before pricing is known is accounted as unpriced
+    // instead of being priced wrongly. Turn ceilings apply either way.
+    void fetchModelCatalog().catch(() => undefined);
+    const priceOf = (usage: LlmUsage | undefined, providerId: string, model: string): number | undefined =>
+      this.priceUsage(usage, providerId, model);
+    /** The account the runtime granted this session, assigned when it builds the run. */
+    const budgetRef: { current?: BudgetAccount } = {};
+    let ignorePaths: string[] | undefined;
+    try {
+      ignorePaths = ProjectGuard.detect(root).lock.ignorePaths;
+    } catch {
+      /* not a locked project: the index watches everything */
+    }
+    const index = this.sharedIndex(root, ignorePaths);
+    const agentStore = new AgentStore();
+    const skills = SkillStore.forProject(root);
+    const mcp = McpManager.forProject(root);
+    const universalRegistry = new UniversalCapabilityRegistry();
+    this.syncUniversalConnections(universalRegistry);
+    // The session does not exist yet, but nothing here runs before `run()` does:
+    // the engine reaches these handlers only once the runtime has built it, by
+    // which point the session is assigned. The indirection is what keeps one
+    // approval promise per request — the delegated run's own gate.
+    let session: GituCodingSession | undefined;
+    const emit = (text: string): void => session?.sinks.onEvent(text);
+    const subagents =
+      agentStore.list().length > 0
+        ? new SubAgentRunner({
+            cwd: root,
+            resolveLlm: (name) => {
+              const def = agentStore.get(name);
+              if (!def) {
+                const available = agentStore.list().map((a) => `"${a.name}"`).join(', ');
+                throw new Error(`unknown specialist agent "${name}". Available agents: [${available || 'none'}].`);
+              }
+              const specialist = resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root });
+              // Specialist work is charged to the delegation's own account: a
+              // fan-out must not be able to outspend what the user granted
+              // without ever tripping that grant.
+              return new UsageTrackingClient(specialist.client, (usage) => {
+                budgetRef.current?.charge({ turns: 1, ...(priceOf(usage, specialist.providerId, specialist.model) !== undefined ? { costUsd: priceOf(usage, specialist.providerId, specialist.model)! } : {}) });
+              });
+            },
+            agentRole: (name) => agentStore.get(name)?.role,
+            agentEffort: (name) => agentStore.get(name)?.effort,
+            onEvent: (text) => emit(text),
+          })
+        : undefined;
+    session = this.gituRuntime.createSession({
+      goal: input.goal,
+      workspace: input.workspace,
+      agentId: input.agentId,
+      requestedBy: input.requestedBy,
+      gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
+      // The chief sees every gate before the person's card does, and settles what the
+      // host's authority policy calls routine. Without it the run behaves exactly as
+      // it did before a chief existed: every gate waits for the person.
+      chief: this.chiefFor(input, resolved),
+      // The teammate's request, clamped by the runtime to this conversation's
+      // pool: a caller can always ask for less and never for more.
+      budget: input.budget,
+      parentBudget: input.parentBudget,
+      costOf: (usage) => priceOf(usage, resolved.providerId, resolved.model),
+      onApprovalRequired: input.onApprovalRequired,
+      onPlanReviewRequested: input.onPlanReviewRequested,
+      onQuestionsRequested: input.onQuestionsRequested,
+      deps: {
+        skills,
+        mcp,
+        agents: agentStore,
+        subagents,
+        browser: this.browserImpl(),
+        universalRegistry,
+        connections: this.connections,
+        connectionContext: () => this.connections.renderForAgent(),
+        // A secure-connection setup raised mid-delegation has no credential form
+        // to answer it (that form is the workspace UI's), so it times out exactly
+        // as it does when nobody answers the workspace run's own prompt.
+        ...this.buildConnectionHandlers({
+          approvalHandler: (gate) => (session ? session.gates.approvalHandler(gate) : Promise.resolve(false)),
+          slot: {},
+          emit,
+        }),
+      },
+      // No auto-approve and no auto-skipped review: a teammate cannot grant
+      // itself authority over the user's machine by delegating to an engineer.
+      runOptions: ({ budget }) => {
+        budgetRef.current = budget;
+        return {
+          // Ignored by the runtime, which derives the engine's cwd from
+          // `workspace` so the two can never disagree; the factory's contract
+          // requires it anyway.
+          workspaceRoot: root,
+          llm: resolved.client,
+          mode: input.runOptions.mode,
+          effort: input.runOptions.effort,
+          index,
+          autoApprove: false,
+          requirePlanReview: true,
+        };
+      },
+    });
+    this.delegatedSessionResources.set(session.id, () => mcp.killAll());
+    return session;
+  }
+
+  /** Liveness line from a delegated run, surfaced in the conversation's progress. */
+  private publishDelegatedProgress(conversationId: string, agentId: string, text: string): void {
+    const run = this.coworkRuns.get(conversationId);
+    if (!run) return;
+    const progress: CoworkProgress = { agentId, agentName: this.cowork().getAgent(agentId)?.name ?? agentId, text };
+    run.progresses ??= {};
+    run.progresses[agentId] = progress;
+    run.progress = progress;
+    this.publishCowork(conversationId);
+  }
+
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(agent.id);
     if (!context) {
@@ -1230,6 +2015,8 @@ export class GituServer {
     if (!request || request.status !== 'open') return { ok: false, statusCode: 404, error: 'request not found or already answered' };
     const action = actionInput.toLowerCase();
     const response = responseInput.trim();
+    const delegated = this.resolveDelegationCard(request, action, response);
+    if (delegated) return delegated;
     let status: Exclude<CoworkRequest['status'], 'open'>;
     if (request.kind === 'permission') {
       if (action !== 'approve' && action !== 'deny') return { ok: false, statusCode: 400, error: 'action must be approve or deny' };
@@ -1263,6 +2050,27 @@ export class GituServer {
       store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
     }
     return { ok: true, statusCode: 200, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined, answer, status };
+  }
+
+  /**
+   * Resolve a request card that stands for a runtime-owned delegation gate.
+   *
+   * Returns `undefined` for every other card, so both transports can call it
+   * before their own kind handling: an approval, plan review or question raised
+   * by a delegated engineer is answered through the runtime that raised it, and
+   * the delegating teammate is never woken — its turn is still blocked inside
+   * the tool call, which is what the answer unblocks.
+   */
+  private resolveDelegationCard(request: CoworkRequest, action: string, response: string): CoworkRequestResolution | undefined {
+    const resolved = this.delegation().resolve(request.id, action, response);
+    if (!resolved) return undefined;
+    if (!resolved.ok) return { ok: false, statusCode: 400, error: resolved.error };
+    const store = this.cowork();
+    const card = store.resolveRequest(request.id, resolved.resolution.status, resolved.resolution.answer);
+    if (!card) return { ok: false, statusCode: 404, error: 'request not found or already answered' };
+    store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `Engineering delegation ${resolved.resolution.status}: ${resolved.resolution.answer}.` });
+    this.publishCowork(request.conversationId);
+    return { ok: true, statusCode: 200, request: card, agent: store.getAgent(request.agentId), answer: resolved.resolution.answer, status: resolved.resolution.status };
   }
 
   private coworkTelegramQuestionAnswer(request: CoworkRequest, text: string): string {
@@ -1734,6 +2542,7 @@ export class GituServer {
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
           computerFor: (agentId) => this.coworkComputer(agentId),
+          delegation: this.delegation(),
           withAgent: (agent, work) => this.withCoworkAgent(agent.id, abort.signal, work),
           store,
           memory: this.coworkMemory(),
@@ -1847,6 +2656,9 @@ export class GituServer {
       this.publishCowork(conversationId);
       return;
     }
+    // The mission's envelope, shared by its own model calls and everything it
+    // delegates. Spent money is checked before a session is allowed to start.
+    const account = this.missionAccountFor(mission);
     const abort = new AbortController();
     this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [], missionId });
     this.publishCowork(conversationId);
@@ -1877,14 +2689,20 @@ export class GituServer {
       }
     };
     try {
+      // Money, not work: a spent envelope means no session may start at all.
+      if (account.exhausted()) {
+        await finishStream(this.stopMissionForBudget(missionId, conversationId, account));
+        return;
+      }
       const result = await runMissionSession({
         mission,
         agent,
         deps: {
           agents: store.listAgents(),
-          resolveLlm: (a) => this.coworkLlm(a),
+          resolveLlm: (a) => this.coworkMissionLlm(a, account, () => abort.abort(new Error('Mission budget exhausted.'))),
           toolContext: (a) => this.coworkToolContext(a),
           computerFor: (agentId) => this.coworkComputer(agentId),
+          delegation: this.delegation(),
           withAgent: (a, work) => this.withCoworkAgent(a.id, abort.signal, work),
           store,
           memory: this.coworkMemory(),
@@ -1963,10 +2781,30 @@ export class GituServer {
           nextWakeAt: undefined,
         });
         await appendNotice(`Mission stopped — turn budget of ${fresh.maxTurns} sessions ran out. Last progress: ${result.progress}`, result.artifactIds);
+      } else if (account.exhausted()) {
+        // The session finished, but spent the last of the envelope: report the
+        // stop now rather than waking into a refusal nobody sees.
+        const detail = this.missionBudgetStop(account);
+        store.updateMission(missionId, {
+          status: 'failed',
+          progress: result.progress,
+          turns,
+          finishedAt: new Date().toISOString(),
+          result: `${detail} Last progress: ${result.progress}`,
+          nextWakeAt: undefined,
+          stoppedForBudget: true,
+        });
+        await appendNotice(detail);
       } else {
         store.updateMission(missionId, { progress: result.progress, turns, nextWakeAt: new Date(Date.now() + 20_000).toISOString() });
       }
     } catch (err) {
+      // Budget exhaustion is not a transient failure: waking again cannot refill
+      // the envelope, so the mission stops with the budget as its result.
+      if (account.exhausted() && store.getMission(missionId)?.status === 'running') {
+        await finishStream(this.stopMissionForBudget(missionId, conversationId, account));
+        return;
+      }
       const currentMission = store.getMission(missionId);
       if (currentMission?.status === 'running') {
         store.updateMission(missionId, { nextWakeAt: new Date(Date.now() + (abort.signal.aborted ? 120_000 : 60_000)).toISOString() });
@@ -1985,6 +2823,7 @@ export class GituServer {
         this.coworkRuns.delete(conversationId);
         this.publishCowork(conversationId);
       }
+      this.persistBudgets();
     }
   }
 
@@ -2021,6 +2860,10 @@ export class GituServer {
   private coworkAutonomyTick(): void {
     const store = this.cowork();
     const now = Date.now();
+    this.pruneMissionAccounts();
+    // Spend can move without a session settling (a delegation cancelled midway,
+    // for instance), so the tick bounds how much a crash could lose.
+    this.persistBudgets();
     // 1. Due missions get a work session.
     for (const mission of store.missions()) {
       if (mission.status !== 'running') continue;
@@ -2661,12 +3504,33 @@ export class GituServer {
           goal: String(body['goal'] ?? ''),
           criteria: Array.isArray(body['criteria']) ? body['criteria'].map(String) : [],
           maxTurns: Number(body['maxTurns']) || 12,
+          // The mission's own spend envelope; absent means it draws from the
+          // conversation's delegation pool without a second ceiling.
+          budgetUsd: Number(body['budgetUsd']) || undefined,
+          reserveUsd: Number(body['reserveUsd']) || undefined,
         });
         this.publishCowork(conversation.id);
         this.sendJson(res, 200, { ok: true, mission });
       } catch (err) {
         this.sendJson(res, 400, { error: (err as Error).message });
       }
+      return true;
+    }
+
+    const missionBudgetMatch = path.match(/^\/api\/cowork\/missions\/([\w-]+)\/budget$/);
+    if (missionBudgetMatch && method === 'POST') {
+      const mission = store.getMission(missionBudgetMatch[1]!);
+      if (!mission) {
+        this.sendJson(res, 404, { error: 'no such mission' });
+        return true;
+      }
+      const body = await this.readBody(req);
+      const raised = this.raiseMissionBudget(mission, Number(body['budgetUsd']));
+      if ('error' in raised) {
+        this.sendJson(res, 400, { error: raised.error });
+        return true;
+      }
+      this.sendJson(res, 200, { ok: true, mission: raised.mission, poolRaisedUsd: raised.poolRaisedUsd });
       return true;
     }
 
@@ -2696,6 +3560,14 @@ export class GituServer {
       }
       const action = String(body['action'] ?? '').toLowerCase();
       const response = String(body['response'] ?? '').trim();
+      // A card standing for a delegated runtime gate is resolved by the runtime,
+      // not by the generic path below: the delegating teammate is still blocked
+      // inside its tool call and must not be woken with a follow-up.
+      const delegated = this.resolveDelegationCard(request, action, response);
+      if (delegated) {
+        this.sendJson(res, delegated.statusCode, delegated.ok ? { ok: true, request: delegated.request, agent: delegated.agent } : { error: delegated.error });
+        return true;
+      }
       let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
       if (request.kind === 'permission') {
         if (action !== 'approve' && action !== 'deny') { this.sendJson(res, 400, { error: 'action must be approve or deny' }); return true; }
@@ -2955,26 +3827,34 @@ export class GituServer {
     };
   }
 
+  /**
+   * Drop stale pending input while the run keeps going.
+   *
+   * This is deliberately NOT `cancel`: a reply or correction supersedes a
+   * question, plan review or approval, but the run itself was not stopped. The
+   * runtime settles the gates it owns — approval, plan review and questions —
+   * while leaving the run live; the connection request is not runtime-owned yet
+   * and is still released here.
+   */
   private releasePendingInput(session: RunSession, note: string): void {
-    const question = session.questions;
-    session.questions = undefined;
-    question?.resolve(note);
     const connection = session.connection;
     session.connection = undefined;
     connection?.resolve(false);
-    const plan = session.planReview;
-    session.planReview = undefined;
-    plan?.resolve({ approved: false, note });
-    for (const approval of session.approvals.values()) approval.resolve(false);
-    session.approvals.clear();
+    session.runtime?.releasePendingGates(note);
   }
 
   private requestChatCredential(session: RunSession, input: ReturnType<typeof credentialChatInput>): Promise<boolean> {
     const previous = session.connection?.requirement;
+    const pauseNote = 'Paused for secure connection setup.';
     const gitu = session.gitu;
+    const runtime = session.runtime;
     session.gitu = undefined;
+    session.runtime = undefined;
     gitu?.stop();
-    this.releasePendingInput(session, 'Paused for secure connection setup.');
+    // Pausing ends this generation, so the runtime settles the approval gate it
+    // owns instead of leaving it pending behind a stopped engine.
+    void runtime?.cancel(pauseNote);
+    this.releasePendingInput(session, pauseNote);
     session.queuedUserMessages = [];
     session.status = 'blocked';
     session.error = undefined;
@@ -3049,7 +3929,7 @@ export class GituServer {
     }
   }
 
-  private recordEvent(s: RunSession, text: string, persistDb = true): void {
+  private recordEvent(s: RunSession, text: string, persistDb = true, typed?: CodingEvent): void {
     const memoryKey = memoryPatternNoticeKey(text);
     if (memoryKey && s.events.some((event) => memoryPatternNoticeKey(event.text) === memoryKey)) return;
     // Streaming deltas are intentionally not persisted.  After a restart the
@@ -3057,7 +3937,7 @@ export class GituServer {
     // cursor: reusing it can overwrite an old persisted event (including a
     // user message) and make the SSE client skip it.  Keep event ids strictly
     // monotonic from the highest known id instead.
-    const ev = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text };
+    const ev: SessionEvent = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text, ...(typed ? { typed } : {}) };
     s.events.push(ev);
     if (persistDb && !text.startsWith('tdelta') && !text.startsWith('activity')) {
       try {
@@ -3070,7 +3950,51 @@ export class GituServer {
     for (const send of s.subscribers) send(ev);
   }
 
-  private pushEvent(s: RunSession, text: string, persistDb = true): void {
+  /**
+   * Hand a native-only runtime event to this session's stream.
+   *
+   * Not a `SessionEvent` row: it carries no `i`, so the legacy renderer ignores
+   * it entirely. It exists so a consumer that speaks the typed vocabulary can
+   * see the transitions that never had prose — `command_finished.exitCode` above
+   * all, and the gate families — without a second SSE channel.
+   *
+   * Buffered on the session and written to the store, so it survives both a
+   * reconnect and a restart. Both bounds are the same one, for the same reason:
+   * a long run's early frames are not worth unbounded memory or disk.
+   */
+  private publishNativeEvent(s: RunSession, event: CodingEvent): void {
+    const frame: NativeEventFrame = { seq: event.seq, t: event.at, typed: event };
+    s.nativeFrames.push(frame);
+    if (s.nativeFrames.length > NATIVE_FRAME_CAPACITY) s.nativeFrames.splice(0, s.nativeFrames.length - NATIVE_FRAME_CAPACITY);
+    // Best-effort like every other write here: a failed append must not break a run.
+    try {
+      this.db().addNativeFrame(s.runId, { t: frame.t, typed: frame.typed }, NATIVE_FRAME_CAPACITY);
+    } catch {
+      /* persistence must never break the run */
+    }
+    for (const send of s.subscribers) send(frame);
+  }
+
+  /**
+   * Rebuild a session's typed frames after a restart.
+   *
+   * `seq` is the runtime log's cursor and restarts at 1 in every new process, so
+   * frames are stored under their own `fid`; the payload's `seq` is carried
+   * through unchanged for readers that want it. Each comes back marked
+   * `restored`, which is what stops a historical gate request from opening a
+   * card: whatever the log ends with, no runtime survived the restart to answer.
+   */
+  private restoredNativeFrames(runId: string): NativeEventFrame[] {
+    const frames: NativeEventFrame[] = [];
+    for (const stored of this.db().nativeFramesFor(runId)) {
+      const typed = stored.typed as CodingEvent | null;
+      if (!typed || typeof typed !== 'object' || typeof typed.type !== 'string' || typeof typed.seq !== 'number') continue;
+      frames.push({ seq: typed.seq, t: stored.t, typed, restored: true });
+    }
+    return frames;
+  }
+
+  private pushEvent(s: RunSession, text: string, persistDb = true, typed?: CodingEvent): void {
     const prose = text.startsWith('say ') ? text.slice(4) : '';
     if (persistDb && prose.length >= LONG_RESPONSE_DOCUMENT_CHARS) {
       try {
@@ -3082,7 +4006,7 @@ export class GituServer {
         // If document persistence fails, preserve the original response.
       }
     }
-    this.recordEvent(s, text, persistDb);
+    this.recordEvent(s, text, persistDb, typed);
   }
 
   /**
@@ -4145,6 +5069,7 @@ export class GituServer {
         mode,
         autoApprove,
         events: [],
+        nativeFrames: [],
         subscribers: new Set(),
         approvals: new Map(),
         files: [],
@@ -4283,7 +5208,14 @@ export class GituServer {
       // Replayed history must render immediately, without replaying typing
       // animations when opening a task or reconnecting its transport.
       for (const ev of session.events) safeWrite(`data: ${JSON.stringify({ ...ev, replay: true })}\n\n`);
-      const send = (ev: { i: number; t: string; text: string }): void => {
+      // Native-only frames have no row to be replayed from, so they come back
+      // from the session's own buffer: a client that reconnects mid-run must
+      // still see the command it missed. They carry no `i`, so replaying them
+      // stays silent for the legacy renderer either way. A frame restored from
+      // the store keeps its mark: only a frame from this process may open a gate
+      // card, because only this process still holds the request behind it.
+      for (const frame of session.nativeFrames) safeWrite(`data: ${JSON.stringify(frame)}\n\n`);
+      const send = (ev: StreamFrame): void => {
         safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       };
       session.subscribers.add(send);
@@ -4302,12 +5234,16 @@ export class GituServer {
     if (method === 'POST' && answersMatch) {
       const body = await this.readBody(req);
       for (const session of this.sessions.values()) {
-        if (session.questions && session.questions.id === answersMatch[1]) {
-          const waiter = session.questions;
-          session.questions = undefined;
+        // The mirror locates the owning session; the runtime is what decides. The
+        // endpoint resolves the runtime directly and never writes to the mirror,
+        // which is a view of runtime state reconciled by the subscription.
+        const waiter = session.questions && session.questions.id === answersMatch[1] ? session.questions : undefined;
+        const runtime = session.runtime;
+        if (!waiter || !runtime) continue;
+        {
           const answer = typeof body['answer'] === 'string' ? body['answer'] : '';
           this.pushEvent(session, 'ask-user answered by user');
-          waiter.resolve(answer);
+          runtime.answerQuestions(waiter.id, answer);
           this.sendJson(res, 200, { ok: true });
           return;
         }
@@ -4436,8 +5372,12 @@ export class GituServer {
       // a moment to honour cancellation; without this, its late completion
       // can overwrite the user-visible stopped state or keep emitting output.
       const gitu = session.gitu;
+      const runtime = session.runtime;
       const lsp = session.lsp;
       session.gitu = undefined;
+      // Same generation rule as detachRun: never leave a runtime behind that
+      // could resolve a gate for a run the user has stopped.
+      session.runtime = undefined;
       session.lsp = undefined;
       gitu?.stop();
       lsp?.shutdown().catch(() => {});
@@ -4450,19 +5390,13 @@ export class GituServer {
       session.finishedAt = nowIso();
 
       // A run paused for a question, plan review, or approval is not waiting
-      // on the LLM abort signal.  Resolve those waiters so the cancelled run
-      // can unwind instead of remaining alive until their timeout.
-      const question = session.questions;
-      session.questions = undefined;
-      question?.resolve('(stopped by user)');
+      // on the LLM abort signal. The runtime owns all three gates, so cancelling
+      // it releases them and their timers, and the cancelled run unwinds instead
+      // of remaining alive until they time out.
       const connection = session.connection;
       session.connection = undefined;
       connection?.resolve(false);
-      const planReview = session.planReview;
-      session.planReview = undefined;
-      planReview?.resolve({ approved: false, note: 'Stopped by user.' });
-      for (const approval of session.approvals.values()) approval.resolve(false);
-      session.approvals.clear();
+      void runtime?.cancel('Stopped by user.');
 
       this.pushEvent(session, 'stopped by user');
       this.sendJson(res, 200, { ok: true });
@@ -4769,9 +5703,12 @@ export class GituServer {
     if (method === 'POST' && planReviewMatch) {
       const body = await this.readBody(req);
       for (const session of this.sessions.values()) {
-        if (session.planReview && session.planReview.id === planReviewMatch[1]) {
-          const waiter = session.planReview;
-          session.planReview = undefined;
+        // As with approvals, the mirror locates the session and the runtime
+        // resolves: one request object, one resolution path.
+        const waiter = session.planReview && session.planReview.id === planReviewMatch[1] ? session.planReview : undefined;
+        const runtime = session.runtime;
+        if (!waiter || !runtime) continue;
+        {
           const steps = Array.isArray(body['steps'])
             ? (body['steps'] as Record<string, unknown>[])
                 .map((s) => ({ description: String(s['description'] ?? '').trim(), verification: String(s['verification'] ?? 'manual check').trim() }))
@@ -4787,7 +5724,7 @@ export class GituServer {
             steps,
           };
           this.pushEvent(session, decision.approved ? 'plan-review approved — building' : 'plan-review changes requested');
-          waiter.resolve(decision);
+          runtime.approvePlan(waiter.id, decision);
           this.sendJson(res, 200, { ok: true });
           return;
         }
@@ -4799,16 +5736,21 @@ export class GituServer {
     const approvalMatch = path.match(/^\/api\/approvals\/([\w-]+)$/);
     if (method === 'POST' && approvalMatch) {
       const body = await this.readBody(req);
+      const approvalId = approvalMatch[1]!;
+      const approved = body['approved'] === true;
       for (const session of this.sessions.values()) {
-        const waiter = session.approvals.get(approvalMatch[1]!);
-        if (waiter) {
-          session.approvals.delete(approvalMatch[1]!);
-          const approved = body['approved'] === true;
-          this.pushEvent(session, `approval ${approved ? 'GRANTED' : 'DENIED'} for ${waiter.tool} (${waiter.why})`);
-          waiter.resolve(approved);
-          this.sendJson(res, 200, { ok: true, approved });
-          return;
-        }
+        // The mirror locates the owning session and supplies the wording; the
+        // runtime is what decides. The endpoint therefore resolves the runtime
+        // directly and never writes to the mirror: the mirror is a view of
+        // runtime state, reconciled by the subscription, so the resolution it
+        // shows comes from the runtime rather than from this handler.
+        const waiter = session.approvals.get(approvalId);
+        const runtime = session.runtime;
+        if (!waiter || !runtime) continue;
+        this.pushEvent(session, `approval ${approved ? 'GRANTED' : 'DENIED'} for ${waiter.tool} (${waiter.why})`);
+        runtime.approve(approvalId, approved);
+        this.sendJson(res, 200, { ok: true, approved });
+        return;
       }
       this.sendJson(res, 404, { error: 'approval not found or already resolved' });
       return;
@@ -4914,26 +5856,102 @@ export class GituServer {
     // Provider writes always require an individual approval. This intentionally
     // does not consult autoApprove: a model's ability to select a provider
     // operation must never become blanket authority over user infrastructure.
-    const requestApproval = (request: { tool: string; why: string; summary: string }) =>
-      new Promise<boolean>((resolve) => {
-        const waiter: ApprovalWaiter = {
-          id: shortId('appr'),
-          tool: request.tool,
-          why: request.why,
-          summary: request.summary,
-          requestedAt: nowIso(),
-          resolve,
-        };
-        session.approvals.set(waiter.id, waiter);
-        this.pushEvent(session, `approval-required ${waiter.id} [${request.tool}] ${request.why}`);
-        setTimeout(() => {
-          if (session.approvals.has(waiter.id)) {
-            session.approvals.delete(waiter.id);
-            this.pushEvent(session, `approval ${waiter.id} timed out — denied`);
-            resolve(false);
-          }
-        }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
+    //
+    // The runtime owns approval resolution: the engine is handed the runtime's
+    // gate, so there is exactly one approval promise per request. The server
+    // keeps a compatibility mirror below for its existing endpoint and UI.
+    const runtimeSession = this.gituRuntime.createSession({
+      goal: opts.goal,
+      workspace: { type: 'host', path: opts.projectPath ?? this.config.cwd },
+      gateTimeoutMs: this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS,
+      onApprovalRequired: (request) => {
+        this.pushEvent(session, `approval-required ${request.id} [${request.tool}] ${request.why}`);
+      },
+    });
+    // Compatibility mirrors only.
+    // GituSessionRuntime owns resolution authority for all three.
+    //
+    // These carry no way to answer a gate: every resolution path — HTTP, cancel,
+    // release — goes to the runtime, so the types no longer offer a second one.
+    // They exist because `sessionView()` still publishes the pending gates for a
+    // surface that has no live frames to render from (a restored session, or a
+    // client whose typed state was reset); they go away once the UI reads gates
+    // from the typed stream alone.
+    //
+    // Reconciled from runtime state, never from an event payload: another surface
+    // (Cowork, the CLI) may already have resolved the gate before this process
+    // observed the transition, so the runtime's current state — not its event
+    // history — is what these show.
+    const syncApprovalMirror = (): void => {
+      const pending = runtimeSession.getState().pendingApproval;
+      session.approvals.clear();
+      if (!pending) return;
+      session.approvals.set(pending.id, {
+        id: pending.id,
+        tool: pending.tool,
+        why: pending.why,
+        summary: pending.summary ?? '',
+        requestedAt: pending.requestedAt,
       });
+    };
+    const syncPlanReviewMirror = (): void => {
+      const pending = runtimeSession.getState().pendingPlanReview;
+      session.planReview = pending
+        ? { id: pending.id, criteria: pending.criteria, steps: pending.steps, requestedAt: pending.requestedAt }
+        : undefined;
+    };
+    const syncQuestionsMirror = (): void => {
+      const pending = runtimeSession.getState().pendingQuestions;
+      session.questions = pending
+        ? { id: pending.id, questions: pending.questions, requestedAt: pending.requestedAt }
+        : undefined;
+    };
+    runtimeSession.subscribe((event) => {
+      syncApprovalMirror();
+      syncPlanReviewMirror();
+      syncQuestionsMirror();
+      // A gate the runtime owns has no server-side handler left to narrate it, so
+      // these lines are emitted from the runtime's own events. They are the same
+      // lines the handlers used to push, in the same order, so the transcript
+      // reads exactly as it did under server-owned gates.
+      if (event.type === 'plan_review_requested') this.pushEvent(session, `plan-review ${event.requestId} waiting for your review`);
+      if (event.type === 'questions_requested') this.pushEvent(session, 'ask-user waiting for your answers');
+      // The runtime settles a timed-out gate itself; keep the legacy line so the
+      // transcript reads exactly as it did under server-owned gates.
+      if (event.type === 'approval_resolved' && event.reason === 'timed out' && event.approvalId) {
+        this.pushEvent(session, `approval ${event.approvalId} timed out — denied`);
+      }
+      if (event.type === 'plan_review_resolved' && event.reason === 'timed out') {
+        this.pushEvent(session, `plan-review ${event.requestId} timed out — treating as denied`);
+      }
+      if (event.type === 'questions_answered' && event.reason === 'timed out') {
+        this.pushEvent(session, 'ask-user timed out — agent will assume defaults');
+      }
+      // The session stream is a projection of the runtime log, which is the one
+      // record of the run. Every event rides it; only the shape differs.
+      //
+      // A prose row keeps the legacy line verbatim, so the UI renders what it has
+      // always rendered, and carries the typed event beside it so a card can stop
+      // parsing prose one kind at a time. A native-only transition has no line to
+      // project, so it travels as a typed frame instead: same connection, no row,
+      // and nothing invented for a renderer that has no place to put it.
+      if (!isCurrentExecution()) return;
+      if (event.source === undefined) {
+        this.publishNativeEvent(session, event);
+        return;
+      }
+      const ledgerMatch = event.source.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
+      if (ledgerMatch) {
+        session.taskId = ledgerMatch[1];
+        this.persistSession(session);
+      }
+      const branchMatch = event.source.match(/branch\s+(?:Switched to existing|Created|Already on)\s+(\S+)/);
+      if (branchMatch) {
+        session.branch = branchMatch[1];
+        this.persistSession(session);
+      }
+      this.pushEvent(session, event.source, !event.source.startsWith('browseshot '), event);
+    });
     // Keep the per-run universal catalog synchronized with durable connection
     // metadata. A connection can be added or gain a documented operation while
     // this run is paused; the next model turn must see and invoke it immediately.
@@ -4942,26 +5960,7 @@ export class GituServer {
     // (shared cache, evidence, and fail-closed approval gates) instead of only
     // the raw mcp:<server>:<tool> executor path.
     const universalRegistry = new UniversalCapabilityRegistry();
-    const syncUniversalConnections = (): void => {
-      for (const capability of universalRegistry.list()) {
-        if (capability.source === 'connection') universalRegistry.unregister(capability.id);
-      }
-      for (const profile of this.connections.list()) {
-        if (!profile.hasCredential) continue;
-        universalRegistry.registerConnection(
-          profile.id,
-          profile.operations,
-          async (operation, body) => {
-            const registered = this.connections.operation(profile.id, operation.id);
-            if (!registered) throw new Error(`Registered operation "${operation.id}" is no longer available on ${profile.label}.`);
-            const result = await this.connections.invoke(profile.id, registered.id, body);
-            if (!result.ok) throw new Error(result.message);
-            return result.data;
-          },
-          profile.provider,
-        );
-      }
-    };
+    const syncUniversalConnections = (): void => this.syncUniversalConnections(universalRegistry);
     syncUniversalConnections();
     void Promise.all(
       mcp.servers().map(async (server) => {
@@ -4985,6 +5984,14 @@ export class GituServer {
         ),
       ].join('\n');
     };
+    // Connection handlers used by the engine. The closures now live in
+    // `buildConnectionHandlers`, so the delegated-session path runs the same
+    // ones; only the approval gate, the waiter slot and the event sink differ.
+    const connectionHandlers = this.buildConnectionHandlers({
+      approvalHandler: runtimeSession.gates.approvalHandler,
+      slot: session,
+      emit: (text) => this.pushEvent(session, text),
+    });
     const gitu = createGitu(
       {
         workspaceRoot: opts.projectPath ?? this.config.cwd,
@@ -5024,155 +6031,24 @@ export class GituServer {
         browser: this.browserImpl(),
       universalRegistry,
       connectionContext: () => `${universalCapabilityContext()}\n\n${this.connections.renderForAgent()}`,
-      connectionActionHandler: async ({ connectionId, operationId }) => {
-        // Live read path: resolve FIRST (existing or catalog-backed/documented
-        // safe GET auto-registers and persists), then execute. No approval
-        // channel, no credential prompt, no manual registration request.
-        const result = await this.connections.resolveAndExecuteRead({ connectionId, operationId });
-        return {
-          message: result.message,
-          ...(result.data !== undefined ? { data: result.data } : {}),
-          ...(result.operation ? { operation: result.operation } : {}),
-        };
-      },
-      // The recovery controller may run ONE read-only operation on its own
-      // when the model spirals — never a write: approval stays mandatory.
-      safestProviderRead: (preferredConnectionId) => this.connections.safestRead(preferredConnectionId),
-      connectionOperationHandler: async (proposal) => {
-        const profile = this.connections.get(proposal.connectionId);
-        const view = this.connections.list().find((connection) => connection.id === proposal.connectionId);
-        if (!profile || !view?.hasCredential) throw new Error('Saved connection is unavailable or needs its credential configured again.');
-        const op = normalizeConnectionOperation(proposal.operation);
-        if (!op) throw new Error('The proposed provider operation is malformed.');
-        // Safe GET/read operations NEVER enter the approval channel: they
-        // resolve through the capability resolver (register-if-missing under
-        // the existing credential) and execute immediately, like a
-        // connection_action. Only non-read proposals go to operation approval.
-        if (op.risk === 'read' && op.method === 'GET') {
-          const result = await this.connections.resolveAndExecuteRead({
-            connectionId: profile.id,
-            operation: op,
-            capability: op.capability,
-            documented: Boolean(proposal.documentationUrl || profile.documentationUrl || catalogCapabilityDeclared(profile.provider, op.capability)),
-          });
-          return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-        }
-        const capabilityDeclared = profile.capabilities.includes(op.capability);
-        // MISSING_OPERATION !== INVALID_CONNECTION: a capability gap on a VALID
-        // connection resolves from verified official documentation (the catalog)
-        // or the proposal's claimed documentationUrl — it never requires the
-        // user to re-enter a credential.
-        if (!capabilityDeclared && !catalogCapabilityDeclared(profile.provider, op.capability) && !proposal.documentationUrl) {
-          throw new Error(
-            `Saved connection "${profile.label}" does not declare capability "${op.capability}", no verified-documentation catalog entry exists for provider "${profile.provider}", and the proposal supplies no documentationUrl. ` +
-              `Use a documented operation; the saved credential remains valid — no re-entry is needed.`,
-          );
-        }
-        const documentedCapability = !capabilityDeclared;
-        const existing = this.connections.operation(profile.id, op.id);
-        if (existing && JSON.stringify(existing) !== JSON.stringify(op)) {
-          throw new Error(`Operation id "${op.id}" is already registered with different details. Choose a new documented id; do not retarget an existing operation.`);
-        }
-        const body = proposal.body === undefined ? undefined : normalizeConnectionOperationBody(proposal.body);
-        const bodyText = body === undefined ? '(no request body)' : JSON.stringify(body, null, 2);
-        const approved = await requestApproval({
-          tool: `connection:${profile.provider}`,
-          why: `External ${op.risk} operation — ${proposal.reason}`,
-          summary: [
-            `Connection: ${profile.label} (${profile.id})`,
-            `Operation: ${op.label}`,
-            `Request: ${op.method} ${op.path}`,
-            `Required capability: ${op.capability}`,
-            `Risk: ${op.risk}`,
-            `Documentation: ${proposal.documentationUrl ?? profile.documentationUrl ?? 'not supplied'}`,
-            `Body:\n${bodyText}`,
-          ].join('\n'),
-        });
-        if (!approved) throw new Error('User denied the provider operation.');
-        // Registration happens only after approval. It makes the immutable
-        // documented operation discoverable in future tasks, but every write
-        // still returns through this approval path before invocation.
-        const registered = this.connections.registerApprovedOperation(profile.id, op, documentedCapability);
-        const result = await this.connections.invoke(profile.id, registered.id, body);
-        return { message: result.message, ...(result.data !== undefined ? { data: result.data } : {}) };
-      },
-      // The secure form is framed by WHAT the user is being asked to change:
-      // 'reauth' only after a positively classified authentication failure,
-      // 'setup' for a genuinely first-time connection.
-      connectionRecoveryCheck: (prerequisite) => this.connections.connectionRecoveryDecision(prerequisite),
-      connectionRequestHandler: (prerequisite) =>
-        new Promise<boolean>((resolve) => {
-          const decision = this.connections.connectionRecoveryDecision(prerequisite);
-          const waiter: ConnectionWaiter = {
-            id: shortId('conn'),
-            requirement: {
-              ...this.connections.requirementFor(prerequisite),
-              requestType: decision.action === 'reauth' ? 'reauth' : 'setup',
-            },
-            requestedAt: nowIso(),
-            resolve,
-          };
-          session.connection = waiter;
-          this.pushEvent(session, `connection ${waiter.requirement.requestType === 'reauth' ? 'reauthorization needed' : 'waiting for secure setup'} — ${waiter.requirement.description}`);
-          setTimeout(() => {
-            if (session.connection === waiter) {
-              session.connection = undefined;
-              this.pushEvent(session, 'connection setup timed out — prerequisite remains unresolved');
-              resolve(false);
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
-      askUserHandler: (questions) =>
-        new Promise<string>((resolve) => {
-          const waiter: QuestionsWaiter = { id: shortId('q'), questions, requestedAt: nowIso(), resolve };
-          session.questions = waiter;
-          this.pushEvent(session, `ask-user waiting for your answers`);
-          setTimeout(() => {
-            if (session.questions === waiter) {
-              session.questions = undefined;
-              this.pushEvent(session, 'ask-user timed out — agent will assume defaults');
-              resolve('(no answer — proceed with reasonable defaults)');
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
-      planReviewHandler: (input) =>
-        new Promise((resolve) => {
-          const waiter: PlanReviewWaiter = {
-            id: shortId('pr'),
-            criteria: input.criteria,
-            steps: input.steps,
-            requestedAt: nowIso(),
-            resolve,
-          };
-          session.planReview = waiter;
-          this.pushEvent(session, `plan-review ${waiter.id} waiting for your review`);
-          setTimeout(() => {
-            if (session.planReview === waiter) {
-              session.planReview = undefined;
-              this.pushEvent(session, `plan-review ${waiter.id} timed out — treating as denied`);
-              resolve({ approved: false, note: 'Plan review timed out.' });
-            }
-          }, this.config.approvalTimeoutMs ?? APPROVAL_TIMEOUT_MS);
-        }),
-      approvalHandler: requestApproval,
-      onEvent: (text) => {
-        if (!isCurrentExecution()) return;
-        const ledgerMatch = text.match(/ledger\s+(?:created|resumed):\s+(\S+)/);
-        if (ledgerMatch) {
-          session.taskId = ledgerMatch[1];
-          this.persistSession(session);
-        }
-        const branchMatch = text.match(/branch\s+(?:Switched to existing|Created|Already on)\s+(\S+)/);
-        if (branchMatch) {
-          session.branch = branchMatch[1];
-          this.persistSession(session);
-        }
-        this.pushEvent(session, text, !text.startsWith('browseshot '));
-      },
+      ...connectionHandlers,
+      // Every gate the engine can pause on is runtime-owned, so the runtime is
+      // the single request authority and the session-scoped mirrors above are
+      // views of it rather than competing stores.
+      askUserHandler: runtimeSession.gates.askUserHandler,
+      planReviewHandler: runtimeSession.gates.planReviewHandler,
+      approvalHandler: runtimeSession.gates.approvalHandler,
+      // The engine reports through the runtime's sinks, so its prose and its
+      // native events land in the same log the projection above reads. The
+      // ledger/branch bookkeeping that used to live here now rides that
+      // projection, because it is a reaction to a line, not a second stream.
+      onEvent: (text) => runtimeSession.sinks.onEvent(text),
+      onCodingEvent: (payload) => runtimeSession.sinks.onCodingEvent(payload),
       },
     );
     activeGitu = gitu;
     session.gitu = gitu;
+    session.runtime = runtimeSession;
     // Steered messages that arrived during the prelude (before this attach)
     // are buffered on the session — deliver them now so they are not lost.
     const buffered = session.pendingSteer;
@@ -5221,6 +6097,8 @@ export class GituServer {
         session.error = undefined;
         session.finishedAt = undefined;
         session.gitu = undefined;
+        // The continuation attaches its own runtime; this one's run is over.
+        session.runtime = undefined;
         void this.executeRun(session, llm, {
           goal: session.goal,
           mode: session.mode ?? 'standard',
@@ -5270,6 +6148,7 @@ export class GituServer {
             // Detach the old execution before starting the resume. Its finally
             // block then becomes a no-op and cannot overwrite the new state.
             session.gitu = undefined;
+            session.runtime = undefined;
             void this.executeRun(session, next.client, {
               ...opts,
               projectPath: root,
@@ -5296,6 +6175,9 @@ export class GituServer {
       );
     } finally {
       if (!isCurrentExecution()) return;
+      // Stop holding a runtime session whose run is over. A superseded run keeps
+      // its replacement's runtime instead, exactly as it keeps its engine.
+      if (session.runtime === runtimeSession) session.runtime = undefined;
       session.finishedAt = nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       this.saveRegistry();

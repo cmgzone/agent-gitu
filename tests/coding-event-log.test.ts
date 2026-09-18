@@ -19,8 +19,28 @@ describe('CodingEventLog native-first suppression', () => {
     const log = new CodingEventLog();
     log.publishNative({ type: 'command_started', command: 'npm test' });
     const fromLegacy = log.publishLegacy('run      $ npm test');
-    expect(fromLegacy).toEqual({ seq: 2, at: fromLegacy.at, type: 'log', text: 'run      $ npm test' });
+    // Suppressing the event must not suppress the wording: the line is retained
+    // so a host can still project exactly what the emitter said.
+    expect(fromLegacy).toEqual({ seq: 2, at: fromLegacy.at, type: 'log', text: 'run      $ npm test', source: 'run      $ npm test' });
     expect(log.events().filter((event) => event.type === 'command_started')).toHaveLength(1);
+  });
+
+  it('retains the prose line on a classified event too, not only a suppressed one', () => {
+    // `lines` belongs to no native emitter, so the shim's classification stands
+    // — and the words it was classified from still have to survive for a prose
+    // consumer that has not adopted the typed vocabulary.
+    const log = new CodingEventLog();
+    const event = log.publishLegacy('lines    src/cli.ts +12 lines');
+    expect(event).toMatchObject({ type: 'file_changed', path: 'src/cli.ts', linesAdded: 12, source: 'lines    src/cli.ts +12 lines' });
+    // Verbatim, not trimmed: the projection renders this and nothing else.
+    expect(event.source).toBe('lines    src/cli.ts +12 lines');
+  });
+
+  it('leaves a natively-reported event without a source line', () => {
+    // A native emitter reports a transition rather than wording, so there is no
+    // prose to project and a host must not be handed one to invent.
+    const log = new CodingEventLog();
+    expect(log.publishNative({ type: 'command_finished', command: 'npm test', ok: true }).source).toBeUndefined();
   });
 
   it('suppresses each natively-owned kind, including the completion line', () => {

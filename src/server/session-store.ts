@@ -45,6 +45,23 @@ export interface StoredEvent {
   i: number;
   t: string;
   text: string;
+  /** The runtime event this prose line was projected from, when it had one.
+   *  Untyped at the store boundary: the caller owns the payload schema. */
+  typed?: unknown;
+}
+
+/**
+ * A typed runtime event kept beside the prose rows.
+ *
+ * Rows are keyed by `idx` (the rendered-row cursor); frames are keyed by their
+ * own `fid` because `seq` restarts at 1 in every new process. Without that
+ * separation a restored frame would collide with an unrelated later one.
+ */
+export interface StoredFrame {
+  fid: number;
+  t: string;
+  /** The whole `CodingEvent` as JSON; it repeats its own `seq` and `at`. */
+  typed: unknown;
 }
 
 export interface StoredSessionFile {
@@ -118,28 +135,39 @@ export class SessionStore {
          path TEXT,
          createdAt TEXT,
          PRIMARY KEY (runId, id)
+       );
+       CREATE TABLE IF NOT EXISTS native_frames (
+         runId TEXT,
+         fid INTEGER,
+         t TEXT,
+         typed TEXT,
+         PRIMARY KEY (runId, fid)
        );`,
     );
     // Existing installations created the sessions table before these fields
-    // existed. SQLite has no ADD COLUMN IF NOT EXISTS, so ignore the harmless
+    // existed, and the events table before rows carried their typed companion.
+    // SQLite has no ADD COLUMN IF NOT EXISTS, so ignore the harmless
     // duplicate-column error on an already-migrated database.
-    for (const column of [
-      'finishedAt TEXT',
-      'mode TEXT',
-      'provider TEXT',
-      'model TEXT',
-      'requestedProvider TEXT',
-      'requestedModel TEXT',
-      'activeProvider TEXT',
-      'activeModel TEXT',
-      'report TEXT',
-      'error TEXT',
-      'usage TEXT',
-      'branch TEXT',
-      'worktreePath TEXT',
+    for (const [table, column] of [
+      ['sessions', 'finishedAt TEXT'],
+      ['sessions', 'mode TEXT'],
+      ['sessions', 'provider TEXT'],
+      ['sessions', 'model TEXT'],
+      ['sessions', 'requestedProvider TEXT'],
+      ['sessions', 'requestedModel TEXT'],
+      ['sessions', 'activeProvider TEXT'],
+      ['sessions', 'activeModel TEXT'],
+      ['sessions', 'report TEXT'],
+      ['sessions', 'error TEXT'],
+      ['sessions', 'usage TEXT'],
+      ['sessions', 'branch TEXT'],
+      ['sessions', 'worktreePath TEXT'],
+      // The typed companion on a prose row. Older rows simply have none and
+      // restore as prose-only, exactly as they always have.
+      ['events', 'typed TEXT'],
     ]) {
       try {
-        this.db.exec(`ALTER TABLE sessions ADD COLUMN ${column}`);
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column}`);
       } catch {
         /* column already exists */
       }
@@ -198,7 +226,47 @@ export class SessionStore {
   }
 
   addEvent(runId: string, ev: StoredEvent): void {
-    this.db.prepare(`INSERT OR REPLACE INTO events (runId, idx, t, text) VALUES (?, ?, ?, ?)`).run(runId, ev.i, ev.t, ev.text);
+    // `typed` rides beside the prose so a restored row keeps the structured
+    // event it was projected from, not just the words. Best-effort parse on the
+    // way out: an unreadable companion degrades that row to prose, never fails
+    // the read.
+    this.db
+      .prepare(`INSERT OR REPLACE INTO events (runId, idx, t, text, typed) VALUES (?, ?, ?, ?, ?)`)
+      .run(runId, ev.i, ev.t, ev.text, ev.typed === undefined ? null : JSON.stringify(ev.typed));
+  }
+
+  /**
+   * Append one typed frame and keep only the newest `keep` for the run.
+   *
+   * Trimmed on write rather than on read so a long-lived session cannot grow
+   * the table without bound, mirroring the in-memory frame buffer's bound.
+   */
+  addNativeFrame(runId: string, frame: { t: string; typed: unknown }, keep: number): number {
+    const row = this.db.prepare(`SELECT IFNULL(MAX(fid), -1) + 1 AS next FROM native_frames WHERE runId = ?`).get(runId) as
+      | { next: number }
+      | undefined;
+    const fid = row ? Number(row.next) : 0;
+    this.db.prepare(`INSERT INTO native_frames (runId, fid, t, typed) VALUES (?, ?, ?, ?)`).run(runId, fid, frame.t, JSON.stringify(frame.typed));
+    if (keep > 0) this.db.prepare(`DELETE FROM native_frames WHERE runId = ? AND fid <= ?`).run(runId, fid - keep);
+    return fid;
+  }
+
+  nativeFramesFor(runId: string): StoredFrame[] {
+    const rows = this.db.prepare(`SELECT fid, t, typed FROM native_frames WHERE runId = ? ORDER BY fid ASC`).all(runId) as {
+      fid: number;
+      t: string;
+      typed: string | null;
+    }[];
+    const frames: StoredFrame[] = [];
+    for (const row of rows) {
+      if (!row.typed) continue;
+      try {
+        frames.push({ fid: Number(row.fid), t: row.t, typed: JSON.parse(row.typed) });
+      } catch {
+        /* an unreadable frame is history we cannot use; the prose rows remain */
+      }
+    }
+    return frames;
   }
 
   deleteEvent(runId: string, idx: number): void {
@@ -333,7 +401,20 @@ export class SessionStore {
   }
 
   eventsFor(runId: string): StoredEvent[] {
-    return this.db.prepare(`SELECT idx AS i, t, text FROM events WHERE runId = ? ORDER BY idx ASC`).all(runId) as unknown as StoredEvent[];
+    const rows = this.db.prepare(`SELECT idx AS i, t, text, typed FROM events WHERE runId = ? ORDER BY idx ASC`).all(runId) as {
+      i: number;
+      t: string;
+      text: string;
+      typed: string | null;
+    }[];
+    return rows.map((row) => {
+      if (!row.typed) return { i: row.i, t: row.t, text: row.text };
+      try {
+        return { i: row.i, t: row.t, text: row.text, typed: JSON.parse(row.typed) };
+      } catch {
+        return { i: row.i, t: row.t, text: row.text };
+      }
+    });
   }
 
   deleteSessionsForProject(filter: { path?: string; name?: string }): number {
@@ -342,6 +423,7 @@ export class SessionStore {
       .all(filter.path ?? null, filter.name ?? null) as { runId: string }[];
     for (const r of rows) {
       this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(r.runId);
+      this.db.prepare(`DELETE FROM native_frames WHERE runId = ?`).run(r.runId);
       this.db.prepare(`DELETE FROM session_files WHERE runId = ?`).run(r.runId);
       this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(r.runId);
     }
@@ -350,6 +432,7 @@ export class SessionStore {
 
   deleteSession(runId: string): boolean {
     this.db.prepare(`DELETE FROM events WHERE runId = ?`).run(runId);
+    this.db.prepare(`DELETE FROM native_frames WHERE runId = ?`).run(runId);
     this.db.prepare(`DELETE FROM session_files WHERE runId = ?`).run(runId);
     const res = this.db.prepare(`DELETE FROM sessions WHERE runId = ?`).run(runId);
     return Number(res.changes) > 0;

@@ -12,9 +12,10 @@
  *
  * `CodingEventPayload` is the structured replacement, and the runtime should
  * emit it natively. `toCodingEvent` exists only so two interfaces can share one
- * stream while that migration is in progress. It is deliberately conservative:
- * anything it cannot classify with certainty becomes `log`, never a guess.
+ * stream while that migration is in progress. It is deliberately conservative: * anything it cannot classify with certainty becomes `log`, never a guess.
  */
+
+import type { ChiefDecisionAction, ChiefRequestKind } from './chief.js';
 
 /**
  * Cursor + timestamp every consumer needs to order, replay and resume a stream
@@ -26,6 +27,17 @@ export interface CodingEventEnvelope {
   seq: number;
   /** ISO timestamp of first publication. */
   at: string;
+  /**
+   * The legacy prose line this event was classified from, verbatim.
+   *
+   * Only legacy-published events carry it; a native emitter reports a transition
+   * and has no line to point at. It exists so a host can keep projecting the
+   * stream a UI already renders — `run      $ npm test` classified to
+   * `command_started` no longer holds its own wording otherwise, and a surface
+   * that has not adopted the typed vocabulary would silently lose the line.
+   * It is a projection aid, not part of the event's meaning.
+   */
+  source?: string;
 }
 
 /**
@@ -105,7 +117,14 @@ export type CodingEventPayload =
       skipped?: number;
       durationMs?: number;
     }
-  | { type: 'approval_required'; approvalId: string; tool?: string; why?: string }
+  /** The gate's own request, forwarded so a card can render it without reading
+   *  the host mirror. `summary` is the detail the requester wants shown; it is
+   *  display payload, never an input to the authorization decision.
+   *  `requestedAt` is when the agent asked, part of the request's meaning; the
+   *  envelope's `at` is a publication stamp and diverges under replay, so a
+   *  consumer that wants request age reads this field and falls back to `at`
+   *  only for an event classified from legacy text. */
+  | { type: 'approval_required'; approvalId: string; tool?: string; why?: string; summary?: string; requestedAt?: string }
   /** Published by whichever surface resolved the request first. Exactly one
    *  approval object exists per session; this is how the other surfaces learn
    *  the request is no longer pending. */
@@ -118,15 +137,47 @@ export type CodingEventPayload =
    * `plan` is the rendered plan for display; the structured criteria and steps
    * live on the pending request a surface reads from session state.
    */
-  | { type: 'plan_review_requested'; requestId: string; plan: string }
-  | { type: 'plan_review_resolved'; requestId: string; decision: PlanReviewDecision }
+  /** `plan` is the rendered rendering a log stays readable with; `criteria` and
+   *  `steps` are the structured request the review card edits, and mirror
+   *  `CodingPlanReviewRequest`. */
+  | {
+      type: 'plan_review_requested';
+      requestId: string;
+      plan: string;
+      criteria?: string[];
+      steps?: { description: string; verification: string }[];
+      requestedAt?: string;
+    }
+  /** `reason` is the cancellation note when the runtime released the gate, or
+   *  'timed out' when the request expired unanswered. */
+  | { type: 'plan_review_resolved'; requestId: string; decision: PlanReviewDecision; reason?: string }
   /**
    * Clarification questions, owned by the runtime on the same terms. The
-   * structured questions (with their options) live on the pending request;
-   * this carries the question texts so a log stays readable.
+   * structured questions and their options ride along in `details`, so a card
+   * renders them without reading anything outside the log; `questions` stays the
+   * readable projection. `details` mirrors `CodingQuestion`.
    */
-  | { type: 'questions_requested'; requestId: string; questions: string[] }
-  | { type: 'questions_answered'; requestId: string }
+  | {
+      type: 'questions_requested';
+      requestId: string;
+      questions: string[];
+      details?: { question: string; header?: string; options: string[] }[];
+      requestedAt?: string;
+    }
+  | { type: 'questions_answered'; requestId: string; reason?: string }
+  /**
+   * A chief of staff settled a gated request, or declined to and handed it to the
+   * person. Every request the runtime offers a chief produces exactly one of
+   * these, escalation included: a request that quietly reached a person without
+   * saying why it was not routine would be indistinguishable from one nobody
+   * looked at.
+   *
+   * `detail` is the decision's own words — the reason, the answer, the note — so a
+   * surface explains the outcome without re-deriving the policy. The resolution
+   * itself still travels as its own event (`approval_resolved` and friends): this
+   * one says *who decided*, that one says *what the request now is*.
+   */
+  | { type: 'chief_decided'; requestKind: ChiefRequestKind; requestId: string; action: ChiefDecisionAction; detail: string }
   /**
    * A control system refused an operation. These are the strongest signals in
    * the stream — evidence that the guard, the policy engine or a user
@@ -184,6 +235,7 @@ export const CODING_EVENT_TYPES = [
   'plan_review_resolved',
   'questions_requested',
   'questions_answered',
+  'chief_decided',
   'policy_denied',
   'operation_blocked',
   'evidence_recorded',
@@ -202,8 +254,10 @@ export const CODING_EVENT_TYPES = [
  *
  * `policy_denied` and `operation_blocked` are emitted by the executor at the
  * gate that refused the action. The legacy `denied `/`blocked ` text lines
- * still flow to the existing workspace UI, so the adapter keeps mapping them to
- * `log` rather than guessing at a reason code from their wording.
+ * still flow to the existing workspace UI, so the adapter keeps mapping them to *   `log` rather than guessing at a reason code from their wording.
+ *
+ * `chief_decided` is native-only on its own terms: no prose line announces who
+ * decided a request, so there is nothing for the adapter to classify.
  *
  * Kept as data (rather than a comment) so the migration can assert the gap
  * closes as native emission lands.
@@ -218,6 +272,7 @@ export const NATIVE_ONLY_EVENT_TYPES = [
   'plan_review_resolved',
   'questions_requested',
   'questions_answered',
+  'chief_decided',
   'policy_denied',
   'operation_blocked',
 ] as const satisfies readonly CodingEventType[];

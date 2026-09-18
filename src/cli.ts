@@ -23,6 +23,7 @@ import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
 import { GituServer } from './server/server.js';
+import { SkillStore } from './skills/skills.js';
 import type { MemoryStatus, MemoryType, MemoryVisibility } from './types.js';
 
 interface ParsedArgs {
@@ -76,6 +77,9 @@ Usage:
   gitu report <taskId>                 Show the completion report for a task
   gitu memory [--type <type>] [--json] Show stored memory
   gitu memory search <query>           Ranked search (--limit --scope --visibility --agent --project --type --status --json)
+  gitu skill export <name> [--out D]   Export a skill as agentskills.io SKILL.md
+  gitu skill import <path> [--global]  Import a SKILL.md folder (or file) into the skill store
+  gitu serve [--port 8321]             Headless server: cowork, schedules and learning run with no UI
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
@@ -393,6 +397,52 @@ async function main(): Promise<void> {
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
       return;
+    }
+
+    // Headless server: the same control plane (cowork, schedules, learning
+    // loop, sessions) with no UI attached — the "always on" mode for agents
+    // that live on a machine, not in a tab.
+    case 'serve': {
+      const portRaw = flags.get('port');
+      const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
+      if (!Number.isFinite(port) || port < 1 || port > 65535) throw new Error('Invalid --port');
+      const server = new GituServer({ cwd, port });
+      const bound = await server.start();
+      console.log(`Agent Gitu headless server running: http://localhost:${bound}`);
+      console.log('Cowork teams, scheduled jobs and the learning loop stay active; the Web UI is still served at the same port.');
+      console.log('Press Ctrl+C to stop.');
+      const shutdown = (): void => {
+        server
+          .stop()
+          .catch(() => {})
+          .finally(() => process.exit(0));
+      };
+      process.on('SIGINT', shutdown);
+      process.on('SIGTERM', shutdown);
+      return;
+    }
+
+    case 'skill': {
+      const sub = positional[1];
+      const guard = ProjectGuard.detect(cwd);
+      const skills = SkillStore.forProject(guard.lock.repoRoot);
+      if (sub === 'export') {
+        const name = positional[2];
+        if (!name) throw new Error('Usage: gitu skill export <name> [--out <dir>]');
+        const out = typeof flags.get('out') === 'string' ? String(flags.get('out')) : process.cwd();
+        const file = skills.exportSkillMd(name, out);
+        console.log(`Exported "${name}" → ${file} (agentskills.io SKILL.md)`);
+        return;
+      }
+      if (sub === 'import') {
+        const source = positional[2];
+        if (!source) throw new Error('Usage: gitu skill import <path-to-SKILL.md-or-folder> [--global]');
+        const scope = flags.get('global') === true ? 'global' : 'project';
+        const imported = skills.importSkillDir(source, { scope });
+        console.log(`Imported "${imported.name}" (${scope} skills) → ${imported.target}`);
+        return;
+      }
+      throw new Error('Usage: gitu skill export <name> [--out <dir>] | gitu skill import <path> [--global]');
     }
 
     case 'run': {

@@ -31,23 +31,39 @@ export function isTrivialEvidenceCommand(command: string): boolean {
 const TRIVIAL_WORDS = new Set([
   'echo', '.', ':', 'true', 'pwd', 'cd', 'ls', 'dir', 'cls', 'whoami', 'hostname',
   'date', 'ver', 'tree', 'sleep', 'start-sleep',
-  'write-host', 'get-childitem', 'gci', 'set-location', 'sl', 'git',
+  'write-host', 'get-childitem', 'gci', 'set-location', 'sl',
 ]);
-/** Read-only git subcommands that keep a `git ...` segment trivial. */
+/** Read-only git subcommands that keep a `git ...` segment trivial. Write ops
+ *  (commit, push, reset, checkout, …) are NOT here on purpose: they mutate
+ *  state, so they must never be dismissed as a no-op verification. */
 const TRIVIAL_GIT_SUBCOMMANDS = new Set(['status', 'log', 'diff', 'show']);
 
 function isTrivialSegment(raw: string): boolean {
   const tokens = raw.trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return true;
   let sawCommand = false;
+  let sawGit = false;
+  let gitSubcommandSeen = false;
   for (const tok of tokens) {
     if (/^[-/]/.test(tok)) continue; // flags and unix-style paths are inert
     const t = tok.toLowerCase().replace(/^["']|["']$/g, '');
+    if (t === 'git') {
+      // Only a read-only git invocation stays trivial; the first bare word after
+      // `git` is the subcommand — if it mutates state, the segment is real work.
+      sawGit = true;
+      sawCommand = true;
+      continue;
+    }
+    if (sawGit && !gitSubcommandSeen) {
+      gitSubcommandSeen = true;
+      if (TRIVIAL_GIT_SUBCOMMANDS.has(t)) continue; // git status / log / diff / show
+      return false; // git <commit|push|reset|checkout|…> mutates state — not a no-op
+    }
+    if (sawGit) continue; // arguments to a read-only git subcommand stay inert
     if (TRIVIAL_WORDS.has(t)) {
       sawCommand = true;
       continue;
     }
-    if (t === 'git' || TRIVIAL_GIT_SUBCOMMANDS.has(t)) continue;
     // Path-ish continuation AFTER a trivial command ("cd client", "echo done").
     if (sawCommand && /^[\w .~\\/:"'()-]+$/.test(tok)) continue;
     return false;
@@ -153,8 +169,13 @@ export function hasRegressionProof(input: RegressionProofInput): boolean {
     const cmd = real(ev.command);
     if (!cmd || ev.passed) continue;
     const pass = passAt.get(cmd);
-    if (!pass || ev.createdAt >= pass) continue;
-    if (edits.some((a) => a.createdAt! > ev.createdAt && a.createdAt! < pass)) return true;
+    // Inclusive lower bound: nowIso() has limited resolution, so a fast local
+    // fail -> edit -> pass can record the SAME timestamp for all three. A fail
+    // stamped at the same instant as the pass is still a genuine prior failure,
+    // and an edit stamped at either boundary is still causally between them.
+    // Strict > / < made a correct, fast fix unprovable purely on clock ties.
+    if (!pass || ev.createdAt > pass) continue;
+    if (edits.some((a) => a.createdAt! >= ev.createdAt && a.createdAt! <= pass)) return true;
   }
   return false;
 }
@@ -245,9 +266,13 @@ export class EvidenceEngine {
       };
     }
 
-    // Check stale fingerprint
-    if (currentFingerprint && evidence.workspaceFingerprint && evidence.workspaceFingerprint !== currentFingerprint) {
-      evidence.stale = true;
+    // Staleness is recomputed from the CURRENT fingerprint, never latched: if
+    // the workspace reverts to the state this evidence was captured against,
+    // the evidence is valid again instead of staying permanently stale.
+    if (currentFingerprint && evidence.workspaceFingerprint) {
+      evidence.stale = evidence.workspaceFingerprint !== currentFingerprint;
+    }
+    if (evidence.stale) {
       return {
         ok: false,
         reason: `Evidence ${evidenceId} is stale because the workspace was modified after the command ran. Re-run "${criterion.verification || evidence.command || 'verification'}" to produce fresh evidence.`,
@@ -291,12 +316,14 @@ export class EvidenceEngine {
     let satisfiedCount = 0;
 
     for (const c of ledger.acceptanceCriteria) {
-      // Check if any attached evidence is stale
+      // Recompute staleness against the CURRENT fingerprint (never latched):
+      // evidence captured against a fingerprint the workspace has since
+      // returned to is fresh again, not permanently stale.
       if (currentFingerprint) {
         for (const id of c.evidenceIds) {
           const ev = ledger.evidence.find((e) => e.id === id);
-          if (ev && ev.workspaceFingerprint && ev.workspaceFingerprint !== currentFingerprint) {
-            ev.stale = true;
+          if (ev && ev.workspaceFingerprint) {
+            ev.stale = ev.workspaceFingerprint !== currentFingerprint;
           }
         }
       }

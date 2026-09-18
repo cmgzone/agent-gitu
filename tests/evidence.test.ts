@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { commandsMatch, EvidenceEngine } from '../src/evidence/evidence.js';
+import { commandsMatch, EvidenceEngine, isTrivialEvidenceCommand } from '../src/evidence/evidence.js';
 import type { TaskLedgerData } from '../src/types.js';
 
 function emptyLedger(): TaskLedgerData {
@@ -239,6 +239,33 @@ describe('structured criteria — evidence relevance checking', () => {
     expect(specs[0]!.text).toBe('plain text criterion');
     expect(specs[0]!.verification).toBeUndefined();
     expect(specs[1]!.verification).toBe('npm test');
+  });
+});
+
+describe('isTrivialEvidenceCommand — git write ops are not no-ops', () => {
+  it('keeps read-only git subcommands trivial', () => {
+    expect(isTrivialEvidenceCommand('git status')).toBe(true);
+    expect(isTrivialEvidenceCommand('git log --oneline')).toBe(true);
+    expect(isTrivialEvidenceCommand('git diff')).toBe(true);
+    expect(isTrivialEvidenceCommand('git show HEAD')).toBe(true);
+  });
+
+  it('treats state-mutating git subcommands as real work, not no-ops', () => {
+    expect(isTrivialEvidenceCommand('git commit -m x')).toBe(false);
+    expect(isTrivialEvidenceCommand('git push')).toBe(false);
+    expect(isTrivialEvidenceCommand('git reset --hard')).toBe(false);
+    expect(isTrivialEvidenceCommand('git checkout main')).toBe(false);
+  });
+
+  it('still treats ordinary no-op commands as trivial', () => {
+    expect(isTrivialEvidenceCommand('git status && git log')).toBe(true);
+    expect(isTrivialEvidenceCommand('echo done')).toBe(true);
+    expect(isTrivialEvidenceCommand('cd client')).toBe(true);
+  });
+
+  it('does not let a trivial prefix hide real work in a compound command', () => {
+    expect(isTrivialEvidenceCommand('cd client && npm test')).toBe(false);
+    expect(isTrivialEvidenceCommand('git status && git commit -m x')).toBe(false);
   });
 });
 

@@ -102,6 +102,10 @@ export const COWORK_CSS = String.raw`
   .cw-bubble code { font-family: var(--mono); font-size: 12px; background: var(--card2); border-radius: 4px; padding: 1px 4px; }
   .cw-bubble .cw-mention { color: var(--accent); font-weight: 600; }
   .cw-bubble a { color: var(--run); }
+  .cw-table { border-collapse: collapse; margin: 8px 0; font-size: 12.5px; display: block; overflow-x: auto; max-width: 100%; }
+  .cw-table th, .cw-table td { border: 1px solid var(--border2); padding: 5px 10px; text-align: left; vertical-align: top; }
+  .cw-table th { background: var(--card2); font-weight: 600; }
+  .cw-table tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
   .cw-typing { display: flex; align-items: center; gap: 8px; padding: 2px 22px 10px; font-size: 12px; color: var(--muted); }
   .cw-typing .dots { display: inline-flex; gap: 3px; }
   .cw-typing .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: cwpulse 1.1s infinite; }
@@ -919,10 +923,37 @@ export const COWORK_JS = String.raw`
   }
 
   // Small, safe rich-text renderer: escape first, then restore code fences,
-  // inline code, bold, links and @mentions on the escaped text. Backticks
-  // survive esc() unchanged, so \x60 matches them post-escape.
+  // inline code, bold, links, @mentions and markdown tables on the escaped
+  // text. Backticks survive esc() unchanged, so \x60 matches them post-escape.
+  // Tables are rebuilt from the raw (unescaped) source: each cell is escaped
+  // individually, so no markup can smuggle through a pipe row.
+  function cwTableHtml(block) {
+    var rows = block.split('\n').map(function (line) { return line.trim(); }).filter(Boolean);
+    if (rows.length < 2) return null;
+    var isDivider = function (line) { return /^\|?[\s:|-]+\|?$/.test(line) && line.indexOf('-') >= 0; };
+    if (!isDivider(rows[1])) return null;
+    var cells = function (line) {
+      var parts = line.replace(/^\|/, '').replace(/\|$/, '').split('|');
+      return parts.map(function (cell) { return esc(cell.trim()); });
+    };
+    var head = cells(rows[0]);
+    var body = rows.slice(2).map(cells);
+    var html = '<table class="cw-table"><thead><tr>' + head.map(function (c) { return '<th>' + c + '</th>'; }).join('') + '</tr></thead><tbody>';
+    body.forEach(function (row) { html += '<tr>' + row.map(function (c) { return '<td>' + c + '</td>'; }).join('') + '</tr>'; });
+    return html + '</tbody></table>';
+  }
+
   function cwBody(text, members) {
-    var out = esc(text);
+    // Pull pipe tables out of the raw text before escaping; anything left
+    // behind is still escaped and line-broken below.
+    var tables = [];
+    var stripped = String(text || '').replace(/(^|\n)(\|[^\n]*\|\n\|[\s:|-]*\|(?:\n\|[^\n]*\|)+)/g, function (all, lead, block) {
+      var html = cwTableHtml(block.replace(/^\n/, ''));
+      if (!html) return all;
+      tables.push(html);
+      return lead + '\x00TABLE' + (tables.length - 1) + '\x00';
+    });
+    var out = esc(stripped);
     out = out.replace(/\x60\x60\x60([\s\S]*?)\x60\x60\x60/g, function (all, code) { return '</span><span class="cw-code">' + String(code).replace(/^\n/, '') + '</span><span>'; });
     out = out.replace(/\x60([^\x60\n]+)\x60/g, function (all, code) { return '<code>' + code + '</code>'; });
     out = out.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
@@ -932,6 +963,7 @@ export const COWORK_JS = String.raw`
       if (!safe) return;
       out = out.replace(new RegExp('@(' + safe + ')', 'gi'), '<span class="cw-mention">@$1</span>');
     });
+    out = out.replace(/\x00TABLE(\d+)\x00/g, function (all, i) { return '</span>' + tables[Number(i)] + '<span>'; });
     out = out.replace(/\n/g, '<br>');
     return '<span>' + out + '</span>';
   }

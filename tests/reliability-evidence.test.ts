@@ -138,6 +138,29 @@ describe('EvidenceEngine — fingerprint-based staleness', () => {
     expect(ev.stale).toBe(true);
   });
 
+  it('restores evidence freshness when the workspace reverts to the original fingerprint', () => {
+    const engine = new EvidenceEngine();
+    const ledger = emptyLedger();
+    const ev = engine.record(ledger, { kind: 'test', label: 'npm test', passed: true, output: 'ok', workspaceFingerprint: 'fp-1' });
+    engine.link(ledger, 'ac-1', ev.id, 'fp-1');
+    expect(engine.gate(ledger, 'fp-1').open).toBe(true);
+
+    // Workspace changes: evidence goes stale and the gate closes.
+    expect(engine.gate(ledger, 'fp-2').open).toBe(false);
+    expect(ev.stale).toBe(true);
+
+    // Workspace reverts to the exact state the evidence was captured against:
+    // staleness is recomputed, not latched, so the evidence is valid again.
+    const gate = engine.gate(ledger, 'fp-1');
+    expect(ev.stale).toBe(false);
+    expect(gate.open).toBe(true);
+
+    // link() with the original fingerprint also recovers instead of rejecting.
+    const relink = engine.link(ledger, 'ac-1', ev.id, 'fp-1');
+    expect(relink.ok).toBe(true);
+    expect(ev.stale).toBe(false);
+  });
+
   it('reopens the gate after re-running verification on the new workspace state', () => {
     const engine = new EvidenceEngine();
     const ledger = emptyLedger();

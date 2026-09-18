@@ -35,6 +35,33 @@ function message(patch = {}) {
   return { id: 'm1', seq: 1, role: 'user', text: 'Original', revision: 0, attempt: 0, changeSeq: 1, status: 'sent', ...patch };
 }
 
+describe('cwBody markdown tables', () => {
+  it('renders a pipe table as a real table, not raw ---|---', () => {
+    const u = fixture();
+    const html = u.context.cwBody('Before\n\n| Category | Status |\n|----------|--------|\n| Polish   | Done   |\n\nAfter', []);
+    expect(html).toContain('<table class="cw-table">');
+    expect(html).toContain('<th>Category</th>');
+    expect(html).toContain('<td>Polish</td>');
+    expect(html).not.toContain('----------|--------');
+    expect(html).toContain('Before');
+    expect(html).toContain('After');
+  });
+
+  it('escapes cell content so markup cannot smuggle through a table', () => {
+    const u = fixture();
+    const html = u.context.cwBody('| A | B |\n|---|---|\n| <img src=x onerror=alert(1)> | `code` |', []);
+    expect(html).toContain('<table');
+    expect(html).toContain('&lt;img src=x onerror=alert(1)>');
+    expect(html).not.toContain('<img');
+  });
+
+  it('leaves non-table pipes and divider-less rows alone', () => {
+    const u = fixture();
+    expect(u.context.cwBody('a | b | c', [])).not.toContain('<table');
+    expect(u.context.cwBody('| just | one |\n| row | here |', [])).not.toContain('<table');
+  });
+});
+
 describe('Cowork message actions', () => {
   it('renders Copy/Reference/Delete for outputs, edits only users, Retry only failures', () => {
     const u = fixture();

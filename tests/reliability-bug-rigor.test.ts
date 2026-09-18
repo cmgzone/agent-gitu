@@ -100,6 +100,33 @@ describe('hasRegressionProof', () => {
       }),
     ).toBe(false);
   });
+
+  it('accepts fail -> edit -> pass that share one timestamp (fast local run)', () => {
+    // nowIso() has limited resolution; a quick reproduction, fix and re-run can
+    // all land in the same millisecond. A correct fast fix must still prove out.
+    const same = t(1);
+    expect(
+      hasRegressionProof({
+        evidence: [
+          { command: 'npm test', passed: false, createdAt: same },
+          { command: 'npm test', passed: true, createdAt: same },
+        ],
+        actions: [{ tool: 'apply_edit', status: 'success', createdAt: same }],
+      }),
+    ).toBe(true);
+  });
+
+  it('still rejects a fail recorded strictly after the pass', () => {
+    expect(
+      hasRegressionProof({
+        evidence: [
+          { command: 'npm test', passed: true, createdAt: t(1) },
+          { command: 'npm test', passed: false, createdAt: t(2) },
+        ],
+        actions: [{ tool: 'apply_edit', status: 'success', createdAt: t(0) }],
+      }),
+    ).toBe(false);
+  });
 });
 
 describe('Hermes — bug-fix rigor gate', () => {

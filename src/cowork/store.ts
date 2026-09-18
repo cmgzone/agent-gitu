@@ -58,7 +58,7 @@ export interface CoworkMessage {
   agentId?: string;
   agentName?: string;
   text: string;
-  via: 'web' | 'telegram' | 'schedule' | 'agent';
+  via: 'web' | 'telegram' | 'discord' | 'schedule' | 'agent';
   /** Telegram author name / schedule label, for display. */
   from?: string;
   /** Tool calls the agent made while composing this message. */
@@ -111,6 +111,15 @@ export interface CoworkTelegramConfig {
   chatTitle?: string;
   /** Durable getUpdates cursor so a restart neither replays nor drops queued messages. */
   offset?: number;
+}
+
+/** Second channel (Discord): a bot token plus the one channel it serves. */
+export interface CoworkDiscordConfig {
+  enabled: boolean;
+  /** Bot token from the Discord developer portal. Local-only, like Telegram's. */
+  token?: string;
+  channelId?: string;
+  channelName?: string;
 }
 
 export interface CoworkSchedule {
@@ -169,6 +178,8 @@ export interface CoworkConversation {
   /** Chief of staff for group chats: coordinates who answers. */
   chiefId?: string;
   telegram?: CoworkTelegramConfig;
+  /** Second channel: a Discord bot + the one channel it serves. */
+  discord?: CoworkDiscordConfig;
   schedule?: CoworkSchedule;
   /** Folders tagged for this conversation (user or teammate). */
   folders?: CoworkFolderTag[];
@@ -266,6 +277,8 @@ export interface CoworkRequest {
   status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
   response?: string;
   telegramNotifiedAt?: string;
+  /** Same marker as telegramNotifiedAt, for the Discord channel. */
+  discordNotifiedAt?: string;
   createdAt: string;
   resolvedAt?: string;
 }
@@ -523,6 +536,7 @@ export class CoworkStore {
     memberIds: string[];
     chiefId?: string;
     telegram?: CoworkTelegramConfig;
+    discord?: CoworkDiscordConfig;
     schedule?: CoworkSchedule;
   }): CoworkConversation {
     const data = this.load();
@@ -539,6 +553,7 @@ export class CoworkStore {
       memberIds,
       chiefId: input.chiefId && memberIds.includes(input.chiefId) ? input.chiefId : existing?.chiefId,
       telegram: input.telegram ?? existing?.telegram,
+      discord: input.discord ?? existing?.discord,
       schedule: input.schedule ?? existing?.schedule,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -548,7 +563,7 @@ export class CoworkStore {
     return conv;
   }
 
-  updateConversation(id: string, patch: Partial<Pick<CoworkConversation, 'title' | 'memberIds' | 'chiefId' | 'telegram' | 'schedule'>>): CoworkConversation | undefined {
+  updateConversation(id: string, patch: Partial<Pick<CoworkConversation, 'title' | 'memberIds' | 'chiefId' | 'telegram' | 'discord' | 'schedule'>>): CoworkConversation | undefined {
     const data = this.load();
     const existing = data.conversations.find((c) => c.id === id);
     if (!existing) return undefined;
@@ -564,6 +579,7 @@ export class CoworkStore {
       else if (!patch.chiefId) delete existing.chiefId;
     }
     if (patch.telegram !== undefined) existing.telegram = sanitizeTelegram(patch.telegram);
+    if (patch.discord !== undefined) existing.discord = sanitizeDiscord(patch.discord);
     if (patch.schedule !== undefined) existing.schedule = sanitizeSchedule(patch.schedule);
     existing.updatedAt = new Date().toISOString();
     this.save(true);
@@ -720,6 +736,38 @@ export class CoworkStore {
   /** One message by id. Identity survives edits, retries and status changes. */
   getMessage(conversationId: string, messageId: string): CoworkMessage | undefined {
     return (this.load().messages[conversationId] ?? []).find((message) => message.id === messageId);
+  }
+
+  /**
+   * Cross-session search over EVERY conversation's messages (user, agent and
+   * system) — the teammate-facing "what did we already figure out" recall.
+   * Case-insensitive term match: every term must appear in the text. Returns
+   * the newest matches first with a bounded snippet and conversation context.
+   */
+  searchMessages(query: string, opts: { limit?: number; conversationId?: string } = {}): { conversationId: string; conversationTitle: string; seq: number; id: string; role: string; agentName?: string; ts: string; snippet: string }[] {
+    const terms = query.toLowerCase().split(/\s+/).map((t) => t.trim()).filter(Boolean);
+    if (terms.length === 0) return [];
+    const limit = Math.min(50, Math.max(1, opts.limit ?? 12));
+    const conversations = this.load().conversations
+      .filter((c) => !opts.conversationId || c.id === opts.conversationId);
+    const hits: { conversationId: string; conversationTitle: string; seq: number; id: string; role: string; agentName?: string; sortTs: number; ts: string; text: string }[] = [];
+    for (const conversation of conversations) {
+      for (const message of this.load().messages[conversation.id] ?? []) {
+        const text = message.text.toLowerCase();
+        if (!terms.every((term) => text.includes(term))) continue;
+        hits.push({ conversationId: conversation.id, conversationTitle: conversation.title, seq: message.seq, sortTs: Date.parse(message.ts) || 0, id: message.id, role: message.role, agentName: message.agentName, ts: message.ts, text: message.text });
+      }
+    }
+    hits.sort((a, b) => b.sortTs - a.sortTs || b.seq - a.seq);
+    return hits.slice(0, limit).map((hit) => {
+      // Snippet centered on the first matching term, bounded for the prompt.
+      const lower = hit.text.toLowerCase();
+      const at = lower.indexOf(terms[0]!);
+      const start = Math.max(0, at - 80);
+      const end = Math.min(hit.text.length, start + 220);
+      const snippet = `${start > 0 ? '…' : ''}${hit.text.slice(start, end)}${end < hit.text.length ? '…' : ''}`;
+      return { conversationId: hit.conversationId, conversationTitle: hit.conversationTitle, seq: hit.seq, id: hit.id, role: hit.role, agentName: hit.agentName, ts: hit.ts, snippet };
+    });
   }
 
   /** Highest change sequence handed out for a conversation so far. */
@@ -1236,6 +1284,20 @@ export class CoworkStore {
     return request;
   }
 
+  markRequestDiscordNotified(id: string): CoworkRequest | undefined {
+    const request = this.getRequest(id);
+    if (!request || request.status !== 'open') return undefined;
+    request.discordNotifiedAt = new Date().toISOString();
+    this.save();
+    return request;
+  }
+
+  /** Open requests for a conversation, oldest first (Telegram/Discord pick the
+   *  newest question to answer). */
+  openRequests(conversationId: string): CoworkRequest[] {
+    return this.load().requests.filter((r) => r.conversationId === conversationId && r.status === 'open');
+  }
+
   // ------------------------------------------------- per-agent memory
   // Memory now lives in the shared MemoryStore (same architecture as the main
   // agent — typed entries, lifecycle, isolation). See cowork/memory.ts.
@@ -1323,6 +1385,16 @@ function sanitizeTelegram(value: unknown): CoworkTelegramConfig {
     chatId: raw['chatId'] !== undefined && raw['chatId'] !== '' ? String(raw['chatId']) : undefined,
     chatTitle: typeof raw['chatTitle'] === 'string' ? raw['chatTitle'] : undefined,
     offset: Number.isSafeInteger(raw['offset']) && Number(raw['offset']) >= 0 ? Number(raw['offset']) : undefined,
+  };
+}
+
+function sanitizeDiscord(value: unknown): CoworkDiscordConfig {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  return {
+    enabled: raw['enabled'] === true,
+    token: typeof raw['token'] === 'string' && raw['token'].trim() ? raw['token'].trim() : undefined,
+    channelId: raw['channelId'] !== undefined && raw['channelId'] !== '' ? String(raw['channelId']) : undefined,
+    channelName: typeof raw['channelName'] === 'string' ? raw['channelName'] : undefined,
   };
 }
 

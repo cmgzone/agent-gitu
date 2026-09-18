@@ -100,6 +100,82 @@ export class CoworkMemory {
     return own.length;
   }
 
+  /** Trusted success-pattern observation from a completed turn. The model
+   *  contributes the generalized SUBJECT, never the trust: sourceType is
+   *  always 'task_completion' (the same trusted source the main agent's
+   *  autoLearn uses), and the store rejects untrusted sources outright. */
+  recordSuccessObservation(
+    agent: CoworkAgent,
+    input: { subject: string; evidence?: string },
+  ): { promoted: boolean; distinctObservations: number; reason?: string } {
+    return this.memory.recordSuccessObservation({
+      subject: input.subject,
+      taskId: `cowork-${agent.name}`,
+      scope: this.scope,
+      sourceType: 'task_completion',
+      evidence: input.evidence,
+    });
+  }
+
+  /** Proactive-learning consolidation sweep: merge duplicates, supersede
+   *  contradicted entries, and flag conflicts across the whole team memory.
+   *  Pure curation over what agents already wrote — never invents claims. */
+  consolidate(): { merged: unknown[]; supersededIds: string[]; flagged: { aId: string; bId: string; reason: string }[] } {
+    return this.memory.consolidate(this.scope);
+  }
+
+  /** Bounded store: archive the least valuable entries once the active set
+   *  exceeds the cap (pinned/verified/high-importance knowledge survives). */
+  prune(cap?: number): { archived: number } {
+    return this.memory.enforceCap(cap);
+  }
+
+  /** Decay: archive stale, low-value, never-retrieved observations. */
+  decay(olderThanDays?: number): string[] {
+    return this.memory.decay(olderThanDays === undefined ? {} : { olderThanDays });
+  }
+
+  /** Shared (non-private) knowledge, for indexing into the recall index.
+   *  Agent-private memories are deliberately excluded — visibility holds. */
+  sharedEntries(limit = 500): { id: string; type: string; claim: string; confidence: number; createdAt: string }[] {
+    return this.memory
+      .query({ limit }, this.ctx({ name: '' } as CoworkAgent))
+      .filter((e) => (e.visibility ?? 'project') !== 'agent' && e.status !== 'archived' && e.status !== 'superseded')
+      .slice(0, limit)
+      .map((e) => ({ id: e.id, type: e.type, claim: e.claim, confidence: e.confidence, createdAt: e.createdAt }));
+  }
+
+  /** Compaction flush / distillation: record a claim an LLM extracted from old
+   *  transcripts. It arrives as an UNVERIFIED candidate via the store's own
+   *  trust rule (sourceType model_inference), never as durable knowledge.
+   *  Returns false when the claim was already known (dedupe). */
+  recordDistilled(input: { agent: CoworkAgent; type: MemoryType; claim: string; source: string; evidence?: string }): boolean {
+    const claim = input.claim.trim();
+    if (!claim) return false;
+    const dup = this.memory
+      .query({ text: claim.slice(0, 60), limit: 5 }, this.ctx(input.agent))
+      .some((e) => e.claim.toLowerCase().replace(/\s+/g, ' ') === claim.toLowerCase().replace(/\s+/g, ' ') && e.status !== 'archived' && e.status !== 'superseded');
+    if (dup) return false;
+    this.memory.add({
+      type: input.type,
+      claim,
+      scope: this.scope,
+      visibility: 'project',
+      sourceType: 'model_inference',
+      source: input.source,
+      ...(input.evidence ? { evidence: input.evidence } : {}),
+      confidence: 0.6,
+      importance: 0.5,
+    });
+    return true;
+  }
+
+  /** Stats for the learning loop's activity gate (e.g. only review agents that
+   *  actually produced or received memory recently). */
+  stats(): { total: number } {
+    return { total: this.memory.query({ limit: 10_000 }, undefined).length };
+  }
+
   /** One-time import of the earlier flat fact files into the shared store. */
   migrateLegacyFactFiles(agentNameById: Map<string, string>): number {
     const dir = path.join(ensureGituHome().root, 'Cowork', 'memory');

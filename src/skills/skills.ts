@@ -590,6 +590,43 @@ export class SkillStore {
     return true;
   }
 
+  /** agentskills.io-compatible export: writes <outDir>/<name>/SKILL.md with
+   *  YAML frontmatter plus the instructions body, so any agent that speaks the
+   *  open standard can install it. Returns the written file path. */
+  exportSkillMd(name: string, outDir: string): string {
+    const skill = this.get(name);
+    if (!skill) throw new Error(`Unknown skill: ${name}`);
+    if (!skill.instructions?.trim()) throw new Error(`Skill "${name}" has no instructions to export.`);
+    const dir = path.join(outDir, skill.name);
+    mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'SKILL.md');
+    writeFileSync(file, `${serializeFrontmatter(manifestFor(skill))}\n${skill.instructions.trim()}\n`);
+    return file;
+  }
+
+  /** agentskills.io-compatible import: source is a directory containing
+   *  SKILL.md (the standard layout) or a direct SKILL.md path. The skill is
+   *  copied into the store as <skillsDir>/<name>/SKILL.md, where discovery
+   *  already knows how to read it. Same-name skills are replaced. */
+  importSkillDir(source: string, opts: { scope?: 'global' | 'project' } = {}): { name: string; target: string } {
+    const mdPath = statSync(source).isDirectory() ? path.join(source, 'SKILL.md') : source;
+    if (!existsSync(mdPath)) throw new Error(`No SKILL.md found at ${source}`);
+    const raw = readFileSync(mdPath, 'utf8');
+    const frontmatter = frontmatterFromPrefix(raw);
+    if (!frontmatter) throw new Error(`${mdPath} must start with YAML frontmatter (name, description).`);
+    const manifest = normalizeManifest(frontmatter.raw, this.limits);
+    if (!manifest) throw new Error('SKILL.md frontmatter requires at least name and description.');
+    const body = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').slice(frontmatter.bodyOffset).trim();
+    if (!body) throw new Error('SKILL.md has frontmatter but no instructions body.');
+    const targetDir = opts.scope === 'global' ? (this.globalDir ?? SkillStore.globalSkillsDir()) : this.dir;
+    const dir = path.join(targetDir, manifest.name);
+    mkdirSync(dir, { recursive: true });
+    const target = path.join(dir, 'SKILL.md');
+    writeFileSync(target, raw.replace(/^\uFEFF/, ''));
+    return { name: manifest.name, target };
+  }
+
+
   readReference(name: string, requestedPath: string): { ok: true; content: string } | { ok: false; code: 'SKILL_REFERENCE_DENIED'; message: string } {
     const skill = this.get(name);
     if (!skill?.sourceRoot || skill.format !== 'skill-md') return { ok: false, code: 'SKILL_REFERENCE_DENIED', message: 'References are available only to directory SKILL.md skills.' };

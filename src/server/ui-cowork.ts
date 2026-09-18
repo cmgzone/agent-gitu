@@ -35,6 +35,20 @@ export const COWORK_CSS = String.raw`
   .cw-rail-head .iconbtn { width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border2); border-radius: 7px; background: transparent; color: var(--muted); }
   .cw-rail-head .iconbtn svg { width: 14px; height: 14px; }
   .cw-rail-head .iconbtn:hover { color: var(--text); border-color: var(--accent); }
+  .cw-learn { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border2); border-radius: 999px; background: transparent; color: var(--muted); font: inherit; font-size: 10px; letter-spacing: .04em; padding: 3px 8px; cursor: pointer; white-space: nowrap; }
+  .cw-learn:hover { color: var(--text); border-color: var(--accent); }
+  .cw-learn .cw-learn-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); flex: none; }
+  .cw-learn.cw-learn-on { color: var(--text); border-color: var(--accent); }
+  .cw-learn.cw-learn-on .cw-learn-dot { background: var(--accent); }
+  .cw-learn.cw-learn-off { opacity: .55; }
+  .cw-rail-search { padding: 0 12px 8px; }
+  .cw-rail-search input { width: 100%; box-sizing: border-box; background: var(--card2); border: 1px solid var(--border2); border-radius: 8px; color: var(--text); padding: 6px 10px; font: inherit; font-size: 12px; }
+  .cw-rail-search input:focus { outline: none; border-color: var(--accent); }
+  .cw-hit { display: block; width: 100%; text-align: left; background: transparent; border: 0; border-bottom: 1px solid var(--border); padding: 8px 6px; color: var(--text); font: inherit; cursor: pointer; }
+  .cw-hit:hover { background: var(--card2); }
+  .cw-hit .cw-hit-title { font-size: 12px; font-weight: 600; }
+  .cw-hit .cw-hit-snippet { font-size: 11px; color: var(--muted); margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  @media (max-width: 720px) { .cw-learn span:last-child { display: none; } .cw-learn { padding: 3px 6px; } }
   .cw-rail-scroll { flex: 1; overflow-y: auto; padding: 4px 8px 12px; }
   .cw-sec { font-size: 10.5px; font-weight: 700; letter-spacing: .12em; color: var(--faint); margin: 14px 6px 6px; }
   .cw-sec:first-child { margin-top: 4px; }
@@ -284,7 +298,7 @@ export const COWORK_JS = String.raw`
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
   function cwEnsure() {
-    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null };
+    if (!S.cw) S.cw = { agents: [], convs: [], skills: [], active: null, msgs: [], lastSeq: 0, lastChange: 0, busy: false, working: null, progress: null, progresses: [], timer: null, infoOpen: true, missions: [], artifacts: [], todos: [], requests: [], pendingFiles: [], threads: [], folders: [], widgets: [], threadId: null, learn: null, searchQuery: '', searchHits: [] };
     var cw = S.cw;
     if (!cw.lastChange) cw.lastChange = 0;
     if (!cw.outbox) cw.outbox = Object.create(null);
@@ -367,9 +381,10 @@ export const COWORK_JS = String.raw`
     $('view').innerHTML =
       '<div class="cw" id="cw">' +
         '<aside class="cw-rail">' +
-          '<div class="cw-rail-head"><span class="cw-brand">' + cwIcon('users') + '<span>COWORK</span></span><span class="spacer"></span>' +
+          '<div class="cw-rail-head"><span class="cw-brand">' + cwIcon('users') + '<span>COWORK</span></span><button class="cw-learn" id="cwLearn" title="Cowork learning mode"></button><span class="spacer"></span>' +
           '<button class="iconbtn" id="cwAddAgent" title="New teammate" aria-label="New teammate">' + cwIcon('plus') + '</button>' +
           '<button class="iconbtn" id="cwAddGroup" title="New group chat" aria-label="New group chat">' + cwIcon('chat') + '</button></div>' +
+          '<div class="cw-rail-search"><input type="search" id="cwSearch" placeholder="Search all chats…" title="Cross-session recall: every conversation, related phrasing included"></div>' +
           '<div class="cw-rail-scroll" id="cwRail"></div>' +
           '<div class="cw-rail-foot"><button class="btn ghost" id="cwExit">Back to workspace</button><button class="btn ghost" id="cwGear" title="Settings" aria-label="Settings">' + cwIcon('gear') + '</button></div>' +
         '</aside>' +
@@ -383,6 +398,26 @@ export const COWORK_JS = String.raw`
     $('cwGear').onclick = function () { openSettings('cowork'); };
     $('cwAddAgent').onclick = function () { cwAgentModal(null); };
     $('cwAddGroup').onclick = function () { cwGroupModal(); };
+    var learnBtn = $('cwLearn');
+    if (learnBtn) learnBtn.onclick = cwLearnCycle;
+    cwLearnLoad();
+    var searchBox = $('cwSearch');
+    if (searchBox) {
+      searchBox.onkeydown = function (event) {
+        if (event.key !== 'Enter') return;
+        var query = this.value.trim();
+        if (!query) { cwEnsure().searchQuery = ''; cwEnsure().searchHits = []; cwRenderRail(); return; }
+        api('/api/cowork/search?q=' + encodeURIComponent(query) + '&limit=20')
+          .then(function (d) {
+            var cw = cwEnsure();
+            cw.searchQuery = query;
+            cw.searchHits = d.hits || [];
+            cwRenderRail();
+            if (!(d.hits || []).length) toast('No past messages match that.');
+          })
+          .catch(function (e) { toast(e.message, true); });
+      };
+    }
     cwLoad(true);
   }
 
@@ -392,6 +427,58 @@ export const COWORK_JS = String.raw`
     S.active = 'home';
     try { localStorage.setItem('hermes.cowork', 'closed'); } catch (e) {}
     openHome();
+  }
+
+  /** Proactive learning badge: shows the current mode in the rail head and
+   *  cycles reactive → proactive → off on click. The server is authoritative;
+   *  the Settings select reads the same state. */
+  function cwLearnMode() {
+    var cw = cwEnsure();
+    return (cw.learn && cw.learn.mode) || 'reactive';
+  }
+  function cwLearnLabel(mode) {
+    return mode === 'proactive' ? 'scheduled' : mode === 'off' ? 'off' : 'each task';
+  }
+  function cwLearnLoad() {
+    var cw = cwEnsure();
+    api('/api/cowork/learning').then(function (d) {
+      cw.learn = d || { mode: 'reactive' };
+      cwLearnRender();
+    }).catch(function () {});
+  }
+  function cwLearnRender() {
+    var cw = cwEnsure();
+    var el = $('cwLearn');
+    if (!el || !cw.learn) return;
+    var mode = cwLearnMode();
+    el.className = 'cw-learn' + (mode === 'proactive' ? ' cw-learn-on' : mode === 'off' ? ' cw-learn-off' : '');
+    var jobTip = function (job, label) {
+      if (!job) return '';
+      return job.enabled ? '\n' + label + ': every ' + job.every : '\n' + label + ': off';
+    };
+    var jobs = cw.learn.jobs || [];
+    var tip = 'Cowork learning: ' + cwLearnLabel(mode) +
+      jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_consolidate'; })[0], 'Memory consolidation') +
+      jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_review'; })[0], 'Learning review') +
+      jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_distill'; })[0], 'Transcript distillation') +
+      '\nClick to change';
+    el.setAttribute('title', tip);
+    el.innerHTML = '<span class="cw-learn-dot"></span><span>' + esc('learn: ' + cwLearnLabel(mode)) + '</span>';
+  }
+  function cwLearnCycle() {
+    var cw = cwEnsure();
+    var mode = cwLearnMode();
+    var next = mode === 'reactive' ? 'proactive' : mode === 'proactive' ? 'off' : 'reactive';
+    api('/api/cowork/learning', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: next }) })
+      .then(function (r) {
+        cw.learn = cw.learn || {};
+        cw.learn.mode = (r && r.mode) || next;
+        if (S.settings) S.settings.cwLearn = cw.learn.mode;
+        if (typeof persist === 'function') persist();
+        cwLearnRender();
+        toast('Cowork learning: ' + cwLearnLabel(cw.learn.mode));
+      })
+      .catch(function (e) { toast(e.message, true); });
   }
 
   function cwLoad(openFirst) {
@@ -417,6 +504,25 @@ export const COWORK_JS = String.raw`
     if (!el) return;
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.toggle('cw-empty', cw.agents.length === 0);
+    // Active search: show cross-session recall results instead of the roster.
+    if (cw.searchQuery) {
+      var hits = cw.searchHits || [];
+      var html = '<div class="cw-sec">RESULTS — "' + esc(cw.searchQuery) + '" (' + hits.length + ')</div>';
+      if (!hits.length) html += '<div class="cw-empty-note">No past messages match. Related phrasing is included when an embedding provider is configured.</div>';
+      hits.forEach(function (hit) {
+        html += '<button class="cw-hit" data-conv="' + esc(hit.conversationId) + '">' +
+          '<span class="cw-hit-title">' + esc(hit.conversationTitle) + ' · ' + esc(hit.role === 'agent' ? hit.agentName || 'agent' : hit.role) + '</span>' +
+          '<span class="cw-hit-snippet">' + esc(hit.snippet) + '</span></button>';
+      });
+      html += '<button class="cw-item" id="cwSearchClear">← Back to the team</button>';
+      el.innerHTML = html;
+      el.querySelectorAll('[data-conv]').forEach(function (b) {
+        b.onclick = function () { cw.searchQuery = ''; cw.searchHits = []; cwOpenConv(b.getAttribute('data-conv')); };
+      });
+      var clearBtn = $('cwSearchClear');
+      if (clearBtn) clearBtn.onclick = function () { cw.searchQuery = ''; cw.searchHits = []; cwRenderRail(); };
+      return;
+    }
     var html = '<div class="cw-sec">TEAM</div>';
     if (cw.agents.length === 0) html += '<div class="cw-empty-note">No teammates yet. Create the first profile — pick a name, a character and instructions.</div>';
     cw.agents.forEach(function (a) {
@@ -1052,6 +1158,7 @@ export const COWORK_JS = String.raw`
   // gateway is how an agent gets its own bot, groups link a shared room.
   function cwGatewayHtml(conv, kind) {
     var tg = conv.telegram || { enabled: false };
+    var dc = conv.discord || { enabled: false };
     var sched = conv.schedule || { every: '', goal: '', enabled: false };
     var hint = kind === 'dm'
       ? 'Message your bot in a private Telegram chat (or add it to a group), send anything there, then press "Find chats". ' + esc(conv.title) + ' replies are mirrored back automatically.'
@@ -1070,6 +1177,20 @@ export const COWORK_JS = String.raw`
           '<div style="font-size:11px;color:var(--faint);margin-top:6px">For a private bot chat, your numeric Telegram user ID is also the chat ID. Group IDs are usually negative and may start with -100.</div>' +
           '<div style="font-size:11px;color:var(--faint);margin-top:6px">' + hint + '</div>' +
           '<div class="cw-actions"><button class="btn dark" id="cwTgSave">Save gateway</button></div>' +
+        '</div>' +
+        '<h4>DISCORD GATEWAY</h4>' +
+        '<div class="cw-card">' +
+          '<div class="cw-check"><input type="checkbox" id="cwDcOn"' + (dc.enabled ? ' checked' : '') + '> <span>Connect this chat to Discord</span></div>' +
+          '<label>Bot token (from the Discord developer portal)</label><input type="password" id="cwDcToken" value="" placeholder="' + (dc.tokenSaved ? 'Saved in this local app — leave blank to keep' : 'MTIzNDU2Nzg...') + '">' +
+          '<label>Or pick a server the bot is in</label>' +
+          '<div style="display:flex;gap:6px"><select id="cwDcGuild"><option value="">— pick a server —</option></select>' +
+          '<button class="btn ghost" id="cwDcFindGuilds" style="flex:none">Find servers</button></div>' +
+          '<label>Text channel</label>' +
+          '<div style="display:flex;gap:6px"><select id="cwDcChan"><option value="' + esc(dc.channelId || '') + '">' + esc(dc.channelName || dc.channelId || '— pick a channel —') + '</option></select>' +
+          '<button class="btn ghost" id="cwDcFindChans" style="flex:none">Find channels</button></div>' +
+          '<label>Or paste a channel ID</label><input type="text" id="cwDcChanId" value="' + esc(dc.channelId || '') + '" placeholder="123456789012345678">' +
+          '<div style="font-size:11px;color:var(--faint);margin-top:6px">The bot needs the Message Content intent enabled in the developer portal. Agent replies and request cards are mirrored to the channel; reply approve / deny / accept / dismiss there to answer a card.</div>' +
+          '<div class="cw-actions"><button class="btn dark" id="cwDcSave">Save gateway</button></div>' +
         '</div>' +
         '<h4>SCHEDULE</h4>' +
         '<div class="cw-card">' +
@@ -1109,6 +1230,46 @@ export const COWORK_JS = String.raw`
           var body = { schedule: { every: $('cwSchEvery').value, goal: $('cwSchGoal').value, enabled: $('cwSchOn').checked } };
           api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
             .then(function (d) { cw.convs = cw.convs.map(function (c) { return c.id === d.conversation.id ? d.conversation : c; }); cwRenderChat(); cwRenderRail(); toast(d.conversation.schedule && d.conversation.schedule.enabled ? 'Schedule saved' : 'Schedule disabled'); })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        // Discord pairing: token stays local (sent once, then saved server-side).
+        // Each node is optional in the DOM fixture; a missing node means the
+        // card isn't rendered and the binding is skipped.
+        var discordBody = function () {
+          return { token: $('cwDcToken')?.value.trim() || undefined, guildId: $('cwDcGuild')?.value || undefined };
+        };
+        var cwDcFindGuilds = $('cwDcFindGuilds');
+        if (cwDcFindGuilds) cwDcFindGuilds.onclick = function () {
+          api('/api/cowork/discord/channels', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(discordBody()) })
+            .then(function (d) {
+              var sel = $('cwDcGuild');
+              if (!sel) return;
+              sel.innerHTML = '<option value="">— pick a server —</option>' + (d.guilds || []).map(function (g) { return '<option value="' + esc(g.id) + '">' + esc(g.name) + '</option>'; }).join('');
+              if (!(d.guilds || []).length) toast('No servers found — is the token valid and the bot invited somewhere?', true);
+            })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        var cwDcFindChans = $('cwDcFindChans');
+        if (cwDcFindChans) cwDcFindChans.onclick = function () {
+          var guildId = $('cwDcGuild')?.value;
+          if (!guildId) { toast('Pick a server first', true); return; }
+          api('/api/cowork/discord/channels', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(discordBody()) })
+            .then(function (d) {
+              var sel = $('cwDcChan');
+              if (sel) sel.innerHTML = '<option value="">— pick a channel —</option>' + (d.channels || []).map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + '</option>'; }).join('');
+            })
+            .catch(function (e) { toast(e.message, true); });
+        };
+        var cwDcSave = $('cwDcSave');
+        if (cwDcSave) cwDcSave.onclick = function () {
+          var channelId = $('cwDcChan')?.value || $('cwDcChanId')?.value.trim() || '';
+          var body = { discord: { enabled: $('cwDcOn')?.checked === true, token: $('cwDcToken')?.value.trim() || undefined, channelId: channelId } };
+          api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+            .then(function (d) {
+              cw.convs = cw.convs.map(function (c) { return c.id === d.conversation.id ? d.conversation : c; });
+              cwRenderChat(); cwRenderRail(); cwLearnLoad();
+              toast(d.conversation.discord && d.conversation.discord.enabled ? 'Discord gateway connected' : 'Discord gateway disabled');
+            })
             .catch(function (e) { toast(e.message, true); });
         };
       }

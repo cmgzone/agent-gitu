@@ -889,7 +889,7 @@ export const UI_HTML = String.raw`<!doctype html>
     modelsLoaded: false,
     draft: '',
     sel: { model: '', effort: 'high' },
-    settings: { autoApprove: false, autoLearn: true, projectPath: '', devMode: false },
+    settings: { autoApprove: false, autoLearn: true, projectPath: '', devMode: false, cwLearn: 'reactive' },
     setSection: 'general',
     delivery: 'steer',
     pendingFiles: []
@@ -4704,12 +4704,61 @@ export const UI_HTML = String.raw`<!doctype html>
         '<input id="cwSetName" placeholder="Your name" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px">' +
         '<textarea id="cwSetAbout" rows="4" placeholder="About you — role, company, current focus…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
         '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
-        '<div><button class="btn dark" id="cwSetProfileSave">Save</button></div></div></div>';
+        '<div><button class="btn dark" id="cwSetProfileSave">Save</button></div></div></div>' +
+        '<div class="setcard" style="margin-bottom:12px"><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">When on, teammates cannot save or improve skills directly — their changes are staged here for your review first. Applies to the whole team.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"' + '></div>' +
+        '<div id="cwPendingBody"></div></div>';
       api('/api/cowork/profile').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwSetName')) return;
         $('cwSetName').value = (d.profile && d.profile.name) || '';
         $('cwSetAbout').value = (d.profile && d.profile.about) || '';
         $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
+      }).catch(function () {});
+      api('/api/cowork/profile').then(function (d) {
+        if (S.setSection !== 'cowork' || !$('cwSetName')) return;
+        $('cwSetName').value = (d.profile && d.profile.name) || '';
+        $('cwSetAbout').value = (d.profile && d.profile.about) || '';
+        $('cwSetPrefs').value = (d.profile && d.profile.preferences) || '';
+      }).catch(function () {});
+      // Skill-write approval: a review panel that lists staged teammate skill
+      // changes, plus the toggle that turns staging on.
+      api('/api/cowork/learning').then(function (d) {
+        if (S.setSection !== 'cowork' || !$('cwSkillApproval')) return;
+        $('cwSkillApproval').checked = d.skillApproval === true;
+      }).catch(function () {});
+      $('cwSkillApproval').onchange = function () {
+        api('/api/cowork/learning', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ skillApproval: $('cwSkillApproval').checked }) })
+          .then(function () { toast($('cwSkillApproval').checked ? 'Skill changes now need your approval' : 'Skill changes apply directly'); renderSettings(); })
+          .catch(function (e) { toast(e.message, true); });
+      };
+      var pendingBody = $('cwPendingBody');
+      api('/api/cowork/skills/pending').then(function (d) {
+        if (S.setSection !== 'cowork' || !$('cwPendingBody')) return;
+        var items = d.pending || [];
+        if (!items.length) { $('cwPendingBody').innerHTML = '<div style="font-size:12px;color:var(--muted);padding:0 18px 14px">Nothing waiting. Teammates stage changes here when approval is on.</div>'; return; }
+        $('cwPendingBody').innerHTML = items.map(function (p) {
+          return '<div style="border-top:1px solid var(--border);padding:10px 18px">' +
+            '<div style="font-weight:600;font-size:13px">' + esc(p.name) + ' <span class="chip">' + (p.kind === 'create' ? 'new skill' : 'improve') + '</span></div>' +
+            '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + esc(p.description || '') + '</div>' +
+            '<pre style="white-space:pre-wrap;font-family:var(--mono);font-size:11px;background:var(--card2);border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:6px;max-height:140px;overflow:auto">' + esc(p.instructions || '(no instruction changes)') + '</pre>' +
+            '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn dark" data-cwapprove="' + esc(p.id) + '">Approve</button><button class="btn ghost" data-cwreject="' + esc(p.id) + '">Reject</button></div>' +
+            '</div>';
+        }).join('');
+        $('cwPendingBody').querySelectorAll('[data-cwapprove]').forEach(function (btn) {
+          btn.onclick = function () {
+            var id = this.getAttribute('data-cwapprove');
+            api('/api/cowork/skills/pending/' + encodeURIComponent(id) + '/approve', { method: 'POST' })
+              .then(function (r) { toast(r.skill ? 'Skill "' + r.skill.name + '" saved' : 'Skill approved'); renderSettings(); })
+              .catch(function (e) { toast(e.message, true); });
+          };
+        });
+        $('cwPendingBody').querySelectorAll('[data-cwreject]').forEach(function (b) {
+          b.onclick = function () {
+            api('/api/cowork/skills/pending/' + encodeURIComponent(this.getAttribute('data-cwreject')) + '/reject', { method: 'POST' })
+              .then(function () { toast('Change rejected'); renderSettings(); })
+              .catch(function (e) { toast(e.message, true); });
+          };
+        });
+      }).catch(function () {});
       }).catch(function () {});
       $('cwSetProfileSave').onclick = function () {
         var btn = this;
@@ -5115,6 +5164,7 @@ export const UI_HTML = String.raw`<!doctype html>
       b.innerHTML = '<h1>Permissions</h1>' +
         '<div class="setcard">' +
         '<div class="setrow"><div class="grow"><div class="t">Auto-learn reusable skills</div><div class="d">After a successful task the agent reflects on what it did and saves any repeatable multi-step pattern (deploy flows, design conventions, checklists) as a skill with create_skill. Turn off to stop all proactive skill creation.</div></div><button class="toggle ' + (S.settings.autoLearn ? 'on' : '') + '" id="pLearn"></button></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Cowork learning mode</div><div class="d">When your cowork teammates learn from their work. <b>On each task</b> reflects after every completed turn (the original behavior). <b>Scheduled review</b> keeps ordinary turns quiet and reflects on a timer instead, plus a daily memory consolidation sweep. <b>Off</b> stops cowork learning entirely.</div></div><select id="pCwLearn"><option value="reactive">On each task (original)</option><option value="proactive">Scheduled review</option><option value="off">Off</option></select></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Plan review</div><div class="d">In Plan mode the agent waits for your approval before building.</div></div><button class="toggle ' + (S.settings.review ? 'on' : '') + '" id="pReview"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Auto-approve dangerous actions</div><div class="d">Skips the approval gate for destructive commands. Significantly increases risk of data loss.</div></div><button class="toggle ' + (S.settings.autoApprove ? 'on' : '') + '" id="pAuto"></button></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Loop prevention</div><div class="d">Repeated failing actions are blocked automatically. Always on.</div></div><button class="toggle on" disabled></button></div>' +
@@ -5123,6 +5173,31 @@ export const UI_HTML = String.raw`<!doctype html>
       $('pLearn').onclick = function () { S.settings.autoLearn = !S.settings.autoLearn; persist(); renderSettings(); };
       $('pReview').onclick = function () { S.settings.review = !S.settings.review; persist(); renderSettings(); };
       $('pAuto').onclick = function () { S.settings.autoApprove = !S.settings.autoApprove; persist(); renderSettings(); };
+      var cwLearn = $('pCwLearn');
+      if (cwLearn) {
+        if (['reactive', 'proactive', 'off'].indexOf(S.settings.cwLearn) < 0) S.settings.cwLearn = 'reactive';
+        cwLearn.value = S.settings.cwLearn;
+        // The server is authoritative (the loop also runs when this UI is closed).
+        api('/api/cowork/learning').then(function (r) {
+          if (!r || ['reactive', 'proactive', 'off'].indexOf(r.mode) < 0) return;
+          S.settings.cwLearn = r.mode; persist();
+          if ($('pCwLearn')) $('pCwLearn').value = r.mode;
+        }).catch(function () {});
+        cwLearn.onchange = function () {
+          var mode = this.value;
+          var label = mode === 'proactive' ? 'Scheduled review' : mode === 'off' ? 'Off' : 'On each task';
+          S.settings.cwLearn = mode;
+          persist();
+          api('/api/cowork/learning', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: mode }) })
+            .then(function (r) {
+              S.settings.cwLearn = (r && r.mode) || mode;
+              persist();
+              toast('Cowork learning: ' + label);
+              renderSettings();
+            })
+            .catch(function (e) { toast(e.message, true); });
+        };
+      }
     } else if (S.setSection === 'workspace') {
       Promise.all([api('/api/files'), api('/api/home')]).then(function (res) {
         var files = res[0].files || [];

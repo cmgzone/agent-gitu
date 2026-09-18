@@ -143,6 +143,14 @@ export interface WorkspaceSettings {
   fallbackModels?: string[];
   /** User-owned OpenAI-compatible endpoints. Credentials stay in keys.json under keyEnvVar. */
   customProviders?: CustomProviderProfile[];
+  /** Proactive cowork learning loop. `mode` picks when coworkers learn:
+   *  'reactive' = reflect after each completed turn (the original behavior),
+   *  'proactive' = reflect only during the scheduled review wake,
+   *  'off' = no cowork learning. consolidate (default on) is a safe curation
+   *  sweep; review/reviewEvery remain as raw overrides for the API.
+   *  skillApproval stages every cowork skill write for user review instead of
+   *  applying it directly. */
+  coworkLearning?: { mode?: 'reactive' | 'proactive' | 'off'; consolidate?: boolean; review?: boolean; reviewEvery?: string; skillApproval?: boolean };
 }
 
 export interface CustomProviderProfile {
@@ -213,12 +221,25 @@ export function sanitizeCustomProviders(value: unknown): CustomProviderProfile[]
   return out;
 }
 
+function sanitizeCoworkLearning(value: unknown): WorkspaceSettings['coworkLearning'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const src = value as Record<string, unknown>;
+  const out: NonNullable<WorkspaceSettings['coworkLearning']> = {};
+  if (src['mode'] === 'reactive' || src['mode'] === 'proactive' || src['mode'] === 'off') out.mode = src['mode'];
+  if (typeof src['skillApproval'] === 'boolean') out.skillApproval = src['skillApproval'];
+  if (typeof src['consolidate'] === 'boolean') out.consolidate = src['consolidate'];
+  if (typeof src['review'] === 'boolean') out.review = src['review'];
+  if (typeof src['reviewEvery'] === 'string' && src['reviewEvery'].trim()) out.reviewEvery = src['reviewEvery'].trim().slice(0, 16);
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export function loadWorkspaceSettings(): WorkspaceSettings {
   const data = readJson<Record<string, unknown>>(settingsFile()) ?? {};
   const projectsPath = typeof data['projectsPath'] === 'string' && data['projectsPath'] ? String(data['projectsPath']) : undefined;
   const fallbackModels = sanitizeFallbackModels(data['fallbackModels']);
   const customProviders = sanitizeCustomProviders(data['customProviders']);
-  return { projectsPath, ...(fallbackModels ? { fallbackModels } : {}), ...(customProviders ? { customProviders } : {}) };
+  const coworkLearning = sanitizeCoworkLearning(data['coworkLearning']);
+  return { projectsPath, ...(fallbackModels ? { fallbackModels } : {}), ...(customProviders ? { customProviders } : {}), ...(coworkLearning ? { coworkLearning } : {}) };
 }
 
 export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): WorkspaceSettings {
@@ -233,6 +254,11 @@ export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): Work
     const providers = sanitizeCustomProviders(patch.customProviders ?? []);
     if (providers && providers.length > 0) merged.customProviders = providers;
     else delete merged.customProviders;
+  }
+  if ('coworkLearning' in patch) {
+    const learning = sanitizeCoworkLearning(patch.coworkLearning);
+    if (learning) merged.coworkLearning = learning;
+    else delete merged.coworkLearning;
   }
   saveWorkspaceSettings(merged);
   return merged;

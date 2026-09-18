@@ -5,7 +5,9 @@ import { excerpt, summarizeParams } from '../util.js';
 import { coworkToolDocs, executeCoworkTool, parseToolCalls, stripToolMarkers, type CoworkToolScope } from './tools.js';
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers } from '../llm/llm.js';
 import { compactHistory } from '../agent/compaction.js';
+import { parseReplyAction } from '../agent/action-parser.js';
 import type { CoworkMemory } from './memory.js';
+import type { CoworkRecall } from './recall.js';
 import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMessageInput, CoworkMission, CoworkStore, CoworkThread } from './store.js';
 import { BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL } from '../skills/builtin.js';
 import type { ToolResult } from '../types.js';
@@ -54,6 +56,8 @@ export interface CoworkRunnerDeps {
   store?: CoworkStore;
   /** Shared MemoryStore facade backing the agent_memory tool. */
   memory?: CoworkMemory;
+  /** Hybrid cross-session recall index backing search_history. */
+  recall?: CoworkRecall;
   /** Whether the in-app browser bridge is connected (enables `browse`). */
   browser?: boolean;
   supportsImagesFor?: (agent: CoworkAgent) => boolean | Promise<boolean>;
@@ -65,6 +69,13 @@ export interface CoworkRunnerDeps {
   references?: string;
   /** Rendered per-agent persistent memory block. */
   memoryFor?: (agent: CoworkAgent) => string;
+  /** Post-turn learning pass (default true — same contract as the main agent's
+   *  autoLearn). Set false to stop all proactive skill/pattern creation. */
+  autoLearn?: boolean;
+  /** True when this turn IS a scheduled learning review. The reflection pass
+   *  then runs even with no tool use (a review's work is the reflection), and
+   *  it uses the review prompt. */
+  learningReview?: boolean;
   /** Called after every appended agent/system message (Telegram mirror). */
   onMessage?: (message: CoworkMessage) => void | Promise<void>;
   /** Called when an agent starts composing (UI "thinking" indicator). */
@@ -342,7 +353,7 @@ function mediaMessage(media: CoworkTriggerMedia[] | undefined, supportsImages: b
 }
 
 function recordToolResult(scope: CoworkToolScope | undefined, tool: string, result: ToolResult): void {
-  if (!scope?.conversationId || ['conversation_history', 'todo_manage', 'use_skill', 'list_skills'].includes(tool)) return;
+  if (!scope?.conversationId || ['conversation_history', 'search_history', 'todo_manage', 'use_skill', 'list_skills'].includes(tool)) return;
   scope.store.recordWork({ conversationId: scope.conversationId, agentId: scope.agent.id, tool, ok: result.ok, output: result.output });
 }
 
@@ -396,11 +407,13 @@ async function agentTurn(input: {
   let ctx: ToolContext | undefined;
   const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: conversation.id, threadId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
   let reply = '';
   const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string, detail?: string) =>
     deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text, tool, toolOk, webUrl, detail });
   let continuations = 0;
+  let endedByWaiting = false;
+  let endedByBudget = false;
 
   try {
   for (let segmentRounds = 0; ; ) {
@@ -467,6 +480,7 @@ async function agentTurn(input: {
       if (result.ok && ['ask_user', 'request_permission'].includes(call.tool)) {
         reply = stripToolMarkers(reply) || 'I’m waiting for your response to the card above.';
         waitingForUser = true;
+        endedByWaiting = true;
         break;
       }
     }
@@ -475,6 +489,7 @@ async function agentTurn(input: {
     if (segmentRounds < MAX_TOOL_ROUNDS_PER_TURN) continue;
     if (continuations >= MAX_TOOL_CONTINUATIONS) {
       reply = 'Tool budget reached. Work is incomplete; the last requested actions were not executed.';
+      endedByBudget = true;
       break;
     }
     continuations += 1;
@@ -493,8 +508,146 @@ async function agentTurn(input: {
   const stored = append({ role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', tools: usedTools.length ? usedTools : undefined, artifactIds: artifactIds.length ? artifactIds : undefined });
   await deps.onMessage?.(stored);
   if (seenInbox.size > 0) deps.store?.markInboxDelivered([...seenInbox]);
+  const didWork = usedTools.some((t) => t.ok);
+  // A scheduled learning review has no tool work by design ("reflection only"),
+  // so it must be allowed to reflect on its own; ordinary turns keep the
+  // "only after real work" guard.
+  const shouldReflect = deps.autoLearn !== false && !deps.signal?.aborted &&
+    (deps.learningReview === true || (didWork && !endedByWaiting && !endedByBudget));
+  if (shouldReflect) {
+    try {
+      await coworkAutoLearn(agent, messages, usedTools, text, llm, deps, deps.learningReview === true ? 'review' : 'turn');
+    } catch (err) {
+      // A learning failure must never fail the user's finished turn.
+      deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: `learn   post-turn learning skipped: ${(err as Error).message}` });
+    }
+  }
   } finally {
     scope?.releaseHostBrowser?.();
+  }
+}
+
+/**
+ * Post-turn reflection — the cowork counterpart of the main agent's
+ * `autoLearn` (`gitu.ts`). Runs only after a turn that finished its own work
+ * (at least one tool succeeded, not budget-exhausted, not parked on a card).
+ *
+ * The reflection pass can do one of two things, both opt-in by the model:
+ *   1. create_skill — a genuinely repeatable multi-step workflow, saved
+ *      through the SAME SkillStore the main agent uses (toolCreateSkill).
+ *   2. memory record_pattern — a smaller durable success pattern, recorded
+ *      through MemoryStore.recordSuccessObservation. Like the main agent, the
+ *      model contributes the generalized SUBJECT, never the trust: the source
+ *      is 'task_completion' because this pass only runs after a completed
+ *      turn, and recordSuccessObservation rejects untrusted sources outright.
+ *
+ * Best-effort and invisible: a 'complete' reflection reply is not appended to
+ * the conversation, and an unexpected throw is swallowed by the caller.
+ */
+async function coworkAutoLearn(
+  agent: CoworkAgent,
+  messages: LlmMessage[],
+  usedTools: { name: string; ok: boolean }[],
+  summary: string,
+  llm: LlmClient,
+  deps: CoworkRunnerDeps,
+  trigger: 'turn' | 'review' = 'turn',
+): Promise<void> {
+  const progress = (text: string) => deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text });
+  if (deps.autoLearn === false) return;
+  const alreadyLearned = usedTools.some((t) => t.ok && t.name === 'create_skill');
+  if (alreadyLearned && trigger === 'turn') return;
+
+  const toolsUsed = usedTools.filter((t) => t.ok).map((t) => t.name).join(', ') || '(none)';
+
+  let skillsList = '(none)';
+  try {
+    const ctx = deps.toolContext(agent);
+    skillsList = ctx.skills?.list().map((s) => s.name).join(', ') || '(none)';
+  } catch { /* skills unavailable — leave the list as "(none)" */ }
+
+  const intro =
+    trigger === 'review'
+      ? `REVIEW (proactive learning pass — scheduled, after recent activity). Look back at what you worked on, then decide whether anything is worth keeping.\n` +
+        `Recent work summary: ${summary.slice(0, 240)}\n` +
+        `Tools used recently: ${toolsUsed}\n` +
+        `Existing skills: ${skillsList}\n` +
+        `Choose ONE of the following, or report nothing reusable.\n`
+      : `REFLECTION (auto-learn pass — optional, after a completed turn).\n` +
+        `What you just finished: ${summary.slice(0, 240)}\n` +
+        `Tools you used: ${toolsUsed}\n` +
+        `Existing skills: ${skillsList}\n`;
+
+  const reflectionMessages: LlmMessage[] = [
+    ...messages,
+    {
+      role: 'user',
+      content:
+        intro +
+        `If this turn revealed a genuinely repeatable multi-step pattern (a workflow, checklist, or how-work-gets-done-here convention), save it as a skill:\n` +
+        `{"thought":"...","action":{"type":"tool_call","stepId":"step-1","tool":"create_skill","params":{"name":"kebab-case-name","description":"when to use it","instructions":"step-by-step reusable knowledge","global":true},"reason":"auto-learned from completed turn","expected":"skill saved"}}\n` +
+        `Use global:true unless the pattern is specific to THIS workspace (global skills are visible from every project).\n` +
+        `If an EXISTING skill from the list above was used this turn and proved incomplete, outdated, or wrong, improve it instead of creating a near-duplicate:\n` +
+        `{"thought":"...","action":{"type":"tool_call","stepId":"step-1","tool":"update_skill","params":{"name":"existing-skill","instructions":"the corrected, improved step-by-step knowledge"},"reason":"the skill missed a step that cost time","expected":"skill improved"}}\n` +
+        `If it revealed a durable success pattern worth remembering but NOT worth a full skill (e.g. "email triage here is verified via one read-only IMAP probe"), record it instead:\n` +
+        `{"thought":"...","action":{"type":"tool_call","tool":"memory","params":{"action":"record_pattern","subject":"short generalized subject","evidence":"what verified it"}},"reason":"auto-learned from completed turn","expected":"pattern observation recorded"}\n` +
+        `Otherwise respond with: {"thought":"nothing reusable","action":{"type":"complete","summary":"nothing to learn","chat":true}}`,
+    },
+  ];
+  progress(trigger === 'review' ? 'learn   scheduled review — reflecting on recent work' : 'learn   reflecting on the completed turn to extract a reusable skill or pattern');
+  const reply = await llm.complete(reflectionMessages, { temperature: 0.6, effort: agent.effort, signal: deps.signal });
+  const parsed = parseReplyAction(reply);
+
+  if (parsed?.type === 'tool_call' && parsed.tool === 'create_skill') {
+    let outcome = '';
+    try {
+      const ctx = deps.toolContext(agent);
+      const skill = ctx.skills?.create({
+        name: String(parsed.params['name'] ?? 'skill'),
+        description: String(parsed.params['description'] ?? ''),
+        instructions: String(parsed.params['instructions'] ?? ''),
+        createdBy: 'agent',
+        scope: parsed.params['global'] === true ? 'global' : 'project',
+      });
+      outcome = skill ? `learn   auto-saved skill "${skill.name}"` : 'learn   skills not available in this session';
+    } catch (err) {
+      outcome = `learn   could not save skill: ${(err as Error).message.slice(0, 200)}`;
+    }
+    progress(outcome);
+  } else if (parsed?.type === 'tool_call' && parsed.tool === 'update_skill') {
+    // Skill self-improvement: correct an existing skill instead of making a
+    // near-duplicate. Only the named skill is touched, and only by its fields.
+    let outcome = '';
+    try {
+      const ctx = deps.toolContext(agent);
+      const skill = ctx.skills?.update(String(parsed.params['name'] ?? ''), {
+        ...(typeof parsed.params['description'] === 'string' ? { description: parsed.params['description'] } : {}),
+        ...(typeof parsed.params['instructions'] === 'string' ? { instructions: parsed.params['instructions'] } : {}),
+      });
+      outcome = skill ? `learn   improved existing skill "${skill.name}"` : `learn   could not improve: unknown skill`;
+    } catch (err) {
+      outcome = `learn   could not improve skill: ${(err as Error).message.slice(0, 200)}`;
+    }
+    progress(outcome);
+  } else if (parsed?.type === 'tool_call' && parsed.tool === 'memory' && parsed.params['action'] === 'record_pattern') {
+    const subject = String(parsed.params['subject'] ?? '').trim().replace(/\s+/g, ' ').slice(0, 160);
+    if (!subject) {
+      progress('learn   reflection returned an empty pattern subject — nothing recorded');
+    } else if (!deps.memory) {
+      progress('learn   memory store unavailable — pattern not recorded');
+    } else {
+      const outcome = deps.memory.recordSuccessObservation(agent, {
+        subject,
+        evidence: String(parsed.params['evidence'] ?? '').trim() || `auto-learned after completed turn "${summary.slice(0, 80)}"`,
+      });
+      progress(
+        outcome.promoted
+          ? `learn   success pattern promoted "${subject.slice(0, 80)}"`
+          : `learn   success observation recorded (${outcome.distinctObservations}/3 for this subject)`,
+      );
+    }
+  } else {
+    progress('learn   nothing new worth saving');
   }
 }
 
@@ -659,7 +812,7 @@ export async function runMissionSession(input: {
     const artifactIds: string[] = [];
     const taggedFolders = (deps.store?.getConversation(mission.conversationId)?.folders ?? []).map((folder) => folder.path);
     const scope: CoworkToolScope | undefined =
-      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
+      deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: mission.conversationId, computerFor: deps.computerFor, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser } : undefined;
     let ctx: ToolContext | undefined;
     const messages: LlmMessage[] = [
       // The transcript is deliberately not included: missions run in their own

@@ -17,12 +17,13 @@ import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../gi
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
 import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
-import { LlmError, UsageTrackingClient } from '../llm/llm.js';
+import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { CoworkComputer } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
+import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
 import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
@@ -30,11 +31,14 @@ import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
 import { ProviderError, allProviderSpecs, fetchModelCatalog, freeModelFallback, modelCapabilityTier, modelMetadataFor, peekModelCatalog, providerKey, resolveImageSupport, resolveLlm, usageCostUsd } from '../llm/providers.js';
 import { resolveModelCatalog } from '../llm/resolved-model-catalog.js';
+import { resolveEmbedder } from '../llm/providers.js';
 import { removeStoredKey, setStoredKey, storedKeyVars } from '../llm/keys.js';
 import { SessionStore, type SessionUsage, type StoredSessionFile } from './session-store.js';
 import { McpManager } from '../mcp/client.js';
 import { Reporter } from '../report/reporter.js';
 import { SkillStore } from '../skills/skills.js';
+import { PendingSkillStore } from '../skills/pending.js';
+import { CoworkRecall } from '../cowork/recall.js';
 import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionRequirement } from '../connections/connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
@@ -183,6 +187,10 @@ export interface GituServerConfig {
   autoInstallLsp?: boolean;
   browser?: BrowserBridge;
   telegramFetch?: TelegramFetch;
+  /** Discord REST transport (injectable for tests). */
+  discordFetch?: DiscordFetch;
+  /** Discord gateway transport (injectable for tests). */
+  discordWebSocketFactory?: DiscordWebSocketFactory;
   /** Injectable for tests; production queries the local Codex runtime. */
   codexSubscriptionInfo?: () => Promise<CodexSubscriptionInfo>;
   startCodexSubscriptionLogin?: () => Promise<CodexLoginStart>;
@@ -255,6 +263,11 @@ export class GituServer {
   private coworkMemoryStore?: CoworkMemory;
   private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
   private readonly coworkPollers = new Map<string, TelegramPoller>();
+  /** One Discord gateway per conversation (keyed by conversation id). */
+  private readonly coworkDiscords = new Map<string, DiscordGateway>();
+  private coworkLearningScheduler?: CronScheduler;
+  private coworkLastReviewAt?: number;
+  private coworkRecall?: CoworkRecall;
   private coworkTimer?: ReturnType<typeof setInterval>;
   private readonly coworkTools = new Map<string, ToolContext>();
   private readonly coworkComputers = new Map<string, CoworkComputer>();
@@ -846,10 +859,14 @@ export class GituServer {
   /** Browser snapshots expose connection state, never the reusable bot secret. */
   private coworkConversationView(conversation: CoworkConversation) {
     const telegram = conversation.telegram;
+    const discord = conversation.discord;
     return {
       ...conversation,
       ...(telegram
         ? { telegram: { enabled: telegram.enabled, chatId: telegram.chatId, chatTitle: telegram.chatTitle, tokenSaved: Boolean(telegram.token) } }
+        : {}),
+      ...(discord
+        ? { discord: { enabled: discord.enabled, channelId: discord.channelId, channelName: discord.channelName, tokenSaved: Boolean(discord.token) } }
         : {}),
     };
   }
@@ -986,6 +1003,194 @@ export class GituServer {
         console.error(`[hermes] cowork schedule tick failed: ${(err as Error).message}`);
       }
     }, 20_000);
+    this.startCoworkLearning();
+  }
+
+  /** Proactive learning loop: (1) a safe consolidation sweep over team memory
+   *  and (2) an opt-in reflection review that wakes an agent to self-improve.
+   *  Both ride the existing CronScheduler so they run only while the app is
+   *  open, with in-flight dedupe and crash-safe ticks. */
+  private startCoworkLearning(): void {
+    const settings = loadWorkspaceSettings().coworkLearning ?? {};
+    const mode = settings.mode;
+    const reviewEnabled = mode ? mode === 'proactive' : settings.review === true;
+    const consolidateEnabled = mode === 'off' ? false : settings.consolidate !== false;
+    const store = CronStore.forProject(ensureGituHome().workspace);
+    // CronStore.add() always generates its own id, so a stable learning-job id
+    // must be applied by renaming the freshly added entry in place — otherwise
+    // a second, unreachable job would be appended on every server start.
+    const ensureJob = (id: string, every: string, goal: string, enabled: boolean): CronJob => {
+      const existing = store.jobs().find((j) => j.id === id);
+      if (existing) {
+        store.update(id, { enabled, every });
+        return { ...existing, enabled, every };
+      }
+      const created = store.add({ every, goal });
+      const jobs = store.jobs().map((j) => (j.id === created.id ? { ...j, id, enabled } : j));
+      (store as unknown as { save: (jobs: CronJob[]) => void }).save(jobs);
+      return { ...created, id, enabled };
+    };
+    const sweepJob = ensureJob('cowork_learn_consolidate', '1d', 'Consolidate cowork team memory: merge duplicates and supersede contradictions', consolidateEnabled);
+    const reviewEvery = settings.reviewEvery ?? '1d';
+    const reviewJob = ensureJob('cowork_learn_review', reviewEvery, 'Review recent cowork work and save a reusable skill or pattern', reviewEnabled);
+    // Compaction flush: LLM distillation of un-distilled transcripts into
+    // candidate memories. Opt-in with the review (it spends model calls).
+    const distillJob = ensureJob('cowork_learn_distill', reviewEvery, 'Distill old cowork transcripts into durable candidate memories', reviewEnabled);
+    if (this.coworkLearningScheduler) this.coworkLearningScheduler.stop();
+    this.coworkLearningScheduler = new CronScheduler(store, async (job) => {
+      if (job.id === sweepJob.id) return this.coworkLearnConsolidateTick();
+      if (job.id === reviewJob.id) return this.coworkLearnReviewTick();
+      if (job.id === distillJob.id) return this.coworkLearnDistillTick();
+      return undefined;
+    });
+    this.coworkLearningScheduler.start(30_000);
+  }
+
+  /** Safe curation sweep: merge duplicate memories, supersede contradictions,
+   *  archive what falls outside the value cap, and index shared knowledge into
+   *  the recall index so memory is searchable alongside transcripts.
+   *  No LLM, no new claims — it only organizes what agents already wrote. */
+  private coworkLearnConsolidateTick(): string {
+    try {
+      const memory = this.coworkMemory();
+      const result = memory.consolidate();
+      const pruned = memory.prune();
+      const decayed = memory.decay();
+      // Index durable, SHARED knowledge (never agent-private entries).
+      const index = this.coworkRecallIndex();
+      const shared = memory.sharedEntries();
+      for (const entry of shared) {
+        index.indexDoc({
+          kind: 'memory',
+          key: `memory:${entry.id}`,
+          title: entry.type,
+          role: 'memory',
+          ts: entry.createdAt,
+          text: entry.claim,
+        });
+      }
+      const msg = `[cowork learn] consolidate: merged ${result.merged.length}, superseded ${result.supersededIds.length}, flagged ${result.flagged.length}, archived ${pruned.archived + decayed.length}, indexed ${shared.length} memory(ies)`;
+      console.error(msg);
+      return msg;
+    } catch (err) {
+      console.error(`[hermes] cowork consolidate failed: ${(err as Error).message}`);
+      return 'consolidate failed';
+    }
+  }
+
+  /**
+   * Compaction flush (distillation): an LLM reads the transcript tail that has
+   * not been distilled yet and extracts the durable knowledge worth keeping —
+   * decisions, facts, lessons, constraints. Extracted claims enter the memory
+   * store as UNVERIFIED candidates (sourceType model_inference), so the trust
+   * model still decides what becomes durable. Bounded: one conversation and a
+   * capped number of claims per tick.
+   */
+  private async coworkLearnDistillTick(): Promise<string> {
+    const store = this.cowork();
+    const index = this.coworkRecallIndex();
+    const target = store
+      .listConversations()
+      .map((conv) => {
+        const cursor = Number(index.getMeta(`distill:${conv.id}`) ?? '-1');
+        const fresh = store.messages(conv.id).filter((m) => m.seq > cursor && m.role !== 'system' && m.text.trim().length > 0);
+        return { conv, fresh, cursor };
+      })
+      .filter((c) => c.fresh.length >= 8)
+      .sort((a, b) => b.fresh.length - a.fresh.length)[0];
+    if (!target) return 'nothing to distill';
+
+    const agent = store.getAgent(target.conv.memberIds[0] ?? '');
+    if (!agent) return 'distill skipped (no agent)';
+    const transcript = target.fresh
+      .slice(-40)
+      .map((m) => `${m.role === 'agent' ? m.agentName ?? 'agent' : m.role}: ${m.text.slice(0, 600)}`)
+      .join('\n')
+      .slice(-8_000);
+    const prompt = [
+      'You are compacting an old work transcript into durable team knowledge.',
+      'Extract ONLY what stays true and useful in future work: decisions made, facts learned about the workspace/systems, conventions to follow, constraints, and lessons from failures.',
+      'Skip pleasantries, one-off status, and anything already obvious from the code. Do not speculate; do not invent details.',
+      'Reply with JSON only: {"memories":[{"type":"decision|fact|lesson|constraint|project_convention|architecture","claim":"one self-contained sentence"}]}',
+      'Return at most 5 entries. If nothing is worth keeping, reply {"memories":[]}.',
+      '',
+      'TRANSCRIPT:',
+      transcript,
+    ].join('\n');
+    try {
+      const reply = await this.coworkLlm(agent).complete(
+        [{ role: 'system', content: 'You extract durable knowledge from transcripts and reply with JSON only.' }, { role: 'user', content: prompt }],
+        { temperature: 0.2, effort: 'low' },
+      );
+      const parsed = extractLastJsonObject(reply) as { memories?: { type?: unknown; claim?: unknown }[] } | undefined;
+      const allowed = new Set(['decision', 'fact', 'lesson', 'constraint', 'project_convention', 'architecture', 'task', 'failure']);
+      let recorded = 0;
+      for (const item of (parsed?.memories ?? []).slice(0, 5)) {
+        const type = String(item?.type ?? '');
+        const claim = String(item?.claim ?? '').trim().slice(0, 400);
+        if (!claim || !allowed.has(type)) continue;
+        if (this.coworkMemory().recordDistilled({ agent, type: type as never, claim, source: `distilled from ${target.conv.title}` })) {
+          recorded += 1;
+          const added = this.coworkMemory().sharedEntries(500).find((e) => e.claim === claim);
+          if (added) {
+            index.indexDoc({ kind: 'memory', key: `memory:${added.id}`, title: type, role: 'memory', ts: added.createdAt, text: claim });
+          }
+        }
+      }
+      index.setCursor(`distill:${target.conv.id}`, String(target.fresh.at(-1)!.seq));
+      const msg = `[cowork learn] distilled ${recorded} candidate(s) from ${target.conv.title} (${target.fresh.length} messages)`;
+      console.error(msg);
+      return msg;
+    } catch (err) {
+      console.error(`[hermes] cowork distill failed: ${(err as Error).message}`);
+      return 'distill failed';
+    }
+  }
+
+  /** Resolve when coworkers learn, from the workspace setting. Returns
+   *  'reactive' (reflect after every completed turn — the original behavior),
+   *  'proactive' (reflect only during the scheduled review wake), or 'off'. */
+  private coworkLearningMode(): 'reactive' | 'proactive' | 'off' {
+    const settings = loadWorkspaceSettings().coworkLearning;
+    if (settings?.mode) return settings.mode;
+    // Legacy/raw API: the review job being enabled means "proactive".
+    return settings?.review === true ? 'proactive' : 'reactive';
+  }
+
+  /** Mark the trigger a scheduled review will create, so that wake turn is the
+   *  one allowed to reflect while ordinary turns stay silent in proactive mode. */
+  private readonly coworkReviewTriggers = new Set<string>();
+
+  /** Opt-in reflection review: pick the most recently active DM agent and wake
+   *  it with a review instruction so the per-turn reflection (coworkAutoLearn)
+   *  can save a skill or record a pattern from recent work. Skips when there is
+   *  no activity newer than the last review, and when the conversation is busy. */
+  private coworkLearnReviewTick(): string | undefined {
+    const store = this.cowork();
+    const since = this.coworkLastReviewAt ?? 0;
+    let best: { conv: CoworkConversation; agentId: string; ts: number } | undefined;
+    for (const conv of store.listConversations()) {
+      if (conv.kind !== 'dm') continue;
+      const agentId = conv.memberIds[0];
+      if (!agentId || !store.getAgent(agentId)) continue;
+      const last = store.messages(conv.id).filter((m) => m.role === 'agent').at(-1);
+      if (!last) continue;
+      const ts = Date.parse(last.ts);
+      if (ts <= since) continue;
+      if (!best || ts > best.ts) best = { conv, agentId, ts };
+    }
+    if (!best) return 'no recent activity to review';
+    const agent = store.getAgent(best.agentId);
+    if (!agent) return undefined;
+    const fired = this.dispatchAgentWake(
+      best.conv.id,
+      best.agentId,
+      `Proactive learning review. Look back at your recent work in this chat and decide whether anything durable is worth keeping — save a reusable skill (create_skill) or record a success pattern (agent_memory record_pattern). If nothing is reusable, reply briefly that there is nothing to learn. Do not start new work; this is a reflection only.`,
+      'schedule',
+      { learningReview: true },
+    );
+    if (fired) this.coworkLastReviewAt = Date.now();
+    return fired ? `review wake for ${agent.name}` : 'conversation busy — review deferred';
   }
 
   private async stopCoworkLifecycle(): Promise<void> {
@@ -994,6 +1199,15 @@ export class GituServer {
     this.coworkSubscribers.clear();
     if (this.coworkTimer) clearInterval(this.coworkTimer);
     this.coworkTimer = undefined;
+    if (this.coworkLearningScheduler) { this.coworkLearningScheduler.stop(); this.coworkLearningScheduler = undefined; }
+    for (const gateway of this.coworkDiscords.values()) gateway.stop();
+    this.coworkDiscords.clear();
+    // Release the recall index's SQLite handle — on Windows an open handle
+    // would block the temp-home cleanup that follows stop().
+    this.coworkRecall?.close();
+    this.coworkRecall = undefined;
+    for (const gateway of this.coworkDiscords.values()) gateway.stop();
+    this.coworkDiscords.clear();
     for (const poller of this.coworkPollers.values()) poller.stop();
     this.coworkPollers.clear();
     for (const context of this.coworkTools.values()) context.mcp?.killAll();
@@ -1170,8 +1384,28 @@ export class GituServer {
     }
   }
 
+  /** Push open request cards to Discord the same way Telegram gets them — the
+   *  team asks for an answer/approval and the paired channel sees it. */
+  private async surfaceCoworkDiscordRequests(conversation: CoworkConversation): Promise<void> {
+    const dc = conversation.discord;
+    if (!dc?.enabled || !dc.token || !dc.channelId) return;
+    for (const request of this.cowork().requests(conversation.id)) {
+      if (request.status !== 'open' || request.discordNotifiedAt) continue;
+      try {
+        const agent = this.cowork().getAgent(request.agentId);
+        await sendDiscordRequestCard(this.config.discordFetch, dc.token, dc.channelId, request, agent?.name);
+        this.cowork().markRequestDiscordNotified(request.id);
+      } catch (err) {
+        const current = this.coworkRuns.get(conversation.id);
+        if (current) current.telegramError = (err as Error).message;
+        console.error(`[hermes] cowork discord card (${conversation.id}): ${(err as Error).message}`);
+      }
+    }
+  }
+
   private startCoworkPoller(conv: CoworkConversation): void {
     this.stopCoworkPoller('');
+    this.startCoworkDiscord(conv);
     const tg = conv.telegram;
     if (!tg?.enabled || !tg.token || !tg.chatId) return;
     if (this.coworkPollers.has(tg.token)) {
@@ -1213,10 +1447,64 @@ export class GituServer {
     void this.surfaceCoworkRequests(conv);
   }
 
+  /** Dispatch a Discord message after resolving a pending request reply. */
+  private async handleCoworkDiscordText(conversationId: string, from: string, text: string): Promise<void> {
+    const note = parseDiscordRequestReply(text, this.cowork().openRequests(conversationId), (requestId, action, response) => {
+      const resolution = this.resolveCoworkRequestAction(requestId, action, response);
+      return { ok: resolution.ok, answer: resolution.request?.response ?? resolution.request?.status, error: resolution.error };
+    });
+    if (note !== undefined) {
+      const conv = this.cowork().getConversation(conversationId);
+      const dc = conv?.discord;
+      if (dc?.token && dc.channelId) await sendDiscordMessage(this.config.discordFetch, dc.token, dc.channelId, note).catch(() => undefined);
+      return;
+    }
+    this.dispatchCoworkMessage(conversationId, text, 'discord', from);
+  }
+
   private stopCoworkPoller(conversationId: string): void {
     const tokens = new Set(this.cowork().listConversations().filter((c) => c.id !== conversationId && c.telegram?.enabled).map((c) => c.telegram?.token));
     for (const [token, poller] of this.coworkPollers) {
       if (!tokens.has(token)) { poller.stop(); this.coworkPollers.delete(token); }
+    }
+  }
+
+  /**
+   * Discord channel: start (or restart) the gateway for this conversation.
+   * Messages that arrive in the paired channel are dispatched exactly like a
+   * Telegram message, so the team logic is channel-agnostic.
+   */
+  private startCoworkDiscord(conv: CoworkConversation): void {
+    const existing = this.coworkDiscords.get(conv.id);
+    if (existing) { existing.stop(); this.coworkDiscords.delete(conv.id); }
+    const dc = conv.discord;
+    if (!dc?.enabled || !dc.token || !dc.channelId) return;
+    const gateway = new DiscordGateway({
+      token: dc.token,
+      channelId: dc.channelId,
+      webSocketFactory: this.config.discordWebSocketFactory,
+      onMessage: async (from, text) => {
+        const linked = this.cowork().getConversation(conv.id);
+        if (!linked?.discord?.enabled) return;
+        await this.handleCoworkDiscordText(linked.id, from, text);
+      },
+      onError: (message) => console.error(`[hermes] cowork discord (${conv.id}): ${message}`),
+    });
+    this.coworkDiscords.set(conv.id, gateway);
+    gateway.start();
+  }
+
+  /** Outbound mirror: deliver a finished agent message to the linked channel. */
+  private async sendCoworkDiscord(conversationId: string, text: string): Promise<void> {
+    const conv = this.cowork().getConversation(conversationId);
+    const dc = conv?.discord;
+    if (!dc?.enabled || !dc.token || !dc.channelId) return;
+    try {
+      await sendDiscordMessage(this.config.discordFetch, dc.token, dc.channelId, text);
+    } catch (err) {
+      const current = this.coworkRuns.get(conversationId);
+      if (current) current.telegramError = (err as Error).message;
+      console.error(`[hermes] cowork discord send (${conversationId}): ${(err as Error).message}`);
     }
   }
 
@@ -1367,6 +1655,15 @@ export class GituServer {
     return this.coworkMemory().promptBlock({ name: agent.name } as CoworkAgent);
   }
 
+  /** Hybrid cross-session recall index (SQLite FTS5 + embeddings). One per
+   *  server; built lazily so a server that never searches pays nothing. */
+  private coworkRecallIndex(): CoworkRecall {
+    if (!this.coworkRecall) {
+      this.coworkRecall = CoworkRecall.forWorkspace(this.cowork(), resolveEmbedder());
+    }
+    return this.coworkRecall;
+  }
+
   /** Shared "about the user" block for every teammate's prompt. */
   private coworkUserContext(): string | undefined {
     const profile = this.cowork().userProfile();
@@ -1389,6 +1686,12 @@ export class GituServer {
       // Queued future user messages must not steer the current trigger, and
       // other threads never bleed into this one.
       const history = store.messages(conversationId, 0, threadId ?? null).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);
+      // Learning mode: 'reactive' reflects after every completed turn, while
+      // 'proactive' keeps ordinary turns quiet and only reflects on the trigger
+      // a scheduled review created. 'off' never reflects.
+      const learningMode = this.coworkLearningMode();
+      const isLearningReview = this.coworkReviewTriggers.delete(trigger.id);
+      const autoLearn = learningMode === 'off' ? false : learningMode === 'proactive' ? isLearningReview : true;
       const streams = new Map<string, TelegramReplyStream>();
       const activeAgents = new Map<string, string>();
       const tg = conv.telegram;
@@ -1437,6 +1740,9 @@ export class GituServer {
           acquireHostBrowser: () => this.coworkBrowserLease.acquire(abort.signal),
           userContext: this.coworkUserContext(),
           memoryFor: (agent) => this.coworkMemoryFor(agent),
+          autoLearn,
+          learningReview: isLearningReview,
+          recall: this.coworkRecallIndex(),
           signal: abort.signal,
           onWorking: (agent) => {
             activeAgents.set(agent.id, agent.name);
@@ -1585,6 +1891,11 @@ export class GituServer {
           acquireHostBrowser: () => this.coworkBrowserLease.acquire(abort.signal),
           userContext: this.coworkUserContext(),
           memoryFor: (a) => this.coworkMemoryFor(a),
+          // Missions are already bounded autonomous sessions (not chat turns):
+          // they reflect after a completed session in both reactive and
+          // proactive modes, and never when learning is off.
+          autoLearn: this.coworkLearningMode() !== 'off',
+          recall: this.coworkRecallIndex(),
           signal: abort.signal,
           onProgress: (progress) => {
             const current = this.coworkRuns.get(conversationId);
@@ -1598,6 +1909,8 @@ export class GituServer {
             if (current?.abort === abort) current.progress = undefined;
             this.publishCowork(conversationId);
             await finishStream(telegramAgentMessage(message.agentName, message.text));
+            // Mirror the finished reply to Discord when this chat is paired.
+            void this.sendCoworkDiscord(conversationId, message.text);
             await this.surfaceCoworkRequests(conversation);
           },
         },
@@ -1674,7 +1987,7 @@ export class GituServer {
   }
 
   /** Wake one specific agent with an instruction (follow-ups, inbox mail). */
-  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent'): boolean {
+  private dispatchAgentWake(conversationId: string, agentId: string, instruction: string, via: CoworkMessage['via'] = 'agent', opts: { learningReview?: boolean } = {}): boolean {
     const store = this.cowork();
     const conversation = store.getConversation(conversationId);
     const agent = store.getAgent(agentId);
@@ -1682,6 +1995,11 @@ export class GituServer {
     const run = this.coworkRuns.get(conversationId);
     if (run?.busy) return false; // retried by the next autonomy tick where relevant
     const trigger = store.appendMessage(conversationId, { role: 'system', via, text: instruction });
+    if (opts.learningReview) {
+      // Bound the set: an aborted review never consumes its marker.
+      if (this.coworkReviewTriggers.size > 50) this.coworkReviewTriggers.clear();
+      this.coworkReviewTriggers.add(trigger.id);
+    }
     const abort = new AbortController();
     this.coworkRuns.set(conversationId, { busy: true, working: agent.name, abort, queue: [trigger], forceAgentId: agentId });
     this.publishCowork(conversationId);
@@ -1899,6 +2217,34 @@ export class GituServer {
       return false;
     }
 
+    // Discord pairing: list the guilds/channels the bot can post to, mirroring
+    // /api/cowork/telegram/chats. Requires the saved bot token on that
+    // conversation (never re-exposed). Optional guildId lists its channels.
+    const discordPairingMatch = path.match(/^\/api\/cowork\/discord\/channels(?:\/([\w-]+))?$/);
+    if (discordPairingMatch && method === 'POST') {
+      const conversationId = discordPairingMatch[1];
+      const body = await this.readBody(req);
+      const conv = conversationId ? store.getConversation(conversationId) : undefined;
+      const token = typeof body['token'] === 'string' && body['token'].trim() ? body['token'].trim() : conv?.discord?.token;
+      if (!token) {
+        this.sendJson(res, 400, { error: 'a Discord bot token is required (paste it once; it stays local)' });
+        return true;
+      }
+      const guildId = typeof body['guildId'] === 'string' ? body['guildId'] : undefined;
+      try {
+        if (!guildId) {
+          const guilds = await recentDiscordGuilds(this.config.discordFetch, token);
+          this.sendJson(res, 200, { guilds });
+        } else {
+          const channels = await recentDiscordChannels(this.config.discordFetch, token, guildId);
+          this.sendJson(res, 200, { channels });
+        }
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message });
+      }
+      return true;
+    }
+
     if (path === '/api/cowork/conversations') {
       if (method === 'GET') {
         this.sendJson(res, 200, { conversations: store.listConversations().map((conversation) => this.coworkConversationView(conversation)) });
@@ -1930,12 +2276,19 @@ export class GituServer {
         try {
           const telegram = body['telegram'] && typeof body['telegram'] === 'object' ? (body['telegram'] as Record<string, unknown>) : undefined;
           const schedule = body['schedule'] && typeof body['schedule'] === 'object' ? (body['schedule'] as Record<string, unknown>) : undefined;
+          const discord = body['discord'] && typeof body['discord'] === 'object' ? (body['discord'] as Record<string, unknown>) : undefined;
           const existing = store.getConversation(convId);
           const submittedToken = typeof telegram?.['token'] === 'string' ? telegram['token'].trim() : '';
           const effectiveToken = submittedToken || existing?.telegram?.token;
           const effectiveChatId = telegram?.['chatId'] !== undefined ? String(telegram['chatId'] ?? '') : existing?.telegram?.chatId;
           if (telegram?.['enabled'] === true && store.listConversations().some((c) => c.id !== convId && c.telegram?.enabled && c.telegram.token === effectiveToken && c.telegram.chatId === effectiveChatId)) {
             throw new Error('This Telegram bot and chat are already linked to another conversation.');
+          }
+          const submittedDiscordToken = typeof discord?.['token'] === 'string' ? discord['token'].trim() : '';
+          const effectiveDiscordToken = submittedDiscordToken || existing?.discord?.token;
+          const effectiveDiscordChannel = discord?.['channelId'] !== undefined ? String(discord['channelId'] ?? '') : existing?.discord?.channelId;
+          if (discord?.['enabled'] === true && store.listConversations().some((c) => c.id !== convId && c.discord?.enabled && c.discord.token === effectiveDiscordToken && c.discord.channelId === effectiveDiscordChannel)) {
+            throw new Error('This Discord bot and channel are already linked to another conversation.');
           }
           const conv = store.updateConversation(convId, {
             title: typeof body['title'] === 'string' ? body['title'] : undefined,
@@ -1950,14 +2303,23 @@ export class GituServer {
                   offset: effectiveToken === existing?.telegram?.token ? existing?.telegram?.offset : undefined,
                 }
               : undefined,
+            discord: discord
+              ? {
+                  enabled: discord['enabled'] === true,
+                  token: effectiveDiscordToken,
+                  channelId: discord['channelId'] !== undefined ? String(discord['channelId'] ?? '') : undefined,
+                  channelName: typeof discord['channelName'] === 'string' ? discord['channelName'] : undefined,
+                }
+              : undefined,
             schedule: schedule ? { every: String(schedule['every'] ?? ''), goal: String(schedule['goal'] ?? ''), enabled: schedule['enabled'] !== false, lastRunAt: typeof schedule['lastRunAt'] === 'string' ? schedule['lastRunAt'] : undefined } : undefined,
           });
           if (!conv) {
             this.sendJson(res, 404, { error: 'conversation not found' });
             return true;
           }
-          // Telegram/schedule config changes take effect immediately.
+          // Telegram/Discord/schedule config changes take effect immediately.
           this.startCoworkPoller(conv);
+          void this.surfaceCoworkDiscordRequests(conv);
           this.sendJson(res, 200, { ok: true, conversation: this.coworkConversationView(conv) });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
@@ -2883,6 +3245,108 @@ export class GituServer {
         projectsPath: projectsDir(),
         customProjectsPath: settings.projectsPath ? !isDriveRoot(settings.projectsPath) : false,
       });
+      return;
+    }
+
+    // Proactive cowork learning loop: safe curation sweep by default, opt-in
+    // reflection review. POST applies immediately (the scheduler is restarted)
+    // so a toggle takes effect without an app restart.
+    // Cross-session recall search (the same hybrid index the search_history
+    // tool uses), exposed so the UI can search every chat the team ever had.
+    if (method === 'GET' && path === '/api/cowork/search') {
+      const url = new URL(req.url ?? '/', 'http://localhost');
+      const query = (url.searchParams.get('q') ?? '').trim();
+      if (!query) {
+        this.sendJson(res, 200, { query: '', hits: [] });
+        return;
+      }
+      const limitRaw = Number(url.searchParams.get('limit'));
+      const hits = await this.coworkRecallIndex().search(query, { limit: Number.isFinite(limitRaw) ? limitRaw : 20 });
+      this.sendJson(res, 200, { query, hits });
+      return;
+    }
+
+    // Staged skill-write approvals: when skillApproval is on, cowork agents'
+    // skill writes queue here and apply only on explicit approval.
+    const pendingSkillsMatch = path.match(/^\/api\/cowork\/skills\/pending(?:\/([\w-]+)\/(approve|reject))?$/);
+    if (pendingSkillsMatch) {
+      const pending = PendingSkillStore.forHome();
+      const changeId = pendingSkillsMatch[1];
+      if (!changeId) {
+        this.sendJson(res, 200, { pending: pending.pending() });
+        return;
+      }
+      if (method !== 'POST') {
+        this.sendJson(res, 405, { error: 'method not allowed' });
+        return;
+      }
+      const decision = pendingSkillsMatch[2] === 'approve' ? 'approved' : 'rejected';
+      const entry = pending.take(changeId, decision);
+      if (!entry) {
+        this.sendJson(res, 404, { error: 'pending change not found or already resolved' });
+        return;
+      }
+      if (decision === 'rejected') {
+        this.sendJson(res, 200, { ok: true, resolved: entry.id, status: 'rejected' });
+        return;
+      }
+      try {
+        const skills = SkillStore.forProject(ensureGituHome().workspace);
+        const applied = entry.kind === 'create'
+          ? skills.create({
+              name: entry.name,
+              description: entry.description ?? '',
+              instructions: entry.instructions ?? '',
+              createdBy: 'agent',
+              scope: 'project',
+            })
+          : skills.update(entry.name, {
+              ...(entry.description ? { description: entry.description } : {}),
+              ...(entry.instructions ? { instructions: entry.instructions } : {}),
+            });
+        this.sendJson(res, 200, { ok: true, resolved: entry.id, status: 'approved', skill: { name: applied.name } });
+      } catch (err) {
+        this.sendJson(res, 400, { error: (err as Error).message, resolved: entry.id, status: 'approved' });
+      }
+      return;
+    }
+
+    if (path === '/api/cowork/learning') {
+      if (method === 'GET') {
+        const settings = loadWorkspaceSettings().coworkLearning ?? {};
+        const mode = this.coworkLearningMode();
+        const jobs = CronStore.forProject(ensureGituHome().workspace).jobs().filter((j) => j.id.startsWith('cowork_learn_'));
+        this.sendJson(res, 200, {
+          mode,
+          consolidate: settings.consolidate !== false,
+          review: mode === 'proactive',
+          reviewEvery: settings.reviewEvery ?? '1d',
+          skillApproval: settings.skillApproval === true,
+          jobs: jobs.map((j) => ({ id: j.id, every: j.every, enabled: j.enabled, lastRunAt: j.lastRunAt })),
+        });
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        // Merge with the current settings: a POST that only flips one toggle
+        // must not silently reset the other fields to their defaults.
+        const current = loadWorkspaceSettings().coworkLearning ?? {};
+        const mode = body['mode'] === 'reactive' || body['mode'] === 'proactive' || body['mode'] === 'off' ? body['mode'] : current.mode;
+        updateWorkspaceSettings({
+          coworkLearning: {
+            mode,
+            consolidate: typeof body['consolidate'] === 'boolean' ? body['consolidate'] : current.consolidate,
+            review: typeof body['review'] === 'boolean' ? body['review'] : current.review,
+            reviewEvery: typeof body['reviewEvery'] === 'string' ? body['reviewEvery'] : current.reviewEvery,
+            skillApproval: typeof body['skillApproval'] === 'boolean' ? body['skillApproval'] : current.skillApproval,
+          },
+        });
+        this.startCoworkLearning();
+        const settings = loadWorkspaceSettings().coworkLearning ?? {};
+        this.sendJson(res, 200, { ok: true, mode: this.coworkLearningMode(), consolidate: settings.consolidate !== false, review: this.coworkLearningMode() === 'proactive', reviewEvery: settings.reviewEvery ?? '1d' });
+        return;
+      }
+      this.sendJson(res, 405, { error: 'method not allowed' });
       return;
     }
 

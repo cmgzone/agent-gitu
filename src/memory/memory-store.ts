@@ -571,6 +571,36 @@ export class MemoryStore {
   }
 
   /**
+   * Bounded store (scale): when the ACTIVE set exceeds `cap`, archive the
+   * least valuable entries — pinned, durable/verified, high-importance and
+   * frequently-retrieved knowledge always survives. History is preserved
+   * (archived, not deleted), and nothing is dropped before the cap is hit.
+   */
+  enforceCap(cap = 2_000): { archived: number } {
+    return this.atomic(() => {
+      this.refresh();
+      const active = this.entries.filter((e) => e.status !== 'archived' && e.status !== 'superseded');
+      if (active.length <= cap) return { archived: 0 };
+      const worth = (e: MemoryEntry): number =>
+        (e.pinned ? 1_000 : 0) +
+        (e.status === 'verified' || e.status === 'durable' ? 100 : 0) +
+        (e.importance ?? 0.5) * 10 +
+        Math.min(10, e.accessCount ?? 0) +
+        e.confidence;
+      const doomed = [...active]
+        .sort((a, b) => worth(b) - worth(a) || (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+        .slice(cap);
+      for (const e of doomed) {
+        e.status = 'archived';
+        e.updatedAt = nowIso();
+        this.logAudit({ event: 'archived', memoryId: e.id, reason: `over cap (${cap})` });
+      }
+      if (doomed.length > 0) this.flush();
+      return { archived: doomed.length };
+    });
+  }
+
+  /**
    * Consolidation (review Phase 5): group same-type, same-scope memories
    * with high claim overlap and merge each group into ONE stronger memory
    * whose claim combines the contributors. Contributors are marked

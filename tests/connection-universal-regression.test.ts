@@ -62,6 +62,16 @@ describe('universal connection operation state', () => {
     ]));
   });
 
+  it('exposes rejected operations through capabilityStateOf only', async () => {
+    home();
+    const registry = new ConnectionRegistry();
+    const id = save(registry);
+    expect(registry.capabilityStateOf(id).rejectedOperations).toBeUndefined();
+    globalThis.fetch = (async () => new Response('{}', { status: 404 })) as typeof fetch;
+    await registry.invokeRead(id, 'get-resource').catch(() => undefined);
+    expect(registry.capabilityStateOf(id).rejectedOperations?.length).toBe(1);
+  });
+
   it('allows a different documented endpoint for the same capability and operation id', async () => {
     home();
     const registry = new ConnectionRegistry();
@@ -94,14 +104,14 @@ describe('universal connection operation state', () => {
     expect(registry.get(id)?.operations.find((operation) => operation.id === 'get-resource')?.path).toBe('/api/v1/right');
   });
 
-  it('reuses a fresh successful read instead of hitting the provider repeatedly', async () => {
+  it('every safe read reaches the provider so loop protection sees real traffic', async () => {
     home();
     const registry = new ConnectionRegistry();
     const id = save(registry);
     let calls = 0;
     globalThis.fetch = (async () => {
       calls += 1;
-      return new Response(JSON.stringify({ value: 42 }), { status: 200, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ value: calls }), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch;
 
     const first = await registry.invokeRead(id, 'get-resource');
@@ -109,32 +119,7 @@ describe('universal connection operation state', () => {
 
     expect(first.ok).toBe(true);
     expect(second.ok).toBe(true);
-    expect(second.message).toContain('Reused fresh provider result');
-    expect(second.data).toEqual({ value: 42 });
-    expect(calls).toBe(1);
-  });
-
-  it('invalidates cached reads after a provider mutation', async () => {
-    home();
-    const registry = new ConnectionRegistry();
-    const id = save(registry);
-    let calls = 0;
-    globalThis.fetch = (async (input, init) => {
-      calls += 1;
-      const method = String(init?.method ?? 'GET');
-      if (method === 'PUT') return new Response(JSON.stringify({ updated: true }), { status: 200, headers: { 'content-type': 'application/json' } });
-      return new Response(JSON.stringify({ version: calls }), { status: 200, headers: { 'content-type': 'application/json' } });
-    }) as typeof fetch;
-
-    await registry.invokeRead(id, 'get-resource');
-    await registry.invokeRead(id, 'get-resource');
-    expect(calls).toBe(1);
-
-    await registry.invoke(id, 'update-resource', { enabled: true });
     expect(calls).toBe(2);
-
-    await registry.invokeRead(id, 'get-resource');
-    expect(calls).toBe(3);
   });
 
   it('does not poison an entire capability when only one path returns 404', async () => {

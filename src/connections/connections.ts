@@ -627,8 +627,6 @@ function profileSkillInstructions(profile: ConnectionProfile): string {
 export class ConnectionRegistry {
   private discoveryCache = new DiscoveryFactCache();
   private discoveryTelemetry = new DiscoveryTelemetryAccumulator();
-  /** Fresh-read cache for safe GET operations (per registry instance). */
-  private readCache = new Map<string, { status: number; data?: unknown; storedAt: number }>();
 
   getDiscoveryTelemetry(): DiscoveryTelemetry {
     return this.discoveryTelemetry.snapshot();
@@ -959,39 +957,9 @@ export class ConnectionRegistry {
     return Boolean(loadStoredKeys()[keyRef(id)]?.trim());
   }
 
-  private readCacheKey(id: string, operation: Pick<ConnectionOperation, 'id' | 'method' | 'path'>): string {
-    return `${id}:${operation.id}:${operation.method}:${operation.path}`;
-  }
-
-  private cachedRead(id: string, operation: ConnectionOperation): ConnectionInvocationResult | undefined {
-    const key = this.readCacheKey(id, operation);
-    const cached = this.readCache.get(key);
-    if (!cached) return undefined;
-    if (Date.now() - cached.storedAt > 30_000) {
-      this.readCache.delete(key);
-      return undefined;
-    }
-    return {
-      ok: true,
-      status: cached.status,
-      message: `Reused fresh provider result for ${operation.label}; no network request was needed.`,
-      ...(cached.data !== undefined ? { data: cached.data } : {}),
-    };
-  }
-
-  private invalidateReadCache(id: string): void {
-    const prefix = `${id}:`;
-    for (const key of this.readCache.keys()) if (key.startsWith(prefix)) this.readCache.delete(key);
-  }
-
   async invokeOperation(id: string, operation: ConnectionOperation, body?: unknown): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
-
-    if (operation.method === 'GET' && operation.risk === 'read' && body === undefined) {
-      const cached = this.cachedRead(profile.id, operation);
-      if (cached) return cached;
-    }
 
     let encoded: string | undefined;
     if (body !== undefined) {
@@ -1110,11 +1078,6 @@ export class ConnectionRegistry {
 
     if (operation.risk !== 'read') {
       this.discoveryCache.invalidateForWrite(profile.id);
-      this.invalidateReadCache(profile.id);
-    }
-
-    if (operation.risk === 'read' && operation.method === 'GET') {
-      this.readCache.set(this.readCacheKey(profile.id, operation), { status: response.status, data, storedAt: Date.now() });
     }
 
     return {
@@ -1381,7 +1344,6 @@ export class ConnectionRegistry {
             mutable.operations = mutable.operations.map((op) => (op.id === registered.id ? wanted : op));
             mutable.rejectedOperations = (mutable.rejectedOperations ?? []).filter((r) => !(r.operationId === registered.id && r.path === registered.path));
           });
-          this.invalidateReadCache(profile.id);
           const healed = this.operation(profile.id, wanted.id);
           if (healed && JSON.stringify(healed) === JSON.stringify(wanted)) {
             return {

@@ -1000,7 +1000,11 @@ describe('connection anti-loop progress awareness (regression)', () => {
     expect(events.some((e) => e.includes('repeated saved connection action stopped — coolify:get-app-sv7-envs'))).toBe(true);
     expect(report.status).toBe('failed');
     expect(report.failureReason).toContain('requested more than three times without a new operation');
-    expect(ledger.data.blockers).toEqual([]);
+    // Main's loop records the terminal cause in the blocker ledger (the
+    // reporter surfaces it as failureReason); the guard never invents an
+    // external-prerequisite blocker for this failure.
+    expect(ledger.data.blockers.some((b) => b.includes('was requested more than three times without a new operation'))).toBe(true);
+    expect(ledger.data.blockers.every((b) => !/credential|reauthenticat|permission/i.test(b))).toBe(true);
   }, 30000);
 
   it('does not add a stalled blocker after successful verification reads', async () => {

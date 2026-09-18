@@ -39,6 +39,7 @@ import type {
   ConnectionRecoveryDecision,
 } from '../connections/connections.js';
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
+import { catalogOperation } from '../connections/catalog.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
@@ -1065,6 +1066,10 @@ export class Gitu {
         lastProgressAt: { evidence: number; files: number; actions: number };
       }
       const connectionCallTracker = new Map<string, ConnectionCallRecord>();
+      /** Consecutive saved-connection failures; drives dynamic reasoning-effort escalation. */
+      let connectionFailureStreak = 0;
+      /** Stable provider reads promoted to project memory this run (deduped per operation). */
+      const promotedConnectionFacts = new Set<string>();
       const connectionOperationAttempts = new Map<string, number>();
       let lastExecutedActionTag: string | undefined;
       // Capability-resolution must be followed by a concrete action; a model
@@ -1191,7 +1196,14 @@ export class Gitu {
           maxTransportAttempts: number,
           override?: { effort?: EffortLevel; outputBudgetTokens?: number },
         ) => ({
-          effort: override?.effort ?? effortPlan.llmEffort ?? this.config.effort,
+          // Dynamic effort escalation: after repeated saved-connection
+          // failures the next turn reasons harder (the provider interaction
+          // is clearly non-trivial) unless an explicit per-call override
+          // already pins the effort.
+          effort:
+            connectionFailureStreak >= 2 && override?.effort === undefined
+              ? 'high'
+              : override?.effort ?? effortPlan.llmEffort ?? this.config.effort,
           signal: this.abortController!.signal,
           logicalRequestId,
           maxTransportAttempts,
@@ -2331,17 +2343,57 @@ export class Gitu {
                 const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                 concreteActionSinceLastAsk = true;
                 tracker.consecutiveFailures = 0;
+                connectionFailureStreak = 0;
                 const dataDigest = result.data !== undefined ? JSON.stringify(result.data) : undefined;
                 if (tracker.lastDataDigest !== undefined && dataDigest !== undefined && tracker.lastDataDigest !== dataDigest) {
                   tracker.consecutiveCalls = 1;
                 }
                 tracker.lastDataDigest = dataDigest;
                 this.emit(`connection ${action.connectionId}/${action.operationId} completed`);
+                // Promote provider reads to project memory so future tasks
+                // reuse them without re-reading the provider. Explicit
+                // memoryPolicy on the handler's operation wins; otherwise the
+                // verified catalog decides; unknown operations promote as
+                // session-stable facts. Volatile/session data (env vars,
+                // listings) is never promoted.
+                if (result.data !== undefined) {
+                  const handlerOp = (result as { operation?: { memoryPolicy?: { promotable?: boolean; stability?: string } } }).operation?.memoryPolicy;
+                  const catalogOp = catalogOperation('coolify', action.operationId);
+                  const catalogPolicy = (catalogOp as { memoryPolicy?: { promotable?: boolean; stability?: string } } | undefined)?.memoryPolicy;
+                  const policy = handlerOp ?? catalogPolicy;
+                  const suppress = policy?.promotable === false || policy?.stability === 'volatile' || policy?.stability === 'session';
+                  if (!suppress && !promotedConnectionFacts.has(action.operationId)) {
+                    promotedConnectionFacts.add(action.operationId);
+                    memory.add({
+                      type: 'fact',
+                      scope: action.connectionId,
+                      evidence: `${action.connectionId}/${action.operationId} via saved connection`,
+                      claim: `Provider read ${action.operationId} (${action.connectionId}): ${JSON.stringify(result.data).slice(0, 300)}`,
+                      confidence: 0.8,
+                    });
+                  }
+                }
                 observe(
                   `CONNECTION ACTION RESULT: ${result.message}${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this provider result as evidence for discovery; it does not authorize unregistered or write operations.`,
                 );
               } catch (error) {
                 tracker.consecutiveFailures += 1;
+                connectionFailureStreak += 1;
+                // Negative provider memory: a provider endpoint that rejected
+                // the agent becomes a project-scoped failure note scoped to
+                // the connection, so later turns/tasks avoid blindly
+                // retrying the same dead route.
+                try {
+                  memory.add({
+                    type: 'failure',
+                    scope: action.connectionId,
+                    evidence: `${action.connectionId}/${action.operationId} rejected`,
+                    claim: `Provider read ${action.operationId} on ${action.connectionId} was rejected: ${connectionEventReason((error as Error).message).slice(0, 200)}`,
+                    confidence: 0.7,
+                  });
+                } catch {
+                  /* negative memory is best-effort; never mask the real error */
+                }
                 if (tracker.consecutiveFailures > 3) {
                   const blocker = `Saved connection action ${connectionActionKey} failed repeatedly.`;
                   ledger.addBlocker(blocker);

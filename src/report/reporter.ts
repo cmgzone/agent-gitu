@@ -124,8 +124,11 @@ export class Reporter {
           ? `Task blocked: ${d.blockers[d.blockers.length - 1] ?? 'unknown blocker'}`
           : exitReason === 'aborted'
             ? 'Task stopped by user.'
-            : `Task stopped without completion: ${stopReason ?? 'the agent stalled before it could finish'}`),
-      ...(exitReason === 'stalled' && stopReason ? { failureReason: stopReason } : {}),
+            : `Task stopped without completion: ${stopReason ?? d.blockers[d.blockers.length - 1] ?? 'the agent stalled before it could finish'}`),
+      // Main's loop records the terminal cause in the blocker ledger before a
+      // stalled exit (protocol stalls are exceptions and carry no blocker —
+      // those fall back to the generic reason).
+      ...(exitReason === 'stalled' && (stopReason ?? d.blockers[d.blockers.length - 1]) ? { failureReason: stopReason ?? d.blockers[d.blockers.length - 1] } : {}),
       changes,
       filesChanged: unique((scope?.filesChanged ?? d.filesChanged).filter(isReportableFile)),
       verification,

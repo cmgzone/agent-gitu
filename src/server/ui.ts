@@ -705,9 +705,13 @@ export const UI_HTML = String.raw`<!doctype html>
   .shell.left-collapsed .sb .head { padding: 14px 0 8px; justify-content: center; }
   .run-side .collapse-tab { margin-left: auto; border: 0; background: none; color: var(--muted); border-radius: 7px; width: 28px; height: 28px; align-self: center; font-size: 12px; }
   .run-side .collapse-tab:hover { background: var(--hover); color: var(--text); }
-  .run-side .rail { display: none; flex-direction: column; align-items: center; padding-top: 10px; }
-  .run-side .rail button { writing-mode: vertical-rl; border: 0; background: none; color: var(--muted); font-size: 11px; letter-spacing: 1.5px; padding: 12px 5px; border-radius: 7px; }
-  .run-side .rail button:hover { background: var(--hover); color: var(--text); }
+  .run-side .rail { display: none; flex: 1; flex-direction: column; align-items: center; padding: 10px 0; gap: 2px; }
+  .run-side .rail button { border: 0; background: none; color: var(--muted); border-radius: 8px; cursor: pointer; }
+  .run-side .rail .rail-tab { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; }
+  .run-side .rail .rail-tab:hover { background: var(--hover); color: var(--text); }
+  .run-side .rail .rail-tab.active { color: var(--accent); background: var(--hover); }
+  .run-side .rail #rsExpand { writing-mode: vertical-rl; font-size: 11px; letter-spacing: 1.5px; padding: 10px 4px; margin-top: auto; }
+  .run-side .rail #rsExpand:hover { background: var(--hover); color: var(--text); }
   .run.collapsed-side .run-side { width: 40px; }
   .run.collapsed-side .side-tabs, .run.collapsed-side .side-body { display: none; }
   .run.collapsed-side .run-side .rail { display: flex; }
@@ -1947,7 +1951,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '</div>' +
       '<div class="vresize" id="rsResize"></div>' +
       '<aside class="run-side"><div class="side-tabs" id="sideTabs"></div><div class="side-body" id="sideBody"></div>' +
-      '<div class="rail"><button id="rsExpand" title="expand panel">PANEL &#171;</button></div></aside></div>';
+      '<div class="rail" id="sideRail"></div></aside></div>';
     renderSideTabs(sess, runId);
     $('overviewPanel').onclick = showRunPanel;
     renderApproach(sess);
@@ -1958,7 +1962,6 @@ export const UI_HTML = String.raw`<!doctype html>
       updateJumpLatest(this);
     }, { passive: true });
     $('jumpLatest').onclick = function () { stickScroll($('stream'), true); };
-    $('rsExpand').onclick = function () { S.settings.rightCollapsed = false; persist(); applyLayout(); };
     bindResize('rsResize', 'right');
     applyLayout();
     renderComposerTodos(runId);
@@ -4764,6 +4767,29 @@ export const UI_HTML = String.raw`<!doctype html>
       persist();
       applyLayout();
     };
+    renderSideRail(sess, runId, tabs);
+  }
+
+  /** Collapsed-rail shortcuts: one icon per enabled panel, plus expand. */
+  function renderSideRail(sess, runId, tabs) {
+    var rail = $('sideRail');
+    if (!rail) return;
+    var defs = [['state', 'State', 'layers'], ['context', 'Context', 'search'], ['browser', 'Browser', 'globe'], ['git', 'Git', 'branch']];
+    var html = '';
+    defs.forEach(function (x) {
+      if (tabs[x[0]] === false) return;
+      html += '<button class="rail-tab ' + (sess.side === x[0] ? 'active' : '') + '" data-side="' + x[0] + '" title="' + x[1] + '" aria-label="' + x[1] + '">' + icon(x[2]) + '</button>';
+    });
+    rail.innerHTML = html + '<button class="rail-tab" id="rsExpand" title="expand panel" aria-label="Expand panel">&#187;</button>';
+    rail.querySelectorAll('.rail-tab[data-side]').forEach(function (t) {
+      t.onclick = function () {
+        sess.side = t.getAttribute('data-side');
+        showRunPanel();
+        renderSideTabs(sess, runId);
+        renderRunSide(runId);
+      };
+    });
+    $('rsExpand').onclick = function () { showRunPanel(); };
   }
 
   function closeTabMgr() { var m = $('tabMgrMenu'); if (m) m.remove(); }

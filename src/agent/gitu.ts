@@ -2121,24 +2121,32 @@ export class Gitu {
               let lspNote = '';
               if ((action.tool === 'write_file' || action.tool === 'apply_edit') && outcome.result.ok) {
                 const touched = outcome.result.filesTouched ?? [];
-                const issues: string[] = [];
-                for (const file of touched) {
-                  const diag = await lsp.diagnostics(file);
-                  if (diag.ok && /^\[(ERROR|WARNING)\]/m.test(diag.output)) {
-                    issues.push(diag.output);
+                // Post-edit gate only for files with a DIRECTLY applicable
+                // language server. Unknown extensions (e.g. .txt anywhere) fall
+                // back to the repo's primary language via languageForUnknownFile,
+                // which would spawn/probe a server per edit for nothing — skip
+                // them up front.
+                const lspFiles = touched.filter((file) => lsp.supportsFile(file));
+                if (lspFiles.length > 0) {
+                  const issues: string[] = [];
+                  for (const file of lspFiles) {
+                    const diag = await lsp.diagnostics(file);
+                    if (diag.ok && /^\[(ERROR|WARNING)\]/m.test(diag.output)) {
+                      issues.push(diag.output);
+                    }
                   }
-                }
-                if (issues.length > 0) {
-                  lspNote = `\nLSP DIAGNOSTICS (post-edit check):\n${issues.join('\n\n')}`;
-                  this.emit(`lsp      post-edit diagnostics: issues in ${issues.length} file(s) — fix before the evidence gate`);
-                }
-                // Change-impact analysis: surface edited symbols with wide fan-in
-                // so the model checks callers instead of assuming a local fix is
-                // safe. Silently skipped without a language server.
-                const impact = await analyzeChangeImpact(lsp, touched).catch(() => undefined);
-                if (impact) {
-                  lspNote += `${lspNote ? '\n' : ''}\n${impact}`;
-                  this.emit('impact   wide fan-in symbols changed — caller check advised');
+                  if (issues.length > 0) {
+                    lspNote = `\nLSP DIAGNOSTICS (post-edit check):\n${issues.join('\n\n')}`;
+                    this.emit(`lsp      post-edit diagnostics: issues in ${issues.length} file(s) — fix before the evidence gate`);
+                  }
+                  // Change-impact analysis: surface edited symbols with wide fan-in
+                  // so the model checks callers instead of assuming a local fix is
+                  // safe. Silently skipped without a language server.
+                  const impact = await analyzeChangeImpact(lsp, lspFiles).catch(() => undefined);
+                  if (impact) {
+                    lspNote += `${lspNote ? '\n' : ''}\n${impact}`;
+                    this.emit('impact   wide fan-in symbols changed — caller check advised');
+                  }
                 }
               }
 

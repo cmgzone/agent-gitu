@@ -73,6 +73,24 @@ describe('UI — responsive task shell and trustworthy controls', () => {
     expect(UI_HTML).toContain('/project-file?path=');
   });
 
+  it('keeps every panel reachable from the collapsed sidebar rail', () => {
+    // Regression: collapsing the details panel left only a "PANEL «" button,
+    // so State/Context/Browser/Git became unreachable without expanding first.
+    expect(UI_HTML).toContain('<div class="rail" id="sideRail"></div>');
+    expect(UI_HTML).toContain('function renderSideRail(sess, runId, tabs)');
+    expect(UI_HTML).toContain('renderSideRail(sess, runId, tabs);');
+    expect(UI_HTML).toContain("['state', 'State', 'layers']");
+    expect(UI_HTML).toContain("['context', 'Context', 'search']");
+    expect(UI_HTML).toContain("['browser', 'Browser', 'globe']");
+    expect(UI_HTML).toContain("['git', 'Git', 'branch']");
+    // Rail tabs honour the tab-manager selection, switch the panel and reuse
+    // the shared showRunPanel() path so narrow windows get the overlay.
+    expect(UI_HTML).toContain('if (tabs[x[0]] === false) return;');
+    expect(UI_HTML).toContain('sess.side = t.getAttribute(\'data-side\');');
+    expect(UI_HTML).toContain("$('rsExpand').onclick = function () { showRunPanel(); };");
+    expect(UI_HTML).toContain('.run-side .rail .rail-tab.active');
+  });
+
   it('clears live transport and thinking state after a terminal status', () => {
     expect(UI_HTML).toContain("if (sess.session && sess.session.status !== 'running') setWorking(null);");
     expect(UI_HTML).toContain("if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; }");

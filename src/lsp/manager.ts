@@ -423,6 +423,21 @@ export class LspManager {
     return languageIdForPath(file) ?? languageForUnknownFile(this.repoRoot, file);
   }
 
+  /**
+   * True when this file has a DIRECT, runnable language-server mapping —
+   * extension-level only, never the repo-root language fallback. Unknown
+   * extensions (e.g. .txt, .log) and extensions whose server is unavailable
+   * return false, so callers can skip per-edit work that would otherwise
+   * spawn or probe a server and get nothing back.
+   */
+  supportsFile(file: string): boolean {
+    const languageId = languageIdForPath(file);
+    if (!languageId) return false;
+    const config = this.registry.serverForLanguage(languageId);
+    if (!config) return false;
+    return serverBinaryAvailable(config) || (this.options.autoInstall === true && Boolean(installSpecFor(config)));
+  }
+
   private async serverReadyFor(file: string): Promise<{ languageId: string; config: LspServerConfig } | undefined> {
     const languageId = this.languageIdFor(file);
     if (!languageId) return undefined;

@@ -4937,6 +4937,10 @@ export class GituServer {
     // Keep the per-run universal catalog synchronized with durable connection
     // metadata. A connection can be added or gain a documented operation while
     // this run is paused; the next model turn must see and invoke it immediately.
+    // MCP server tools are registered alongside connection operations so the
+    // agent's capability_action can reach them through the same secure runtime
+    // (shared cache, evidence, and fail-closed approval gates) instead of only
+    // the raw mcp:<server>:<tool> executor path.
     const universalRegistry = new UniversalCapabilityRegistry();
     const syncUniversalConnections = (): void => {
       for (const capability of universalRegistry.list()) {
@@ -4959,9 +4963,20 @@ export class GituServer {
       }
     };
     syncUniversalConnections();
+    void Promise.all(
+      mcp.servers().map(async (server) => {
+        const tools = await mcp.toolsForServer(server.name);
+        if (!tools || tools.length === 0) return;
+        universalRegistry.registerMcpServerTools(
+          server.name,
+          tools,
+          (toolName, args) => mcp.call(`mcp:${server.name}:${toolName}`, args),
+        );
+      }),
+    );
     const universalCapabilityContext = (): string => {
       syncUniversalConnections();
-      const capabilities = universalRegistry.list().filter((capability) => capability.source === 'connection');
+      const capabilities = universalRegistry.list().filter((capability) => capability.source === 'connection' || capability.source === 'mcp');
       if (capabilities.length === 0) return 'UNIVERSAL CAPABILITIES: none available.';
       return [
         'UNIVERSAL CAPABILITIES (invoke directly with capability_action; credentials remain private):',

@@ -15,6 +15,7 @@ export interface McpToolInfo {
   server: string;
   name: string;
   description?: string;
+  /** JSON Schema for the tool's arguments, when the server declares one. */
   inputSchema?: Record<string, unknown>;
 }
 
@@ -374,6 +375,19 @@ export class McpManager {
       }
     }));
     return results.flat();
+  }
+
+  /** Tool definitions for one configured server, or undefined when the
+   * server is unavailable. Never throws: an MCP server being down must not
+   * take down catalog construction. */
+  async toolsForServer(name: string): Promise<McpToolInfo[] | undefined> {
+    const client = this.client(name);
+    if (!client) return undefined;
+    try {
+      return await client.listTools();
+    } catch {
+      return undefined;
+    }
   }
 
   async call(qualifiedName: string, args: Record<string, unknown>): Promise<string> {

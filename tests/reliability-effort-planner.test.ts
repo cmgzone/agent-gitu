@@ -360,7 +360,7 @@ describe('Hermes — adaptive effort & risk integration', () => {
     const { report, ledger } = await hermes.run('inspect pages');
 
     expect(events.some((e) => e.includes('budget extended by'))).toBe(true);
-    expect(report.status).toBe('failed'); // completion-sentinel request_block is an internal failure
+    expect(report.status).toBe('blocked'); // ended by its own request_block, not a stall
     expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(false);
   }, 30000);
 });

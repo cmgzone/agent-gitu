@@ -1,6 +1,7 @@
 import { Script, createContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { UI_HTML } from '../src/server/ui.js';
+import { COWORK_JS } from '../src/server/ui-cowork.js';
 
 function source(name: string) {
   const declaration = new RegExp('^( +)function ' + name + '\\(', 'm').exec(UI_HTML)!;
@@ -14,6 +15,7 @@ function proseRenderer() {
   const stream = { appendChild: (element: { innerHTML: string }) => emitted.push(element) };
   const context = createContext({
     URL,
+    window: { addEventListener() {} },
     S: { sessions: { run: {} } },
     $: (id: string) => id === 'stream' ? stream : null,
     document: { createElement: () => ({ innerHTML: '', querySelector: () => null }) },
@@ -23,12 +25,13 @@ function proseRenderer() {
     reportFiles: () => [], reportChecks: () => [], browserHighlight: () => '',
     verificationSection: () => '', qualityMetricsHtml: () => '',
     chipFor: () => '', icon: () => '', setupCopyButton: () => {}, stickScroll: () => {},
+    shortText: (value: string, limit: number) => value.length > limit ? value.slice(0, limit - 1) + '…' : value,
   });
   new Script([
     'responseEscape', 'responseLink', 'responseVideoEmbed', 'responseInline', 'responseEmbeds', 'responseListItem', 'responseFence',
     'responseBlockStart', 'renderResponseText', 'stripJsonLeak', 'finalizeNarration',
-    'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportSideCard', 'appendSummary',
-  ].map(source).join('\n') + '\nvar esc = responseEscape;').runInContext(context);
+    'parseOutcome', 'readableSummary', 'reportStatusLine', 'reportMessageText', 'reportReplyHtml', 'reportSideCard', 'reportChangedFilesHtml', 'appendSummary',
+  ].map(source).join('\n') + '\nvar esc = responseEscape;\n' + COWORK_JS).runInContext(context);
   return { context, emitted };
 }
 
@@ -40,6 +43,12 @@ const longResponse = [
 // Public narration preserves the assistant’s complete explanation. Technical
 // telemetry is disclosed separately and protocol objects never become prose.
 describe('UI — narration structuring & technical disclosures', () => {
+  it('shows a lack of progress as paused instead of a failed report', () => {
+    const { context } = proseRenderer();
+    const html = context.reportReplyHtml({ status: 'failed', summary: 'Completed work is saved.', failureReason: 'Work paused because the last segment had no new verifiable progress.', filesChanged: [], changes: [], verification: [] }, null, '');
+    expect(html).toContain('Paused');
+    expect(html).not.toContain('Failed');
+  });
   it('renders telemetry as a collapsed Execution details card, not a meta line', () => {
     expect(UI_HTML).toContain("text.indexOf('telemetry ') === 0");
     expect(UI_HTML).toContain('<b>Execution details</b>');
@@ -78,7 +87,7 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(parsed.lede).toBe(longResponse);
     const report = { summary: longResponse, status: 'complete', remainingRisks: [], followUps: [] };
     context.appendSummary('run', { report, goal: 'Improve the conversation', status: 'complete' });
-    const expected = '<div class="r-lede response-prose">' + context.renderResponseText(longResponse) + '</div>';
+    const expected = context.cwBody(longResponse, []);
     expect(emitted[0].innerHTML).toContain(expected);
     expect(context.reportSideCard(report)).toContain(expected);
   });
@@ -132,16 +141,43 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain('JSON_LEAK_RE.test(chunk)');
   });
 
-  it('renders the completion report as flat sections, not a bordered card', () => {
-    // Main report uses the flat document layout; the old bordered summary
-    // card is gone from the report path.
-    expect(UI_HTML).toContain("div.className = 'report-flat'");
-    expect(UI_HTML).not.toContain("div.className = 'summary-card'");
-    expect(UI_HTML).toContain('reportStatusLine(');
-    // Conversational outcome first — not "1/3 checks passed" stats chips.
-    expect(UI_HTML).toContain("doneIcon + ' ' + doneWord");
-    expect(UI_HTML).toContain('verification checks passed');
-    expect(UI_HTML).not.toContain('criteria satisfied');
+  it('renders the main report through the same bubble and rich text as Cowork', () => {
+    const { context, emitted } = proseRenderer();
+    const report = { summary: '### Ready\n\n**Done** with `npm test`.', status: 'complete', remainingRisks: [], followUps: [] };
+    const cowork = context.cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'orb', color: '#8f80ff' } }, 'Completed', context.cwBody(report.summary, []), '');
+    expect(context.reportReplyHtml(report, null, '')).toBe(cowork);
+    context.appendSummary('run', { report, status: 'complete' });
+    expect(emitted[0].innerHTML).toContain('class="cw-bubble"');
+    expect(emitted[0].innerHTML).toContain('popovertarget="report-menu-run"');
+    expect(emitted[0].innerHTML).not.toContain('class="r-headline"');
+    expect(emitted[0].innerHTML).not.toContain('class="r-status"');
+  });
+
+  it('groups changed files in a compact report disclosure', () => {
+    const { context, emitted } = proseRenderer();
+    context.reportFiles = () => ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'];
+    context.appendSummary('run', {
+      report: { summary: 'Updated the project.', status: 'complete', remainingRisks: [], followUps: [] },
+      goal: 'Update the project', status: 'complete',
+    });
+    expect(emitted[0].innerHTML).toContain('class="report-files"');
+    expect(emitted[0].innerHTML).toContain('Changed files');
+    expect(emitted[0].innerHTML).toContain('<summary>Show all 5 files</summary>');
+    expect(emitted[0].innerHTML).toContain('Download src/e.ts');
+  });
+
+  it('distinguishes reported updates from verified changed-file paths', () => {
+    const { context, emitted } = proseRenderer();
+    expect(context.reportStatusLine('complete', [], 0, 0, 13)).toContain('13 updates reported');
+    expect(context.reportStatusLine('complete', [], 0, 0, 13)).not.toContain('files changed');
+    expect(context.reportStatusLine('blocked', [{ passed: false }, { passed: true }], 1, 1, 0)).toContain('1 passed · 1 failed verification attempt');
+    const changes = ['First update', 'Second update', 'Third update', 'Fourth update', 'Fifth update'];
+    context.appendSummary('run', {
+      report: { summary: 'Updated the project.', status: 'complete', changes, remainingRisks: [], followUps: [] },
+      goal: 'Update the project', status: 'complete',
+    });
+    expect(emitted[0].innerHTML).toContain('Fifth update');
+    expect(emitted[0].innerHTML).not.toContain('No source code was modified');
   });
 
   it('parses the machine change dump into human-phrased changes', () => {
@@ -149,7 +185,7 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain('function reportLede(summary)');
     expect(UI_HTML).toContain('dependency-free static website using vanilla HTML, CSS, and JavaScript');
     expect(UI_HTML).toContain('CHANGE_VERBS');
-    expect(UI_HTML).toContain('What Gitu found');
+    expect(UI_HTML).toContain("section('Findings', findings)");
   });
 
   it('hides all technical evidence behind one collapsed disclosure', () => {
@@ -184,10 +220,10 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain('stamp.textContent = hhmm(iso)');
   });
 
-  it('shows the run effort, compact dates, and a two-line blocker clamp', () => {
+  it('keeps run effort and dates in task details, with compact failure text', () => {
     expect(UI_HTML).toContain("L.effortPlan.llmEffort");
     expect(UI_HTML).toContain("shortDate(session.startedAt)");
-    expect(UI_HTML).toContain("next.classList.toggle('wrapped'");
-    expect(UI_HTML).toContain('webkit-line-clamp: 2');
+    expect(UI_HTML).toContain("if (tb) tb.style.display = 'none'");
+    expect(UI_HTML).toContain('webkit-line-clamp: 3');
   });
 });

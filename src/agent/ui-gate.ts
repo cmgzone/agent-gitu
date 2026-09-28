@@ -70,7 +70,7 @@ export function uiVisualGate(
   opts: { browserAvailable: boolean; /** Whether the model can actually see screenshots. */ visionAvailable?: boolean },
 ): UiVisualGate {
   if (!isUiTask(data)) return { required: false, verified: true };
-  if (!opts.browserAvailable) return { required: false, verified: true };
+  if (!opts.browserAvailable) return { required: true, verified: false, reason: 'the final UI needs browser verification, but no browser is available; enable the browser or report this dependency' };
   const visionAvailable = opts.visionAvailable ?? true;
   const screenshotAt = lastMatchingActionAt(data, isScreenshotAction);
   const cleanEvidenceAt = lastMatchingActionAt(data, isCleanEvidenceAction);

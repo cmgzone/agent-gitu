@@ -562,34 +562,79 @@ export function evaluateInstructionGate(
 }
 
 /**
- * CORRECT-follow-up supersession: when a correction negates an area ("backend
- * is fine", "not the backend", "instead of the backend"), the instructions and
- * plan steps that targeted that area become superseded history. Instructions
- * added by the SAME correction message are excluded — the user may negate an
- * area and simultaneously re-state a constraint. Returns the ids of superseded
- * instructions.
+ * CORRECT-follow-up supersession: when a correction explicitly rejects or
+ * replaces a named thing ("don't want Coolify; use Vercel instead", "replace
+ * the backend"), the instructions and plan steps that targeted that thing
+ * become superseded history. Instructions added by the SAME correction
+ * message are excluded — the user may negate an area and simultaneously
+ * re-state a constraint. Returns the ids of superseded instructions.
+ *
+ * Negations come in two strength tiers, and only the strong tier may cancel
+ * plan steps:
+ *  - STRONG — an explicit rejection or dismissal of a named thing:
+ *    "don't want X", "do not use X", "replace X", "switch from X",
+ *    "instead of X", "X is fine (look elsewhere)". These unambiguously
+ *    de-authorize X, so steps targeting X are cancelled (with the correction
+ *    recorded in the revision log).
+ *  - WEAK — contrastive prose: "not the X", "rather than the X". These
+ *    compare or mention options; they do not reject X. They may only
+ *    supersede standing INSTRUCTIONS, never cancel plan steps.
+ *
+ * The weak tier's restriction is load-bearing: a plan document that says
+ * "the runtime, rather than the LLM, enforces authorization" or "the model
+ * decided it had permission" must never delete the run's own work items just
+ * because those steps share a vocabulary word (regression: re-stating the
+ * Black Box plan cancelled its policy-enforcement and delegation steps this
+ * way via the harvested token "model").
  */
+const SUPERSEDE_STOP_TOKENS = new Set([
+  'the', 'a', 'an', 'this', 'that', 'it', 'is', 'was',
+  'be', 'been', 'being', 'not', 'no', 'do', 'does', 'did',
+  'has', 'have', 'had', 'will', 'would', 'can', 'could', 'should',
+  'then', 'there', 'here', 'which', 'who', 'what', 'when', 'how',
+]);
+
 export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText: string, excludeIds: string[] = []): string[] {
-  const negated = new Set<string>();
-  const fine = /([a-z][\w-]*)\s+is\s+(?:fine|good|correct|ok)\b/gi;
-  const notThe = /\bnot\s+(?:the\s+)?([a-z][\w-]*)/gi;
-  const instead = /\b(?:instead of|rather than)\s+(?:the\s+)?([a-z][\w-]*)/gi;
-  const rejected = /\b(?:don't|do not|dont)\s+(?:want|use)\s+(?:to use\s+)?(?:the\s+)?([a-z][\w-]*)/gi;
-  const replaced = /\b(?:replace|switch from)\s+(?:the\s+)?([a-z][\w-]*)/gi;
-  for (const re of [fine, notThe, instead, rejected, replaced]) {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(correctionText)) !== null) {
-      const token = m[1]!.toLowerCase();
-      if (!['the', 'a', 'an', 'this', 'that', 'it', 'is', 'was'].includes(token)) negated.add(token);
+  const strong = new Set<string>();
+  const weak = new Set<string>();
+  const strongRes = [
+    /\b(?:don't|do not|dont)\s+(?:want|use)\s+(?:to use\s+)?(?:the\s+)?([a-z][\w-]*)/gi,
+    /\b(?:replace|switch from)\s+(?:the\s+)?([a-z][\w-]*)/gi,
+    /\binstead of\s+(?:the\s+)?([a-z][\w-]*)/gi,
+    /([a-z][\w-]*)\s+is\s+(?:fine|good|correct|ok)\b/gi,
+  ];
+  const weakRes = [
+    /\bnot\s+the\s+([a-z][\w-]*)/gi,
+    /\brather than\s+(?:the\s+)?([a-z][\w-]*)/gi,
+  ];
+  const harvest = (res: RegExp[], into: Set<string>): void => {
+    for (const re of res) {
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(correctionText)) !== null) {
+        const token = m[1]!.toLowerCase();
+        if (!SUPERSEDE_STOP_TOKENS.has(token)) into.add(token);
+      }
     }
-  }
-  if (negated.size === 0) return [];
+  };
+  harvest(strongRes, strong);
+  harvest(weakRes, weak);
+  if (strong.size === 0 && weak.size === 0) return [];
 
   // Conventional module roots a negated noun may stand for ("backend" covers
   // server/, "database" covers migrations/ ...).
-  const roots = new Set<string>(negated);
-  if (negated.has('backend')) ['server', 'api'].forEach((r) => roots.add(r));
-  if (negated.has('database') || negated.has('db')) ['migrations', 'prisma', 'schema'].forEach((r) => roots.add(r));
+  const expandRoots = (tokens: Set<string>): Set<string> => {
+    const roots = new Set(tokens);
+    if (tokens.has('backend')) ['server', 'api'].forEach((r) => roots.add(r));
+    if (tokens.has('database') || tokens.has('db')) ['migrations', 'prisma', 'schema'].forEach((r) => roots.add(r));
+    return roots;
+  };
+
+  // Root set currently consulted by textHits; swapped per check tier below.
+  const roots = new Set<string>();
+  const useRoots = (tokens: Set<string>): void => {
+    roots.clear();
+    for (const r of expandRoots(tokens)) roots.add(r);
+  };
 
   const textHits = (text: string): boolean => {
     const lower = text.toLowerCase();
@@ -599,6 +644,11 @@ export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText
   const superseded: string[] = [];
   const excluded = new Set(excludeIds);
   const auth = ledger.ensureTaskAuthority();
+  // Instructions respond to BOTH tiers: contrastive corrections ("backend is
+  // fine, the problem is the frontend") legitimately retire standing guidance
+  // about the contrasted area. This is recoverable history, unlike step
+  // cancellation.
+  useRoots(new Set([...strong, ...weak]));
   for (const inst of auth.instructions) {
     if (inst.status !== 'active' || excluded.has(inst.id)) continue;
     if (textHits(inst.text) || (inst.constraint?.deny ?? []).some((d) => textHits(d)) || (inst.constraint?.allow ?? []).some((d) => textHits(d))) {
@@ -606,10 +656,15 @@ export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText
       superseded.push(inst.id);
     }
   }
-  for (const step of ledger.data.plan) {
-    if (step.status === 'done' || step.status === 'cancelled') continue;
-    if (textHits([step.description, step.verification, ...(step.subtasks ?? []).map(todo => todo.text)].join(' '))) {
-      ledger.reviseStep(step.id, { status: 'cancelled' }, `Superseded by user request: ${correctionText}`);
+  // Plan steps respond ONLY to strong rejections. Contrastive prose must
+  // never cancel work items (see the doc comment above for the regression).
+  if (strong.size > 0) {
+    useRoots(strong);
+    for (const step of ledger.data.plan) {
+      if (step.status === 'done' || step.status === 'cancelled') continue;
+      if (textHits([step.description, step.verification, ...(step.subtasks ?? []).map(todo => todo.text)].join(' '))) {
+        ledger.reviseStep(step.id, { status: 'cancelled' }, `Superseded by user request: ${correctionText}`);
+      }
     }
   }
   if (superseded.length > 0) ledger.save();

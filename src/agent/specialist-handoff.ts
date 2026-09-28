@@ -42,7 +42,7 @@ export function buildSpecialistHandoff(
   try {
     // Keep this local and lexical. Semantic embedding calls can be expensive;
     // the worker needs an immediate starting map, not another broad analysis.
-    scopedPack = context.buildPack(task, { maxFiles, maxBytes: Math.max(2_000, maxExcerptChars + 1_500) }, criterionText);
+    scopedPack = context.buildPack(task, { maxFiles, maxBytes: Math.max(2_000, maxExcerptChars + 1_500) }, criterionText, false);
   } catch {
     // A handoff is an optimisation, never a reason to reject delegation.
   }

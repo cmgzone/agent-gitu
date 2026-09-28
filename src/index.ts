@@ -172,4 +172,5 @@ export {
 } from './coding/workspace.js';
 export { allocateChildBudget, allocatableUsd, budgetExhausted, validateAllocation, type BudgetSpend, type RunBudget } from './coding/budget.js';
 export * from './types.js';
+export type * from './blackbox/types.js';
 export { errorSignature, hashParams, normalizeErrorText } from './util.js';

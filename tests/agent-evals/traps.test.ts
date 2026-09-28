@@ -81,7 +81,11 @@ describe('agent-eval: context loss over a long run', () => {
           if (_n >= 26) {
             return JSON.stringify({ action: { type: 'request_block', reason: 'survey wrapped up' } });
           }
-          return JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'package.json', offset: 1 + (_n % 5) }, reason: 'read', expected: 'content' } });
+          // Distinct 200-line regions per turn: hashParams canonicalizes read
+          // offsets into regions, and exact-duplicate region reads are
+          // throttled by the read-thrift rules, so turn-driving reads must be
+          // genuinely new evidence for the long-run machinery to engage.
+          return JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'package.json', offset: 1 + _n * 200 }, reason: 'read', expected: 'content' } });
         },
       ],
     });
@@ -105,7 +109,7 @@ describe('agent-eval: compaction trap (huge outputs push history out)', () => {
         () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'inspect and verify', verification: 'node --version' }] } }),
         // ~12 x 30K-char reads ≈ 360K chars — forces multiple compactions.
         ...Array.from({ length: 12 }, (_x, i) => () =>
-          JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'bundle.js', offset: i + 1 }, reason: 'inspect bundle', expected: 'content' } }),
+          JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'bundle.js', offset: 1 + i * 200 }, reason: 'inspect bundle', expected: 'content' } }),
         ),
         (_n, messages) => {
           states.push(...messages.filter(isTaskStateMessage));
@@ -142,7 +146,7 @@ describe('agent-eval: wide refactor (scope discovered mid-run)', () => {
         ),
         // Reach the turn-20 budget checkpoint so the escalation is evaluated.
         ...Array.from({ length: 9 }, (_x, i) => () =>
-          JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'package.json', offset: i + 1 }, reason: 'check config', expected: 'content' } }),
+          JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'package.json', offset: 1 + i * 200 }, reason: 'check config', expected: 'content' } }),
         ),
         () => JSON.stringify({ action: { type: 'request_block', reason: 'wrapped up' } }),
       ],
@@ -171,7 +175,7 @@ describe('agent-eval: failure storm (repeated distinct failures)', () => {
           }),
         ),
         ...Array.from({ length: 13 }, (_x, i) => () =>
-          JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'package.json', offset: i + 1 }, reason: 'regroup', expected: 'content' } }),
+          JSON.stringify({ action: { type: 'tool_call', tool: 'read_file', params: { path: 'package.json', offset: 1 + i * 200 }, reason: 'regroup', expected: 'content' } }),
         ),
         () => JSON.stringify({ action: { type: 'request_block', reason: 'gave up cleanly' } }),
       ],

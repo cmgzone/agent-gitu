@@ -30,6 +30,20 @@ describe('chat credential handoff', () => {
     expect(mixedServices).toMatchObject({ detected: true, providerHint: 'openai' });
   });
 
+  it('routes AI Studio keys and google/gemini mentions to the built-in gemini provider id', () => {
+    // Provider ids (gemini) differ from models.dev catalog keys (google); the
+    // hint must be the id so allProviderSpecs()[hint] resolves the built-in spec.
+    const shaped = credentialChatInput('Here is my key AIzaSy1234567890abcdefghijklmnop');
+    expect(shaped).toMatchObject({ detected: true, providerHint: 'gemini' });
+    expect(shaped.safeText).not.toContain('AIza');
+
+    const mention = credentialChatInput('Use gemini for this. API key = opaque-aistudio-key-123456');
+    expect(mention).toMatchObject({ detected: true, providerHint: 'gemini' });
+
+    const googleMention = credentialChatInput('Google AI Studio API key = opaque-aistudio-key-123456');
+    expect(googleMention).toMatchObject({ detected: true, providerHint: 'gemini' });
+  });
+
   it('does not mistake ordinary planning text for a secret', () => {
     expect(credentialChatInput('Keep the token budget at 128000 and discuss the API first')).toEqual({
       safeText: 'Keep the token budget at 128000 and discuss the API first', detected: false,
@@ -116,6 +130,37 @@ describe('chat credential handoff', () => {
       };
       expect(view.pendingConnection?.requirement.requiredFields).toEqual(['token']);
       expect(view.pendingConnection?.requirement.credentialTarget).toMatchObject({ kind: 'model-provider', provider: 'openai', envVar: 'HERMES_OPENAI_API_KEY' });
+    } finally {
+      await server.stop();
+      // node:sqlite releases its Windows file handle just after close(). Give
+      // the runtime one turn before deleting the isolated test home. Use the
+      // async remover so Windows retry delays yield to that release work.
+      await delay(100);
+      if (previousHome === undefined) delete process.env.AGENT_GITU_HOME;
+      else process.env.AGENT_GITU_HOME = previousHome;
+      await rm(root, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
+    }
+  }, { timeout: 90_000, retry: 1 });
+
+  it('asks for an AI Studio key through the gemini one-field model form', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'gitu-model-key-'));
+    writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'model-key-pause-gemini' }));
+    const previousHome = process.env.AGENT_GITU_HOME;
+    process.env.AGENT_GITU_HOME = path.join(root, 'gitu-home');
+    const server = new GituServer({ cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 1000 });
+    try {
+      const port = await server.start();
+      const created = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ goal: 'Gemini API key is AIzaSy1234567890abcdefghijklmnop', provider: 'gemini', model: 'gemini-3.7-flash' }),
+      }).then((response) => response.json()) as { runId: string; credentialRequired: boolean };
+      expect(created.credentialRequired).toBe(true);
+      expect(created.runId).toBeTruthy();
+      const view = await fetch(`http://127.0.0.1:${port}/api/runs/${created.runId}`).then((response) => response.json()) as {
+        pendingConnection?: { requirement: { requiredFields?: string[]; credentialTarget?: { kind: string; provider: string; envVar: string } } };
+      };
+      expect(view.pendingConnection?.requirement.requiredFields).toEqual(['token']);
+      expect(view.pendingConnection?.requirement.credentialTarget).toMatchObject({ kind: 'model-provider', provider: 'gemini', envVar: 'HERMES_GEMINI_API_KEY' });
     } finally {
       await server.stop();
       // node:sqlite releases its Windows file handle just after close(). Give

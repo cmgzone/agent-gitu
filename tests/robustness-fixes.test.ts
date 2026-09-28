@@ -78,7 +78,7 @@ describe('write_file truncation heuristic', () => {
 });
 
 describe('checkpoint workspace isolation', () => {
-  it('keeps private .hermes state out of Git commits, including legacy tracked state', () => {
+  it('keeps private .hermes state out of Git commits, including legacy tracked state', async () => {
     const dir = makeProject('checkpoint-private-state');
     const git = (...args: string[]): string => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
     writeFileSync(path.join(dir, '.gitignore'), '', 'utf8');
@@ -98,7 +98,7 @@ describe('checkpoint workspace isolation', () => {
     writeFileSync(path.join(privateDir, 'old-task.json'), '{"changed":true}', 'utf8');
     writeFileSync(path.join(dir, 'product.txt'), 'real product change', 'utf8');
     const checkpoints = new CheckpointManager(guard);
-    const result = checkpoints.snapshot(
+    const result = await checkpoints.snapshot(
       { data: { taskId: 'task-private' }, addCheckpoint: () => {} } as never,
       'step-1',
       'product change',

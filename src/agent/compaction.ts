@@ -157,6 +157,62 @@ export function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_REC
   return true;
 }
 
+/**
+ * Model-aware compaction policy. The historical constants (80K chars / 32
+ * messages) fit a mid-size window regardless of the selected model; this
+ * derives the thresholds from the model's ACTUAL context window:
+ *
+ *   working = window − output reserve − safety reserve
+ *   history may occupy ~half of working; triggers fire at that budget
+ *
+ * A 32K model compacts much earlier (≈48K chars of history), a 1M model can
+ * retain far more (capped so a single request stays bounded), and an unknown
+ * window falls back to the historical constants. Explicit host overrides in
+ * `config.compaction` always win over derived values.
+ *
+ * `emergencyInputTokens` is the provider-usage counterpart: when the LAST
+ * real request already consumed ~90% of the working window, the next turn
+ * compacts before asking the model again. Token counts from provider usage
+ * are authoritative; the char budget remains the chars/4 fallback for runs
+ * without usage metadata.
+ */
+export interface CompactionPolicy {
+  charBudget: number;
+  keepRecent: number;
+  triggerMessages: number;
+  /** Provider-reported input tokens above which the next turn compacts first. */
+  emergencyInputTokens?: number;
+}
+
+function clampValue(value: number, lo: number, hi: number): number {
+  return Math.max(lo, Math.min(hi, value));
+}
+
+export function compactionPolicyForWindow(
+  contextWindowTokens?: number,
+  overrides?: { charBudget?: number; keepRecent?: number; triggerMessages?: number },
+): CompactionPolicy {
+  const base: CompactionPolicy = {
+    charBudget: COMPACT_CHAR_BUDGET,
+    keepRecent: COMPACT_KEEP_RECENT,
+    triggerMessages: COMPACT_TRIGGER,
+  };
+  if (!contextWindowTokens || !Number.isFinite(contextWindowTokens) || contextWindowTokens <= 0) {
+    return { ...base, ...overrides };
+  }
+  const outputReserve = clampValue(Math.floor(contextWindowTokens * 0.125), 4_096, 16_384);
+  const safetyReserve = clampValue(Math.floor(contextWindowTokens * 0.1), 4_096, 12_288);
+  const workingTokens = contextWindowTokens - outputReserve - safetyReserve;
+  const historyTokens = Math.floor(workingTokens * 0.5);
+  const derived: CompactionPolicy = {
+    charBudget: clampValue(historyTokens * 4, 48_000, 800_000),
+    keepRecent: clampValue(Math.floor(workingTokens / 8_000), 4, 8),
+    triggerMessages: clampValue(Math.floor(workingTokens / 2_000), 12, 64),
+    emergencyInputTokens: Math.floor(workingTokens * 0.9),
+  };
+  return { ...base, ...derived, ...overrides };
+}
+
 export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) => void, opts: CompactionOptions = {}): boolean {
   const charBudget = opts.charBudget ?? COMPACT_CHAR_BUDGET;
   const keepRecent = opts.keepRecent ?? COMPACT_KEEP_RECENT;

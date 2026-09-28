@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
@@ -8,8 +8,8 @@ import { MemoryStore } from '../src/memory/memory-store.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { SkillStore } from '../src/skills/skills.js';
 import { buildCoworkMessages, runConversationTurn, runMissionSession } from '../src/cowork/runner.js';
-import { executeCoworkTool } from '../src/cowork/tools.js';
-import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
+import { executeCoworkTool, coworkNativeTool } from '../src/cowork/tools.js';
+import { LlmError, type LlmClient, type LlmMessage, type LlmTurnResult } from '../src/llm/llm.js';
 import type { ToolContext } from '../src/tools/tools.js';
 import { HermesServer } from '../src/server/server.js';
 import { CoworkBrowserLease } from '../src/cowork/browser-lease.js';
@@ -30,7 +30,275 @@ function setup() {
   return { file, store, agent, conversation, memory, ctx, scope, perms };
 }
 
+function withReview(client: LlmClient, review: (input: { candidate: string; checklist: { id: string; status: string }[] }) => { state: string; reason: string } = () => ({ state: 'done', reason: 'The requested answer is present.' })): LlmClient {
+  return { ...client, complete: async (messages, options) => {
+    if (String(messages[0]?.content).startsWith('COWORK COMPLETION REVIEW.')) return JSON.stringify(review(JSON.parse(String(messages[1]?.content))));
+    return client.complete(messages, options);
+  } };
+}
+
 describe('Cowork continuity across providers and restarts', () => {
+  it('keeps a public work update visible across a tool call and the next model turn', async () => {
+    const s = setup();
+    const prompt = buildCoworkMessages(s.agent, s.conversation, [s.agent], [], { agents: [s.agent], resolveLlm: vi.fn(), toolContext: () => s.ctx });
+    expect(prompt[0]!.content).toContain('LIVE UPDATES:');
+    const frames: { text: string; tool?: string }[] = [];
+    let round = 0;
+    const llm: LlmClient = {
+      name: 'streaming-test',
+      complete: async () => '',
+      completeStream: async (_messages, opts, onDelta) => {
+        const reply = ++round === 1
+          ? 'I’m checking the workspace files for the requested item.\n<tool>{"name":"list_files","params":{"path":"."}}</tool>'
+          : 'The check is complete.\n<cowork_state>done</cowork_state>';
+        opts.onActivity?.({ type: 'reasoning' });
+        onDelta(reply);
+        return reply;
+      },
+    };
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Check the files', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onProgress: p => frames.push({ text: p.text, tool: p.tool }) },
+      append: m => s.store.appendMessage(s.conversation.id, m),
+    });
+    expect(result.error).toBeUndefined();
+    expect(frames.some(p => p.tool === 'list_files' && p.text.includes('checking the workspace files'))).toBe(true);
+    expect(frames.some(p => !p.tool && p.text.includes('checking the workspace files'))).toBe(true);
+    expect(frames.some(p => p.text.includes('<tool>'))).toBe(false);
+    expect(frames.some(p => p.text.includes('cowork_state'))).toBe(false);
+    expect(result.messages[0]!.text).toBe('The check is complete.');
+  });
+
+  it('never streams a partially emitted completion marker into the chat', async () => {
+    const s = setup();
+    const frames: string[] = [];
+    const reply = 'The audit is complete.\n<cowork_state>done</cowork_state>';
+    const llm: LlmClient = {
+      name: 'streamed-state-test',
+      complete: async () => JSON.stringify({ state: 'done', reason: 'The audit report answers the request.' }),
+      completeStream: async (_messages, _options, onDelta) => {
+        for (const char of reply) onDelta(char);
+        return reply;
+      },
+    };
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Audit the file', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onProgress: progress => frames.push(progress.text) },
+      append: message => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.messages[0]!.text).toBe('The audit is complete.');
+    expect(frames.every(frame => !frame.includes('cowork_state') && !frame.endsWith('<'))).toBe(true);
+  });
+
+  it('continues after a bare progress reply instead of ending the mailbox check', async () => {
+    const s = setup();
+    const replies = [
+      'Checking the mailbox now.\n<cowork_state>working</cowork_state>',
+      '<tool>{"name":"list_files","params":{"path":"."}}</tool>',
+      'The check is complete.\n<cowork_state>done</cowork_state>',
+    ];
+    const complete = vi.fn(async () => replies.shift() ?? 'The check is complete.');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Check the mailbox again', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: (message) => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(result.messages[0]).toMatchObject({ role: 'agent', text: 'The check is complete.', tools: [{ name: 'list_files', ok: true }] });
+  });
+
+  it.each([
+    'I’m first mapping the niche’s demand and current rules. Then I’ll turn that into a channel plan.',
+    'I’ll install the requested CLI, verify the tools, and then suggest automations.',
+    'I am auditing the numbers and reconciling the source data.',
+  ])('continues a status-only promise without another user message: %s', async (update) => {
+    const s = setup();
+    const replies = [`${update}\n<cowork_state>working</cowork_state>`, '<tool>{"name":"list_files","params":{"path":"."}}</tool>', 'The requested work is complete.\n<cowork_state>done</cowork_state>'];
+    const complete = vi.fn(async () => replies.shift() ?? 'The requested work is complete.');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Please do the work', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: (message) => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({ role: 'agent', text: 'The requested work is complete.', tools: [{ name: 'list_files', ok: true }] });
+  });
+
+  it('uses the reported state even when the wording sounds like a future action', async () => {
+    const s = setup();
+    const complete = vi.fn(async () => 'I’ll install it after you provide the account.\n<cowork_state>waiting</cowork_state>');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Install it', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => withReview({ name: 'test', complete } as LlmClient, () => ({ state: 'waiting', reason: 'The user must provide the account.' })), toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: (message) => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(result.messages[0]!.text).toBe('I’ll install it after you provide the account.');
+  });
+
+  it('accepts an unmarked answer only after semantic completion review', async () => {
+    const s = setup();
+    const complete = vi.fn(async () => 'The sum of 18 and 24 is 42.');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'What is 18 + 24?', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => withReview({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: (message) => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(result.error).toBeUndefined();
+    expect(result.messages).toEqual([expect.objectContaining({ role: 'agent', text: 'The sum of 18 and 24 is 42.' })]);
+  });
+
+  it('continues beyond three incomplete replies and finishes the saved checklist', async () => {
+    const s = setup();
+    const todo = s.store.addTodo({ conversationId: s.conversation.id, agentId: s.agent.id, text: 'Verify the file' });
+    writeFileSync(path.join(root, 'verified.txt'), '42');
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      calls += 1;
+      if (calls <= 4) return 'I am checking the file.';
+      if (calls === 5) return '<tool>{"name":"read_file","params":{"path":"verified.txt"}}</tool>';
+      if (calls === 6) return `<tool>${JSON.stringify({ name: 'todo_manage', params: { action: 'complete', id: todo.id } })}</tool>`;
+      return 'The verified value is 42.\n<cowork_state>done</cowork_state>';
+    });
+    const llm = withReview({ name: 'test', complete } as LlmClient, ({ checklist }) => {
+      expect(checklist).toContainEqual(expect.objectContaining({ id: todo.id, status: 'pending' }));
+      return { state: 'working', reason: 'The saved verification item is still open; read the file.' };
+    });
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Continue verifying the file', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: (message) => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(complete).toHaveBeenCalledTimes(7);
+    expect(result.error).toBeUndefined();
+    expect(result.messages).toEqual([expect.objectContaining({
+      role: 'agent',
+      text: 'The verified value is 42.',
+    })]);
+    expect(s.store.todos(s.conversation.id)).toEqual([expect.objectContaining({ status: 'done' })]);
+  }, 15000);
+
+  it('does not accumulate incomplete replies across successful tool rounds', async () => {
+    const s = setup();
+    let calls = 0;
+    const complete = vi.fn(async () => {
+      if (++calls > 12) return 'Finished.\n<cowork_state>done</cowork_state>';
+      return calls % 2 ? 'Checking.\n<cowork_state>working</cowork_state>' : '<tool>{"name":"list_files","params":{"path":"."}}</tool>';
+    });
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Complete the checks', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledTimes(13);
+    expect(result.messages.at(-1)?.tools).toHaveLength(6);
+  });
+
+  it('keeps Stop responsive during automatic continuation backoff', async () => {
+    const s = setup();
+    const abort = new AbortController();
+    const complete = vi.fn(async () => 'Still working.\n<cowork_state>working</cowork_state>');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Do the work', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, autoLearn: false, requireCompletionState: true, signal: abort.signal, onProgress: p => { if (p.text.includes('Retrying automatically')) abort.abort(); } }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(result.messages.at(-1)?.text).toContain('Stopped by user');
+  });
+
+  it('rejects a premature done marker and then performs the missing action', async () => {
+    const s = setup();
+    const replies = ['I will inspect the files.\n<cowork_state>done</cowork_state>', '<tool>{"name":"list_files","params":{"path":"."}}</tool>', 'The files are checked.\n<cowork_state>done</cowork_state>'];
+    const complete = vi.fn(async () => replies.shift()!);
+    const llm = withReview({ name: 'test', complete } as LlmClient, () => ({ state: 'working', reason: 'There is only a promise; inspect the files with the available tool.' }));
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Inspect the files', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(result.messages.at(-1)?.tools).toEqual([{ name: 'list_files', ok: true }]);
+  });
+
+  it('does not resume an unrelated saved task when the user asks a new question', async () => {
+    const s = setup();
+    const old = s.store.addTodo({ conversationId: s.conversation.id, agentId: s.agent.id, text: 'Prepare an old report' });
+    const complete = vi.fn(async () => 'The sum is 42.\n<cowork_state>done</cowork_state>');
+    const llm = withReview({ name: 'test', complete } as LlmClient, ({ checklist }) => {
+      expect(checklist).toContainEqual(expect.objectContaining({ id: old.id }));
+      return { state: 'done', reason: 'The arithmetic question is answered; the old report is unrelated.' };
+    });
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'What is 18 + 24?', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledOnce();
+    expect(s.store.todos(s.conversation.id)[0]?.status).toBe('pending');
+  });
+
+  it('executes native OpenRouter calls and preserves tool results for the next round', async () => {
+    const s = setup();
+    let rounds = 0;
+    const complete = vi.fn(async () => { throw new Error('Verified final reply must not need another paid request'); });
+    const llm: LlmClient = { name: 'native-test', complete, completeStream: vi.fn(), completeTurn: async (messages, options): Promise<LlmTurnResult> => {
+      expect(options?.protocolMode).toBe('native');
+      expect(options?.tools?.[0]?.name).toBe('cowork_tool');
+      if (++rounds === 1) return { kind: 'tool_calls', calls: [{ name: 'cowork_tool', arguments: { name: 'write_file', params: { path: 'native.txt', content: '42' } } }], metadata: {} };
+      expect(JSON.stringify(messages)).toContain('TOOL RESULT write_file (ok=true)');
+      expect(messages.some(message => typeof message.content === 'string' && message.content.includes('<tool>{"name":"write_file"'))).toBe(true);
+      return { kind: 'text', text: 'Saved 42.\n<cowork_state>done</cowork_state>', metadata: {} };
+    } };
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Save 42 to native.txt', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    expect(result.error).toBeUndefined();
+    expect(readFileSync(path.join(root, 'native.txt'), 'utf8')).toBe('42');
+    expect(result.messages.at(-1)?.text).toBe('Saved 42.');
+    expect(complete).not.toHaveBeenCalled();
+    const tool = coworkNativeTool({ ...s.agent, allowWrites: false }, false);
+    expect(JSON.stringify(tool.parameters)).not.toContain('write_file');
+    expect(JSON.stringify(tool.parameters)).not.toContain('browse');
+  });
+
+  it('falls back to text tools only when the endpoint rejects native functions', async () => {
+    const s = setup();
+    let rounds = 0;
+    const llm = { name: 'native-fallback', completeTurn: async (_messages: LlmMessage[], options: { protocolMode?: string }): Promise<LlmTurnResult> => {
+      if (++rounds === 1) throw new LlmError('Tools unsupported', { kind: 'tool_protocol_incompatible' });
+      expect(options.protocolMode).toBeUndefined();
+      return { kind: 'text', text: rounds === 2 ? '<tool>{"name":"list_files","params":{"path":"."}}</tool>' : 'Checked.\n<cowork_state>done</cowork_state>', metadata: {} };
+    } } as LlmClient;
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Check the files', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    expect(result.error).toBeUndefined();
+    expect(rounds).toBe(3);
+    expect(result.messages.at(-1)?.tools).toEqual([{ name: 'list_files', ok: true }]);
+  });
+
+  it('continues past four tool checkpoints without ending the Cowork turn', async () => {
+    const s = setup();
+    const toolRounds = 24 * 4;
+    let calls = 0;
+    const complete = vi.fn(async () => ++calls <= toolRounds
+      ? '<tool>{"name":"todo_manage","params":{"action":"list"}}</tool>'
+      : 'All checks are complete.\n<cowork_state>done</cowork_state>');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Run a long verification', via: 'web' });
+    const result = await runConversationTurn({
+      conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'long-chain-test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: (message) => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(complete).toHaveBeenCalledTimes(toolRounds + 1);
+    expect(result.messages.filter((message) => message.role === 'system' && message.text.includes('continuing automatically after checkpoint'))).toHaveLength(4);
+    expect(result.messages.at(-1)).toMatchObject({ role: 'agent', text: 'All checks are complete.' });
+  }, 60000);
+
   it('executes streamed DeepSeek DSML productivity and schedule calls without exposing markup', async () => {
     const s = setup();
     let round = 0;
@@ -195,5 +463,28 @@ describe('Cowork continuity across providers and restarts', () => {
     const result = await runMissionSession({ mission, agent: s.agent, deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete }) as unknown as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store }, append: (m) => s.store.appendMessage(s.conversation.id, m) });
     expect(result.status).toBe('working');
     expect(result.progress).toContain('not executed');
+  });
+
+  it('streams mission prose without exposing its status JSON', async () => {
+    const s = setup();
+    const mission = s.store.createMission({ conversationId: s.conversation.id, agentId: s.agent.id, goal: 'Check the workspace', criteria: [] });
+    const frames: string[] = [];
+    const llm: LlmClient = {
+      name: 'mission-stream-test',
+      complete: async () => '',
+      completeStream: async (_messages, _options, onDelta) => {
+        const reply = 'I checked the workspace and verified the result.\n{"status":"done","progress":"Verified","criteriaMet":[],"result":"Ready"}';
+        for (const piece of ['I checked the workspace', ' and verified the result.\n{', '"status":"done","progress":"Verified","criteriaMet":[],"result":"Ready"}']) onDelta(piece);
+        return reply;
+      },
+    };
+    const result = await runMissionSession({
+      mission, agent: s.agent,
+      deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, onProgress: p => frames.push(p.text) },
+      append: m => s.store.appendMessage(s.conversation.id, m),
+    });
+    expect(result.status).toBe('done');
+    expect(frames.some(text => text.includes('checked the workspace'))).toBe(true);
+    expect(frames.some(text => text.includes('"status"'))).toBe(false);
   });
 });

@@ -1,6 +1,9 @@
-import { readdirSync, readFileSync, statSync, watch, type FSWatcher } from 'node:fs';
+import { readdirSync, readFileSync, lstatSync, statSync, watch, type FSWatcher } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { Worker } from 'node:worker_threads';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import type { FileRole } from '../types.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { classifyRole, isContextConfigDotfile, tokenize } from './context-engine.js';
@@ -12,6 +15,14 @@ const MAX_INDEXED_FILES = 2000;
 /** Bump when tokenize() changes shape so existing indexes rebuild once. */
 const TOKENIZER_VERSION = 3;
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go'];
+
+// Serialize writers to the shared cache without waiting on SQLite locks on
+// the desktop thread. Each refresh itself runs entirely in a worker.
+let refreshQueue: Promise<unknown> = Promise.resolve();
+
+export function isGeneratedIndexDirectory(name: string): boolean {
+  return /^(?:dist(?:[-_].*|\d+)?|build(?:[-_].*|\d+)?|release(?:[-_].*)?|win-unpacked|app\.asar(?:\.unpacked)?)$/i.test(name);
+}
 
 /** Extract only static, relative module specifiers. Package imports and
  * dynamic expressions are deliberately not treated as repository edges. */
@@ -80,12 +91,19 @@ export class CodeIndex {
   private watching = false;
   /** True until the stored tokenizer version matches (forces one full rebuild). */
   private rebuildTerms = false;
+  private pendingRefresh?: Promise<RefreshStats>;
+  private refreshWorker?: Worker;
+  private closed = false;
 
-  constructor(repoRoot: string, dbPath: string = defaultIndexPath()) {
+  constructor(
+    repoRoot: string,
+    private readonly dbPath: string = defaultIndexPath(),
+  ) {
     this.root = path.resolve(repoRoot);
     this.repo = this.root.replace(/\\/g, '/').replace(/\/+$/, '');
     this.db = new DatabaseSync(dbPath);
     this.db.exec('PRAGMA busy_timeout = 5000;');
+    this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)');
     const verRow = this.db.prepare("SELECT value FROM meta WHERE key = 'tokenizer_version'").get() as { value?: string } | undefined;
     this.rebuildTerms = verRow?.value !== String(TOKENIZER_VERSION);
@@ -123,6 +141,16 @@ export class CodeIndex {
       CREATE INDEX IF NOT EXISTS idx_imports_source ON imports(repo, source);
       CREATE INDEX IF NOT EXISTS idx_imports_target ON imports(repo, target);
     `);
+  }
+
+  /** Heavy schema maintenance belongs to refresh, which the UI runs in a worker. */
+  private prepareRefresh(): void {
+    // This cache is rebuildable. Keep the active B-tree pages in memory while
+    // bulk indexing instead of repeatedly spilling a 2 MB default page cache.
+    this.db.exec('PRAGMA cache_size = -65536; PRAGMA synchronous = NORMAL;');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_terms_file ON terms(repo, path)');
+    const version = this.db.prepare("SELECT value FROM meta WHERE key = 'tokenizer_version'").get() as { value?: string } | undefined;
+    this.rebuildTerms = version?.value !== String(TOKENIZER_VERSION);
     if (this.rebuildTerms) {
       // Clear legacy rows so queries never mix token schemes (after DDL so a
       // fresh database has the tables to clean).
@@ -157,12 +185,13 @@ export class CodeIndex {
    * depth cap, artifact/unknown roles skipped).
    */
   refresh(root: string, ignores: Iterable<string>): RefreshStats {
+    this.prepareRefresh();
     this.ignores = new Set(ignores);
     const ignoreSet = this.ignores;
     const walked: { rel: string; role: FileRole; size: number; mtimeMs: number }[] = [];
 
     const walk = (dir: string, depth: number): void => {
-      if (depth > MAX_WALK_DEPTH || walked.length > MAX_INDEXED_FILES) return;
+      if (depth > MAX_WALK_DEPTH || walked.length >= MAX_INDEXED_FILES) return;
       let entries: string[];
       try {
         entries = readdirSync(dir);
@@ -170,6 +199,7 @@ export class CodeIndex {
         return;
       }
       for (const name of entries) {
+        if (walked.length >= MAX_INDEXED_FILES) return;
         // Keep private VCS/agent state out even for callers that do not pass
         // ProjectGuard's default ignores. Other dotfiles are considered below:
         // config dotfiles such as .eslintrc are useful context, while unknown
@@ -178,11 +208,13 @@ export class CodeIndex {
         const full = path.join(dir, name);
         let st;
         try {
-          st = statSync(full);
+          st = lstatSync(full);
         } catch {
           continue;
         }
+        if (st.isSymbolicLink()) continue;
         if (st.isDirectory()) {
+          if (isGeneratedIndexDirectory(name)) continue;
           // Do not traverse arbitrary hidden directories, which can contain
           // local credentials. GitHub workflow files are project config and
           // are the one useful exception.
@@ -276,6 +308,78 @@ export class CodeIndex {
       this.rebuildTerms = false;
     }
     return stats;
+  }
+
+  /** Refresh without executing filesystem scans, tokenization or SQL writes on the UI thread. */
+  refreshAsync(root: string, ignores: Iterable<string>, requireFresh = false): Promise<RefreshStats> {
+    if (this.closed) return Promise.reject(new Error('Code index is closed'));
+    if (this.pendingRefresh) {
+      // A refresh already scanning the tree may have passed a file just edited
+      // by this caller. Context retrieval needs a scan begun after its request.
+      if (requireFresh) return this.pendingRefresh.then(() => this.refreshAsync(root, ignores));
+      return this.pendingRefresh;
+    }
+    if (this.dbPath === ':memory:') return Promise.reject(new Error('Background indexing requires a file-backed database'));
+    const ignorePaths = [...ignores];
+    const work = refreshQueue.then(
+      () =>
+        new Promise<RefreshStats>((resolve, reject) => {
+          if (this.closed) {
+            reject(new Error('Code index is closed'));
+            return;
+          }
+          const moduleUrl = import.meta.url;
+          const worker = new Worker(
+            `
+        const { workerData, parentPort } = require('node:worker_threads');
+        (async () => {
+          if (workerData.loader) { const { register } = await import(workerData.loader); register(); }
+          const { CodeIndex } = await import(workerData.moduleUrl);
+          const index = new CodeIndex(workerData.root, workerData.dbPath);
+          try { parentPort.postMessage({ stats: index.refresh(workerData.root, workerData.ignores) }); }
+          finally { index.close(); }
+        })().catch(error => { parentPort.postMessage({ error: error.message }); });
+      `,
+            {
+              eval: true,
+              workerData: {
+                moduleUrl,
+                root,
+                dbPath: this.dbPath,
+                ignores: ignorePaths,
+                loader: moduleUrl.endsWith('.ts') ? pathToFileURL(createRequire(import.meta.url).resolve('tsx/esm/api')).href : undefined,
+              },
+            },
+          );
+          this.refreshWorker = worker;
+          const timeout = setTimeout(() => {
+            reject(new Error('Project indexing timed out'));
+            void worker.terminate();
+          }, 120_000);
+          const cleanup = (): void => {
+            clearTimeout(timeout);
+            if (this.refreshWorker === worker) this.refreshWorker = undefined;
+          };
+          worker.once('message', (message: { stats?: RefreshStats; error?: string }) => {
+            cleanup();
+            if (message.stats) resolve(message.stats);
+            else reject(new Error(message.error ?? 'Project indexing failed'));
+          });
+          worker.once('error', (error) => {
+            cleanup();
+            reject(error);
+          });
+          worker.once('exit', () => {
+            cleanup();
+            reject(new Error('Project indexing stopped'));
+          });
+        }),
+    );
+    refreshQueue = work.catch(() => undefined);
+    this.pendingRefresh = work.finally(() => {
+      this.pendingRefresh = undefined;
+    });
+    return this.pendingRefresh;
   }
 
   /** All indexed files for this repo (path, role, size, mtime). */
@@ -463,11 +567,7 @@ export class CodeIndex {
     const debounceMs = opts.debounceMs ?? 500;
     const sweepMs = opts.sweepMs ?? 30_000;
 
-    try {
-      this.refresh(this.root, this.ignores);
-    } catch {
-      /* best effort */
-    }
+    void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     try {
       this.watcher = watch(this.root, { recursive: true }, () => this.scheduleRefresh(debounceMs));
       this.watcher.on('error', () => {
@@ -482,11 +582,7 @@ export class CodeIndex {
       this.watcher = undefined; // recursive watch unsupported -> sweep only
     }
     this.sweepTimer = setInterval(() => {
-      try {
-        this.refresh(this.root, this.ignores);
-      } catch {
-        /* best effort */
-      }
+      void this.refreshAsync(this.root, this.ignores).catch(() => undefined);
     }, sweepMs);
   }
 
@@ -494,11 +590,7 @@ export class CodeIndex {
     if (this.debounceTimer) return;
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = undefined;
-      try {
-        this.refresh(this.root, this.ignores);
-      } catch {
-        /* best effort */
-      }
+      void this.refreshAsync(this.root, this.ignores, true).catch(() => undefined);
     }, debounceMs);
   }
 
@@ -527,6 +619,9 @@ export class CodeIndex {
   }
 
   close(): void {
+    this.closed = true;
+    this.stopWatch();
+    void this.refreshWorker?.terminate();
     try {
       this.db.close();
     } catch {

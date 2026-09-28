@@ -3,6 +3,9 @@ import { isTrivialEvidenceCommand } from '../evidence/evidence.js';
 
 /** Conservative discovery allowlist for temporary planning and conversational reads. */
 export function isObservationTool(tool: string, params: Record<string, unknown> = {}): boolean {
+  // Polling a managed command is a read: it executes nothing, so it must not be
+  // treated as a new command action.
+  if (tool === 'run_command') return String(params['action'] ?? 'run') === 'status';
   if (['read_file', 'search_files', 'list_files', 'web_fetch', 'list_skills', 'use_skill', 'use_skill_reference',
     'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'agent_status', 'list_mcp', 'list_connections'].includes(tool)) return true;
   if (tool === 'schedule_manage') return params['action'] === 'list';
@@ -10,16 +13,29 @@ export function isObservationTool(tool: string, params: Record<string, unknown> 
 }
 
 /** Quick work needs fresh checks, without inventing formal acceptance criteria. */
-export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint: string, currentFingerprint: string): { open: boolean; reason: string } {
+export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint: string, currentFingerprint: string, criterionCommands?: ReadonlySet<string>): { open: boolean; reason: string } {
   const actions = data.actions.filter(a => a.status === 'success');
   const work = actions.some(a => !(a.observationOnly ?? isObservationTool(a.tool)));
   if (!work && baselineFingerprint === currentFingerprint) return { open: true, reason: 'Conversation or read-only investigation.' };
 
   const checks = data.evidence.filter(e => e.command && !isTrivialEvidenceCommand(e.command));
+  const commandKey = (command: string): string => command.trim().replace(/\s+/g, ' ').toLowerCase();
   const latest = new Map<string, typeof checks[number]>();
-  for (const check of checks) latest.set(check.command!.trim(), check);
+  for (const check of checks) latest.set(commandKey(check.command!), check);
   const fresh = [...latest.values()].filter(e => !e.stale && e.workspaceFingerprint === currentFingerprint);
-  if (fresh.some(e => !e.passed)) return { open: false, reason: 'A check still fails on the current workspace. Resolve it or report the blocker.' };
+  // Formal criteria identify the checks that are required for completion.
+  // A failed exploratory command remains history unless a criterion requires
+  // it; the evidence gate separately validates every linked criterion.
+  if (fresh.some(e => !e.passed && (!criterionCommands || criterionCommands.has(commandKey(e.command!))))) {
+    return { open: false, reason: 'A required check still fails on the current workspace. Resolve it or report the blocker.' };
+  }
+  if (criterionCommands?.size) {
+    const requiredPassing = [...criterionCommands].every(command =>
+      fresh.some(e => e.passed && commandKey(e.command!) === command),
+    );
+    if (!requiredPassing) return { open: false, reason: 'Fresh passing verification is required for every criterion command.' };
+    return { open: true, reason: 'Fresh verification passed for every criterion command.' };
+  }
   if (fresh.some(e => e.passed)) return { open: true, reason: 'Fresh, lightweight verification passed.' };
   const productWork = actions.every(a => (a.observationOnly ?? isObservationTool(a.tool)) || ['browse', 'create_document', 'schedule_manage'].includes(a.tool));
   const verifiedResults = data.evidence.filter(e => !e.command && e.passed && !e.stale && e.workspaceFingerprint === currentFingerprint && ['file', 'manual', 'log'].includes(e.kind));

@@ -20,14 +20,14 @@ function scriptedLlm(script: string[]): LlmClient {
   return { name: 'mock', complete: async () => script[Math.min(call++, script.length - 1)] } as unknown as LlmClient;
 }
 function newServer(script: string[]): GituServer {
-  return new GituServer({ cwd: WORKSPACE, port: 0, llm: scriptedLlm(script) });
+  return new GituServer({ cwd: WORKSPACE, port: 0, llm: scriptedLlm(script), coworkCompletionProtocol: 'legacy' });
 }
 /** Same as newServer, but exposes how many LLM calls were made so a test can
  *  prove whether a reflection pass ran (script index order is not reliable). */
 function newServerWithCounter(script: string[]): { server: GituServer; calls: () => number } {
   let call = 0;
   const llm = { name: 'mock', complete: async () => script[Math.min(call++, script.length - 1)] } as unknown as LlmClient;
-  return { server: new GituServer({ cwd: WORKSPACE, port: 0, llm }), calls: () => call };
+  return { server: new GituServer({ cwd: WORKSPACE, port: 0, llm, coworkCompletionProtocol: 'legacy' }), calls: () => call };
 }
 async function api(base: string, method: string, pathName: string, body?: unknown): Promise<{ status: number; json: any }> {
   const res = await fetch(`${base}${pathName}`, {

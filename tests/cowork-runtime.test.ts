@@ -4,11 +4,11 @@ import path from 'node:path';
 import { Script } from 'node:vm';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
-import { cleanTelegramText, parseTelegramRequestAction, sendTelegramDocument, sendTelegramRequestCard, TelegramReplyStream, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
+import { cleanTelegramText, parseTelegramRequestAction, sendTelegramDocument, sendTelegramRequestCard, TelegramReplyStream, TelegramTypingIndicator, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
 import { CoworkStore, type CoworkRequest } from '../src/cowork/store.js';
 import { buildCoworkMessages, runConversationTurn, type CoworkRunnerDeps, type CoworkProgress } from '../src/cowork/runner.js';
 import { executeCoworkTool, stripToolMarkers } from '../src/cowork/tools.js';
-import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
+import type { LlmClient, LlmMessage, LlmOptions } from '../src/llm/llm.js';
 import type { ToolContext } from '../src/tools/tools.js';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 
@@ -27,6 +27,21 @@ function telegramMock() {
 const token = '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 describe('Telegram live replies', () => {
+  it('shows typing throughout a long turn and stops when the turn ends', async () => {
+    vi.useFakeTimers();
+    const { calls, fetchImpl } = telegramMock();
+    const typing = new TelegramTypingIndicator(token, '42', fetchImpl);
+    typing.start();
+    typing.start();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.method === 'sendChatAction'
+      && call.body['chat_id'] === '42' && call.body['action'] === 'typing')).toBe(true);
+    typing.stop();
+    await vi.advanceTimersByTimeAsync(8_000);
+    expect(calls).toHaveLength(3);
+  });
+
   it('edits the same message, preserves plain text and drains final chunks', async () => {
     vi.useFakeTimers();
     const { calls, fetchImpl } = telegramMock();
@@ -57,6 +72,11 @@ describe('Telegram live replies', () => {
     const chunks = telegramChunks(text);
     expect(chunks.join('')).toBe(text);
     expect(chunks.every((c) => c.length <= 3800 && !/[\uD800-\uDBFF]$/.test(c))).toBe(true);
+  });
+
+  it('drops decorative rule lines instead of sending their symbols to Telegram', () => {
+    const report = 'Launch brief\n\n---\n\n## Findings\n\n- **Tests:** 12 passed\n\n-----';
+    expect(cleanTelegramText(report)).toBe('Launch brief\n\nFindings\n\n- Tests: 12 passed');
   });
 
   it('sends clean request cards with inline Telegram actions', async () => {
@@ -342,7 +362,7 @@ describe('cowork streaming and tool execution', () => {
     const client = {
       completeStream: async (_messages: LlmMessage[], _opts: unknown, delta: (text: string) => void) => {
         delta('Hello');
-        expect(progress[0]!.text).toBe('Hello');
+        expect(progress.at(-1)!.text).toBe('Hello');
         for (const part of [' <t', 'ool>{"secret":"never visible"}', '</tool>']) delta(part);
         return 'Final answer';
       },
@@ -367,6 +387,36 @@ describe('cowork streaming and tool execution', () => {
     expect(result.messages.at(-1)!.text).toContain('Stopped by user');
   });
 
+  it('reports real reasoning, response, tool and next-round activity without leaking tool markers', async () => {
+    const progress: CoworkProgress[] = [];
+    let round = 0;
+    const client = {
+      completeStream: async (_messages: LlmMessage[], options: LlmOptions, delta: (text: string) => void) => {
+        expect(progress.at(-1)?.phase).toBe('thinking');
+        expect(progress.at(-1)?.reasoning).toBe('');
+        options.onActivity?.({ type: 'reasoning' });
+        expect(progress.at(-1)).toMatchObject({ phase: 'reasoning', text: '' });
+        options.onReasoningDelta?.('Checking the available ');
+        options.onReasoningDelta?.('evidence.');
+        expect(progress.at(-1)).toMatchObject({ phase: 'reasoning', text: '', reasoning: 'Checking the available evidence.' });
+        options.onActivity?.({ type: 'content' });
+        delta('Checking.');
+        expect(progress.at(-1)).toMatchObject({ phase: 'responding', text: 'Checking.' });
+        if (round++ === 0) return '<tool>{"name":"unknown","params":{}}</tool>';
+        options.onStreamReset?.();
+        expect(progress.at(-1)).toMatchObject({ phase: 'thinking', text: '' });
+        expect(progress.at(-1)?.reasoning).toBe('');
+        delta('Finished.');
+        return 'Finished.';
+      },
+    };
+    const result = await runConversationTurn(setup('activity', client, { onProgress: p => progress.push(p) }));
+    expect(result.messages.at(-1)?.text).toBe('Finished.');
+    expect(result.messages.every(message => !message.text.includes('Checking the available evidence.'))).toBe(true);
+    expect(progress.some(p => p.phase === 'working' && p.tool === 'unknown')).toBe(true);
+    expect(progress.every(p => !p.text.includes('<tool>'))).toBe(true);
+  });
+
   it('keeps the newest trigger when old history exceeds the transcript budget', () => {
     const input = setup('history', {});
     const history = Array.from({ length: 40 }, (_, i) => ({ ...input.trigger, text: i === 39 ? 'LATEST REQUEST' : 'x'.repeat(4000) }));
@@ -375,15 +425,16 @@ describe('cowork streaming and tool execution', () => {
     expect(String(prompt[1]!.content).length).toBeLessThan(25000);
   });
 
-  it('reports tool budget exhaustion instead of pretending unexecuted tools succeeded', async () => {
-    const client = { complete: async () => '<tool>{"name":"unknown","params":{}}</tool>' };
-    const result = await runConversationTurn(setup('budget', client));
+  it('keeps checkpointing beyond the old tool budget and remains stoppable', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    const client = { complete: async () => { if (++calls > 24 * 5) controller.abort(); return '<tool>{"name":"unknown","params":{}}</tool>'; } };
+    const result = await runConversationTurn(setup('budget', client, { signal: controller.signal }));
     const checkpoints = result.messages.filter((m) => m.role === 'system' && m.text.includes('continuing automatically'));
-    expect(checkpoints).toHaveLength(3);
-    const final = result.messages.filter((m) => m.role === 'agent').at(-1)!;
-    expect(final.text).toContain('Work is incomplete');
-    expect(final.tools).toHaveLength(24 * 4);
-    expect(final.tools!.every((t) => !t.ok)).toBe(true);
+    expect(checkpoints.length).toBeGreaterThan(3);
+    expect(calls).toBe(121);
+    expect(result.messages.at(-1)!.text).toContain('Stopped by user');
+    expect(result.messages.filter(m => m.role === 'agent')).toHaveLength(0);
   });
 
   it('keeps working across a budget segment until the task finishes', async () => {
@@ -426,6 +477,7 @@ describe('cowork streaming and tool execution', () => {
     const broken = input.store.saveAgent({ name: 'broken', systemPrompt: 'Help.' });
     const healthy = input.store.saveAgent({ name: 'healthy', systemPrompt: 'Help.' });
     const conversation = input.store.saveConversation({ kind: 'group', memberIds: [input.agent.id, broken.id, healthy.id], chiefId: input.agent.id });
+    let chiefCalls = 0;
     const deps = {
       ...input.deps,
       agents: [input.agent, broken, healthy],
@@ -434,6 +486,10 @@ describe('cowork streaming and tool execution', () => {
           complete: async (messages: LlmMessage[]) => {
             if (agent.id === broken.id) throw new Error('Invalid API key');
             if (agent.id === healthy.id) return 'My part succeeded.';
+            // Unmentioned trigger: the chief triages first, summoning both
+            // workers, then closes with a synthesis that sees the failure.
+            chiefCalls += 1;
+            if (chiefCalls === 1) return '@broken @healthy please check your parts.';
             expect(JSON.stringify(messages)).toContain('Could not complete my part: Invalid API key');
             return 'Summary: partial success; one worker needs its connection fixed.';
           },
@@ -441,7 +497,8 @@ describe('cowork streaming and tool execution', () => {
     };
     const result = await runConversationTurn({ ...input, conversation, deps, append: (m) => input.store.appendMessage(conversation.id, m) });
     const names = result.messages.map((m) => m.agentName);
-    expect(new Set(names.slice(0, -1))).toEqual(new Set(['broken', 'healthy']));
+    expect(names[0]).toBe('resilient-chief');
+    expect(new Set(names.slice(1, -1))).toEqual(new Set(['broken', 'healthy']));
     expect(names.at(-1)).toBe('resilient-chief');
     expect(result.messages.at(-1)!.text).toContain('partial success');
   });

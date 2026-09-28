@@ -170,6 +170,9 @@ describe('typed refusal cards', () => {
     expect(card.textContent).toContain('blocked');
     expect(card.textContent).toContain('repetition guard');
     expect(card.querySelector('.policy-detail')!.textContent).toContain('failed 3 times');
+    expect(card.querySelector('.policy-summary')!.textContent).toContain('Repeated action stopped');
+    expect(card.querySelector('details')).toBeTruthy();
+    expect(card.querySelector('summary')!.textContent).toBe('Technical details');
     // Distinct card styling from a denial, so the two are not read as one thing.
     expect(card.querySelector('.dot-blocked')).toBeTruthy();
   });

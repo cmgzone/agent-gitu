@@ -1,17 +1,19 @@
-import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { ProjectLock, WorkspaceAuthority } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
 
 const MARKER_FILES = ['package.json', 'pyproject.toml', 'cargo.toml', 'go.mod', 'pom.xml', 'build.gradle'];
 const DEFAULT_IGNORES = ['node_modules', 'dist', 'build', 'out', 'coverage', '.git', '.venv', '__pycache__', 'target', '.hermes'];
+const execGit = promisify(execFile);
 
 export class ProjectGuardError extends Error {}
 
 function tryGit(repoRoot: string, args: string[]): string | undefined {
   try {
-    return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000, windowsHide: true }).trim();
   } catch {
     return undefined;
   }
@@ -144,6 +146,31 @@ export class ProjectGuard {
       branch = undefined;
     }
 
+    return ProjectGuard.fromDetectedRoot(root, marker, workspace, branch);
+  }
+
+  /** Desktop/run startup must not wait for Git on Electron's main thread. */
+  static async detectAsync(cwd: string): Promise<ProjectGuard> {
+    const located = findRepoRoot(cwd);
+    if (!located) throw new ProjectGuardError(`No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`);
+    const root = canonicalPath(located.root);
+    const git = async (args: string[]): Promise<string | undefined> => {
+      try { return (await execGit('git', args, { cwd: root, encoding: 'utf8', timeout: 3000, windowsHide: true })).stdout.trim(); }
+      catch { return undefined; }
+    };
+    const [top, commonDir, branch] = await Promise.all([
+      git(['rev-parse', '--show-toplevel']),
+      git(['rev-parse', '--path-format=absolute', '--git-common-dir']),
+      git(['rev-parse', '--abbrev-ref', 'HEAD']),
+    ]);
+    const worktreeRoot = canonicalPath(top || root);
+    const common = commonDir ? canonicalPath(commonDir) : undefined;
+    const repositoryRoot = common && path.basename(common).toLowerCase() === '.git' ? canonicalPath(path.dirname(common)) : worktreeRoot;
+    return ProjectGuard.fromDetectedRoot(root, located.marker, { repositoryRoot, worktreeRoot, writableRoot: root }, branch);
+  }
+
+  private static fromDetectedRoot(root: string, marker: string | undefined, workspace: WorkspaceAuthority, branch: string | undefined): ProjectGuard {
+
     let name = path.basename(root);
     let pkg: PackageJson = {};
     const pkgPath = path.join(root, 'package.json');
@@ -204,6 +231,58 @@ export class ProjectGuard {
   isInsideProject(absPath: string): boolean {
     const rel = path.relative(this.activeWritableRoot, path.resolve(absPath));
     return !rel.startsWith('..') && !path.isAbsolute(rel);
+  }
+
+  private readonly diagnosticReads = new Map<string, { real: string; directory: boolean }>();
+
+  private assertPublicReadPath(absPath: string): void {
+    const parts = path.resolve(absPath).split(path.sep).map(part => part.toLowerCase());
+    if (parts.includes('.hermes') || parts.includes('.git')) {
+      throw new ProjectGuardError('Private agent and Git state cannot be read through diagnostic access.');
+    }
+  }
+
+  /** Read authority is separate from write authority; ignore rules only control discovery. */
+  assertReadable(absPath: string): void {
+    const abs = path.resolve(absPath);
+    // Preserve the existing task scratch exception and normal workspace checks.
+    try {
+      this.assertInside(abs);
+      if (!abs.split(path.sep).some(part => part.toLowerCase() === '.hermes')) this.assertPublicReadPath(canonicalPath(abs));
+      return;
+    } catch { /* check read-only authority */ }
+    this.assertPublicReadPath(abs);
+    if (this.isInsideProject(abs)) {
+      this.assertNoSymlinkEscape(abs);
+      this.assertPublicReadPath(canonicalPath(abs));
+      return;
+    }
+    for (const [granted, scope] of this.diagnosticReads) {
+      const rel = path.relative(granted, abs);
+      if (rel !== '' && (!scope.directory || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel))) continue;
+      const real = realpathSync(abs);
+      this.assertPublicReadPath(real);
+      const realRel = path.relative(scope.real, real);
+      if (realRel === '' || (scope.directory && realRel !== '..' && !realRel.startsWith(`..${path.sep}`) && !path.isAbsolute(realRel))) return;
+    }
+    throw new ProjectGuardError(`Read access to ${abs} requires approval outside the locked project.`);
+  }
+
+  /** Validate a proposed scope before displaying it to the user. No access is granted here. */
+  diagnosticReadScope(absPath: string): { path: string; real: string; directory: boolean } {
+    const abs = path.resolve(absPath);
+    if (this.isInsideProject(abs)) throw new ProjectGuardError('A workspace symlink cannot expand diagnostic access. Request the external target directly.');
+    this.assertPublicReadPath(abs);
+    const real = realpathSync(abs);
+    this.assertPublicReadPath(real);
+    return { path: abs, real, directory: statSync(abs).isDirectory() };
+  }
+
+  /** Called only by the host after approval; never from model-supplied tool parameters. */
+  grantDiagnosticRead(scope: { path: string; real: string; directory: boolean }): void {
+    const current = this.diagnosticReadScope(scope.path);
+    if (current.real !== scope.real || current.directory !== scope.directory) throw new ProjectGuardError('Diagnostic target changed while awaiting approval.');
+    this.diagnosticReads.set(scope.path, { real: scope.real, directory: scope.directory });
   }
 
   private assertNoSymlinkEscape(absPath: string): void {

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-const IMAGE = 'agent-gitu-cowork:1';
+const IMAGE = 'agent-gitu-cowork:2';
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
 
@@ -91,6 +91,7 @@ export class CoworkComputer {
   async start(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (this.starting) return this.starting;
+    if (this.state === 'running') return;
     this.startupAbort = new AbortController();
     const combined = signal ? AbortSignal.any([signal, this.startupAbort.signal]) : this.startupAbort.signal;
     this.starting = this.provision(combined).finally(() => {
@@ -106,13 +107,15 @@ export class CoworkComputer {
     try {
       await this.exec(['info', '--format', '{{.ServerVersion}}'], undefined, signal, 15_000);
       let exists = false;
+      let legacyImage = false;
       try {
-        await this.exec(['container', 'inspect', this.name], undefined, signal, 15_000);
+        const configuredImage = await this.exec(['container', 'inspect', '--format', '{{.Config.Image}}', this.name], undefined, signal, 15_000);
         exists = true;
+        legacyImage = configuredImage.trim() !== IMAGE;
       } catch {
         signal?.throwIfAborted();
       }
-      if (!exists) {
+      if (!exists || legacyImage) {
         try {
           await this.exec(['image', 'inspect', IMAGE], undefined, signal, 15_000);
         } catch {
@@ -127,6 +130,13 @@ export class CoworkComputer {
           }
           await withAbort(build, signal);
           signal?.throwIfAborted();
+        }
+        if (legacyImage) {
+          // Keep the old container as a recoverable backup. The replacement
+          // reuses the same named volumes, preserving files and browser logins.
+          await this.exec(['stop', '--time', '2', this.name], undefined, signal);
+          await this.exec(['rename', this.name, this.name + '-backup-' + Date.now()], undefined, signal);
+          exists = false;
         }
         await this.exec(
           [
@@ -179,6 +189,21 @@ export class CoworkComputer {
     if (this.starting) await this.starting.catch(() => {});
     if (this.state === 'running') await this.exec(['stop', '--time', '2', this.name], undefined, undefined, 15_000);
     this.state = 'stopped';
+  }
+
+  /** Screen reads never provision, restart or wake a stopped teammate. */
+  async desktopScreenshot(signal?: AbortSignal): Promise<ToolResult> {
+    if (this.state !== 'running') return { ok: false, output: this.error || 'Start this private desktop to view its screen.' };
+    try {
+      return await this.request('desktop_screenshot', {}, signal);
+    } catch (error) {
+      signal?.throwIfAborted();
+      // An externally stopped/crashed container must be restartable from the
+      // viewer. A failed capture alone does not interrupt a healthy computer.
+      const running = await this.exec(['container', 'inspect', '--format', '{{.State.Running}}', this.name], undefined, signal, 15_000).catch(() => 'unknown');
+      if (running.trim() === 'false') this.state = 'stopped';
+      throw error;
+    }
   }
 
   private async request(tool: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {

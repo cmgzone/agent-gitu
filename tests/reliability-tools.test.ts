@@ -65,6 +65,11 @@ describe('validateToolParams — schema boundary', () => {
     expect(v.error).toContain('must be a string');
   });
 
+  it('requires a boolean for an explicit read refresh', () => {
+    expect(validateToolParams('read_file', { path: 'src/a.ts', refresh: true }).valid).toBe(true);
+    expect(validateToolParams('read_file', { path: 'src/a.ts', refresh: 'true' }).valid).toBe(false);
+  });
+
   it('rejects a missing write_file path', () => {
     const v = validateToolParams('write_file', { content: 'hello' });
     expect(v.valid).toBe(false);

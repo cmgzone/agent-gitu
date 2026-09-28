@@ -1,5 +1,6 @@
 import type { LlmMessage, LlmUsage } from '../llm/llm.js';
 import type { TokenTelemetrySnapshot } from '../types.js';
+import type { FileKnowledgeStats } from '../context/file-knowledge.js';
 
 /**
  * Per-run token telemetry. Provider-reported usage is recorded when
@@ -71,7 +72,7 @@ export function sectionOfMessage(m: LlmMessage): ContextSection {
   if (text.startsWith('COMPACTED HISTORY')) return 'digest';
   if (text.startsWith('CONTEXT PACK') || text.startsWith('CONTEXT SAMPLE')) return 'contextPack';
   if (text.startsWith('RELEVANT MEMORY') || text.startsWith('PRE-FLIGHT FAILURE LESSONS')) return 'memory';
-  if (text.startsWith('ACTIVE CONSTRAINTS')) return 'protected';
+  if (text.startsWith('ACTIVE CONSTRAINTS') || text.startsWith('FILE KNOWLEDGE')) return 'protected';
   if (text.startsWith('TASK STRATEGY')) return 'strategy';
   return 'conversation';
 }
@@ -217,6 +218,20 @@ export class RunTelemetry {
     this.autoLearnSkipped += 1;
   }
 
+  /** Fold one executor's FileKnowledge feature counters into the run aggregate. */
+  noteFileKnowledge(stats: FileKnowledgeStats): void {
+    this.fileKnowledge.extractions += stats.extractions;
+    this.fileKnowledge.astSuccess += stats.astSuccess;
+    this.fileKnowledge.regexFallback += stats.regexFallback;
+    this.fileKnowledge.invalidations += stats.invalidations;
+    this.fileKnowledge.hits += stats.hits;
+    this.fileKnowledge.misses += stats.misses;
+    this.fileKnowledge.staleDropped += stats.staleDropped;
+    this.fileKnowledge.rereadRequired += stats.rereadRequired;
+    this.fileKnowledge.rereadRedundant += stats.rereadRedundant;
+    this.fileKnowledge.rereadAvoided += stats.rereadAvoided;
+  }
+
   snapshot(): TokenTelemetrySnapshot {
     return {
       calls: this.calls,
@@ -284,6 +299,7 @@ export class RunTelemetry {
       autoLearnSkipped: this.autoLearnSkipped,
       wastedCalls: this.wastedCalls,
       filesInContextPack: this.filesInContextPack,
+      fileKnowledge: { ...this.fileKnowledge },
     };
   }
 
@@ -323,6 +339,18 @@ export class RunTelemetry {
   maxPromptChars = 0;
   autoLearnCalls = 0;
   autoLearnSkipped = 0;
+  readonly fileKnowledge: FileKnowledgeStats = {
+    extractions: 0,
+    astSuccess: 0,
+    regexFallback: 0,
+    invalidations: 0,
+    hits: 0,
+    misses: 0,
+    staleDropped: 0,
+    rereadRequired: 0,
+    rereadRedundant: 0,
+    rereadAvoided: 0,
+  };
 }
 
 /**
@@ -357,6 +385,7 @@ export function renderEfficiencySummary(
     `reopenings=${t.staleHypothesisReopens ?? 0}`,
     `mootSupersessions=${t.mootProblemSupersessions ?? 0}`,
     `steers=${t.userSteersHandled ?? 0}`,
+    `fk=${t.fileKnowledge ? `hit${t.fileKnowledge.hits}/miss${t.fileKnowledge.misses}/stale${t.fileKnowledge.staleDropped} ast${t.fileKnowledge.astSuccess}/regex${t.fileKnowledge.regexFallback} rereads avoided${t.fileKnowledge.rereadAvoided}/required${t.fileKnowledge.rereadRequired}/redundant${t.fileKnowledge.rereadRedundant}` : '-'}`,
     `stateReplayAvoided=${k(t.stateReplayCharsAvoided)}c`,
     `tokensIn=${tokensIn}`,
     `tokensOut=${tokensOut}`,
@@ -373,6 +402,11 @@ export function renderTelemetry(t: TokenTelemetrySnapshot): string {
     `digest=${src.digest} strategy=${src.strategy} conversation=${src.conversation} images=${src.images}) ` +
     `planning=${t.planningCalls}c/~${t.estimatedPlanningInput}t execution=${t.executionCalls}c/~${t.estimatedExecutionInput}t ` +
     `compactions=${t.compactions} toolCalls=${t.toolCalls} screenshots=${t.screenshots} wasted=${t.wastedCalls}` +
+    (t.fileKnowledge
+      ? ` fileKnowledge=hit${t.fileKnowledge.hits}/miss${t.fileKnowledge.misses}/stale${t.fileKnowledge.staleDropped}` +
+        ` ast=${t.fileKnowledge.astSuccess}/regex=${t.fileKnowledge.regexFallback}` +
+        ` rereads=avoided${t.fileKnowledge.rereadAvoided}/required${t.fileKnowledge.rereadRequired}/redundant${t.fileKnowledge.rereadRedundant}`
+      : '') +
     ` avgInputPerTurn=${t.calls > 0 ? Math.round(t.estimatedInputTokens / t.calls) : 0}t` +
     ` coreSystem=${t.coreSystemChars ?? 0}c capabilities=${t.capabilityContractChars ?? 0}c maxPrompt=${t.maxPromptChars ?? 0}c`;
   if (!t.behavior) return base;

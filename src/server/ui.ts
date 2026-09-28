@@ -1,10 +1,14 @@
+import { HOME_CSS, HOME_BLOB_HTML } from './ui-home.js';
 import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
+import { ACTIVITY_CSS, ACTIVITY_MARK_HTML } from './ui-activity.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
+import { UI_THEME_CSS, UI_THEME_BOOTSTRAP, UI_THEME_JS } from './ui-theme.js';
+import { ONBOARDING_CSS, ONBOARDING_HTML, ONBOARDING_JS } from './ui-onboarding.js';
 
 export const UI_HTML = String.raw`<!doctype html>
 <html lang="en">
@@ -13,6 +17,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agent Gitu</title>
 <link rel="icon" type="image/svg+xml" href="/brand/agent-gitu-mark.svg">
+<script id="themeBootstrap">${UI_THEME_BOOTSTRAP}</script>
   <style>
   /* Bundled fonts (served locally from /fonts/*, no CDN, offline-safe). */
   @font-face { font-family: 'Inter'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/inter-latin-400-normal.woff2') format('woff2'); }
@@ -20,46 +25,18 @@ export const UI_HTML = String.raw`<!doctype html>
   @font-face { font-family: 'Inter'; font-style: normal; font-weight: 600; font-display: swap; src: url('/fonts/inter-latin-600-normal.woff2') format('woff2'); }
   @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/jetbrains-mono-latin-400-normal.woff2') format('woff2'); }
   @font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 700; font-display: swap; src: url('/fonts/jetbrains-mono-latin-700-normal.woff2') format('woff2'); }
-  /* Timeline palette (agent-timeline-mockup): bg/ok/err/run/evidence + line. */
   :root {
-    --bg: #0d1017;
-    --card: #131826;
-    --card2: #0f141f;
-    --border: #1e2534;
-    --border2: #2b3448;
-    --text: #e6ebf4;
-    --muted: #8b94a7;
-    --faint: #75809a;
-    --dark: #e6ebf4;
-    --ok: #3fd68f;
-    --err: #ff6465;
-    --run: #5ba8ff;
-    --evidence: #c9a86a;
-    --line: #212939;
-    --ok-dim: rgba(63,214,143,.13);
-    --err-dim: rgba(255,100,101,.13);
-    --run-dim: rgba(91,168,255,.12);
-    --hover: #1a2231;
-    --green: var(--ok);
-    --red: var(--err);
-    --blue: var(--run);
-    --amber: var(--evidence);
-    --amber-bg: rgba(201,168,106,.12);
-    --accent: #8f80ff;
     --sans: 'Inter', -apple-system, 'Segoe UI', system-ui, sans-serif;
     --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    /* Native controls (select popups, scrollbars, checkboxes) render dark —
-       without this Chromium flashes a WHITE dropdown list on every select. */
-    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; }
-  body { margin: 0; background: radial-gradient(circle at 48% -18%, rgba(143,128,255,.13), transparent 33rem), var(--bg); color: var(--text); font: 13.5px/1.6 var(--sans); }
-  ::selection { background: rgba(143,128,255,.35); }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13.5px/1.6 var(--sans); }
+  ::selection { background: var(--border2); }
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: #232c3f; border-radius: 5px; border: 2px solid var(--bg); }
-  ::-webkit-scrollbar-thumb:hover { background: #2e3950; }
+  ::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 5px; border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border2); }
   /* Counters never jitter as numbers change (Inter tnum). */
   #progText, .spec-turns, .stat .v { font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; }
   button { font: inherit; cursor: pointer; }
@@ -82,7 +59,7 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .shell { display: flex; height: 100%; min-width: 0; }
   .mobile-nav-btn, .mobile-backdrop { display: none; }
-  .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: linear-gradient(180deg, rgba(19,24,38,.72), var(--bg) 150px); display: flex; flex-direction: column; overflow: hidden; }
+  .sb { width: var(--sbw, 264px); flex: none; border-right: 1px solid var(--border); background: var(--sidebar); display: flex; flex-direction: column; overflow: hidden; }
   .sb .head { display: flex; align-items: center; gap: 8px; padding: 16px 14px 10px; }
   .sb .head .name { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 2px; font-size: 14px; }
   .brand-mark { width: 22px; height: 22px; flex: none; border-radius: 6px; }
@@ -90,15 +67,16 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .iconbtn { background: none; border: 0; color: var(--muted); width: 28px; height: 28px; border-radius: 7px; font-size: 15px; }
   .sb .iconbtn:hover { background: var(--hover); color: var(--text); }
   .sb .scroll { flex: 1; overflow-y: auto; padding: 4px 10px 10px; }
-  .sb .newbtn { margin: 6px 4px 10px; display: flex; align-items: center; gap: 9px; border: 1px solid rgba(143,128,255,.34); background: linear-gradient(135deg, rgba(143,128,255,.20), rgba(91,168,255,.12)); color: var(--text); border-radius: 10px; padding: 9px 11px; font-weight: 650; font-size: 13px; width: calc(100% - 8px); text-align: left; transition: transform .16s ease, border-color .16s ease, background .16s ease; }
-  .sb .newbtn:hover { background: linear-gradient(135deg, rgba(143,128,255,.31), rgba(91,168,255,.18)); border-color: rgba(143,128,255,.62); transform: translateY(-1px); }
+  .sb .newbtn { margin: 4px 2px 6px; display: flex; align-items: center; gap: 8px; border: 1px solid var(--border2); background: var(--card); color: var(--text); border-radius: 9px; padding: 7px 10px; font-weight: 650; font-size: 13px; width: calc(100% - 8px); text-align: left; transition: transform .16s ease, border-color .16s ease, background .16s ease; }
+  .sb .newbtn:hover { background: var(--hover); border-color: var(--border2); transform: translateY(-1px); }
   .sb .navitem { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-radius: 8px; color: var(--text); font-size: 13px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; }
   .sb .navitem:hover { background: var(--hover); }
+  .sb .navitem.active { background: var(--selected); color: var(--text); }
   .sb .navitem .ico { width: 16px; text-align: center; color: var(--muted); }
   .sb .sect { font-size: 11px; color: var(--muted); margin: 14px 10px 4px; }
   .sb .proj { display: flex; align-items: center; gap: 8px; padding: 6px 10px; font-size: 12.5px; font-weight: 600; color: var(--text); border-radius: 8px; cursor: pointer; }
   .sb .proj:hover { background: var(--hover); }
-  .sb .proj.activeproj { background: rgba(143,128,255,.10); }
+  .sb .proj.activeproj { background: var(--selected); }
   .sb .proj.activeproj .ico { color: var(--accent); }
   .sb .proj .delx { display: none; border: 0; background: none; color: var(--muted); width: 24px; height: 24px; border-radius: 6px; align-items: center; justify-content: center; flex: none; padding: 0; position: relative; }
   /* Invisible halo brings the ~24px control to a ~32px touch target. */
@@ -106,9 +84,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .proj:hover .delx { display: inline-flex; }
   .sb .proj .delx:hover { color: var(--err); background: var(--err-dim); }
   .sb .proj .delx svg { width: 11px; height: 11px; }
-  .sb .chat { display: flex; align-items: flex-start; gap: 8px; padding: 5px 10px 5px 26px; font-size: 12.5px; color: var(--muted); border-radius: 8px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; position: relative; }
-  .sb .chat .dot { margin-top: 4px; }
-  .sb .chat .chat-label { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; line-height: 1.35; padding: 1px 0; }
+  .sb .chat { display: flex; align-items: center; gap: 9px; padding: 6px 10px 6px 22px; font-size: 12.5px; color: var(--muted); border-radius: 8px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; position: relative; }
+  .sb .chat .dot { margin-top: 0; }
+  .sb .chat .chat-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
   .sb .chat:hover { background: var(--hover); color: var(--text); }
   /* Per-session hover delete — single-session cleanup no longer requires
      discovering bulk-manage mode. Two-click arm/confirm, no native dialogs. */
@@ -118,18 +96,18 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .chat .rowdel:hover { color: var(--err); background: var(--err-dim); }
   .sb .chat .rowdel.armed { color: #fff; background: var(--err); }
   .sb .chat .rowdel.armed::after { content: 'sure?'; inset: 0 -34px 0 auto; font-size: 10.5px; color: var(--err); display: flex; align-items: center; white-space: nowrap; }
-  .sb .more-row { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 26px; font-size: 11.5px; color: var(--faint); border: 0; background: none; width: 100%; text-align: left; cursor: pointer; }
+  .sb .more-row { display: flex; align-items: center; gap: 6px; padding: 4px 10px 4px 22px; font-size: 11.5px; color: var(--faint); border: 0; background: none; width: 100%; text-align: left; cursor: pointer; }
   .sb .more-row:hover { color: var(--text); background: var(--hover); border-radius: 8px; }
-  .sb .chat.active { background: rgba(143,128,255,.16); color: var(--text); }
-  .sb .chat .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+  .sb .chat.active { background: var(--selected); color: var(--text); }
+  .sb .chat .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
   .sb .chat .dot.running { background: var(--blue); animation: pulse 1.2s infinite; }
   .sb .chat .dot.waiting { background: var(--amber); animation: pulse 1.2s infinite; }
   .sb .chat .dot.completed { background: var(--green); }
   .sb .chat .dot.blocked, .sb .chat .dot.failed { background: var(--red); }
-  /* Inline end-of-stream failure card (mirrors the State-panel banner into the main column). */
-  .run-stop-note { margin: 7px 0; color: rgba(151,164,194,.58); font-size: 10px; line-height: 1.35; letter-spacing: .01em; }
+  /* Inline end-of-stream failure note in the activity timeline. */
+  .run-stop-note { margin: 7px 0; color: var(--faint); font-size: 10px; line-height: 1.35; letter-spacing: .01em; }
   /* A user message whose send FAILED — kept visible with retry, no longer "pending". */
-  .usermsg.failed > div { border-color: rgba(255,100,101,.55) !important; opacity: .85; }
+  .usermsg.failed > div { border-color: var(--err-border) !important; opacity: .85; }
   .sb .foot { border-top: 1px solid var(--border); padding: 10px 12px; display: flex; gap: 8px; align-items: center; }
   .bulkbar { display: flex; gap: 6px; align-items: center; padding: 8px 10px; border-top: 1px solid var(--border); background: var(--bg); }
   .bulkbar #bulkCount { flex: 1; font-size: 12px; color: var(--muted); }
@@ -144,32 +122,78 @@ export const UI_HTML = String.raw`<!doctype html>
   .topbar .spacer { flex: 1; }
   .view { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
-  .home { position: relative; isolation: isolate; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; padding: 24px; overflow: auto; }
-  .home::before { content: ''; position: absolute; z-index: -1; width: min(920px, 86vw); height: 520px; top: calc(50% - 270px); border-radius: 50%; background: radial-gradient(ellipse, rgba(91,168,255,.075), rgba(143,128,255,.04) 39%, transparent 70%); pointer-events: none; }
+  .home { position: relative; isolation: isolate; flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 32px 24px; overflow: auto; }
+  .home > :not(.home-particles) { flex-shrink: 0; max-width: 100%; }
+  .home > :last-child { margin-bottom: auto; }
+  .home > .composer, .home > .home-cta { width: min(760px, 100%); }
+  .home::before { content: ''; position: absolute; z-index: -1; width: min(920px, 86vw); height: 520px; top: calc(50% - 270px); border-radius: 50%; background: none; pointer-events: none; }
   .home-intro { width: min(760px, 94vw); }
-  .home-eyebrow { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: #b9b1ff; font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+  .home-eyebrow { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: var(--text); font-size: 10.5px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
   .home-eyebrow::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 4px var(--ok-dim); }
   .home h1 { font-size: clamp(24px, 3vw, 32px); font-weight: 650; letter-spacing: -.035em; line-height: 1.18; margin: 0; }
   .home h1 .u { border-bottom: 2px dotted var(--faint); }
   .home-copy { max-width: 580px; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+  /* The wordmark owns a row so it never sits behind the home controls. */
+  .home-brand { position: relative; width: min(760px, 100%); margin-top: auto; padding: 12px 0 16px; text-align: center; }
+  .home-brand-kicker { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 14px; color: var(--muted); font: 10px var(--mono); letter-spacing: .18em; text-transform: uppercase; }
+  .home-brand-kicker::before, .home-brand-kicker::after { content: ''; width: 28px; height: 1px; background: var(--border2); }
+  .home .home-brand h1 { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; column-gap: .22em; font-size: clamp(38px, 6vw, 72px); font-weight: 600; letter-spacing: -.055em; line-height: 1.15; text-align: center; }
+  .home-brand-name { color: var(--accent); background: linear-gradient(115deg, var(--accent) 15%, var(--run) 90%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+  .home-brand-spark { display: inline-block; width: 8px; height: 8px; margin-left: 6px; border-radius: 2px; background: var(--run); transform: rotate(-12deg); vertical-align: baseline; }
+  .home-brand-copy { margin: 14px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  /* Two layers of tiny shining particles drifting across the home background. */
+  .home-particles { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+  .home-particles::before, .home-particles::after { content: ''; position: absolute; inset: -20%; border-radius: 50%; background-repeat: repeat;
+    background-image: radial-gradient(1.6px 1.6px at 12% 22%, color-mix(in srgb, var(--text) 55%, transparent) 50%, transparent 52%),
+      radial-gradient(1.3px 1.3px at 68% 14%, color-mix(in srgb, var(--accent) 70%, transparent) 50%, transparent 52%),
+      radial-gradient(1.8px 1.8px at 84% 62%, color-mix(in srgb, var(--text) 40%, transparent) 50%, transparent 52%),
+      radial-gradient(1.2px 1.2px at 30% 78%, color-mix(in srgb, var(--text) 50%, transparent) 50%, transparent 52%),
+      radial-gradient(1.5px 1.5px at 52% 44%, color-mix(in srgb, var(--run) 60%, transparent) 50%, transparent 52%),
+      radial-gradient(1.2px 1.2px at 92% 88%, color-mix(in srgb, var(--text) 45%, transparent) 50%, transparent 52%);
+    background-size: 620px 620px; opacity: .5; animation: homeDrift 90s linear infinite, homeTwinkle 5.5s ease-in-out infinite alternate; }
+  .home-particles::after { background-size: 460px 460px; opacity: .35; animation-duration: 130s, 7s; animation-direction: reverse, alternate; }
+  @keyframes homeDrift { from { transform: translate3d(0, 0, 0); } to { transform: translate3d(-3%, -2.5%, 0); } }
+  @keyframes homeTwinkle { from { opacity: .22; } to { opacity: .55; } }
+${HOME_CSS}
+  /* The + menu on every composer: attach, tag a folder, schedule. */
+  .home-plus-menu { position: fixed; z-index: 70; min-width: 210px; padding: 6px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: var(--shadow-float); }
+  .home-plus-menu button { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; font: inherit; font-size: 12.5px; color: var(--text); background: transparent; border: 0; border-radius: 9px; padding: 8px 10px; cursor: pointer; }
+  .home-plus-menu button:hover { background: var(--hover); }
+  .home-plus-menu button.active { background: var(--selected); }
+  .home-plus-menu button:disabled { opacity: .5; cursor: not-allowed; }
+  .home-plus-menu .check { margin-left: auto; color: var(--accent); opacity: 0; }
+  .home-plus-menu button.active .check { opacity: 1; }
+  .home-plus-menu button .ico { color: var(--muted); display: inline-flex; }
+  .home-plus-menu button .ico svg { width: 15px; height: 15px; }
   .sugs { display: grid; grid-template-columns: repeat(4, 170px); gap: 10px; }
-  @media (max-width: 900px) { .sugs { grid-template-columns: repeat(2, 170px); } }  .sug { min-height: 130px; background: linear-gradient(155deg, rgba(27,34,49,.94), var(--card)); border: 1px solid var(--border); border-radius: 13px; padding: 14px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--text); transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
-  .sug:hover { border-color: rgba(143,128,255,.48); box-shadow: 0 12px 30px rgba(2,6,17,.28); transform: translateY(-2px); }
+  @media (max-width: 900px) { .sugs { grid-template-columns: repeat(2, 170px); } }  .sug { min-height: 130px; background: var(--card); border: 1px solid var(--border); border-radius: 13px; padding: 14px; text-align: left; cursor: pointer; font-size: 12.5px; color: var(--text); transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease; }
+  .sug:hover { border-color: var(--border2); box-shadow: 0 12px 30px rgba(2,6,17,.28); transform: translateY(-2px); }
   .sug .ico { font-size: 15px; display: block; margin-bottom: 10px; }
   .sug-title { display: block; font-weight: 650; line-height: 1.38; }
   .sug-hint { display: block; margin-top: 5px; color: var(--faint); font-size: 11px; line-height: 1.38; }
-  .setup-card { border: 1px solid rgba(91,168,255,.34); background: var(--run-dim); color: var(--text); border-radius: 12px; padding: 12px 14px; }
-  .setup-card:hover { border-color: var(--run); background: rgba(91,168,255,.16); }
-  .setup-card h3 { color: #cfe6ff; font-size: 12px; letter-spacing: .6px; text-transform: uppercase; }
+  .setup-card { border: 1px solid var(--run-border); background: var(--run-dim); color: var(--text); border-radius: 12px; padding: 12px 14px; }
+  .setup-card:hover { border-color: var(--run); background: var(--run-dim); }
+  .setup-card h3 { color: var(--text); font-size: 12px; letter-spacing: .6px; text-transform: uppercase; }
   .setup-card .setup-action { display: inline-block; margin-top: 6px; color: var(--run); font-size: 12px; font-weight: 650; }
-  .composer { width: min(760px, 94vw); background: linear-gradient(145deg, rgba(24,31,47,.98), var(--card)); border: 1px solid var(--border2); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 12px 32px rgba(0,0,0,.15); padding: 6px 8px 8px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
-  .composer:focus-within { border-color: rgba(143,128,255,.72); box-shadow: 0 0 0 3px rgba(143,128,255,.12), 0 16px 38px rgba(0,0,0,.24); }
-  .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
+  .composer { position: relative; width: min(760px, 94vw); background: var(--card); border: 1px solid var(--border2); border-radius: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.12), 0 12px 32px rgba(0,0,0,.15); padding: 6px 8px 8px; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+  .composer:focus-within { border-color: var(--border2); box-shadow: 0 0 0 3px var(--selected), 0 16px 38px rgba(0,0,0,.24); }
+  .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: 15px/1.5 var(--sans); padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
   .composer textarea::placeholder { color: var(--faint); }
   .composer-bar { display: flex; align-items: center; gap: 5px; padding: 2px 6px; flex-wrap: wrap; }
+  .context-trigger { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 8px; background: none; color: var(--muted); padding: 5px 9px; font-size: 12px; }
+  .context-trigger:hover, .context-trigger[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+  .context-trigger svg { width: 14px; height: 14px; }
+  .context-card { position: absolute; right: 8px; bottom: calc(100% + 8px); z-index: 65; width: min(390px, calc(100vw - 32px)); max-height: min(65vh, 560px); overflow-y: auto; padding: 15px; border: 1px solid var(--border2); border-radius: 14px; background: var(--card); box-shadow: var(--shadow-float); }
+  .context-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 650; }
+  .context-card .section-h { margin-top: 14px; }
+  .context-card .stat-grid { gap: 10px 14px; }
+  .context-card details > summary { cursor: pointer; color: var(--muted); font-size: 11.5px; margin-top: 12px; }
   .pill { background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
   .pill:hover { background: var(--hover); color: var(--text); }
   .control-pill { border: 1px solid transparent; }
+  #homePlusBtn { width: 32px; height: 32px; padding: 0; flex: none; justify-content: center; border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); background: color-mix(in srgb, var(--accent) 13%, var(--card)); color: var(--accent); cursor: pointer; }
+  #homePlusBtn:hover, #homePlusBtn[aria-expanded="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--card)); color: var(--accent); }
+  #homePlusBtn svg { width: 16px; height: 16px; }
   .control-prefix { color: var(--faint); font-size: 10px; font-weight: 650; letter-spacing: .55px; text-transform: uppercase; }
   .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; max-width: 220px; }
   .model-meta { color: var(--faint); font: 10.5px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
@@ -193,16 +217,16 @@ export const UI_HTML = String.raw`<!doctype html>
   .model-item .mi-name { font-weight: 600; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-item .mi-name .vmark { color: var(--blue); font-style: normal; }
   .model-empty { color: var(--faint); font-size: 12px; padding: 10px 9px; text-align: center; line-height: 1.5; }
-  .model-list mark { background: rgba(143,128,255,.28); color: inherit; border-radius: 3px; }
+  .model-list mark { background: var(--selected); color: inherit; border-radius: 3px; }
   .model-count { padding: 5px 10px 2px; margin-top: 4px; border-top: 1px solid var(--border); color: var(--faint); font-size: 10.5px; text-align: right; }
-  .send { margin-left: auto; width: 32px; height: 32px; border-radius: 10px; border: 0; background: linear-gradient(135deg, #a99cff, #6f98ff); color: #fff; font-size: 14px; box-shadow: 0 4px 12px rgba(112,134,255,.28); transition: transform .16s ease, filter .16s ease, box-shadow .16s ease; }
-  .send:not(:disabled):hover { filter: brightness(1.1); box-shadow: 0 7px 18px rgba(112,134,255,.38); transform: translateY(-1px); }
+  .send { margin-left: auto; width: 32px; height: 32px; border-radius: 10px; border: 0; background: var(--accent); color: var(--on-accent); font-size: 14px; transition: opacity .16s ease; }
+  .send:not(:disabled):hover { opacity: .85; }
   /* Send ⇄ Stop: while the agent runs the same button stops it. */
   .send.stop { background: var(--err); color: #fff; font-size: 11px; animation: stopPulse 1.6s ease-in-out infinite; }
   .send.stop:hover { filter: brightness(1.12); }
-  @keyframes stopPulse { 0%,100% { box-shadow: 0 0 0 0 rgba(255,100,101,.45); } 50% { box-shadow: 0 0 0 5px rgba(255,100,101,0); } }
+  @keyframes stopPulse { 0%,100% { box-shadow: 0 0 0 0 var(--err-border); } 50% { box-shadow: 0 0 0 5px transparent; } }
   #wfChip { flex: none; }
-  .send:disabled { background: #2b3448; }
+  .send:disabled { background: var(--border2); }
 
   .run { flex: 1; display: flex; min-height: 0; }
   .run-main { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -213,20 +237,6 @@ export const UI_HTML = String.raw`<!doctype html>
   .progress .pbar { flex: 1; height: 2px; border-radius: 1px; background: var(--line); overflow: hidden; }
   .progress .pbar span { display: block; height: 100%; width: 0; background: var(--run); transition: width .5s ease; }
   .stream { position: relative; flex: 1; overflow-y: auto; padding: 10px 24px 18px 20px; }
-  .run-overview { display: flex; align-items: center; gap: 12px; padding: 12px 24px 10px; border-bottom: 1px solid var(--border); background: linear-gradient(180deg, rgba(19,24,38,.78), var(--bg)); flex: none; min-width: 0; }
-  .run-overview-main { display: flex; align-items: flex-start; gap: 9px; min-width: 0; flex: 1; }
-  .run-overview-dot { width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; background: var(--faint); flex: none; }
-  .run-overview-dot.running { background: var(--run); box-shadow: 0 0 0 4px var(--run-dim); }
-  .run-overview-dot.completed { background: var(--ok); }
-  .run-overview-dot.failed, .run-overview-dot.blocked { background: var(--err); }
-  .run-overview-dot.aborted { background: var(--faint); }
-  .run-overview-dot.waiting { background: var(--evidence); }
-  .run-overview-goal { color: var(--text); font-size: 13px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .run-overview-next { color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .run-overview-next.wrapped { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.45; }
-  .run-overview-stats { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 10.5px var(--mono); white-space: nowrap; }
-  .run-overview .details-btn { border: 1px solid var(--border2); background: rgba(19,24,38,.84); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 11.5px; transition: background .15s ease, border-color .15s ease; }
-  .run-overview .details-btn:hover { background: var(--hover); border-color: rgba(143,128,255,.48); }
   .timeline-trim-note { margin: 4px 0 10px 20px; color: var(--faint); font-size: 11.5px; }
   .stream::before { content: none; }
   .tl-row { position: relative; display: flex; align-items: flex-start; gap: 11px; padding: 5px 0; min-width: 0; animation: toolIn .22s ease-out both; }
@@ -239,13 +249,17 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-dot.dot-ev { width: 7px; height: 7px; margin-top: 7px; margin-left: 1px; background: var(--evidence); box-shadow: none; animation: none; }
   /* Plain narration/thought: tiny unfilled dot, no color */
   .tl-dot.dot-note { width: 5px; height: 5px; margin-top: 8px; margin-left: 2px; background: transparent; box-shadow: inset 0 0 0 1px var(--faint); opacity: .65; animation: none; }
-  @keyframes tlPulse { 0% { box-shadow: inset 0 0 0 1.5px var(--run), 0 0 0 0 rgba(91,168,255,.4); } 100% { box-shadow: inset 0 0 0 1.5px var(--run), 0 0 0 7px rgba(91,168,255,0); } }
+  @keyframes tlPulse { 0% { box-shadow: inset 0 0 0 1.5px var(--run), 0 0 0 0 var(--run-border); } 100% { box-shadow: inset 0 0 0 1.5px var(--run), 0 0 0 7px transparent; } }
   @keyframes dotPop { 30% { transform: scale(1.4); } }
   .tl-body { flex: 1; min-width: 0; }
   /* Narration / thought text: full-weight sans body — reads MORE prominent
      than the mono tool lines around it. */
   .tl-note-row { padding: 9px 0; }
-  .tl-note-row .tl-body { font-size: 14px; font-weight: 400; line-height: 1.75; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tl-note-row .tl-body { font-size: 15px; font-weight: 400; line-height: 1.65; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tl-stream-row .stream-live { display: none; align-items: center; gap: 7px; margin-bottom: 4px; color: var(--muted); font: 11px var(--mono); white-space: nowrap; }
+  .tl-stream-row[data-stream-state="live"] .stream-live { display: inline-flex; }
+  .tl-stream-row .stream-live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--run); box-shadow: 0 0 0 3px var(--run-dim); }
+  .tl-stream-row .stream-text { min-width: 0; }
   .tl-note-row > .tl-dot, .tl-tool-group > .tl-dot { display: none; }
   .tl-note-row > .tl-time, .tl-tool-group > .tl-time { display: none; }
   .response-prose { display: block; white-space: normal; overflow-wrap: anywhere; line-height: 1.75; }
@@ -254,7 +268,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .response-prose h1, .response-prose h2, .response-prose h3, .response-prose h4, .response-prose h5, .response-prose h6 { margin: 1.1em 0 .45em; color: var(--text); font-size: 1.06em; line-height: 1.5; font-weight: 600; }
   .response-prose ul, .response-prose ol { margin: .4em 0 1em; padding-left: 22px; }
   .response-prose li { padding: 2px 0; }
-  .response-prose code { font: .9em var(--mono); color: #bdcce6; }
+  .response-prose code { font: .9em var(--mono); color: var(--text); }
   .response-prose pre { padding: 8px 0 8px 14px; margin: .8em 0; border-left: 2px solid var(--border2); overflow-x: auto; white-space: pre; }
   .response-code-language { color: var(--faint); font: 10.5px var(--mono); margin-top: 14px; }
   .response-prose a { color: var(--run); text-decoration: underline; text-underline-offset: 3px; }
@@ -266,7 +280,7 @@ export const UI_HTML = String.raw`<!doctype html>
      Telemetry and raw-model JSON are machine output, not conversation:
      collapsed by default so the feed answers what/why/proof/next first,
      implementation detail one click away. */
-  .exec-details { margin: 3px 0; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.02); overflow: hidden; }
+  .exec-details { margin: 3px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--card2); overflow: hidden; }
   .exec-details summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 7px; padding: 5px 10px; font-size: 11.5px; color: var(--muted); user-select: none; }
   .exec-details summary::-webkit-details-marker { display: none; }
   .exec-details summary:hover { background: var(--hover); }
@@ -328,20 +342,37 @@ export const UI_HTML = String.raw`<!doctype html>
   .intake-row { font-size: 11.5px; line-height: 1.55; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
   /* Evidence result: compact inline pill, not a full-width card */
   .ev-pill { display: inline-flex; align-items: center; max-width: 100%; font-family: var(--mono); font-size: 10.5px; letter-spacing: .2px; border-radius: 999px; padding: 2px 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ev-pill.pass { color: var(--ok); background: var(--ok-dim); box-shadow: inset 0 0 0 1px rgba(63,214,143,.3); }
-  .ev-pill.fail { color: var(--err); background: var(--err-dim); box-shadow: inset 0 0 0 1px rgba(255,100,101,.3); }
+  .ev-pill.pass { color: var(--ok); background: var(--ok-dim); box-shadow: inset 0 0 0 1px var(--ok-border); }
+  .ev-pill.fail { color: var(--err); background: var(--err-dim); box-shadow: inset 0 0 0 1px var(--err-border); }
   /* ── Tool call rows: one monospace line on the timeline ─────────────────
      Command, context, duration, and status above a native output disclosure. */
   @keyframes toolIn { from { opacity: 0; } to { opacity: 1; } }
   @keyframes outFade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; transform: none; } }
   .tl-tool.done-bad { animation: rowFlash .6s ease; }
-  @keyframes rowFlash { 0% { background: rgba(255,100,101,.09); } 100% { background: transparent; } }
+  @keyframes rowFlash { 0% { background: var(--err-dim); } 100% { background: transparent; } }
   .tl-cmd { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-family: var(--mono); font-size: 12px; cursor: pointer; border-radius: 6px; }
-  .tl-cmd:hover .cmd { color: #fff; }
+  .tl-cmd:hover .cmd { color: var(--text); }
   .tl-cmd .cmd { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 10000 auto; }
   .tl-cmd .why { color: var(--faint); font-style: italic; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1 9999 auto; }
   .st { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: .5px; color: var(--faint); }
   .lines { font-family: var(--mono); font-size: 10px; color: var(--ok); background: var(--ok-dim); border-radius: 5px; padding: 1px 6px; flex: none; }
+  .lines .del { color: var(--err); margin-left: 4px; }
+  /* Code diff. Removals red, additions green, both counted: a rewrite that
+     deleted code must never read as a pure addition. */
+  .diffview { margin: 6px 0 2px 12px; padding: 4px 0; border-left: 2px solid var(--border2); border-radius: 3px; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; overflow-x: auto; }
+  .diffview .dline { display: flex; gap: 8px; padding: 0 8px; white-space: pre; }
+  .diffview .dline .ln { min-width: 2.8em; text-align: right; color: var(--faint); opacity: .55; user-select: none; }
+  .diffview .dline .mark { width: 1ch; opacity: .85; }
+  .diffview .dline .tx { min-width: 0; }
+  .diffview .dline.add { background: var(--ok-dim); color: var(--ok); }
+  .diffview .dline.remove { background: var(--err-dim); color: var(--err); }
+  .diffview .dline.context { color: var(--faint); }
+  .diffview .dline.gap { color: var(--faint); font-style: italic; opacity: .7; }
+  /* The model's own reasoning: a run that thinks silently is indistinguishable
+     from a run that is stuck. */
+  .thinkbox { margin: 2px 0 6px 12px; border-left: 2px solid var(--border2); padding: 2px 0 2px 10px; }
+  .thinkbox summary { cursor: pointer; color: var(--faint); font-size: 11px; }
+  .thinkbox pre { margin: 4px 0 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.55; color: var(--text); opacity: .82; white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow-y: auto; }
   /* Collapsed output disclosure */
   .tl-out { margin-top: 2px; max-width: 100%; }
   .tl-out summary { list-style: none; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; -webkit-user-select: none; font-family: var(--mono); font-size: 10px; letter-spacing: .6px; color: var(--faint); padding: 2px 0; }
@@ -351,18 +382,18 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-out summary:hover { color: var(--muted); }
   .tool-btn-copy { display: inline-flex; align-items: center; gap: 4px; background: none; border: 1px solid var(--border2); border-radius: 5px; padding: 4px 8px; font-size: 10px; font-family: var(--mono); color: var(--faint); cursor: pointer; transition: all .2s; min-height: 26px; }
   .tool-btn-copy:hover { background: var(--hover); color: var(--text); }
-  .tool-btn-copy.copied { color: var(--ok); border-color: rgba(63,214,143,.4); }
+  .tool-btn-copy.copied { color: var(--ok); border-color: var(--ok-border); }
   .tool-btn-copy svg { width: 10px; height: 10px; }
   .tl-out[open] pre { animation: outFade .25s ease; }
-  .tl-out pre { margin: 4px 0 0; padding: 8px 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; color: #a7b1c5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  .tl-out pre { margin: 4px 0 0; padding: 8px 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
   .tl-out pre.folded { max-height: 110px; overflow: hidden; position: relative; border-radius: 8px 8px 0 0; }
   /* Live work: quiet surfaces, clear states, and motion only at the edge. */
   .stream { overflow-anchor: none; }
   .replayed, .replayed .dot-ok, .replayed .dot-bad { animation: none !important; }
   .text-arrival { animation: textArrival .18s ease-out both; }
   @keyframes textArrival { from { opacity: .3; } to { opacity: 1; } }
-  .text-streaming::after { content: '···'; display: inline-block; margin-left: 5px; color: var(--run); font: 700 14px/1 var(--mono); letter-spacing: 1px; animation: thinkingDots 1.15s ease-in-out infinite; }
-  @keyframes thinkingDots { 0%, 100% { opacity: .28; transform: translateY(1px); } 50% { opacity: 1; transform: translateY(-1px); } }
+  .text-streaming::after { content: ''; display: inline-block; width: 2px; height: 1em; margin-left: 3px; vertical-align: -.12em; border-radius: 1px; background: var(--run); animation: streamCaret 1s steps(1, end) infinite; }
+  @keyframes streamCaret { 50% { opacity: 0; } }
   .tl-note-row:has(.text-streaming) .caret { display: none; }
   /* Tool calls belong to the agent response that caused them. A single
      expandable activity group keeps a long run readable while still making
@@ -374,7 +405,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-group-details > summary::-webkit-details-marker { display: none; }
   .tool-group-details > summary:hover .tool-group-title { color: var(--text); }
   .tool-group-details > summary:focus-visible, .tool-call-head:focus-visible { outline: 2px solid var(--run); outline-offset: 3px; }
-  .tool-group-orbit { width: 12px; height: 12px; border: 1.5px solid rgba(91,168,255,.22); border-top-color: var(--run); border-radius: 50%; animation: spin .85s linear infinite; flex: none; }
+  .tool-group-orbit { width: 12px; height: 12px; border: 1.5px solid var(--run-dim); border-top-color: var(--run); border-radius: 50%; animation: spin .85s linear infinite; flex: none; }
   .tl-tool-group:not([data-tool-group-state=working]) .tool-group-orbit { display: none; }
   .tool-group-copy { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
   .tool-group-title { color: var(--muted); font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -385,7 +416,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-tool-group[data-tool-group-state=working] .tool-group-state { color: var(--run); }
   .tl-tool-group[data-tool-group-state=attention] .tool-group-state { color: var(--err); }
   .tool-group-state:empty { display: none; }
-  .tl-tool-group[data-tool-group-state=working] .tool-group-title { color: var(--muted); background: linear-gradient(100deg, var(--muted) 30%, #f1f5ff 48%, var(--muted) 66%); background-size: 250% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: toolTextShimmer 2.4s linear infinite; }
+  .tl-tool-group[data-tool-group-state=working] .tool-group-title { color: var(--muted); background: linear-gradient(100deg, var(--muted) 30%, var(--text) 48%, var(--muted) 66%); background-size: 250% 100%; background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; animation: toolTextShimmer 2.4s linear infinite; }
   @keyframes toolTextShimmer { from { background-position: 160% 0; } to { background-position: -90% 0; } }
   @media (prefers-reduced-motion: reduce) { .tl-tool-group[data-tool-group-state=working] .tool-group-title { background: none; -webkit-text-fill-color: currentColor; animation: none; } }
   .tool-group-chevron { color: var(--faint); transition: transform .18s ease; flex: none; }
@@ -398,6 +429,16 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-call-head:hover .cmd { color: var(--text); }
   .tool-call-head .cmd { flex: 1 1 auto; }
   .tool-call-head .why { flex: 0 2 auto; max-width: 36%; }
+  .tool-call[data-tool-kind="edit"] .tool-kind { color: var(--run); }
+  .tool-call[data-tool-kind="edit"] .cmd { font-family: var(--mono); text-decoration: underline dotted; text-decoration-color: var(--border2); text-underline-offset: 3px; }
+  .tool-change-stat { display: inline-flex; gap: 6px; flex: none; color: var(--faint); font: 10.5px var(--mono); white-space: nowrap; }
+  .tool-change-stat .added { color: var(--ok); }
+  .tool-change-stat .removed { color: var(--err); }
+  .tool-diff { padding: 8px 0 !important; border: 1px solid var(--border) !important; border-radius: 8px !important; background: var(--card2) !important; }
+  .tool-diff-line { padding: 0 2px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .tool-diff-line.add { color: var(--ok); background: var(--ok-dim); }
+  .tool-diff-line.del { color: var(--err); background: var(--err-dim); }
+  .tool-diff-line.hunk { color: var(--run); }
   .tool-kind { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 20px; flex: none; border: 0; color: var(--faint); font: 11px var(--mono); background: transparent; }
   .tool-duration { color: var(--faint); font: 10px var(--mono); font-variant-numeric: tabular-nums; flex: none; min-width: 32px; text-align: right; }
   .exit-code { font: 10px var(--mono); color: var(--faint); flex: none; }
@@ -412,7 +453,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .tool-call .tl-out summary { display: flex; padding-top: 7px; }
   .tool-call .tl-out summary::before { display: none; }
   .tool-call .tool-btn-copy { margin-left: auto; }
-  .tool-call .st-run::before { content: ''; width: 9px; height: 9px; border: 1.5px solid rgba(91,168,255,.25); border-top-color: var(--run); border-radius: 50%; animation: toolSpin .9s linear infinite; }
+  .tool-call .st-run::before { content: ''; width: 9px; height: 9px; border: 1.5px solid var(--run-dim); border-top-color: var(--run); border-radius: 50%; animation: toolSpin .9s linear infinite; }
   @keyframes toolSpin { to { transform: rotate(360deg); } }
   .jump-latest { position: absolute; z-index: 5; bottom: 152px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; padding: 7px 14px; border: 1px solid var(--border2); border-radius: 999px; color: var(--text); background: var(--card); box-shadow: 0 6px 24px rgba(0,0,0,.3); font-size: 11px; }
   .jump-latest:hover { background: var(--hover); border-color: var(--run); }
@@ -421,8 +462,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .approach-panel > summary::-webkit-details-marker { display: none; }
   .approach-panel > summary::before { content: '›'; color: var(--faint); transition: transform .18s ease; }
   .approach-panel[open] > summary::before { transform: rotate(90deg); }
-  .approach-panel > summary:hover { background: rgba(255,255,255,.025); }
-  .approach-title { font-weight: 600; color: #b9b1ff; font-size: 12px; }
+  .approach-panel > summary:hover { background: var(--hover); }
+  .approach-title { font-weight: 600; color: var(--text); font-size: 12px; }
   .approach-count { font: 10px var(--mono); color: var(--faint); }
   .approach-latest { flex: 1; min-width: 0; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .approach-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; font: 10px var(--mono); color: var(--faint); }
@@ -441,21 +482,25 @@ export const UI_HTML = String.raw`<!doctype html>
   .fold-btn:hover { color: var(--text); }
 
   .chip { font-size: 11px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--border2); color: var(--muted); }
-  .chip.ok { color: var(--ok); border-color: rgba(63,214,143,.35); background: var(--ok-dim); }
-  .chip.bad { color: var(--err); border-color: rgba(255,100,101,.35); background: var(--err-dim); }
-  .chip.info { color: var(--run); border-color: rgba(91,168,255,.35); background: var(--run-dim); }
-  .chip.warn { color: var(--evidence); border-color: rgba(201,168,106,.4); background: var(--amber-bg); }
+  .chip.ok { color: var(--ok); border-color: var(--ok-border); background: var(--ok-dim); }
+  .chip.bad { color: var(--err); border-color: var(--err-border); background: var(--err-dim); }
+  .chip.info { color: var(--run); border-color: var(--run-border); background: var(--run-dim); }
+  .chip.warn { color: var(--evidence); border-color: var(--warn-border); background: var(--amber-bg); }
   /* A refused action: the reason code, the operation it refused, and the real
      detail message — none of which the legacy line carried. Quiet by design:
      the agent refusing itself is context, not a headline. */
   .tl-policy .policy-op { font-family: var(--mono); font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
   .tl-policy .policy-tool { font-family: var(--mono); font-size: 11px; color: var(--faint); }
-  .tl-policy .policy-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
+  .tl-policy .policy-summary { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 4px; }
+  .tl-policy .policy-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 4px; overflow-wrap: anywhere; }
+  .tl-policy details.policy-detail summary { width: fit-content; cursor: pointer; color: var(--faint); font-size: 11px; }
+  .tl-policy details.policy-detail summary:hover { color: var(--text); }
+  .tl-policy .policy-raw { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 8px 10px; margin-top: 6px; border-radius: 7px; background: var(--card2); user-select: text; }
   .tl-meta .recover-detail { color: var(--muted); font-size: 11.5px; line-height: 1.5; margin-top: 3px; overflow-wrap: anywhere; }
   .crit-req { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 3px; }
   .crit-req code { background: var(--card2); border-radius: 4px; padding: 1px 5px; color: var(--text); }
 
-  .review-card, .approval { border: 1px solid rgba(201,168,106,.35); background: var(--amber-bg); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .review-card, .approval { border: 1px solid var(--warn-border); background: var(--amber-bg); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   .review-card h3, .approval h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--evidence); }
   .review-card label { display: block; font-size: 11px; color: var(--muted); margin: 8px 0 3px; }
   .review-card textarea { width: 100%; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 7px 9px; font-family: var(--mono); font-size: 11.5px; resize: vertical; }
@@ -465,9 +510,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .review-card .actions input { min-width: 0; flex: 1 1 160px; }
   .review-card input { flex: 1; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 6px 9px; font-size: 12px; }
   .btn { border: 0; border-radius: 8px; padding: 6px 14px; font-size: 12.5px; font-weight: 600; }
-  .btn.dark { background: var(--dark); color: #10141d; }
+  .btn.dark { background: var(--dark); color: var(--on-accent); }
   .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--border2); }
-  .btn.red { background: transparent; color: var(--err); border: 1px solid rgba(255,100,101,.35); }
+  .btn.red { background: transparent; color: var(--err); border: 1px solid var(--err-border); }
   .approval pre { font-family: var(--mono); font-size: 11.5px; background: var(--card2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; overflow-x: auto; margin: 6px 0 10px; }
   .md-plan { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 4px 14px; margin: 6px 0; }
   .md-plan h4 { margin: 12px 0 6px; font-size: 12px; letter-spacing: .8px; text-transform: uppercase; color: var(--muted); }
@@ -476,7 +521,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .md-plan li .ver { display: block; color: var(--muted); font-size: 11.5px; }
   .md-plan ul { margin: 0 0 12px; padding-left: 20px; font-size: 12.5px; }
 
-  .qcard { border: 1px solid rgba(91,168,255,.35); background: rgba(91,168,255,.07); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
+  .qcard { border: 1px solid var(--run-border); background: var(--run-dim); border-radius: 12px; padding: 14px 16px; margin: 12px 0; }
   .qcard h3 { margin: 0 0 10px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--run); }
   .qcard .q { margin-bottom: 12px; }
   .qcard .q .qt { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
@@ -504,11 +549,9 @@ export const UI_HTML = String.raw`<!doctype html>
   .summary-card .verify-row details { width: 100%; color: var(--muted); font-size: 11px; }
   .summary-card .verify-row summary { cursor: pointer; width: fit-content; }
   .summary-card .verify-row pre { margin: 6px 0 0; padding: 7px; max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; border-radius: 6px; background: var(--card2); font: 10.5px var(--mono); color: var(--muted); }
-  /* ── Flat completion report ──────────────────────────────────────────────
-     The end-of-run report is a document, not a dashboard: no bordered card,
-     just typography, spacing and hairline separators. Outcome first, then
-     findings/changes/status, technical evidence collapsed by default. */
-  .report-flat { padding: 14px 0 6px; margin: 16px 0 4px; border-top: 1px solid var(--border); }
+  /* Completion reports share Cowork reply styling. Verification details
+     remain available in the collapsed technical evidence disclosure. */
+  .report-flat { padding: 0; margin: 16px 0; min-width: 0; }
   .report-flat .r-headline { display: flex; align-items: center; gap: 10px; }
   .report-flat h2 { margin: 0; font-size: 17px; }
   .report-flat .r-headline .tool-btn-copy { margin-left: auto; }
@@ -521,6 +564,21 @@ export const UI_HTML = String.raw`<!doctype html>
   .report-flat .r-sec li { position: relative; padding-left: 16px; margin: 3px 0; }
   .report-flat .r-sec li::before { content: '\2022'; position: absolute; left: 4px; color: var(--faint); }
   .report-flat .r-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .report-files { margin-top: 12px; border: 1px solid var(--border2); border-radius: 12px; overflow: hidden; background: var(--card2); }
+  .report-files-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; color: var(--text); font-size: 12.5px; font-weight: 600; border-bottom: 1px solid var(--border); }
+  .report-files-head svg { width: 15px; height: 15px; color: var(--run); }
+  .report-files-count { margin-left: auto; color: var(--faint); font: 11px var(--mono); }
+  .report-file-row { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 7px 12px; color: var(--muted); font: 11.5px var(--mono); text-decoration: none; }
+  .report-file-row + .report-file-row { border-top: 1px solid var(--border); }
+  .report-file-row:hover { background: var(--hover); color: var(--text); }
+  .report-file-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .report-file-action { margin-left: auto; flex: none; color: var(--faint); font: 11px var(--sans); }
+  .report-files-more > summary { cursor: pointer; padding: 9px 12px; color: var(--muted); font-size: 11.5px; border-top: 1px solid var(--border); }
+  .report-files-more > summary:hover { color: var(--text); background: var(--hover); }
+  .r-delivery-more { margin-top: 7px; }
+  .r-delivery-more > summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 11.5px; }
+  .r-delivery-more > summary:hover { color: var(--text); }
+  .r-delivery-more > ul { margin-top: 7px; }
   .report-flat .r-note { margin-top: 7px; font-size: 12px; color: var(--muted); }
   .report-flat .sec { margin-top: 14px; }
   .report-flat .sec h4 { margin: 0 0 6px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
@@ -544,40 +602,67 @@ export const UI_HTML = String.raw`<!doctype html>
   .connection-error { color: var(--red); margin-top: 12px; font-size: 12.5px; }
   .step.cancelled, .step .st.cancelled, .composer-todo.cancelled { color: var(--muted); opacity: .7; }
   .composer-todo.cancelled .composer-todo-text { text-decoration: line-through; }
+  /* The user's own message mirrors the Cowork "me" bubble exactly: same milky
+     surface, same asymmetric corners, same right-aligned meta line, so both
+     chats read the same. Theme overrides live in ui-theme.ts. */
+  .usermsg { display: flex; justify-content: flex-end; margin: 10px 0; }
+  .usermsg .ub { position: relative; min-width: 0; max-width: min(74%, 680px); overflow-wrap: anywhere; white-space: pre-wrap; font-size: 15px; line-height: 1.58;
+    background: color-mix(in srgb, var(--run-dim) 84%, transparent);
+    border: 1px solid color-mix(in srgb, var(--run-border) 45%, transparent);
+    border-radius: 20px; border-bottom-right-radius: 7px; padding: 10px 16px;
+    backdrop-filter: blur(12px) saturate(1.35); -webkit-backdrop-filter: blur(12px) saturate(1.35);
+    box-shadow: var(--shadow), inset 0 1px 0 color-mix(in srgb, var(--card) 60%, transparent);
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+  .usermsg .ub:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--border2) 70%, transparent); box-shadow: var(--shadow-float), inset 0 1px 0 color-mix(in srgb, var(--card) 60%, transparent); }
+  .usermsg .umeta { display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-height: 24px; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+  .usermsg .umeta .nm { font-weight: 700; color: var(--text); }
+  .usermsg .umeta .tg { color: var(--faint); }
   .usermsg.pending .ubtns { display: none; }
 
   @keyframes spin { to { transform: rotate(360deg); } }
-  .working { display: flex; align-items: center; gap: 8px; padding: 10px 2px 12px; }
-  .working .spinner { width: 12px; height: 12px; border: 2px solid var(--border2); border-top-color: var(--run); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
-  .working .thinking-waves { display: inline-flex; gap: 3px; align-items: center; height: 12px; }
-  .working .thinking-waves i { width: 3px; height: 3px; border-radius: 50%; background: var(--run); animation: thinkingWave .9s ease-in-out infinite; }
-  .working .thinking-waves i:nth-child(2) { animation-delay: .13s; }
-  .working .thinking-waves i:nth-child(3) { animation-delay: .26s; }
-  @keyframes thinkingWave { 0%, 100% { opacity: .25; transform: translateY(1px); } 50% { opacity: 1; transform: translateY(-2px); } }
-  .working .wtext { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ${ACTIVITY_CSS}
+  .working.activity-indicator { padding: 10px 2px 12px; }
 
-  .run-side { width: var(--rsw, 380px); flex: none; display: flex; flex-direction: column; min-height: 0; }
-  .side-tabs { display: flex; gap: 4px; padding: 10px 14px 0; flex: none; }
-  .side-tab { border: 1px solid transparent; background: none; color: var(--muted); border-radius: 8px 8px 0 0; padding: 6px 14px; font-size: 12.5px; }
-  .side-tab.active { background: var(--card); border-color: var(--border); border-bottom-color: var(--card); color: var(--text); }
+  .run-side { position: fixed; top: 0; bottom: 0; left: var(--sbw, 264px); z-index: 70; width: min(420px, calc(100vw - var(--sbw, 264px))); display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border2); background: var(--card); box-shadow: 14px 0 40px rgba(0,0,0,.35); }
+  .shell.left-collapsed .run-side { left: 44px; width: min(420px, calc(100vw - 44px)); }
+  .side-panel-head { display: flex; align-items: center; gap: 10px; min-height: 46px; padding: 7px 14px; border-bottom: 1px solid var(--border); font-weight: 650; }
+  .side-panel-head .close { margin-left: auto; border: 0; border-radius: 7px; background: none; color: var(--muted); width: 28px; height: 28px; font-size: 18px; }
+  .side-panel-head .close:hover { background: var(--hover); color: var(--text); }
   .side-body { flex: 1; overflow-y: auto; background: var(--card); border-top: 1px solid var(--border); padding: 16px 18px; }
-  .side-summary { border: 1px solid var(--border); background: var(--card2); border-radius: 10px; padding: 10px 11px; margin-bottom: 12px; }
-  .side-summary .t { font-weight: 650; font-size: 12.5px; }
-  .side-summary .d { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .side-summary { border: 1px solid var(--border); background: var(--card2); border-radius: 10px; padding: 11px 13px; margin-bottom: 12px; border-left: 3px solid var(--accent); }
+  .side-summary .t { font-weight: 650; font-size: 12.5px; letter-spacing: .02em; }
+  .side-summary .d { color: var(--muted); font-size: 11.5px; margin-top: 4px; font-family: var(--mono); }
   .side-more { margin-top: 6px; color: var(--muted); font-size: 11.5px; }
   .side-more > summary { cursor: pointer; padding: 4px 0; }
   .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
   .stat .k { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
   .stat .v { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .stat .v.mono { font-family: var(--mono); font-weight: 500; font-size: 12px; }
-  .section-h { font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin: 20px 0 8px; }
-  .crit { display: flex; gap: 8px; padding: 5px 0; font-size: 12.5px; align-items: flex-start; }
+  .section-h { font-size: 10.5px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); margin: 20px 0 8px; padding-bottom: 5px; border-bottom: 1px solid var(--border); font-weight: 700; }
+  .crit { display: flex; gap: 8px; padding: 6px 9px; font-size: 12.5px; align-items: flex-start; border: 1px solid var(--border); background: var(--card2); border-radius: 8px; margin-bottom: 5px; }
+  .crit.done { opacity: .78; border-color: var(--ok-border); }
   .crit .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: none; background: var(--faint); }
   .crit.done .dot { background: var(--green); }
   .crit .ev-ids { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
   .step { display: flex; gap: 8px; padding: 4px 0; font-size: 12.5px; }
   .step .st { font-family: var(--mono); font-size: 10.5px; width: 76px; flex: none; color: var(--muted); padding-top: 1px; }
   .step .st.done { color: var(--green); } .step .st.failed, .step .st.blocked { color: var(--red); } .step .st.in_progress { color: var(--blue); }
+  /* Evidence checks read as scannable cards instead of flat wrapped rows. */
+  .side-evidence { display: flex; flex-direction: column; gap: 6px; }
+  .ev-row { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); background: var(--card2); border-radius: 8px; padding: 6px 9px; font-size: 12px; }
+  .ev-row.pass { border-color: var(--ok-border); background: color-mix(in srgb, var(--ok-dim) 30%, var(--card2)); }
+  .ev-row.fail { border-color: var(--err-border); background: color-mix(in srgb, var(--err-dim) 30%, var(--card2)); }
+  .ev-chip { flex: none; font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: .06em; border-radius: 999px; padding: 2px 7px; margin-top: 1px; }
+  .ev-chip.pass { color: var(--ok); background: var(--ok-dim); box-shadow: inset 0 0 0 1px var(--ok-border); }
+  .ev-chip.fail { color: var(--err); background: var(--err-dim); box-shadow: inset 0 0 0 1px var(--err-border); }
+  .ev-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+  .ev-row:hover .ev-text { white-space: normal; overflow-wrap: anywhere; }
+  .side-fail { margin: 0 0 14px; padding: 11px 12px; border: 1px solid var(--err-border); border-radius: 9px; background: var(--err-dim); color: var(--err); font-size: 12px; line-height: 1.5; }
+  .side-fail .ft { font-weight: 700; display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .side-fail .fmsg { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .side-fail .fhint { margin-top: 7px; color: var(--muted); }
+  .side-fail .facts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .side-fail .facts .btn { padding: 5px 11px; font-size: 11.5px; border-radius: 7px; }
   .bar { height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; display: flex; margin: 8px 0 6px; }
   .bar span { height: 100%; }
   .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 12px; font-size: 11px; color: var(--muted); }
@@ -585,7 +670,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .tl-time { margin-left: auto; flex: none; align-self: flex-start; margin-top: 5px; color: var(--faint); font: 10px var(--mono); opacity: .8; }
   .empty { color: var(--faint); font-size: 12.5px; padding: 4px 0; }
 
-  .bottom-composer { border-top: 1px solid var(--border); padding: 10px 26px 14px; flex: none; background: linear-gradient(180deg, rgba(13,16,23,.72), var(--bg)); }
+  .bottom-composer { padding: 10px 26px 14px; flex: none; background: var(--bg); }
   .bottom-composer .composer { width: 100%; box-shadow: none; }
   /* The current checklist lives at the point of action. It is deliberately
      compact: the agent's next work item stays visible without competing with
@@ -611,7 +696,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .composer-todo.done .composer-todo-mark { border-color: var(--ok); background: var(--ok-dim); color: var(--ok); }
   .composer-todo.blocked .composer-todo-mark, .composer-todo.failed .composer-todo-mark { border-color: var(--err); background: var(--err-dim); color: var(--err); }
   .composer-todo-text { min-width: 0; overflow-wrap: anywhere; }
-  .composer-todo.done .composer-todo-text { text-decoration: line-through; text-decoration-color: rgba(139,148,167,.55); }
+  .composer-todo.done .composer-todo-text { text-decoration: line-through; text-decoration-color: var(--faint); }
   .composer-todo-parent { color: var(--faint); font-size: 10.5px; }
   .composer-todo-state { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; white-space: nowrap; }
   .composer-todo.active .composer-todo-state { color: var(--run); }
@@ -624,7 +709,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .setnav .back:hover { background: var(--hover); color: var(--text); }
   .setnav .item { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 8px; font-size: 13px; cursor: pointer; border: 0; background: none; width: 100%; text-align: left; color: var(--text); }
   .setnav .item:hover { background: var(--hover); }
-  .setnav .item.active { background: rgba(143,128,255,.16); }
+  .setnav .item.active { background: var(--selected); }
   .setnav .sect { font-size: 11px; color: var(--muted); margin: 14px 10px 4px; }
   .setbody { flex: 1; overflow-y: auto; padding: 34px 8vw; }
   .setbody h1 { font-size: 22px; font-weight: 600; margin: 0 0 20px; }
@@ -655,7 +740,7 @@ export const UI_HTML = String.raw`<!doctype html>
   .keysec.show { display: flex; }
   .keysec .hint { width: 100%; color: var(--faint); font-size: 11px; }
   .model-item .mi-cur { color: var(--accent); font-weight: 700; flex: none; }
-  .toggle { width: 38px; height: 22px; border-radius: 999px; background: #333d52; border: 0; position: relative; transition: background .15s; flex: none; }
+  .toggle { width: 38px; height: 22px; border-radius: 999px; background: var(--border2); border: 0; position: relative; transition: background .15s; flex: none; }
   .toggle.on { background: var(--blue); }
   .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
   .toggle.on::after { left: 19px; }
@@ -667,17 +752,17 @@ export const UI_HTML = String.raw`<!doctype html>
   .setlist input, .setlist textarea { width: 100%; border: 1px solid var(--border2); border-radius: 8px; background: var(--card2); color: var(--text); padding: 6px 9px; font-size: 12px; margin-bottom: 6px; }
   .setlist .meta { color: var(--muted); font-size: 11px; }
   .toasts { position: fixed; top: 16px; right: 16px; z-index: 100; display: flex; flex-direction: column; gap: 8px; }
-  .toast { background: #1b2334; color: var(--text); border: 1px solid var(--border2); border-radius: 10px; padding: 10px 14px; font-size: 12.5px; max-width: 380px; box-shadow: 0 6px 24px rgba(0,0,0,.45); animation: tin .18s ease; white-space: pre-wrap; }
-  .toast.err { background: rgba(255,100,101,.12); border-color: rgba(255,100,101,.4); color: #ffb3b4; }
+  .toast { background: var(--card); color: var(--text); border: 1px solid var(--border2); border-radius: 10px; padding: 10px 14px; font-size: 12.5px; max-width: 380px; box-shadow: 0 6px 24px rgba(0,0,0,.45); animation: tin .18s ease; white-space: pre-wrap; }
+  .toast.err { background: var(--err-dim); border-color: var(--err-border); color: var(--err); }
   .toast-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
-  .toast-actions button { background: none; border: 1px solid rgba(255,179,180,.4); color: #ffb3b4; border-radius: 6px; padding: 3px 10px; font-size: 11.5px; cursor: pointer; min-height: 24px; }
-  .toast-actions button:hover { background: rgba(255,100,101,.15); }
+  .toast-actions button { background: none; border: 1px solid var(--err-border); color: var(--err); border-radius: 6px; padding: 3px 10px; font-size: 11.5px; cursor: pointer; min-height: 24px; }
+  .toast-actions button:hover { background: var(--err-dim); }
   .welapsed { color: var(--faint); font-family: var(--mono); font-size: 10.5px; margin-left: 2px; }
-  .working.slow { border-color: rgba(217,119,6,.55); }
-  .working.slow .wtext { color: #fbbf24; }
-  .working.slow .welapsed { color: #fbbf24; }
+  .working.slow { border-color: var(--warn-border); }
+  .working.slow .wtext { color: var(--evidence); }
+  .working.slow .welapsed { color: var(--evidence); }
   @keyframes tin { from { transform: translateY(-6px); opacity: 0; } }
-  .modal { position: fixed; inset: 0; background: rgba(4,6,10,.6); z-index: 60; display: flex; align-items: center; justify-content: center; }
+  .modal { position: fixed; inset: 0; background: var(--overlay); z-index: 60; display: flex; align-items: center; justify-content: center; }
   .modal .box { width: 580px; max-width: 94vw; max-height: 72vh; background: var(--card); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
   /* Modal headers share the .bar class name with the 6px progress strip.
      Re-assert every strip property here so headers render as real bars. */
@@ -692,38 +777,25 @@ export const UI_HTML = String.raw`<!doctype html>
   .sb .navitem .ico, .sb .proj .ico, .setnav .item .ico, .sug .ico { display: inline-flex; align-items: center; color: var(--muted); }
   .sugs .sug .ico { display: flex; margin-bottom: 10px; }
   .setlist .x svg { width: 12px; height: 12px; }
-  .ubtns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 4px; opacity: 0; transition: opacity .12s; }
+  .ubtns { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; opacity: 0; transition: opacity .12s; }
   div:hover > .ubtns, div:hover .ubtns { opacity: 1; }
-  .ubtn { border: 1px solid var(--border2); background: var(--card2); color: var(--muted); border-radius: 6px; width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center; }
+  .ubtn { border: 1px solid color-mix(in srgb, var(--border2) 60%, transparent); background: color-mix(in srgb, var(--card2) 70%, transparent); color: var(--muted); border-radius: 999px; width: 30px; height: 26px; display: inline-flex; align-items: center; justify-content: center; }
   .ubtn:hover { color: var(--text); border-color: var(--border2); }
   .ubtn svg { width: 12px; height: 12px; }
 
-  .shell.left-collapsed .sb { width: 44px; border-right: 0; }
+  .shell.left-collapsed .sb { width: 44px; border-right: 0; background: var(--bg); }
   .shell.left-collapsed .sb .scroll, .shell.left-collapsed .sb .foot,
   .shell.left-collapsed .sb .name, .shell.left-collapsed .sb .spacer,
   .shell.left-collapsed .sb #gearBtn { display: none; }
   .shell.left-collapsed .sb .head { padding: 14px 0 8px; justify-content: center; }
-  .run-side .collapse-tab { margin-left: auto; border: 0; background: none; color: var(--muted); border-radius: 7px; width: 28px; height: 28px; align-self: center; font-size: 12px; }
-  .run-side .collapse-tab:hover { background: var(--hover); color: var(--text); }
-  .run-side .rail { display: none; flex: 1; flex-direction: column; align-items: center; padding: 10px 0; gap: 2px; }
-  .run-side .rail button { border: 0; background: none; color: var(--muted); border-radius: 8px; cursor: pointer; }
-  .run-side .rail .rail-tab { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; }
-  .run-side .rail .rail-tab:hover { background: var(--hover); color: var(--text); }
-  .run-side .rail .rail-tab.active { color: var(--accent); background: var(--hover); }
-  .run-side .rail #rsExpand { writing-mode: vertical-rl; font-size: 11px; letter-spacing: 1.5px; padding: 10px 4px; margin-top: auto; }
-  .run-side .rail #rsExpand:hover { background: var(--hover); color: var(--text); }
-  .run.collapsed-side .run-side { width: 40px; }
-  .run.collapsed-side .side-tabs, .run.collapsed-side .side-body { display: none; }
-  .run.collapsed-side .run-side .rail { display: flex; }
-
   .vresize { width: 6px; flex: none; cursor: col-resize; margin: 0 -3px; z-index: 6; }
-  .vresize:hover, .vresize.active { background: rgba(124, 108, 240, .35); }
-  .shell.left-collapsed #sbResize, .run.collapsed-side #rsResize { display: none; }
+  .vresize:hover, .vresize.active { background: var(--border2); }
+  .shell.left-collapsed #sbResize { display: none; }
 
   .abubble { max-width: 100%; background: transparent; border: 0; border-radius: 0; padding: 8px 0; margin: 10px 0; font-size: 14px; line-height: 1.75; white-space: pre-wrap; box-shadow: none; }
   .abubble .who { display: block; color: var(--accent); font-size: 10.5px; font-weight: 600; margin-bottom: 2px; }
   .session-file { position: relative; max-width: 520px; margin: 9px 0 9px 20px; border: 1px solid var(--border2); border-radius: 12px; background: var(--card); padding: 10px 11px; display: flex; gap: 10px; align-items: center; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
-  .session-file.user { margin-left: auto; border-color: rgba(91,168,255,.34); background: rgba(91,168,255,.08); }
+  .session-file.user { margin-left: auto; border-color: var(--run-border); background: var(--run-dim); }
   .session-file .file-ico { width: 34px; height: 34px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--run); border: 1px solid var(--border); border-radius: 9px; background: var(--card2); }
   .session-file.user .file-ico { color: var(--blue); }
   .session-file .file-main { flex: 1; min-width: 0; }
@@ -739,10 +811,10 @@ export const UI_HTML = String.raw`<!doctype html>
 
   .shotmsg { margin: 10px 0 10px 20px; }
   .shotmsg img { display: block; max-width: 340px; width: 100%; border: 1px solid var(--border2); border-radius: 10px; background: var(--card2); box-shadow: 0 2px 10px rgba(0,0,0,.3); margin-top: 4px; }
-  .browser-shot img { border-color: rgba(143,128,255,.45); }
-  .browser-chat-highlight { display: flex; align-items: center; gap: 7px; width: fit-content; padding: 3px 8px; border-radius: 999px; color: #b7aaff; background: rgba(143,128,255,.14); font-size: 11px; }
+  .browser-shot img { border-color: var(--border2); }
+  .browser-chat-highlight { display: flex; align-items: center; gap: 7px; width: fit-content; padding: 3px 8px; border-radius: 999px; color: var(--text); background: var(--selected); font-size: 11px; }
   .browser-chat-highlight span { color: var(--accent); }
-  .browser-highlight { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 9px 10px; border: 1px solid rgba(143,128,255,.4); border-radius: 9px; background: rgba(143,128,255,.08); color: #cfc6ff; font-size: 12px; }
+  .browser-highlight { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 9px 10px; border: 1px solid var(--border2); border-radius: 9px; background: var(--selected); color: var(--text); font-size: 12px; }
   .browser-highlight > div { display: flex; align-items: center; gap: 7px; }
   .browser-highlight b { font-size: 11px; letter-spacing: .7px; text-transform: uppercase; }
   .browser-highlight > span { color: var(--accent); font: 10.5px var(--mono); }
@@ -765,14 +837,14 @@ export const UI_HTML = String.raw`<!doctype html>
   .thumbs .rm { position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--border2); background: var(--card2); color: var(--muted); font-size: 11px; display: flex; align-items: center; justify-content: center; padding: 0; }
   /* Invisible hit-area expansion so the small round button meets ~28px touch targets. */
   .thumbs .rm::after { content: ''; position: absolute; inset: -5px; border-radius: 50%; }
-  .thumbs .rm:hover { color: var(--err); border-color: rgba(255,100,101,.4); }
+  .thumbs .rm:hover { color: var(--err); border-color: var(--err-border); }
   .pill[disabled] { opacity: .4; cursor: not-allowed; }
 
   .grow-row { display: flex; gap: 6px; align-items: center; padding: 3px 0; }
   .gitpath { font-family: var(--mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
   .gitpath:hover { color: var(--accent); }
 
-  .bpanel2 .nav { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .bpanel2 .nav { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
   .bpanel2 .nav input { flex: 1; border: 1px solid var(--border2); border-radius: 8px; padding: 6px 9px; font-family: var(--mono); font-size: 12px; background: var(--card2); color: var(--text); min-width: 0; }
   .bpanel2 .bwrap { position: relative; }
   .bpanel2 .bwrap img { width: 100%; display: block; border: 1px solid var(--border); border-radius: 10px; background: var(--card2); min-height: 160px; object-fit: top left; }
@@ -781,21 +853,12 @@ export const UI_HTML = String.raw`<!doctype html>
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
   }
-  /* Narrow windows: the right panel becomes a slide-in overlay instead of
-     disappearing — Browser/Git/state must stay reachable, not vanish. */
-  @media (max-width: 1080px) {
-    .run-side { position: fixed; right: 0; top: 0; bottom: 0; width: min(430px, 94vw); transform: translateX(105%); transition: transform .16s ease; box-shadow: -14px 0 40px rgba(0,0,0,.5); z-index: 70; }
-    .run-side.narrow-open { transform: none; }
-    .side-fab { display: inline-flex; }
-  }
-  .side-fab { display: none; position: fixed; right: 16px; bottom: 18px; z-index: 71; border-radius: 999px; padding: 10px 15px; background: var(--accent); color: #fff; border: 0; font-weight: 600; font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.4); align-items: center; gap: 7px; cursor: pointer; }
-  .side-fab svg { width: 14px; height: 14px; }
-  @media (max-width: 1080px) { .side-fab { display: inline-flex; } }
   @media (max-width: 720px) {
     .shell { width: 100%; }
+    .usermsg .ub { max-width: 100%; }
     .mobile-nav-btn { display: flex; align-items: center; gap: 9px; min-height: 46px; padding: 0 14px; border: 0; border-bottom: 1px solid var(--border); background: var(--bg); color: var(--text); font-weight: 700; letter-spacing: .8px; flex: none; }
     .mobile-nav-btn .hamb { color: var(--muted); font-size: 18px; }
-    .mobile-backdrop { position: fixed; inset: 0; z-index: 79; border: 0; padding: 0; background: rgba(4,6,10,.66); }
+    .mobile-backdrop { position: fixed; inset: 0; z-index: 79; border: 0; padding: 0; background: var(--overlay); }
     .shell.mobile-nav-open .mobile-backdrop { display: block; }
     .sb { position: fixed; inset: 0 auto 0 0; z-index: 80; width: min(320px, 88vw) !important; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); }
     .shell.mobile-nav-open .sb { transform: none; }
@@ -823,13 +886,7 @@ export const UI_HTML = String.raw`<!doctype html>
     .stream::before { left: 14px; }
     .progress { padding: 7px 12px 2px; }
     .progress #progMeta { display: none; }
-    .run-overview { align-items: flex-start; padding: 10px 12px; flex-wrap: wrap; }
-    .run-overview-main { flex-basis: calc(100% - 72px); }
-    .run-overview-stats { order: 3; width: 100%; padding-left: 18px; }
-    .run-overview .details-btn { margin-left: auto; }
-    .run-side { width: min(430px, 100vw); }
-    .side-fab { bottom: 116px; right: 10px; padding: 9px 12px; }
-    .side-fab { display: none !important; }
+    .run-side, .shell.left-collapsed .run-side { left: 0; width: min(430px, 100vw); z-index: 81; }
     .settings { flex-direction: column; }
     .setnav { width: 100%; flex: none; display: flex; gap: 4px; align-items: center; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
     .setnav .back { margin: 0 4px 0 0; flex: none; }
@@ -845,9 +902,12 @@ export const UI_HTML = String.raw`<!doctype html>
     #mascotWrap { display: none !important; }
   }
   ${COWORK_CSS}
+  ${UI_THEME_CSS}
+  ${ONBOARDING_CSS}
 </style>
 </head>
 <body>
+${ONBOARDING_HTML}
 <div class="shell">
   <aside class="sb">
     <div class="head">
@@ -869,6 +929,7 @@ export const UI_HTML = String.raw`<!doctype html>
   </aside>
   <button type="button" class="mobile-backdrop" id="mobileBackdrop" aria-label="Close navigation"></button>
   <div class="vresize" id="sbResize"></div>
+  <aside class="run-side" id="toolPanel" aria-label="Tool panel" hidden><div class="side-panel-head"><span id="toolPanelTitle">Task details</span><button type="button" class="close" id="toolPanelClose" aria-label="Close tool panel">&times;</button></div><div class="side-body" id="sideBody"></div></aside>
   <div class="main">
     <button type="button" class="mobile-nav-btn" id="mobileNav" aria-label="Open navigation" aria-expanded="false"><span class="hamb">&#9776;</span><span>AGENT GITU</span></button>
     <div class="topbar" id="topbar" style="display:none"></div>
@@ -903,7 +964,7 @@ export const UI_HTML = String.raw`<!doctype html>
     modelsLoaded: false,
     draft: '',
     sel: { model: '', effort: 'high', persistent: true, spendCeilingUsd: '' },
-    settings: { autoApprove: false, autoLearn: true, projectPath: '', devMode: false, cwLearn: 'reactive' },
+    settings: { autoApprove: false, autoLearn: true, projectPath: '', devMode: false, cwLearn: 'reactive', theme: 'system' },
     setSection: 'general',
     delivery: 'steer',
     pendingFiles: []
@@ -924,6 +985,8 @@ export const UI_HTML = String.raw`<!doctype html>
   function persist() {
     try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: credentialChatInput(S.draft || '').safeText })); } catch (e) {}
   }
+  ${UI_THEME_JS}
+  document.querySelector('.sb .foot').insertAdjacentHTML('beforeend', themeToggleHtml());
   function $(id) { return document.getElementById(id); }
   function esc(s) { var d = document.createElement('div'); d.textContent = String(s == null ? '' : s); return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
   // Users see what Gitu is doing and why it matters — not the internal agent
@@ -991,6 +1054,7 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   var SVG_OPEN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
   var ICONS = {
+    plus: SVG_OPEN + '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     gear: SVG_OPEN + '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     shield: SVG_OPEN + '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
     folder: SVG_OPEN + '<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
@@ -1043,6 +1107,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (status === 'completed') return '<span class="chip ok">complete</span>';
     if (status === 'blocked') return '<span class="chip bad">blocked</span>';
     if (status === 'failed') return '<span class="chip bad">failed</span>';
+    if (status === 'waiting_for_model') return '<span class="chip warn">retrying model</span>';
+    if (status === 'stalled') return '<span class="chip warn">paused</span>';
     if (status === 'aborted') return '<span class="chip warn">stopped</span>';
     if (status === 'review') return '<span class="chip warn">awaiting review</span>';
     if (status === 'running') return '<span class="chip info">running</span>';
@@ -1085,6 +1151,31 @@ export const UI_HTML = String.raw`<!doctype html>
     document.title = (anyWait ? '⏸ ' : '') + TITLE_BASE;
   }
 
+  function sessionTitle(goal) {
+    var raw = String(goal || '').trim();
+    if (!raw) return 'Untitled session';
+    var repoMatch = raw.match(/github\.com\/[^\s/]+\/([a-z0-9._-]+)/i);
+    var repoName = repoMatch ? repoMatch[1].replace(/\.git$/i, '').replace(/[-_]+/g, ' ').replace(/\b\w/g, function (c) { return c.toUpperCase(); }) : '';
+    if (/\bcontinue\b/i.test(raw) && /\bblack\s*box\b/i.test(raw)) return 'Continue Black Box work';
+    if (repoName && /\blanding\s+page\b/i.test(raw) && /\b(real information|details|content)\b/i.test(raw)) {
+      return 'Update landing page with ' + repoName + ' details';
+    }
+    var heading = raw.length > 240 && raw.match(/^#{1,3}\s+([^\n]+)/m);
+    var text = heading ? heading[1] : raw;
+    text = text.replace(/^\[cron\s+[^\]]+\]\s*/i, '')
+      .replace(/https?:\/\/\S+/g, ' ')
+      .replace(/^[\s*_#>\d.)-]+/, '')
+      .replace(/^(?:yes[.!]?\s+|please\s+|can you\s+|could you\s+|i (?:want|need) you to\s+)/i, '')
+      .replace(/\*\*/g, '')
+      .replace(/\s+/g, ' ').trim();
+    if (!text) return repoName ? 'Work on ' + repoName : 'Untitled session';
+    var sentence = text.split(/[.!?](?:\s|$)/)[0].trim();
+    var words = sentence.split(/\s+/).slice(0, 9);
+    var title = words.join(' ').replace(/[,:;\s-]+$/, '');
+    if (sentence.split(/\s+/).length > words.length) title += '…';
+    return title.charAt(0).toUpperCase() + title.slice(1);
+  }
+
   function renderSidebar() {
     api('/api/runs').then(function (sessions) {
       var byProj = {};
@@ -1101,6 +1192,9 @@ export const UI_HTML = String.raw`<!doctype html>
         '<button class="navitem" data-set="skills"><span class="ico">' + icon('bolt') + '</span>Skills</button>' +
         '<button class="navitem" data-set="mcp"><span class="ico">' + icon('plug') + '</span>MCP servers</button>' +
         '<button class="navitem" data-set="workspace"><span class="ico">' + icon('folder') + '</span>Workspace</button>' +
+        (S.active !== 'home' ? '<button class="navitem' + (S.panelKind === 'state' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="state"><span class="ico">' + icon('layers') + '</span>Task details</button>' : '') +
+        '<button class="navitem' + (S.panelKind === 'browser' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="browser"><span class="ico">' + icon('globe') + '</span>Browser</button>' +
+        '<button class="navitem' + (S.panelKind === 'git' && !$('toolPanel').hidden ? ' active' : '') + '" data-tool="git"><span class="ico">' + icon('branch') + '</span>Git</button>' +
         '<div class="sect" style="display:flex;align-items:center">Projects<span style="flex:1"></span><button class="ubtn" id="sbManage" title="select multiple to delete" style="display:inline-flex">' + (S.manage ? icon('check') : icon('pencil')) + '</button></div>';
       var names = Object.keys(byProj);
       if (!names.length) html += '<div class="empty" style="padding-left:10px">No chats yet</div>';
@@ -1117,7 +1211,7 @@ export const UI_HTML = String.raw`<!doctype html>
           html += '<div class="proj' + (isActive ? ' activeproj' : '') + '" data-proj="' + esc(p) + '" role="button" tabindex="0" aria-current="' + (isActive ? 'true' : 'false') + '" title="' + (isActive ? 'active project for new sessions' : 'set as active project for new sessions') + '">' +
             '<button class="ubtn" data-collapse="' + esc(p) + '" title="' + (isCol ? 'expand sessions' : 'collapse sessions') + '" style="display:inline-flex;padding:2px;margin-right:2px">' + icon(isCol ? 'chevRight' : 'chevDown') + '</button>' +
             '<span class="ico">' + icon('folder') + '</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(p) + '</span>' +
-            (isActive ? '<span class="chip" style="margin-right:6px;background:rgba(143,128,255,.14);color:#cfc6ff">active</span>' : '') +
+            (isActive ? '<span class="chip" style="margin-right:6px;background:var(--selected);color:var(--text)">active</span>' : '') +
             (isCol ? '<span class="chip" style="margin-right:6px">' + byProj[p].length + '</span>' : '') +
             '<button class="delx" data-delproj="' + esc(p) + '" title="delete project and its sessions">' + icon('x') + '</button></div>';
         }
@@ -1128,10 +1222,10 @@ export const UI_HTML = String.raw`<!doctype html>
           byProj[p].slice(0, S.manage ? 200 : visible).forEach(function (s) {
             var wf = waitingFor(s);
             if (S.manage) {
-              html += '<label class="chat"><input type="checkbox" class="chk" data-selrun="' + esc(s.runId) + '"' + (S.selRuns && S.selRuns[s.runId] ? ' checked' : '') + '><span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.goal.slice(0, 34)) + '</span></label>';
+              html += '<label class="chat"><input type="checkbox" class="chk" data-selrun="' + esc(s.runId) + '"' + (S.selRuns && S.selRuns[s.runId] ? ' checked' : '') + '><span class="dot ' + esc(s.status) + '"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(sessionTitle(s.goal)) + '</span></label>';
             } else {
               html += '<button class="chat ' + (S.active === s.runId ? 'active' : '') + '" data-run="' + esc(s.runId) + '" title="' + esc(s.goal) + (wf ? '\n⏸ waiting for you — ' + wf : '') + '">' +
-                '<span class="dot ' + (wf ? 'waiting' : esc(s.status)) + '"></span><span class="chat-label">' + esc(s.goal) + '</span>' +
+                '<span class="dot ' + (wf ? 'waiting' : esc(s.status)) + '"></span><span class="chat-label">' + esc(sessionTitle(s.goal)) + '</span>' +
                 '<span class="rowdel" data-delrun="' + esc(s.runId) + '" title="delete this session" role="button" tabindex="0" aria-label="Delete session">' + icon('x') + '</span></button>';
             }
           });
@@ -1200,6 +1294,9 @@ export const UI_HTML = String.raw`<!doctype html>
       });
       $('sbScroll').querySelectorAll('[data-set]').forEach(function (el) {
         el.onclick = function () { toggleMobileNav(false); openSettings(el.getAttribute('data-set')); };
+      });
+      $('sbScroll').querySelectorAll('[data-tool]').forEach(function (el) {
+        el.onclick = function () { openToolPanel(el.getAttribute('data-tool')); };
       });
       $('sbScroll').querySelectorAll('[data-delproj]').forEach(function (el) {
         el.onclick = function (e) {
@@ -1360,7 +1457,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!b) return;
     var sess = S.sessions[S.active];
     var s = sess && sess.session;
-    var running = Boolean(s && s.status === 'running');
+    var running = Boolean(s && (s.status === 'running' || s.status === 'waiting_for_model'));
     var waiting = waitingFor(s);
     // Typing yields the button back to Send so you can steer or queue a follow-up.
     var f = $('follow');
@@ -1422,7 +1519,7 @@ export const UI_HTML = String.raw`<!doctype html>
     S.active = 'home';
     S.supersedeNext = null;
     toggleMobileNav(false);
-    if ($('sideFab')) $('sideFab').hidden = true;
+    closeToolPanel();
     stopStreams();
     stopBrowserPoll();
     renderSidebar();
@@ -1430,29 +1527,25 @@ export const UI_HTML = String.raw`<!doctype html>
     var effProj = effectiveProjectPath();
     var name = effectiveProjectName();
     var keyless = S.modelsLoaded && !hasAnyProviderKey();
-    var heading = effProj
-      ? 'What should we work on in <span class="u">' + esc(name) + '</span>?'
-      : 'What should we work on?';
-    var homeCopy = effProj
-      ? 'Ask a question or describe a change. Gitu will get to work and check the result. Use Plan when you want to review the approach first.'
-      : 'Choose a project, then describe the outcome you want. Gitu will keep the work scoped and evidence-backed.';
     $('view').innerHTML =
       '<div class="home">' +
-      '<div class="home-intro"><div class="home-eyebrow">Ready when you are</div><h1>' + heading + '</h1><p class="home-copy">' + homeCopy + '</p></div>' +
+      '<nav class="home-cta" aria-label="Workspace modes">' +
+      '<button type="button" class="home-cta-btn" id="homeCodingBtn" aria-label="Coding" aria-describedby="homeCodingDesc">' +
+      '<span class="cta-ico" aria-hidden="true">' + icon('terminal') + '</span>' +
+      '<span class="cta-body"><span class="cta-t">Coding</span><span class="cta-d" id="homeCodingDesc">Build something</span></span><span class="cta-arrow" aria-hidden="true">&#8599;</span></button>' +
+      '<button type="button" class="home-cta-btn team" id="coworkCta" aria-label="Cowork" aria-describedby="homeCoworkDesc">' +
+      '<span class="cta-ico" aria-hidden="true">' + icon('users') + '</span>' +
+      '<span class="cta-body"><span class="cta-t">Cowork</span><span class="cta-d" id="homeCoworkDesc">Meet your team</span></span><span class="cta-arrow" aria-hidden="true">&#8599;</span></button>' +
+      '</nav>' +
+      '<header class="home-brand"><div class="home-brand-kicker" aria-hidden="true">&lt;/&gt; Ideas into action</div>' +
+      '<div class="home-brand-lockup">' + ${JSON.stringify(HOME_BLOB_HTML)} + '<h1><span>Agent</span><span><span class="home-brand-name">Gitu</span><i class="home-brand-spark" aria-hidden="true"></i></span></h1></div>' +
+      '<p class="home-brand-copy">A little spark. A working idea. Let’s build it.</p></header>' +
+      '<div class="home-particles" aria-hidden="true"></div>' +
       (keyless
         ? '<button class="setup-card" id="keylessCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto 8px;max-width:760px">' +
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
           '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
       : '') +
-      '<button class="setup-card" id="coworkCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto;max-width:760px">' +
-      '<h3 style="margin:0 0 4px;display:flex;align-items:center;gap:7px"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="color:var(--accent)"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Cowork mode</h3>' +
-      '<div class="meta-line">Create your own agent teammates, chat one-on-one or in group chats, put them on Telegram, and let a chief of staff coordinate the work.</div><span class="setup-action">Open your team →</span></button>' +
-      '<div class="sugs">' +
-      '<button class="sug" data-sug="Explore and understand the codebase"><span class="ico" style="color:var(--run)">' + icon('search') + '</span><span class="sug-title">Explore the codebase</span><span class="sug-hint">Map the architecture and find the right starting point.</span></button>' +
-      '<button class="sug" data-sug="Build a new feature, app, or tool"><span class="ico" style="color:var(--accent)">' + icon('bolt') + '</span><span class="sug-title">Build something new</span><span class="sug-hint">Turn an idea into a working, verified change.</span></button>' +
-      '<button class="sug" data-sug="Review the code and suggest changes"><span class="ico" style="color:var(--ok)">' + icon('layers') + '</span><span class="sug-title">Review the code</span><span class="sug-hint">Check quality, risks, and practical next improvements.</span></button>' +
-      '<button class="sug" data-sug="Fix issues and failures"><span class="ico" style="color:var(--err)">' + icon('wrench') + '</span><span class="sug-title">Fix an issue</span><span class="sug-hint">Investigate a failure and verify the repair.</span></button>' +
-      '</div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar"><button type="button" class="pill control-pill" id="homeProj" title="active project for this session — click to change" style="max-width:190px"><span class="control-prefix">Project</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></button>' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div>' +
@@ -1461,9 +1554,8 @@ export const UI_HTML = String.raw`<!doctype html>
     ta.value = S.draft;
     ta.addEventListener('input', function () { S.draft = ta.value; persist(); ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
     ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
-    $('view').querySelectorAll('[data-sug]').forEach(function (el) {
-      el.onclick = function () { ta.value = el.getAttribute('data-sug'); S.draft = ta.value; persist(); ta.focus(); };
-    });
+    var codingBtn = $('homeCodingBtn');
+    if (codingBtn) codingBtn.onclick = function () { ta.focus(); };
     bindControls();
     bindPaste('goal');
     $('send').onclick = startRun;
@@ -1709,20 +1801,28 @@ export const UI_HTML = String.raw`<!doctype html>
     if (S.active === runId) updatePlanControl();
   }
   function updatePlanControl() {
-    var btn = $('planOnce');
-    if (!btn) return;
+    var agent = $('menuAgent'), plan = $('menuPlan'), plus = $('homePlusBtn');
+    if (!agent || !plan) return;
     var sess = S.sessions[S.active];
     var busy = Boolean(sess && sess.session && sess.session.status === 'running');
     var enabled = planRequested(S.active);
-    btn.disabled = busy || Boolean(S.starting);
-    btn.setAttribute('aria-pressed', String(enabled));
-    btn.textContent = enabled ? 'Plan once' : 'Plan';
-    btn.style.background = enabled ? 'var(--amber-bg)' : '';
-    btn.style.borderColor = enabled ? 'var(--evidence)' : '';
-    btn.title = busy ? 'Available when this task finishes' : enabled ? 'This request will pause for plan review, then build' : 'Plan this request before making changes';
+    agent.disabled = plan.disabled = busy || Boolean(S.starting);
+    agent.setAttribute('aria-checked', String(!enabled));
+    plan.setAttribute('aria-checked', String(enabled));
+    agent.classList.toggle('active', !enabled);
+    plan.classList.toggle('active', enabled);
+    plan.title = busy ? 'Available when this task finishes' : 'Pause for plan review before making changes';
+    if (plus) plus.title = enabled ? 'More actions · Plan mode selected' : 'More actions · Agent mode selected';
   }
   function controlsHtml() {
-    return '<span class="pill control-pill" title="Ask questions, investigate, or make changes">Agent</span><button type="button" class="pill control-pill" id="planOnce" aria-pressed="false" title="Plan this request before making changes">Plan</button>' +
+    return '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
+      '<div class="home-plus-menu" id="homePlusMenu" hidden role="menu" aria-label="More actions">' +
+        '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
+        '<button type="button" id="menuPlan" data-hp="plan" role="menuitemradio" aria-checked="false"><span class="ico">' + icon('layers') + '</span>Plan mode<span class="check">✓</span></button>' +
+        '<button type="button" data-hp="attach" role="menuitem"><span class="ico">' + icon('file') + '</span>Choose files</button>' +
+        '<button type="button" data-hp="folder" role="menuitem"><span class="ico">' + icon('folder') + '</span>Tag project folder</button>' +
+        '<button type="button" data-hp="schedule" role="menuitem"><span class="ico">' + icon('clock') + '</span>Schedule a run</button>' +
+      '</div>' +
       '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="control-prefix">Model</span><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
       '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
@@ -1854,7 +1954,6 @@ export const UI_HTML = String.raw`<!doctype html>
   function bindControls() {
     var model = $('model'), effort = $('effort');
     updatePlanControl();
-    if ($('planOnce')) $('planOnce').onclick = function () { setPlanRequested(S.active, !planRequested(S.active)); };
     if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
     fillEffort('effort', provOf(S.sel.model));
     if (effort) effort.value = S.sel.effort;
@@ -1889,13 +1988,51 @@ export const UI_HTML = String.raw`<!doctype html>
     renderThumbs();
     syncModelLabel();
     bindModelMenu();
+    // The plus menu holds task mode, file picking, and secondary actions.
+    var plusBtn = $('homePlusBtn'), plusMenu = $('homePlusMenu');
+    if (plusBtn && plusMenu) {
+      plusBtn.onclick = function (e) {
+        e.stopPropagation();
+        var open = plusMenu.hasAttribute('hidden');
+        if (open) {
+          plusMenu.removeAttribute('hidden');
+          var rect = plusBtn.getBoundingClientRect();
+          plusMenu.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - plusMenu.offsetWidth - 12)) + 'px';
+          plusMenu.style.top = Math.max(12, rect.top - plusMenu.offsetHeight - 8) + 'px';
+          plusBtn.setAttribute('aria-expanded', 'true');
+        } else {
+          plusMenu.setAttribute('hidden', '');
+          plusBtn.setAttribute('aria-expanded', 'false');
+        }
+      };
+      plusMenu.querySelectorAll('[data-hp]').forEach(function (b) {
+        b.onclick = function () {
+          plusMenu.setAttribute('hidden', '');
+          plusBtn.setAttribute('aria-expanded', 'false');
+          var action = b.getAttribute('data-hp');
+          if (action === 'agent') setPlanRequested(S.active, false);
+          else if (action === 'plan') setPlanRequested(S.active, true);
+          else if (action === 'attach') { var ai = $('attachInput'); if (ai) ai.click(); }
+          else if (action === 'folder') openFolderBrowser();
+          else if (action === 'schedule') openSettings('cron');
+        };
+      });
+      if (!plusMenu._boundOutside) {
+        plusMenu._boundOutside = true;
+        document.addEventListener('click', function (e) {
+          if (!plusMenu.hasAttribute('hidden') && e.target !== plusBtn && !plusBtn.contains(e.target) && !plusMenu.contains(e.target)) {
+            plusMenu.setAttribute('hidden', '');
+            plusBtn.setAttribute('aria-expanded', 'false');
+          }
+        });
+      }
+    }
   }
   function updateAttachState() {
-    var attach = $('attachBtn');
+    var attach = document.querySelector('#homePlusMenu [data-hp="attach"]');
     if (!attach) return;
     var vision = currentVision();
-    attach.removeAttribute('disabled');
-    attach.title = vision ? 'Attach files, documents, or images' : 'Attach files or documents (this model cannot inspect image pixels)';
+    attach.title = vision ? 'Choose files, documents, or images' : 'Choose files or documents (this model cannot inspect image pixels)';
   }
 
   function startRun() {
@@ -1952,12 +2089,13 @@ export const UI_HTML = String.raw`<!doctype html>
     S.active = runId;
     S.supersedeNext = null;
     toggleMobileNav(false);
-    if ($('sideFab')) $('sideFab').hidden = false;
+    closeToolPanel();
     stopStreams();
     var sess = S.sessions[runId] || (S.sessions[runId] = { events: [], ledger: null, session: null, side: 'state', nodes: {}, pendingFiles: [] });
     sess.nodes = {};
     resetStreamRenderState(sess);
     sess.justOpened = true;
+    sess.historyReady = false;
     // Attachments are per-composer: switching sessions must show THAT
     // session's staged files (or none), never the previous one's.
     renderThumbs();
@@ -1966,20 +2104,17 @@ export const UI_HTML = String.raw`<!doctype html>
     renderTopbar();
     $('view').innerHTML =
       '<div class="run"><div class="run-main">' +
-      '<div class="run-overview" id="runOverview"><div class="run-overview-main"><span class="run-overview-dot" id="runOverviewDot"></span><div style="min-width:0"><div class="run-overview-next" id="runOverviewNext">Connecting to task state</div></div></div><div class="run-overview-stats" id="runOverviewStats"></div><button type="button" class="details-btn" id="overviewPanel">Details</button></div>' +
       '<div class="progress" id="progress" style="display:none"><span class="plabel" id="progText"></span><div class="pbar"><span id="progFill"></span></div><span class="plabel" id="progMeta"></span></div>' +
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
       '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div></div></div>' +
-      '</div>' +
-      '<div class="vresize" id="rsResize"></div>' +
-      '<aside class="run-side"><div class="side-tabs" id="sideTabs"></div><div class="side-body" id="sideBody"></div>' +
-      '<div class="rail" id="sideRail"></div></aside></div>';
-    renderSideTabs(sess, runId);
-    $('overviewPanel').onclick = showRunPanel;
+      '<div class="composer-bar">' + controlsHtml() + '<button type="button" class="context-trigger" id="contextToggle" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard">' + icon('layers') + ' Context</button><button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
+      '<div class="context-card" id="contextCard" hidden><div class="context-card-head"><span>Session context</span><button type="button" class="ubtn" id="contextClose" aria-label="Close context card">&times;</button></div><div id="contextCardBody"></div></div></div></div>' +
+      '</div></div>';
+    $('contextToggle').onclick = function () { toggleContextCard(); };
+    $('contextClose').onclick = function () { toggleContextCard(false); };
     renderApproach(sess);
     $('approachPanel').open = Boolean(sess.approachOpen);
     $('approachPanel').addEventListener('toggle', function () { sess.approachOpen = this.open; });
@@ -1988,7 +2123,6 @@ export const UI_HTML = String.raw`<!doctype html>
       updateJumpLatest(this);
     }, { passive: true });
     $('jumpLatest').onclick = function () { stickScroll($('stream'), true); };
-    bindResize('rsResize', 'right');
     applyLayout();
     renderComposerTodos(runId);
   $('follow').addEventListener('keydown', function (e) {
@@ -2033,10 +2167,10 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.replaying = false;
     sess.lastIndex = sess.events.length ? sess.events[sess.events.length - 1].i : -1;
     var w = document.createElement('div');
-    w.className = 'working'; w.id = 'working';
+    w.className = 'working activity-indicator'; w.id = 'working';
     w.setAttribute('role', 'status');
     w.setAttribute('aria-live', 'polite');
-    w.innerHTML = '<span class="spinner"></span><span class="thinking-waves" aria-hidden="true"><i></i><i></i><i></i></span><span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span>';
+    w.innerHTML = '${ACTIVITY_MARK_HTML}<span class="wtext" id="workingText">Connecting…</span><span class="welapsed" id="workingElapsed"></span><div class="reasoning-stream" id="workingReasoning" aria-label="Model reasoning" hidden></div>';
     $('stream').appendChild(w);
     setWorking('Thinking…');
     renderRunSide(runId);
@@ -2049,6 +2183,16 @@ export const UI_HTML = String.raw`<!doctype html>
     stopStreams();
     var es = new EventSource('/api/runs/' + runId + '/stream');
     S.es = es;
+    es.addEventListener('replay-end', function () {
+      var sess = S.sessions[runId];
+      if (!sess || S.active !== runId) return;
+      sess.historyReady = true;
+      if (sess.session && sess.session.status !== 'running') {
+        setWorking(null);
+        es.close();
+        if (S.es === es) S.es = null;
+      }
+    });
     es.onmessage = function (msg) {
       var ev = JSON.parse(msg.data);
       var sess = S.sessions[runId];
@@ -2084,7 +2228,7 @@ export const UI_HTML = String.raw`<!doctype html>
       try { es.close(); } catch (e) {}
       if (S.es === es) S.es = null;
       if (!sess || S.active !== runId) return;
-      if (sess.session && sess.session.status && sess.session.status !== 'running') return;
+      if (sess.session && sess.session.status && sess.session.status !== 'running' && sess.historyReady) return;
       S.esFailures = (S.esFailures || 0) + 1;
       S.reconnecting = true;
       setWorking('Connection lost — reconnecting…');
@@ -2099,17 +2243,18 @@ export const UI_HTML = String.raw`<!doctype html>
   }
 
   var UB_SEQ = 0;
-  function userBubble(text, runId, ubId) {
+  function userBubble(text, runId, ubId, ts) {
     // Unique per-send identity: edit/retry/failure/removal must never target
     // the wrong copy when the user sends the exact same text twice.
     var id = ubId || 'ub-' + Date.now().toString(36) + '-' + (++UB_SEQ);
     var div = document.createElement('div');
     div.className = 'usermsg';
-    div.style.cssText = 'display:flex;justify-content:flex-end;margin:10px 0;';
     div.setAttribute('data-ubid', id);
     div.setAttribute('data-ubtext', text);
-    div.innerHTML = '<div style="max-width:75%;background:rgba(91,168,255,.1);border:1px solid rgba(91,168,255,.32);border-radius:12px;padding:8px 12px;font-size:13px;white-space:pre-wrap">' +
-      '<span style="color:var(--blue);font-size:10.5px;display:block;margin-bottom:2px">you</span>' + esc(text) +
+    // Same anatomy as the Cowork "me" bubble: a right-aligned meta line with the
+    // sender and send time, then the bubble itself. All styling lives in
+    // .usermsg/.ub so the two chats render identically.
+    div.innerHTML = '<div class="ub"><div class="umeta"><span class="nm">You</span><span class="tg">' + esc(hhmm(ts || new Date().toISOString())) + '</span></div>' + esc(text) +
       '<div class="ubtns"><button class="ubtn" title="edit and resend" data-ub="edit">' + icon('pencil') + '</button>' +
       '<button class="ubtn" title="retry" data-ub="retry">' + icon('retry') + '</button>' + '</div></div>';
     div.querySelector('[data-ub="edit"]').onclick = function () {
@@ -2411,7 +2556,8 @@ export const UI_HTML = String.raw`<!doctype html>
     var bubble = userBubble('Sending message…', runId);
     bubble.classList.add('pending');
     var ubId = bubble.getAttribute('data-ubid');
-    sess.pendingUserMessages.push({ id: ubId, text: credentialChatInput(text).safeText });
+    // Remember the send time so the confirmed bubble shows the same clock time.
+    sess.pendingUserMessages.push({ id: ubId, text: credentialChatInput(text).safeText, ts: new Date().toISOString() });
     appendLive(stream, bubble);
     stickScroll(stream, true);
     return ubId;
@@ -2427,7 +2573,7 @@ export const UI_HTML = String.raw`<!doctype html>
     item.text = safeText;
     var stream = S.active === runId && $('stream');
     var bubble = stream && stream.querySelector('div[data-ubid="' + item.id + '"]');
-    if (bubble && !item.displayed) { bubble.replaceWith(userBubble(safeText, runId, item.id)); item.displayed = true; }
+    if (bubble && !item.displayed) { bubble.replaceWith(userBubble(safeText, runId, item.id, item.ts)); item.displayed = true; }
     if (consume) pending.splice(index, 1);
     return Boolean(bubble);
   }
@@ -2480,6 +2626,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (node) {
       flushStreamText(node.querySelector('.exec-pre'));
       var c = node.querySelector('.caret'); if (c) c.remove();
+      if (node.classList.contains('tl-stream-row')) node.dataset.streamState = 'done';
       dedupeNarration(sess, node, 'lastThoughtText');
       finalizeNarration(node);
       sess.nodes.thought = null;
@@ -2582,8 +2729,13 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function splitSummary(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(0, d) : body; }
   function splitReason(body) { var d = body.indexOf(' — '); return d >= 0 ? body.slice(d + 3) : ''; }
+  function publicThinkingStatus(text) {
+    var description = String(text || '').replace(/^think\s*/, '').replace(/\s+/g, ' ').trim();
+    if (!description || /[{}\[\]]/.test(description)) return 'Thinking…';
+    return 'Thinking · ' + description.charAt(0).toUpperCase() + shortText(description.slice(1), 90).replace(/[.!?]+$/, '') + '…';
+  }
   function workingTextFor(text) {
-    if (text.indexOf('think') === 0) return 'Thinking…';
+    if (text.indexOf('think') === 0) return publicThinkingStatus(text);
     if (text.indexOf('run ') === 0) {
       var summary = splitSummary(text.slice(4));
       var k = toolKind(summary);
@@ -2626,6 +2778,8 @@ export const UI_HTML = String.raw`<!doctype html>
     if (text !== S.lastWorkingText) { S.lastWorkingText = text; S.workingSince = Date.now(); w.classList.remove('slow'); }
     var t = $('workingText');
     if (t && t.textContent !== text) t.textContent = text;
+    var activeSession = S.sessions[S.active];
+    renderReasoningStream($('workingReasoning'), activeSession && activeSession.nodes && activeSession.nodes.reasoningText);
     if (!S.workingTimer) {
       S.workingTimer = setInterval(function () {
         if (!document.hidden) document.querySelectorAll('.tool-call[data-tool-state="working"]').forEach(function (row) {
@@ -2682,6 +2836,43 @@ export const UI_HTML = String.raw`<!doctype html>
     } else {
       preEl.classList.remove('folded');
     }
+  }
+
+  // Actual patch output gets line color and counts. Plain edit acknowledgements
+  // stay plain: a successful write does not tell us how many lines changed.
+  function decorateToolDiff(row, preEl, output) {
+    if (!row || row.dataset.toolKind !== 'edit' || !preEl) return;
+    var lines = String(output || '').split('\n');
+    var patch = lines.some(function (line) { return /^diff --git |^@@ |^--- /.test(line); });
+    if (!patch) return;
+    var added = 0, removed = 0;
+    lines.forEach(function (line) {
+      if (line.charAt(0) === '+' && line.indexOf('+++') !== 0) added++;
+      if (line.charAt(0) === '-' && line.indexOf('---') !== 0) removed++;
+    });
+    if (!added && !removed) return;
+    preEl.classList.add('tool-diff');
+    preEl.textContent = '';
+    lines.forEach(function (line, index) {
+      var span = document.createElement('span');
+      span.className = 'tool-diff-line' +
+        (line.charAt(0) === '+' && line.indexOf('+++') !== 0 ? ' add' :
+        line.charAt(0) === '-' && line.indexOf('---') !== 0 ? ' del' :
+        /^@@ |^diff --git /.test(line) ? ' hunk' : '');
+      span.textContent = line + (index < lines.length - 1 ? '\n' : '');
+      preEl.appendChild(span);
+    });
+    var head = row.querySelector('.tool-call-head');
+    if (!head) return;
+    var stat = head.querySelector('.tool-change-stat');
+    if (!stat) {
+      stat = document.createElement('span');
+      stat.className = 'tool-change-stat';
+      var status = head.querySelector('.st');
+      if (status) head.insertBefore(stat, status); else head.appendChild(stat);
+    }
+    stat.innerHTML = '<span class="added">+' + added + '</span><span class="removed">−' + removed + '</span>';
+    stat.setAttribute('aria-label', added + ' lines added, ' + removed + ' lines removed');
   }
 
   // ── Delegated specialists ───────────────────────────────────────────────
@@ -3200,6 +3391,70 @@ export const UI_HTML = String.raw`<!doctype html>
     }
   }
 
+  // Attach the real diff to the edit's tool row. Removals render red and
+  // additions green: a rewrite that deleted code must never look like a pure
+  // addition, which is exactly what a count-only badge showed.
+  function applyFileChange(runId, typed) {
+    var sess = S.sessions[runId];
+    if (!sess || !typed) return;
+    var row = findToolRow(sess, typed.path, true);
+    if (!row || !typed.diff || !typed.diff.length) return;
+    if (row.querySelector('.diffview')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'diffview';
+    for (var i = 0; i < typed.diff.length; i++) {
+      var d = typed.diff[i] || {};
+      // A "… N unchanged lines" row is a gap marker, not source.
+      var gap = d.kind === 'context' && /^\u2026 \d+ (unchanged|more diff)/.test(String(d.text || ''));
+      var line = document.createElement('div');
+      line.className = 'dline ' + (gap ? 'gap' : (d.kind === 'add' ? 'add' : d.kind === 'remove' ? 'remove' : 'context'));
+      var ln = document.createElement('span');
+      ln.className = 'ln';
+      ln.textContent = d.newLine || d.oldLine || '';
+      var mark = document.createElement('span');
+      mark.className = 'mark';
+      mark.textContent = d.kind === 'add' ? '+' : d.kind === 'remove' ? '-' : '';
+      var tx = document.createElement('span');
+      tx.className = 'tx';
+      tx.textContent = d.text || '';
+      line.appendChild(ln);
+      line.appendChild(mark);
+      line.appendChild(tx);
+      wrap.appendChild(line);
+    }
+    row.appendChild(wrap);
+  }
+
+  // The model's own reasoning. A run that thinks silently is indistinguishable
+  // from a run that is stuck, so the trace is shown — collapsed by default,
+  // live while it streams.
+  function applyReasoning(runId, typed) {
+    var stream = $('stream');
+    var sess = S.sessions[runId];
+    if (!stream || !sess || !typed || !typed.text) return;
+    var box = sess.nodes && sess.nodes.think;
+    if (!box) {
+      var row = document.createElement('div');
+      row.className = 'tl-row tl-think';
+      box = document.createElement('details');
+      box.className = 'thinkbox';
+      var sum = document.createElement('summary');
+      sum.textContent = "Model's reasoning";
+      var pre = document.createElement('pre');
+      box.appendChild(sum);
+      box.appendChild(pre);
+      row.appendChild(box);
+      sess.nodes = sess.nodes || {};
+      sess.nodes.think = box;
+      sess.nodes.thinkOpen = true;
+      appendLive(stream, row);
+    }
+    var body = box.querySelector('pre');
+    if (body) body.textContent = typed.text;
+    // Open while it is still arriving, and leave it open: the trace is the point.
+    if (sess.nodes.thinkOpen) box.open = true;
+  }
+
   // Refused actions, rendered from the typed frames the executor emits at the
   // gate that refused them. This family had no visible rendering before: a
   // refusal is decided in preflight, before the run row that would create a
@@ -3236,7 +3491,18 @@ export const UI_HTML = String.raw`<!doctype html>
     var op = String(typed.operation || '').trim();
     if (op) html += ' <span class="policy-op">' + esc(op) + '</span>';
     if (typed.tool) html += ' <span class="policy-tool">' + esc(typed.tool) + '</span>';
-    if (typed.detail) html += '<div class="policy-detail">' + esc(String(typed.detail)) + '</div>';
+    if (typed.detail) {
+      var detail = String(typed.detail);
+      if (typed.reason === 'loop_detected' || detail.length > 220) {
+        var summary = typed.reason === 'loop_detected'
+          ? 'Repeated action stopped. Use earlier results or try a different check.'
+          : detail.slice(0, 150).replace(/\s+/g, ' ').trim() + (detail.length > 150 ? '…' : '');
+        html += '<div class="policy-summary">' + esc(summary) + '</div>' +
+          '<details class="policy-detail"><summary>Technical details</summary><div class="policy-raw">' + esc(detail) + '</div></details>';
+      } else {
+        html += '<div class="policy-detail">' + esc(detail) + '</div>';
+      }
+    }
     return html + ' <span class="chip warn repeat-count">&times;1</span></div>';
   }
 
@@ -3303,6 +3569,26 @@ export const UI_HTML = String.raw`<!doctype html>
       if (seen.has(ev.i)) return;
       seen.add(ev.i);
       if (seen.size > 2000) seen.delete(seen.values().next().value);
+    }
+    if (text === 'activity preparing-project' || text === 'activity indexing-project') {
+      setWorking(text === 'activity indexing-project' ? 'Indexing project…' : 'Preparing project…');
+      return;
+    }
+    if (text === 'activity reasoning-reset' || text.indexOf('activity reasoning-delta ') === 0) {
+      if (!sess || !sess.nodes) return;
+      if (text === 'activity reasoning-reset') sess.nodes.reasoningText = '';
+      else {
+        try {
+          var reasoningDelta = JSON.parse(text.slice('activity reasoning-delta '.length));
+          if (typeof reasoningDelta !== 'string') return;
+          sess.nodes.reasoningText = (sess.nodes.reasoningText || '') + reasoningDelta;
+          sess.nodes.reasoningText = sess.nodes.reasoningText.slice(-24000);
+        } catch (e) { return; }
+      }
+      renderReasoningStream($('workingReasoning'), sess.nodes.reasoningText);
+      if (text !== 'activity reasoning-reset') setWorking('Reasoning…');
+      stickScroll(stream);
+      return;
     }
     updateApproach(runId, ev);
     // The next assistant event starts a fresh activity group after the prior
@@ -3371,8 +3657,9 @@ export const UI_HTML = String.raw`<!doctype html>
           t.className = 'tl-row tl-meta';
           t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><details class="exec-details"><summary><b>Raw model output</b><span class="chev">\u25B8</span></summary><pre class="exec-pre"></pre></details></div>';
         } else {
-          t.className = 'tl-row tl-note-row';
-          t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><span class="txt"></span><span class="caret"></span></div>';
+          t.className = 'tl-row tl-note-row tl-stream-row';
+          t.dataset.streamState = 'live';
+          t.innerHTML = '<span class="tl-dot dot-note"></span><div class="tl-body"><div class="stream-live" aria-hidden="true">Agent Gitu · writing</div><div class="stream-text"><span class="txt"></span><span class="caret"></span></div></div>';
         }
         insert(t);
         sess.nodes.thought = t;
@@ -3447,7 +3734,7 @@ export const UI_HTML = String.raw`<!doctype html>
       if (!sess || !sess.chatish) { closeThought(runId); setWorking('Preparing tool action…'); }
       return;
     }
-    if (text.indexOf('think') === 0) { setWorking('Thinking…'); return; }
+    if (text.indexOf('think') === 0) { setWorking(publicThinkingStatus(text)); return; }
     if (text.indexOf('approval-required') === 0) { setWorking('Waiting for your approval…'); return; }
     if (text.indexOf('ask-user') === 0) { closeThought(runId); setWorking('Waiting for your answers…'); return; }
     if (text.indexOf('user-msg ') === 0) {
@@ -3478,19 +3765,29 @@ export const UI_HTML = String.raw`<!doctype html>
       return;
     }
     if (text.indexOf('lines ') === 0) {
-      var lineHint = text.slice(6).replace(/\s+\+\d+\s+lines.*$/i, '').trim();
+      // "+12 lines" (legacy) and "+12 -3 lines" (current): the removal count is
+      // part of what the user has to see, so it gets its own red counter.
+      var counts = /\s+\+(\d+)(?:\s+-(\d+))?\s+lines.*$/i.exec(text);
+      var lineHint = text.slice(6).replace(counts ? counts[0] : /\s+\+\d+\s+lines.*$/i, '').trim();
       var toolCard = findToolRow(sess, lineHint, true);
       if (toolCard && !toolCard.querySelector('.lines')) {
+        var addedTarget = counts ? parseInt(counts[1], 10) || 0 : 0;
+        var removedTarget = counts && counts[2] ? parseInt(counts[2], 10) || 0 : 0;
         var badge = document.createElement('span');
         badge.className = 'lines';
-        badge.textContent = '+0 lines';
+        var plus = document.createElement('span');
+        plus.textContent = '+0';
+        var minus = document.createElement('span');
+        minus.className = 'del';
+        badge.appendChild(plus);
+        badge.appendChild(minus);
         var cmdRow = toolCard.querySelector('.tl-cmd');
         cmdRow.insertBefore(badge, cmdRow.querySelector('.st'));
-        var target = parseInt(text.split('+')[1] || '0', 10) || 0;
         var startT = Date.now();
         var anim = setInterval(function () {
           var pr = Math.min(1, (Date.now() - startT) / 700);
-          badge.textContent = '+' + Math.round(target * pr) + ' lines';
+          plus.textContent = '+' + Math.round(addedTarget * pr);
+          minus.textContent = removedTarget ? '-' + Math.round(removedTarget * pr) : '';
           if (pr >= 1) clearInterval(anim);
         }, 40);
       }
@@ -3697,6 +3994,7 @@ export const UI_HTML = String.raw`<!doctype html>
       sess.nodes.nextToolBatchHint = '';
       var row = document.createElement('div');
       row.className = 'tool-call' + (kind === 'browser' ? ' tl-browser' : '');
+      row.dataset.toolKind = kind;
       row.innerHTML =
         '<button type="button" class="tl-cmd tool-call-head" aria-expanded="false">' +
           '<span class="tool-kind" aria-hidden="true">' + ({ shell: '&gt;_', read: '≡', edit: '±', search: '⌕', list: '▤', browser: '◎', tool: '◇' }[kind] || '◇') + '</span>' +
@@ -3760,6 +4058,7 @@ export const UI_HTML = String.raw`<!doctype html>
         var preEl = t2.querySelector('pre');
         var cleanOut = body.replace(/ ⏎ /g, '\n');
         setupOutputFolding(detailsEl, preEl, cleanOut);
+        decorateToolDiff(t2, preEl, cleanOut);
         var outputLabel = t2.querySelector('.output-label');
         var outputLines = cleanOut ? cleanOut.split('\n').length : 0;
         if (outputLabel) outputLabel.textContent = 'Output · ' + outputLines + (outputLines === 1 ? ' line' : ' lines');
@@ -3960,34 +4259,37 @@ export const UI_HTML = String.raw`<!doctype html>
       }).join('') + '</ol>';
   }
 
-  function renderRunOverview(session, ledger) {
-    var next = $('runOverviewNext'), stats = $('runOverviewStats'), dot = $('runOverviewDot');
-    if (!next || !session) return;
-    var waiting = waitingFor(session);
-    var status = waiting ? 'waiting' : (session.status || 'idle');
-    dot.className = 'run-overview-dot ' + status;
-    // The blocker line is the most important sentence on screen when a run
-    // stops — let it wrap to two lines instead of clipping mid-sentence.
-    next.classList.toggle('wrapped', status === 'blocked' || status === 'failed' || status === 'aborted');
-    var current = '';
-    if (status === 'blocked' && ledger && ledger.blockers && ledger.blockers.length) current = 'Blocked: ' + ledger.blockers[ledger.blockers.length - 1];
-    if (!current && status === 'failed' && session.error) current = 'Failed: ' + shortText(session.error, 260);
-    if (!current && status === 'aborted') current = session.error || 'Stopped by user.';
-    if (!current && waiting) current = 'Needs your ' + waiting + ' before work can continue';
-    if (!current && (status === 'running' || status === 'waiting') && ledger && ledger.plan) {
-      var step = ledger.plan.filter(function (s) { return s.status === 'in_progress'; })[0] || ledger.plan.filter(function (s) { return s.status === 'pending'; })[0];
-      if (step) current = step.description;
+  // Classify a raw provider/runtime error into a human headline plus a
+  // recovery hint. Task details show the headline and retain the raw error
+  // in a copyable failure card.
+  function failureSummary(error) {
+    var text = String(error || '').replace(/\s+/g, ' ').trim();
+    if (!text) return { title: 'The run failed', hint: '', canSwitchModel: true };
+    if (/Verification could not be completed after two correction opportunities/i.test(text)) {
+      return { title: 'Verification stopped this run', hint: 'Review the checks in Technical evidence. Correct a failing check or command, then continue this session to verify again.', canSwitchModel: false };
     }
-    if (!current) current = status === 'completed' ? 'Completed — review the result and evidence' : status === 'failed' ? 'Failed — review the failure reason and retry options' : status === 'blocked' ? 'Blocked — review the required action' : status === 'aborted' ? 'Stopped by user' : status === 'running' ? 'Preparing the next action' : 'Task state ready';
-    next.textContent = current;
-    next.title = current;
-    var statBits = [status === 'waiting' ? 'needs input' : status];
-    if (ledger && ledger.acceptanceCriteria && ledger.acceptanceCriteria.length) {
-      var satisfied = ledger.acceptanceCriteria.filter(function (c) { return c.satisfied; }).length;
-      statBits.push(satisfied + '/' + ledger.acceptanceCriteria.length + ' criteria');
+    if (/Work paused because/i.test(text)) {
+      return { title: 'Work paused after no new progress', hint: 'Completed work is saved. Review the last action and continue with a different approach or additional information.', canSwitchModel: false };
     }
-    if (ledger && ledger.filesChanged && ledger.filesChanged.length) statBits.push(ledger.filesChanged.length + ' files');
-    stats.textContent = statBits.join(' · ');
+    if (/ChatGPT subscription runtime could not start|ChatGPT subscription request failed:\s*spawn\s+(?:EFTYPE|ENOENT|EACCES|EPERM)/i.test(text)) {
+      return { title: 'The local Codex runtime could not start', hint: 'Restart Agent Gitu; if it persists, repair or reinstall Agent Gitu (or update Codex), then retry. Changing models will not fix this runtime error.', canSwitchModel: false };
+    }
+    if (/usage (?:limit|cap)|quota (?:exceeded|exhausted)|insufficient[_ -]quota|purchase more credits|no credits|insufficient balance|\bbilling\b|\b402\b/i.test(text)) {
+      var reset = /(?:try again|resets?)\s+(at|in)\s+([^.;,)]+)/i.exec(text);
+      var title = /chatgpt/i.test(text) ? 'ChatGPT plan usage limit reached' : 'The selected model ran out of quota or credits';
+      if (reset) title += ' — try again ' + reset[1].toLowerCase() + ' ' + reset[2].trim();
+      return { title: title, hint: 'Switch models to retry now, or wait for the quota to reset. Your task and history are preserved.', canSwitchModel: true };
+    }
+    if (/\b401\b|invalid api key|incorrect api key|unauthorized|authentication failed/i.test(text)) {
+      return { title: 'The provider rejected its API key', hint: 'Check the key in provider settings, then retry. Your task and history are preserved.', canSwitchModel: true };
+    }
+    if (/\b429\b|rate limit|too many requests/i.test(text)) {
+      return { title: 'The provider rate-limited the request', hint: 'Wait a moment and retry, or switch to another model. Your task and history are preserved.', canSwitchModel: true };
+    }
+    if (/fetch failed|econnrefused|enotfound|etimedout|econnreset|socket hang up|network error|stream (?:disconnected|ended|closed)/i.test(text)) {
+      return { title: 'Could not reach the model provider', hint: 'Check your connection and retry. Your task and history are preserved.', canSwitchModel: true };
+    }
+    return { title: shortText(text, 140), hint: 'Your task and history are preserved — pick an available model in the composer and send a message to retry.', canSwitchModel: true };
   }
 
   function pollRun(runId) {
@@ -3998,20 +4300,20 @@ export const UI_HTML = String.raw`<!doctype html>
       S.pollFailures = 0;
       retainUsageEstimate(sess, session);
       sess.session = session;
+      renderContextCard(runId);
       // A resumed run replays the whole history over SSE, re-creating tool
       // cards from earlier interrupted runs in the "working" state — those
       // suppress the thinking/reasoning/responding indicator for the entire
       // run. Keep sweeping anything that predates this run's start (5s clock-
       // skew margin); the run's own live tool cards are left alone.
       if (sess.runStartedAtMs) interruptWorkingToolRows(sess, sess.runStartedAtMs - 5000);
-      renderRunOverview(session, sess.ledger);
       // On opening a persisted task, place its model in the composer. That
       // makes continuing it stable; a later picker change is deliberate and
       // is sent as a one-session model override.
       // EXCEPT when the last attempt failed on billing: yanking the picker
       // back to the dead paid model would silently eat the user's free-model
       // recovery — leave the composer alone so their selection stands.
-      var billingFail = !!(session.error && /(401|no credits|insufficient balance|billing)/i.test(session.error));
+      var billingFail = !!(session.error && /(401|no credits|insufficient balance|billing|usage (?:limit|cap)|quota (?:exceeded|exhausted)|insufficient[_ -]quota|purchase more credits)/i.test(session.error));
       if (!sess.modelSynced && !sess.modelOverride && session.provider && session.model && !billingFail) {
         var sessionModel = session.provider + '::' + session.model;
         if (modelInfo(sessionModel)) {
@@ -4039,25 +4341,38 @@ export const UI_HTML = String.raw`<!doctype html>
         appendSummary(runId, session);
         sess.summaryShown = summaryKey;
       }
-      if (session.status === 'running') sess.justOpened = false;
+      if (session.status === 'running') {
+        sess.justOpened = false;
+        if (!S.es) {
+          connect(runId);
+          S.poll = setInterval(function () { pollRun(runId); }, 1500);
+        }
+      }
       if (session.taskId) {
         api('/api/tasks/' + session.taskId).then(function (ledger) {
           var s2 = S.sessions[runId];
           if (s2 && S.active === runId) {
             s2.ledger = ledger;
             renderRunSide(runId);
+            renderContextCard(runId);
             renderComposerTodos(runId);
-            renderRunOverview(session, ledger);
             if (s2.chatish) { var pp = $('progress'); if (pp) pp.style.display = 'none'; } else updateProgress(ledger);
           }
         }).catch(function () {});
       } else renderRunSide(runId);
-      if (session.status !== 'running') {
+      if (session.status === 'waiting_for_model') {
+        interruptWorkingToolRows(sess, undefined);
+        var retryAt = session.modelRecovery && session.modelRecovery.nextRetryAt;
+        var retrySeconds = retryAt ? Math.max(0, Math.ceil((Date.parse(retryAt) - Date.now()) / 1000)) : 0;
+        setWorking('Waiting for the model — retrying automatically' + (retrySeconds ? ' in ' + retrySeconds + 's' : '') + '…');
+        updateSendState();
+        renderSidebar();
+      } else if (session.status !== 'running') {
         retireAbubble(sess);
         closeThought(runId);
         interruptWorkingToolRows(sess, undefined);
         setWorking(null);
-        if (S.es) { try { S.es.close(); } catch (e) {} S.es = null; }
+        if (S.es && sess.historyReady) { try { S.es.close(); } catch (e) {} S.es = null; }
         S.reconnecting = false;
         if (S.poll) { clearInterval(S.poll); S.poll = null; }
         renderSidebar();
@@ -4079,7 +4394,7 @@ export const UI_HTML = String.raw`<!doctype html>
     if (!stream || !sess) return;
     var key = session && session.error ? String(session.error) : '';
     var existing = stream.querySelector('.run-stop-note');
-    if (!key || session.status === 'running') {
+    if (!key || session.status === 'running' || session.status === 'waiting_for_model') {
       if (existing) existing.remove();
       sess.errShownKey = '';
       return;
@@ -4089,7 +4404,7 @@ export const UI_HTML = String.raw`<!doctype html>
     sess.errShownKey = key;
     var div = document.createElement('div');
     div.className = 'run-stop-note';
-    div.textContent = 'Run stopped — see Details to review and retry.';
+    div.textContent = 'Run stopped — see Task details in the left sidebar to review and retry.';
     var w = $('working');
     if (w) stream.insertBefore(div, w); else stream.appendChild(div);
     stickScroll(stream, true);
@@ -4152,6 +4467,11 @@ export const UI_HTML = String.raw`<!doctype html>
     // code fact prose cannot express.
     if (typed.type === 'command_started') return;
     if (typed.type === 'command_finished') { applyCommandFinish(runId, typed); return; }
+  // A file change and the model's reasoning are both display-only facts the
+  // prose stream cannot carry: the diff body (with its removals) and the trace
+  // itself. Handled before the gate section so a restored frame renders too.
+  if (typed.type === 'file_changed') { applyFileChange(runId, typed); return; }
+  if (typed.type === 'reasoning') { applyReasoning(runId, typed); return; }
     // A refused action is a fact about the run, not a request: it renders from a
     // restored frame too, which is why it is handled before the history guard.
     if (typed.type === 'policy_denied' || typed.type === 'operation_blocked') {
@@ -4427,18 +4747,20 @@ export const UI_HTML = String.raw`<!doctype html>
     return out;
   }
   // One status strip answering: did it work, was it verified, what moved.
-  function reportStatusLine(status, checks, passed, changeCount) {
+  function reportStatusLine(status, checks, passed, fileCount, updateCount) {
     var bits = [];
     bits.push(status === 'complete' ? '<span>🟢 <b>Completed</b></span>'
       : status === 'blocked' ? '<span>⚠️ <b>Blocked</b></span>'
+      : status === 'paused' ? '<span>⏸️ <b>Paused</b></span>'
       : status === 'aborted' ? '<span>⏹️ <b>Stopped</b></span>' : '<span>❌ <b>Failed</b></span>');
     if (checks.length) {
       bits.push(passed === checks.length
         ? '<span>✅ All ' + checks.length + ' verification checks passed</span>'
-        : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + '/' + checks.length + ' verification checks passed</span>');
+        : '<span>' + (passed ? '⚠️' : '❌') + ' ' + passed + ' passed · ' + (checks.length - passed) + ' failed verification attempt' + (checks.length - passed === 1 ? '' : 's') + '</span>');
     }
-    bits.push(changeCount
-      ? '<span>🛠️ ' + changeCount + ' file' + (changeCount === 1 ? '' : 's') + ' changed</span>'
+    bits.push(fileCount
+      ? '<span>🛠️ ' + fileCount + ' file' + (fileCount === 1 ? '' : 's') + ' changed</span>'
+      : updateCount ? '<span>🛠️ ' + updateCount + ' update' + (updateCount === 1 ? '' : 's') + ' reported</span>'
       : '<span>🔒 No source code was modified</span>');
     return '<div class="r-status">' + bits.join('') + '</div>';
   }
@@ -4526,27 +4848,40 @@ export const UI_HTML = String.raw`<!doctype html>
       (screenshots ? ' · ' + screenshots + ' screenshot' + (screenshots === 1 ? '' : 's') : '') + '</span></div>';
   }
 
-  function reportSideCard(report) {
-    var checks = reportChecks(report);
-    var currentChecks = checks.filter(function (check) { return check.authority !== 'historical'; });
-    var passed = currentChecks.filter(function (check) { return check.passed; }).length;
-    var files = reportFiles(report);
+  function reportMessageText(report) {
     var parsed = parseOutcome(report.summary);
-    var ok = report.status === 'complete';
-    var icon = ok ? '🎉' : (report.status === 'blocked' ? '⚠️' : (report.status === 'aborted' ? '⏹️' : '❌'));
-    var outcomeWord = ok ? 'Done' : (report.status === 'blocked' ? 'Blocked' : (report.status === 'aborted' ? 'Stopped' : 'Failed'));
-    var html = '<div class="report-flat" style="margin:12px 0 0;border-top:0;padding-top:0">' +
-      '<div class="r-headline"><h2 style="font-size:14.5px">' + icon + ' ' + outcomeWord + '</h2>' +
-      '<span class="chip ' + (ok ? 'ok' : 'bad') + '">' + esc(report.status) + '</span>' +
-      (report.phase && report.phase.kind === 'follow_up' ? '<span class="chip" style="margin-left:6px">follow-up</span>' : '') + '</div>' +
-      '<div class="r-lede response-prose">' + renderResponseText(parsed.lede || report.summary) + '</div>' +
-      reportStatusLine(report.status, currentChecks, passed, files.length || (report.changes || []).length || parsed.changes.length) +
-      browserHighlight(report.browserActivity) +
-      ((checks.length || report.qualityMetrics) ? '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + verificationSection(checks) + qualityMetricsHtml(report.qualityMetrics) + '</details>' : '') +
-      '</div>';
-    return html;
+    var parts = [parsed.lede || readableSummary(report.summary)];
+    var findings = (report.findings || []).map(function (item) { return item.claim; }).filter(Boolean);
+    var changes = (report.changes || []).length ? report.changes : parsed.changes.map(function (item) { return (CHANGE_VERBS[item.action] || 'Changed') + ' ' + item.path; });
+    function section(title, items) {
+      if (items && items.length) parts.push('### ' + title + '\n' + items.map(function (item) { return '- ' + String(item); }).join('\n'));
+    }
+    section('Findings', findings);
+    section('Delivered', changes);
+    section('Remaining risks', report.remainingRisks);
+    section('Follow-ups', report.followUps);
+    return parts.join('\n\n');
   }
 
+  function reportReplyHtml(report, runId, actions) {
+    var displayStatus = report.status === 'failed' && /^Work paused because/.test(report.failureReason || '') ? 'paused' : report.status;
+    var checks = reportChecks(report);
+    var currentChecks = checks.filter(function (check) { return check.authority !== 'historical'; });
+    var files = reportFiles(report);
+    var body = cwBody(cwVisibleReply(reportMessageText(report)), []);
+    if (runId && files.length) body += reportChangedFilesHtml(runId, files);
+    var evidence = verificationSection(checks) + browserHighlight(report.browserActivity) + qualityMetricsHtml(report.qualityMetrics);
+    if (report.tokenTelemetry && devMode()) evidence += telemetryGridHtml(report.tokenTelemetry);
+    if (evidence) body += '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' +
+      reportStatusLine(displayStatus, currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length) + evidence + '</details>';
+    var status = { complete: 'Completed', blocked: 'Blocked', aborted: 'Stopped', failed: 'Failed', paused: 'Paused' }[displayStatus] || displayStatus;
+    if (report.phase && report.phase.kind === 'follow_up') status += ' · Follow-up';
+    return cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'orb', color: '#8f80ff' } }, status, body, actions);
+  }
+
+  function reportSideCard(report) {
+    return '<div class="report-flat">' + reportReplyHtml(report, null, '') + '</div>';
+  }
   function qualityMetricsHtml(metrics) {
     if (!metrics || typeof metrics.score !== 'number') return '';
     var criteria = metrics.criteria || {};
@@ -4561,64 +4896,38 @@ export const UI_HTML = String.raw`<!doctype html>
     return '<div class="r-note" data-quality-metrics><b>Outcome quality</b> · ' + esc(bits.join(' · ')) + '</div>';
   }
 
+  function reportChangedFilesHtml(runId, files) {
+    if (!files.length) return '';
+    function row(path) {
+      var url = '/api/runs/' + encodeURIComponent(runId) + '/project-file?path=' + encodeURIComponent(path);
+      return '<a class="report-file-row" href="' + esc(url) + '" download aria-label="Download ' + esc(path) + '">' +
+        '<span class="report-file-path">' + esc(path) + '</span><span class="report-file-action">Download ↓</span></a>';
+    }
+    var html = '<div class="report-files"><div class="report-files-head">' + icon('file') +
+      '<span>Changed files</span><span class="report-files-count">' + files.length + '</span></div>' + files.slice(0, 4).map(row).join('');
+    if (files.length > 4) html += '<details class="report-files-more"><summary>Show all ' + files.length + ' files</summary>' + files.slice(4).map(row).join('') + '</details>';
+    return html + '</div>';
+  }
+
   function appendSummary(runId, session) {
     var stream = $('stream');
     if (!stream) return;
     var sess = S.sessions[runId];
     if (sess && sess.chatish) return;
     var r = session.report;
-    var files = reportFiles(r);
-    var checks = reportChecks(r);
-    var currentChecks = checks.filter(function (check) { return check.authority !== 'historical'; });
-    var passed = currentChecks.filter(function (check) { return check.passed; }).length;
-    var parsed = parseOutcome(r.summary);
     var div = document.createElement('div');
     div.className = 'report-flat';
-    var ok = r.status === 'complete';
-    var doneIcon = ok ? '🎉' : (r.status === 'blocked' ? '⚠️' : (r.status === 'aborted' ? '⏹️' : '❌'));
-    var doneWord = ok ? 'Done' : (r.status === 'blocked' ? 'Blocked' : (r.status === 'aborted' ? 'Stopped' : 'Failed'));
-    var html = '<div class="r-headline"><h2 title="' + esc(session.goal) + '">' + doneIcon + ' ' + doneWord + '</h2>' + chipFor(session.status) +
-      '<button class="tool-btn-copy" data-sumcopy title="copy the full report as text">' + icon('copy') + ' Copy report</button></div>';
-    html += '<div class="r-lede response-prose">' + renderResponseText(parsed.lede || r.summary) + '</div>';
-    html += reportStatusLine(r.status, currentChecks, passed, files.length || (r.changes || []).length || parsed.changes.length);
-    if (r.phase && r.phase.kind === 'follow_up') html += '<div class="r-note">Follow-up delivery — earlier task work was preserved and is not repeated here.</div>';
-    var findings = (r.findings || []).slice(0, 5);
-    if (findings.length) {
-      html += '<div class="r-sec"><h4>🔍 What Gitu found</h4><ul>' + findings.map(function (f) {
-        return '<li>' + esc(shortText(f.claim, 220)) + '</li>';
-      }).join('') + '</ul></div>';
-    }
-    // The reporter now emits short, reader-facing delivery lines. Legacy
-    // summaries still fall back to the old parser, so saved runs keep their
-    // useful detail without forcing raw tool output into the report.
-    var deliveryItems = Array.isArray(r.changes) && r.changes.length
-      ? r.changes.slice(0, 8)
-      : parsed.changes.slice(0, 8).map(function (c) { return (CHANGE_VERBS[c.action] || 'Changed') + ' ' + c.path; });
-    if (deliveryItems.length || files.length) {
-      html += '<div class="r-sec"><h4>🛠️ Delivered</h4>' +
-        (deliveryItems.length ? '<ul>' + deliveryItems.map(function (item) { return '<li>' + esc(shortText(item, 260)) + '</li>'; }).join('') + '</ul>' : '') +
-        (files.length ? '<div class="r-files">' + files.slice(0, 12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') + '</div>' : '<div class="r-note">🔒 No source code was modified.</div>') +
-        '</div>';
-    } else if (!files.length) {
-      html += '<div class="r-note">🔒 No source code was modified.</div>';
-    }
-    html += browserHighlight(r.browserActivity);
-    if (r.remainingRisks.length) html += '<div class="r-sec"><h4>⚠️ Remaining risks</h4><ul>' + r.remainingRisks.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
-    if (r.followUps.length) html += '<div class="r-sec"><h4>→ Follow-ups</h4><ul>' + r.followUps.map(function (v) { return '<li>' + esc(v) + '</li>'; }).join('') + '</ul></div>';
-    // Technical evidence — verification rows, the raw model summary and the
-    // token telemetry all live behind ONE collapsed disclosure. Available,
-    // not in the way.
-    var evHtml = verificationSection(checks);
-    var rawHtml = '<div class="sec"><h4>Raw summary</h4><pre class="exec-pre" style="max-height:240px">' + esc(readableSummary(r.summary)) + '</pre></div>';
-    // Token machinery inside the report card is Developer detail too.
-    var teleHtml = r.tokenTelemetry && devMode() ? telemetryGridHtml(r.tokenTelemetry) : '';
-    var qualityHtml = qualityMetricsHtml(r.qualityMetrics);
-    if (evHtml || rawHtml || teleHtml || qualityHtml) {
-      html += '<details class="exec-details" style="margin-top:16px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' + qualityHtml + evHtml + rawHtml + teleHtml + '</details>';
-    }
-    div.innerHTML = html;
-    // The full-report text exporter finally gets a consumer.
+    var menuId = 'report-menu-' + runId;
+    var actions = '<div class="cw-message-actions"><button class="cw-message-more" type="button" popovertarget="' + esc(menuId) + '" aria-label="Report actions" title="Report actions">…</button>' +
+      '<div class="cw-message-menu" id="' + esc(menuId) + '" popover="auto"><button data-sumcopy>Copy report</button></div></div>';
+    div.innerHTML = reportReplyHtml(r, runId, actions);
     setupCopyButton(div.querySelector('[data-sumcopy]'), function () { return reportText(r); });
+    var more = div.querySelector('.cw-message-more');
+    if (more) more.onclick = function () {
+      var menu = div.querySelector('.cw-message-menu'), rect = more.getBoundingClientRect();
+      menu.style.left = Math.max(12, Math.min(rect.right - 164, window.innerWidth - 176)) + 'px';
+      menu.style.top = Math.max(12, Math.min(rect.bottom + 4, window.innerHeight - 80)) + 'px';
+    };
     var working = $('working');
     if (working) stream.insertBefore(div, working); else stream.appendChild(div);
     if (sess && sess.justOpened) stream.scrollTop = 0;
@@ -4635,30 +4944,37 @@ export const UI_HTML = String.raw`<!doctype html>
   function renderRunSide(runId) {
     var sess = S.sessions[runId];
     var body = $('sideBody');
-    if (!body || !sess) return;
-    if (sess.side === 'context') { renderContext(runId); stopBrowserPoll(); return; }
-    if (sess.side === 'browser') { showBrowserPanel(runId); return; }
-    if (sess.side === 'git') { renderGitPanel(runId); stopBrowserPoll(); return; }
-    stopBrowserPoll();
+    if (!body || !sess || S.panelKind !== 'state' || $('toolPanel').hidden) return;
     if (sess.chatish) { body.innerHTML = '<div class="empty" style="padding:16px 6px">Conversation session — no task state.</div>'; return; }
     var L = sess.ledger;
     if (!L) { body.innerHTML = '<div class="empty">Waiting for task ledger…</div>'; return; }
     var failure = sess.session && sess.session.error;
+    var modelWaiting = sess.session && sess.session.status === 'waiting_for_model';
     var satisfied = L.acceptanceCriteria.filter(function (c) { return c.satisfied; }).length;
     var planDone = L.plan.filter(function (s) { return s.status === 'done'; }).length;
-    var subscriptionRuntimeFailure = typeof failure === 'string' && /(ChatGPT subscription runtime could not start|ChatGPT subscription request failed:\s*spawn\s+(?:EFTYPE|ENOENT|EACCES|EPERM))/i.test(failure);
-    var recoveryHint = subscriptionRuntimeFailure
-      ? 'The local Codex runtime could not start. Restart Agent Gitu; if it persists, repair or reinstall Agent Gitu (or update Codex), then retry. Changing models will not fix this runtime error.'
-      : 'Choose an available model in the composer, then send a message to retry. Your task and history are preserved.';
+    // The card leads with a classified headline; the raw provider error stays
+    // visible-but-secondary,
+    // clamped, and copyable.
+    var failSummary = failure ? failureSummary(failure) : null;
+    if (modelWaiting && failSummary) {
+      failSummary.title = 'Waiting for the model to recover';
+      failSummary.hint = 'This task will retry automatically. Completed work is saved; you can stop it or select another model.';
+    }
     var html = failure
-      ? '<div style="margin:0 0 14px;padding:10px;border:1px solid rgba(255,100,101,.4);border-radius:9px;background:rgba(255,100,101,.1);color:#ffb3b4;font-size:12px;line-height:1.45"><b>Last attempt failed.</b> ' + esc(failure) + '<br>' + recoveryHint + '</div>'
+      ? '<div class="side-fail"><div class="ft">&#9888; ' + esc(failSummary.title) + '</div>' +
+        '<div class="fmsg" title="' + esc(failure) + '">' + esc(failure) + '</div>' +
+        (failSummary.hint ? '<div class="fhint">' + esc(failSummary.hint) + '</div>' : '') +
+        '<div class="facts">' +
+        (failSummary.canSwitchModel ? '<button type="button" class="btn dark" id="sideFailSwitch">Switch model &amp; retry</button><button type="button" class="btn ghost" id="sideFailSettings">Provider settings</button>' : '') +
+        '<button type="button" class="btn ghost" id="sideFailCopy">Copy error</button></div></div>'
       : '';
     html += '<div class="side-summary"><div class="t">Task state</div><div class="d">' +
       (L.acceptanceCriteria.length ? satisfied + '/' + L.acceptanceCriteria.length + ' criteria · ' : '') +
       (L.plan.length ? planDone + '/' + L.plan.length + ' plan steps · ' : '') + L.evidence.length + ' checks</div></div>';
-    if (L.blockers.length) {
+    var visibleBlockers = L.blockers.filter(function (b) { return b !== failure; });
+    if (visibleBlockers.length) {
       html += '<div class="section-h" style="margin-top:0">Blockers</div>';
-      L.blockers.slice(-3).forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
+      visibleBlockers.slice(-3).forEach(function (b) { html += '<div class="crit"><span class="dot" style="background:var(--red)"></span><div>' + esc(b) + '</div></div>'; });
     }
     if (L.acceptanceCriteria.length || L.mode !== 'agent') html += '<div class="section-h" style="margin-top:0">Acceptance criteria</div>';
     if (!L.acceptanceCriteria.length && L.mode !== 'agent') html += '<div class="empty">none set yet</div>';
@@ -4682,25 +4998,61 @@ export const UI_HTML = String.raw`<!doctype html>
     if (orderedPlan.length > 6) html += '<details class="side-more"><summary>Show ' + (orderedPlan.length - 6) + ' more plan steps</summary>' + orderedPlan.slice(6).map(planHtml).join('') + '</details>';
     html += '<div class="section-h">Evidence</div>';
     if (!L.evidence.length) html += '<div class="empty">none yet</div>';
-    function evidenceHtml(e) { return '<div class="step"><span class="st ' + (e.passed ? 'done' : 'failed') + '">' + (e.passed ? 'PASS' : 'FAIL') + '</span><div>' + esc(e.label) + '</div></div>'; }
+    function evidenceHtml(e) { return '<div class="ev-row ' + (e.passed ? 'pass' : 'fail') + '"><span class="ev-chip ' + (e.passed ? 'pass' : 'fail') + '">' + (e.passed ? 'PASS' : 'FAIL') + '</span><span class="ev-text">' + esc(e.label) + '</span></div>'; }
     var recentEvidence = L.evidence.slice(-8);
-    html += recentEvidence.map(evidenceHtml).join('');
-    if (L.evidence.length > 8) html += '<details class="side-more"><summary>Show ' + (L.evidence.length - 8) + ' older checks</summary>' + L.evidence.slice(0, -8).map(evidenceHtml).join('') + '</details>';
+    html += '<div class="side-evidence">' + recentEvidence.map(evidenceHtml).join('') + '</div>';
+    if (L.evidence.length > 8) html += '<details class="side-more"><summary>Show ' + (L.evidence.length - 8) + ' older checks</summary><div class="side-evidence">' + L.evidence.slice(0, -8).map(evidenceHtml).join('') + '</div></details>';
     html += '<div class="section-h">Files changed</div>';
     var visibleFiles = L.filesChanged.filter(reportableFile);
     html += visibleFiles.length ? visibleFiles.slice(0, 12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') : '<div class="empty">none</div>';
     if (visibleFiles.length > 12) html += '<details class="side-more"><summary>Show ' + (visibleFiles.length - 12) + ' more files</summary>' + visibleFiles.slice(12).map(function (f) { return projectFileChipHtml(runId, f, f); }).join('') + '</details>';
     body.innerHTML = html;
+    if (failure) {
+      var failSwitch = $('sideFailSwitch');
+      if (failSwitch) failSwitch.onclick = function () {
+        closeToolPanel();
+        var pick = $('modelPick');
+        if (pick && !pick.disabled) openModelMenu();
+        else { var follow = $('follow'); if (follow) follow.focus(); }
+      };
+      var failSettings = $('sideFailSettings');
+      if (failSettings) failSettings.onclick = function () { openSettings('providers'); };
+      setupCopyButton($('sideFailCopy'), failure);
+    }
   }
 
   function applyLayout() {
     applyWidths();
     var shell = document.querySelector('.shell');
     if (shell) shell.classList.toggle('left-collapsed', !!S.settings.leftCollapsed);
-    var run = document.querySelector('.run');
-    if (run) run.classList.toggle('collapsed-side', !!S.settings.rightCollapsed);
     var btn = $('sbCollapse');
     if (btn) btn.innerHTML = S.settings.leftCollapsed ? '&#187;' : '&#171;';
+  }
+
+  function closeToolPanel() {
+    var panel = $('toolPanel');
+    if (!panel || panel.hidden) return;
+    panel.hidden = true;
+    S.panelKind = '';
+    stopBrowserPoll();
+    renderSidebar();
+  }
+
+  function openToolPanel(kind) {
+    var panel = $('toolPanel');
+    if (!panel) return;
+    if (!panel.hidden && S.panelKind === kind) { closeToolPanel(); return; }
+    toggleContextCard(false);
+    stopBrowserPoll();
+    S.panelKind = kind;
+    panel.hidden = false;
+    $('toolPanelTitle').textContent = kind === 'browser' ? 'Browser' : kind === 'git' ? 'Git' : 'Task details';
+    $('sideBody').innerHTML = '';
+    toggleMobileNav(false);
+    renderSidebar();
+    if (kind === 'browser') showBrowserPanel(S.active);
+    else if (kind === 'git') renderGitPanel(S.active);
+    else if (S.active !== 'home') renderRunSide(S.active);
   }
 
   function toggleMobileNav(open) {
@@ -4711,40 +5063,25 @@ export const UI_HTML = String.raw`<!doctype html>
     if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   }
 
-  function showRunPanel() {
-    var rs = document.querySelector('.run-side');
-    if (!rs) return;
-    if (window.innerWidth <= 1080) {
-      rs.classList.add('narrow-open');
-      var fab = $('sideFab');
-      if (fab) fab.querySelector('span').textContent = 'Close';
-    } else {
-      S.settings.rightCollapsed = false;
-      persist();
-      applyLayout();
-    }
-  }
-
   function applyWidths() {
     var rs = document.documentElement.style;
     rs.setProperty('--sbw', (S.settings.sbWidth || 264) + 'px');
-    rs.setProperty('--rsw', (S.settings.sideWidth || 380) + 'px');
   }
 
-  function bindResize(id, side) {
+  function bindResize(id) {
     var h = $(id);
     if (!h) return;
     h.addEventListener('mousedown', function (e) {
       e.preventDefault();
-      var el = side === 'left' ? document.querySelector('.sb') : document.querySelector('.run-side');
+      var el = document.querySelector('.sb');
       if (!el) return;
       var startX = e.clientX;
       var startW = el.getBoundingClientRect().width;
       h.classList.add('active');
       var move = function (ev) {
         var dx = ev.clientX - startX;
-        var w = Math.max(200, Math.min(760, Math.round(side === 'left' ? startW + dx : startW - dx)));
-        if (side === 'left') S.settings.sbWidth = w; else S.settings.sideWidth = w;
+        var w = Math.max(200, Math.min(760, Math.round(startW + dx)));
+        S.settings.sbWidth = w;
         applyWidths();
       };
       var up = function () {
@@ -4756,100 +5093,6 @@ export const UI_HTML = String.raw`<!doctype html>
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', up);
     });
-  }
-
-  function sideTabsState() {
-    if (!S.settings.sideTabs) S.settings.sideTabs = { state: true, context: true, browser: true, git: true };
-    return S.settings.sideTabs;
-  }
-
-  function renderSideTabs(sess, runId) {
-    var el = $('sideTabs');
-    if (!el) return;
-    var tabs = sideTabsState();
-    if (tabs[sess.side] === false) {
-      sess.side = tabs.state !== false ? 'state' : tabs.context !== false ? 'context' : 'browser';
-    }
-    var html = '';
-    if (tabs.state !== false) html += '<button class="side-tab ' + (sess.side === 'state' ? 'active' : '') + '" data-side="state">State</button>';
-    if (tabs.context !== false) html += '<button class="side-tab ' + (sess.side === 'context' ? 'active' : '') + '" data-side="context">Context</button>';
-    if (tabs.browser !== false) html += '<button class="side-tab ' + (sess.side === 'browser' ? 'active' : '') + '" data-side="browser">' + icon('globe') + ' Browser</button>';
-    if (tabs.git !== false) html += '<button class="side-tab ' + (sess.side === 'git' ? 'active' : '') + '" data-side="git">' + icon('branch') + ' Git</button>';
-    html += '<button class="collapse-tab" id="tabMgr" title="add / remove tabs" style="font-size:14px">+</button>';
-    html += '<button class="collapse-tab" id="rsCollapse" title="close details panel" aria-label="Close details panel">&#187;</button>';
-    el.innerHTML = html;
-    el.querySelectorAll('.side-tab').forEach(function (t) {
-      t.onclick = function () { sess.side = t.getAttribute('data-side'); renderSideTabs(sess, runId); renderRunSide(runId); };
-    });
-    $('tabMgr').onclick = function () { openTabMgr($('tabMgr'), sess, runId); };
-    $('rsCollapse').onclick = function () {
-      var panel = document.querySelector('.run-side');
-      if (window.innerWidth <= 1080 && panel) {
-        panel.classList.remove('narrow-open');
-        var fab = $('sideFab');
-        if (fab) fab.querySelector('span').textContent = 'Panel';
-        return;
-      }
-      S.settings.rightCollapsed = true;
-      persist();
-      applyLayout();
-    };
-    renderSideRail(sess, runId, tabs);
-  }
-
-  /** Collapsed-rail shortcuts: one icon per enabled panel, plus expand. */
-  function renderSideRail(sess, runId, tabs) {
-    var rail = $('sideRail');
-    if (!rail) return;
-    var defs = [['state', 'State', 'layers'], ['context', 'Context', 'search'], ['browser', 'Browser', 'globe'], ['git', 'Git', 'branch']];
-    var html = '';
-    defs.forEach(function (x) {
-      if (tabs[x[0]] === false) return;
-      html += '<button class="rail-tab ' + (sess.side === x[0] ? 'active' : '') + '" data-side="' + x[0] + '" title="' + x[1] + '" aria-label="' + x[1] + '">' + icon(x[2]) + '</button>';
-    });
-    rail.innerHTML = html + '<button class="rail-tab" id="rsExpand" title="expand panel" aria-label="Expand panel">&#187;</button>';
-    rail.querySelectorAll('.rail-tab[data-side]').forEach(function (t) {
-      t.onclick = function () {
-        sess.side = t.getAttribute('data-side');
-        showRunPanel();
-        renderSideTabs(sess, runId);
-        renderRunSide(runId);
-      };
-    });
-    $('rsExpand').onclick = function () { showRunPanel(); };
-  }
-
-  function closeTabMgr() { var m = $('tabMgrMenu'); if (m) m.remove(); }
-
-  function openTabMgr(anchor, sess, runId) {
-    closeTabMgr();
-    var defs = [['state', 'State'], ['context', 'Context'], ['browser', 'Browser'], ['git', 'Git']];
-    var tabs = sideTabsState();
-    var d = document.createElement('div');
-    d.id = 'tabMgrMenu';
-    var r = anchor.getBoundingClientRect();
-    d.style.cssText = 'position:fixed;z-index:70;background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:6px;min-width:150px;top:' + (r.bottom + 6) + 'px;right:' + (window.innerWidth - r.right) + 'px';
-    d.innerHTML = defs.map(function (x) {
-      return '<label style="display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:7px;cursor:pointer;font-size:12.5px"><input type="checkbox" data-tab="' + x[0] + '"' + (tabs[x[0]] !== false ? ' checked' : '') + ' style="margin:0;width:auto">' + x[1] + '</label>';
-    }).join('');
-    document.body.appendChild(d);
-    d.querySelectorAll('input[data-tab]').forEach(function (cb) {
-      cb.onchange = function () {
-        var key = cb.getAttribute('data-tab');
-        var count = 0;
-        defs.forEach(function (x) { if (x[0] === key ? cb.checked : S.settings.sideTabs[x[0]] !== false) count++; });
-        if (count === 0) { cb.checked = true; toast('At least one tab must stay visible', true); return; }
-        S.settings.sideTabs[key] = cb.checked;
-        persist();
-        renderSideTabs(sess, runId);
-        renderRunSide(runId);
-      };
-    });
-    setTimeout(function () {
-      document.addEventListener('mousedown', function close(e) {
-        if (!d.contains(e.target) && e.target !== anchor) { d.remove(); document.removeEventListener('mousedown', close); }
-      });
-    }, 0);
   }
 
   function clientNormalize(input) {
@@ -5025,20 +5268,61 @@ export const UI_HTML = String.raw`<!doctype html>
     var lines = [r.status.toUpperCase() + ' — ' + r.summary];
     if (r.phase && r.phase.kind === 'follow_up') lines.push('Scope: follow-up work (earlier task history preserved)');
     if (r.changes && r.changes.length) lines.push('', 'Delivered:', '  ' + r.changes.join('\n  '));
-    if (r.filesChanged.length) lines.push('Files: ' + r.filesChanged.join(', '));
-    if (r.verification.length) lines.push('', 'Verification:', '  ' + r.verification.join('\n  '));
-    if (r.remainingRisks.length) lines.push('', 'Risks:', '  ' + r.remainingRisks.join('\n  '));
-    if (r.followUps.length) lines.push('', 'Follow-ups:', '  ' + r.followUps.join('\n  '));
+    if ((r.filesChanged || []).length) lines.push('Files: ' + r.filesChanged.join(', '));
+    if ((r.verification || []).length) lines.push('', 'Verification:', '  ' + r.verification.join('\n  '));
+    if ((r.remainingRisks || []).length) lines.push('', 'Risks:', '  ' + r.remainingRisks.join('\n  '));
+    if ((r.followUps || []).length) lines.push('', 'Follow-ups:', '  ' + r.followUps.join('\n  '));
     return lines.join('\n');
   }
 
-  function renderContext(runId) {
+  function toggleContextCard(open) {
+    var card = $('contextCard'), button = $('contextToggle');
+    if (!card || !button) return;
+    var visible = open === undefined ? card.hidden : Boolean(open);
+    card.hidden = !visible;
+    button.setAttribute('aria-expanded', visible ? 'true' : 'false');
+    if (visible) { closeToolPanel(); renderContextCard(S.active); }
+  }
+
+  function renderContextCard(runId) {
     var sess = S.sessions[runId];
-    var body = $('sideBody');
+    var body = $('contextCardBody');
+    if (!body || !sess || $('contextCard').hidden) return;
+    var scrollTop = $('contextCard').scrollTop;
     var L = sess.ledger;
     var session = sess.session;
+    var U = session && session.usage;
+    var model = session && session.provider && session.model ? modelInfo(session.provider + '::' + session.model) : null;
+    var contextWindow = model && model.metadata && model.metadata.contextTokens;
     var html = '<div class="stat-grid">';
     function stat(k, v, mono) { html += '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v ' + (mono ? 'mono' : '') + '" title="' + esc(v) + '">' + esc(v) + '</div></div>'; }
+    stat('Input tokens', U ? Number(U.inputTokens || 0).toLocaleString() : '—', true);
+    stat('Cached tokens', U ? Number(U.cachedTokens || 0).toLocaleString() : '—', true);
+    stat('Output tokens', U ? Number(U.outputTokens || 0).toLocaleString() : '—', true);
+    stat('Model context window', typeof contextWindow === 'number' ? contextWindow.toLocaleString() : 'Unavailable', true);
+    html += '</div>';
+    html += '<div class="section-h">Action breakdown</div>';
+    if (L && L.actions.length) {
+      var counts = { read: 0, write: 0, command: 0, other: 0 };
+      L.actions.forEach(function (a) {
+        if (a.tool === 'read_file' || a.tool === 'list_files' || a.tool === 'search_files') counts.read++;
+        else if (a.tool === 'write_file' || a.tool === 'apply_edit') counts.write++;
+        else if (a.tool === 'run_command') counts.command++;
+        else counts.other++;
+      });
+      var total = L.actions.length;
+      function pct(n) { return Math.round((n / total) * 1000) / 10; }
+      html += '<div class="bar">' +
+        '<span style="width:' + pct(counts.read) + '%;background:var(--ok)"></span>' +
+        '<span style="width:' + pct(counts.write) + '%;background:var(--evidence)"></span>' +
+        '<span style="width:' + pct(counts.command) + '%;background:var(--run)"></span>' +
+        '<span style="width:' + pct(counts.other) + '%;background:var(--muted)"></span></div>' +
+        '<div class="legend"><span><i style="background:var(--ok)"></i>Reads ' + pct(counts.read) + '%</span>' +
+        '<span><i style="background:var(--evidence)"></i>Writes ' + pct(counts.write) + '%</span>' +
+        '<span><i style="background:var(--run)"></i>Commands ' + pct(counts.command) + '%</span>' +
+        '<span><i style="background:var(--muted)"></i>Other ' + pct(counts.other) + '%</span></div>';
+    } else html += '<div class="empty">No actions yet</div>';
+    html += '<details id="contextRunDetails"><summary>Run details</summary><div class="stat-grid" style="margin-top:10px">';
     stat('Session', runId, true);
     stat('Status', session ? session.status : '—');
     stat('Provider', session && session.provider ? session.provider : '—');
@@ -5056,47 +5340,24 @@ export const UI_HTML = String.raw`<!doctype html>
       stat('Files changed', L.filesChanged.length);
       stat('Checkpoints', L.checkpoints.length);
     }
-    html += '</div>';
-    var U = session && session.usage;
-    html += '<div class="section-h">Usage &amp; cost</div><div class="stat-grid">';
+    html += '</div><div class="section-h">Usage &amp; cost</div><div class="stat-grid">';
     stat('Messages', U ? U.messages : 0);
-    stat('Input tokens', U ? formatTokens(U.inputTokens) : '—', true);
-    stat('Cached tokens', U ? formatTokens(U.cachedTokens) : '—', true);
-    stat('Output tokens', U ? formatTokens(U.outputTokens) : '—', true);
     stat(U && U.costIncomplete ? 'Estimated cost' : 'Total cost', U && typeof U.costUsd === 'number' ? (U.costIncomplete ? '~$' : '$') + U.costUsd.toFixed(4) : '—', true);
-    html += '</div>';
-    if (L && L.actions.length) {
-      var counts = { read: 0, write: 0, command: 0, other: 0 };
-      L.actions.forEach(function (a) {
-        if (a.tool === 'read_file' || a.tool === 'list_files' || a.tool === 'search_files') counts.read++;
-        else if (a.tool === 'write_file' || a.tool === 'apply_edit') counts.write++;
-        else if (a.tool === 'run_command') counts.command++;
-        else counts.other++;
-      });
-      var total = L.actions.length;
-      function pct(n) { return Math.round((n / total) * 1000) / 10; }
-      html += '<div class="section-h">Action breakdown</div><div class="bar">' +
-        '<span style="width:' + pct(counts.read) + '%;background:#16a34a"></span>' +
-        '<span style="width:' + pct(counts.write) + '%;background:#d97706"></span>' +
-        '<span style="width:' + pct(counts.command) + '%;background:#8a6d1a"></span>' +
-        '<span style="width:' + pct(counts.other) + '%;background:#9ca3af"></span></div>' +
-        '<div class="legend"><span><i style="background:#16a34a"></i>Reads ' + pct(counts.read) + '%</span>' +
-        '<span><i style="background:#d97706"></i>Writes ' + pct(counts.write) + '%</span>' +
-        '<span><i style="background:#8a6d1a"></i>Commands ' + pct(counts.command) + '%</span>' +
-        '<span><i style="background:#9ca3af"></i>Other ' + pct(counts.other) + '%</span></div>';
-    }
+    html += '</div></details>';
+    var wasOpen = $('contextRunDetails') && $('contextRunDetails').open;
     body.innerHTML = html;
+    $('contextRunDetails').open = Boolean(wasOpen);
+    $('contextCard').scrollTop = scrollTop;
   }
 
   function openSettings(section) {
     S.setSection = section || 'general';
+    closeToolPanel();
     $('settings').hidden = false;
-    if ($('sideFab')) $('sideFab').hidden = true;
     renderSettings();
   }
   function closeSettings() {
     $('settings').hidden = true;
-    if ($('sideFab')) $('sideFab').hidden = S.active === 'home';
   }
 
   function refreshModels() {
@@ -5136,7 +5397,7 @@ export const UI_HTML = String.raw`<!doctype html>
       b.innerHTML = '<h1>' + esc(S.setSection === 'mcp' ? 'MCP servers' : S.setSection === 'skills' ? 'Skills' : S.setSection === 'agents' ? 'Specialist agents' : S.setSection === 'cron' ? 'Scheduled / heartbeat' : S.setSection === 'connections' ? 'Connections' : S.setSection) + '</h1><p class="meta" style="color:var(--muted);font-size:12.5px">loading…</p>';
     }
     if (S.setSection === 'general') {
-      b.innerHTML = '<h1>General</h1>' +
+      b.innerHTML = '<h1>General</h1>' + themeOptionsHtml() +
         '<h2>Defaults</h2><div class="setcard">' +
         '<div class="setrow"><div class="grow"><div class="t">Agent workflow</div><div class="d">One conversation for questions and changes. Quick edits get focused checks. Use Plan in the composer to review a plan for one request, then continue building.</div></div><span class="chip">Always on</span></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
@@ -5172,6 +5433,8 @@ export const UI_HTML = String.raw`<!doctype html>
         $('gPersist').checked = a.persistent !== false;
         if ($('gSpend')) $('gSpend').value = a.maxCostUsd === undefined ? '' : String(a.maxCostUsd);
       }).catch(function () {});
+      b.insertAdjacentHTML('beforeend', '<h2>Getting started</h2><p class="appearance-description">Choose your theme, connect a provider, and pick a workspace.</p><button class="btn ghost" id="setupAgain">Open setup wizard</button>');
+      $('setupAgain').onclick = function () { closeSettings(); openSetupWizard(); };
     } else if (S.setSection === 'cowork') {
       b.innerHTML = '<h1>Cowork</h1>' +
         '<p style="color:var(--muted);font-size:12.5px;max-width:640px">Shared context for your agent team. Every teammate receives this in their system prompt, and they will update it themselves when you ask them to in a chat (or when you share something durable about you).</p>' +
@@ -5748,7 +6011,7 @@ export const UI_HTML = String.raw`<!doctype html>
           '<div class="setcard">' +
           (agents.length ? agents.map(function (a) {
             return '<div class="skcard"><div class="skhead"><b style="font-size:14px">' + esc(a.name) + '</b>' +
-              '<span class="chip" style="background:rgba(143,128,255,.14);color:#cfc6ff;font-weight:600;font-size:11px">SPECIALIST</span>' +
+              '<span class="chip" style="background:var(--selected);color:var(--text);font-weight:600;font-size:11px">SPECIALIST</span>' +
               '<span style="flex:1"></span>' +
               '<button class="ubtn" data-agedit="' + esc(a.id) + '" title="edit">' + icon('pencil') + '</button>' +
               '<button class="ubtn" data-agdel="' + esc(a.id) + '" title="delete">' + icon('x') + '</button></div>' +
@@ -6028,6 +6291,7 @@ export const UI_HTML = String.raw`<!doctype html>
     $('projChip').onclick = openFolderBrowser;
     $('mobileNav').onclick = function () { toggleMobileNav(true); };
     $('mobileBackdrop').onclick = function () { toggleMobileNav(false); };
+    $('toolPanelClose').onclick = closeToolPanel;
     updateProjChip();
     renderSidebar();
     renderTopbar();
@@ -6035,34 +6299,19 @@ export const UI_HTML = String.raw`<!doctype html>
     var cwWasOpen = false;
     try { cwWasOpen = localStorage.getItem('hermes.cowork') === 'open'; } catch (e) {}
     if (cwWasOpen) openCowork(); else openHome();
+    initializeOnboarding();
 
-    // Narrow-window panel toggle: the right side becomes an overlay instead
-    // of being removed entirely (Browser/Git used to vanish ≤1080px).
-    var fab = document.createElement('button');
-    fab.className = 'side-fab';
-    fab.id = 'sideFab';
-    fab.hidden = true;
-    fab.innerHTML = icon('layers') + '<span>Panel</span>';
-    fab.title = 'toggle the state / browser / git panel';
-    fab.onclick = function () {
-      var rs = document.querySelector('.run-side');
-      if (!rs) return;
-      if (rs.classList.contains('narrow-open')) {
-        rs.classList.remove('narrow-open');
-        fab.querySelector('span').textContent = 'Panel';
-      } else showRunPanel();
-    };
-    document.body.appendChild(fab);
-
-    // One global Escape: closes the TOPMOST layer (panel overlay → settings →
+    // One global Escape: closes the TOPMOST layer (tool panel → settings →
     // browse modal → dynamic modals) and returns focus to where it was.
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       var prev = document.activeElement;
       var sh = document.querySelector('.shell.mobile-nav-open');
       if (sh) { toggleMobileNav(false); refocusEl(prev); return; }
-      var rs2 = document.querySelector('.run-side.narrow-open');
-      if (rs2) { rs2.classList.remove('narrow-open'); var f2 = $('sideFab'); if (f2) f2.querySelector('span').textContent = 'Panel'; refocusEl(prev); return; }
+      var contextCard = $('contextCard');
+      if (contextCard && !contextCard.hidden) { toggleContextCard(false); $('contextToggle').focus(); return; }
+      var toolPanel = $('toolPanel');
+      if (toolPanel && !toolPanel.hidden) { closeToolPanel(); refocusEl(prev); return; }
       var st = $('settings');
       if (st && !st.hidden) { closeSettings(); refocusEl(prev); return; }
       var bm = $('browseModal');
@@ -6081,12 +6330,13 @@ export const UI_HTML = String.raw`<!doctype html>
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   ${COWORK_JS}
+  ${ONBOARDING_JS}
   boot();
 })();
 </script>
 <div id="mascotWrap" style="position:fixed;right:14px;bottom:12px;z-index:45;pointer-events:none;width:240px;height:170px">
   <canvas id="mascotCanvas" aria-hidden="true" style="width:240px;height:170px;image-rendering:pixelated"></canvas>
-  <div id="mascotName" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-weight:700;font-size:11px;color:#fff;background:#1b2334;border:1px solid #8f80ff;border-radius:6px;padding:2px 8px;white-space:nowrap;opacity:0;transition:opacity .4s">Agent Gitu</div>
+  <div id="mascotName" style="position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-family:var(--mono);font-weight:700;font-size:11px;color:#fff;background:var(--card);border:1px solid #8f80ff;border-radius:6px;padding:2px 8px;white-space:nowrap;opacity:0;transition:opacity .4s">Agent Gitu</div>
 </div>
 <script type="module">
 import * as THREE from '/vendor/three.module.js';
@@ -6165,7 +6415,7 @@ import * as THREE from '/vendor/three.module.js';
     if (document.hidden) return true;
     if (mascotMq && mascotMq.matches) return true;
     var w = document.getElementById('mascotWrap');
-    return !w || w.style.display === 'none';
+    return !w || getComputedStyle(w).display === 'none';
   }
   function updateMascotVisibility() {
     var hidden = mascotIsHidden();
@@ -6270,93 +6520,30 @@ import * as THREE from '/vendor/three.module.js';
 })();
 </script>
 <script type="module">
-// Cowork character avatars: voxel busts built with the bundled three.js and
+// Cowork cube avatars: floating heads built with the bundled three.js and
 // snapshotted to PNG data URLs so lists and chat bubbles stay cheap. The
 // module registers window.__coworkAvatar; without three.js the UI falls back
 // to inline SVG identicons.
 import * as THREE from '/vendor/three.module.js';
 (function () {
-  function shade(hex, f) {
-    var n = parseInt(hex.slice(1), 16);
-    var r = Math.min(255, Math.max(0, Math.round(((n >> 16) & 255) * f)));
-    var g = Math.min(255, Math.max(0, Math.round(((n >> 8) & 255) * f)));
-    var b = Math.min(255, Math.max(0, Math.round((n & 255) * f)));
-    return (r << 16) | (g << 8) | b;
-  }
   function box(w, h, d, color) {
     return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color: color }));
   }
-  // A head-and-shoulders voxel bust in one of four head styles. Everything is
-  // derived from the saved config (color + shape) so the same character
-  // renders identically everywhere.
+  // The cube character is a floating head, centered in the avatar frame.
   function buildCharacter(config) {
     var color = /^#[0-9a-f]{6}$/i.test(config.color) ? config.color : '#8f80ff';
-    var shape = config.shape || 'cube';
     var group = new THREE.Group();
-    var dark = shade(color, 0.62), darker = shade(color, 0.4), light = shade(color, 1.25);
-    var head = box(10, 9, 9, color);
-    head.position.y = 8.5;
+    var head = box(10, 10, 10, color);
     group.add(head);
     var eyeMat = new THREE.MeshLambertMaterial({ color: 0x10141d });
-    function eye(x, y, w, h) {
-      var e = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.6), eyeMat);
-      e.position.set(x, y, 4.55);
-      head.add(e);
+    function facePart(x, y, w, h) {
+      var part = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.6), eyeMat);
+      part.position.set(x, y, 5.05);
+      head.add(part);
     }
-    var mouth = new THREE.Mesh(new THREE.BoxGeometry(4, 0.7, 0.6), eyeMat);
-    mouth.position.set(0, -2.6, 4.55);
-    head.add(mouth);
-    if (shape === 'visor') {
-      var visor = new THREE.Mesh(new THREE.BoxGeometry(8.4, 2.6, 0.5), new THREE.MeshLambertMaterial({ color: 0x10141d }));
-      visor.position.set(0, 1.1, 4.55);
-      head.add(visor);
-      var glowL = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.2, 0.4), new THREE.MeshLambertMaterial({ color: 0xeaf2ff }));
-      glowL.position.set(-1.8, 1.1, 4.7);
-      head.add(glowL);
-      var glowR = glowL.clone();
-      glowR.position.x = 1.8;
-      head.add(glowR);
-      head.remove(mouth);
-    } else if (shape === 'antenna') {
-      eye(-2.1, 0.9, 1.7, 1.9);
-      eye(2.1, 0.9, 1.7, 1.9);
-      var rod = box(0.7, 3.4, 0.7, darker);
-      rod.position.set(0, 6.1, 0);
-      group.add(rod);
-      var bulb = new THREE.Mesh(new THREE.SphereGeometry(1.25, 12, 10), new THREE.MeshLambertMaterial({ color: light }));
-      bulb.position.set(0, 8.2, 0);
-      group.add(bulb);
-    } else if (shape === 'bot') {
-      eye(-2.1, 0.9, 1.6, 2.1);
-      eye(2.1, 0.9, 1.6, 2.1);
-      var earL = box(0.9, 3, 3, darker);
-      earL.position.set(-5.4, 0.4, 0);
-      group.add(earL);
-      var earR = earL.clone();
-      earR.position.x = 5.4;
-      group.add(earR);
-      var bolt = box(2.2, 0.8, 0.7, dark);
-      bolt.position.set(0, 4.9, 4.4);
-      head.add(bolt);
-    } else {
-      eye(-2.1, 0.9, 1.7, 2.1);
-      eye(2.1, 0.9, 1.7, 2.1);
-      var brow = box(7.4, 0.8, 0.6, dark);
-      brow.position.set(0, 2.8, 4.55);
-      head.add(brow);
-    }
-    var neck = box(4, 1.6, 4, darker);
-    neck.position.y = 3.1;
-    group.add(neck);
-    var torso = box(14, 5, 8, dark);
-    torso.position.y = -0.2;
-    group.add(torso);
-    var collar = box(15.4, 1.2, 9.2, darker);
-    collar.position.y = 2.2;
-    group.add(collar);
-    var chest = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.4, 0.5), new THREE.MeshLambertMaterial({ color: light }));
-    chest.position.set(0, -0.1, 4.15);
-    torso.add(chest);
+    facePart(-2.1, 1, 1.7, 2.1);
+    facePart(2.1, 1, 1.7, 2.1);
+    facePart(0, -2.6, 4, 0.7);
     return group;
   }
   function renderScene(group, size) {
@@ -6374,8 +6561,8 @@ import * as THREE from '/vendor/three.module.js';
     scene.add(rim);
     scene.add(group);
     var cam = new THREE.PerspectiveCamera(30, 1, 0.1, 200);
-    cam.position.set(7, 9, 34);
-    cam.lookAt(0, 4.5, 0);
+    cam.position.set(7, 7, 32);
+    cam.lookAt(0, 0, 0);
     group.rotation.y = -0.42;
     renderer.render(scene, cam);
     var url = canvas.toDataURL('image/png');
@@ -6391,7 +6578,7 @@ import * as THREE from '/vendor/three.module.js';
         return null;
       }
     },
-    shapes: ['cube', 'visor', 'antenna', 'bot'],
+    shapes: ['cube'],
   };
   // Classic-script UI may have rendered SVG fallbacks before this deferred
   // module registered the renderer — tell it to redraw the avatars.

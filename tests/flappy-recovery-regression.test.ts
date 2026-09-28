@@ -102,27 +102,27 @@ describe('Flappy recovery regression — stale failure must not resurrect', () =
     expect(overlapHash).toBe(firstHash);
 
     const actions: ActionRecord[] = [
-      action('read-1', 'read_file', firstHash, 'read js/logic.js', 'pipe speed is 3.2 and movement is steady'),
-      action('read-2', 'read_file', overlapHash, 'read js/logic.js', 'same movement code; no contradictory evidence'),
+      { ...action('read-1', 'read_file', firstHash, 'read js/logic.js', 'pipe speed is 3.2 and movement is steady'), contextFingerprint: 'logic-v1' },
+      { ...action('read-2', 'read_file', overlapHash, 'read js/logic.js', 'same movement code; no contradictory evidence'), contextFingerprint: 'logic-v1' },
     ];
 
-    const reusable = detector.reusableSuccessfulRead(actions, 'read_file', firstHash);
+    const reusable = detector.reusableSuccessfulRead(actions, 'read_file', firstHash, 'logic-v1');
     expect(reusable?.id).toBe('read-2');
 
     actions.push(
-      action(
+      { ...action(
         'read-cache',
         'read_file',
         firstHash,
         'read js/logic.js',
         `${CACHED_INVESTIGATION_PREFIX}: reused read-2; no filesystem read executed`,
-      ),
+      ), contextFingerprint: 'logic-v1' },
     );
 
-    expect(detector.reusableSuccessfulRead(actions, 'read_file', firstHash)).toBeUndefined();
-    const blocked = detector.evaluate(actions, 'read_file', firstHash, undefined);
+    expect(detector.reusableSuccessfulRead(actions, 'read_file', firstHash, 'logic-v1')).toBeUndefined();
+    const blocked = detector.evaluate(actions, 'read_file', firstHash, undefined, 'logic-v1');
     expect(blocked.allowed).toBe(false);
-    expect(blocked.reason).toMatch(/unchanged source|unchanged evidence|without a relevant source change/i);
+    expect(blocked.reason).toMatch(/exact read request|file version/i);
   });
 
   it('reopens the read after logic.js changes, so the guard does not hide fresh code', () => {

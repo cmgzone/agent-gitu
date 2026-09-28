@@ -4,6 +4,7 @@ import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkd
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
+import { providerRecoveryDelay } from '../agent/task-recovery.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
 import { resolveAutonomy, type AutonomyPolicy } from '../agent/autonomy.js';
@@ -15,6 +16,7 @@ import { modelChiefAdvisor } from '../chief/advisor.js';
 import { resolveAuthorityPolicy, type AuthorityPolicy, type AuthorityPolicyPatch } from '../chief/authority.js';
 import { workspacePath } from '../coding/workspace.js';
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
+import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { LspManager } from '../lsp/manager.js';
@@ -35,8 +37,9 @@ import { runConversationTurn, runMissionSession, mentionNames, renderReferencedM
 import { CoworkComputer } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
-import { TelegramPoller, TelegramReplyStream, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
+import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
+import { readOnboarding, saveOnboarding } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
 import { codexSubscriptionInfo, startCodexSubscriptionLogin, type CodexLoginStart, type CodexSubscriptionInfo } from '../llm/codex-subscription.js';
@@ -51,6 +54,7 @@ import { SkillStore } from '../skills/skills.js';
 import { PendingSkillStore } from '../skills/pending.js';
 import { CoworkRecall } from '../cowork/recall.js';
 import { ConnectionRegistry, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperationRisk, type ConnectionRequirement } from '../connections/connections.js';
+import { probeSshHost, SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { catalogCapabilityDeclared } from '../connections/catalog.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
@@ -60,6 +64,7 @@ import { nowIso, sha256, shortId } from '../util.js';
 import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
+import { coworkActivityView } from './cowork-activity.js';
 import { BRAND_DIR, BRAND_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
 
 export interface PendingApproval {
@@ -110,7 +115,8 @@ interface ConnectionWaiter extends PendingConnection {
 export interface RunSessionView {
   runId: string;
   goal: string;
-  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed' | 'aborted';
+  status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted';
+  modelRecovery?: { attempt: number; nextRetryAt: string };
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
@@ -186,9 +192,11 @@ interface NativeEventFrame {
 type StreamFrame = SessionEvent | NativeEventFrame;
 
 interface RunSession {
+  executionGeneration?: number;
   runId: string;
   goal: string;
-  status: 'running' | 'waiting_for_model' | 'completed' | 'blocked' | 'failed' | 'aborted';
+  status: 'running' | 'waiting_for_model' | 'stalled' | 'completed' | 'blocked' | 'failed' | 'aborted';
+  modelRecovery?: { attempt: number; nextRetryAt: string };
   startedAt: string;
   finishedAt?: string;
   taskId?: string;
@@ -245,10 +253,15 @@ export interface GituServerConfig {
   host?: string;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
+  /** Initial provider recovery delay; grows to five minutes, respecting Retry-After. */
+  providerRecoveryDelayMs?: number;
   /** Automatically bootstrap missing built-in language servers (enabled by default). */
   autoInstallLsp?: boolean;
   browser?: BrowserBridge;
   telegramFetch?: TelegramFetch;
+  /** Legacy mode is only for callers that supply models without the Cowork
+   * completion-state protocol. Normal app turns require explicit state. */
+  coworkCompletionProtocol?: 'explicit' | 'legacy';
   /** Discord REST transport (injectable for tests). */
   discordFetch?: DiscordFetch;
   /** Discord gateway transport (injectable for tests). */
@@ -383,6 +396,8 @@ export class GituServer {
   private readonly config: GituServerConfig;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
+  private readonly modelRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private stopping = false;
   private readonly connections = new ConnectionRegistry();
   /** Runtime-owned session guarantees. Approval resolution authority lives here;
    *  the run path keeps a compatibility mirror for the existing endpoint and UI. */
@@ -801,6 +816,7 @@ export class GituServer {
       report: s.report,
       error: s.error,
       usage: s.usage,
+      modelRecovery: s.modelRecovery,
     });
   }
 
@@ -812,6 +828,8 @@ export class GituServer {
    * cannot overwrite user-visible state or resurrect a deleted session row.
    */
   private detachRun(session: RunSession, reason: string): void {
+    this.cancelModelRecovery(session);
+    session.executionGeneration = (session.executionGeneration ?? 0) + 1;
     const gitu = session.gitu;
     const runtime = session.runtime;
     const lsp = session.lsp;
@@ -833,6 +851,7 @@ export class GituServer {
   }
 
   async start(): Promise<number> {
+    this.stopping = false;
     ensureGituHome();
     const server = http.createServer((req, res) => {
       this.route(req, res).catch((err) => {
@@ -870,11 +889,16 @@ export class GituServer {
     }
     this.startCoworkLifecycle();
     for (const entry of this.loadRegistry()) {
-      if (this.sessions.has(entry.runId)) continue;
+      const existing = this.sessions.get(entry.runId);
+      if (existing) {
+        if (existing.status === 'waiting_for_model' && existing.modelRecovery) this.scheduleModelRecovery(existing);
+        continue;
+      }
       let status: RunSession['status'] = entry.status as RunSession['status'];
       // A user-aborted run is terminal. Do not relabel it as an application
       // restart interruption when the registry is loaded again.
-      const interrupted = status !== 'completed' && status !== 'blocked' && status !== 'failed' && status !== 'aborted';
+      const recoverable = status === 'waiting_for_model' && Boolean(entry.modelRecovery);
+      const interrupted = !recoverable && status !== 'completed' && status !== 'blocked' && status !== 'stalled' && status !== 'failed' && status !== 'aborted';
       if (interrupted) status = 'blocked';
       let mode = entry.mode;
       let report = entry.report;
@@ -887,8 +911,8 @@ export class GituServer {
         const ledger = root ? TaskLedger.load(root, entry.taskId) : undefined;
         pausedForDiscussion = Boolean(ledger?.data.blockers.includes('Paused for discussion with the user.'));
         mode ??= ledger?.data.mode;
-        if (!pausedForDiscussion) report ??= ledger?.data.report;
-        finishedAt ??= ledger?.data.completedAt;
+        if (!pausedForDiscussion && !recoverable) report ??= ledger?.data.report;
+        if (!recoverable) finishedAt ??= ledger?.data.completedAt;
         branch ??= ledger?.data.gitBranch;
         worktreePath ??= ledger?.data.worktreePath;
       }
@@ -897,7 +921,7 @@ export class GituServer {
         goal: entry.goal,
         status,
         startedAt: entry.startedAt,
-        finishedAt,
+        finishedAt: recoverable ? undefined : finishedAt,
         taskId: entry.taskId,
         project: entry.project,
         projectPath: entry.projectPath,
@@ -913,6 +937,7 @@ export class GituServer {
         report,
         error: interrupted ? 'Agent Gitu was interrupted by an application restart. Send a message to resume it.' : pausedForDiscussion ? undefined : entry.error,
         usage: entry.usage,
+        modelRecovery: recoverable ? entry.modelRecovery : undefined,
         files: entry.files,
         // Restored rows keep their typed companion when they had one; the store
         // returns the payload untyped, so narrow it here against the shape the
@@ -934,11 +959,22 @@ export class GituServer {
       };
       this.sessions.set(entry.runId, session);
       if (interrupted) this.pushEvent(session, 'application restarted — run paused; send a message to resume');
+      if (recoverable) this.scheduleModelRecovery(session);
     }
     return (server.address() as AddressInfo).port;
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    // Keep durable recovery dates while cancelling timers owned by this process.
+    for (const timer of this.modelRecoveryTimers.values()) clearTimeout(timer);
+    this.modelRecoveryTimers.clear();
+    for (const session of this.sessions.values()) {
+      const recovery = session.modelRecovery;
+      this.detachRun(session, 'Application stopping.');
+      session.modelRecovery = recovery;
+      this.persistSession(session);
+    }
     this.persistBudgets();
     this.scheduler?.stop();
     await this.stopCoworkLifecycle();
@@ -1214,12 +1250,15 @@ export class GituServer {
       working: run?.busy ? run.working ?? null : null,
       progress: run?.progress ?? null,
       progresses: run?.busy ? Object.values(run.progresses ?? {}) : [],
+      workHistory: store.workHistory(conversationId, threadId).map((entry, index) => coworkActivityView(entry, store.getAgent(entry.agentId)?.name ?? 'Teammate', index)),
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
       missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
+      // The sub-agent execution tree, live: the UI renders it under missions.
+      subAgents: this.subAgents().tree({ conversationId }),
       artifacts: store.artifacts(conversationId),
       todos: store.todos(conversationId),
-      requests: store.requests(conversationId).filter((request) => request.status === 'open' || (request.resolvedAt && Date.now() - Date.parse(request.resolvedAt) < 86_400_000)),
+      requests: store.requests(conversationId),
       rosterRevision: store.rosterRevision,
       roster: rosterRevision !== store.rosterRevision ? { agents: store.listAgents(), conversations: store.listConversations().map((conversation) => this.coworkConversationView(conversation)) } : undefined,
       deleted: !store.getConversation(conversationId),
@@ -1262,6 +1301,23 @@ export class GituServer {
    * only place that knows the connection registry, the specialist roster and
    * the teammate's workspace.
    */
+  private coworkSubAgentRunner?: CoworkSubAgentRunner;
+
+  /**
+   * The shared sub-agent layer: one manager and one runner per server, so a
+   * termination reaches the running turn no matter which session spawned it.
+   * First construction is also the restart sweep: this process cannot own a
+   * live child turn before the runner exists, so every still-active instance
+   * on disk belonged to a dead run and is marked orphaned.
+   */
+  private subAgents(): CoworkSubAgentRunner {
+    if (!this.coworkSubAgentRunner) {
+      this.coworkSubAgentRunner = new CoworkSubAgentRunner(new CoworkSubAgents(this.cowork(), (conversationId) => this.publishCowork(conversationId)));
+      this.coworkSubAgentRunner.sweepOrphans();
+    }
+    return this.coworkSubAgentRunner;
+  }
+
   private delegation(): CoworkDelegation {
     this.delegationService ??= new CoworkDelegation({
       workspaceFor: (scope) => {
@@ -2018,7 +2074,9 @@ export class GituServer {
     const request = store.getRequest(requestId);
     if (!request || request.status !== 'open') return { ok: false, statusCode: 404, error: 'request not found or already answered' };
     const action = actionInput.toLowerCase();
-    const response = responseInput.trim();
+    // Responses are stored in the request record and echoed into chat: scrub
+    // pasted credentials from every transport at this single choke point.
+    const response = credentialChatInput(responseInput.trim()).safeText;
     const delegated = this.resolveDelegationCard(request, action, response);
     if (delegated) return delegated;
     let status: Exclude<CoworkRequest['status'], 'open'>;
@@ -2028,6 +2086,10 @@ export class GituServer {
     } else if (request.kind === 'recommendation') {
       if (action !== 'accept' && action !== 'dismiss') return { ok: false, statusCode: 400, error: 'action must be accept or dismiss' };
       status = action === 'accept' ? 'accepted' : 'dismissed';
+    } else if (request.kind === 'credential') {
+      // Secrets never travel through chat transports or the Chief: only the
+      // secure web form (the HTTP route) may provide a credential.
+      return { ok: false, statusCode: 400, error: 'Credential requests are provided through the secure form in the web app — the key must never be typed into chat.' };
     } else {
       if (action !== 'answer') return { ok: false, statusCode: 400, error: 'action must be answer' };
       if (!response) return { ok: false, statusCode: 400, error: 'an answer is required' };
@@ -2220,6 +2282,9 @@ export class GituServer {
   private startCoworkPoller(conv: CoworkConversation): void {
     this.stopCoworkPoller('');
     this.startCoworkDiscord(conv);
+    // A source preview can share the user's Cowork store with the installed
+    // desktop app, but Telegram permits only one getUpdates consumer per bot.
+    if (process.env['AGENT_GITU_SKIP_TELEGRAM_POLLING'] === '1') return;
     const tg = conv.telegram;
     if (!tg?.enabled || !tg.token || !tg.chatId) return;
     if (this.coworkPollers.has(tg.token)) {
@@ -2242,7 +2307,8 @@ export class GituServer {
               ? [this.cowork().addArtifact({ conversationId: linked.id, name: file.name, mime: file.mime, dataBase64: file.dataBase64 }).id]
               : undefined;
             if (!file && await this.handleCoworkTelegramRequestText(linked, text)) continue;
-            this.dispatchCoworkMessage(linked.id, text, 'telegram', from, artifactIds);
+            // Chat history persists: scrub pasted credentials before storing.
+            this.dispatchCoworkMessage(linked.id, credentialChatInput(text).safeText, 'telegram', from, artifactIds);
           }
         }
       },
@@ -2273,7 +2339,8 @@ export class GituServer {
       if (dc?.token && dc.channelId) await sendDiscordMessage(this.config.discordFetch, dc.token, dc.channelId, note).catch(() => undefined);
       return;
     }
-    this.dispatchCoworkMessage(conversationId, text, 'discord', from);
+    // Chat history persists: scrub pasted credentials before storing.
+    this.dispatchCoworkMessage(conversationId, credentialChatInput(text).safeText, 'discord', from);
   }
 
   private stopCoworkPoller(conversationId: string): void {
@@ -2509,12 +2576,16 @@ export class GituServer {
       const streams = new Map<string, TelegramReplyStream>();
       const activeAgents = new Map<string, string>();
       const tg = conv.telegram;
+      const typing = tg?.enabled && tg.token && tg.chatId
+        ? new TelegramTypingIndicator(tg.token, tg.chatId, this.config.telegramFetch)
+        : undefined;
       const beginStream = (agentId: string): TelegramReplyStream | undefined => {
         let stream = streams.get(agentId);
         if (!stream && tg?.enabled && tg.token && tg.chatId) {
           stream = new TelegramReplyStream(tg.token, tg.chatId, this.config.telegramFetch);
           streams.set(agentId, stream);
         }
+        if (stream) typing?.start();
         return stream;
       };
       const syncWorking = () => {
@@ -2556,8 +2627,12 @@ export class GituServer {
           userContext: this.coworkUserContext(),
           memoryFor: (agent) => this.coworkMemoryFor(agent),
           autoLearn,
+          requireCompletionState: this.config.coworkCompletionProtocol !== 'legacy',
           learningReview: isLearningReview,
           recall: this.coworkRecallIndex(),
+          subAgents: this.subAgents(),
+          subAgentLlm: (agent, account, onExhausted) => this.coworkMissionLlm(agent, account, onExhausted),
+          budgetFor: ({ missionId, conversationId: scopeConversationId }) => this.delegationBudgetFor(missionId, scopeConversationId),
           signal: abort.signal,
           onWorking: (agent) => {
             activeAgents.set(agent.id, agent.name);
@@ -2609,6 +2684,7 @@ export class GituServer {
         if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, 'failed');
         throw err;
       } finally {
+        typing?.stop();
         run.working = undefined;
         run.progress = undefined;
         run.progresses = undefined;
@@ -2668,8 +2744,12 @@ export class GituServer {
     this.publishCowork(conversationId);
     const telegram = conversation.telegram;
     let stream: TelegramReplyStream | undefined;
+    const typing = telegram?.enabled && telegram.token && telegram.chatId
+      ? new TelegramTypingIndicator(telegram.token, telegram.chatId, this.config.telegramFetch)
+      : undefined;
     const beginStream = (): TelegramReplyStream | undefined => {
       if (!stream && telegram?.enabled && telegram.token && telegram.chatId) stream = new TelegramReplyStream(telegram.token, telegram.chatId, this.config.telegramFetch);
+      if (stream) typing?.start();
       return stream;
     };
     const finishStream = async (text: string): Promise<void> => {
@@ -2681,6 +2761,7 @@ export class GituServer {
         store.appendMessage(conversationId, { role: 'system', via: 'web', text: `Telegram delivery failed: ${message}` });
         this.publishCowork(conversationId);
       }
+      typing?.stop();
       stream = undefined;
     };
     const sendArtifacts = async (artifactIds: string[] | undefined): Promise<void> => {
@@ -2720,6 +2801,9 @@ export class GituServer {
           // proactive modes, and never when learning is off.
           autoLearn: this.coworkLearningMode() !== 'off',
           recall: this.coworkRecallIndex(),
+          subAgents: this.subAgents(),
+          subAgentLlm: (agent, account, onExhausted) => this.coworkMissionLlm(agent, account, onExhausted),
+          budgetFor: ({ missionId, conversationId: scopeConversationId }) => this.delegationBudgetFor(missionId, scopeConversationId),
           signal: abort.signal,
           onProgress: (progress) => {
             const current = this.coworkRuns.get(conversationId);
@@ -2822,6 +2906,11 @@ export class GituServer {
           ? 'Mission session stopped. It will resume automatically.'
           : 'Mission session hit an error. It will retry automatically.');
     } finally {
+      typing?.stop();
+      // A mission that left `running` owns no more workers: terminate whatever
+      // its sessions spawned so nothing outlives the work that created it.
+      const settledMission = store.getMission(missionId);
+      if (settledMission && settledMission.status !== 'running') this.subAgents().terminateMissionSubtree(missionId, `mission ${settledMission.status}`);
       const current = this.coworkRuns.get(conversationId);
       if (current?.abort === abort) {
         this.coworkRuns.delete(conversationId);
@@ -3001,12 +3090,30 @@ export class GituServer {
 
     const computerMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer$/);
     if (computerMatch) {
-      if (!store.getAgent(computerMatch[1]!)) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
+      let targetAgent = store.getAgent(computerMatch[1]!);
+      if (!targetAgent) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
       const computer = this.coworkComputer(computerMatch[1]!);
-      if (method === 'GET') { this.sendJson(res, 200, { computer: computer.status() }); return true; }
+      const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer });
+      if (method === 'GET') { this.sendJson(res, 200, { computer: status() }); return true; }
       if (method === 'POST') {
         const body = await this.readBody(req);
-        if (body['action'] === 'stop') {
+        if (body['action'] === 'use-private') {
+          const inUse = this.coworkAgentLocks.has(targetAgent.id) || store.listConversations().some((conversation) => conversation.memberIds.includes(targetAgent!.id) && this.coworkRuns.get(conversation.id)?.busy);
+          if (inUse) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish, or stop its task before changing computers.' }); return true; }
+          targetAgent = store.saveAgent({ ...targetAgent, useHostComputer: false });
+          this.coworkTools.get(targetAgent.id)?.mcp?.killAll();
+          this.coworkTools.delete(targetAgent.id);
+          void computer.start().catch(() => {});
+        }
+        else if (body['action'] === 'desktop') {
+          if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'This teammate uses My computer. Choose Use private desktop to give it its own screen.' }); return true; }
+          try {
+            const shot = await computer.desktopScreenshot();
+            this.sendJson(res, shot.ok ? 200 : 503, shot.ok ? { computer: status(), pngBase64: shot.output, capturedAt: new Date().toISOString() } : { error: shot.output, computer: status() });
+          } catch (error) { this.sendJson(res, 503, { error: (error as Error).message, computer: status() }); }
+          return true;
+        }
+        else if (body['action'] === 'stop') {
           for (const conversation of store.listConversations()) {
             if (!conversation.memberIds.includes(computerMatch[1]!)) continue;
             const run = this.coworkRuns.get(conversation.id);
@@ -3022,10 +3129,11 @@ export class GituServer {
           return true;
         }
         else if (body['action'] === 'start') {
+          if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Choose Use private desktop before starting this teammate’s desktop.' }); return true; }
           // Image installation can take minutes. Status is polled by the UI.
           void computer.start().catch(() => {});
-        } else { this.sendJson(res, 400, { error: 'action must be start, stop or screenshot' }); return true; }
-        this.sendJson(res, 202, { computer: computer.status() }); return true;
+        } else { this.sendJson(res, 400, { error: 'action must be start, stop, desktop, use-private or screenshot' }); return true; }
+        this.sendJson(res, 202, { computer: status(), agent: targetAgent }); return true;
       }
     }
 
@@ -3425,7 +3533,10 @@ export class GituServer {
           return true;
         }
         const attached = artifactIds.map((id) => store.getArtifact(id)?.name).filter(Boolean);
-        const text = String(body['text'] ?? '').trim() || (attached.length ? `Attached ${attached.join(', ')}` : '');
+        // Cowork chat history persists on disk: scrub pasted credentials before
+        // the text is stored, exactly like the chief task chat does. Secrets
+        // only ever arrive via the secure connection form (POST /api/connections).
+        const text = credentialChatInput(String(body['text'] ?? '').trim()).safeText || (attached.length ? `Attached ${attached.join(', ')}` : '');
         const threadId = typeof body['threadId'] === 'string' && body['threadId'] ? body['threadId'] : undefined;
         const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined, threadId, {
           id: typeof id === 'string' ? id : undefined,
@@ -3521,6 +3632,21 @@ export class GituServer {
       return true;
     }
 
+    const subAgentTreeMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/subagents$/);
+    if (subAgentTreeMatch && method === 'GET') {
+      const convId = subAgentTreeMatch[1]!;
+      if (!store.getConversation(convId)) {
+        this.sendJson(res, 404, { error: 'conversation not found' });
+        return true;
+      }
+      const query = new URL(req.url ?? '/', 'http://localhost').searchParams;
+      const missionId = query.get('missionId') ?? undefined;
+      // The execution tree as runtime truth: live spend for open accounts, the
+      // gate's own verdict on each child's evidence, and nesting by parent.
+      this.sendJson(res, 200, { tree: this.subAgents().tree({ conversationId: convId, ...(missionId ? { missionId } : {}) }) });
+      return true;
+    }
+
     const missionBudgetMatch = path.match(/^\/api\/cowork\/missions\/([\w-]+)\/budget$/);
     if (missionBudgetMatch && method === 'POST') {
       const mission = store.getMission(missionBudgetMatch[1]!);
@@ -3546,11 +3672,41 @@ export class GituServer {
         if (mission) {
           const run = this.coworkRuns.get(mission.conversationId);
           if (run?.missionId === mission.id) run.abort.abort(new Error('Mission cancelled by user.'));
+          this.subAgents().terminateMissionSubtree(mission.id, 'mission cancelled');
           store.appendMessage(mission.conversationId, { role: 'system', via: 'web', text: 'Mission cancelled by the user.' });
           this.publishCowork(mission.conversationId);
         }
       }
       this.sendJson(res, cancelled ? 200 : 404, cancelled ? { ok: true } : { error: 'no running mission with that id' });
+      return true;
+    }
+
+    const sshCredentialMatch = path.match(/^\/api\/cowork\/requests\/([\w-]+)\/(ssh-host-key|ssh-save)$/);
+    if (sshCredentialMatch && method === 'POST') {
+      const request = store.getRequest(sshCredentialMatch[1]!);
+      if (!request || request.kind !== 'credential' || request.status !== 'open' ||
+          !(request.credential?.providerHint.toLowerCase() === 'ssh' || /^ssh:/i.test(request.credential?.baseUrl ?? ''))) {
+        this.sendJson(res, 404, { error: 'Open SSH credential request not found.' });
+        return true;
+      }
+      const body = await this.readBody(req);
+      const baseUrl = String(body['baseUrl'] ?? request.credential?.baseUrl ?? '');
+      try {
+        if (sshCredentialMatch[2] === 'ssh-host-key') {
+          const fingerprint = await probeSshHost(baseUrl);
+          this.sendJson(res, 200, { fingerprint });
+        } else {
+          const saved = await new SshConnectionRegistry().saveAndValidate({
+            label: String(body['label'] ?? request.credential?.label ?? 'SSH server'),
+            baseUrl,
+            password: String(body['password'] ?? ''),
+            hostFingerprint: String(body['hostFingerprint'] ?? ''),
+          });
+          this.sendJson(res, 200, { ok: true, connection: saved });
+        }
+      } catch (error) {
+        this.sendJson(res, 400, { error: (error as Error).message });
+      }
       return true;
     }
 
@@ -3563,7 +3719,8 @@ export class GituServer {
         return true;
       }
       const action = String(body['action'] ?? '').toLowerCase();
-      const response = String(body['response'] ?? '').trim();
+      // Stored request responses must never carry pasted credentials.
+      const response = credentialChatInput(String(body['response'] ?? '').trim()).safeText;
       // A card standing for a delegated runtime gate is resolved by the runtime,
       // not by the generic path below: the delegating teammate is still blocked
       // inside its tool call and must not be woken with a follow-up.
@@ -3572,7 +3729,8 @@ export class GituServer {
         this.sendJson(res, delegated.statusCode, delegated.ok ? { ok: true, request: delegated.request, agent: delegated.agent } : { error: delegated.error });
         return true;
       }
-      let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
+      let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed' | 'provided';
+      let credentialConnection: { id: string; label: string } | undefined;
       if (request.kind === 'permission') {
         if (action !== 'approve' && action !== 'deny') { this.sendJson(res, 400, { error: 'action must be approve or deny' }); return true; }
         status = action === 'approve' ? 'approved' : 'denied';
@@ -3581,12 +3739,26 @@ export class GituServer {
         if (action !== 'accept' && action !== 'dismiss') { this.sendJson(res, 400, { error: 'action must be accept or dismiss' }); return true; }
         status = action === 'accept' ? 'accepted' : 'dismissed';
       }
+      else if (request.kind === 'credential') {
+        // The secret never reaches this endpoint: the card already saved it via
+        // POST /api/connections and only sends the saved connection id back.
+        if (action !== 'provide') { this.sendJson(res, 400, { error: 'action must be provide' }); return true; }
+        const connectionId = String(body['connectionId'] ?? '').trim();
+        const ssh = request.credential?.providerHint.toLowerCase() === 'ssh' || /^ssh:/i.test(request.credential?.baseUrl ?? '');
+        const profile = connectionId ? (ssh ? new SshConnectionRegistry().get(connectionId) : this.connections.get(connectionId)) : undefined;
+        if (!profile) { this.sendJson(res, 400, { error: 'Save the credential through the secure form first — no saved connection was provided.' }); return true; }
+        credentialConnection = { id: profile.id, label: profile.label };
+        status = 'provided';
+      }
       else {
         if (action !== 'answer') { this.sendJson(res, 400, { error: 'action must be answer' }); return true; }
         if (!response) { this.sendJson(res, 400, { error: 'an answer is required' }); return true; }
         status = 'answered';
       }
-      const resolved = store.resolveRequest(request.id, status, response);
+      const answer = credentialConnection
+        ? `Credential saved as connection "${credentialConnection.label}" (id: ${credentialConnection.id})`
+        : response || status;
+      const resolved = store.resolveRequest(request.id, status, credentialConnection ? answer : response);
       const agent = store.getAgent(request.agentId);
       if (resolved?.status === 'approved' && agent && request.permission) {
         const patch = request.permission === 'shell' ? { allowShell: true }
@@ -3598,14 +3770,15 @@ export class GituServer {
         context?.mcp?.killAll();
         this.coworkTools.delete(agent.id);
       }
-      const answer = response || status;
-      store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : 'Recommendation'} ${status}: ${answer}.` });
+      store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : request.kind === 'credential' ? 'Credential' : 'Recommendation'} ${status}: ${answer}.` });
       this.publishCowork(request.conversationId);
-      const instruction = `The user responded to your ${request.kind} "${request.title}": ${answer}. Continue from that decision and report what you do.`;
+      const instruction = credentialConnection
+        ? `The user saved the credential you requested ("${request.title}") as connection "${credentialConnection.label}" (id: ${credentialConnection.id}). It lives in the local connection store — ${credentialConnection.id.startsWith('ssh-') ? 'use ssh_exec with this connection id for authorized SSH commands' : 'use it through your connection tools'} and continue the task. Never print or quote the secret itself.`
+        : `The user responded to your ${request.kind} "${request.title}": ${answer}. Continue from that decision and report what you do.`;
       if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
         store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
       }
-      this.sendJson(res, 200, { ok: true, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined });
+      this.sendJson(res, 200, { ok: true, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined, answer: credentialConnection ? answer : undefined });
       return true;
     }
 
@@ -3795,6 +3968,7 @@ export class GituServer {
       runId: s.runId,
       goal: s.goal,
       status: s.status,
+      modelRecovery: s.modelRecovery,
       startedAt: s.startedAt,
       finishedAt: s.finishedAt,
       taskId: s.taskId,
@@ -4165,6 +4339,17 @@ export class GituServer {
       } catch (err) {
         this.sendJson(res, 200, { name: '(none)', repoRoot: this.config.cwd, error: (err as Error).message });
       }
+      return;
+    }
+
+    if (method === 'GET' && path === '/api/onboarding') {
+      this.sendJson(res, 200, readOnboarding());
+      return;
+    }
+    if (method === 'POST' && path === '/api/onboarding') {
+      const body = await this.readBody(req);
+      try { this.sendJson(res, 200, saveOnboarding(body)); }
+      catch (err) { this.sendJson(res, 400, { error: (err as Error).message }); }
       return;
     }
 
@@ -5269,6 +5454,7 @@ export class GituServer {
       // the store keeps its mark: only a frame from this process may open a gate
       // card, because only this process still holds the request behind it.
       for (const frame of session.nativeFrames) safeWrite(`data: ${JSON.stringify(frame)}\n\n`);
+      safeWrite('event: replay-end\ndata: {}\n\n');
       const send = (ev: StreamFrame): void => {
         safeWrite(`data: ${JSON.stringify(ev)}\n\n`);
       };
@@ -5417,7 +5603,7 @@ export class GituServer {
         this.sendJson(res, 404, { error: 'run not found' });
         return;
       }
-      if (session.status !== 'running') {
+      if (session.status !== 'running' && session.status !== 'waiting_for_model') {
         this.sendJson(res, 200, { ok: true, alreadyStopped: true });
         return;
       }
@@ -5426,6 +5612,8 @@ export class GituServer {
       // a moment to honour cancellation; without this, its late completion
       // can overwrite the user-visible stopped state or keep emitting output.
       const gitu = session.gitu;
+      this.cancelModelRecovery(session);
+      session.executionGeneration = (session.executionGeneration ?? 0) + 1;
       const runtime = session.runtime;
       const lsp = session.lsp;
       session.gitu = undefined;
@@ -5471,6 +5659,8 @@ export class GituServer {
       // the same session/ledger/worktree.
       const prevStatus = session.status;
       const wasRunning = prevStatus === 'running';
+      // Reserve the session against its automatic retry during async setup.
+      this.cancelModelRecovery(session, false);
       session.status = 'running';
       try {
       const body = await this.readBody(req, 30_000_000);
@@ -5675,7 +5865,7 @@ export class GituServer {
       // USER-CONFIGURED fallback list (Settings → Fallback models) first; with
       // no usable entry, rescue to a free model from the SAME provider so the
       // session keeps moving. An explicit picker override always wins.
-      const billingFailure = typeof session.error === 'string' && /(401|no credits|insufficient balance|billing)/i.test(session.error);
+      const billingFailure = typeof session.error === 'string' && /(401|no credits|insufficient balance|billing|usage (?:limit|cap)|quota (?:exceeded|exhausted)|insufficient[_ -]quota|purchase more credits)/i.test(session.error);
       if (billingFailure && !useSelectedModel && provider && model) {
         const chain = loadWorkspaceSettings().fallbackModels ?? [];
         const configured = chain
@@ -5751,6 +5941,8 @@ export class GituServer {
         // session would be stuck "running" forever.
         if (!wasRunning) session.status = prevStatus;
         throw err;
+      } finally {
+        if (session.status === 'waiting_for_model' && session.modelRecovery) this.scheduleModelRecovery(session);
       }
     }
 
@@ -5814,6 +6006,64 @@ export class GituServer {
     this.sendJson(res, 404, { error: 'not found' });
   }
 
+  private cancelModelRecovery(session: RunSession, clearState = true): void {
+    const timer = this.modelRecoveryTimers.get(session.runId);
+    if (timer) clearTimeout(timer);
+    this.modelRecoveryTimers.delete(session.runId);
+    if (clearState) session.modelRecovery = undefined;
+  }
+
+  private scheduleModelRecovery(session: RunSession, client?: LlmClient, original?: Parameters<GituServer['executeRun']>[2]): void {
+    if (this.stopping || !session.modelRecovery || session.status !== 'waiting_for_model') return;
+    this.cancelModelRecovery(session, false);
+    const delay = Math.max(0, Date.parse(session.modelRecovery.nextRetryAt) - Date.now());
+    // Long Retry-After values must not overflow Node's signed timer interval.
+    const timer = setTimeout(() => {
+      if (this.modelRecoveryTimers.get(session.runId) !== timer || this.sessions.get(session.runId) !== session || this.stopping) return;
+      this.modelRecoveryTimers.delete(session.runId);
+      if (session.status !== 'waiting_for_model' || !session.modelRecovery) return;
+      if (Date.parse(session.modelRecovery.nextRetryAt) > Date.now()) {
+        this.scheduleModelRecovery(session, client, original);
+        return;
+      }
+      const root = session.taskId ? this.resolveTaskRoot(session.taskId, session.projectPath) : session.projectPath;
+      try {
+        const resolved = client ?? this.config.llm ?? resolveLlm({ provider: session.activeProvider ?? session.provider, model: session.activeModel ?? session.model, workingDirectory: root ?? this.config.cwd }).client;
+        session.status = 'running';
+        session.error = undefined;
+        session.report = undefined;
+        session.finishedAt = undefined;
+        this.pushEvent(session, 'continue — automatically retrying the model from preserved task results');
+        void this.executeRun(session, resolved, {
+          ...original,
+          goal: session.goal,
+          mode: session.mode ?? 'agent',
+          projectPath: root ?? session.projectPath,
+          review: false,
+          model: session.activeModel ?? session.model,
+          actionProtocolMode: session.actionProtocolMode,
+          autoApprove: session.autoApprove,
+          autoLearn: original?.autoLearn ?? false,
+          resume: session.taskId ? { taskId: session.taskId, message: 'Continue the unfinished user request from preserved results. Do not repeat completed actions. The previous model request was interrupted by a temporary provider or connection failure.' } : original?.resume,
+          conversationHistory: this.conversationHistory(session),
+        }).catch(error => {
+          if (this.sessions.get(session.runId) !== session || session.status !== 'running') return;
+          session.status = 'blocked';
+          session.error = `Automatic recovery could not start: ${error instanceof Error ? error.message : String(error)}`;
+          this.cancelModelRecovery(session);
+          this.pushEvent(session, session.error);
+        });
+      } catch (error) {
+        session.status = 'blocked';
+        session.error = `Automatic recovery needs attention: ${error instanceof Error ? error.message : String(error)}`;
+        this.cancelModelRecovery(session);
+        this.pushEvent(session, session.error);
+      }
+    }, Math.min(delay, 2_147_483_647));
+    timer.unref();
+    this.modelRecoveryTimers.set(session.runId, timer);
+  }
+
   private async executeRun(
     session: RunSession,
     llm: LlmClient,
@@ -5842,21 +6092,30 @@ export class GituServer {
     // its state.  This protects a fresh continuation from a late completion
     // of an earlier run that was stopped or superseded.
     let activeGitu: InstanceType<typeof Gitu> | undefined;
-    const isCurrentExecution = (): boolean => session.gitu === activeGitu;
+    const generation = session.executionGeneration = (session.executionGeneration ?? 0) + 1;
+    const recoveryAttempt = session.modelRecovery?.attempt ?? 0;
+    this.cancelModelRecovery(session);
+    const isCurrentExecution = (): boolean => !this.stopping && this.sessions.get(session.runId) === session && session.executionGeneration === generation && session.gitu === activeGitu;
     let root: string;
     let ignorePaths: string[] | undefined;
+    this.pushEvent(session, 'activity preparing-project');
     // Catalog modality is the source of truth for image support; warm the
     // catalog once per run so even brand-new providers report vision correctly.
     peekModelCatalog() ?? (await fetchModelCatalog().catch(() => undefined));
+    if (!isCurrentExecution()) return;
     try {
-      const lock = ProjectGuard.detect(opts.projectPath ?? this.config.cwd).lock;
+      const lock = (await ProjectGuard.detectAsync(opts.projectPath ?? this.config.cwd)).lock;
       root = lock.repoRoot;
       ignorePaths = lock.ignorePaths;
     } catch {
       root = this.config.cwd;
     }
     const index = this.sharedIndex(root, ignorePaths);
+    this.pushEvent(session, 'activity indexing-project');
+    await index.refreshAsync(root, ignorePaths ?? []);
+    if (!isCurrentExecution()) return;
     const catalog = await fetchModelCatalog();
+    if (!isCurrentExecution()) return;
     const selectedModel = opts.model ?? session.model ?? '';
     const modelMeta = modelMetadataFor(catalog, session.provider ?? '', selectedModel);
     const contextWindowTokens = modelMeta?.contextTokens;
@@ -6117,6 +6376,7 @@ export class GituServer {
       onCodingEvent: (payload) => runtimeSession.sinks.onCodingEvent(payload),
       },
     );
+    if (!isCurrentExecution()) { gitu.stop(); void runtimeSession.cancel('Execution superseded.'); return; }
     activeGitu = gitu;
     session.gitu = gitu;
     session.runtime = runtimeSession;
@@ -6144,7 +6404,7 @@ export class GituServer {
           ? 'blocked'
           : report.status === 'aborted'
             ? 'aborted'
-            : 'failed';
+            : report.failureReason?.startsWith('Work paused because') ? 'stalled' : 'failed';
       session.report = pausedForDiscussion ? undefined : report;
       // Stalled/blocked runs previously left session.error null, so the UI
       // failure card had nothing to show and the end looked like a silent
@@ -6245,12 +6505,18 @@ export class GituServer {
           }
         }
       }
-      session.status = llmError?.details.kind === 'rate_limit_temporary' ? 'waiting_for_model' : 'failed';
+      const delay = providerRecoveryDelay(err, recoveryAttempt + 1, this.config.providerRecoveryDelayMs);
+      session.status = delay !== undefined ? 'waiting_for_model' : 'failed';
       session.error = (err as Error).message;
+      if (delay !== undefined) {
+        session.report = undefined;
+        session.modelRecovery = { attempt: recoveryAttempt + 1, nextRetryAt: new Date(Date.now() + delay).toISOString() };
+        this.scheduleModelRecovery(session, llm, opts);
+      }
       this.pushEvent(
         session,
         session.status === 'waiting_for_model'
-          ? `waiting-for-model: ${session.error} — task state is preserved; select a configured fallback or retry when the provider recovers`
+          ? `waiting-for-model: ${session.error} — task state is preserved; retrying automatically at ${session.modelRecovery!.nextRetryAt}`
           : `fatal: ${session.error}`,
       );
     } finally {
@@ -6258,7 +6524,8 @@ export class GituServer {
       // Stop holding a runtime session whose run is over. A superseded run keeps
       // its replacement's runtime instead, exactly as it keeps its engine.
       if (session.runtime === runtimeSession) session.runtime = undefined;
-      session.finishedAt = nowIso();
+      session.gitu = undefined;
+      session.finishedAt = session.status === 'waiting_for_model' ? undefined : nowIso();
       this.pushEvent(session, `run finished: ${session.status}`);
       this.saveRegistry();
     }

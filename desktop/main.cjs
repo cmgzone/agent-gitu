@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, nativeTheme } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,6 +10,44 @@ const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png'
 let mainWindow = null;
 let server = null;
 let boundPort = 0;
+let startupWindow = null;
+let starting = false;
+
+async function showStartupWindow() {
+  if (startupWindow && !startupWindow.isDestroyed()) { startupWindow.show(); return; }
+  const win = new BrowserWindow({
+    width: 520, height: 420, resizable: false, show: false,
+    title: 'Agent Gitu', icon: APP_ICON_PATH, autoHideMenuBar: true,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#111111' : '#fafaf9',
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: nativeTheme.shouldUseDarkColors ? '#111111' : '#fafaf9', symbolColor: nativeTheme.shouldUseDarkColors ? '#e8e8e8' : '#242422', height: 32 },
+    webPreferences: { preload: path.join(__dirname, 'startup-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
+  startupWindow = win;
+  win.on('closed', () => { if (startupWindow === win) startupWindow = null; });
+  win.webContents.ipc.on('gitu:startup-retry', (event) => {
+    if (event.senderFrame !== win.webContents.mainFrame || event.senderFrame.url !== pathToFileURL(path.join(__dirname, 'startup.html')).href || starting) return;
+    void start().catch(showStartupFailure);
+  });
+  await win.loadFile(path.join(__dirname, 'startup.html'));
+  if (!win.isDestroyed()) win.show();
+}
+
+function startupStatus(text, failed = false) {
+  if (startupWindow && !startupWindow.isDestroyed()) startupWindow.webContents.send('gitu:startup-status', { text, failed });
+}
+
+function closeStartupWindow() {
+  const win = startupWindow;
+  startupWindow = null;
+  if (win && !win.isDestroyed()) win.close();
+}
+
+function showStartupFailure(err) {
+  log(`fatal: ${err && err.stack ? err.stack : err}`);
+  if (startupWindow && !startupWindow.isDestroyed()) startupStatus('Your workspace could not start. Try again, or close and reopen Agent Gitu.', true);
+  else app.quit();
+}
 
 let browserWin = null;
 let driving = 0;
@@ -534,6 +572,10 @@ function makeBrowserBridge(normalizeUrl) {
 }
 
 function createMainWindow() {
+  const windowColors = (theme) => theme === 'light'
+    ? { color: '#fafaf9', symbolColor: '#242422' }
+    : { color: '#111111', symbolColor: '#e8e8e8' };
+  const initialColors = windowColors(nativeTheme.shouldUseDarkColors ? 'dark' : 'light');
   mainWindow = new BrowserWindow({
     width: 1480,
     height: 940,
@@ -546,13 +588,11 @@ function createMainWindow() {
     title: 'Agent Gitu',
     icon: APP_ICON_PATH,
     autoHideMenuBar: true,
-    // Draw the window controls into the app's dark surface instead of leaving
-    // Windows' white title bar above the web UI.
-    backgroundColor: '#0d1017',
+    // Window controls share the app's resolved light or dark appearance.
+    backgroundColor: initialColors.color,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#0d1017',
-      symbolColor: '#dbe7ff',
+      ...initialColors,
       height: 32,
     },
     // Do NOT set backgroundThrottling: false here. On Windows it triggers
@@ -560,6 +600,7 @@ function createMainWindow() {
     // evicts the compositor frame ~5 minutes later and the window renders
     // blank even though the DOM and renderer are perfectly healthy.
     webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       // Chromium draws PDFs with its internal viewer, which Electron treats as a
@@ -588,13 +629,26 @@ function createMainWindow() {
 
   let revealed = false;
   const appUrl = `http://127.0.0.1:${boundPort}`;
+  const themedWindow = mainWindow;
+  themedWindow.webContents.ipc.on('gitu:theme', (event, theme) => {
+    if (themedWindow.isDestroyed() || event.senderFrame !== themedWindow.webContents.mainFrame) return;
+    if (theme !== 'light' && theme !== 'dark') return;
+    try {
+      if (new URL(event.senderFrame.url).origin !== appUrl) return;
+      const colors = windowColors(theme);
+      themedWindow.setBackgroundColor(colors.color);
+      themedWindow.setTitleBarOverlay({ ...colors, height: 32 });
+    } catch { /* The window may close during a theme change. */ }
+  });
   const revealWindow = () => {
+    if (startupWindow && !loaded && !failureShown) return;
     if (revealed || !mainWindow || mainWindow.isDestroyed()) return;
     revealed = true;
     log('revealing mainWindow');
     try {
       mainWindow.show();
       mainWindow.maximize();
+      closeStartupWindow();
       log(`mainWindow revealed successfully, isVisible=${mainWindow.isVisible()}`);
     } catch (err) {
       log(`error showing mainWindow: ${err && err.message}`);
@@ -629,9 +683,9 @@ function createMainWindow() {
     failureShown = true;
     const html =
       '<!doctype html><html><head><meta charset="utf-8"><title>Agent Gitu</title>' +
-      '<style>html,body{height:100%;margin:0;background:#0d1017;color:#dbe7ff;font:15px/1.6 system-ui,sans-serif;display:flex;align-items:center;justify-content:center}' +
-      'main{max-width:520px;padding:32px;text-align:center}h1{font-size:20px;margin:0 0 10px}p{color:#93a0bb;margin:0 0 18px}' +
-      'a{display:inline-block;background:#7c6cf0;color:#fff;text-decoration:none;border-radius:8px;padding:9px 18px;font-weight:600}</style></head>' +
+      '<style>html,body{height:100%;margin:0;background:#111;color:#e8e8e8;font:15px/1.6 system-ui,sans-serif;display:flex;align-items:center;justify-content:center}' +
+      'main{max-width:520px;padding:32px;text-align:center}h1{font-size:20px;margin:0 0 10px}p{color:#a3a3a3;margin:0 0 18px}' +
+      'a{display:inline-block;background:#dedede;color:#171717;text-decoration:none;border-radius:8px;padding:9px 18px;font-weight:600}@media(prefers-color-scheme:light){html,body{background:#fafaf9;color:#242422}p{color:#62625e}a{background:#30302e;color:#fff}}</style></head>' +
       '<body><main id="gitu-fail"><h1>Agent Gitu could not load its interface</h1><p>' +
       reason +
       '</p><p>The local server is running at ' +
@@ -643,9 +697,11 @@ function createMainWindow() {
     mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html)).catch((err) => {
       log(`load failure page could not be shown: ${err && err.message}`);
     });
+    revealWindow();
   };
   const scheduleRetry = (reason) => {
     if (loaded || failureShown || !mainWindow || mainWindow.isDestroyed()) return;
+    if (retryTimer) return;
     if (loadAttempts >= 2) {
       loadFailurePage(reason);
       return;
@@ -653,6 +709,7 @@ function createMainWindow() {
     loadAttempts += 1;
     log(`retrying page load (${reason}; attempt ${loadAttempts})`);
     retryTimer = setTimeout(() => {
+      retryTimer = null;
       if (loaded || failureShown || !mainWindow || mainWindow.isDestroyed()) return;
       mainWindow.webContents.reload();
       armLoadWatchdog();
@@ -693,6 +750,7 @@ function createMainWindow() {
           revealWindow();
         } else if (state === 'fail') {
           clearTimeout(loadWatchdog);
+          revealWindow();
           log('mainWindow is showing the load failure page');
         } else {
           scheduleRetry('the loaded document was not the app shell');
@@ -735,7 +793,7 @@ function createMainWindow() {
     }
   }, 1500);
 
-  mainWindow.loadURL(appUrl);
+  mainWindow.loadURL(appUrl).catch((err) => scheduleRetry(`navigation failed: ${err && err.message}`));
   armLoadWatchdog();
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     // Compare parsed hosts, not string prefixes: startsWith('http://127.0.0.1')
@@ -764,8 +822,13 @@ function createMainWindow() {
 }
 
 async function start() {
+  if (starting) return;
+  starting = true;
   log('start() begin');
   try {
+    await showStartupWindow();
+    startupStatus('Opening your workspace…');
+    if (server) { await server.stop().catch(() => {}); server = null; }
     const dist = path.join(__dirname, '..', 'dist');
     log(`dist path: ${dist}`);
     const serverUrl = pathToFileURL(path.join(dist, 'server', 'server.js')).href;
@@ -781,6 +844,7 @@ async function start() {
     log(`hermes home at ${home.root}`);
     const cwd = process.env.HERMES_CWD || home.workspace;
     const bridge = makeBrowserBridge(browserMod.normalizeUrl);
+    startupStatus('Preparing your workspace…');
 
     server = new HermesServer({ cwd, port: DESIRED_PORT, browser: bridge });
     try {
@@ -802,15 +866,15 @@ async function start() {
       /* best effort */
     }
 
+    startupStatus('Loading Agent Gitu…');
     createMainWindow();
     log('main window created');
 
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-    });
   } catch (err) {
     log(`start() fatal error: ${err && err.stack ? err.stack : err}`);
     throw err;
+  } finally {
+    starting = false;
   }
 }
 
@@ -828,7 +892,10 @@ if (!gotLock) {
 } else {
   app.on('second-instance', () => {
     log('second-instance triggered');
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (startupWindow && !startupWindow.isDestroyed()) {
+      startupWindow.show();
+      startupWindow.focus();
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
       if (!mainWindow.isVisible()) {
         log('second-instance: window was hidden, showing now');
         mainWindow.show();
@@ -836,15 +903,14 @@ if (!gotLock) {
       }
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
-    } else {
+    } else if (boundPort) {
       log('second-instance: recreating main window');
       createMainWindow();
     }
   });
-  app.whenReady().then(start).catch((err) => {
-    log(`fatal: ${err && err.stack ? err.stack : err}`);
-    console.error('[hermes-desktop]', err);
-    app.quit();
+  app.whenReady().then(start).catch(showStartupFailure);
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0 && boundPort) createMainWindow();
   });
   app.on('before-quit', () => {
     log('app before-quit event fired');

@@ -53,7 +53,7 @@ Lock project → criteria → context pack → plan →
 | **PolicyEngine**                    | Unapproved destructive commands (fail-closed tiers)                                                                                                                             |
 | **CheckpointManager**               | Irreversible damage (git branch + snapshot per step)                                                                                                                            |
 | **Specialist evidence gate**        | Accepting a sub-agent's "done" without revalidating its evidence against the delegated contract                                                                                 |
-| **Adaptive effort planner**         | Runaway cost on open-ended work: per-task budgets cap turns and specialist delegations by task complexity                                                                       |
+| **Adaptive effort planner**         | Initial turn allowances expand while progress continues; stalled work pauses, while explicit spending and specialist limits remain enforced                                     |
 | **Risk-based specialist selection** | Using the wrong specialist (or any specialist) for low-risk work: risk classifier → right-sized roster, with domain review gates for security/payments/data                     |
 | **Task↔session↔git binding**        | Resuming a task in the wrong working tree or on the wrong branch                                                                                                                |
 | **LSP intelligence layer**          | Blind text search for symbol facts; `lsp_diagnostics/definition/references/hover/symbols` + automatic post-edit diagnostics check, task-type → investigation strategies         |
@@ -67,6 +67,35 @@ their native package managers. Custom `.hermes/lsp.json` commands and languages
 without a trusted installer remain opt-in and continue to use the normal
 `search_files`/`read_file` fallback. Set `autoInstallLsp: false` in
 `GituServer` configuration to disable this behavior.
+
+### Task recovery
+
+- Verification correction attempts apply to the same unchanged result. A repair
+  or a changed check outcome starts a new correction opportunity. Repeated
+  completion claims cannot waive missing UI verification.
+- Productive work can continue beyond four effort extensions. A segment with no
+  new verifiable progress pauses with an explanation and preserves completed work.
+- Workspace tasks retry temporary network, rate-limit, and provider failures
+  automatically, starting after 15 seconds and backing off to five minutes.
+  Provider `Retry-After` instructions can require a longer wait. Pending retries
+  survive an app restart; Stop, deletion, and manual continuation cancel them.
+- Cowork keeps the current model request and completed tool results through
+  temporary outages. Both engines share recovery classification and completion
+  state decisions. Authentication, billing, and exhausted quota require a
+  configured fallback or user action instead of repeated automatic attempts.
+
+### Live reasoning in chat
+
+Main chat and Cowork show provider-exposed reasoning text or thought summaries
+under the animated activity indicator. Each teammate has its own stream. A new
+model round or transport retry clears partial reasoning; answer text remains
+separate. The live view keeps the latest 24,000 characters and lets you scroll
+back without snapping to the bottom.
+
+OpenRouter requests visible reasoning, Gemini requests thought summaries, and
+compatible providers and the ChatGPT subscription bridge forward exposed text.
+Models that do not return reasoning continue to show their activity status.
+Internal action `thought` fields and encrypted reasoning blocks are not rendered.
 
 ## Quick start
 
@@ -118,6 +147,12 @@ HERMES_OPENAI_API_KEY | OPENAI_API_KEY
 # DeepSeek direct API (provider: deepseek)
 HERMES_DEEPSEEK_API_KEY | DEEPSEEK_API_KEY
 # Uses https://api.deepseek.com; default model: deepseek-flash.
+
+# Google AI Studio / Gemini API (provider: gemini)
+HERMES_GEMINI_API_KEY | GEMINI_API_KEY | GOOGLE_API_KEY
+# Uses the OpenAI-compatibility endpoint
+# (https://generativelanguage.googleapis.com/v1beta/openai);
+# default model: gemini-3.7-flash. Get a key at https://aistudio.google.com/apikey
 
 # Any OpenAI-compatible endpoint (provider: custom)
 HERMES_API_KEY  (+ optional HERMES_BASE_URL, HERMES_MODEL)
@@ -223,6 +258,13 @@ renders the agent's **state**, not a chat transcript:
 - plan steps with per-step status/attempts
 - evidence list (PASS/FAIL, kind, command)
 - files changed, blockers, completion report
+- **code diffs**: every change is a real line-level diff against the file's
+  previous content — removals in red, additions in green, and both counted
+  (`+12 -3`) on the tool card. A rewrite that deleted code can no longer read as a
+  pure addition, which is what an addition-only counter always showed.
+- **model reasoning**: the provider's reasoning trace is shown live in a
+  collapsible "Model's reasoning" block, so a run that is thinking is visibly
+  thinking rather than an unexplained spinner.
 - live activity feed via Server-Sent Events
 - **approval gates**: dangerous actions pause the run until approved/denied in the UI
 - collapsible left/right sidebars (tab handles, persisted per browser)
@@ -277,7 +319,12 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   start Docker Desktop with Linux containers enabled. Use **Start** in the
   agent's computer card, or let its first computer tool start it. The first
   start builds `assets/cowork-computer/Dockerfile` and downloads Chromium;
-  allow several minutes. **View browser** shows a current screenshot.
+  allow several minutes. **Open desktop** shows that teammate's Linux desktop
+  and visible Chromium window, refreshing every two seconds. The viewer is
+  view-only, with Start/Stop controls. Teammates on My computer can explicitly
+  switch using **Use private desktop** while idle. This uses Docker containers,
+  not a separate hypervisor VM. Upgrading an older private computer preserves
+  its workspace/home volumes and retains the old container as a backup.
   Containers have 2 CPUs, 2 GB memory, no host mounts or published ports.
   Stop preserves the volumes; deleting a teammate retains its computer data.
   Long-running app servers use `run_command` with `background: true`; agents
@@ -352,11 +399,17 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   the conversation. Configure it per host with `chiefOfStaff: { policy, advisor }`
   (`advisor: false` for policy-only, or supply your own), or `false` to turn the
   chief off (interactive runs keep every gate for you by design).
-- **Long commands and verification** — commands have no implicit deadline;
-  positive `timeoutMs` values are respected without a ten-minute cap. Stop
-  cancels the process tree. The main agent accepts relevant document/browser
-  evidence for productivity work, still checks code changes, and reports a
-  blocker after two unsuccessful evidence-correction opportunities.
+- **Long commands and verification** — a command never blocks a turn on output.
+  Every call answers with a status: `exited` with an exit code, or `running` with
+  a job id that stays pollable (`{"action":"status","id":"cmd-3"}`) and stoppable
+  (`{"action":"stop","id":"cmd-3"}`). `waitMs` (default 60 s) is how long a call
+  waits for a terminal state; `timeoutMs` remains the hard kill deadline, has no
+  implicit value, and is respected without a ten-minute cap. Stop cancels the
+  process tree, and evidence is only ever recorded from a command that reached a
+  terminal state — never from one that is still running. The main agent accepts
+  relevant document/browser evidence for productivity work, still checks code
+  changes, and reports a blocker after two unsuccessful evidence-correction
+  opportunities.
 
 Data lives in `<AgentGitu home>/Cowork/cowork.json` (profiles, conversations,
 transcripts, gateway tokens). API surface: `/api/cowork/agents`,

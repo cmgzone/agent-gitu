@@ -95,7 +95,8 @@ export function actionGrammarContract(mode: PromptProtocolMode): string {
 // ── Capability contracts ────────────────────────────────────────────────────
 
 const FILESYSTEM_CONTRACT = `FILESYSTEM TOOLS:
-- read_file {"path":"src/x.ts","offset":1,"limit":200} — read the minimum needed; the InvestigationGuard refuses re-reads of unchanged files and returns the cached answer.
+- read_file {"path":"src/x.ts","offset":1,"limit":200} — read the minimum needed; unchanged duplicate requests may reuse the saved answer.
+- For a deliberate on-disk confirmation of the same file and range, use read_file with "refresh":true and state the decision being checked in reason. One fresh confirmation is allowed per file version and request until a source edit or successful command creates a new checkpoint.
 - write_file {"path":"src/x.ts","content":"full content"} — full-file writes.
 - apply_edit {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
 - search_files {"pattern":"regex or text","path":"src","mode":"literal|regex","flags":"ims","include":["**/*.py"],"exclude":[...],"maxResults":50,"contextLines":2} — regex mode scans whole files, so patterns match ACROSS lines (use \\n, \\s, [\\s\\S]); mode "literal" for plain text; results end with a capability line.
@@ -105,7 +106,9 @@ const FILESYSTEM_CONTRACT = `FILESYSTEM TOOLS:
 function testingContract(testCommand?: string): string {
   return (
     'COMMANDS & VERIFICATION:\n' +
-    `- run_command {"command":"${testCommand ?? 'npm test'}","timeoutMs":120000} — verification commands are recorded as evidence (ev-...) automatically; cite them with claim_criterion. For a long-running dev server/watcher use {"command":"npm start","background":true,"startupWaitMs":1500}; the runtime keeps it alive for subsequent browser checks and cleans it up when the run ends.\n` +
+    `- run_command {"command":"${testCommand ?? 'npm test'}"} — a command NEVER blocks the turn on output. Every call answers with a STATUS: "exited" with an exit code, or "running" with a job id the runtime keeps tracking. waitMs (default 60000) is how long the call waits for a terminal state before answering RUNNING; timeoutMs is the hard kill deadline (0 = none, respected without a ten-minute cap).\n` +
+    '- A RUNNING result proves nothing. Check it with run_command {"action":"status","id":"cmd-3"} (the poll itself waits up to waitMs, default 10000, for the terminal state) and stop work you no longer need with {"action":"stop","id":"cmd-3"}. Evidence (ev-...) is recorded only when a command reaches a terminal state — including the poll that observes its exit — so cite it with claim_criterion only then.\n' +
+    '- For a long-running dev server/watcher use {"command":"npm start","background":true,"startupWaitMs":1500}: the runtime keeps it alive for subsequent browser checks, its log stays readable with {"action":"status","id":"..."}, and it is cleaned up when the run ends.\n' +
     '- Failed commands return the failure DIGEST (error lines + tail), not the raw log. When a reproduction is expected to exit non-zero, declare it structurally, e.g. "expectation":{"description":"bug reproduced","assertions":[{"kind":"equals","target":"exitCode","expected":1}],"blocksOnFailure":false}; a matching non-zero exit is PASS evidence, not a blocker.'
   );
 }

@@ -8,11 +8,11 @@ import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { extractJson, LlmError, parseXmlFunctionCall, type LlmClient, type LlmMessage } from '../llm/llm.js';
 import { resilientLlm } from '../llm/resilient.js';
-import { LoopDetector } from '../loop/loop-detector.js';
+import { DEFAULT_LOOP_POLICY, LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import { malformedPolicyFor, resolveAutonomy, type AutonomyPolicy } from './autonomy.js';
 import { PolicyEngine } from '../policy/policy.js';
-import { KNOWN_TOOL_NAMES, runtimeToolNames } from '../tools/tools.js';
+import { KNOWN_TOOL_NAMES, runtimeToolNames, commandResultSource, isCommandPending } from '../tools/tools.js';
 import { buildSpecialistEvidenceReport, type SpecialistEvidenceReport } from './specialist-evidence.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import {
@@ -71,6 +71,10 @@ export interface SubAgentResult {
   /** Exact selected-skill identity check made during checkpoint recovery. */
   skillState?: SpecialistSkillState;
   stopReason?: SpecialistStopReason;
+  /** This specialist executor's FileKnowledge feature counters, folded into
+   *  the orchestrator's run aggregate so specialist read/knowledge behavior is
+   *  measured too (not just the main lane's). */
+  fileKnowledgeStats?: import('../context/file-knowledge.js').FileKnowledgeStats;
 }
 
 export type SubAgentJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -279,6 +283,7 @@ PROTOCOL — respond each turn with EXACTLY ONE JSON object:
 {"action":{"type":"tool_call","tool":"<tool>","params":{...},"reason":"why","expected":"what should happen"}}
 Tools:
 - read_file       {"path":"src/x.ts"}
+                  Set "refresh":true only for a deliberate fresh confirmation of the same file and range; explain the decision in reason.
 - write_file      {"path":"src/x.ts","content":"full content"}
 - apply_edit      {"path":"src/x.ts","oldString":"exact text","newString":"replacement"}
 - list_files      {"path":"src"}
@@ -1017,16 +1022,22 @@ export class SubAgentRunner {
       ledger.setStatus('executing');
       const policy = new PolicyEngine(false);
       // A specialist's own dynamic budget/stagnation controller is the lane
-      // authority. Do not let the executor's optional duplicate-read cache
-      // terminate a productive specialist before that 30 -> 40 contract can
-      // make its decision (the v0.2.1 behavior).
-      const executor = new Executor(
+      // authority, so its duplicate-read bound is one notch looser than the
+      // main agent's: the third identical read still executes for real, the
+      // fourth is served from the cached observation, and only a repeat of
+      // that replay is blocked. Exact-duplicate re-reads are never progress
+      // in any lane, so no lane gets an unbounded allowance.
+      // ASSIGN the outer `executor` (declared above the try): the finally
+      // block disposes it, and the result object below reads its FileKnowledge
+      // stats. Redeclaring it here as `const` silently shadowed the outer
+      // binding and left both the disposal and the stats undefined.
+      executor = new Executor(
         guard,
         ledger,
         policy,
         new LoopDetector({
-          maxSameSuccessfulRead: Number.MAX_SAFE_INTEGER,
-          maxInvestigationReadsPerFailureEpisode: Number.MAX_SAFE_INTEGER,
+          maxSameSuccessfulRead: 3,
+          maxInvestigationReadsPerFailureEpisode: DEFAULT_LOOP_POLICY.maxInvestigationReadsPerFailureEpisode,
         }),
         (e) => emit(`subagent ${name}: ${e}`),
         specialistSkills,
@@ -1075,6 +1086,15 @@ export class SubAgentRunner {
         role: 'user',
         content: `AVAILABLE SKILLS (metadata only)\n${specialistSkills.renderForPrompt(selectedSkills.map((skill) => skill.name), { maxSkills: 8 })}${activeSkillBodies ? `\n\n${activeSkillBodies}` : ''}`,
       });
+      // Durable implementation knowledge (revision-bound): facts the shared
+      // store already holds about this repo — learned by the main agent, other
+      // specialists, or a previous attempt of this very specialist. Injected
+      // ONCE at start: the specialist's own reads keep its hot context current
+      // mid-run, and stale entries (changed files) are omitted by the store.
+      const knowledgeBlock = executor.fileKnowledge.render();
+      if (knowledgeBlock) {
+        messages.push({ role: 'user', content: knowledgeBlock });
+      }
       if (resumedFrom) {
         // Wake-where-it-left-off briefing so the specialist does not redo or
         // clobber the earlier attempt's committed work.
@@ -1379,22 +1399,29 @@ export class SubAgentRunner {
 
           let evidenceNote = '';
           if (toolName === 'run_command') {
-            const cmd = String((action['params'] as Record<string, unknown>)?.['command'] ?? '');
-            const kind = classifyEvidenceKind(cmd);
-            const currentFp = await getWorkspaceFingerprint(workRoot);
-            const ev = evidenceEngine.record(ledger.data, {
-              kind,
-              label: String(action['expected'] || cmd),
-              command: cmd,
-              exitCode: outcome.result.exitCode,
-              passed: outcome.result.ok,
-              output: outcome.result.output,
-              workspaceFingerprint: currentFp,
-            });
-            ledger.save();
-            evidenceIds.push(ev.id);
-            evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). If this satisfies a criterion, use {"action":{"type":"claim_criterion","criterionId":"<id>","evidenceId":"${ev.id}"}}.`;
-            emit(`subagent ${name} evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+            const cmd = commandResultSource(outcome.result, (action['params'] as Record<string, unknown>) ?? {});
+            if (isCommandPending(outcome.result)) {
+              // Nothing is proven while the command runs: report the pending job
+              // instead of recording an evidence row for it.
+              evidenceNote = `\nCOMMAND STILL RUNNING (job ${outcome.result.jobId ?? 'unknown'}) — no evidence yet. Poll it with run_command {"action":"status","id":"${outcome.result.jobId ?? '<id>'}"} before claiming verification.`;
+              emit(`subagent ${name} — command still running (${outcome.result.jobId ?? 'unknown'}); no evidence recorded`);
+            } else if (cmd) {
+              const kind = classifyEvidenceKind(cmd);
+              const currentFp = await getWorkspaceFingerprint(workRoot);
+              const ev = evidenceEngine.record(ledger.data, {
+                kind,
+                label: String(action['expected'] || cmd),
+                command: cmd,
+                exitCode: outcome.result.exitCode,
+                passed: outcome.result.ok,
+                output: outcome.result.output,
+                workspaceFingerprint: currentFp,
+              });
+              ledger.save();
+              evidenceIds.push(ev.id);
+              evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). If this satisfies a criterion, use {"action":{"type":"claim_criterion","criterionId":"<id>","evidenceId":"${ev.id}"}}.`;
+              emit(`subagent ${name} evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
+            }
           }
 
           // Dynamic budget extension: if making progress and approaching the current budget
@@ -1769,6 +1796,7 @@ export class SubAgentRunner {
       evidenceReport: ledger ? buildSpecialistEvidenceReport(ledger.data, status) : undefined,
       blockers: blockers.length > 0 ? blockers : undefined,
       recommendation: recommendation || undefined,
+      fileKnowledgeStats: executor?.fileKnowledge.stats(),
     };
   }
 

@@ -191,6 +191,11 @@ describe('guarantee events stay silent when nothing intervened', () => {
     const { executor, events } = makeHarness({ policy });
     const outcome = await executor.execute({ tool: 'write_file', params: { path: 'src/b.ts', content: 'x' }, reason: 'test', expected: 'file written' });
     expect(outcome.result.ok).toBe(true);
-    expect(events).toEqual([]);
+    // No gate spoke. A file change is a fact, not an intervention, so it is the
+    // only event — and it now carries the diff (with its removals) the user needs.
+    expect(events.filter((event) => event.type !== 'file_changed')).toEqual([]);
+    expect(events).toEqual([
+      { type: 'file_changed', path: 'src/b.ts', linesAdded: 1, linesRemoved: 0, diff: [{ kind: 'add', text: 'x', newLine: 1 }] },
+    ]);
   });
 });

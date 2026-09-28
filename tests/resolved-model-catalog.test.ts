@@ -111,6 +111,29 @@ describe('resolveModelCatalog', () => {
     expect(JSON.stringify(result)).not.toContain('fake-secret');
   });
 
+  it('follows the signed-in plan default for the ChatGPT subscription provider', async () => {
+    const deps = dependencies([spec('chatgpt', {
+      auth: 'chatgpt-subscription', keyEnvVars: [], baseUrl: 'codex://chatgpt',
+      defaultModel: 'seed-default', models: ['seed-default'],
+    })]);
+    deps.codexSubscriptionInfo.mockResolvedValue({
+      available: true,
+      signedIn: true,
+      planType: 'plus',
+      models: [
+        { id: 'gpt-6-astra', vision: true, effortLevels: ['low'], isDefault: true },
+        { id: 'gpt-5.6-sol', vision: true, effortLevels: ['low'], isDefault: false },
+      ],
+    });
+    const { providers, defaultProvider } = await resolveModelCatalog(deps);
+    expect(providers[0]).toMatchObject({
+      id: 'chatgpt', signedIn: true, usable: true, live: true, hasKey: false,
+      defaultModel: 'gpt-6-astra',
+    });
+    expect(ids(providers[0]!)).toEqual(['gpt-6-astra', 'gpt-5.6-sol']);
+    expect(defaultProvider).toBe('chatgpt');
+  });
+
   it.each<ModelInfo[] | undefined>([undefined, [], [{ id: '  ' }]])('falls back to normalized offline seeds when discovery is unusable (%j)', async (fetched) => {
     const deps = dependencies([spec('offline', {
       publicModels: true, models: [' seed-free ', '', 'seed-free', '\t', 'plain'], defaultModel: ' configured ',
@@ -135,7 +158,7 @@ describe('resolveModelCatalog', () => {
     expect(deps.cachedLiveModels).not.toHaveBeenCalled();
   });
 
-  it('uses the injected subscription callback once, retains its default and bypasses API-key discovery', async () => {
+  it('uses the injected subscription callback once, follows the plan default and bypasses API-key discovery', async () => {
     const deps = dependencies([spec('subscription', { auth: 'chatgpt-subscription' })]);
     deps.codexSubscriptionInfo.mockResolvedValue({
       available: true, signedIn: true, planType: 'plus',
@@ -144,8 +167,11 @@ describe('resolveModelCatalog', () => {
       })),
     });
     const { providers, defaultProvider } = await resolveModelCatalog(deps);
-    expect(ids(providers[0]!)).toEqual(['future-subscription-model', 'subscription-default']);
-    expect(providers[0]).toMatchObject({ auth: 'chatgpt-subscription', hasKey: false, signedIn: true, planType: 'plus', available: true, usable: true, live: true });
+    // A signed-in plan is authoritative: the live list is shown without the
+    // offline seed default, which may name a model the plan no longer includes,
+    // and the plan's own default becomes the row default.
+    expect(ids(providers[0]!)).toEqual(['future-subscription-model']);
+    expect(providers[0]).toMatchObject({ auth: 'chatgpt-subscription', defaultModel: 'future-subscription-model', hasKey: false, signedIn: true, planType: 'plus', available: true, usable: true, live: true });
     expect(providers[0]?.models[0]?.vision).toBe(true);
     expect(defaultProvider).toBe('subscription');
     expect(deps.codexSubscriptionInfo).toHaveBeenCalledTimes(1);

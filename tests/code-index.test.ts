@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -91,13 +91,12 @@ describe('CodeIndex', () => {
     const idx = new CodeIndex(repo, db);
     idx.startWatch([], { debounceMs: 50, sweepMs: 5000 });
     expect(idx.isWatched()).toBe(true);
-    expect(idx.stats().files).toBe(1); // initial build happens at watch start
+    await idx.refreshAsync(repo, []);
+    expect(idx.stats().files).toBe(1);
 
     await new Promise((r) => setTimeout(r, 100));
     writeFileSync(path.join(repo, 'src', 'b.ts'), 'export const b = () => "fresh content";');
-    await new Promise((r) => setTimeout(r, 800));
-
-    expect(idx.fileList().some((f) => f.path === 'src/b.ts')).toBe(true);
+    await expect.poll(() => idx.fileList().some((f) => f.path === 'src/b.ts'), { timeout: 8000 }).toBe(true);
     expect(idx.stats().files).toBe(2);
     expect(idx.contentMatches(['fresh']).get('src/b.ts')).toEqual(new Set(['fresh']));
 
@@ -136,8 +135,59 @@ describe('CodeIndex', () => {
 
     rmSync(repo, { recursive: true, force: true });
     const idx2 = new CodeIndex(repo, db);
+    idx2.refresh(repo, []); // orphan cleanup now runs with background maintenance
     expect(idx2.stats().files).toBe(0);
     idx2.close();
+  });
+
+  it('refreshes off-thread, excludes packaged copies, and keeps later edits fresh', async () => {
+    const { repo, db } = tempRepo();
+    mkdirSync(path.join(repo, 'src'), { recursive: true });
+    for (let i = 0; i < 60; i++) writeFileSync(path.join(repo, 'src', `file-${i}.ts`), `export const value${i} = '${'searchable '.repeat(500)}';`);
+    for (const directory of ['dist-build', 'dist-build2']) {
+      mkdirSync(path.join(repo, 'app', directory), { recursive: true });
+      writeFileSync(path.join(repo, 'app', directory, 'bundle.js'), 'export const duplicate = 1;');
+    }
+    const idx = new CodeIndex(repo, db);
+    let heartbeats = 0;
+    const timer = setInterval(() => {
+      heartbeats++;
+    }, 5);
+    try {
+      const first = idx.refreshAsync(repo, []);
+      expect(idx.refreshAsync(repo, [])).toBe(first);
+      expect((await first).added).toBe(60);
+      expect(heartbeats).toBeGreaterThan(2);
+      expect(idx.fileList().every((file) => file.path.startsWith('src/'))).toBe(true);
+      writeFileSync(path.join(repo, 'src', 'file-0.ts'), 'export const diagnosticCorrection = true;');
+      expect((await idx.refreshAsync(repo, [])).updated).toBe(1);
+      expect(idx.contentMatches(['diagnostic']).has('src/file-0.ts')).toBe(true);
+    } finally {
+      clearInterval(timer);
+      idx.close();
+    }
+  });
+
+  it('settles a queued refresh when its index is closed', async () => {
+    const { repo, db } = tempRepo();
+    const idx = new CodeIndex(repo, db);
+    const pending = idx.refreshAsync(repo, []);
+    idx.close();
+    await expect(pending).rejects.toThrow(/closed|stopped/);
+  });
+
+  it('does not index files reached through a directory symlink', async () => {
+    const { repo, db } = tempRepo();
+    const outside = mkdtempSync(path.join(tmpdir(), 'gitu-index-outside-'));
+    writeFileSync(path.join(outside, 'private.ts'), 'export const secret = true;');
+    symlinkSync(outside, path.join(repo, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    const idx = new CodeIndex(repo, db);
+    try {
+      await idx.refreshAsync(repo, []);
+      expect(idx.fileList()).toEqual([]);
+    } finally {
+      idx.close();
+    }
   });
 
   it('indexes local import edges and returns bounded dependency proximity', () => {

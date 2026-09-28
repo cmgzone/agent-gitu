@@ -24,6 +24,46 @@ export function sha256(input: string): string {
   return createHash('sha256').update(input).digest('hex');
 }
 
+function levenshtein(a: string, b: string): number {
+  const an = a.length;
+  const bn = b.length;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix: number[][] = [];
+  for (let i = 0; i <= bn; i++) matrix[i] = [i];
+  for (let j = 0; j <= an; j++) matrix[0]![j] = j;
+  for (let i = 1; i <= bn; i++) {
+    for (let j = 1; j <= an; j++) {
+      matrix[i]![j] = b.charAt(i - 1) === a.charAt(j - 1)
+        ? matrix[i - 1]![j - 1]!
+        : Math.min(matrix[i - 1]![j - 1]! + 1, matrix[i - 1]![j]! + 1, matrix[i]![j - 1]! + 1);
+    }
+  }
+  return matrix[bn]![an]!;
+}
+
+/**
+ * "Did you mean" matching for names a model mistyped or invented: exact and
+ * containment hits rank first, then a bounded edit distance so short names do
+ * not match everything. Returns at most `limit` candidates, best first.
+ */
+export function closestNameMatches(name: string, candidates: string[], limit = 4): string[] {
+  const lower = name.trim().toLowerCase();
+  if (!lower) return [];
+  return candidates
+    .map((candidate) => {
+      const c = candidate.toLowerCase();
+      if (c === lower) return { candidate, score: 0 };
+      if (c.includes(lower) || lower.includes(c)) return { candidate, score: Math.abs(c.length - lower.length) / 10 + 0.5 };
+      const d = levenshtein(lower, c);
+      return { candidate, score: d <= Math.max(2, Math.floor(c.length / 3)) ? d : Number.POSITIVE_INFINITY };
+    })
+    .filter((entry) => Number.isFinite(entry.score))
+    .sort((a, b) => a.score - b.score || a.candidate.localeCompare(b.candidate))
+    .slice(0, Math.max(1, limit))
+    .map((entry) => entry.candidate);
+}
+
 export function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value) ?? 'null';

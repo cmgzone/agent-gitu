@@ -17,3 +17,8 @@ diff-manifest.txt
 .freebuff/
 tests/agent-evals/results/*
 !tests/agent-evals/results/README.md
+# Expo / React Native (apps/mobile)
+.expo/
+web-build/
+apps/mobile/dist/
+*.tsbuildinfo

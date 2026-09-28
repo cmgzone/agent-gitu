@@ -17,6 +17,7 @@ export interface SessionUsage {
 }
 
 export interface StoredSession {
+  modelRecovery?: { attempt: number; nextRetryAt: string };
   runId: string;
   taskId?: string;
   goal: string;
@@ -160,6 +161,7 @@ export class SessionStore {
       ['sessions', 'report TEXT'],
       ['sessions', 'error TEXT'],
       ['sessions', 'usage TEXT'],
+      ['sessions', 'modelRecovery TEXT'],
       ['sessions', 'branch TEXT'],
       ['sessions', 'worktreePath TEXT'],
       // The typed companion on a prose row. Older rows simply have none and
@@ -177,8 +179,8 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
@@ -198,6 +200,7 @@ export class SessionStore {
            report = excluded.report,
            error = excluded.error,
            usage = excluded.usage,
+           modelRecovery = excluded.modelRecovery,
            updatedAt = excluded.updatedAt`,
       )
       .run(
@@ -221,6 +224,7 @@ export class SessionStore {
         s.report ? JSON.stringify(s.report) : null,
         s.error ?? null,
         s.usage ? JSON.stringify(s.usage) : null,
+        s.modelRecovery ? JSON.stringify(s.modelRecovery) : null,
         new Date().toISOString(),
       );
   }
@@ -303,7 +307,7 @@ export class SessionStore {
 
   listSessions(): StoredSession[] {
     const rows = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage FROM sessions ORDER BY startedAt DESC`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions ORDER BY startedAt DESC`)
       .all() as {
         runId: string;
         taskId: string | null;
@@ -325,6 +329,7 @@ export class SessionStore {
         report: string | null;
         error: string | null;
         usage: string | null;
+        modelRecovery: string | null;
       }[];
     return rows.map((r) => ({
       runId: r.runId,
@@ -347,12 +352,13 @@ export class SessionStore {
       report: parseReport(r.report),
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
+      modelRecovery: parseModelRecovery(r.modelRecovery),
     }));
   }
 
   getSessionByTaskId(taskId: string): StoredSession | undefined {
     const r = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
       .get(taskId) as {
         runId: string;
         taskId: string | null;
@@ -374,6 +380,7 @@ export class SessionStore {
         report: string | null;
         error: string | null;
         usage: string | null;
+        modelRecovery: string | null;
       } | undefined;
     if (!r) return undefined;
     return {
@@ -397,6 +404,7 @@ export class SessionStore {
       report: parseReport(r.report),
       error: r.error ?? undefined,
       usage: parseUsage(r.usage),
+      modelRecovery: parseModelRecovery(r.modelRecovery),
     };
   }
 
@@ -459,6 +467,13 @@ function parseUsage(value: string | null): SessionUsage | undefined {
   } catch {
     return undefined;
   }
+}
+
+function parseModelRecovery(value: string | null): StoredSession['modelRecovery'] {
+  try {
+    const parsed = JSON.parse(value ?? 'null') as StoredSession['modelRecovery'];
+    return parsed && Number.isInteger(parsed.attempt) && parsed.attempt > 0 && Number.isFinite(Date.parse(parsed.nextRetryAt)) ? parsed : undefined;
+  } catch { return undefined; }
 }
 
 function parseReport(value: string | null): CompletionReport | undefined {

@@ -114,7 +114,7 @@ function renderer() {
     'normalizeToolKey', 'activeToolRows', 'findToolRow',
     // Tool-lifecycle matching was hoisted out of appendEvent so the typed
     // command frames can share it; the prose path now calls these top-level too.
-    'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow',
+    'terminalToolSummary', 'applyToolOutcome', 'finishToolCard', 'finishToolRow', 'decorateToolDiff',
     // Timeline insertion is shared the same way: the prose row and the typed
     // refusal card must land in the same place, in the same way.
     'insertTimelineNode',
@@ -142,6 +142,25 @@ function renderer() {
 }
 
 describe('UI — parallel tool lifecycle', () => {
+  it('shows real edit diff totals and colors only when output is a patch', () => {
+    const r = renderer();
+    r.event(0, 'run edit src/app.ts — Update the greeting');
+    r.event(1, 'ok edit src/app.ts (12ms)');
+    r.event(2, 'out diff --git a/src/app.ts b/src/app.ts ⏎ --- a/src/app.ts ⏎ +++ b/src/app.ts ⏎ @@ -1 +1 @@ ⏎ -hello ⏎ +hello world');
+    const row = r.rows()[0]!;
+    expect(row.dataset.toolKind).toBe('edit');
+    expect(row.querySelector('.tool-change-stat')!.textContent).toContain('+1');
+    expect(row.querySelector('.tool-change-stat')!.textContent).toContain('−1');
+    expect(row.querySelectorAll('.tool-diff-line').some(line => line.className.includes(' add'))).toBe(true);
+    expect(row.querySelectorAll('.tool-diff-line').some(line => line.className.includes(' del'))).toBe(true);
+    expect(row.querySelector('pre')!.textContent).toContain('+hello world');
+
+    const plain = renderer();
+    plain.event(0, 'run edit src/app.ts — Update the greeting');
+    plain.event(1, 'ok edit src/app.ts (12ms)');
+    plain.event(2, 'out Updated src/app.ts');
+    expect(plain.rows()[0]!.querySelector('.tool-change-stat')).toBeNull();
+  });
   it('shows the exact active command and reason, then advances as parallel calls finish', () => {
     const r = renderer();
     r.event(0, 'parallel inspect source and run checks');

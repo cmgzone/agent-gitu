@@ -1,4 +1,4 @@
-import { execFile, execFileSync, spawn, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
@@ -12,7 +12,8 @@ import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
 import { ConnectionRegistry } from '../connections/connections.js';
-import { commandTimeout, deadline } from './command-timeout.js';
+import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-timeout.js';
+import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
 
 export interface ToolContext {
   signal?: AbortSignal;
@@ -143,8 +144,16 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: err,
-          schema: `read_file({ path: string, offset?: number, limit?: number })`,
+          schema: `read_file({ path: string, offset?: number, limit?: number, refresh?: boolean })`,
           correction: `Provide a valid file path string relative to the project root, e.g. read_file({ "path": "src/index.ts" }).`,
+        };
+      }
+      if (p['refresh'] !== undefined && typeof p['refresh'] !== 'boolean') {
+        return {
+          valid: false,
+          error: `Invalid "refresh" parameter (must be a boolean).`,
+          schema: `read_file({ path: string, offset?: number, limit?: number, refresh?: boolean })`,
+          correction: `Set "refresh": true only for a deliberate fresh confirmation of unchanged file content.`,
         };
       }
       return { valid: true };
@@ -260,20 +269,43 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
       return { valid: true };
     }
     case 'run_command': {
-      const cmdErr = checkNonEmptyString('command');
-      if (cmdErr) {
+      const action = p['action'] === undefined ? 'run' : String(p['action']);
+      const schema = `run_command({ action?: "run"|"status"|"stop", command?: string, timeoutMs?: number, waitMs?: number, background?: boolean, startupWaitMs?: number, id?: string })`;
+      if (!['run', 'status', 'stop'].includes(action)) {
         return {
           valid: false,
-          error: cmdErr,
-          schema: `run_command({ command: string, timeoutMs?: number, background?: boolean, startupWaitMs?: number })`,
-          correction: `Provide a valid command string to run, e.g. run_command({ "command": "npm test" }).`,
+          error: `Parameter "action" must be "run", "status" or "stop".`,
+          schema,
+          correction: `Run with {"command":"npm test"}, check with {"action":"status","id":"cmd-3"}, stop with {"action":"stop","id":"cmd-3"}.`,
         };
+      }
+      if (action === 'run') {
+        const cmdErr = checkNonEmptyString('command');
+        if (cmdErr) {
+          return {
+            valid: false,
+            error: cmdErr,
+            schema,
+            correction: `Provide a valid command string to run, e.g. run_command({ "command": "npm test" }).`,
+          };
+        }
+      }
+      if (action === 'stop') {
+        const idErr = checkNonEmptyString('id');
+        if (idErr) {
+          return {
+            valid: false,
+            error: idErr,
+            schema,
+            correction: `Use the job id from a RUNNING result, e.g. run_command({ "action": "stop", "id": "cmd-3" }).`,
+          };
+        }
       }
       if (p['background'] !== undefined && typeof p['background'] !== 'boolean') {
         return {
           valid: false,
           error: `Parameter "background" must be a boolean.`,
-          schema: `run_command({ command: string, timeoutMs?: number, background?: boolean, startupWaitMs?: number })`,
+          schema,
           correction: `Use background:true only for a long-running server or watcher.`,
         };
       }
@@ -281,8 +313,16 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         return {
           valid: false,
           error: `Parameter "startupWaitMs" must be a finite number.`,
-          schema: `run_command({ command: string, background: true, startupWaitMs?: number })`,
+          schema,
           correction: `Provide a startup grace period in milliseconds, e.g. 1500.`,
+        };
+      }
+      if (p['waitMs'] !== undefined && (typeof p['waitMs'] !== 'number' || !Number.isFinite(p['waitMs'] as number))) {
+        return {
+          valid: false,
+          error: `Parameter "waitMs" must be a finite number.`,
+          schema,
+          correction: `waitMs is how long the call waits for a terminal state before answering with a RUNNING status; 0 waits for it (or, for a status poll, answers immediately).`,
         };
       }
       return { valid: true };
@@ -617,7 +657,7 @@ export function toolReadFile(ctx: ToolContext, params: Record<string, unknown>):
   if (!val.valid) return fail(formatToolValidationError('read_file', params, val));
   const rel = String(params['path']);
   const abs = ctx.guard.resolve(rel);
-  ctx.guard.assertInside(abs);
+  ctx.guard.assertReadable(abs);
   try {
     const st = statSync(abs);
     if (st.isDirectory()) return fail(`read_file: ${rel} is a directory`);
@@ -671,6 +711,16 @@ function bracketImbalance(content: string): { curly: number; paren: number; brac
   };
 }
 
+/** The file's content before an edit, or '' for a new file. A read failure is not
+ *  an error: the diff is display data, and the write is verified separately. */
+function readIfPresent(abs: string): string {
+  try {
+    return statSync(abs).isFile() ? readFileSync(abs, 'utf8') : '';
+  } catch {
+    return '';
+  }
+}
+
 export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   const rel = String(params['path'] ?? '');
   const content = params['content'];
@@ -680,6 +730,7 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
   ctx.guard.assertInside(abs);
   try {
     mkdirSync(path.dirname(abs), { recursive: true });
+    const previous = readIfPresent(abs);
     const persisted = writeAndVerify(ctx, abs, content);
     if (!persisted.ok) return persisted.result;
     let output = `Wrote ${content.length} chars to ${rel}`;
@@ -692,11 +743,21 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
         `\n[WARN] possible TRUNCATED write — unbalanced brackets: {${imbalance.curly}} (${imbalance.paren}) [${imbalance.bracket}]. ` +
         `Re-read the file tail and rewrite completely if it was cut off.`;
     }
+    const diff = diffFileContents(previous, content);
+    const body = formatDiffBlock(diff);
     return {
       ok: true,
-      output: `${output}\n[verified persisted content at ${ctx.guard.toRelative(abs)}${persisted.recovered ? ' after one recovery write' : ''}]`,
+      output:
+        `${output} ${formatLineCounts(diff.added, diff.removed)}\n` +
+        `[verified persisted content at ${ctx.guard.toRelative(abs)}${persisted.recovered ? ' after one recovery write' : ''}]\n` +
+        (body ? `${body}\n` : '') +
+        '[read the file to confirm the result]',
       filesTouched: [ctx.guard.toRelative(abs)],
-      linesAdded: content.split('\n').length,
+      // Real counts against the file's previous content: a rewrite that replaced
+      // code must report the lines it removed, not the size of the new file.
+      linesAdded: diff.added,
+      linesRemoved: diff.removed,
+      payload: { diff },
     };
   } catch (err) {
     return fail(`write_file failed: ${(err as Error).message}`);
@@ -792,7 +853,7 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
       const updated = content.split(oldStr).join(newStr);
       const persisted = writeAndVerify(ctx, abs, updated);
       if (!persisted.ok) return persisted.result;
-      return editSuccess(ctx, abs, rel, newStr, oldStr, replaceAll ? ` (replaced ${count} occurrence${count === 1 ? '' : 's'})` : '');
+      return editSuccess(ctx, abs, rel, content, updated, replaceAll ? ` (replaced ${count} occurrence${count === 1 ? '' : 's'})` : '');
     }
 
     // Exact match failed — retry line-ending-tolerantly. Models emit \n while
@@ -809,7 +870,7 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
     const finalContent = hadCRLF ? normUpdated.replace(/\n/g, '\r\n') : normUpdated;
     const persisted = writeAndVerify(ctx, abs, finalContent);
     if (!persisted.ok) return persisted.result;
-    return editSuccess(ctx, abs, rel, newStr, oldStr, replaceAll ? ` (replaced ${normCount} occurrence${normCount === 1 ? '' : 's'}, normalized line endings)` : ' (matched with normalized line endings)');
+    return editSuccess(ctx, abs, rel, content, finalContent, replaceAll ? ` (replaced ${normCount} occurrence${normCount === 1 ? '' : 's'}, normalized line endings)` : ' (matched with normalized line endings)');
   } catch (err) {
     return fail(`apply_edit failed: ${(err as Error).message}`);
   }
@@ -819,23 +880,33 @@ function editSuccess(
   ctx: ToolContext,
   abs: string,
   rel: string,
-  newStr: string,
-  oldStr: string,
+  before: string,
+  after: string,
   note: string,
 ): ToolResult {
-  const delta = newStr.split('\n').length - oldStr.split('\n').length;
+  const diff = diffFileContents(before, after);
+  const body = formatDiffBlock(diff);
   return {
     ok: true,
-    output: `Edited ${rel}${note}\n[verified persisted content at ${ctx.guard.toRelative(abs)}]`,
+    // The counts AND the rows travel in the text: cowork, the CLI and Telegram
+    // have no diff panel, and a deletion that only exists in a runtime field is
+    // a deletion the user cannot see.
+    output:
+      `Edited ${rel} ${formatLineCounts(diff.added, diff.removed)}${note}\n` +
+      `[verified persisted content at ${ctx.guard.toRelative(abs)}]\n` +
+      (body ? `${body}\n` : '') +
+      '[read the file to confirm the result]',
     filesTouched: [ctx.guard.toRelative(abs)],
-    linesAdded: Math.max(newStr.split('\n').length, delta),
+    linesAdded: diff.added,
+    linesRemoved: diff.removed,
+    payload: { diff },
   };
 }
 
 export function toolListFiles(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   const rel = String(params['path'] ?? '.');
   const abs = ctx.guard.resolve(rel);
-  ctx.guard.assertInside(abs);
+  ctx.guard.assertReadable(abs);
   const ignores = new Set(ctx.guard.lock.ignorePaths);
   const out: string[] = [];
 
@@ -853,6 +924,7 @@ export function toolListFiles(ctx: ToolContext, params: Record<string, unknown>)
       const full = path.join(dir, name);
       let st;
       try {
+        ctx.guard.assertReadable(full);
         st = statSync(full);
       } catch {
         continue;
@@ -947,7 +1019,7 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
   }
   const rel = String(params['path'] ?? '.');
   const abs = ctx.guard.resolve(rel);
-  ctx.guard.assertInside(abs);
+  ctx.guard.assertReadable(abs);
   const include = Array.isArray(params['include']) ? (params['include'] as unknown[]).map(String) : [];
   const exclude = Array.isArray(params['exclude']) ? (params['exclude'] as unknown[]).map(String) : [];
   const maxResults = Math.min(500, Math.max(1, Number(params['maxResults']) || MAX_SEARCH_MATCHES));
@@ -1009,6 +1081,7 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
       const full = path.join(dir, name);
       let st;
       try {
+        ctx.guard.assertReadable(full);
         st = statSync(full);
       } catch {
         continue;
@@ -1126,192 +1199,514 @@ export async function toolLspSymbols(ctx: ToolContext, params: Record<string, un
   return call.ok ? { ok: true, output: call.output, payload: call.payload } : lspUnavailable(call.output);
 }
 
-/** Managed long-running commands (dev servers/watchers) scoped to one Executor. */
-export class BackgroundCommandRegistry {
-  private readonly children = new Map<number, ReturnType<typeof spawn>>();
+/** Longest tail of each stream kept for status reads; a chatty server must not
+ *  grow the harness without bound. */
+const MAX_CAPTURED_OUTPUT = 64_000;
+/** Finished jobs stay readable this long, so a poll can still report an exit
+ *  code that arrived after the call that started it had already answered. */
+const COMMAND_HISTORY_LIMIT = 20;
+/**
+ * After the shell exits, how long its pipes may take to drain before the result
+ * is reported anyway. A descendant that inherited our stdout (a `.cmd` shim's
+ * real process, a GUI app, a dev server) holds that handle open indefinitely;
+ * the command itself is already over, so `close` may never arrive — and waiting
+ * for it is what used to wedge the whole turn.
+ */
+const DRAIN_GRACE_MS = 300;
+/** Backstop after a deliberate kill: the tool always answers, even if the OS
+ *  never reports the death. */
+const KILL_BACKSTOP_MS = 5_000;
 
+export type CommandJobStatus = 'running' | 'exited' | 'stopped';
+
+/**
+ * One managed command. The record outlives the promise that reported it, so a
+ * later status poll can still answer with the exit code and the output tail.
+ */
+export interface CommandJob {
+  id: string;
+  command: string;
+  cwd: string;
+  background: boolean;
+  status: CommandJobStatus;
+  startedAt: number;
+  endedAt?: number;
+  pid?: number;
+  /** Only ever an OS-reported code. A kill leaves it absent, never invented. */
+  exitCode?: number;
+  signal?: string;
+  reason?: 'timeout' | 'cancel' | 'stop' | 'spawn-failed';
+  /** The shell exited but a descendant still holds our stdio. */
+  stdioHeldOpen?: boolean;
+  /** Hard kill deadline in ms (0 = none); kept for the timeout wording. */
+  hardDeadlineMs: number;
+  stdout: string;
+  stderr: string;
+}
+
+const delayMs = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The combined capture, formatted exactly as the legacy result always was. */
+function jobBody(job: CommandJob): string {
+  return [job.stdout, job.stderr].filter(Boolean).join('\n--- stderr ---\n');
+}
+
+/**
+ * Managed commands: dev servers/watchers started with `background:true`, plus any
+ * foreground command that outlives its call window. Scoped to one Executor.
+ *
+ * The registry — not the caller — owns the outcome: a job is settled by its own
+ * `exit`, its output is buffered, and it stays pollable afterwards. That is what
+ * lets `run_command` answer with a status instead of blocking a turn on output
+ * that may never come.
+ */
+export class BackgroundCommandRegistry {
+  private readonly jobs = new Map<string, CommandJob>();
+  private readonly children = new Map<string, ReturnType<typeof spawn>>();
+  private sequence = 0;
+  /**
+   * Background command: answer as soon as it survives its startup window, or
+   * report the early exit that proves the launch failed.
+   */
   start(command: string, cwd: string, startupWaitMs = 1500): Promise<ToolResult> {
     const waitMs = Math.min(10_000, Math.max(100, Number.isFinite(startupWaitMs) ? startupWaitMs : 1500));
-    const isWindows = process.platform === 'win32';
-    const shell = isWindows ? 'powershell.exe' : '/bin/sh';
-    const args = isWindows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
+    const { job, child } = this.launch(command, cwd, true);
 
-    return new Promise((resolve) => {
-      const child = spawn(shell, args, {
-        cwd,
-        windowsHide: true,
-        detached: !isWindows,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      let startupOutput = '';
+    return new Promise<ToolResult>((resolve) => {
       let settled = false;
-      const append = (chunk: unknown): void => {
-        startupOutput = `${startupOutput}${String(chunk)}`.slice(-12_000);
-      };
-      child.stdout?.on('data', append);
-      child.stderr?.on('data', append);
-
-      const timer = setTimeout(() => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const answer = (result: ToolResult): void => {
         if (settled) return;
         settled = true;
-        if (!child.pid) {
-          resolve({ ok: false, output: 'Background command failed to obtain a process id.', errorSignature: 'background-process-start-failed' });
+        if (timer) clearTimeout(timer);
+        resolve(result);
+      };
+      timer = setTimeout(() => {
+        if (!job.pid) {
+          answer({ ok: false, output: 'Background command failed to obtain a process id.', errorSignature: 'background-process-start-failed' });
           return;
         }
-        this.children.set(child.pid, child);
-        resolve({
+        const startup = jobBody(job).trim();
+        answer({
           ok: true,
+          status: 'running',
+          jobId: job.id,
           exitCode: 0,
+          durationMs: Date.now() - job.startedAt,
+          payload: { command: job.command },
           output:
-            `BACKGROUND PROCESS STARTED (pid ${child.pid}); it is still running after ${waitMs}ms. ` +
-            `Verify readiness separately (for example with browse or a health request).` +
-            (startupOutput.trim() ? `\nSTARTUP OUTPUT:\n${excerpt(startupOutput, 2500)}` : ''),
+            `BACKGROUND PROCESS STARTED (${job.id}, pid ${job.pid}); it is still running after ${waitMs}ms. ` +
+            `Verify readiness separately (for example with browse or a health request); read its output later with ` +
+            `run_command {"action":"status","id":"${job.id}"} and stop it with {"action":"stop","id":"${job.id}"}.` +
+            (startup ? `\nSTARTUP OUTPUT:\n${excerpt(startup, 2500)}` : ''),
         });
       }, waitMs);
 
       child.once('error', (err) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({ ok: false, output: `Background command failed to start: ${err.message}`, errorSignature: 'background-process-start-failed' });
+        this.settle(job, 'stopped', { reason: 'spawn-failed' });
+        answer({ ok: false, status: 'stopped', jobId: job.id, output: `Background command failed to start: ${err.message}`, errorSignature: 'background-process-start-failed' });
       });
       child.once('exit', (code, signal) => {
-        if (child.pid) this.children.delete(child.pid);
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve({
+        this.settle(job, 'exited', { exitCode: code ?? undefined, signal: signal ?? undefined });
+        const startup = jobBody(job).trim();
+        answer({
           ok: false,
-          exitCode: code ?? 1,
+          status: 'exited',
+          jobId: job.id,
+          ...(job.exitCode !== undefined ? { exitCode: job.exitCode } : {}),
           output:
             `Background command exited during its ${waitMs}ms startup window (exit ${code ?? 'unknown'}${signal ? `, signal ${signal}` : ''}).` +
-            (startupOutput.trim() ? `\n${excerpt(startupOutput, 3000)}` : ''),
+            (startup ? `\n${excerpt(startup, 3000)}` : ''),
           errorSignature: 'background-process-exited',
         });
       });
     });
   }
+  /**
+   * Foreground command that never blocks the turn: the call answers as soon as
+   * the process reaches a terminal state, or with a RUNNING status once `waitMs`
+   * elapses. Settlement is driven by the process's own `exit`, never by the stdio
+   * pipes closing, so a command that crashed still reports its failure.
+   */
+  run(
+    command: string,
+    cwd: string,
+    opts: { waitMs: number; timeoutMs: number; signal?: AbortSignal },
+  ): Promise<ToolResult> {
+    const { job, child } = this.launch(command, cwd, false);
+    job.hardDeadlineMs = opts.timeoutMs;
 
-  dispose(): void {
-    const isWindows = process.platform === 'win32';
-    for (const [pid, child] of this.children) {
-      try {
-        if (isWindows) {
-          execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
-        } else {
-          try {
-            process.kill(-pid, 'SIGTERM');
-          } catch {
-            child.kill('SIGTERM');
-          }
-        }
-      } catch {
-        /* Process already exited. */
-      }
-    }
-    this.children.clear();
-  }
-}
+    return new Promise<ToolResult>((resolve) => {
+      let answered = false;
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
+      let killBackstop: ReturnType<typeof setTimeout> | undefined;
+      let waitTimer: ReturnType<typeof setTimeout> | undefined;
+      let cancelDeadline = (): void => {};
+      let onAbort = (): void => {};
 
-export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
-  const command = String(params['command'] ?? '');
-  if (!command) return Promise.resolve(fail('run_command: missing "command"'));
-  if (params['background'] === true) {
-    if (!ctx.backgroundCommands) {
-      return Promise.resolve({
-        ok: false,
-        output: 'run_command background:true requires an executor-managed background process registry.',
-        errorSignature: 'background-command-unavailable',
+      const answer = (result: ToolResult): void => {
+        if (answered) return;
+        answered = true;
+        if (waitTimer) clearTimeout(waitTimer);
+        if (drainTimer) clearTimeout(drainTimer);
+        resolve(result);
+      };
+      const finalize = (): void => {
+        cancelDeadline();
+        if (killBackstop) clearTimeout(killBackstop);
+        opts.signal?.removeEventListener('abort', onAbort);
+        answer(this.terminalResult(job));
+      };
+      const kill = (reason: 'timeout' | 'cancel'): void => {
+        if (job.status !== 'running') return;
+        job.reason ??= reason;
+        this.killTree(child);
+        // The OS reports the death through 'exit'; if it never does, the tool
+        // still answers instead of wedging the turn on a process we killed.
+        killBackstop = setTimeout(() => {
+          this.settle(job, 'stopped', { reason });
+          finalize();
+        }, KILL_BACKSTOP_MS);
+      };
+      child.once('error', (err) => {
+        job.stderr = `${job.stderr}\n${err.message}`;
+        this.settle(job, 'stopped', { reason: 'spawn-failed' });
+        finalize();
       });
-    }
-    return ctx.backgroundCommands.start(command, ctx.cwd, Number(params['startupWaitMs'] ?? 1500));
-  }
-  let timeoutMs: number;
-  try { timeoutMs = commandTimeout(params['timeoutMs']); }
-  catch (err) { return Promise.resolve(fail((err as Error).message)); }
-  if (ctx.signal?.aborted) return Promise.resolve(fail('Command cancelled before launch.'));
+      child.once('exit', (code, signal) => {
+        // The command is over the moment it exits: a descendant holding the pipe
+        // must not keep the turn waiting on stdio that will never close.
+        job.exitCode = code ?? undefined;
+        job.signal = signal ?? undefined;
+        if (job.reason) {
+          this.settle(job, 'stopped', { reason: job.reason });
+          finalize();
+          return;
+        }
+        drainTimer = setTimeout(() => {
+          job.stdioHeldOpen = true;
+          this.settle(job, 'exited', { reason: job.reason });
+          finalize();
+        }, DRAIN_GRACE_MS);
+      });
+      child.once('close', () => {
+        if (drainTimer) clearTimeout(drainTimer);
+        job.stdioHeldOpen = false;
+        this.settle(job, job.reason ? 'stopped' : 'exited', { reason: job.reason });
+        finalize();
+      });
 
-  return new Promise((resolve) => {
+      cancelDeadline = deadline(opts.timeoutMs, () => kill('timeout'));
+      onAbort = (): void => kill('cancel');
+      opts.signal?.addEventListener('abort', onAbort, { once: true });
+      if (opts.signal?.aborted) kill('cancel');
+
+      // `waitMs: 0` means "wait for the terminal state": the pre-status
+      // behaviour, reachable only by asking for it.
+      if (opts.waitMs > 0) {
+        waitTimer = setTimeout(() => {
+          answer({
+            ok: true,
+            status: 'running',
+            jobId: job.id,
+            durationMs: Date.now() - job.startedAt,
+            payload: { command: job.command },
+            output:
+              `${excerpt(jobBody(job), 2500) || '(no output yet)'}\n` +
+              `[STILL RUNNING after ${Date.now() - job.startedAt}ms — job ${job.id}${job.pid ? `, pid ${job.pid}` : ''}. Nothing is verified yet: ` +
+              `check it with run_command {"action":"status","id":"${job.id}"} and stop it with {"action":"stop","id":"${job.id}"} if it is not needed.]`,
+          });
+        }, opts.waitMs);
+      }
+    });
+  }
+  /**
+   * Read the state of managed commands. A poll with an id blocks briefly (never
+   * past `waitMs`) so it usually observes the terminal state in one call instead
+   * of making the agent loop spin on a process that has not moved.
+   */
+  async status(id?: string, waitMs = 0): Promise<ToolResult> {
+    if (id) {
+      const job = this.jobs.get(id);
+      if (!job) return fail(this.unknownJob(id));
+      if (job.status === 'running' && waitMs > 0) await this.awaitTerminal(job, waitMs);
+      return this.snapshot(job);
+    }
+    const jobs = [...this.jobs.values()];
+    if (jobs.length === 0) return { ok: true, output: 'No managed commands on this host: nothing has been started here yet.' };
+    return {
+      ok: true,
+      output:
+        `${jobs.map((job) => this.summaryLine(job)).join('\n')}\n` +
+        `Poll one with run_command {"action":"status","id":"<id>"}; stop one with {"action":"stop","id":"<id>"}.`,
+    };
+  }
+
+  /** Stop a managed command and confirm the death rather than assuming it. */
+  async stop(id: string, waitMs = 2_000): Promise<ToolResult> {
+    const job = this.jobs.get(id);
+    if (!job) return fail(this.unknownJob(id));
+    if (job.status === 'running') {
+      job.reason = 'stop';
+      const child = this.children.get(id);
+      if (child) this.killTree(child);
+      await this.awaitTerminal(job, waitMs);
+      if (job.status === 'running') this.settle(job, 'stopped', { reason: 'stop' });
+      return this.snapshot(job);
+    }
+    return {
+      ...this.snapshot(job),
+      output: `${this.summaryLine(job)}\nNothing to stop: the command already ${job.status}${job.exitCode !== undefined ? ` with exit ${job.exitCode}` : ''}.`,
+    };
+  }
+  private unknownJob(id: string): string {
+    return `run_command: no managed command "${id}". Use {"action":"status"} to list the jobs this host is tracking; a command that ran inside the private computer is inspected with computer_process.`;
+  }
+
+  private launch(command: string, cwd: string, background: boolean): { job: CommandJob; child: ReturnType<typeof spawn> } {
     const isWindows = process.platform === 'win32';
     const shell = isWindows ? 'powershell.exe' : '/bin/sh';
     const args = isWindows ? ['-NoProfile', '-NonInteractive', '-Command', command] : ['-c', command];
-    // POSIX: own process group so the whole tree can be signalled on timeout.
-    const execOpts: ExecFileOptionsWithStringEncoding = {
-      cwd: ctx.cwd,
-      maxBuffer: 16 * 1024 * 1024,
+    const child = spawn(shell, args, {
+      cwd,
       windowsHide: true,
-      encoding: 'utf8',
+      // POSIX: own process group, so the whole tree can be signalled on timeout.
+      detached: !isWindows,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    this.sequence += 1;
+    const job: CommandJob = {
+      id: `cmd-${this.sequence}`,
+      command,
+      cwd,
+      background,
+      status: 'running',
+      startedAt: Date.now(),
+      pid: child.pid,
+      hardDeadlineMs: 0,
+      stdout: '',
+      stderr: '',
     };
-    if (!isWindows) (execOpts as { detached?: boolean }).detached = true;
-    let timedOut = false;
-    const child = execFile(shell, args, execOpts, (err, stdout, stderr) => {
-        cancelDeadline();
-        ctx.signal?.removeEventListener('abort', cancel);
-        // Only an OS-reported code is a fact. A timeout, a cancellation or a
-        // spawn failure leaves no exit status at all, so the structured field
-        // stays absent instead of inventing one; the legacy text below keeps its
-        // previous display value so existing output is unchanged.
-        let osExitCode: number | undefined;
-        if (err) {
-          const code = (err as { code?: unknown }).code;
-          osExitCode = typeof code === 'number' ? code : undefined;
-        }
-        const body = [stdout, stderr].filter(Boolean).join('\n--- stderr ---\n');
-        const output = excerpt(body || '(no output)', 4000);
-        if (err) {
-          const msg = timedOut ? ` (timeout after ${timeoutMs}ms; process tree terminated)` : ctx.signal?.aborted ? ' (cancelled; process tree terminated)' : '';
-          resolve({
-            ok: false,
-            ...(osExitCode !== undefined ? { exitCode: osExitCode } : {}),
-            output: `${output}\n[exit ${osExitCode ?? 1}${msg}]`,
-            errorSignature: errorSignature(body || err.message),
-          });
-        } else {
-          const stderrFailed = !stdout.trim() && stderr.trim().length > 0 && STDERR_FAIL_RE.test(stderr);
-          if (stderrFailed) {
-            resolve({
-              ok: false,
-              // The process did exit 0; calling this a failure is this layer's
-              // reading of its stderr, so the raw fact is still reported as 0.
-              exitCode: 0,
-              output: `${output}\n[exit 0 but stderr indicates failure]`,
-              errorSignature: errorSignature(stderr),
-            });
-          } else {
-            resolve({ ok: true, exitCode: 0, output: excerpt(body || '(ok)', 4000) });
-          }
-        }
-      },
-    );
-    // Own the timeout instead of Node's `timeout` option: Node kills only the
-    // DIRECT shell child, and the completion callback — where a tree kill
-    // could run — fires only AFTER that child is already dead, so `taskkill
-    // /T` would target a dead PID and grandchildren (servers, watchers) would
-    // survive. Killing from our own timer reaches the tree while it is alive.
-    const cancel = () => {
-      try {
-        if (isWindows && child.pid) {
-          execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
-        } else if (child.pid) {
-          try {
-            process.kill(-child.pid, 'SIGKILL');
-          } catch {
-            child.kill('SIGKILL');
-          }
-        }
-      } catch {
-        /* best effort — backstop below */
-      }
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* already gone */
-      }
+    this.jobs.set(job.id, job);
+    this.children.set(job.id, child);
+    const capture = (stream: 'stdout' | 'stderr') => (chunk: unknown): void => {
+      const text = `${job[stream]}${String(chunk)}`;
+      // A dev server's log must not grow the harness without bound.
+      job[stream] = text.length > MAX_CAPTURED_OUTPUT ? text.slice(text.length - MAX_CAPTURED_OUTPUT) : text;
     };
-    const cancelDeadline = deadline(timeoutMs, () => { timedOut = true; cancel(); });
-    ctx.signal?.addEventListener('abort', cancel, { once: true });
-    if (ctx.signal?.aborted) cancel();
-  });
+    child.stdout?.on('data', capture('stdout'));
+    child.stderr?.on('data', capture('stderr'));
+    this.trimHistory();
+    return { job, child };
+  }
+
+  /** Idempotent: the first terminal transition wins, later events are ignored. */
+  private settle(job: CommandJob, status: CommandJobStatus, opts: { exitCode?: number; signal?: string; reason?: CommandJob['reason'] } = {}): void {
+    if (job.status !== 'running') return;
+    job.status = status;
+    job.endedAt = Date.now();
+    if (opts.reason) job.reason ??= opts.reason;
+    if (opts.signal) job.signal = opts.signal;
+    if (opts.exitCode !== undefined) job.exitCode = opts.exitCode;
+    // A deliberate kill publishes no exit code: the status a taskkill produces is
+    // an artifact of the kill, not the command's own outcome.
+    if (job.reason) job.exitCode = undefined;
+    this.children.delete(job.id);
+    this.trimHistory();
+  }
+  /** Wait — bounded — for a job to leave the running state. */
+  private async awaitTerminal(job: CommandJob, waitMs: number): Promise<void> {
+    const until = Date.now() + waitMs;
+    while (job.status === 'running' && Date.now() < until) await delayMs(50);
+  }
+
+  /** Keep only the most recent finished jobs; live ones are never evicted. */
+  private trimHistory(): void {
+    const finished = [...this.jobs.values()].filter((job) => job.status !== 'running');
+    for (const job of finished.slice(0, Math.max(0, finished.length - COMMAND_HISTORY_LIMIT))) this.jobs.delete(job.id);
+  }
+
+  private summaryLine(job: CommandJob): string {
+    const seconds = ((job.endedAt ?? Date.now()) - job.startedAt) / 1000;
+    const state = job.status === 'running' ? 'RUNNING' : job.status === 'exited' ? `EXITED ${job.exitCode ?? '?'}` : 'STOPPED';
+    return `[${state} ${seconds.toFixed(1)}s] ${job.id}${job.pid ? ` (pid ${job.pid})` : ''} $ ${job.command}`;
+  }
+  /** The result for a job that reached a terminal state. */
+  private terminalResult(job: CommandJob): ToolResult {
+    const body = jobBody(job);
+    const output = excerpt(body || '(no output)', 4000);
+    const durationMs = (job.endedAt ?? Date.now()) - job.startedAt;
+    const payload = { command: job.command };
+    const note =
+      job.reason === 'timeout'
+        ? ` (timeout after ${job.hardDeadlineMs}ms; process tree terminated)`
+        : job.reason === 'cancel'
+          ? ' (cancelled; process tree terminated)'
+          : job.reason === 'stop'
+            ? ' (stopped by the agent; process tree terminated)'
+            : job.reason === 'spawn-failed'
+              ? ' (command failed to start)'
+              : '';
+    const held = job.stdioHeldOpen ? "\n[a descendant process still holds this command's output pipe; it outlived the shell]" : '';
+    if (job.reason === 'spawn-failed') {
+      return {
+        ok: false,
+        status: job.status,
+        jobId: job.id,
+        durationMs,
+        payload,
+        output: `${output}\n[exit 1${note}]${held}`,
+        errorSignature: errorSignature(body || 'command failed to start'),
+      };
+    }
+    if (job.reason || (job.exitCode ?? 0) !== 0) {
+      return {
+        ok: false,
+        status: job.status,
+        jobId: job.id,
+        durationMs,
+        payload,
+        ...(job.exitCode !== undefined ? { exitCode: job.exitCode } : {}),
+        output: `${output}\n[exit ${job.exitCode ?? 1}${note}]${held}`,
+        errorSignature: errorSignature(body || `command ${job.reason ?? 'failed'}`),
+      };
+    }
+    const stderrFailed = !job.stdout.trim() && job.stderr.trim().length > 0 && STDERR_FAIL_RE.test(job.stderr);
+    if (stderrFailed) {
+      return {
+        ok: false,
+        // The process did exit 0; calling this a failure is this layer's reading
+        // of its stderr, so the raw fact is still reported as 0.
+        exitCode: 0,
+        status: 'exited',
+        jobId: job.id,
+        durationMs,
+        payload,
+        output: `${output}\n[exit 0 but stderr indicates failure]`,
+        errorSignature: errorSignature(job.stderr),
+      };
+    }
+    return { ok: true, exitCode: 0, status: 'exited', jobId: job.id, durationMs, payload, output: excerpt(body || '(ok)', 4000) };
+  }
+  /** The result for one job, running or finished. */
+  private snapshot(job: CommandJob): ToolResult {
+    if (job.status === 'running') {
+      return {
+        ok: true,
+        status: 'running',
+        jobId: job.id,
+        durationMs: Date.now() - job.startedAt,
+        payload: { command: job.command },
+        output:
+          `${this.summaryLine(job)}\n${excerpt(jobBody(job), 2500) || '(no output yet)'}\n` +
+          `[Not finished — nothing is verified yet. Poll again with {"action":"status","id":"${job.id}"}, or stop it with {"action":"stop","id":"${job.id}"}.]`,
+      };
+    }
+    const terminal = this.terminalResult(job);
+    return { ...terminal, output: `${this.summaryLine(job)}\n${terminal.output}` };
+  }
+
+  /** Kill the whole process tree: a shell wrapper must not leave grandchildren
+   *  (servers, watchers, GUI apps) behind. */
+  private killTree(child: ReturnType<typeof spawn>, signal: 'SIGKILL' | 'SIGTERM' = 'SIGKILL'): void {
+    const isWindows = process.platform === 'win32';
+    try {
+      if (isWindows && child.pid) {
+        execFileSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 10_000 });
+      } else if (child.pid) {
+        try {
+          process.kill(-child.pid, signal);
+        } catch {
+          child.kill(signal);
+        }
+      }
+    } catch {
+      /* best effort — the direct kill below is the backstop */
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      /* already gone */
+    }
+  }
+  dispose(): void {
+    for (const [id, child] of this.children) {
+      const job = this.jobs.get(id);
+      this.killTree(child, 'SIGTERM');
+      if (job) this.settle(job, 'stopped', { reason: 'stop' });
+    }
+    this.children.clear();
+    this.jobs.clear();
+  }
+}
+
+/**
+ * Registry for hosts that own none (cowork chat agents have no Executor). Every
+ * command path needs a home for the jobs it reports, even when the caller never
+ * passes a registry.
+ */
+const hostCommands = new BackgroundCommandRegistry();
+
+/**
+ * Commands are never a blocking wait for output. Every call answers with a
+ * STATUS: `exited`/`stopped` with an exit code, or `running` with a job id that
+ * stays pollable. A process that crashed — or that left a descendant holding the
+ * inherited stdio pipes — therefore always reports instead of wedging the turn.
+ */
+export function toolRunCommand(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  const registry = ctx.backgroundCommands ?? hostCommands;
+  const action = String(params['action'] ?? 'run');
+
+  if (action === 'status') {
+    const raw = typeof params['id'] === 'string' ? params['id'].trim() : '';
+    let waitMs: number;
+    try {
+      waitMs = pollWaitMs(params['waitMs']);
+    } catch (err) {
+      return Promise.resolve(fail((err as Error).message));
+    }
+    return registry.status(raw || undefined, waitMs);
+  }
+  if (action === 'stop') {
+    const id = typeof params['id'] === 'string' ? params['id'].trim() : '';
+    if (!id) return Promise.resolve(fail('run_command stop: provide the "id" of the managed command to stop.'));
+    return registry.stop(id);
+  }
+
+  const command = String(params['command'] ?? '');
+  if (!command) return Promise.resolve(fail('run_command: missing "command"'));
+  if (ctx.signal?.aborted) return Promise.resolve(fail('Command cancelled before launch.'));
+  if (params['background'] === true) return registry.start(command, ctx.cwd, Number(params['startupWaitMs'] ?? 1500));
+
+  let timeoutMs: number;
+  let waitMs: number;
+  try {
+    timeoutMs = commandTimeout(params['timeoutMs']);
+    waitMs = commandWaitMs(params['waitMs']);
+  } catch (err) {
+    return Promise.resolve(fail((err as Error).message));
+  }
+  return registry.run(command, ctx.cwd, { timeoutMs, waitMs, signal: ctx.signal });
+}
+
+/**
+ * A command that has not finished yet. Nothing may be derived from such a
+ * result — no evidence, no plan-step completion, no "verification passed".
+ */
+export function isCommandPending(result: ToolResult): boolean {
+  return result.status === 'running';
+}
+
+/**
+ * The command a command-tool result belongs to. A status poll carries the job's
+ * own command, so a long verification that finished while the agent was polling
+ * can still be recorded as evidence.
+ */
+export function commandResultSource(result: ToolResult, params: Record<string, unknown>): string {
+  const own = typeof params['command'] === 'string' ? params['command'].trim() : '';
+  if (own) return own;
+  const payload = result.payload as { command?: unknown } | undefined;
+  return typeof payload?.command === 'string' ? payload.command : '';
 }
 export function toolListSkills(ctx: ToolContext): ToolResult {
   if (!ctx.skills) return fail('skills not available');

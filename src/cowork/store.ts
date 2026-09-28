@@ -14,7 +14,7 @@ export interface CoworkAvatar {
   /** Hex accent color of the character body. */
   color: string;
   /** Character style rendered consistently throughout the UI. */
-  shape: 'orb' | 'jelly' | 'cat' | 'sprout' | 'ufo' | 'cube' | 'visor' | 'antenna' | 'bot';
+  shape: 'orb' | 'cube';
 }
 
 export interface CoworkAgent {
@@ -234,6 +234,99 @@ export interface CoworkMission {
   finishedAt?: string;
 }
 
+/**
+ * A sub-agent's permission snapshot, restated structurally from
+ * `CoworkToolPerms` (tools.ts) so this module never imports its consumers —
+ * and with `chief` deliberately absent, so no sub-agent can ever hold
+ * teammate-management authority, however its parent is configured.
+ */
+export interface SubAgentPermissions {
+  allowShell: boolean;
+  allowWrites: boolean;
+  allowConfig: boolean;
+  browser: boolean;
+}
+
+export type SubAgentStatus = 'starting' | 'running' | 'blocked' | 'completed' | 'failed' | 'terminated' | 'orphaned';
+
+/** One piece of evidence a sub-agent recorded: a real tool execution, host-captured. */
+export interface SubAgentEvidenceDetail {
+  id: string;
+  tool: string;
+  /** For command-shaped evidence, the command that ran. */
+  command?: string;
+  kind: 'tool_result' | 'command';
+  passed: boolean;
+  outputExcerpt: string;
+}
+
+/**
+ * The evidence report a sub-agent's run hands back to its parent.
+ *
+ * Built by the HOST from the child's actual tool trail — never authored by the
+ * model — and attributed to its exact slot in the tree, so a report cannot be
+ * replayed into a different parent or depth, and a child cannot mark its own
+ * work verified: the parent's gate revalidates it independently.
+ */
+export interface SubAgentEvidenceReport {
+  instanceId: string;
+  parentAgentId: string;
+  depth: number;
+  role: string;
+  /** The child's own words, kept for the parent to judge. */
+  reportSummary: string;
+  evidence: SubAgentEvidenceDetail[];
+}
+
+/**
+ * A temporary, mission-scoped worker a cowork agent spawned.
+ *
+ * This is deliberately NOT a `CoworkAgent`: a profile is a durable employee
+ * the user configures, while an instance is a disposable worker process —
+ * created by the host at spawn time, terminated when it reports, and swept to
+ * `orphaned` when a restart finds it without a live runtime. Everything
+ * authority-shaped on it (depth, budget, permissions) is host-assigned; the
+ * record exists so the audit trail can always answer "why does this agent
+ * exist?" after the process that ran it is gone.
+ */
+export interface SubAgentInstance {
+  id: string;
+  conversationId: string;
+  /** The mission this worker belongs to, when it is mission work. */
+  missionId?: string;
+  /** Whoever spawned it: a durable agent id, or a parent instance id. */
+  parentAgentId: string;
+  /** The durable agent at the root of this tree (depth 1). */
+  rootAgentId: string;
+  /** The spawn provenance: who asked, why, and which request it was. */
+  spawnedBy: { agentId: string; reason: string; requestId?: string };
+  /** Host-assigned: chief 0, durable cowork agent 1, its sub-agent 2. */
+  depth: number;
+  maxDepth: number;
+  /**
+   * The envelope the host granted after clamping — what the child sees. Like
+   * the mission budget it is stated inline so the store stays self-contained;
+   * the live account tree (`src/coding/budget.ts`) is process-local.
+   */
+  grantedBudget?: { maxCostUsd?: number; maxTurns?: number; reserveUsd?: number };
+  /** Spend snapshot, written when the instance reaches a terminal status. */
+  spend?: { costUsd?: number; turns?: number; subagents?: number };
+  permissions: SubAgentPermissions;
+  skills: string[];
+  role: string;
+  objective: string;
+  maxRuntimeMinutes?: number;
+  status: SubAgentStatus;
+  /** Why it is blocked, failed, terminated or orphaned, when it is. */
+  statusReason?: string;
+  /** The parent's-facing result, written on completion. */
+  resultSummary?: string;
+  /** The evidence report the gate validated, persisted for the audit trail. */
+  evidence?: SubAgentEvidenceReport;
+  createdAt: string;
+  finishedAt?: string;
+}
+
 /** An agent's own reminder: wake me up at <dueAt> to do <note>. */
 export interface CoworkFollowUp {
   id: string;
@@ -279,17 +372,34 @@ export interface CoworkTodo {
   updatedAt: string;
 }
 
+/**
+ * Metadata for a credential request: everything the secure form needs to save
+ * a connection — and nothing more. The secret itself is NEVER stored on the
+ * request; it goes straight from the form to the local connection store.
+ */
+export interface CoworkRequestCredential {
+  /** Provider slug the credential is for (e.g. "github"). */
+  providerHint: string;
+  label?: string;
+  baseUrl?: string;
+  validationPath?: string;
+  /** Existing saved connection to re-authorize instead of creating a new one. */
+  connectionId?: string;
+}
+
 export interface CoworkRequest {
   id: string;
   conversationId: string;
   agentId: string;
-  kind: 'permission' | 'question' | 'recommendation';
+  kind: 'permission' | 'question' | 'recommendation' | 'credential';
   title: string;
   detail: string;
   options: string[];
   /** Permission requests can enable one existing per-agent capability. */
   permission?: 'shell' | 'writes' | 'config' | 'host';
-  status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed';
+  /** Credential requests carry connection metadata only — never the secret. */
+  credential?: CoworkRequestCredential;
+  status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed' | 'provided';
   response?: string;
   telegramNotifiedAt?: string;
   /** Same marker as telegramNotifiedAt, for the Discord channel. */
@@ -326,6 +436,8 @@ export interface CoworkData {
   /** Shared "about the user" context injected into every teammate. */
   userProfile?: CoworkUserProfile;
   missions: CoworkMission[];
+  /** Ephemeral sub-agent instances, kept after settling for the audit trail. */
+  subAgents: SubAgentInstance[];
   followUps: CoworkFollowUp[];
   inbox: CoworkInboxMessage[];
   artifacts: CoworkArtifact[];
@@ -341,13 +453,16 @@ export interface CoworkData {
 export interface CoworkWorkEntry {
   conversationId: string;
   agentId: string;
+  threadId?: string;
+  /** Public narration supplied with the action, never private reasoning. */
+  publicUpdate?: string;
   tool: string;
   ok: boolean;
   output: string;
   ts: string;
 }
 
-export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, messageTombstones: {}, missions: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
+export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, messageTombstones: {}, missions: [], subAgents: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
 
 /** Accept only a well-formed envelope; a damaged record must not become a grant. */
 function sanitizeBudgetRecord(value: unknown): CoworkBudgetRecord | undefined {
@@ -409,6 +524,18 @@ const MAX_MENTIONED_AGENTS = 12;
  *  media the team exchanges; model input is bounded separately. */
 export const MAX_ARTIFACT_BYTES = 20_000_000;
 
+/** Trim + cap credential request metadata; undefined when unusable. Secrets never pass through here. */
+function sanitizeCredentialMeta(input: CoworkRequestCredential | undefined): CoworkRequestCredential | undefined {
+  const providerHint = String(input?.providerHint ?? '').trim().slice(0, 60);
+  if (!providerHint) return undefined;
+  const connectionId = String(input?.connectionId ?? '').trim().slice(0, 80) || undefined;
+  const baseUrl = String(input?.baseUrl ?? '').trim().slice(0, 300) || undefined;
+  if (!connectionId && !baseUrl) return undefined;
+  const label = String(input?.label ?? '').trim().slice(0, 80) || undefined;
+  const validationPath = String(input?.validationPath ?? '').trim().slice(0, 200) || undefined;
+  return { providerHint, ...(label ? { label } : {}), ...(baseUrl ? { baseUrl } : {}), ...(validationPath ? { validationPath } : {}), ...(connectionId ? { connectionId } : {}) };
+}
+
 export class CoworkStore {
   private data: CoworkData = emptyCoworkData();
   private loaded = false;
@@ -445,6 +572,7 @@ export class CoworkStore {
             }
           : undefined,
         missions: Array.isArray(parsed.missions) ? parsed.missions : [],
+        subAgents: Array.isArray(parsed.subAgents) ? parsed.subAgents : [],
         followUps: Array.isArray(parsed.followUps) ? parsed.followUps : [],
         inbox: Array.isArray(parsed.inbox) ? parsed.inbox : [],
         artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
@@ -468,7 +596,13 @@ export class CoworkStore {
         else if (todo.status === 'done' || (prior.status !== 'done' && todo.updatedAt > prior.updatedAt)) Object.assign(prior, { status: todo.status, note: todo.note, updatedAt: todo.updatedAt });
       }
       this.data.todos = [...unique.values()];
-      for (const agent of this.data.agents) agent.skills = [...new Set(['browser-workflow', ...(agent.skills ?? [])])];
+      let avatarsChanged = false;
+      for (const agent of this.data.agents) {
+        agent.skills = [...new Set(['browser-workflow', ...(agent.skills ?? [])])];
+        const previousAvatar = JSON.stringify(agent.avatar);
+        agent.avatar = sanitizeAvatar(agent.avatar, undefined);
+        avatarsChanged ||= previousAvatar !== JSON.stringify(agent.avatar);
+      }
       // Preserve existing mutation cursors: array order is append order, not
       // change order. Assign only missing cursors above the durable high-water.
       for (const [conversationId, tombstones] of Object.entries(this.data.messageTombstones)) {
@@ -476,7 +610,7 @@ export class CoworkStore {
           ? tombstones.filter((entry) => entry && typeof entry.id === 'string' && Number.isSafeInteger(entry.changeSeq) && entry.changeSeq > 0)
           : [];
       }
-      let identityChanged = false;
+      let identityChanged = avatarsChanged;
       for (const [conversationId, list] of Object.entries(this.data.messages)) {
         if (!Array.isArray(list)) { this.data.messages[conversationId] = []; continue; }
         let change = this.messageChangeCursor(conversationId);
@@ -604,6 +738,7 @@ export class CoworkStore {
       if (!conversationIds.has(conversationId)) rmSync(this.artifactDir(conversationId), { recursive: true, force: true });
     }
     data.missions = data.missions.filter((mission) => mission.agentId !== id && conversationIds.has(mission.conversationId));
+    data.subAgents = data.subAgents.filter((instance) => instance.parentAgentId !== id && instance.rootAgentId !== id && conversationIds.has(instance.conversationId));
     data.followUps = data.followUps.filter((followUp) => followUp.agentId !== id && conversationIds.has(followUp.conversationId));
     data.inbox = data.inbox.filter((message) => message.fromAgentId !== id && message.toAgentId !== id && conversationIds.has(message.conversationId));
     data.todos = data.todos.filter((todo) => todo.agentId !== id && conversationIds.has(todo.conversationId));
@@ -807,6 +942,7 @@ export class CoworkStore {
     data.conversations = data.conversations.filter((c) => c.id !== id);
     delete data.messages[id];
     data.missions = data.missions.filter((mission) => mission.conversationId !== id);
+    data.subAgents = data.subAgents.filter((instance) => instance.conversationId !== id);
     data.followUps = data.followUps.filter((followUp) => followUp.conversationId !== id);
     data.inbox = data.inbox.filter((message) => message.conversationId !== id);
     data.todos = data.todos.filter((todo) => todo.conversationId !== id);
@@ -1090,6 +1226,81 @@ export class CoworkStore {
     return true;
   }
 
+  // Sub-agents: ephemeral, mission-scoped workers spawned by a cowork agent.
+
+  subAgents(filter?: { conversationId?: string; missionId?: string }): SubAgentInstance[] {
+    let all = [...this.load().subAgents].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    if (filter?.conversationId) all = all.filter((instance) => instance.conversationId === filter.conversationId);
+    if (filter?.missionId) all = all.filter((instance) => instance.missionId === filter.missionId);
+    return all;
+  }
+
+  getSubAgent(id: string): SubAgentInstance | undefined {
+    return this.load().subAgents.find((instance) => instance.id === id);
+  }
+
+  /**
+   * Record a spawned sub-agent. Authority fields (depth, granted budget,
+   * permissions) are trusted as given because only the host's spawn path
+   * computes them — this method validates provenance, never authority.
+   */
+  createSubAgent(input: {
+    conversationId: string;
+    missionId?: string;
+    parentAgentId: string;
+    rootAgentId: string;
+    spawnedBy: { agentId: string; reason: string; requestId?: string };
+    depth: number;
+    maxDepth: number;
+    grantedBudget?: SubAgentInstance['grantedBudget'];
+    permissions: SubAgentPermissions;
+    skills: string[];
+    role: string;
+    objective: string;
+    maxRuntimeMinutes?: number;
+  }): SubAgentInstance {
+    const data = this.load();
+    if (!data.conversations.some((c) => c.id === input.conversationId)) throw new Error('Conversation not found');
+    if (input.missionId !== undefined && !data.missions.some((m) => m.id === input.missionId)) throw new Error('Mission not found');
+    const parentKnown = data.agents.some((a) => a.id === input.parentAgentId) || data.subAgents.some((instance) => instance.id === input.parentAgentId);
+    if (!parentKnown) throw new Error('Unknown parent for sub-agent');
+    const role = input.role.trim();
+    const objective = input.objective.trim();
+    if (!role || !objective) throw new Error('Sub-agent role and objective are required');
+    const reason = input.spawnedBy.reason.trim();
+    if (!reason) throw new Error('Sub-agent spawn reason is required');
+    const instance: SubAgentInstance = {
+      id: `csa-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
+      conversationId: input.conversationId,
+      ...(input.missionId !== undefined ? { missionId: input.missionId } : {}),
+      parentAgentId: input.parentAgentId,
+      rootAgentId: input.rootAgentId,
+      spawnedBy: { agentId: input.spawnedBy.agentId, reason: reason.slice(0, 500), ...(input.spawnedBy.requestId ? { requestId: input.spawnedBy.requestId } : {}) },
+      depth: input.depth,
+      maxDepth: input.maxDepth,
+      ...(input.grantedBudget !== undefined ? { grantedBudget: input.grantedBudget } : {}),
+      permissions: { ...input.permissions },
+      skills: [...new Set(input.skills.map((skill) => String(skill).trim()).filter(Boolean))],
+      role: role.slice(0, 120),
+      objective: objective.slice(0, 2_000),
+      ...(input.maxRuntimeMinutes !== undefined ? { maxRuntimeMinutes: input.maxRuntimeMinutes } : {}),
+      status: 'starting',
+      createdAt: new Date().toISOString(),
+    };
+    data.subAgents.push(instance);
+    this.save();
+    return instance;
+  }
+
+  updateSubAgent(id: string, patch: Partial<Omit<SubAgentInstance, 'id' | 'createdAt'>>): SubAgentInstance | undefined {
+    const data = this.load();
+    const instance = data.subAgents.find((candidate) => candidate.id === id);
+    if (!instance) return undefined;
+    Object.assign(instance, patch);
+    this.save();
+    return instance;
+  }
+
   // Follow-ups: an agent's own scheduled wake-ups.
 
   addFollowUp(input: { conversationId: string; agentId: string; note: string; dueAt: string }): CoworkFollowUp {
@@ -1339,6 +1550,10 @@ export class CoworkStore {
     return this.load().workLog.filter((entry) => entry.conversationId === conversationId && entry.agentId === agentId);
   }
 
+  workHistory(conversationId: string, threadId: string | null = null): CoworkWorkEntry[] {
+    return this.load().workLog.filter((entry) => entry.conversationId === conversationId && (entry.threadId ?? null) === threadId).slice(-200);
+  }
+
   // Interactive cards: user questions, capability permission, recommendations.
 
   requests(conversationId: string): CoworkRequest[] {
@@ -1349,7 +1564,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; options?: string[]; permission?: CoworkRequest['permission'] }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1357,6 +1572,8 @@ export class CoworkStore {
     const detail = input.detail.trim();
     if (!title || !detail) throw new Error('Request title and detail are required');
     if (input.kind === 'permission' && !input.permission) throw new Error('Permission type is required');
+    const credential = input.kind === 'credential' ? sanitizeCredentialMeta(input.credential) : undefined;
+    if (input.kind === 'credential' && !credential) throw new Error('Credential requests need a provider and a base URL (or an existing connection to re-authorize)');
     const request: CoworkRequest = {
       id: `cr-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
       conversationId: input.conversationId,
@@ -1366,6 +1583,7 @@ export class CoworkStore {
       detail: detail.slice(0, 2_000),
       options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))].slice(0, 6),
       permission: input.permission,
+      credential,
       status: 'open',
       createdAt: new Date().toISOString(),
     };
@@ -1475,13 +1693,18 @@ function artifactMime(name: string, supplied?: string): string {
   return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
 }
 
-const AVATAR_SHAPES = new Set(['orb', 'jelly', 'cat', 'sprout', 'ufo', 'cube', 'visor', 'antenna', 'bot']);
+const AVATAR_SHAPES = new Set(['orb', 'cube']);
+const LEGACY_AVATAR_SHAPES = new Map<string, CoworkAvatar['shape']>([
+  ['jelly', 'orb'], ['cat', 'orb'], ['sprout', 'orb'], ['ufo', 'orb'],
+  ['visor', 'cube'], ['antenna', 'cube'], ['bot', 'cube'],
+]);
 const AVATAR_COLORS = new Set(['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b']);
 
 function sanitizeAvatar(value: unknown, fallback: CoworkAvatar | undefined): CoworkAvatar {
   const raw = (value ?? {}) as Record<string, unknown>;
   const color = typeof raw['color'] === 'string' && AVATAR_COLORS.has(raw['color'].toLowerCase()) ? raw['color'].toLowerCase() : fallback?.color ?? '#8f80ff';
-  const shape = typeof raw['shape'] === 'string' && AVATAR_SHAPES.has(raw['shape']) ? (raw['shape'] as CoworkAvatar['shape']) : fallback?.shape ?? 'orb';
+  const suppliedShape = typeof raw['shape'] === 'string' ? raw['shape'] : '';
+  const shape = AVATAR_SHAPES.has(suppliedShape) ? suppliedShape as CoworkAvatar['shape'] : LEGACY_AVATAR_SHAPES.get(suppliedShape) ?? fallback?.shape ?? 'orb';
   return { color, shape };
 }
 

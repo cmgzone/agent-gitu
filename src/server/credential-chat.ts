@@ -10,7 +10,7 @@ export function credentialChatInput(text: string): { safeText: string; detected:
       if (/^(?:github_pat_|gh[pousr]_)/.test(value)) providerHint ??= 'github';
       else if (value.startsWith('sk-ant-')) providerHint ??= 'anthropic';
       else if (value.startsWith('sk-proj-')) providerHint ??= 'openai';
-      else if (value.startsWith('AIza')) providerHint ??= 'google';
+      else if (value.startsWith('AIza')) providerHint ??= 'gemini';
       else if (value.startsWith('xox')) providerHint ??= 'slack';
       return '[credential removed — use secure form]';
     },
@@ -31,7 +31,7 @@ export function credentialChatInput(text: string): { safeText: string; detected:
   // an unrelated provider mentioned elsewhere in the task description.
   if (detected && explicitProvider && !providerHint) {
     providerHint = explicitProvider === 'claude' ? 'anthropic'
-      : explicitProvider === 'gemini' ? 'google'
+      : explicitProvider === 'google' ? 'gemini'
         : explicitProvider === 'dashscope' ? 'alibaba'
           : explicitProvider.replace(/[ ]+/g, '-').replace('fly.io', 'fly');
   }

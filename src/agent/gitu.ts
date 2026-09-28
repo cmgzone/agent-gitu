@@ -1,4 +1,5 @@
 import { CheckpointManager } from '../checkpoint/checkpoint.js';
+import { VerificationAttempts, completionDisposition } from './task-recovery.js';
 import type { CodingEventSink } from '../coding/events.js';
 import { CodeIndex } from '../context/code-index.js';
 import { ContextEngine } from '../context/context-engine.js';
@@ -9,7 +10,7 @@ import { Executor } from '../executor/executor.js';
 import { getWorkspaceFingerprint, gitExec } from '../git/git.js';
 import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
-import { LoopDetector } from '../loop/loop-detector.js';
+import { DEFAULT_LOOP_POLICY, LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
 import {
   extractLastJsonObject,
@@ -37,7 +38,7 @@ import {
   turnCeilingFor,
   type AutonomyPolicy,
 } from './autonomy.js';
-import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
+import { KNOWN_TOOL_NAMES, commandResultSource, isCommandPending } from '../tools/tools.js';
 import { LspManager } from '../lsp/manager.js';
 import { MemoryStore } from '../memory/memory-store.js';
 import type { McpManager } from '../mcp/client.js';
@@ -88,6 +89,7 @@ import { auditArchitecture, decisionConflicts, detectExplicitTechnologies, norma
 import { RunTelemetry, estimatePlanningArtifactTokens, renderTelemetry, computeBehaviorMetrics } from './telemetry.js';
 import { buildContextSnapshot, renderContextSnapshot } from '../context/snapshot.js';
 import { buildModelContext, type ModelContextAttachment } from '../context/model-context.js';
+import { FileKnowledgeStore } from '../context/file-knowledge.js';
 import { ProviderReadCache } from '../connections/runtime/provider-cache.js';
 import { UniversalCapabilityRegistry } from '../connections/runtime/universal-registry.js';
 import {
@@ -129,6 +131,7 @@ import {
   extractFailureDigest,
   compactHistory,
   compactFollowUpConversation,
+  compactionPolicyForWindow,
   type CompactionOptions,
 } from './compaction.js';
 import {
@@ -360,6 +363,8 @@ export class Gitu {
   private readonly inbox: { text: string; attachmentContext?: string }[] = [];
   private aborted = false;
   private abortController?: AbortController;
+  /** Last reasoning text published, so a streaming trace is not re-announced. */
+  private lastReasoning = '';
 
   constructor(config: GituConfig) {
     this.config = config;
@@ -381,6 +386,21 @@ export class Gitu {
     this.config.subagents?.stop('Parent task stopped by user.');
   }
 
+  /**
+   * Publish the model's reasoning trace as a typed event so the surfaces can
+   * SHOW it. A provider that streams `reasoning_content` re-publishes the
+   * accumulated text on every delta, so this is throttled to growth and bounded:
+   * a reasoning turn is display data, not model context, and must never grow
+   * without limit.
+   */
+  private publishReasoning(text?: string): void {
+    if (!text) return;
+    const trimmed = text.trim();
+    if (!trimmed || trimmed === this.lastReasoning) return;
+    this.lastReasoning = trimmed;
+    this.config.onCodingEvent?.({ type: 'reasoning', text: trimmed.length > 4000 ? `…${trimmed.slice(-4000)}` : trimmed });
+  }
+
   async run(goal: string): Promise<GituRunResult> {
     const { cwd } = this.config;
     // Dynamic auto-retry: network blips and provider outages delay the run
@@ -393,7 +413,7 @@ export class Gitu {
 
     let guard: ProjectGuard;
     try {
-      guard = ProjectGuard.detect(cwd);
+      guard = await ProjectGuard.detectAsync(cwd);
     } catch (err) {
       if (err instanceof ProjectGuardError) throw err;
       throw err;
@@ -483,7 +503,7 @@ export class Gitu {
     }
 
     const checkpoints = new CheckpointManager(guard);
-    const branchInfo = checkpoints.ensureTaskBranch(ledger.data.taskId);
+    const branchInfo = await checkpoints.ensureTaskBranch(ledger.data.taskId);
     if (branchInfo.branch) {
       ledger.data.gitBranch = branchInfo.branch;
       ledger.save();
@@ -542,13 +562,16 @@ export class Gitu {
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
-    // Preserve the v0.2.1 execution contract: successful reads remain valid
-    // progress for the orchestrator's dynamic budget. Repeated failing calls
-    // are still bounded by LoopDetector; successful investigation is governed
-    // by the turn budget and compaction instead of being fatal after 2 reads.
+    // Successful reads remain valid progress for the orchestrator's dynamic
+    // budget (v0.2.1 contract), so repetition is no longer FATAL: the third
+    // request for the same unchanged evidence is served from the cached
+    // observation (ok, zero filesystem cost, still recorded as progress) and
+    // only a repeat of that replay is hard-blocked as drift. The limits stay
+    // finite because re-reading unchanged files is the dominant time sink of
+    // real runs (one audit measured 210 of 229 reads as exact duplicates).
     const loopDetector = new LoopDetector({
-      maxSameSuccessfulRead: Number.MAX_SAFE_INTEGER,
-      maxInvestigationReadsPerFailureEpisode: Number.MAX_SAFE_INTEGER,
+      maxSameSuccessfulRead: DEFAULT_LOOP_POLICY.maxSameSuccessfulRead,
+      maxInvestigationReadsPerFailureEpisode: DEFAULT_LOOP_POLICY.maxInvestigationReadsPerFailureEpisode,
     });
     const evidence = new EvidenceEngine();
     const skills = this.config.skills ?? SkillStore.forProject(guard.lock.repoRoot);
@@ -588,6 +611,19 @@ export class Gitu {
     const ownedIndex = this.config.index ? undefined : new CodeIndex(guard.lock.repoRoot);
     const context = new ContextEngine(guard, this.config.index ?? ownedIndex);
     const reporter = new Reporter();
+
+    /**
+     * Durable implementation knowledge: facts learned from files this run
+     * read, ordered by what the active work most recently touched. Stale
+     * entries (file changed since learning) are omitted by the store, so the
+     * model is never handed outdated signatures. Used for BOTH the initial
+     * protected assembly (restart survival — the store persists on disk across
+     * runs) and the per-turn state message.
+     */
+    const fileKnowledgeSection = (): string =>
+      executor.fileKnowledge.render({
+        candidates: FileKnowledgeStore.recentCandidatePaths(ledger.data.actions, ledger.data.filesChanged),
+      });
 
     try {
       const userCriteriaProvided = Boolean(this.config.criteria && this.config.criteria.length > 0);
@@ -954,6 +990,7 @@ export class Gitu {
         strategy: strategySection,
         memory: memorySection,
         protectedMemory: protectedSection,
+        fileKnowledge: fileKnowledgeSection() || undefined,
         contextPack: contextNote || undefined,
         conversationHistory: isFollowUpPhase ? compactFollowUpConversation(this.config.conversationHistory) : this.config.conversationHistory,
         images: effectiveImages,
@@ -1000,6 +1037,7 @@ export class Gitu {
       if (ledger.data.mode === 'chat') {
         ledger.setStatus('executing');
         this.emit('think  composing answer');
+        this.emit('activity reasoning-reset');
         messages.push({
           role: 'user',
           content: `User request (chat mode — answer directly and helpfully in plain text only; no tools, no JSON): ${activeGoal}`,
@@ -1008,9 +1046,13 @@ export class Gitu {
           messages,
           {
             effort: effortPlan.llmEffort ?? this.config.effort,
+            onReasoningDelta: (delta: string) => this.emit(`activity reasoning-delta ${JSON.stringify(delta)}`),
+            onStreamReset: () => this.emit('activity reasoning-reset'),
             onActivity: (activity: LlmActivityEvent) => {
-              if (activity.type === 'reasoning') this.emit('activity reasoning');
-              else if (activity.type === 'content') this.emit('activity content');
+              if (activity.type === 'reasoning') {
+                this.emit('activity reasoning');
+                this.publishReasoning(activity.text);
+              } else if (activity.type === 'content') this.emit('activity content');
             },
           },
           createProseStreamer((chunk) => this.emit(`tdelta ${chunk}`)),
@@ -1084,6 +1126,10 @@ export class Gitu {
       // observe() forces a compaction pass (long context correlates with
       // protocol drift), regardless of the normal compaction triggers.
       let driftCompactionRequested = false;
+      // Provider-reported input tokens of the most recent model request (real
+      // token counts, not chars/4). Emergency compaction reads this to shed
+      // history BEFORE the next request when the working window is nearly full.
+      let lastRequestInputTokens: number | undefined;
       let loopBlocks = 0;
       interface ConnectionCallRecord {
         consecutiveCalls: number;
@@ -1156,7 +1202,7 @@ export class Gitu {
       let budgetCap = effortMaxTurns;
       let budgetExtensions = 0;
       const progressSnapshot = (): { evidence: number; satisfied: number; files: number; todos: number; browses: number; distinctOk: number } => ({
-        evidence: ledger.data.evidence.length,
+        evidence: new Set(ledger.data.evidence.filter(e => e.passed && !e.stale).map(e => `${e.command ?? e.label}:${e.workspaceFingerprint}`)).size,
         satisfied: ledger.data.acceptanceCriteria.filter((c) => c.satisfied).length,
         files: ledger.data.filesChanged?.length ?? 0,
         // Checked todos are real execution progress — they let fine-grained
@@ -1175,8 +1221,21 @@ export class Gitu {
       let turns = 0;
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
-      let visualGateRejections = 0;
-      let evidenceGateRejections = 0;
+      const verificationAttempts = new VerificationAttempts();
+      const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
+        // Timestamps and evidence IDs are excluded: repeating the same check
+        // must not reset recovery, but a repair or changed outcome must.
+        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint, e.outputExcerpt]]));
+        const signature = JSON.stringify([fingerprint, reason, [...latestChecks]]);
+        if (verificationAttempts.reject(gate, signature) >= 3) {
+          const blocker = `Verification could not be completed after two correction opportunities on the same unchanged result: ${reason}`;
+          ledger.addBlocker(blocker);
+          exitReason = 'blocked';
+          observe(blocker);
+        } else {
+          observe(`COMPLETION REJECTED by ${gate} gate — ${reason}. Continue with a concrete repair or verification; request_block if a dependency prevents progress.`);
+        }
+      };
       let instructionGateRejections = 0;
       let qualityReviewRejections = 0;
       let completionAttempts = 0;
@@ -1203,9 +1262,12 @@ export class Gitu {
         plan: ledger.data.plan.filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id)),
         evidence: ledger.data.evidence.slice(activeWorkPhase.evidenceStartIndex),
         actions: ledger.data.actions.slice(activeWorkPhase.actionStartIndex),
-        // A prior UI phase must not force screenshot work for an unrelated
-        // backend/docs follow-up. The final diff supplies real phase files.
-        filesChanged: [],
+        // Include new files and re-edits from this phase, without inheriting
+        // UI work from an unrelated earlier request. Non-git workspaces also
+        // need this: a Git diff cannot enumerate their changed files.
+        filesChanged: isFollowUpPhase
+          ? ledger.data.filesChanged.filter((file, index) => index >= (activeWorkPhase.fileStartIndex ?? 0) || ledger.data.actions.slice(activeWorkPhase.actionStartIndex).some(a => a.status === 'success' && (a.paramsSummary === `write ${file}` || a.paramsSummary === `edit ${file}`)))
+          : ledger.data.filesChanged,
         planDesign: isFollowUpPhase ? undefined : ledger.data.planDesign,
       });
 
@@ -1215,7 +1277,7 @@ export class Gitu {
           : '';
         const liveConnections = this.config.connectionContext?.();
         const liveContext = liveConnections ? `CURRENT REGISTERED CONNECTIONS AND CAPABILITIES (refresh, metadata only):\n${liveConnections}` : '';
-        messages.push({ role: 'user', content: buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope()) });
+        messages.push({ role: 'user', content: buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope(), fileKnowledgeSection()) });
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
@@ -1288,10 +1350,13 @@ export class Gitu {
           ...(protocolMode === 'native' ? { tools: [GITU_ACTION_TOOL], toolChoice: 'required' as const } : protocolMode === 'structured_text' ? { json: true } : {}),
           onUsage: (u: LlmUsage) => {
             callUsage = u;
+            lastRequestInputTokens = u.inputTokens;
           },
           onActivity: (activity: LlmActivityEvent) => {
-            if (activity.type === 'reasoning') this.emit('activity reasoning');
-            else if (activity.type === 'content') this.emit('activity content');
+            if (activity.type === 'reasoning') {
+              this.emit('activity reasoning');
+              this.publishReasoning(activity.text);
+            } else if (activity.type === 'content') this.emit('activity content');
             else if (activity.type === 'tool') this.emit('activity tool');
           },
           onStreamReset: () => {
@@ -1299,13 +1364,16 @@ export class Gitu {
             // client fell back to a full completion. Discard streamed state so
             // the authoritative final text is not overlaid on stale fragments.
             resetProse();
+            this.emit('activity reasoning-reset');
           },
+          onReasoningDelta: (delta: string) => this.emit(`activity reasoning-delta ${JSON.stringify(delta)}`),
         });
         const callOnce = async (
           protocolMode: 'native' | 'structured_text' | 'text',
           maxTransportAttempts: number,
           override?: { effort?: EffortLevel; outputBudgetTokens?: number },
         ): Promise<LlmTurnResult> => {
+          this.emit('activity reasoning-reset');
           this.emit('activity reasoning');
           let r: LlmTurnResult;
           try {
@@ -1579,7 +1647,7 @@ export class Gitu {
 
       // Called only after a successful run_command. An explicit stepId limits
       // completion to that step; untagged checks cover every exact match.
-      const completeVerifiedPlanSteps = (command: string, stepId?: string): void => {
+      const completeVerifiedPlanSteps = async (command: string, stepId?: string): Promise<void> => {
         if (!command.trim()) return;
         const steps = stepId ? [ledger.step(stepId)] : ledger.data.plan;
         for (const step of steps) {
@@ -1587,7 +1655,7 @@ export class Gitu {
           // match a cancelled step's verification must not resurrect it to done.
           if (!step || step.status === 'done' || step.status === 'cancelled' || !step.verification || !commandsMatch(step.verification, command)) continue;
           ledger.updateStep(step.id, { status: 'done' });
-          checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
+          await checkpoints.snapshot(ledger, step.id, step.description.slice(0, 60));
           this.emit(`step     ${step.id} done — verification "${command}" passed`);
         }
       };
@@ -1601,8 +1669,24 @@ export class Gitu {
         // before the model is asked again.
         const driftCompaction = driftCompactionRequested;
         driftCompactionRequested = false;
+        // Model-aware compaction: thresholds derive from the selected model's
+        // actual context window (explicit config.compaction overrides win).
+        // When provider usage reports the LAST request already near the
+        // working ceiling, the next turn compacts before asking the model —
+        // real token counts are authoritative, chars/4 is only the fallback.
+        const compactionPolicy = compactionPolicyForWindow(this.config.contextWindowTokens, this.config.compaction);
+        const usageEmergency =
+          compactionPolicy.emergencyInputTokens !== undefined &&
+          typeof lastRequestInputTokens === 'number' &&
+          lastRequestInputTokens > compactionPolicy.emergencyInputTokens;
+        if (usageEmergency) {
+          this.emit(`context  last request used ${lastRequestInputTokens} input tokens (emergency threshold ${compactionPolicy.emergencyInputTokens}) — compacting before the next turn`);
+        }
         const compactionOpts = {
-          ...(this.config.compaction ?? {}),
+          charBudget: compactionPolicy.charBudget,
+          keepRecent: compactionPolicy.keepRecent,
+          triggerMessages: compactionPolicy.triggerMessages,
+          ...(usageEmergency ? { force: true, keepRecent: Math.min(compactionPolicy.keepRecent, 6) } : {}),
           ...(driftCompaction ? { force: true, keepRecent: 3, triggerMessages: 4 } : {}),
           // Memory-aware compaction: the canonical snapshot rides in the digest
           // and durable failure lessons are extracted into project memory
@@ -2052,7 +2136,7 @@ export class Gitu {
               const append = isFollowUpPhase || action.type === 'append_plan' || followUpCriteriaAdded;
               if (append) ledger.appendPlan(action.steps);
               else ledger.setPlan(action.steps);
-              checkpoints.snapshot(ledger, append ? 'follow-up-plan' : 'plan', append ? 'follow-up plan created' : 'plan created');
+              await checkpoints.snapshot(ledger, append ? 'follow-up-plan' : 'plan', append ? 'follow-up plan created' : 'plan created');
               this.emit('plan     ' + action.steps.length + (append ? ' follow-up' : '') + ' steps');
               const planReviewHandler = this.config.planReviewHandler;
               const needsPlanReview = this.config.requirePlanReview && planReviewHandler && (temporaryPlanPending || !ledger.data.planApproved || (isFollowUpPhase && !followUpPlanReviewHandled));
@@ -2194,7 +2278,7 @@ export class Gitu {
                 break;
               }
               ledger.updateStep(action.stepId, { status: 'done' });
-              checkpoints.snapshot(ledger, action.stepId, step.description.slice(0, 60));
+              await checkpoints.snapshot(ledger, action.stepId, step.description.slice(0, 60));
               this.emit(`step     ${action.stepId} done (explicit) — ${action.reason.slice(0, 80)}`);
               observe(
                 `STEP DONE (${action.stepId}): ${action.reason}\n` +
@@ -2258,6 +2342,7 @@ export class Gitu {
                 observe(outcome.result.output);
                 break;
               }
+              if (outcome.result.ok) loopBlocks = 0;
               if (outcome.deniedByPolicy) {
                 observe(outcome.result.output);
                 break;
@@ -2277,27 +2362,36 @@ export class Gitu {
 
               let evidenceNote = '';
               if (action.tool === 'run_command') {
-                if (!outcome.result.ok) {
-                  // A later retry may repair the command, but its first failed
-                  // result is still uncertainty the cheap completion path must
-                  // not silently erase.
-                  specialistOrVerificationUncertain = true;
-                  this.emit('verification uncertainty recorded — final quality review remains required');
+                const command = commandResultSource(outcome.result, action.params);
+                if (isCommandPending(outcome.result)) {
+                  // The command is still running, so it proves nothing yet: no
+                  // evidence is recorded here. The job stays pollable, and the poll
+                  // that observes its terminal state is what records the evidence.
+                  evidenceNote = `\nCOMMAND STILL RUNNING (job ${outcome.result.jobId ?? 'unknown'}) — this is NOT verification. Check it with run_command {"action":"status","id":"${outcome.result.jobId ?? '<id>'}"} until it reports an exit code before claiming anything.`;
+                  this.emit(`pending  ${command || 'command'} — no evidence while it runs (${outcome.result.jobId ?? 'unknown'})`);
+                } else if (command) {
+                  if (!outcome.result.ok) {
+                    // A later retry may repair the command, but its first failed
+                    // result is still uncertainty the cheap completion path must
+                    // not silently erase.
+                    specialistOrVerificationUncertain = true;
+                    this.emit('verification uncertainty recorded — final quality review remains required');
+                  }
+                  const kind = classifyEvidenceKind(command);
+                  const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                  const ev = evidence.record(ledger.data, {
+                    kind,
+                    label: action.expected || command,
+                    command,
+                    exitCode: outcome.result.exitCode,
+                    passed: outcome.result.ok,
+                    output: outcome.result.output,
+                    workspaceFingerprint: currentFp,
+                  });
+                  ledger.save();
+                  evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
+                  this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
                 }
-                const kind = classifyEvidenceKind(String(action.params['command'] ?? ''));
-                const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-                const ev = evidence.record(ledger.data, {
-                  kind,
-                  label: action.expected || String(action.params['command']),
-                  command: String(action.params['command']),
-                  exitCode: outcome.result.exitCode,
-                  passed: outcome.result.ok,
-                  output: outcome.result.output,
-                  workspaceFingerprint: currentFp,
-                });
-                ledger.save();
-                evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
-                this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
               }
 
               if (outcome.result.ok && (action.tool === 'create_document' || action.tool === 'schedule_manage' || (action.tool === 'browse' && ['screenshot', 'evidence'].includes(String(action.params['action']))))) {
@@ -2354,8 +2448,10 @@ export class Gitu {
               // even a read_file — completed the step and force-checked its
               // todos, so the plan claimed progress for work that never happened
               // and the agent skipped ahead.
-              if (action.tool === 'run_command' && outcome.result.ok) {
-                completeVerifiedPlanSteps(String(action.params['command'] ?? ''), action.stepId);
+              if (action.tool === 'run_command' && outcome.result.ok && !isCommandPending(outcome.result)) {
+                // A step is completed by a command that actually reached a terminal
+                // state — the original run, or the poll that observed its exit.
+                await completeVerifiedPlanSteps(commandResultSource(outcome.result, action.params), action.stepId);
               }
 
               // LSP post-edit gate: after any successful edit, surface diagnostics
@@ -2930,63 +3026,48 @@ export class Gitu {
               }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const gate = evidence.gate(ledger.data, currentFp);
-              const lightweight = agentWorkflow ? agentVerificationGate(activePhaseData(), agentBaselineFingerprint, currentFp) : undefined;
+              const verificationPhaseData = activePhaseData();
+              const criterionCommands = verificationPhaseData.acceptanceCriteria.length
+                ? new Set(verificationPhaseData.acceptanceCriteria.flatMap((criterion) => [
+                    criterion.verification,
+                    ...criterion.evidenceIds.map((id) => ledger.data.evidence.find((item) => item.id === id)?.command),
+                  ].filter((command): command is string => Boolean(command)).map((command) => command.trim().replace(/\s+/g, ' ').toLowerCase())))
+                : undefined;
+              const lightweight = agentWorkflow
+                ? agentVerificationGate(verificationPhaseData, agentBaselineFingerprint, currentFp, criterionCommands)
+                : undefined;
               if (lightweight) {
                 gate.open = lightweight.open && (gate.totalCount === 0 || gate.open);
                 if (!lightweight.open) gate.missing.push(lightweight.reason);
               }
               const conversation = agentWorkflow && ledger.data.actions.slice(actionsAtStart).every(a => a.observationOnly ?? isObservationTool(a.tool)) && currentFp === agentBaselineFingerprint;
               const chatOnly = agentWorkflow ? conversation && gate.open : Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
-              if (!gate.open && !chatOnly) {
-                evidenceGateRejections += 1;
-                if (evidenceGateRejections >= 3) {
-                  const blocker = `Verification could not be completed after two correction opportunities: ${gate.missing.join('; ')}`;
-                  ledger.addBlocker(blocker);
-                  exitReason = 'blocked';
-                  observe(blocker);
-                  break;
-                }
-                observe(
-                  `COMPLETION REJECTED by evidence gate (${gate.satisfiedCount}/${gate.totalCount} criteria backed).\n` +
-                    `Still missing:\n${gate.missing.map((m) => `  - ${m}`).join('\n')}\n` +
-                    `Continue working, or request_block if you cannot proceed.`,
-                );
+              if (completionDisposition(gate.open || chatOnly) === 'working') {
+                rejectCompletion('evidence', `${gate.satisfiedCount}/${gate.totalCount} criteria backed; ${gate.missing.join('; ')}`, currentFp);
                 break;
               }
+              verificationAttempts.resolve('evidence');
               // Visual-verification gate: UI work is only done when the final state
               // was actually SEEN. Command evidence cannot see pixels, so without
-              // this gate broken/unfinished layouts ship as "complete". Soft-capped
-              // like the architecture audit so it can never deadlock a task.
+              // this gate broken/unfinished layouts ship as "complete".
               const visual = uiVisualGate(activePhaseData(), {
                 browserAvailable: Boolean(this.config.browser?.available()),
                 visionAvailable: this.config.supportsImages ?? false,
               });
               if (!visual.verified && !chatOnly) {
-                if (visualGateRejections < 2) {
-                  visualGateRejections += 1;
-                  observe(
-                    `COMPLETION REJECTED by visual-verification gate — ${visual.reason}.\n` +
-                      `Serve or rebuild the app (run_command), browse navigate to it, take a screenshot of every changed view ` +
-                      `(and exercise interactions with click/type where relevant), confirm layout, content, and states look right, then complete again.`,
-                  );
-                  break;
-                }
-                this.emit('visual-gate screenshot requirement unmet — overriding after repeated rejections');
-                action.risks = [...(action.risks ?? []), 'Final UI state was never verified with a screenshot'];
+                rejectCompletion('visual-verification', visual.reason ?? 'Inspect the final UI state with the browser', currentFp);
+                break;
               }
 
               // Active visual reference validation
               const activeVisualRefs = typeof ledger.activeVisualReferences === 'function' ? ledger.activeVisualReferences() : [];
               if (!chatOnly && activeVisualRefs.length > 0) {
-                const hasRecentScreenshot = activePhaseData().actions.some((a) => (a.tool === 'browse' || a.tool === 'screenshot') && a.status === 'success');
-                if (!hasRecentScreenshot && visualGateRejections < 2) {
-                  visualGateRejections += 1;
-                  observe(
-                    `COMPLETION REJECTED by visual reference gate — task has active visual reference(s) (${activeVisualRefs.map((v) => v.id).join(', ')}), but no screenshot or visual inspection was recorded after changes.\n` +
-                      `Use browse (screenshot/navigate) to inspect the result visually before completing.`,
-                  );
+                const referenceLook = uiVisualGate({ ...activePhaseData(), filesChanged: ['visual-reference.html'] }, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: true });
+                if (!referenceLook.verified) {
+                  rejectCompletion('visual-reference', referenceLook.reason ?? 'Compare the final state with the active visual references', currentFp);
                   break;
                 }
+                verificationAttempts.resolve('visual-reference');
               }
               // Instruction-aware completion gate: user requirements issued during
               // the task must show work after they were created, and a blocked
@@ -3203,7 +3284,15 @@ export class Gitu {
                 ledger.save();
                 this.emit(`review   verified diff snapshot collected for completion attempt ${completionAttempt}`);
               }
-              const phaseData = { ...activePhaseData(), filesChanged: verifiedDiff.changedFiles };
+              const phaseData = { ...activePhaseData(), filesChanged: [...new Set([...activePhaseData().filesChanged, ...verifiedDiff.changedFiles])] };
+              // The actual phase diff catches UI edits even without a frontend
+              // plan, while excluding UI files changed in an earlier request.
+              const finalVisual = uiVisualGate(phaseData, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false });
+              if (!chatOnly && !finalVisual.verified) {
+                rejectCompletion('visual-verification', finalVisual.reason ?? 'Inspect the final UI state', currentFp);
+                break;
+              }
+              verificationAttempts.resolve('visual-verification');
               const qualityDecision = shouldRunFinalQualityReview({
                 effortPlan,
                 riskPlan,
@@ -3362,8 +3451,9 @@ export class Gitu {
                 this.emit(`browser action serialized — one state-changing operation at a time`);
               }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
-              const parts = outcomes.map((o, i) => {
-                if (!o) return `[${i + 1}] (not executed)`;
+              const parts: string[] = [];
+              for (const [i, o] of outcomes.entries()) {
+                if (!o) { parts.push(`[${i + 1}] (not executed)`); continue; }
                 let evidenceNote = '';
                 if (o.record.tool === 'run_command') {
                   const command = String(action.calls[i]?.params['command'] ?? '');
@@ -3380,10 +3470,10 @@ export class Gitu {
                   ledger.save();
                   evidenceNote = `\nEVIDENCE RECORDED: ${ev.id} [${ev.passed ? 'PASS' : 'FAIL'}] (${kind}). You may cite it with claim_criterion.`;
                   this.emit(`evidence ${ev.id} ${ev.passed ? 'PASS' : 'FAIL'} (${kind})`);
-                  if (o.result.ok) completeVerifiedPlanSteps(command);
+                  if (o.result.ok) await completeVerifiedPlanSteps(command);
                 }
-                return `[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}${evidenceNote}`;
-              });
+                parts.push(`[${i + 1}] ${o.record.paramsSummary} → ${o.result.ok ? 'success' : 'error'}\n${o.result.output.slice(0, 1200)}${evidenceNote}`);
+              }
               observe(`PARALLEL RESULTS:\n${parts.join('\n\n')}`);
               break;
             }
@@ -3642,6 +3732,9 @@ export class Gitu {
               const output = outcome.result.output;
               const payload = (outcome.result.payload ?? {}) as { results?: SubAgentResult[] };
               const results = payload.results ?? [];
+              // Fold each specialist's FileKnowledge counters into the run
+              // aggregate — specialist reads/knowledge are real work too.
+              for (const r of results) if (r.fileKnowledgeStats) telemetry.noteFileKnowledge(r.fileKnowledgeStats);
               const specialistReportedUncertainty =
                 action.background ||
                 !outcome.result.ok ||
@@ -3832,6 +3925,7 @@ export class Gitu {
               : [{ text: `reproduce: ${finding.claim}` }];
             try {
               const result = await this.config.subagents.runOne(VERIFIER_AGENT, buildVerifierContract(finding), criteria);
+              if (result.fileKnowledgeStats) telemetry.noteFileKnowledge(result.fileKnowledgeStats);
               const verdict = verdictForFinding(finding, result);
               ledger.updateFinding(finding.id, {
                 status: verdict.status,
@@ -3865,6 +3959,7 @@ export class Gitu {
       if (exitReason === 'complete' && !pausedForConversation) ledger.completeActiveWorkPhase();
 
       // Persist token telemetry so spend can be attributed after the fact.
+      telemetry.noteFileKnowledge(executor.fileKnowledge.stats());
       const snap = telemetry.snapshot();
       const artifacts = estimatePlanningArtifactTokens(ledger.data);
       ledger.data.tokenTelemetry = {

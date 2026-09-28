@@ -14,7 +14,7 @@
  *
  *   PROTECTED (never trimmed):
  *     system | strategy | task state (per-turn) | compaction digest
- *     follow-up / user intent | user images
+ *     file knowledge (revision-bound) | follow-up / user intent | user images
  *   TRIMMABLE (in order):
  *     context pack -> supplementary memory -> old conversation history
  *
@@ -51,6 +51,10 @@ export interface ModelContextInput {
    *  Non-trimmable: durable guidance that must survive compaction. Provided
    *  by retrieval, injected only here. */
   protectedMemory?: string;
+  /** Durable, revision-bound implementation facts (FILE KNOWLEDGE ...).
+   *  Protected: survives compaction so exact contracts are never re-derived
+   *  by re-reading unchanged files. Sourced from FileKnowledgeStore. */
+  fileKnowledge?: string;
   contextPack?: string;
   conversationHistory?: LlmMessage[];
   images?: ModelContextImage[];
@@ -101,7 +105,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
     : undefined;
 
   const charsOf = (): number => {
-    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
+    let total = input.system.length + (input.strategy?.length ?? 0) + (input.memory?.length ?? 0) + (input.protectedMemory?.length ?? 0) + (input.fileKnowledge?.length ?? 0) + (contextPack?.length ?? 0) + (input.followUp?.length ?? 0) + (attachmentContent?.length ?? 0) + (digestContent?.length ?? 0);
     for (const m of history) total += messageTextChars(m);
     if (input.images?.length && input.supportsImages) {
       for (const img of input.images) total += Math.floor(img.dataUrl.length / 4);
@@ -163,6 +167,7 @@ export function buildModelContext(input: ModelContextInput): ModelContextResult 
   const messages: LlmMessage[] = [{ role: 'system', content: input.system }];
   if (input.strategy) messages.push({ role: 'user', content: input.strategy });
   if (input.protectedMemory) messages.push({ role: 'user', content: input.protectedMemory });
+  if (input.fileKnowledge) messages.push({ role: 'user', content: input.fileKnowledge });
   if (input.memory) messages.push({ role: 'user', content: input.memory });
   if (contextPack) messages.push({ role: 'user', content: contextPack });
   if (digestContent) messages.push({ role: 'user', content: digestContent });

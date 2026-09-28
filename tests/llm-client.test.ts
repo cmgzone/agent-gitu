@@ -37,6 +37,56 @@ describe('OpenAiCompatClient retry behavior', () => {
   const client = () => new OpenAiCompatClient({ apiKey: 'sk-x', baseUrl: 'https://example.test/v1', model: 'm' });
   const msg = [{ role: 'user' as const, content: 'hi' }];
 
+  it('requests Gemini thought summaries without overriding the selected effort', async () => {
+    mockFetch(async (_url, init) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        reasoning_effort: 'medium', extra_body: { google: { thinking_config: { include_thoughts: true } } },
+      });
+      return jsonResponse({ choices: [{ message: { content: 'Answer', reasoning: 'Exposed summary' } }] });
+    });
+    const deltas: string[] = [];
+    const gemini = new OpenAiCompatClient({ apiKey: 'test', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.1-pro' });
+    await gemini.complete(msg, { effort: 'medium', onReasoningDelta: delta => deltas.push(delta) });
+    expect(deltas).toEqual(['Exposed summary']);
+  });
+
+  it.each([false, true])('separates reasoning aliases and details from answer deltas (native=%s)', async native => {
+    const frames = [
+      { reasoning_content: 'First ' },
+      { reasoning: 'check ' },
+      { reasoning: 'duplicate', reasoning_details: [{ type: 'reasoning.summary', summary: 'the request.' }, { type: 'reasoning.encrypted', data: 'opaque-secret' }] },
+      { content: 'Hello' },
+    ];
+    mockFetch(async (_url, init) => {
+      expect(JSON.parse(String(init?.body)).reasoning).toEqual({ exclude: false, effort: 'high' });
+      return new Response(frames.map(delta => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join('') + 'data: [DONE]\n\n');
+    });
+    const reasoning: string[] = [], answers: string[] = [];
+    const router = new OpenAiCompatClient({ apiKey: 'test', baseUrl: 'https://openrouter.ai/api/v1', model: 'test', capabilities: { streamingTools: true } });
+    const opts = { effort: 'high' as const, onReasoningDelta: (delta: string) => reasoning.push(delta), ...(native ? {
+      protocolMode: 'native' as const, tools: [{ name: 'test', description: 'Test', parameters: { type: 'object' } }],
+    } : {}) };
+    if (native) await router.completeTurnStream(msg, opts, delta => answers.push(delta));
+    else await router.completeStream(msg, opts, delta => answers.push(delta));
+    expect(reasoning.join('')).toBe('First check the request.');
+    expect(answers).toEqual(['Hello']);
+    expect(router.lastReasoning).toBe('First check the request.');
+  });
+
+  it('resets reasoning-only partial output before a broken stream falls back', async () => {
+    let requests = 0;
+    mockFetch(async () => ++requests === 1 ? new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"reasoning_content":"partial"}}]}\n\n'));
+      },
+      pull(controller) { controller.error(new Error('disconnected')); },
+    })) : jsonResponse({ choices: [{ message: { content: 'Answer', reasoning_content: 'Final' } }] }));
+    let reasoning = '';
+    const result = await client().completeStream(msg, { onReasoningDelta: delta => { reasoning += delta; }, onStreamReset: () => { reasoning = ''; } }, () => {});
+    expect(result).toBe('Answer');
+    expect(reasoning).toBe('Final');
+  });
+
   it('retries a transient 429 and succeeds', async () => {
     const calls = mockFetch(async () => {
       if (calls() === 1) {
@@ -355,8 +405,10 @@ describe('OpenAiCompatClient retry behavior', () => {
       );
       expect(out).toBe('Hello world');
       expect(activities).toEqual([
-        { type: 'reasoning' },
-        { type: 'reasoning' },
+        // The reasoning events CARRY the trace: a UI that only learns "thinking
+        // started" cannot show the user anything, which is why it was invisible.
+        { type: 'reasoning', text: 'thinking step 1' },
+        { type: 'reasoning', text: 'thinking step 1thinking step 2' },
         { type: 'content' },
         { type: 'content' },
       ]);
@@ -430,7 +482,7 @@ describe('OpenAiCompatClient retry behavior', () => {
       }
       expect(deltas.join('')).toBe('Calling the tool now.');
       expect(activities).toEqual([
-        { type: 'reasoning' },
+        { type: 'reasoning', text: 'Deciding to run tool' },
         { type: 'content' },
         { type: 'content' },
         { type: 'tool' },

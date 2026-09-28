@@ -32,6 +32,10 @@ const llm: LlmClient = {
   complete: async messages => answer(messages),
   completeStream: async (messages, options, delta) => {
     const text = answer(messages);
+    options.onActivity?.({ type: 'reasoning' });
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    options.signal?.throwIfAborted();
+    options.onActivity?.({ type: 'content' });
     for (const part of text.match(/.{1,5}/gs) ?? []) {
       options.signal?.throwIfAborted();
       delta(part);

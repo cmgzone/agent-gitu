@@ -186,8 +186,13 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // A sentinel only: requests go through the local Codex runtime, not this URL.
     baseUrl: 'codex://chatgpt',
     keyEnvVars: [],
-    defaultModel: 'gpt-5.6-sol',
-    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+    // Offline fallback only: the picker is filled from the runtime's live
+    // `model/list`, so new plan models appear as soon as the bundled Codex
+    // runtime knows them (a stale runtime cannot run them: the service answers
+    // "requires a newer version of Codex"). Keep this generation-accurate and
+    // free of models the service has retired.
+    defaultModel: 'gpt-6-astra',
+    models: ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5'],
     effortLevels: ['low', 'medium', 'high', 'max'],
     maxEffort: 'distinct',
     auth: 'chatgpt-subscription',

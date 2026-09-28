@@ -36,6 +36,7 @@ import type { CodingApprovalRequest, CodingPlanReviewDecision, CodingPlanReviewR
 import type { CodingEvent } from '../coding/events.js';
 import type { WorkspaceRef } from '../coding/workspace.js';
 import type { ToolResult } from '../types.js';
+import { formatLineCounts } from '../tools/diff.js';
 import type { CoworkAgent, CoworkRequest, CoworkStore } from './store.js';
 
 /**
@@ -225,8 +226,12 @@ export function delegationProgressFor(event: CodingEvent): string | undefined {
       return `Engineering task started: ${event.goal}`;
     case 'plan_created':
       return `Plan ready — ${event.steps} step${event.steps === 1 ? '' : 's'}`;
-    case 'file_changed':
-      return `Edited ${event.path}`;
+    case 'file_changed': {
+      // Counts only when the runtime actually measured them: a bare
+      // "Edited src/a.ts +0" is noise, not information.
+      const hasCounts = event.linesAdded !== undefined || event.linesRemoved !== undefined;
+      return `Edited ${event.path}${hasCounts ? ` ${formatLineCounts(event.linesAdded ?? 0, event.linesRemoved ?? 0)}` : ''}`;
+    }
     case 'command_started':
       return `Running ${event.command}`;
     // Only failures: a successful command is already announced by its start line.

@@ -1,6 +1,26 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+
+const execGit = promisify(execFile);
+
+/** UI callers must await Git instead of blocking the desktop event loop. */
+export async function recentChangeScoresAsync(root: string, opts: ChangeSignalOptions = {}): Promise<Map<string, number>> {
+  if (!existsSync(path.join(root, '.git'))) return new Map();
+  const maxCommits = Math.max(1, Math.min(80, opts.maxCommits ?? 18));
+  const maxFiles = Math.max(1, Math.min(200, opts.maxFiles ?? 48));
+  const options = { cwd: root, encoding: 'utf8' as const, windowsHide: true, timeout: 2000, maxBuffer: 512 * 1024 };
+  try {
+    const [log, status] = await Promise.all([
+      execGit('git', ['-c', 'core.quotePath=false', 'log', `--max-count=${maxCommits}`, '--format=%x01', '--name-only'], options),
+      execGit('git', ['status', '--porcelain=v1', '-uall'], options),
+    ]);
+    return scoreRecentChangePaths(log.stdout, status.stdout, maxFiles);
+  } catch {
+    return new Map();
+  }
+}
 
 /**
  * Small, local-only change-history signal for context retrieval.

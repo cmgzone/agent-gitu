@@ -2,7 +2,8 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, execFile } = require('node:child_process');
+const execFileAsync = require('node:util').promisify(execFile);
 const { chromium } = require('playwright');
 const secret = require('node:crypto').randomBytes(32).toString('hex');
 fs.writeFileSync('/tmp/gitu-computer-key', secret, { mode: 0o600 });
@@ -11,6 +12,16 @@ const processes = new Map();
 const cancelled = new Set();
 let browser;
 let browserQueue = Promise.resolve();
+let screenQueue = Promise.resolve();
+
+async function desktopScreenshot() {
+  if (!process.env.DISPLAY) throw new Error('This computer has no desktop display. Stop and start it to upgrade the private desktop.');
+  const file = '/tmp/gitu-desktop.png';
+  await execFileAsync('scrot', ['--overwrite', file], { timeout: 10000 });
+  const image = fs.readFileSync(file);
+  if (image.length > 5_000_000) throw new Error('Desktop screenshot exceeds 5 MB.');
+  return { ok: true, output: image.toString('base64') };
+}
 
 function safePath(value = '.') {
   const resolved = path.resolve('/workspace', String(value));
@@ -77,7 +88,7 @@ async function command(id, params) {
 }
 async function browse(id, p) {
   if (cancelled.has(id)) throw new Error('Browser operation cancelled.');
-  browser ??= await chromium.launchPersistentContext('/home/agent/browser', { headless: true, viewport: { width: 1280, height: 800 } });
+  browser ??= await chromium.launchPersistentContext('/home/agent/browser', { headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 } });
   if (cancelled.has(id)) {
     await browser.close();
     browser = undefined;
@@ -154,6 +165,11 @@ async function browse(id, p) {
   }
 }
 async function execute({ id, tool, params: p = {} }) {
+  if (tool === 'desktop_screenshot') {
+    const next = screenQueue.then(desktopScreenshot);
+    screenQueue = next.catch(() => {});
+    return next;
+  }
   if (cancelled.has(id)) throw new Error('Computer operation cancelled.');
   const file = () => safePath(p.path);
   switch (tool) {

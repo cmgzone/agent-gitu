@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ScriptedMockLlm, type LlmClient } from '../src/llm/llm.js';
-import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMission } from '../src/cowork/store.js';
+import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkConversation, type CoworkMission, type CoworkRequest } from '../src/cowork/store.js';
 import type { BudgetAccount } from '../src/coding/budget.js';
 import { buildCoworkMessages, runConversationTurn, runMissionSession, type CoworkRunnerDeps } from '../src/cowork/runner.js';
 import { parseToolCalls, stripToolMarkers } from '../src/cowork/tools.js';
-import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, TelegramPoller, type TelegramFetch } from '../src/cowork/telegram.js';
+import { escapeTelegramHtml, recentTelegramChats, sendTelegramMessage, telegramRequestCardText, telegramRequestReplyMarkup, TelegramPoller, type TelegramFetch } from '../src/cowork/telegram.js';
+import { discordRequestText, parseDiscordRequestReply } from '../src/cowork/discord.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { McpManager } from '../src/mcp/client.js';
 import { MemoryStore } from '../src/memory/memory-store.js';
@@ -42,14 +43,14 @@ describe('CoworkStore', () => {
     const file = path.join(tempHome('store'), 'cowork.json');
     const store = new CoworkStore(file);
     const agent = store.saveAgent(makeAgentInput('ada', { avatar: { color: '#3fd68f', shape: 'antenna' } }));
-    expect(agent.avatar).toEqual({ color: '#3fd68f', shape: 'antenna' });
+    expect(agent.avatar).toEqual({ color: '#3fd68f', shape: 'cube' });
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
     const m1 = store.appendMessage(conv.id, { role: 'user', text: 'hello', via: 'web' });
     const m2 = store.appendMessage(conv.id, { role: 'agent', agentId: agent.id, agentName: 'ada', text: 'hi', via: 'web' });
 
     const reloaded = new CoworkStore(file);
     expect(reloaded.listAgents().map((a) => a.name)).toEqual(['ada']);
-    expect(reloaded.listAgents()[0]!.avatar).toEqual({ color: '#3fd68f', shape: 'antenna' });
+    expect(reloaded.listAgents()[0]!.avatar).toEqual({ color: '#3fd68f', shape: 'cube' });
     expect(reloaded.listConversations()).toHaveLength(1);
     expect(reloaded.messages(conv.id).map((m) => m.seq)).toEqual([m1.seq, m2.seq]);
     expect(m2.seq).toBeGreaterThan(m1.seq);
@@ -85,12 +86,47 @@ describe('CoworkStore', () => {
     expect(reloaded.resolveRequest(request.id, 'approved')?.status).toBe('approved');
   });
 
+  it('validates credential requests and stores metadata only, never a secret', () => {
+    const file = path.join(tempHome('credential-request'), 'cowork.json');
+    const store = new CoworkStore(file);
+    const agent = store.saveAgent(makeAgentInput('cred-agent'));
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+
+    // A credential request needs a provider hint plus a base URL or an existing connection to re-authorize.
+    expect(() => store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'credential', title: 'Need key', detail: 'd', credential: { providerHint: ' ', baseUrl: 'https://api.github.com' } })).toThrow(/provider/i);
+    expect(() => store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'credential', title: 'Need key', detail: 'd', credential: { providerHint: 'github' } })).toThrow(/base URL|re-authorize/i);
+    expect(() => store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'credential', title: 'Need key', detail: 'd' })).toThrow();
+
+    const request = store.addRequest({
+      conversationId: conv.id, agentId: agent.id, kind: 'credential',
+      title: 'GitHub API key', detail: 'Needed to call the GitHub API',
+      credential: { providerHint: '  github  ', label: 'GitHub', baseUrl: 'https://api.github.com', validationPath: '/user' },
+    });
+    expect(request.status).toBe('open');
+    expect(request.credential).toEqual({ providerHint: 'github', label: 'GitHub', baseUrl: 'https://api.github.com', validationPath: '/user' });
+    // Nothing on the request object can hold the secret itself.
+    expect(JSON.stringify(request)).not.toContain('ghp_');
+
+    // Re-auth requests carry only the existing connection id.
+    const reauth = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'credential', title: 'Re-auth GitHub', detail: 'The saved token expired', credential: { providerHint: 'github', connectionId: 'github' } });
+    expect(reauth.credential).toEqual({ providerHint: 'github', connectionId: 'github' });
+
+    // Other request kinds never carry credential metadata.
+    const question = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'question', title: 'q', detail: 'd', credential: { providerHint: 'github', baseUrl: 'https://api.github.com' } });
+    expect(question.credential).toBeUndefined();
+
+    // Metadata survives a reload, still trimmed and capped.
+    const reloaded = new CoworkStore(file);
+    expect(reloaded.getRequest(request.id)?.credential).toEqual(request.credential);
+    expect(reloaded.getRequest(reauth.id)?.status).toBe('open');
+  });
+
   it('sanitizes avatar configs and rejects junk', () => {
     const store = new CoworkStore(path.join(tempHome('avatar'), 'cowork.json'));
     const bad = store.saveAgent(makeAgentInput('junky', { avatar: { color: 'javascript:alert(1)', shape: 'explosion' } }));
     expect(bad.avatar).toEqual({ color: '#8f80ff', shape: 'orb' });
     const partial = store.saveAgent({ name: 'partial', systemPrompt: 'x', avatar: { shape: 'visor' } });
-    expect(partial.avatar).toEqual({ color: '#8f80ff', shape: 'visor' });
+    expect(partial.avatar).toEqual({ color: '#8f80ff', shape: 'cube' });
   });
 
   it('keeps per-agent memory in the shared MemoryStore, typed and isolated', () => {
@@ -343,44 +379,39 @@ describe('cowork runner', () => {
     expect(store.getConversation(conv.id)!.memberIds).toContain(store.listAgents().find(a => a.name === 'new-scout')!.id);
   });
 
-  it('runs every worker concurrently for unmentioned group messages, with the chief last', async () => {
+  it('triages an unmentioned group message through the chief alone when no teammate is needed', async () => {
     const agent = store.saveAgent(makeAgentInput('solo2'));
     const other = store.saveAgent(makeAgentInput('bystander'));
     const chief = store.saveAgent(makeAgentInput('broadcast-chief', { chiefOfStaff: true }));
     const conv = store.saveConversation({ kind: 'group', memberIds: [agent.id, chief.id, other.id], chiefId: chief.id, title: 'broadcast-test' });
     const trigger = store.appendMessage(conv.id, { role: 'user', text: 'hello', via: 'web' });
-    let activeWorkers = 0;
-    let maxActiveWorkers = 0;
-    let startedWorkers = 0;
-    let releaseWorkers!: () => void;
-    const workersReady = new Promise<void>((resolve) => { releaseWorkers = resolve; });
+    const seen: Record<string, string> = {};
     const result = await runConversationTurn({
       conversation: conv,
       history: store.messages(conv.id),
       trigger,
       deps: depsFor([], {
         resolveLlm: (member) => ({
-          complete: async () => {
-            if (member.id === chief.id) return 'Combined answer.';
-            activeWorkers += 1;
-            startedWorkers += 1;
-            maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
-            if (startedWorkers === 2) releaseWorkers();
-            await workersReady;
-            activeWorkers -= 1;
-            return `${member.name} view.`;
+          complete: async (messages: unknown[]) => {
+            seen[member.name] = JSON.stringify(messages);
+            if (member.id !== chief.id) throw new Error(`${member.name} should not have run`);
+            return 'I can handle this myself.';
           },
         } as never),
       }),
       append: (m) => store.appendMessage(conv.id, m),
     });
-    expect(maxActiveWorkers).toBe(2);
-    expect(new Set(result.messages.slice(0, -1).map((message) => message.agentName))).toEqual(new Set(['solo2', 'bystander']));
-    expect(result.messages.at(-1)!.agentName).toBe('broadcast-chief');
-    expect(result.messages.at(-1)!.text).toBe('Combined answer.');
+    // The chief triages: nobody was summoned, so no worker runs and there is no
+    // duplicate synthesis — the triage reply IS the group's answer.
+    expect(result.messages.map((m) => m.agentName)).toEqual(['broadcast-chief']);
+    expect(result.messages[0]!.text).toBe('I can handle this myself.');
+    expect(seen['bystander']).toBeUndefined();
+    expect(seen['solo2']).toBeUndefined();
+    expect(seen['broadcast-chief']).toContain('TEAM TRIAGE');
+    expect(seen['broadcast-chief']).toContain('never the whole team');
   });
 
-  it('runs a large team in waves so every member still answers once', async () => {
+  it('answers a large team in waves when the chief summons everyone', async () => {
     const workers = Array.from({ length: 6 }, (_, index) => store.saveAgent(makeAgentInput(`wave-${index}`)));
     const chief = store.saveAgent(makeAgentInput('wave-chief', { chiefOfStaff: true }));
     const conv = store.saveConversation({ kind: 'group', memberIds: [...workers.map((w) => w.id), chief.id], chiefId: chief.id, title: 'wave-test' });
@@ -388,6 +419,7 @@ describe('cowork runner', () => {
     let activeWorkers = 0;
     let maxActiveWorkers = 0;
     let startedWorkers = 0;
+    let chiefCalls = 0;
     let releaseWorkers!: () => void;
     const firstWaveStarted = new Promise<void>((resolve) => { releaseWorkers = resolve; });
     const result = await runConversationTurn({
@@ -397,7 +429,12 @@ describe('cowork runner', () => {
       deps: depsFor([], {
         resolveLlm: (member) => ({
           complete: async () => {
-            if (member.id === chief.id) return 'Combined answer.';
+            if (member.id === chief.id) {
+              chiefCalls += 1;
+              return chiefCalls === 1
+                ? `${workers.map((w) => `@${w.name}`).join(' ')} please report your status.`
+                : 'Combined answer.';
+            }
             activeWorkers += 1;
             startedWorkers += 1;
             maxActiveWorkers = Math.max(maxActiveWorkers, activeWorkers);
@@ -413,8 +450,42 @@ describe('cowork runner', () => {
     expect(maxActiveWorkers).toBe(4);
     expect(startedWorkers).toBe(6);
     const replies = result.messages.map((message) => message.agentName);
-    expect(new Set(replies.slice(0, -1))).toEqual(new Set(workers.map((w) => w.name)));
+    expect(replies[0]).toBe('wave-chief');
+    expect(new Set(replies.slice(1, -1))).toEqual(new Set(workers.map((w) => w.name)));
     expect(replies.at(-1)).toBe('wave-chief');
+    expect(result.messages.at(-1)!.text).toBe('Combined answer.');
+  });
+
+  it('summons only the teammates the chief mentions and closes with a synthesis', async () => {
+    const worker = store.saveAgent(makeAgentInput('scope-worker'));
+    const other = store.saveAgent(makeAgentInput('scope-other'));
+    const chief = store.saveAgent(makeAgentInput('scope-chief', { chiefOfStaff: true }));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [worker.id, other.id, chief.id], chiefId: chief.id, title: 'scope-test' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'summarize the launch status', via: 'web' });
+    const seen: Record<string, string[]> = {};
+    const result = await runConversationTurn({
+      conversation: conv,
+      history: store.messages(conv.id),
+      trigger,
+      deps: depsFor([], {
+        resolveLlm: (member) => ({
+          complete: async (messages: unknown[]) => {
+            (seen[member.name] ??= []).push(JSON.stringify(messages));
+            if (member.id === chief.id) return seen[member.name]!.length === 1 ? '@scope-worker check the numbers.' : 'Merged answer.';
+            return 'Numbers are on track.';
+          },
+        } as never),
+      }),
+      append: (m) => store.appendMessage(conv.id, m),
+    });
+    const names = result.messages.map((m) => m.agentName);
+    expect(names).toEqual(['scope-chief', 'scope-worker', 'scope-chief']);
+    // The triage note frames the chief's first turn; the unmentioned teammate is
+    // never woken, and the chief's synthesis closes the cascade.
+    expect(seen['scope-chief']![0]).toContain('TEAM TRIAGE');
+    expect(seen['scope-chief']![0]).toContain('smallest set');
+    expect(seen['scope-chief']![1]).toContain('Synthesize the team findings');
+    expect(seen['scope-other']).toBeUndefined();
   });
 
   it('keeps mentioned group messages targeted', async () => {
@@ -424,6 +495,41 @@ describe('cowork runner', () => {
     const trigger = store.appendMessage(conv.id, { role: 'user', text: '@target-two answer this', via: 'web' });
     const result = await runConversationTurn({ conversation: conv, history: [trigger], trigger, deps: depsFor(['Only me.']), append: (message) => store.appendMessage(conv.id, message) });
     expect(result.messages.map((message) => message.agentName)).toEqual(['target-two']);
+  });
+
+  it('routes a teammate permission card through the Chief of Staff without granting it', async () => {
+    const worker = store.saveAgent(makeAgentInput('approval-worker'));
+    const chief = store.saveAgent(makeAgentInput('approval-chief', { chiefOfStaff: true }));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [worker.id, chief.id], chiefId: chief.id, title: 'approval-routing-test' });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: '@approval-worker update the project', via: 'web' });
+    let chiefSawRequest = false;
+    const deps: CoworkRunnerDeps = {
+      agents: [worker, chief],
+      resolveLlm: (member) => ({
+        complete: async (messages) => {
+          if (member.id === worker.id) {
+            return 'I need workspace write access. <tool>{"name":"request_permission","params":{"permission":"writes","reason":"Update the requested project files"}}</tool>';
+          }
+          const prompt = String(messages[0]?.content ?? '');
+          chiefSawRequest = prompt.includes('OPEN TEAM REQUEST CARDS') && prompt.includes('Update the requested project files');
+          return 'The worker’s write request is shown as an approval card for you. I have left it open.';
+        },
+      } as LlmClient),
+      toolContext: () => ({ cwd: '.' } as ToolContext),
+      store,
+      memory: CoworkMemory.forWorkspace(),
+      autoLearn: false,
+    };
+    const result = await runConversationTurn({
+      conversation: conv, trigger, history: store.messages(conv.id), deps,
+      append: (message) => store.appendMessage(conv.id, message),
+    });
+    const request = store.requests(conv.id)[0];
+    expect(result.error).toBeUndefined();
+    expect(result.messages.map((message) => message.agentName)).toEqual(['approval-worker', 'approval-chief']);
+    expect(chiefSawRequest).toBe(true);
+    expect(request).toMatchObject({ kind: 'permission', agentId: worker.id, permission: 'writes', status: 'open' });
+    expect(worker.allowWrites).toBe(false);
   });
 
   it('builds a system prompt that includes identity, roster and chief role', () => {
@@ -445,6 +551,25 @@ describe('cowork runner', () => {
 });
 
 describe('telegram gateway helpers', () => {
+  it('credential request cards point to the secure web form on every transport', () => {
+    const request: CoworkRequest = {
+      id: 'cr-1', conversationId: 'conv', agentId: 'a1', kind: 'credential',
+      title: 'GitHub API key', detail: 'Needed to call the GitHub API', options: [], status: 'open',
+      credential: { providerHint: 'github', baseUrl: 'https://api.github.com' },
+      createdAt: new Date().toISOString(),
+    };
+    const tg = telegramRequestCardText(request, 'ada');
+    expect(tg).toContain('Credential needed');
+    expect(tg).toContain('secure credential form');
+    expect(telegramRequestReplyMarkup(request)).toBeUndefined();
+    const dc = discordRequestText(request, 'ada');
+    expect(dc).toContain('Credential needed');
+    expect(dc).toContain('secure credential form');
+    // A chat reply can never resolve a credential request on Discord.
+    const note = parseDiscordRequestReply('approve', [request], () => ({ ok: true }));
+    expect(note).toMatch(/no open approval/i);
+  });
+
   it('escapes HTML for Telegram', () => {
     expect(escapeTelegramHtml('<b>me & you</b>')).toBe('&lt;b&gt;me &amp; you&lt;/b&gt;');
   });
@@ -540,6 +665,35 @@ describe('cowork capability tools', () => {
     const recall = await executeCoworkTool(noopCtx, 'agent_memory', { action: 'recall' }, perms, scope(agent));
     expect(recall.output).toContain('User hates long emails');
     expect(memory.count(agent)).toBe(1);
+  });
+
+  it('recovers unknown tools with suggestions and escalation guidance instead of a dead end', async () => {
+    const agent = store.saveAgent(makeAgentInput('lost-tool'));
+    const noPerms = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: false };
+    // A typo gets a did-you-mean suggestion plus the recovery ladder.
+    const typo = await executeCoworkTool(noopCtx, 'read_files', {}, noPerms, scope(agent));
+    expect(typo.ok).toBe(false);
+    expect(typo.output).toContain('unknown tool "read_files"');
+    expect(typo.output).toContain('Did you mean: read_file');
+    // The recovery ladder ends at request_credential: a missing key is never a dead end.
+    expect(typo.output).toContain('request_credential');
+    // Shell-enabled agents are pointed at the run_command fallback...
+    const shellPerms = { ...noPerms, allowShell: true };
+    const invented = await executeCoworkTool(noopCtx, 'send_slack_message', { channel: '#ops' }, shellPerms, scope(agent));
+    expect(invented.ok).toBe(false);
+    expect(invented.output).toContain('run_command');
+    // ...while shell-disabled agents are pointed at request_permission.
+    const locked = await executeCoworkTool(noopCtx, 'send_slack_message', { channel: '#ops' }, noPerms, scope(agent));
+    expect(locked.output).toContain('request_permission');
+    // MCP-qualified names are redirected to mcp_call, never executed directly.
+    const mcpStyle = await executeCoworkTool(noopCtx, 'mcp:github:create_issue', {}, shellPerms, scope(agent));
+    expect(mcpStyle.ok).toBe(false);
+    expect(mcpStyle.output).toContain('mcp_call');
+    // Sub-agents cannot ask the user: they must report the missing key upward.
+    const child = await executeCoworkTool(noopCtx, 'send_slack_message', { channel: '#ops' }, shellPerms, { ...scope(agent), isSubAgent: true });
+    expect(child.ok).toBe(false);
+    expect(child.output).not.toContain('ask_user');
+    expect(child.output).toContain('report');
   });
 
   it('lets agents view and merge-update the shared user context', async () => {
@@ -870,7 +1024,7 @@ describe('cowork server routes', () => {
 
   let serverInstance: HermesServer | undefined;
   async function startServer(llm: LlmClient, extra: Partial<ConstructorParameters<typeof HermesServer>[0]> = {}): Promise<string> {
-    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm, ...extra });
+    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm, coworkCompletionProtocol: 'legacy', ...extra });
     servers.push(server);
     serverInstance = server;
     const port = await server.start();
@@ -947,6 +1101,36 @@ describe('cowork server routes', () => {
     expect(del.status).toBe(200);
     const gone = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((r) => r.json()) as { messages: unknown[] };
     expect(gone.messages).toHaveLength(0);
+  });
+
+  it('continues a Cowork status reply on the server without another user message', async () => {
+    let prompt = '';
+    const llm = new ScriptedMockLlm([
+      (_call, messages) => {
+        prompt = String(messages[0]?.content ?? '');
+        return 'Auditing the channel sources now.\n<cowork_state>working</cowork_state>';
+      },
+      () => '<tool>{"name":"list_files","params":{"path":"."}}</tool>',
+      () => 'The channel audit is complete.\n<cowork_state>done</cowork_state>',
+    ]);
+    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm });
+    servers.push(server);
+    const base = `http://127.0.0.1:${await server.start()}`;
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('status-agent'));
+    const agent = created.json['agent'] as { id: string };
+    const conversation = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    await post(base, `/api/cowork/conversations/${conversation.id}/messages`, { text: 'Audit the channel' });
+    const view = await waitFor(async () => {
+      const state = await fetch(`${base}/api/cowork/conversations/${conversation.id}/messages`).then(r => r.json()) as {
+        busy: boolean;
+        messages: { role: string; status: string; text: string }[];
+      };
+      return !state.busy && state.messages.some(message => message.role === 'agent') ? state : undefined;
+    });
+    expect(prompt).toContain('COMPLETION STATE:');
+    expect(view.messages.filter(message => message.role === 'agent').map(message => message.text)).toEqual(['The channel audit is complete.']);
+    expect(view.messages.find(message => message.role === 'user')?.status).toBe('sent');
+    expect(view.messages.every(message => !message.text.includes('cowork_state'))).toBe(true);
   });
 
   it('tags folders, isolates threads, and exposes widgets over HTTP', async () => {
@@ -1055,6 +1239,72 @@ describe('cowork server routes', () => {
     const approved = await post(base, `/api/cowork/requests/${request.id}`, { action: 'approve' });
     expect(approved.status).toBe(200);
     expect((approved.json['agent'] as { useHostComputer: boolean }).useHostComputer).toBe(true);
+    // Resolved prompts now belong to the transcript and must survive past a day.
+    store.getRequest(request.id)!.resolvedAt = '2020-01-01T00:00:00.000Z';
+    const history = await fetch(`${base}/api/cowork/conversations/${conv.id}/messages`).then((response) => response.json()) as { requests: { id: string; status: string }[] };
+    expect(history.requests).toContainEqual(expect.objectContaining({ id: request.id, status: 'approved' }));
+  });
+
+  it('resolves credential requests only through the secure connection form', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'Done.']));
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('cred-http-agent'));
+    const agent = created.json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const store = (serverInstance as unknown as { cowork: () => CoworkStore }).cowork();
+    const request = store.addRequest({
+      conversationId: conv.id, agentId: agent.id, kind: 'credential',
+      title: 'GitHub API key', detail: 'Needed to call the GitHub API',
+      credential: { providerHint: 'github', baseUrl: 'https://api.github.com', validationPath: '/user' },
+    });
+
+    // Chat-style actions cannot resolve a credential request over HTTP.
+    const wrongAction = await post(base, `/api/cowork/requests/${request.id}`, { action: 'answer', response: 'ghp_notasecretvalue1234567890' });
+    expect(wrongAction.status).toBe(400);
+    const missingId = await post(base, `/api/cowork/requests/${request.id}`, { action: 'provide' });
+    expect(missingId.status).toBe(400);
+    const unknownId = await post(base, `/api/cowork/requests/${request.id}`, { action: 'provide', connectionId: 'nope' });
+    expect(unknownId.status).toBe(400);
+
+    // The Chief/chat resolver rejects credential requests outright.
+    const chief = (serverInstance as unknown as { resolveCoworkRequestAction: (id: string, action: string, response?: string) => { ok: boolean; error?: string } })
+      .resolveCoworkRequestAction(request.id, 'answer', 'ghp_notasecretvalue1234567890');
+    expect(chief.ok).toBe(false);
+    expect(chief.error).toMatch(/secure form/i);
+    expect(store.getRequest(request.id)?.status).toBe('open');
+
+    // The key goes to the connection store; only the connection id comes back.
+    const saved = await post(base, '/api/connections', {
+      label: 'GitHub', provider: 'github', baseUrl: 'https://api.github.com',
+      capabilities: ['connection.discover'],
+      operations: [{ id: 'validate', label: 'Validate saved connection', capability: 'connection.discover', method: 'GET', path: '/user', risk: 'read' }],
+      token: 'ghp_notasecretvalue1234567890',
+    });
+    expect(saved.status).toBe(200);
+    const connection = saved.json['connection'] as { id: string };
+    const provided = await post(base, `/api/cowork/requests/${request.id}`, { action: 'provide', connectionId: connection.id });
+    expect(provided.status).toBe(200);
+    expect(provided.json['answer']).toBe(`Credential saved as connection "GitHub" (id: ${connection.id})`);
+    const resolved = store.getRequest(request.id)!;
+    expect(resolved.status).toBe('provided');
+    expect(resolved.response).toContain(connection.id);
+    // The transcript references the saved connection but never the token.
+    const transcript = JSON.stringify(store.messages(conv.id));
+    expect(transcript).toContain(connection.id);
+    expect(transcript).not.toContain('ghp_notasecretvalue1234567890');
+  });
+
+  it('scrubs pasted credentials from cowork chat history', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'Noted.']));
+    const created = await post(base, '/api/cowork/agents', makeAgentInput('scrub-agent'));
+    const agent = created.json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    const send = await post(base, `/api/cowork/conversations/${conv.id}/messages`, { text: 'here is the key: ghp_AAAAbbbbCCCCddddEEEEffff1111' });
+    expect(send.status).toBe(202);
+    await missionIdle(base, conv.id);
+    const store = (serverInstance as unknown as { cowork: () => CoworkStore }).cowork();
+    const transcript = JSON.stringify(store.messages(conv.id));
+    expect(transcript).not.toContain('ghp_AAAAbbbbCCCCddddEEEEffff1111');
+    expect(transcript).toContain('[credential removed');
   });
 
   it('accepts a large attachment body instead of the 1 MB route default', async () => {
@@ -1514,6 +1764,39 @@ describe('cowork server routes', () => {
     expect(capped.status).toBe(400);
     expect(String(capped.json['error'])).toContain('not about money');
     expect((await view()).missions.find((m) => m.id === mission.id)!.status).toBe('failed');
+  });
+
+  it('serves the sub-agent execution tree for a conversation', async () => {
+    const base = await startServer(new ScriptedMockLlm([() => 'ok']));
+    const agent = (await post(base, '/api/cowork/agents', makeAgentInput('tree-worker'))).json['agent'] as { id: string };
+    const conv = (await post(base, '/api/cowork/conversations', { kind: 'dm', memberIds: [agent.id] })).json['conversation'] as { id: string };
+    // The tree endpoint is a read model: any recorded worker shows up with its
+    // live state, whoever recorded it.
+    const internals = serverInstance as unknown as { cowork(): CoworkStore };
+    internals.cowork().createSubAgent({
+      conversationId: conv.id,
+      parentAgentId: agent.id,
+      rootAgentId: agent.id,
+      spawnedBy: { agentId: agent.id, reason: 'test spawn' },
+      depth: 2,
+      maxDepth: 2,
+      permissions: { allowShell: false, allowWrites: false, allowConfig: false, browser: false },
+      skills: [],
+      role: 'competitor-researcher',
+      objective: 'Compare Piki POS with five competitors',
+    });
+    const response = await fetch(`${base}/api/cowork/conversations/${conv.id}/subagents`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { tree: { conversationId: string; nodes: { role: string; status: string; objective: string; statusReason?: string }[]; totals: { active: number; orphaned: number } } };
+    expect(body.tree.conversationId).toBe(conv.id);
+    expect(body.tree.nodes).toHaveLength(1);
+    // The first tree read constructs the runner, whose startup sweep marks a
+    // recorded-but-never-run worker orphaned — a restarted host's honest view.
+    expect(body.tree.nodes[0]).toMatchObject({ role: 'competitor-researcher', status: 'orphaned', objective: 'Compare Piki POS with five competitors', statusReason: expect.stringContaining('restart') });
+    expect(body.tree.totals).toMatchObject({ active: 0, orphaned: 1 });
+    // Unknown conversations 404 like every other cowork route.
+    const missing = await fetch(`${base}/api/cowork/conversations/nope/subagents`);
+    expect(missing.status).toBe(404);
   });
 
   it('keeps the spent envelope of a chat across a restart', async () => {

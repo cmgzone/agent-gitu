@@ -57,7 +57,10 @@ export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies
       }
       const liveModels = normalizeModels(discovered ?? []);
       const live = liveModels.length > 0;
-      const defaultModel = spec.defaultModel.trim();
+      // The signed-in plan decides which model is "default": a newer generation
+      // can be promoted runtime-side (GPT-6 replaced the 5.6 default), so the
+      // spec default only answers when the runtime reports nothing.
+      const defaultModel = (subscription?.models.find((model) => model.isDefault)?.id ?? spec.defaultModel).trim();
       const models = normalizeModels([
         ...(live ? liveModels : spec.models.map((id) => ({ id }))),
         { id: defaultModel },

@@ -470,7 +470,11 @@ describe('Hermes end-to-end (mock LLM)', () => {
 
     const linesEvent = events.find((e) => e.startsWith('lines '));
     expect(linesEvent).toBeTruthy();
-    expect(linesEvent).toContain('+5');
+    // The file has FOUR content lines (the trailing newline terminates line4, it is
+    // not a fifth empty one). `+5` was the old fabricated count — the whole length of
+    // `content.split('\n')` — which is exactly the kind of number a user cannot trust.
+    expect(linesEvent).toContain('+4');
+    expect(linesEvent).not.toContain('-');
   }, 30000);
 
   it('stop() aborts a running task and queued messages reach the agent', async () => {
@@ -632,7 +636,10 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(specialistBriefing).toContain('WORK HANDOFF — START HERE');
     expect(specialistBriefing).toContain('PARENT GOAL:\ndelegate test');
     expect(specialistBriefing).toContain('EXPLORATION LIMIT:');
-    expect(specialistBriefing).toContain('package.json');
+    // A synthetic task with no lexical matches gets the honest no-files
+    // fallback — the specialist is told to search narrowly instead of being
+    // handed a repository dump (or a bare manifest) as a starting map.
+    expect(specialistBriefing).toContain('No ranked source file was available');
   }, 30000);
 
   it('starts independent specialist work in the background and exposes its status', async () => {
@@ -821,20 +828,26 @@ describe('Hermes end-to-end (mock LLM)', () => {
   it('halts a runaway task when the effort turn budget is exhausted', async () => {
     const dir = makeProject('turn-budget');
     const events: string[] = [];
+    // Distinct successful probes each turn: the runaway looks productive
+    // (every search succeeds and is a NEW action) but never touches the
+    // criteria, so extensions eventually stop and the effort budget halts it.
+    // The probes must be DISTINCT — exact-duplicate investigation reads are
+    // already halted earlier by the read-thrift loop rules, which would end
+    // this run as 'blocked' before the budget contract could be exercised.
+    let probe = 0;
     const llm = new ScriptedMockLlm([
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['some verified result'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'work', verification: 'node --version' }] } }),
-      // Cycles forever from here: productive-looking work that never completes.
       () =>
         JSON.stringify({
           thought: 'keep going',
           action: {
             type: 'tool_call',
             stepId: 'step-1',
-            tool: 'list_files',
-            params: { path: '.' },
+            tool: 'search_files',
+            params: { pattern: `probe-${(probe += 1)}` },
             reason: 'continue',
-            expected: 'listing',
+            expected: 'probe results',
           },
         }),
     ]);
@@ -849,9 +862,8 @@ describe('Hermes end-to-end (mock LLM)', () => {
     expect(ledger.data.effortPlan?.maxTurns).toBe(20); // low effort budget
     expect(report.status).toBe('failed');
     expect(ledger.data.blockers.some((b) => b.includes('effort budget'))).toBe(true);
-    // The identical repeated list_files counts as progress exactly once
-    // (first distinct success), buying one budget extension; the stall then
-    // fires at the extended cap since nothing new ever succeeds.
+    // Extensions are granted while distinct successful work keeps arriving;
+    // once the extension allowance is exhausted the stall contract fires.
     expect(events.some((e) => /effort budget of \d+ turns reached/.test(e))).toBe(true);
   }, 30000);
 

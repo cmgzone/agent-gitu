@@ -93,7 +93,7 @@ describe('ContextEngine', () => {
     if (helper && billing) expect(helper.score).toBeGreaterThan(billing.score);
   });
 
-  it('refreshes a watched index before building a new context pack', () => {
+  it('refreshes a watched index before building a new context pack', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hermes-ctx-'));
     writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'ctx-watched', private: true }));
     mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -105,7 +105,7 @@ describe('ContextEngine', () => {
     index.startWatch(guard.lock.ignorePaths, { debounceMs: 5_000, sweepMs: 60_000 });
     writeFileSync(path.join(dir, 'src', 'fresh-context.ts'), 'export const feature = "sprocket";');
 
-    const pack = new ContextEngine(guard, index).buildPack('fix the sprocket feature');
+    const { pack } = await new ContextEngine(guard, index).buildPackHybrid('fix the sprocket feature');
     expect(pack.primaryFiles.some((f) => f.path === 'src/fresh-context.ts')).toBe(true);
     index.stopWatch();
     index.close();

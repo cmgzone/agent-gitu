@@ -267,6 +267,7 @@ export function discordRequestText(request: CoworkRequest, agentName?: string): 
   }
   if (request.kind === 'permission') lines.push('', 'Reply approve or deny.');
   else if (request.kind === 'recommendation') lines.push('', 'Reply accept or dismiss.');
+  else if (request.kind === 'credential') lines.push('', 'Never send keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
   else lines.push('', request.options.length > 0 ? 'Reply with the option number, or type your answer.' : 'Reply with your answer.');
   return lines.join('\n');
 }
@@ -288,7 +289,9 @@ export function parseDiscordRequestReply(
   resolve: (requestId: string, action: string, response?: string) => { ok: boolean; answer?: string; error?: string },
 ): string | undefined {
   const trimmed = text.trim().toLowerCase();
-  const actionable = openRequests.filter((r) => r.kind !== 'question');
+  // Credential requests are deliberately excluded: they can only be resolved
+  // through the secure web form, never by a chat reply.
+  const actionable = openRequests.filter((r) => r.kind === 'permission' || r.kind === 'recommendation');
   if (trimmed === 'approve' || trimmed === 'deny' || trimmed === 'accept' || trimmed === 'dismiss') {
     const action = trimmed === 'deny' || trimmed === 'dismiss' ? trimmed : trimmed;
     const candidate = actionable.find((r) => (r.kind === 'permission' && (action === 'approve' || action === 'deny')) || (r.kind === 'recommendation' && (action === 'accept' || action === 'dismiss')));
@@ -310,5 +313,6 @@ export function parseDiscordRequestReply(
 function discordRequestLabel(request: CoworkRequest): string {
   if (request.kind === 'permission') return '**Approval needed**';
   if (request.kind === 'recommendation') return '**Recommendation**';
+  if (request.kind === 'credential') return '**Credential needed**';
   return '**Question**';
 }

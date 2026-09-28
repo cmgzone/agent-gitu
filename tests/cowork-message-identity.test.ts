@@ -314,15 +314,24 @@ describe('identity-aware runner', () => {
       mentionedAgentIds: mode === 'structured' ? [chief.id] : mode === 'empty' ? [] : undefined,
     });
     const called: string[] = [];
+    const prompts: string[] = [];
     const result = await runConversationTurn({
       conversation, trigger, history: store.messages(conversation.id),
       append: (message) => store.appendMessage(conversation.id, message),
       deps: { agents: [chief, dev], store, toolContext: () => ({}) as never,
-        resolveLlm: (agent) => { called.push(agent.id); return new ScriptedMockLlm([() => 'Done.']); },
+        resolveLlm: (agent) => {
+          called.push(agent.id);
+          return new ScriptedMockLlm([(_call, messages) => { prompts.push(JSON.stringify(messages)); return 'Done.'; }]);
+        },
       },
     });
     expect(result.error).toBeUndefined();
-    expect(called).toEqual(mode === 'empty' ? [dev.id, chief.id] : [chief.id]);
+    // The referenced "@Dev ..." text is never a mention: dev is not woken in any
+    // mode. An explicit empty mention list is an unmentioned message, which the
+    // chief triages alone; a legacy text that names the chief stays targeted.
+    expect(called).toEqual([chief.id]);
+    const triaged = mode === 'empty';
+    expect(prompts[0]!.includes('TEAM TRIAGE')).toBe(triaged);
   });
 
   it.each([true, false])('integrates bounded JSON references in standalone turns (store=%s)', async (withStore) => {
@@ -354,10 +363,20 @@ describe('identity-aware runner', () => {
   it('reports group worker failure even when chief synthesis succeeds', async () => {
     const { store, chief, dev, conversation } = fixture();
     const trigger = store.appendMessage(conversation.id, { role: 'user', via: 'web', text: 'team work' });
+    // resolveLlm runs once per turn, so the chief's scripted client must persist
+    // across its triage turn and its closing synthesis.
+    const clients = new Map<string, ScriptedMockLlm>();
     const result = await runConversationTurn({ conversation, trigger, history: [trigger],
       append: (message) => store.appendMessage(conversation.id, message),
       deps: { agents: [chief, dev], store, toolContext: () => ({}) as never,
-        resolveLlm: (agent) => { if (agent.id === dev.id) throw new Error('worker unavailable'); return new ScriptedMockLlm([() => 'Partial result.']); },
+        // Unmentioned trigger: the chief triages, summons the failing worker,
+        // then still produces its synthesis — the failure must survive it.
+        resolveLlm: (agent) => {
+          if (agent.id === dev.id) throw new Error('worker unavailable');
+          let client = clients.get(agent.id);
+          if (!client) clients.set(agent.id, client = new ScriptedMockLlm([() => '@Dev take the deploy check.', () => 'Partial result.']));
+          return client;
+        },
       },
     });
     expect(result.error).toContain('worker unavailable');

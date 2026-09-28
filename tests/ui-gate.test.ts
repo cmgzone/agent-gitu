@@ -42,9 +42,9 @@ describe('isUiTask', () => {
 });
 
 describe('uiVisualGate', () => {
-  it('is not required for non-UI tasks and when no browser exists', () => {
+  it('requires a browser for UI tasks and skips non-UI tasks', () => {
     const data = ledger({ filesChanged: ['index.html'] });
-    expect(uiVisualGate(data, { browserAvailable: false })).toMatchObject({ required: false, verified: true });
+    expect(uiVisualGate(data, { browserAvailable: false })).toMatchObject({ required: true, verified: false });
     expect(uiVisualGate(ledger({ filesChanged: ['api.ts'] }), { browserAvailable: true })).toMatchObject({ required: false, verified: true });
   });
 

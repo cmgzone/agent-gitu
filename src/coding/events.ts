@@ -16,6 +16,7 @@
  */
 
 import type { ChiefDecisionAction, ChiefRequestKind } from './chief.js';
+import type { DiffLine } from '../tools/diff.js';
 
 /**
  * Cursor + timestamp every consumer needs to order, replay and resume a stream
@@ -90,7 +91,21 @@ export type CodingEventPayload =
   | { type: 'run_started'; goal: string; workspace?: string }
   | { type: 'plan_created'; steps: number }
   | { type: 'file_read'; path: string }
-  | { type: 'file_changed'; path: string; linesAdded?: number }
+  /**
+   * The model's reasoning trace, as the provider streamed it. The user asked to
+   * SEE the thinking, not just an indicator that some of it happened: a run that
+   * silently reasons looks stuck, and there is nothing to trust in a spinner.
+   */
+  | { type: 'reasoning'; text: string }
+  | {
+      type: 'file_changed';
+      path: string;
+      linesAdded?: number;
+      /** Lines the change deleted. A rewrite is not a pure addition. */
+      linesRemoved?: number;
+      /** Bounded, renderable diff body: removals included, so a panel can show red. */
+      diff?: DiffLine[];
+    }
   | { type: 'command_started'; command: string }
   /**
    * `ok` is the executing layer's interpretation; `exitCode` is the raw fact.
@@ -222,6 +237,7 @@ export type CodingEventType = CodingEventPayload['type'];
 /** Every kind, in display order. Keeps UI filters and parity tests exhaustive. */
 export const CODING_EVENT_TYPES = [
   'run_started',
+  'reasoning',
   'plan_created',
   'file_read',
   'file_changed',
@@ -264,6 +280,7 @@ export const CODING_EVENT_TYPES = [
  */
 export const NATIVE_ONLY_EVENT_TYPES = [
   'run_started',
+  'reasoning',
   'test_started',
   'test_finished',
   'checkpoint_created',
@@ -290,6 +307,15 @@ function splitLegacy(line: string): { token: string; detail: string } | undefine
 }
 
 /**
+ * The leading token of a detail string. A change line is now
+ * `src/x.ts +12 -3`, so anything that recovers a path from one must stop at the
+ * first space instead of swallowing the counts into the path.
+ */
+function firstToken(text: string): string {
+  return text.trim().split(/\s+/, 1)[0] ?? '';
+}
+
+/**
  * Map an executor action summary onto a payload.
  *
  * `summarizeParams` (`src/util.ts`) owns these prefixes: `$ <command>`,
@@ -299,8 +325,10 @@ function splitLegacy(line: string): { token: string; detail: string } | undefine
 function classifyActionSummary(summary: string): CodingEventPayload {
   if (summary.startsWith('$ ')) return { type: 'command_started', command: summary.slice(2).trim() };
   if (summary.startsWith('read ')) return { type: 'file_read', path: summary.slice(5).trim() };
-  if (summary.startsWith('write ')) return { type: 'file_changed', path: summary.slice(6).trim() };
-  if (summary.startsWith('edit ')) return { type: 'file_changed', path: summary.slice(5).trim() };
+  // The path is the FIRST token: a change summary may now carry its `+N −M`
+  // counts, and those must not end up inside `path`.
+  if (summary.startsWith('write ')) return { type: 'file_changed', path: firstToken(summary.slice(6)) };
+  if (summary.startsWith('edit ')) return { type: 'file_changed', path: firstToken(summary.slice(5)) };
   return { type: 'log', text: summary };
 }
 
@@ -318,7 +346,9 @@ function classifyCompletion(detail: string, ok: boolean): CodingEventPayload {
   const body = timing ? detail.slice(0, timing.index) : detail;
   const durationMs = timing?.[1] !== undefined ? Number(timing[1]) : undefined;
   if (body.startsWith('$ ')) return { type: 'command_finished', command: body.slice(2).trim(), ok, ...(durationMs !== undefined ? { durationMs } : {}) };
-  if (ok && (body.startsWith('write ') || body.startsWith('edit '))) return { type: 'file_changed', path: body.replace(/^(write|edit) /, '').trim() };
+  if (ok && (body.startsWith('write ') || body.startsWith('edit '))) {
+    return { type: 'file_changed', path: firstToken(body.replace(/^(write|edit) /, '')) };
+  }
   return { type: 'log', text: detail };
 }
 
@@ -343,9 +373,16 @@ export function toCodingEvent(line: string): CodingEventPayload {
       // rejection with this keyword; only a real command becomes an event.
       return classifyCompletion(detail, false);
     case 'lines': {
-      const match = /^(\S+) \+(\d+) lines$/.exec(detail);
+      // `+N lines` (legacy) and `+N -M lines` (current): a change is never a pure
+      // addition, and the removal count is part of what the user has to see.
+      const match = /^(\S+) \+(\d+)(?: -(\d+))? lines$/.exec(detail);
       if (match?.[1] === undefined || match[2] === undefined) return { type: 'log', text: detail };
-      return { type: 'file_changed', path: match[1], linesAdded: Number(match[2]) };
+      return {
+        type: 'file_changed',
+        path: match[1],
+        linesAdded: Number(match[2]),
+        ...(match[3] !== undefined ? { linesRemoved: Number(match[3]) } : {}),
+      };
     }
     case 'plan': {
       const match = /^(\d+) (?:follow-up )?steps$/.exec(detail);

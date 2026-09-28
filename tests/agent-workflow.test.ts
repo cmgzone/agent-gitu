@@ -1,7 +1,8 @@
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as effortPlanner from '../src/agent/effort-planner.js';
 import { agentVerificationGate } from '../src/agent/agent-workflow.js';
 import { planEffort } from '../src/agent/effort-planner.js';
 import { Gitu } from '../src/agent/gitu.js';
@@ -26,6 +27,44 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('allows three different repairs to complete instead of accumulating old rejections', async () => {
+    const repair = (content: string) => action({ type: 'tool_call', tool: 'write_file', params: { path: 'README.md', content }, reason: 'Repair the wording', expected: 'Correct text' });
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, repair('Hello one\n'), done,
+        action({ type: 'tool_call', tool: 'write_file', params: { path: 'repair-notes.md', content: 'First diagnosis' }, reason: 'Save new diagnosis', expected: 'Saved notes' }), done,
+        action({ type: 'tool_call', tool: 'write_file', params: { path: 'repair-details.md', content: 'Second diagnosis' }, reason: 'Save further diagnosis', expected: 'Saved details' }), done,
+        edit, verify, done, reviewer]),
+    }).run('Correct the typo in README.md');
+    expect(result.report.status, JSON.stringify(result.ledger.data.blockers)).toBe('complete');
+    expect(result.ledger.data.blockers).toEqual([]);
+  }, 30000);
+
+  it('keeps extending productive work past four checkpoints', async () => {
+    const dir = project();
+    const replies: Reply[] = [];
+    for (let i = 0; i < 54; i++) {
+      writeFileSync(path.join(dir, `note-${i}.md`), `Finding ${i}\n`);
+      replies.push(action({ type: 'tool_call', tool: 'read_file', params: { path: `note-${i}.md` }, reason: `Inspect requested note ${i}`, expected: 'Requested content' }));
+    }
+    const effort = effortPlanner.planEffort('Inspect requested notes', { mode: 'agent' });
+    const spy = vi.spyOn(effortPlanner, 'planEffort').mockReturnValue({ ...effort, maxTurns: 2 });
+    try {
+      const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, llm: new ScriptedMockLlm([...replies, action({ type: 'complete', summary: 'Read all requested notes.' })]) }).run('Read all requested notes');
+      expect(result.report.status).toBe('complete');
+      expect(result.ledger.data.budgetExtensions!.length).toBeGreaterThan(4);
+      expect(result.ledger.data.actions.filter(a => a.tool === 'read_file' && a.status === 'success')).toHaveLength(54);
+    } finally { spy.mockRestore(); }
+  }, 60000);
+
+  it('never waives final UI verification after repeated completion attempts', async () => {
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, edit, action({ type: 'tool_call', tool: 'write_file', params: { path: 'index.html', content: '<h1>Hello</h1>' }, reason: 'Create the requested page', expected: 'Hello page' }), verify, done, done, done]),
+    }).run('Create a Hello page and correct the wording in README.md');
+    expect(result.report.status).toBe('blocked');
+    expect(result.ledger.data.blockers.join(' ')).toContain('browser');
+    expect(result.report.risks ?? []).not.toContain('Final UI state was never verified with a screenshot');
+  }, 30000);
+
   it('stops repeated evidence rejection without claiming unverified work completed', async () => {
     const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
       llm: new ScriptedMockLlm([read, edit, done, done, done]),
@@ -45,6 +84,19 @@ describe('unified Agent workflow', () => {
     data.evidence[0]!.stale = true;
     expect(agentVerificationGate(data, 'before', 'after').open).toBe(false);
   });
+  it('requires fresh passing evidence for every formal criterion command', () => {
+    const data = {
+      actions: [{ tool: 'write_file', status: 'success' }],
+      acceptanceCriteria: [{ id: 'ac-1', text: 'Typecheck and test', status: 'pending', criterionCommands: ['npm run typecheck', 'npm test'] }],
+      evidence: [{ kind: 'command', passed: true, command: 'npm run typecheck', workspaceFingerprint: 'after' }],
+    } as unknown as TaskLedgerData;
+
+    const criterionCommands = new Set(['npm run typecheck', 'npm test']);
+    expect(agentVerificationGate(data, 'before', 'after', criterionCommands).open).toBe(false);
+    data.evidence.push({ kind: 'command', passed: true, command: 'npm test', workspaceFingerprint: 'after' });
+    expect(agentVerificationGate(data, 'before', 'after', criterionCommands).open).toBe(true);
+  });
+
   it('keeps high model effort while giving a typo edit a lightweight task budget', () => {
     const effort = planEffort('Correct a typo in README.md', { mode: 'agent', explicitEffort: 'high' });
     expect(effort.complexity).toBe('low');
@@ -207,5 +259,35 @@ describe('unified Agent workflow', () => {
     data.evidence[0]!.passed = true;
     data.evidence[0]!.command = 'echo done';
     expect(agentVerificationGate(data, 'before', 'after').open).toBe(false);
+  });
+
+  it('completes when current criterion evidence passes after an abandoned command failure', async () => {
+    const dir = project();
+    const failed = action({ type: 'tool_call', tool: 'run_command', params: { command: 'node -e "process.exit(1)"' }, reason: 'Try a combined check', expected: 'exit 0' });
+    const claim: Reply = (_call, messages) => {
+      const evidenceId = [...messages].reverse().map(message => /EVIDENCE RECORDED: (ev-\d{8}-[0-9a-f]{6}) \[PASS\]/.exec(String(message.content))?.[1]).find(Boolean);
+      return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: evidenceId ?? 'ev-missing' } });
+    };
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([
+        action({ type: 'set_criteria', criteria: [{ text: 'The corrected wording passes its configured check', verification: 'node check.cjs', evidenceType: 'command_success' }] }),
+        edit, failed, verify, claim, done, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+
+    expect(result.ledger.data.evidence.map(e => e.passed)).toEqual([false, true]);
+    expect(result.ledger.data.acceptanceCriteria[0]?.satisfied).toBe(true);
+    expect(result.report.status).toBe('complete');
+  }, 30000);
+
+  it('still blocks a later failure of the required verification command', () => {
+    const data = { actions: [{ tool: 'write_file', status: 'success' }], evidence: [
+      { command: 'node exploratory.cjs', passed: false, workspaceFingerprint: 'after' },
+      { command: 'node check.cjs', passed: true, workspaceFingerprint: 'after' },
+    ] } as unknown as TaskLedgerData;
+    const required = new Set(['node check.cjs']);
+    expect(agentVerificationGate(data, 'before', 'after', required).open).toBe(true);
+    data.evidence.push({ command: 'node check.cjs', passed: false, workspaceFingerprint: 'after' } as TaskLedgerData['evidence'][number]);
+    expect(agentVerificationGate(data, 'before', 'after', required).open).toBe(false);
   });
 });

@@ -13,10 +13,10 @@ afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
 /** Run the actual container service against temporary files and a browser
  * double. Docker integration is tested separately when Docker is available. */
-function service(name: string, processMock?: { spawn: (...args: any[]) => any; kill: (...args: any[]) => any }) {
+function service(name: string, processMock?: { spawn: (...args: any[]) => any; kill: (...args: any[]) => any }, desktop = false) {
   const workspace = path.join(root, name);
   fs.mkdirSync(workspace);
-  const translate = (p: string) => (p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : path.join(root, name + '-key'));
+  const translate = (p: string) => (p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : path.join(root, name + (p === '/tmp/gitu-desktop.png' ? '-desktop.png' : '-key')));
   const files = {
     ...fs,
     existsSync: (p: string) => fs.existsSync(translate(p)),
@@ -44,14 +44,18 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
   };
   const launch = vi.fn(async () => ({ pages: () => [page], close: async () => {} }));
   let handler: any;
+  const capture = vi.fn((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
+    files.writeFileSync('/tmp/gitu-desktop.png', Buffer.from('desktop-' + name));
+    callback(null, '');
+  });
   const context: any = {
     require: (name: string) =>
       name === 'node:fs'
         ? files
         : name === 'node:path'
           ? path.posix
-          : name === 'node:child_process' && processMock
-            ? { spawn: processMock.spawn }
+          : name === 'node:child_process'
+            ? { ...nodeRequire('node:child_process'), ...(processMock ? { spawn: processMock.spawn } : {}), execFile: capture }
           : name === 'playwright'
             ? { chromium: { launchPersistentContext: launch } }
             : name === 'node:http'
@@ -66,7 +70,7 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     URL,
     setTimeout,
     clearTimeout,
-    process: processMock ? { kill: processMock.kill } : process,
+    process: { kill: processMock?.kill ?? process.kill, env: { DISPLAY: desktop ? ':99' : undefined } },
   };
   runInNewContext(source + '\nglobalThis.executeTool = execute;', context);
   return {
@@ -74,11 +78,30 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     launch,
     page,
     handler,
+    capture,
     execute: (tool: string, params: Record<string, unknown>) => context.executeTool({ id: 'test-id', tool, params }) as Promise<{ ok: boolean; output: string; image?: string }>,
   };
 }
 
 describe('virtual computer service', () => {
+  it('captures the full private desktop and puts the agent browser on that display', async () => {
+    const a = service('desktop-a', undefined, true);
+    const b = service('desktop-b', undefined, true);
+    await a.execute('browse', { action: 'navigate', url: 'https://example.com' });
+    expect(a.launch).toHaveBeenCalledWith('/home/agent/browser', expect.objectContaining({ headless: false }));
+    const first = await a.execute('desktop_screenshot', {});
+    const second = await b.execute('desktop_screenshot', {});
+    expect(Buffer.from(first.output, 'base64').toString()).toBe('desktop-desktop-a');
+    expect(first.output).not.toBe(second.output);
+    expect(a.capture).toHaveBeenCalledWith('scrot', ['--overwrite', '/tmp/gitu-desktop.png'], { timeout: 10000 }, expect.any(Function));
+    expect(a.page.screenshot).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing desktop display instead of returning a browser-only screenshot', async () => {
+    const a = service('no-display');
+    await expect(a.execute('desktop_screenshot', {})).rejects.toThrow('no desktop display');
+    expect(a.capture).not.toHaveBeenCalled();
+  });
   it('returns screenshot pixels and supports the advertised evidence action', async () => {
     const a = service('browser-image');
     expect((await a.execute('browse', { action: 'evidence' })).output).toContain('Visible page content');

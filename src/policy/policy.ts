@@ -88,6 +88,17 @@ export class PolicyEngine {
     private readonly safeMode: boolean = false,
   ) {}
 
+  /** External reads require an explicit, scoped decision even in auto-approve mode. */
+  async approveDiagnosticRead(tool: string, target: string, directory: boolean): Promise<boolean> {
+    if (!this.approvalHandler) return false;
+    return this.approvalHandler({
+      tool,
+      tier: 'moderate',
+      why: `Read diagnostic ${directory ? 'files in this folder and its subfolders' : 'file'} outside the project. This grants no write access.`,
+      summary: target,
+    });
+  }
+
   async evaluate(tool: string, params: Record<string, unknown>): Promise<PolicyDecision> {
     let tier: RiskTier;
     let why: string;

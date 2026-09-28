@@ -47,6 +47,18 @@ const readFileAction = (p: string) =>
     action: { type: 'tool_call', tool: 'read_file', params: { path: p }, reason: 'inspect', expected: 'content' },
   });
 
+// Distinct read per turn (varying 200-LINE REGION offsets): the budgeting
+// contracts count TURNS, not duplicate evidence. Exact-duplicate reads are
+// throttled by the read-thrift loop rules (2 real, then cached replay, then
+// blocked), and hashParams canonicalizes read offsets into 200-line regions
+// — so "distinct" must mean a different REGION, and a fixture that repeats
+// one hash verbatim would halt as BLOCKED before the budget behavior under
+// test could be exercised.
+const distinctReadAction = (p: string, offset: number) =>
+  JSON.stringify({
+    action: { type: 'tool_call', tool: 'read_file', params: { path: p, offset }, reason: 'inspect', expected: 'content' },
+  });
+
 function makeRunner(dir: string, llm: LlmClient, events: string[], overrides: Partial<ConstructorParameters<typeof SubAgentRunner>[0]> = {}) {
   return new SubAgentRunner({
     cwd: dir,
@@ -64,7 +76,7 @@ describe('SubAgentRunner — dynamic turn budgeting', () => {
     const events: string[] = [];
     // 28 successful inspections, then an answer on turn 29 — before the
     // progress-extension at turn 30 (0-indexed 28) can fire.
-    const replies = Array.from({ length: 28 }, () => () => readFileAction('src/a.txt'));
+    const replies = Array.from({ length: 28 }, (_, i) => () => distinctReadAction('src/a.txt', 1 + i * 200));
     replies.push(() => JSON.stringify({ action: { type: 'answer', summary: 'inspected and finished' } }));
     const runner = makeRunner(dir, scriptedLlm(replies), events);
 
@@ -82,7 +94,7 @@ describe('SubAgentRunner — dynamic turn budgeting', () => {
   it('extends the budget when productive work continues past the limit', async () => {
     const dir = makeProject();
     const events: string[] = [];
-    const replies = Array.from({ length: 29 }, () => () => readFileAction('src/a.txt'));
+    const replies = Array.from({ length: 29 }, (_, i) => () => distinctReadAction('src/a.txt', 1 + i * 200));
     replies.push(() => JSON.stringify({ action: { type: 'answer', summary: 'done after extension' } }));
     const runner = makeRunner(dir, scriptedLlm(replies), events);
 
@@ -103,7 +115,8 @@ describe('SubAgentRunner — dynamic turn budgeting', () => {
     // Infinite productive work: read_file always succeeds, so the loop can
     // only stop via the ceiling. Base 30, ceiling 40: the budget must grow
     // 30 → 40 and then stop; 40+10 would exceed the ceiling and is refused.
-    const runner = makeRunner(dir, scriptedLlm([() => readFileAction('src/a.txt')]), events, {
+    const probe = { n: 0 };
+    const runner = makeRunner(dir, scriptedLlm([() => distinctReadAction('src/a.txt', (probe.n++) * 200 + 1)]), events, {
       baseTurns: 30,
       hardCeilingTurns: 40,
     });

@@ -15,9 +15,8 @@ export interface LoopPolicy {
   /** Successful investigation calls against unchanged evidence are useful
    * once or twice; beyond that they are usually context drift, not progress. */
   maxSameSuccessfulRead: number;
-  /** Bound unique investigation after one still-unresolved failing command.
-   * This is deliberately generous enough for real diagnosis but prevents one
-   * failure from funding dozens of unrelated reads. */
+  /** Tighten duplicate-read handling after a still-unresolved command failure.
+   * Fresh line ranges and questions remain available for diagnosis. */
   maxInvestigationReadsPerFailureEpisode: number;
 }
 
@@ -44,6 +43,19 @@ const INVESTIGATION_READ_TOOLS = new Set([
   'lsp_symbols',
 ]);
 
+function differentApproach(tool: string): string {
+  return tool === 'run_command'
+    ? 'Inspect the previous output, run a narrower test case or a different verification command, make a targeted repair, or move to the next validation step. A successful source edit permits re-verifying this command.'
+    : 'Form a new hypothesis or reduce scope.';
+}
+
+function lastMatchingIndex(actions: ActionRecord[], matches: (action: ActionRecord) => boolean): number {
+  for (let i = actions.length - 1; i >= 0; i -= 1) {
+    if (matches(actions[i]!)) return i;
+  }
+  return -1;
+}
+
 function isSuccessfulMutation(action: ActionRecord): boolean {
   return action.status === 'success' && (action.tool === 'write_file' || action.tool === 'apply_edit');
 }
@@ -66,7 +78,16 @@ function unresolvedFailureEpisodeStart(actions: ActionRecord[]): number | undefi
 
     const resolvedLater = actions
       .slice(failureIndex + 1)
-      .some((candidate) => candidate.tool === 'run_command' && candidate.paramsHash === failure.paramsHash && candidate.status === 'success');
+      .some(
+        (candidate) =>
+          candidate.tool === 'run_command' &&
+          candidate.paramsHash === failure.paramsHash &&
+          candidate.status === 'success' &&
+          // A command only resolves a failure episode if it actually exited 0: a
+          // command that is still running (or that never reported an exit status)
+          // has not proven anything about the failure.
+          candidate.exitCode === 0,
+      );
     if (resolvedLater) continue;
 
     let start = failureIndex;
@@ -133,12 +154,14 @@ export class LoopDetector {
    * filesystem/LSP again. Once such a cached replay is recorded, this method
    * returns undefined and evaluate() hard-blocks further repetition.
    */
-  reusableSuccessfulRead(actions: ActionRecord[], tool: string, paramsHash: string): ActionRecord | undefined {
-    if (!INVESTIGATION_READ_TOOLS.has(tool)) return undefined;
-    const sameAction = evidenceWindow(actions, tool, paramsHash).filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+  reusableSuccessfulRead(actions: ActionRecord[], tool: string, paramsHash: string, contextFingerprint?: string): ActionRecord | undefined {
+    if (tool !== 'read_file' || !contextFingerprint) return undefined;
+    const sameAction = evidenceWindow(actions, tool, paramsHash).filter(
+      (a) => a.tool === tool && a.paramsHash === paramsHash && a.contextFingerprint === contextFingerprint,
+    );
     const cachedReplayExists = sameAction.some(isCachedInvestigation);
     if (cachedReplayExists) return undefined;
-    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a));
+    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a) && a.readObservationComplete !== false && Boolean(a.observation));
     return realSuccesses.length >= this.policy.maxSameSuccessfulRead ? realSuccesses.at(-1) : undefined;
   }
 
@@ -149,40 +172,66 @@ export class LoopDetector {
     const start = unresolvedFailureEpisodeStart(actions);
     if (start === undefined) return undefined;
     const failure = [...actions.slice(0, start + 1)].reverse().find((action) => action.tool === 'run_command' && action.status === 'error');
-    const reads = actions.slice(start + 1).filter((action) => INVESTIGATION_READ_TOOLS.has(action.tool) && action.status === 'success').length;
+    const reads = actions.slice(start + 1).filter((action) => INVESTIGATION_READ_TOOLS.has(action.tool) && action.status === 'success' && !isCachedInvestigation(action)).length;
     return { reads, failure };
   }
 
-  evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined): LoopVerdict {
+  evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined, contextFingerprint?: string, refreshRead = false): LoopVerdict {
     const relevantActions = evidenceWindow(actions, tool, paramsHash);
     const sameAction = relevantActions.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
-    const failures = sameAction.filter((a) => a.status === 'error' || a.status === 'blocked');
+    // A PASS resolves the failure episode for this exact action. A successful
+    // source edit also gives a failing command a fresh verification chance.
+    // Keep the full window for successful-read thrift; guard rejections are
+    // not executions and cannot increase the failure count.
+    const latestEdit = tool === 'run_command' ? lastMatchingIndex(relevantActions, isSuccessfulMutation) : -1;
+    const sameActionSinceEdit = relevantActions.slice(latestEdit + 1).filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+    const latestSuccess = lastMatchingIndex(sameActionSinceEdit, (a) => a.status === 'success');
+    const failureEpisode = sameActionSinceEdit.slice(latestSuccess + 1);
+    const failures = failureEpisode.filter((a) => a.status === 'error' && !a.observation?.startsWith('LOOP PREVENTION:'));
     const priorFailures = failures.map(
       (a) => `- ${a.paramsSummary} → ${a.observation ? a.observation.slice(0, 200) : a.status}`,
     );
 
     if (INVESTIGATION_READ_TOOLS.has(tool)) {
+      if (tool === 'read_file' && refreshRead && contextFingerprint) {
+        const lastProgress = lastMatchingIndex(relevantActions, (a) => a.status === 'success' && (a.tool === 'run_command' || isSuccessfulMutation(a)));
+        const alreadyRefreshed = relevantActions.slice(lastProgress + 1).some(
+          (a) => a.tool === 'read_file' && a.paramsHash === paramsHash && a.contextFingerprint === contextFingerprint && a.readRefresh && a.status === 'success',
+        );
+        if (alreadyRefreshed) {
+          return {
+            allowed: false,
+            attempts: sameAction.length,
+            priorFailures,
+            reason: 'An explicit fresh read already confirmed this exact request and file version since the last edit or successful command. Use that result until there is new work to verify.',
+          };
+        }
+      }
+      // A repeated read is only redundant when its earlier observation is
+      // complete, the exact requested range matches, and the file is still
+      // the same version. Search/LSP/list calls do not carry this context.
+      const successfulReads = tool === 'read_file' && contextFingerprint
+        ? sameAction.filter((a) => a.status === 'success' && a.contextFingerprint === contextFingerprint && a.readObservationComplete !== false && Boolean(a.observation))
+        : [];
       const pressure = this.investigationPressure(actions);
-      if (pressure && pressure.reads >= this.policy.maxInvestigationReadsPerFailureEpisode) {
+      if (!refreshRead && pressure && pressure.reads >= this.policy.maxInvestigationReadsPerFailureEpisode && successfulReads.length > 0) {
         return {
           allowed: false,
           attempts: sameAction.length,
           priorFailures,
           reason:
-            `Investigation has already consumed ${pressure.reads} successful reads since the current verification failure${pressure.failure ? ` (${pressure.failure.paramsSummary})` : ''}. ` +
-            `Further reading is blocked until you act on the evidence: make the targeted repair, re-run the failing verification, or explicitly change the plan/hypothesis instead of widening the search.`,
+            `The exact read request already succeeded for this file version. ${pressure.reads} real investigation reads followed the current verification failure. ` +
+            `Use the recorded observation or request a different line range to answer a new question.`,
         };
       }
-
-      const successfulReads = sameAction.filter((a) => a.status === 'success');
-      if (successfulReads.length >= this.policy.maxSameSuccessfulRead) {
+      if (!refreshRead && successfulReads.length >= this.policy.maxSameSuccessfulRead) {
         return {
           allowed: false,
           attempts: sameAction.length,
           priorFailures,
           reason:
-            `The same investigation evidence already succeeded ${successfulReads.length}× without a relevant source change. ` +
-            `Use the existing observation, inspect a genuinely different region/question, or edit/verify before rereading it.`,
+            `The exact read request already succeeded ${successfulReads.length}× for this file version. ` +
+            `Use the existing observation, request a different region, or set refresh:true once for a deliberate fresh confirmation.`,
         };
       }
     }
@@ -196,7 +245,7 @@ export class LoopDetector {
           priorFailures,
           reason:
             `Action failed ${sameError.length}× with the same error signature. ` +
-            `Repeating it is blocked. Form a new hypothesis or reduce scope.`,
+            `Repeating it is blocked. ${differentApproach(tool)}`,
         };
       }
     } else {
@@ -212,7 +261,7 @@ export class LoopDetector {
             priorFailures,
             reason:
               `Action failed ${count}× with the same error signature (${sig}). ` +
-              `Repeating it is blocked. Form a new hypothesis or reduce scope.`,
+              `Repeating it is blocked. ${differentApproach(tool)}`,
           };
         }
       }
@@ -224,8 +273,8 @@ export class LoopDetector {
         attempts: sameAction.length,
         priorFailures,
         reason:
-          `Action failed ${failures.length}× (across ${sameAction.length} attempts). ` +
-          `It is now hard-blocked. Choose a different approach.`,
+          `Action failed ${failures.length}× (across ${failureEpisode.length} attempts). ` +
+          `It is now hard-blocked. Choose a different approach. ${differentApproach(tool)}`,
       };
     }
 

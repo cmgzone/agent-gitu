@@ -11,9 +11,10 @@ import type { SkillStore } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { CodingEventPayload, CodingEventSink } from '../coding/events.js';
 import type { ActionRecord, MemoryRetrievalContext, ToolResult } from '../types.js';
-import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { excerpt, hashParams, summarizeParams } from '../util.js';
+import { closestNameMatches, excerpt, hashParams, normalizeToolPath, summarizeParams } from '../util.js';
+import { FileKnowledgeStore } from '../context/file-knowledge.js';
 import * as narration from '../agent/narration.js';
 
 /** Outputs larger than this are persisted to an artifact; the model gets the
@@ -22,6 +23,8 @@ const ARTIFACT_THRESHOLD = 4000;
 import {
   formatToolValidationError,
   BackgroundCommandRegistry,
+  commandResultSource,
+  isCommandPending,
   toolAgentStatus,
   toolApplyEdit,
   toolBrowse,
@@ -38,6 +41,7 @@ import {
   toolLspHover,
   toolLspReferences,
   toolLspSymbols,
+  MAX_READ_OUTPUT_CHARS,
   toolReadFile,
   toolRunCommand,
   toolSearchFiles,
@@ -55,8 +59,33 @@ import {
 } from '../tools/tools.js';
 
 import { toolCreateDocument } from '../tools/productivity.js';
+import type { FileDiff } from '../tools/diff.js';
 import { toolScheduleManage } from '../cron/tools.js';
 import { isObservationTool } from '../agent/agent-workflow.js';
+
+/** Every tool name this executor dispatches, for "did you mean" suggestions. */
+const EXECUTOR_TOOL_NAMES = [
+  'read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'web_fetch',
+  'browse', 'browser', 'delegate', 'agent_status', 'list_skills', 'create_skill',
+  'update_skill', 'use_skill', 'use_skill_reference', 'memory', 'list_mcp',
+  'configure_mcp', 'list_connections', 'update_connection', 'run_command',
+  'create_document', 'schedule_manage', 'lsp_diagnostics', 'lsp_definition',
+  'lsp_references', 'lsp_hover', 'lsp_symbols',
+];
+
+/**
+ * An unknown tool call is a routing problem, not the end of the run: name the
+ * closest real tools, point at the shell/MCP fallbacks, and require reporting
+ * missing credentials as a block so the user is asked instead of the task
+ * silently stopping.
+ */
+function unknownToolGuidance(tool: string): string {
+  const parts = [`Unknown tool: ${tool} — nothing was executed; that name is not a valid action tool.`];
+  const suggestions = closestNameMatches(tool, EXECUTOR_TOOL_NAMES);
+  if (suggestions.length > 0) parts.push(`Did you mean: ${suggestions.join(', ')}? Retry with the exact name and params from the action grammar.`);
+  parts.push('Do NOT abandon the task because of this. Recover: check the action grammar for the real tool name; if no tool covers the goal, accomplish it with run_command (a shell equivalent, an installable CLI, or a small script) or add an integration with configure_mcp after checking list_mcp. If the work needs a credential, API key, or account you do not have, end with request_block naming the exact missing prerequisite (which service, which key) so the user is asked for it — never stop silently.');
+  return parts.join(' ');
+}
 
 export interface ExecuteRequest {
   tool: string;
@@ -113,7 +142,15 @@ export class Executor {
     this.memoryContext = options?.memoryContext;
     this.signal = options?.signal;
     this.onCodingEvent = options?.onCodingEvent;
+    this.fileKnowledge = FileKnowledgeStore.forRepo(guard.lock.repoRoot);
   }
+
+  /**
+   * Durable implementation knowledge (revision-bound). Reads learn facts from
+   * the file version they saw; successful writes re-learn from the written
+   * content; edits invalidate until the next read proves the new revision.
+   */
+  readonly fileKnowledge: FileKnowledgeStore;
 
   private readonly memory?: MemoryStore;
   private readonly signal?: () => AbortSignal | undefined;
@@ -139,15 +176,51 @@ export class Executor {
    * rejected before any policy or loop judgment. Handlers keep the final
    * assertion — defense in depth, not a replacement.
    */
-  private boundaryViolation(params: Record<string, unknown>): string | undefined {
-    const rel = params['path'];
+  private async boundaryViolation(req: ExecuteRequest): Promise<string | undefined> {
+    const rel = req.params['path'];
     if (typeof rel !== 'string' || !rel.trim()) return undefined;
     try {
-      this.guard.assertInside(this.guard.resolve(rel));
+      const abs = this.guard.resolve(rel);
+      if (['read_file', 'list_files', 'search_files'].includes(req.tool)) {
+        try { this.guard.assertReadable(abs); }
+        catch (error) {
+          const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
+          if (!this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions).allowed) throw error;
+          const scope = this.guard.diagnosticReadScope(abs);
+          if (!await this.policy.approveDiagnosticRead(req.tool, scope.path, scope.directory)) throw error;
+          if (this.signal?.()?.aborted) throw new Error('Diagnostic read cancelled');
+          this.guard.grantDiagnosticRead(scope);
+          this.guard.assertReadable(abs);
+          this.emit(`diagnostic-read approved read-only access to ${scope.path}`);
+        }
+      } else this.guard.assertInside(abs);
     } catch (err) {
       return `DENIED by project boundary: ${(err as Error).message}`;
     }
     return undefined;
+  }
+
+  private readContextFingerprint(req: ExecuteRequest): string | undefined {
+    if (req.tool !== 'read_file' || typeof req.params['path'] !== 'string') return undefined;
+    try {
+      const abs = this.guard.resolve(req.params['path']);
+      this.guard.assertReadable(abs);
+      const stat = statSync(abs);
+      // The loop hash groups nearby offsets into 200-line buckets. A cached
+      // observation is safe only for the exact read request, including limit
+      // and output cap, against this specific file version.
+      const rawOffset = Number(req.params['offset'] ?? 1);
+      const rawLimit = Number(req.params['limit'] ?? 2000);
+      const readParams = {
+        path: normalizeToolPath(req.params['path']),
+        offset: Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1,
+        limit: Number.isFinite(rawLimit) ? Math.min(2000, Math.max(1, Math.floor(rawLimit))) : 2000,
+        maxChars: Math.min(60_000, Math.max(4_000, Number(req.params['maxChars'] ?? MAX_READ_OUTPUT_CHARS))),
+      };
+      return stat.isFile() ? `${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${hashParams('read_file_request', readParams)}` : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async execute(req: ExecuteRequest): Promise<ExecuteOutcome> {
@@ -214,7 +287,7 @@ export class Executor {
     // enforce at execution entry (Windows case-folding, symlink escape), but
     // applied BEFORE any policy/loop judgment so the model never receives a
     // policy verdict on a call the harness would never execute.
-    const boundaryMessage = this.boundaryViolation(req.params);
+    const boundaryMessage = await this.boundaryViolation(req);
     if (boundaryMessage) {
       const record = this.ledger.recordAction({
         stepId,
@@ -231,6 +304,7 @@ export class Executor {
       this.emitCoding({ type: 'policy_denied', reason: 'project_guard', tool: req.tool, operation: summary, detail: boundaryMessage });
       return { record, result: { ok: false, output: boundaryMessage }, deniedByPolicy: boundaryMessage };
     }
+    const readContextFingerprint = this.readContextFingerprint(req);
 
     // User instruction policy: explicit user instructions outrank agent
     // defaults and are enforced deterministically before any other judgment.
@@ -287,8 +361,9 @@ export class Executor {
     // LoopDetector is injected at this boundary and older/custom hosts may
     // implement only evaluate(). Keep the cache optimization optional so a
     // newly-added helper cannot crash otherwise valid tool execution.
+    const refreshRead = req.tool === 'read_file' && req.params['refresh'] === true;
     const reusableRead =
-      typeof this.loopDetector.reusableSuccessfulRead === 'function' ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash) : undefined;
+      !refreshRead && typeof this.loopDetector.reusableSuccessfulRead === 'function' ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash, readContextFingerprint) : undefined;
     if (reusableRead) {
       const cached =
         `${CACHED_INVESTIGATION_PREFIX}: ${summary}\n` +
@@ -301,16 +376,19 @@ export class Executor {
         paramsHash,
         paramsSummary: summary,
         status: 'success',
+        contextFingerprint: readContextFingerprint,
+        readObservationComplete: true,
         reason: req.reason,
         expected: req.expected,
         observation: cached,
         durationMs: Date.now() - started,
       });
       this.emit(`cache    ${summary} (reused unchanged investigation observation)`);
+      this.fileKnowledge.noteRereadAvoided();
       return { record, result: { ok: true, output: cached } };
     }
 
-    const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined);
+    const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined, readContextFingerprint, refreshRead);
     if (!loopVerdict.allowed) {
       const message = LoopDetector.summarizeBlock(loopVerdict);
       const record = this.ledger.recordAction({
@@ -388,7 +466,11 @@ export class Executor {
     this.emit(`run      ${summary}${req.reason ? ` — ${req.reason}` : ''}`);
     // The command lifecycle is emitted natively here, at the dispatch boundary:
     // the tool reports the execution facts, this layer turns them into events.
-    if (req.tool === 'run_command') this.emitCoding({ type: 'command_started', command: String(req.params['command'] ?? '') });
+    // A status poll or a stop acts on an already-started command, so only a real
+    // run opens a command card.
+    if (req.tool === 'run_command' && String(req.params['action'] ?? 'run') === 'run') {
+      this.emitCoding({ type: 'command_started', command: String(req.params['command'] ?? '') });
+    }
     const ctx: ToolContext = {
       guard: this.guard,
       cwd: this.guard.lock.repoRoot,
@@ -528,12 +610,21 @@ export class Executor {
             }
             break;
           }
-          result = { ok: false, output: `Unknown tool: ${req.tool}`, errorSignature: 'unknown-tool' };
+          if (req.tool.startsWith('mcp:')) {
+            result = { ok: false, output: `Unknown tool: ${req.tool} — MCP support is not wired in this session, so MCP tools cannot be called. Accomplish the goal another way (run_command with a shell equivalent) or, if a credential or integration is missing, end with request_block naming the exact missing prerequisite so the user is asked.`, errorSignature: 'unknown-tool' };
+            break;
+          }
+          result = { ok: false, output: unknownToolGuidance(req.tool), errorSignature: 'unknown-tool' };
       }
     } catch (err) {
       const msg = (err as Error).message;
       result = { ok: false, output: `Tool crashed: ${msg}`, errorSignature: msg.slice(0, 16) };
     }
+
+    // Durable implementation knowledge rides beside the action record: facts
+    // learned from what was actually read/written, bound to the content
+    // revision. Failures never teach knowledge; edits invalidate it.
+    this.updateFileKnowledge(req, result);
 
     // recordAction persists immediately below. Fold touched-file bookkeeping
     // into that same ledger write; saving once per file and then again for the
@@ -541,9 +632,24 @@ export class Executor {
     for (const f of result.filesTouched ?? []) {
       if (!this.ledger.data.filesChanged.includes(f)) this.ledger.data.filesChanged.push(f);
     }
-    if (result.ok && result.linesAdded) {
-      const file = String(req.params['path'] ?? '');
-      this.emit(`lines    ${file} +${result.linesAdded} lines`);
+    // A file change is published NATIVELY with real counts and a renderable diff
+    // body. The legacy `lines` line alone could only ever carry an addition, which
+    // is why a rewrite rendered as a green "+12" with the removals invisible.
+    if (result.ok && (result.filesTouched?.length ?? 0) > 0) {
+      const file = String(req.params['path'] ?? result.filesTouched?.[0] ?? '');
+      const added = result.linesAdded ?? 0;
+      const removed = result.linesRemoved ?? 0;
+      if (added > 0 || removed > 0) {
+        const diff = (result.payload as { diff?: FileDiff } | undefined)?.diff;
+        this.emit(`lines    ${file} +${added}${removed > 0 ? ` -${removed}` : ''} lines`);
+        this.emitCoding({
+          type: 'file_changed',
+          path: file,
+          linesAdded: added,
+          linesRemoved: removed,
+          ...(diff?.lines?.length ? { diff: diff.lines } : {}),
+        });
+      }
     }
 
     // Tool-output discipline: the model receives a bounded digest; the FULL
@@ -570,6 +676,11 @@ export class Executor {
       paramsHash,
       paramsSummary: summary,
       status: result.ok ? 'success' : 'error',
+      contextFingerprint: result.ok && readContextFingerprint === this.readContextFingerprint(req) ? readContextFingerprint : undefined,
+      // Only a complete ledger observation can answer a future repeat. The
+      // normal 800-character excerpt may omit the requested middle lines.
+      readObservationComplete: req.tool === 'read_file' && result.ok ? result.output.length <= 800 : undefined,
+      readRefresh: refreshRead || undefined,
       errorSignature: result.ok ? undefined : result.errorSignature,
       exitCode: result.exitCode,
       reason: req.reason,
@@ -581,18 +692,80 @@ export class Executor {
     this.emit(`${result.ok ? 'ok       ' : 'error    '} ${summary} (${record.durationMs}ms)`);
     if (result.output) this.emit(`out      ${excerpt(result.output, 900).replace(/\n/g, ' ⏎ ')}`);
     if (req.tool === 'run_command') {
-      this.emitCoding({
-        type: 'command_finished',
-        command: String(req.params['command'] ?? ''),
-        // `ok` is this layer's interpretation; `exitCode` is the raw fact from
-        // the tool result and is omitted when the process produced no exit
-        // status at all (cancelled before launch, timeout, spawn failure).
-        ok: result.ok,
-        ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
-        durationMs: record.durationMs,
-      });
+      const command = commandResultSource(result, req.params);
+      // A command that has not finished has no outcome to report: closing its card
+      // here would show a verdict that never happened. The poll (or stop) that
+      // observes the terminal state closes it instead, with the job's own runtime.
+      if (command && !isCommandPending(result)) {
+        this.emitCoding({
+          type: 'command_finished',
+          command,
+          // `ok` is this layer's interpretation; `exitCode` is the raw fact from
+          // the tool result and is omitted when the process produced no exit
+          // status at all (cancelled before launch, timeout, spawn failure).
+          ok: result.ok,
+          ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : {}),
+          durationMs: result.durationMs ?? record.durationMs,
+        });
+      }
     }
     return { record, result };
+  }
+
+  /**
+   * Update durable implementation knowledge from a tool outcome.
+   *
+   *  - read_file  → learn facts from the version that was read (sha256 bound)
+   *  - write_file → re-learn from the written content (file is known exactly)
+   *  - apply_edit → INVALIDATE: the on-disk content no longer matches what the
+   *                 facts were extracted from, and presenting stale signatures
+   *                 as current is worse than having none. The next read proves
+   *                 the new revision.
+   *
+   * Only successful calls teach knowledge: a failed read proves nothing about
+   * the file. At most THREE files per action are recorded (multi-file actions
+   * must not flood the store).
+   */
+  private updateFileKnowledge(req: ExecuteRequest, result: { ok: boolean }): void {
+    if (!result.ok) return;
+    if (req.tool === 'apply_edit') {
+      const rel = req.params['path'];
+      if (typeof rel === 'string' && rel) this.fileKnowledge.invalidate(rel);
+      return;
+    }
+    if (req.tool !== 'read_file' && req.tool !== 'write_file') return;
+
+    const rel = req.params['path'];
+    if (typeof rel !== 'string' || !rel) return;
+    let abs: string;
+    try {
+      abs = this.guard.resolve(rel);
+      this.guard.assertInside(abs);
+    } catch {
+      return;
+    }
+    try {
+      const st = statSync(abs);
+      if (!st.isFile()) return;
+      // Telemetry: was this read covered by fresh knowledge (redundant) or
+      // was knowledge unable to serve it (required)? Facts for a path the
+      // model re-reads anyway are the "why do remaining rereads happen" signal.
+      const prior = this.fileKnowledge.get(this.guard.toRelative(abs));
+      if (prior && this.fileKnowledge.stillMatches(prior)) this.fileKnowledge.noteRereadRedundant();
+      else this.fileKnowledge.noteRereadRequired();
+      const content = readFileSync(abs, 'utf8');
+      const learned = this.fileKnowledge.record({
+        path: this.guard.toRelative(abs),
+        content,
+        size: st.size,
+        mtimeMs: st.mtimeMs,
+      });
+      if (learned && learned.facts.length > 0) {
+        this.emit(`knowledge ${learned.facts.length} fact(s) learned from ${learned.path}`);
+      }
+    } catch {
+      /* knowledge is an optimization — never let it break a tool result */
+    }
   }
 
   /** Persist a large raw tool output under .hermes/artifacts (pruned to 50). */

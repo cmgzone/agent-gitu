@@ -18,6 +18,14 @@ describe('ProjectGuard', () => {
     mkdirSync(TEMP_ROOT, { recursive: true });
   });
 
+  it('detects the same project authority asynchronously', async () => {
+    const dir = makeProject('guard-async', { name: 'guard-async', scripts: { test: 'vitest run' } });
+    const sync = ProjectGuard.detect(dir);
+    const asyncGuard = await ProjectGuard.detectAsync(dir);
+    expect(asyncGuard.lock).toMatchObject({ ...sync.lock, lockedAt: asyncGuard.lock.lockedAt });
+    expect(() => asyncGuard.assertInside(path.join(dir, 'node_modules', 'x'))).toThrow();
+  });
+
   it('detects project root, name, and npm scripts', () => {
     const dir = makeProject('guard-basic', {
       name: 'guard-basic',

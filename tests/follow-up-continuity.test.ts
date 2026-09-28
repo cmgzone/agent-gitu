@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyFollowUp, conversationIntent, extractTargetHints, extractInstructionsFromFollowUp, applyFollowUpToLedger, evaluateInstructionGate } from '../src/agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, extractTargetHints, extractInstructionsFromFollowUp, applyFollowUpToLedger, evaluateInstructionGate, supersedeConflictingAuthority } from '../src/agent/follow-up.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
 import type { ProjectLock } from '../src/types.js';
 import fs from 'node:fs';
@@ -106,6 +106,59 @@ describe('Follow-up Continuity & Delta Routing', () => {
       expect(ledger.step('step-1')?.status).toBe('cancelled');
       expect(ledger.data.taskAuthority?.currentGoal).toContain('Vercel');
       expect(ledger.data.planRevisions?.at(-1)?.reason).toContain('Superseded by user request');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('never cancels plan steps from contrastive prose in a re-stated plan document (Black Box regression)', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Black Box security capability', project, mode: 'agent' });
+      ledger.setPlan([
+        { description: 'Build the deterministic Policy Enforcement Point in src/blackbox/policy.ts', verification: 'vitest run tests/blackbox-policy.test.ts', subtasks: ['the model must never decide its own authorization'] },
+        { description: 'Integrate capability intersection into trusted Cowork delegation', verification: 'vitest run tests/blackbox-delegation.test.ts' },
+      ]);
+      // A re-stated plan document: contrastive prose that MENTIONS model/LLM
+      // without rejecting them. This exact shape cancelled steps 4 and 7 of
+      // the Black Box task via the harvested token "model".
+      const planDocument = [
+        'Yes. Here is a plan you can hand directly to your coding agent.',
+        'The runtime, rather than the LLM, enforces exactly what is authorized.',
+        'Successful ownership verification should still not automatically start testing.',
+        'Gitu should receive a capability derived from it rather than being trusted to interpret a sentence.',
+        'The LLM is never the security boundary.',
+        'Without making "the model decided it had permission" part of your security model.',
+      ].join('\n');
+      supersedeConflictingAuthority(ledger, planDocument);
+      expect(ledger.step('step-1')?.status).toBe('pending');
+      expect(ledger.step('step-2')?.status).toBe('pending');
+      expect(ledger.data.planRevisions ?? []).toHaveLength(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('strong rejections cancel steps but weak contrastive prose only retires instructions', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Migrate persistence', project, mode: 'agent' });
+      ledger.setPlan([
+        { description: 'Move the repository layer to Prisma', verification: 'tests pass' },
+        { description: 'Rewrite the database seeds', verification: 'tests pass' },
+      ]);
+      const createdAt = new Date().toISOString();
+      ledger.addInstruction({ text: 'Use Prisma for all new schema work', enforcement: 'hard', status: 'active', createdAt });
+      // Contrastive prose only: "not the Prisma client" is a weak negation.
+      // It retires the standing Prisma instruction but must NOT cancel the
+      // Prisma step — mention/comparison prose never deletes work items.
+      supersedeConflictingAuthority(ledger, 'Actually not the Prisma client; keep the schema work on track.');
+      expect(ledger.step('step-1')?.status).toBe('pending');
+      expect(ledger.hardInstructions().some((i) => i.text.includes('Prisma'))).toBe(false);
+      // Strong: an explicit rejection of Prisma cancels the Prisma step.
+      supersedeConflictingAuthority(ledger, "I don't want Prisma; use Drizzle instead.");
+      expect(ledger.step('step-1')?.status).toBe('cancelled');
+      expect(ledger.step('step-2')?.status).toBe('pending');
     } finally {
       cleanup();
     }

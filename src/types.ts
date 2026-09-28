@@ -126,6 +126,12 @@ export interface ActionRecord {
   paramsHash: string;
   paramsSummary: string;
   status: ActionStatus;
+  /** Exact read request and file version, even if the compact observation is incomplete. */
+  contextFingerprint?: string;
+  /** Whether the compact ledger observation contains the entire read result. */
+  readObservationComplete?: boolean;
+  /** A deliberate on-disk reconfirmation requested with read_file refresh:true. */
+  readRefresh?: boolean;
   errorSignature?: string;
   exitCode?: number;
   reason: string;
@@ -495,6 +501,10 @@ export interface TokenTelemetrySnapshot {
   /** Model calls that produced no executable action (wasted spend). */
   wastedCalls: number;
   filesInContextPack: number;
+  /** FileKnowledge feature counters — did durable facts actually reduce
+   *  rereads, and why do the remaining ones happen? Optional: absent on
+   *  snapshots recorded before the feature existed. */
+  fileKnowledge?: FileKnowledgeStats;
   /** Behavior metrics for the target-first & instruction-reliability model
    *  (computed end-of-run from the ledger; `turnsBeforeFirstEdit` is undefined
    *  when the run never successfully edited a file). */
@@ -909,11 +919,26 @@ export interface ToolResult {
   errorSignature?: string;
   filesTouched?: string[];
   linesAdded?: number;
+  /** Lines the change DELETED. Without it a rewrite looks like a pure addition. */
+  linesRemoved?: number;
   image?: string;
+  /**
+   * Terminal state of a managed command. `running` means the process is still
+   * alive: the call returned a status instead of blocking the turn, so nothing
+   * may be derived from this result yet (no evidence, no step completion).
+   * Absent for tools that do not manage processes.
+   */
+  status?: 'running' | 'exited' | 'stopped';
+  /** Job handle for a managed command, pollable with run_command action:status. */
+  jobId?: string;
+  /** How long the command itself ran (a poll reports the job's own elapsed time,
+   *  not the polling call's). */
+  durationMs?: number;
   /** Optional structured data that rides along in-memory (never serialized to the model). */
   payload?: unknown;
 }
 import type { SkillIdentity } from './skills/skills.js';
+import type { FileKnowledgeStats } from './context/file-knowledge.js';
 export type {
   ProblemState,
   ProblemStatus,

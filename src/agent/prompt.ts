@@ -310,6 +310,8 @@ Execution:
 
 Tools:
 - read_file    {"path":"src/x.ts","offset":1,"limit":200}
+- Diagnostic reads: read_file/list_files/search_files can inspect an explicitly named dependency path. For an external application log or diagnostic folder, request its exact absolute path; the host asks the user for scoped read-only approval. Do not copy logs into the project or use shell commands to evade a denied read. Diagnostic approval grants no write access.
+    To confirm unchanged content from disk despite a cached read, set "refresh":true and state why in reason. A second identical refresh needs intervening edit or successful command.
 - write_file   {"path":"src/x.ts","content":"full file content"}
 - apply_edit   {"path":"src/x.ts","oldString":"exact existing text","newString":"replacement","replaceAll":true}
 - list_files   {"path":"src"}
@@ -437,7 +439,7 @@ export interface TaskStateScope {
   files?: string[];
 }
 
-export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string, scope?: TaskStateScope): string {
+export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string, scope?: TaskStateScope, fileKnowledgeSection?: string): string {
   const d = ledger.data;
   // A full 30-step plan can exceed the useful working-memory budget on every
   // planning turn. Small plans remain rich for review; larger ones use the
@@ -538,6 +540,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     ...(designBlock ? [designBlock] : []),
     planBlock,
     `EVIDENCE:\n${evidence || '  (none yet)'}`,
+    fileKnowledgeSection ?? '',
     failures.length ? `FAILED:\n${failures.map((f) => `  ${f}`).join('\n')}` : '',
     `FILES CHANGED: ${files || '(none)'}`,
     next ? `NEXT: ${next.id}${next.area ? ` (${next.area})` : ''} — ${next.description}` : '',

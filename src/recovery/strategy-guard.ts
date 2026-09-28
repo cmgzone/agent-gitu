@@ -110,6 +110,13 @@ export class StrategyGuard {
     evidenceCountOrContext: number | StrategyUnlockContext = 0,
     legacyEvidenceCount = 0,
   ): StrategyVerdict {
+    // Reading a managed command's status changes nothing and has to stay
+    // repeatable while a problem is active: waiting on a long build is not a
+    // second "strategy", and blocking the poll would strand the agent on a
+    // command whose result it can no longer read.
+    if (input.tool === 'run_command' && String(input?.params?.['action'] ?? 'run') === 'status') {
+      return { allowed: true };
+    }
     const ctx = this.normalizeContext(evidenceCountOrContext, legacyEvidenceCount);
     const identity = this.buildIdentity(input, activeProblem, ctx);
     const fingerprint = sha256(

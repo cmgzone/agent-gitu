@@ -26,7 +26,17 @@ describe('ChatGPT subscription provider', () => {
     });
   });
 
-  it('constructs the official SDK-backed client without an API key', () => {
+  it('keeps its offline seed usable when the runtime cannot be queried', () => {
+    const spec = PROVIDERS['chatgpt']!;
+    // The picker is filled from the runtime's live list; the seed only answers
+    // when that query fails, so the default must always be among the seeds and
+    // no retired model may linger there (the service rejects retired ids).
+    expect(spec.models).toContain(spec.defaultModel);
+    expect(new Set(spec.models).size).toBe(spec.models.length);
+    expect(spec.models.every((id) => /^gpt-[\w.-]+$/.test(id))).toBe(true);
+  });
+
+  it('constructs the subscription bridge client without an API key', () => {
     // The constructor only needs a resolvable local binary; it does not start
     // Codex or make a network request. Point it at Node for an isolated test.
     process.env['HERMES_CODEX_PATH'] = process.execPath;

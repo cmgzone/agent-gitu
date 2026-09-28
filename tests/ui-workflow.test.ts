@@ -7,13 +7,15 @@ import { UI_HTML } from '../src/server/ui.js';
 import { SessionStore } from '../src/server/session-store.js';
 
 function controls() {
-  const button = { disabled: false, textContent: '', title: '', style: {}, attributes: {} as Record<string, string>,
-    setAttribute(key: string, value: string) { this.attributes[key] = value; } };
+  const makeButton = () => ({ disabled: false, title: '', attributes: {} as Record<string, string>,
+    setAttribute(key: string, value: string) { this.attributes[key] = value; },
+    classList: { toggle(_name: string, _active: boolean) {} } });
+  const agent = makeButton(), plan = makeButton(), plus = makeButton();
   const state = { active: 'home', sessions: { a: { session: { status: 'completed' } }, b: { session: { status: 'running' } } } };
-  const context = createContext({ S: state, $: (id: string) => id === 'planOnce' ? button : null });
+  const context = createContext({ S: state, $: (id: string) => ({ menuAgent: agent, menuPlan: plan, homePlusBtn: plus })[id as 'menuAgent' | 'menuPlan' | 'homePlusBtn'] ?? null });
   const source = UI_HTML.slice(UI_HTML.indexOf('  function planRequested('), UI_HTML.indexOf('  function controlsHtml('));
   new Script(source).runInContext(context);
-  return { context, state, button };
+  return { context, state, agent, plan, plus };
 }
 
 function composerChecklist(ledger: unknown) {
@@ -25,7 +27,7 @@ function composerChecklist(ledger: unknown) {
     $: (id: string) => id === 'composerTodos' ? panel : null,
     esc: (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
   });
-  const source = UI_HTML.slice(UI_HTML.indexOf('  function composerTodoItems('), UI_HTML.indexOf('  function renderRunOverview('));
+  const source = UI_HTML.slice(UI_HTML.indexOf('  function composerTodoItems('), UI_HTML.indexOf('  function failureSummary('));
   new Script(source).runInContext(context);
   return { context, get panel() { return panel; }, state, recreatePanel() { panel = createPanel(); } };
 }
@@ -43,29 +45,31 @@ describe('single Agent composer', () => {
   });
 
   it('keeps the temporary plan choice with its composer and clears it after consumption', () => {
-    const { context, state, button } = controls();
+    const { context, state, agent, plan } = controls();
     context.setPlanRequested('home', true);
-    expect(button.attributes['aria-pressed']).toBe('true');
-    expect(button.textContent).toBe('Plan once');
+    expect(plan.attributes['aria-checked']).toBe('true');
+    expect(agent.attributes['aria-checked']).toBe('false');
     state.active = 'a';
     context.updatePlanControl();
-    expect(button.attributes['aria-pressed']).toBe('false');
+    expect(plan.attributes['aria-checked']).toBe('false');
     context.setPlanRequested('a', true);
     context.setPlanRequested('home', false);
     expect(context.planRequested('a')).toBe(true);
     context.setPlanRequested('a', false);
-    expect(button.attributes['aria-pressed']).toBe('false');
+    expect(plan.attributes['aria-checked']).toBe('false');
     expect(controls().context.planRequested('home')).toBe(false);
   });
 
   it('does not offer a new plan toggle while a task is executing', () => {
-    const { context, state, button } = controls();
+    const { context, state, agent, plan } = controls();
     state.active = 'b';
     context.updatePlanControl();
-    expect(button.disabled).toBe(true);
+    expect(agent.disabled).toBe(true);
+    expect(plan.disabled).toBe(true);
     state.sessions.b.session.status = 'completed';
     context.updatePlanControl();
-    expect(button.disabled).toBe(false);
+    expect(agent.disabled).toBe(false);
+    expect(plan.disabled).toBe(false);
   });
 
   it('keeps a collapsed checklist above the composer with the current item, progress, and every task available', () => {

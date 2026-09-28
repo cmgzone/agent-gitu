@@ -345,7 +345,7 @@ describe('ui visual gate sees run_command edits (L13)', () => {
 // ---- M3: checkpoint survives transient git failures -------------------------
 
 describe('checkpoint resilience (M3)', () => {
-  it('reports ok:false instead of throwing when git add fails on a stale lock', () => {
+  it('reports ok:false instead of throwing when git add fails on a stale lock', async () => {
     const dir = makeGitRepo();
     try {
       writeFileSync(path.join(dir, 'b.txt'), 'b\n');
@@ -355,7 +355,7 @@ describe('checkpoint resilience (M3)', () => {
       // A leftover index.lock makes `git add` exit non-zero — exactly the
       // transient failure that used to propagate and fail whole runs.
       writeFileSync(path.join(dir, '.git', 'index.lock'), '');
-      const result = cp.snapshot(ledger, 'step-1', 'test');
+      const result = await cp.snapshot(ledger, 'step-1', 'test');
       expect(result.ok).toBe(false);
       expect(result.message).toMatch(/add failed|skipping/i);
     } finally {

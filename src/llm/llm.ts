@@ -20,7 +20,13 @@ export type LlmContentPart =
   | { type: 'image_url'; image_url: { url: string } };
 
 export type LlmActivityEvent =
-  | { type: 'reasoning' }
+  /**
+   * `text` is the reasoning trace accumulated SO FAR, when the provider streams
+   * one. Without it a reasoning model looked silent: the UI could show that
+   * thinking had started but never what the model was working through, which is
+   * exactly when a user most wants to see it.
+   */
+  | { type: 'reasoning'; text?: string }
   | { type: 'content' }
   | { type: 'tool' };
 
@@ -43,6 +49,8 @@ export interface LlmOptions {
   onUsage?: (usage: LlmUsage) => void;
   /** Called when transport activity transitions (reasoning vs content vs tool deltas). */
   onActivity?: LlmActivityHandler;
+  /** Provider-exposed thinking text or summaries, separate from answer deltas. */
+  onReasoningDelta?: LlmDeltaHandler;
   /** Called before a mid-stream fallback to complete(): earlier partial deltas
    *  are void and the caller should reset any streamed-prose state. */
   onStreamReset?: () => void;
@@ -459,9 +467,18 @@ export interface OpenAiCompatConfig {
 type CompatMessage = {
   content?: string | null;
   reasoning_content?: string;
+  reasoning?: string;
+  reasoning_details?: { type?: string; text?: string; summary?: string }[];
   refusal?: string;
   tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[];
 };
+
+/** Ignore encrypted blocks and signatures; aliases must not duplicate text. */
+function compatReasoning(message: Pick<CompatMessage, 'reasoning_content' | 'reasoning' | 'reasoning_details'> | undefined): string {
+  const details = message?.reasoning_details?.map(detail => detail.type === 'reasoning.text'
+    ? detail.text ?? '' : detail.type === 'reasoning.summary' ? detail.summary ?? '' : '').join('');
+  return details || message?.reasoning_content || message?.reasoning || '';
+}
 
 function objectArguments(raw: unknown): Record<string, unknown> {
   if (typeof raw !== 'string' || !raw.trim()) return {};
@@ -477,7 +494,7 @@ function normalizeCompatTurn(message: CompatMessage | undefined, opts: LlmOption
   const metadata: LlmTurnMetadata = {
     logicalRequestId: opts.logicalRequestId,
     usage,
-    reasoning: typeof message?.reasoning_content === 'string' ? message.reasoning_content : undefined,
+    reasoning: compatReasoning(message) || undefined,
   };
   const calls = (message?.tool_calls ?? [])
     .map((call): LlmToolCall | undefined => {
@@ -561,6 +578,11 @@ export class OpenAiCompatClient implements LlmClient {
     const turn = normalizeCompatTurn(data.choices?.[0]?.message, opts, usage);
     turn.metadata.providerRequestId = typeof data.id === 'string' ? data.id : undefined;
     this.lastReasoning = turn.metadata.reasoning;
+    // Non-streaming turn: the trace is only known once, at the end.
+    if (turn.metadata.reasoning) {
+      opts.onReasoningDelta?.(turn.metadata.reasoning);
+      opts.onActivity?.({ type: 'reasoning', text: turn.metadata.reasoning });
+    }
     return turn;
   }
 
@@ -580,6 +602,12 @@ export class OpenAiCompatClient implements LlmClient {
       if (opts.onUsage) body['stream_options'] = { include_usage: true };
     }
     if (opts.json) body['response_format'] = { type: 'json_object' };
+    if (opts.onReasoningDelta && /\/\/openrouter\.ai(?:\/|$)/i.test(this.baseUrl)) {
+      body['reasoning'] = { exclude: false, ...(opts.effort ? { effort: opts.effort } : { enabled: true }) };
+    }
+    if (opts.onReasoningDelta && /\/\/generativelanguage\.googleapis\.com(?:\/|$)/i.test(this.baseUrl) && /^gemini-(?:2\.5|[3-9])/.test(this.model)) {
+      body['extra_body'] = { google: { thinking_config: { include_thoughts: true } } };
+    }
     if (opts.protocolMode === 'native' && opts.tools && opts.tools.length > 0) {
       body['tools'] = opts.tools.map((tool) => ({
         type: 'function',
@@ -603,7 +631,7 @@ export class OpenAiCompatClient implements LlmClient {
         // provider changes and compatible SDK implementations.
         body['thinking'] = { type: 'enabled' };
         body['reasoning_effort'] = effortWireValue(opts.effort, 'deepseek');
-      } else {
+      } else if (!body['reasoning']) {
         body['reasoning_effort'] = effortWireValue(opts.effort, 'openai');
       }
     }
@@ -706,7 +734,7 @@ export class OpenAiCompatClient implements LlmClient {
       }
       try {
         const json = JSON.parse(payload) as {
-          choices?: { delta?: { content?: string; reasoning_content?: string }; message?: { content?: string } }[];
+          choices?: { delta?: CompatMessage; message?: CompatMessage }[];
           usage?: unknown;
         };
         sawEvent = true;
@@ -717,10 +745,11 @@ export class OpenAiCompatClient implements LlmClient {
           onDelta(delta);
           forwardedAnyDelta = true;
         }
-        const reasonDelta = json.choices?.[0]?.delta?.reasoning_content;
+        const reasonDelta = compatReasoning(json.choices?.[0]?.delta);
         if (reasonDelta) {
           reasoning += reasonDelta;
-          opts.onActivity?.({ type: 'reasoning' });
+          opts.onReasoningDelta?.(reasonDelta);
+          opts.onActivity?.({ type: 'reasoning', text: reasoning });
         }
         const chunkUsage = parseUsage(json.usage);
         if (chunkUsage) streamUsage = chunkUsage;
@@ -757,7 +786,7 @@ export class OpenAiCompatClient implements LlmClient {
       // If partial deltas were already delivered, tell the caller so it can
       // reset its streamed-prose state — otherwise the full text from the
       // fallback overlaps what the user already saw.
-      if (forwardedAnyDelta) opts.onStreamReset?.();
+      if (forwardedAnyDelta || reasoning) opts.onStreamReset?.();
       if (opts.logicalRequestId) {
         throw new LlmError('LLM streaming response was incomplete or unsupported', {
           kind: 'streaming_incompatible',
@@ -834,6 +863,8 @@ export class OpenAiCompatClient implements LlmClient {
             delta?: {
               content?: string | null;
               reasoning_content?: string;
+              reasoning?: string;
+              reasoning_details?: CompatMessage['reasoning_details'];
               refusal?: string;
               tool_calls?: {
                 index?: number;
@@ -857,10 +888,11 @@ export class OpenAiCompatClient implements LlmClient {
         sawEvent = true;
         if (typeof json.id === 'string') providerRequestId = json.id;
         const choice = json.choices?.[0];
-        const reasonDelta = choice?.delta?.reasoning_content;
+        const reasonDelta = compatReasoning(choice?.delta);
         if (reasonDelta) {
           reasoning += reasonDelta;
-          opts.onActivity?.({ type: 'reasoning' });
+          opts.onReasoningDelta?.(reasonDelta);
+          opts.onActivity?.({ type: 'reasoning', text: reasoning });
         }
         const textDelta = choice?.delta?.content ?? choice?.message?.content ?? '';
         if (textDelta) {
@@ -915,7 +947,7 @@ export class OpenAiCompatClient implements LlmClient {
     }
 
     if (streamFailed || !sawEvent) {
-      if (forwardedAnyDelta) opts.onStreamReset?.();
+      if (forwardedAnyDelta || reasoning) opts.onStreamReset?.();
       if (opts.logicalRequestId) {
         throw new LlmError('LLM streaming response was incomplete or unsupported', {
           kind: 'streaming_incompatible',

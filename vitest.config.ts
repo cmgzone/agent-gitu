@@ -5,7 +5,10 @@ export default defineConfig({
     // Nested agent worktrees are independent repositories. Collecting them
     // duplicates whole test suites, slows validation dramatically, and can
     // run stale copies of a test instead of the file being edited here.
-    exclude: ['**/node_modules/**', '**/dist/**', '**/release/**', '**/.freebuff/**', '**/.hermes/worktrees/**'],
+    // `apps/` holds the vendored OpenMuse-derived UI, which gets its own
+    // test tooling in Phase 2 of the UI v2 migration (docs/ui-v2-migration.md);
+    // its dependencies are not installed at the repo root.
+    exclude: ['**/node_modules/**', '**/dist/**', '**/release/**', '**/.freebuff/**', '**/.hermes/worktrees/**', 'apps/**'],
     setupFiles: ['./tests/setup.ts'],
     // Git/execFileSync-heavy tests starve under parallel forks on AV-scanned
     // Windows machines; run files sequentially so they stay fast and stable.

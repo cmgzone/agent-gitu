@@ -176,9 +176,11 @@ export function cleanTelegramText(text: string, fallback = 'Working...'): string
     .replace(/`([^`\n]+)`/g, '$1')
     .replace(/\*\*([^*\n]+)\*\*/g, '$1')
     .replace(/__([^_\n]+)__/g, '$1')
-    .replace(/^\s{0,3}#{1,6}\s+/gm, '')
-    .replace(/^\s*>+\s?/gm, '')
-    .replace(/^\s*[-*+]\s+/gm, '- ')
+    // Line-leading markers may only eat spaces/tabs: a greedy \s would swallow
+    // the blank line above and splice a heading or bullet onto the paragraph.
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]*>+[ \t]?/gm, '')
+    .replace(/^[ \t]*[-*+][ \t]+/gm, '- ')
     .replace(/\r\n?/g, '\n')
     .replace(/\u2026/g, '...')
     .replace(/[\u2018\u2019]/g, "'")
@@ -188,6 +190,15 @@ export function cleanTelegramText(text: string, fallback = 'Working...'): string
     .replace(/·/g, '-')
     .replace(/[✓✔]/g, 'done')
     .replace(/○/g, '-')
+    // Decorative rule lines carry no meaning in a plain-text message: drop them
+    // with their line ending, and strip the rule padding off a wrapped banner
+    // ("------- REPORT -------") so the label survives on its own. The markers
+    // must be contiguous, so a bullet that opens with bold ("- **Tests:**") is
+    // never mistaken for decoration. This runs after the dash/bullet folding
+    // above, so box-drawing and bullet banners collapse into rules first.
+    .replace(/^[^\S\n]*(?:[-=*_~]){3,}(?:\r?\n|$)/gm, '')
+    .replace(/^[^\S\n]*(?:[-=*_~]){3,}/gm, '')
+    .replace(/[ \t]*(?:[-=*_~]){3,}$/gm, '')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -206,6 +217,7 @@ export function telegramAgentMessage(agentName: string | undefined, text: string
 function telegramRequestLabel(request: CoworkRequest): string {
   if (request.kind === 'permission') return 'Approval needed';
   if (request.kind === 'recommendation') return 'Recommendation';
+  if (request.kind === 'credential') return 'Credential needed';
   return 'Question';
 }
 
@@ -225,11 +237,14 @@ export function telegramRequestCardText(request: CoworkRequest, agentName?: stri
   lines.push('', `Request id: ${request.id}`);
   if (request.kind === 'permission') lines.push('Tap Allow or Deny, or reply approve / deny.');
   else if (request.kind === 'recommendation') lines.push('Tap Accept or Dismiss, or reply accept / dismiss.');
+  else if (request.kind === 'credential') lines.push('Never send keys or tokens in chat. Open the Cowork page in the Agent Gitu web app and use the secure credential form on this request.');
   else lines.push(request.options.length > 0 ? 'Tap an option, reply with the option number, or type your answer.' : 'Reply with your answer.');
   return lines.join('\n');
 }
 
 export function telegramRequestReplyMarkup(request: CoworkRequest): Record<string, unknown> | undefined {
+  // Credential requests have no in-chat action: the secure form lives in the web UI.
+  if (request.kind === 'credential') return undefined;
   if (request.kind === 'permission') {
     return { inline_keyboard: [[
       { text: 'Allow', callback_data: `cwreq:${request.id}:approve` },
@@ -317,6 +332,49 @@ export async function sendTelegramDocument(
     const retryAfter = parsed.parameters?.retry_after;
     if (response.status !== 429 || attempt === 2) throw new TelegramError(`Telegram sendDocument failed (HTTP ${response.status}): ${(parsed.description ?? excerpt(body, 200)).replaceAll(token.trim(), '[redacted]')}`, response.status, retryAfter);
     await new Promise((resolve) => setTimeout(resolve, Math.min(60, Math.max(1, retryAfter ?? 1)) * 1_000));
+  }
+}
+
+/** Keep Telegram's short-lived typing status visible for one active Cowork
+ * turn. This is cosmetic: a chat-action failure never interrupts the reply. */
+export class TelegramTypingIndicator {
+  private timer?: ReturnType<typeof setInterval>;
+  private inFlight = false;
+  private retryAfter = 0;
+  private disabled = false;
+
+  constructor(
+    private readonly token: string,
+    private readonly chatId: string,
+    private readonly fetchImpl?: TelegramFetch,
+    private readonly intervalMs = 4_000,
+  ) {}
+
+  start(): void {
+    if (this.timer || this.disabled) return;
+    this.pulse();
+    this.timer = setInterval(() => this.pulse(), this.intervalMs);
+    this.timer.unref?.();
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  private pulse(): void {
+    if (this.inFlight || Date.now() < this.retryAfter) return;
+    this.inFlight = true;
+    void callTelegram(this.fetchImpl, this.token, 'sendChatAction', { chat_id: this.chatId, action: 'typing' })
+      .catch((err: Error) => {
+        if (err instanceof TelegramError && err.status === 429) {
+          this.retryAfter = Date.now() + Math.max(1, err.retryAfter ?? 5) * 1_000;
+        } else if (err instanceof TelegramError && [400, 401, 403].includes(err.status ?? 0)) {
+          this.disabled = true;
+          this.stop();
+        }
+      })
+      .finally(() => { this.inFlight = false; });
   }
 }
 

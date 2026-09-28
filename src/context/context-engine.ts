@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import type { CodeIndex } from './code-index.js';
-import { recentChangeScores } from './change-signals.js';
+import { recentChangeScores, recentChangeScoresAsync } from './change-signals.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
 import type { ContextPack, FileRef, FileRole } from '../types.js';
 import { EMBED_MAX_CHARS, type Embedder } from './embeddings.js';
@@ -121,7 +121,7 @@ export class ContextEngine {
     private readonly index?: CodeIndex,
   ) {}
 
-  buildPack(goal: string, budget: ContextBudget = DEFAULT_CONTEXT_BUDGET, extraTexts: string[] = []): ContextPack {
+  buildPack(goal: string, budget: ContextBudget = DEFAULT_CONTEXT_BUDGET, extraTexts: string[] = [], refreshIndex = true, preparedChanges?: Map<string, number>): ContextPack {
     const root = this.guard.lock.repoRoot;
     // Acceptance criteria and pinned verification commands carry signal the
     // one-line goal often lacks ("auth flow" vs "add rate limiting to
@@ -132,14 +132,12 @@ export class ContextEngine {
     // Recent local work helps disambiguate broad tasks, but contributes only a
     // small tie-breaker so a stale or unrelated edit cannot outrank a direct
     // goal/content match.
-    const changeScores = recentChangeScores(root);
+    const changeScores = preparedChanges ?? (refreshIndex ? recentChangeScores(root) : new Map<string, number>());
 
     if (this.index) {
-      // A watcher is an optimisation, not a consistency boundary. It may be
-      // inside its debounce window (or unavailable on the current platform)
-      // when a new run starts, so take a cheap metadata snapshot here. Only
-      // changed files are read and re-tokenized by CodeIndex.refresh().
-      this.index.refresh(root, ignores);
+      // Desktop callers await buildPackHybrid's worker refresh. Synchronous
+      // consumers can explicitly reuse that snapshot (e.g. specialist handoffs).
+      if (refreshIndex && !this.index.isWatched()) this.index.refresh(root, ignores);
       const contentScores = this.index.contentMatchScores(goalTokens);
       for (const f of this.index.fileList()) {
         files.push({ path: f.path, role: f.role, score: this.score(f.path, f.role, goalTokens, undefined, contentScores.get(f.path)) });
@@ -257,7 +255,9 @@ export class ContextEngine {
     extraTexts: string[] = [],
     embedder?: Embedder,
   ): Promise<{ pack: ContextPack; semantic: boolean }> {
-    const pack = this.buildPack(goal, budget, extraTexts);
+    if (this.index) await this.index.refreshAsync(this.guard.lock.repoRoot, this.guard.lock.ignorePaths, true);
+    const changes = await recentChangeScoresAsync(this.guard.lock.repoRoot);
+    const pack = this.buildPack(goal, budget, extraTexts, false, changes);
     if (!embedder || !this.index) return { pack, semantic: false };
     try {
       await this.index.updateVectors(embedder);

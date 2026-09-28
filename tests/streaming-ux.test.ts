@@ -13,6 +13,24 @@ function makeProject(name: string): string {
 }
 
 describe('Streaming UX — Server side (gitu.ts)', () => {
+  it('streams provider reasoning in plain chat without mixing it into the answer', async () => {
+    const root = makeProject('chat-reasoning');
+    const events: string[] = [];
+    const llm: LlmClient = {
+      name: 'reasoning-chat', complete: async () => 'Hello.',
+      completeStream: async (_messages, opts, delta) => {
+        opts.onReasoningDelta?.('Reviewing the request.');
+        delta('Hello.');
+        return 'Hello.';
+      },
+    };
+    try {
+      await new Gitu({ cwd: root, llm, mode: 'chat', autoLearn: false, onEvent: event => events.push(event) }).run('Hello');
+      expect(events).toContain('activity reasoning-delta "Reviewing the request."');
+      expect(events).toContain('say Hello.');
+      expect(events.filter(event => event.startsWith('tdelta')).join('')).not.toContain('Reviewing the request.');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('flushes pending tdelta on a 25ms timer even when no subsequent chunks arrive', async () => {
     const root = makeProject('timer-flush');
     const events: string[] = [];
@@ -29,6 +47,10 @@ describe('Streaming UX — Server side (gitu.ts)', () => {
         return { kind: 'text', text: '', metadata: {} };
       },
       async completeTurnStream(_messages, _opts, onDelta): Promise<LlmTurnResult> {
+        _opts.onReasoningDelta?.('Checking provider evidence.');
+        expect(events).toContain('activity reasoning-delta "Checking provider evidence."');
+        _opts.onStreamReset?.();
+        expect(events.at(-1)).toBe('activity reasoning-reset');
         // Stream a small chunk (less than 24 chars)
         onDelta('I am checking');
         // Wait 50ms without sending any more chunks — the real timer MUST flush this

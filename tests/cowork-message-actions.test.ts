@@ -82,7 +82,280 @@ describe('cwBody markdown tables', () => {
   });
 });
 
+describe('cwBody prose layout', () => {
+  it('renders markdown headings as real headings, never as raw hashes', () => {
+    const u = fixture();
+    const html = u.context.cwBody(
+      "Here's the inbox report.\n\n---\n\n## support@pikipos.com — Inbox Status\n\n### Two replies drafted\n\nSending is disabled.",
+      [],
+    );
+    expect(html).toContain('<div class="cw-h cw-h2">support@pikipos.com — Inbox Status</div>');
+    expect(html).toContain('<div class="cw-h cw-h3">Two replies drafted</div>');
+    expect(html).not.toContain('#');
+    expect(html).not.toContain('---');
+    expect(html).toContain('Sending is disabled.');
+  });
+
+  it('drops decorative rule lines instead of printing their symbols', () => {
+    const u = fixture();
+    const html = u.context.cwBody('First part.\n\n*****\n\nSecond part.\n\n-----\n\n=====', []);
+    expect(html).not.toContain('*****');
+    expect(html).not.toContain('-----');
+    expect(html).not.toContain('=====');
+    expect(html).toBe('<span>First part.<br><br>Second part.</span>');
+  });
+
+  it('never leaves asterisks from bold-italic or italic runs', () => {
+    const u = fixture();
+    const html = u.context.cwBody('***Urgent*** and **bold** and *soft*', []);
+    expect(html).toContain('<b><i>Urgent</i></b>');
+    expect(html).toContain('<b>bold</b>');
+    expect(html).toContain('<i>soft</i>');
+    expect(html).not.toContain('*');
+    const literal = u.context.cwBody('Use snake_case_table for 2 * 3 * 4 items', []);
+    expect(literal).toContain('snake_case_table');
+    expect(literal).toContain('2 * 3 * 4 items');
+    expect(literal).not.toContain('<i>');
+  });
+
+  it('keeps fenced code verbatim: hash comments and dashed lines stay code', () => {
+    const u = fixture();
+    const html = u.context.cwBody('Sample:\n\n```python\n# a comment\n---\nprint(1)\n```', []);
+    expect(html).toContain('cw-code');
+    expect(html).toContain('# a comment');
+    expect(html).toContain('---');
+    expect(html).toContain('print(1)');
+    expect(html).not.toContain('cw-h');
+  });
+});
+
 describe('Cowork message actions', () => {
+  it('interleaves requests with messages by creation time and keeps resolved answers inline', () => {
+    const u = fixture();
+    u.cw.msgs = [message({ text: 'Earlier message', ts: '2026-09-20T10:00:00Z' }), message({ id: 'm2', text: 'Later message', ts: '2026-09-20T10:02:00Z' })];
+    const request = { id: 'q1', agentId: 'chief', kind: 'question', title: 'Choose a region', detail: 'Pick a launch region', options: ['EU', 'US'], status: 'open', createdAt: '2026-09-20T10:01:00Z' };
+    u.cw.requests = [request];
+    const html = u.context.cwTranscriptHtml();
+    expect(html.indexOf('Earlier message')).toBeLessThan(html.indexOf('Choose a region'));
+    expect(html.indexOf('Choose a region')).toBeLessThan(html.indexOf('Later message'));
+    expect(html).toContain('cw-row cw-request-row');
+    expect(html).toContain('aria-label="Answer: Choose a region"');
+    const resolved = u.context.cwRequestHtml({ ...request, status: 'answered', response: 'EU <first>' });
+    expect(resolved).toContain('Answered · EU &lt;first>');
+    expect(resolved).not.toContain('data-cwrequest=');
+    expect(resolved).not.toContain('<input');
+  });
+
+  it('renders requests from request-only snapshots without rebuilding the task list', () => {
+    const u = fixture();
+    u.context.cwRenderWork = vi.fn();
+    const request = { id: 'q1', agentId: 'chief', kind: 'question', title: 'Choose', status: 'open' };
+    u.context.cwApplySnapshot({ requests: [request] });
+    expect(u.context.cwRenderMsgs).toHaveBeenCalledOnce();
+    expect(u.context.cwRenderWork).not.toHaveBeenCalled();
+    u.context.cwApplySnapshot({ requests: [request] });
+    expect(u.context.cwRenderMsgs).toHaveBeenCalledOnce();
+    u.context.cwApplySnapshot({ requests: [{ ...request, status: 'answered' }] });
+    expect(u.context.cwRenderMsgs).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps typed answers, focus and selection while new messages arrive', () => {
+    const u = fixture();
+    // Restore the actual renderer; this fixture normally stubs surrounding UI.
+    new Script(COWORK_JS).runInContext(u.context);
+    u.context.cwRenderProgress = vi.fn();
+    const before = { value: 'My answer draft', getAttribute: () => 'q1', selectionStart: 3, selectionEnd: 7 };
+    const after = { ...before, value: '', focus: vi.fn(), setSelectionRange: vi.fn() };
+    let rendered = false;
+    const wrap = {
+      scrollHeight: 700, scrollTop: 100, clientHeight: 400,
+      get innerHTML() { return ''; }, set innerHTML(_html: string) { rendered = true; },
+      querySelectorAll: (selector: string) => selector === '[data-cwanswer]' ? [rendered ? after : before] : [],
+    };
+    u.context.$ = (id: string) => id === 'cwMsgs' ? wrap : null;
+    u.context.document.activeElement = before;
+    u.context.cwRenderMsgs();
+    expect(after.value).toBe('My answer draft');
+    expect(after.focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(after.setSelectionRange).toHaveBeenCalledWith(3, 7);
+    expect(wrap.scrollTop).toBe(100);
+  });
+
+  it('submits inline answers once and replaces controls with the resolved request', async () => {
+    const u = fixture();
+    const request = { id: 'q1', agentId: 'chief', kind: 'question', status: 'open' };
+    u.cw.requests = [request];
+    const button = { disabled: false, onclick: null as null | (() => void), getAttribute: (name: string) => name === 'data-cwrequest' ? 'q1' : name === 'data-action' ? 'answer' : '' };
+    const root = { querySelectorAll: (sel: string) => sel.indexOf('[data-cwrequest') === 0 ? [button] : [], querySelector: () => ({ value: '  EU  ' }) };
+    let resolve: (value: unknown) => void = () => {};
+    u.api.mockReturnValue(new Promise(done => { resolve = done; }));
+    u.context.cwBindRequests(root);
+    button.onclick!();
+    button.onclick!();
+    expect(u.api).toHaveBeenCalledOnce();
+    expect(JSON.parse(u.api.mock.calls[0]![1].body)).toEqual({ action: 'answer', response: 'EU' });
+    expect(button.disabled).toBe(true);
+    resolve({ request: { ...request, status: 'answered', response: 'EU' } });
+    await vi.waitFor(() => expect(u.context.cwRenderMsgs).toHaveBeenCalledOnce());
+    expect(u.cw.requests[0].status).toBe('answered');
+    expect(u.cw.requestPending.q1).toBeUndefined();
+  });
+
+  it('renders a secure credential card and provides only the saved connection id', async () => {
+    const u = fixture();
+    // connectionInputHtml lives in UI_CONNECTIONS_JS on the real page.
+    u.context.connectionInputHtml = (field: string, value: string) =>
+      `<input data-connection-field="${field}" value="${String(value ?? '').replace(/"/g, '&quot;')}" type="${field === 'token' ? 'password' : 'text'}">`;
+    const request = { id: 'cr1', agentId: 'chief', kind: 'credential', title: 'GitHub API key', detail: 'Needed to call the GitHub API', options: [], status: 'open',
+      credential: { providerHint: 'github', label: 'GitHub', baseUrl: 'https://api.github.com', validationPath: '/user' } };
+    const html = u.context.cwRequestHtml(request);
+    expect(html).toContain('Secure credential request');
+    expect(html).toContain('data-cwcredential="cr1"');
+    expect(html).toContain('type="password"');
+    expect(html).toContain('value="https://api.github.com"');
+    expect(html).not.toContain('data-cwanswer=');
+
+    // Re-auth cards ask only for the key against the existing connection.
+    const reauth = u.context.cwRequestHtml({ ...request, credential: { providerHint: 'github', connectionId: 'github' } });
+    expect(reauth).toContain('data-cwreauth="github"');
+    expect(reauth).not.toContain('data-connection-field="baseUrl"');
+
+    // Submit: the key goes to POST /api/connections; only the connection id goes back.
+    const fields = [
+      { getAttribute: () => 'label', value: 'GitHub' },
+      { getAttribute: () => 'provider', value: 'github' },
+      { getAttribute: () => 'baseUrl', value: 'https://api.github.com' },
+      { getAttribute: () => 'validationPath', value: '/user' },
+      { getAttribute: () => 'token', value: 'ghp_secret' },
+    ];
+    const attrs: Record<string, string> = { 'data-cwcredential': 'cr1' };
+    const form = {
+      dataset: {},
+      getAttribute: (name: string) => attrs[name] ?? '',
+      querySelectorAll: (sel: string) => sel === '[data-connection-field]' ? fields : [],
+      querySelector: (_sel: string) => null,
+      onsubmit: null as null | ((event: { preventDefault: () => void }) => void),
+    };
+    u.context.cwBindCredentialForms({ querySelectorAll: (sel: string) => sel === '[data-cwcredential]' ? [form] : [] });
+    u.api.mockResolvedValueOnce({ connection: { id: 'github' } }).mockResolvedValueOnce({ request: { ...request, status: 'provided' } });
+    form.onsubmit!({ preventDefault: () => {} });
+    await vi.waitFor(() => expect(u.api).toHaveBeenCalledTimes(2));
+    const saveCall = u.api.mock.calls[0]!;
+    expect(saveCall[0]).toBe('/api/connections');
+    expect(JSON.parse(saveCall[1].body).token).toBe('ghp_secret');
+    const provideCall = u.api.mock.calls[1]!;
+    expect(provideCall[0]).toBe('/api/cowork/requests/cr1');
+    expect(JSON.parse(provideCall[1].body)).toEqual({ action: 'provide', connectionId: 'github' });
+  });
+
+  it('keeps narrow panels closed until requested and restores the chat when dismissed', () => {
+    const u = fixture();
+    const classes = new Set<string>();
+    const rail = { inert: false };
+    const root = { classList: {
+      contains: (name: string) => classes.has(name),
+      toggle: (name: string, on: boolean) => on ? classes.add(name) : classes.delete(name),
+      remove: (name: string) => classes.delete(name),
+    }, querySelector: () => rail };
+    const panel = { style: { display: '' } };
+    const chat = { inert: false };
+    const backdrop = { hidden: true };
+    const trigger = { textContent: '', setAttribute: vi.fn(), focus: vi.fn() };
+    const elements: Record<string, unknown> = { cw: root, cwInfoPanel: panel, cwChat: chat, cwPanelBackdrop: backdrop, cwInfoBtn: trigger, cwBack: trigger };
+    u.context.$ = (id: string) => elements[id];
+    u.cw.infoOpen = true;
+    u.context.window.innerWidth = 1280;
+    u.context.cwSyncPanels();
+    expect(panel.style.display).toBe('block');
+    expect(chat.inert).toBe(false);
+    u.context.window.innerWidth = 900;
+    u.context.cwSyncPanels();
+    expect(panel.style.display).toBe('none');
+    expect(backdrop.hidden).toBe(true);
+    u.cw.infoNarrowOpen = true;
+    u.context.cwSyncPanels();
+    expect(panel.style.display).toBe('block');
+    expect(chat.inert).toBe(false);
+    expect(rail.inert).toBe(false);
+    expect(backdrop.hidden).toBe(true);
+    u.context.cwClosePanels();
+    expect(panel.style.display).toBe('none');
+    expect(chat.inert).toBe(false);
+    expect(trigger.focus).toHaveBeenCalledOnce();
+    u.context.window.innerWidth = 390;
+    classes.add('rail-open');
+    u.context.cwSyncPanels();
+    expect(rail.inert).toBe(false);
+    expect(chat.inert).toBe(true);
+    u.context.cwClosePanels();
+    expect(rail.inert).toBe(true);
+    expect(chat.inert).toBe(false);
+  });
+
+  it('keeps the transcript and open menus intact when a stream repeats unchanged messages', () => {
+    const u = fixture();
+    u.cw.msgs = [message()];
+    u.context.cwApplySnapshot({ messages: [message()], messageChangeSeq: 1 });
+    expect(u.context.cwRenderMsgs).not.toHaveBeenCalled();
+    expect(u.cw.lastSeq).toBe(1);
+    u.context.cwApplySnapshot({ messages: [message({ text: 'Updated', revision: 1, changeSeq: 2 })], messageChangeSeq: 2 });
+    expect(u.context.cwRenderMsgs).toHaveBeenCalledOnce();
+  });
+
+  it('puts actions in a native dismissible popover while keeping delivery status visible', () => {
+    const u = fixture();
+    const html = u.context.cwMessageActionsHtml(message({ status: 'failed' }));
+    expect(html).toContain('popovertarget="cw-message-menu-m1"');
+    expect(html).toContain('popover="auto"');
+    expect(html).toMatch(/aria-label="Message actions"[^>]*>…<\/button>/);
+    expect(html).toMatch(/data-cwaction="retry"[\s\S]*<\/div><span role="status"/);
+  });
+
+  it('removes tool metadata and leaked protocol from replies but preserves user text and code examples', () => {
+    const u = fixture();
+    u.context.cwAva = () => '';
+    const text = 'Checking the file.\n<|tool_calls|>\n<|tool_call|>\n<|tool_name|>read_file<|tool_name|>\n<|parameters|>{"path":"script.sh"}';
+    const html = u.context.cwBubbleHtml(message({ role: 'agent', text, tools: [{ name: 'read_file', ok: true }] }));
+    expect(html).toContain('Checking the file.');
+    expect(html).not.toContain('read_file');
+    expect(html).not.toContain('script.sh');
+    expect(html).not.toContain('cw-tools');
+    expect(u.context.cwBubbleHtml(message({ text }))).toContain('read_file');
+    const code = 'Example: `<tool>`\n```xml\n<|tool_calls|>\n```';
+    expect(u.context.cwVisibleReply(code)).toBe(code);
+    expect(u.context.cwVisibleReply('Checking. <tool>{"name":"read_file"}</tool> Done.')).toBe('Checking.  Done.');
+    expect(u.context.cwVisibleReply('Checking. <|tool_ca')).toBe('Checking.');
+  });
+
+  it('shows prose or a neutral working indicator during tool execution', () => {
+    const u = fixture();
+    const text = { textContent: '' };
+    const label = { textContent: '' };
+    const icon = { innerHTML: '', _ico: undefined as string | undefined };
+    const live = { hidden: true, innerHTML: '', _progressKey: null, querySelectorAll: (selector: string) => selector === '.cw-progress-text' ? [text] : selector === '.cw-progress-activity .wtext' ? [label] : selector === '.cw-progress-activity .cw-tool-ico' ? [icon] : [] };
+    const wrap = { scrollHeight: 100, scrollTop: 0, clientHeight: 100 };
+    u.context.$ = (id: string) => id === 'cwLive' ? live : id === 'cwMsgs' ? wrap : undefined;
+    u.context.cwAva = () => '';
+    u.cw.busy = true;
+    u.cw.progresses = [{ agentId: 'chief', agentName: 'Chief', tool: 'run_command', detail: 'private command' }];
+    new Script(COWORK_JS).runInContext(u.context);
+    u.context.cwAva = () => '';
+    u.context.cwRenderProgress();
+    // The label stays neutral and the icon marks the activity — the command
+    // text itself never reaches the live row.
+    expect(label.textContent).toBe('Working…');
+    expect(icon.innerHTML).toContain('title="Running a command"');
+    expect(icon.innerHTML).not.toContain('private command');
+    // A neutral public category fills the row until the agent sends its own
+    // prose; the raw command never reaches the live row.
+    expect(text.textContent).toBe('Running a check in the workspace…');
+    expect(text.textContent).not.toContain('private command');
+    expect(live.innerHTML).not.toContain('cw-progress-tool');
+    u.cw.progresses[0]!.text = 'Here is the summary.';
+    u.context.cwRenderProgress();
+    expect(text.textContent).toBe('Running a check in the workspace…\nHere is the summary.');
+  });
+
   it('renders Copy/Reference/Delete for outputs, edits only users, Retry only failures', () => {
     const u = fixture();
     const output = u.context.cwMessageActionsHtml(message({ role: 'agent' }));

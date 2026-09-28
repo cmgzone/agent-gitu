@@ -40,6 +40,7 @@ import type { McpManager } from '../mcp/client.js';
 import type { LlmClient, LlmMessage } from '../llm/llm.js';
 import type { ApprovalHandler } from '../policy/policy.js';
 import type { SkillStore } from '../skills/skills.js';
+import type { AutonomyPolicy } from '../agent/autonomy.js';
 
 /** What varies from one run to the next. */
 export interface GituFactoryOptions {
@@ -67,6 +68,12 @@ export interface GituFactoryOptions {
   supportsImages?: boolean;
   contextWindowTokens?: number;
   modelCapability?: 'low' | 'standard' | 'high';
+  /**
+   * When this run may end on its own. Omitted means persistent autonomy: the
+   * engine recovers from provider/protocol noise and keeps working, bounded
+   * only by an explicit user ceiling. See `src/agent/autonomy.ts`.
+   */
+  autonomy?: Partial<AutonomyPolicy>;
 }
 
 /**
@@ -144,6 +151,7 @@ export function buildGituConfig(options: GituFactoryOptions, deps: GituFactoryDe
     supportsImages: options.supportsImages,
     contextWindowTokens: options.contextWindowTokens,
     modelCapability: options.modelCapability,
+    autonomy: options.autonomy,
     prerequisiteRecovery: { providers: [deps.connections.asPrerequisiteProvider()] },
     connections: deps.connections,
     connectionContext: deps.connectionContext,

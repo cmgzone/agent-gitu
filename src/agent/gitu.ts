@@ -25,7 +25,18 @@ import {
 } from '../llm/llm.js';
 import { resolveEmbedder } from '../llm/providers.js';
 import { recoveryBudgetTokens, reduceEffortOneLevel, type EffortLevel } from '../llm/output-budget.js';
-import { resilientLlm } from '../llm/resilient.js';
+import { computeResilientDelay, resilientLlm, sleepWithSignal } from '../llm/resilient.js';
+import {
+  EMPTY_REPLY_RETRY_BASE_MS,
+  EMPTY_REPLY_RETRY_MAX_MS,
+  MAX_EMPTY_LADDER_CYCLES,
+  MAX_EMPTY_REPLY_RETRIES,
+  malformedPolicyFor,
+  mayExtendBudget,
+  resolveAutonomy,
+  turnCeilingFor,
+  type AutonomyPolicy,
+} from './autonomy.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
 import { LspManager } from '../lsp/manager.js';
 import { MemoryStore } from '../memory/memory-store.js';
@@ -220,6 +231,18 @@ export interface GituConfig {
   modelCapability?: 'low' | 'standard' | 'high';
   /** Compaction thresholds — configurable instead of model-specific constants. */
   compaction?: { charBudget?: number; keepRecent?: number; triggerMessages?: number };
+  /**
+   * When this run may end on its own. Defaults to persistent: the engine
+   * recovers from provider/protocol noise and keeps working, bounded only by
+   * an explicit user ceiling. See `./autonomy.ts`.
+   */
+  autonomy?: Partial<AutonomyPolicy>;
+  /**
+   * Wait before re-asking a provider that returned no content. Injectable for
+   * the same reason the transport's retry delay is: a test must be able to
+   * exercise the recovery ladder without waiting out real backoff.
+   */
+  recoverySleep?: (ms: number) => Promise<void>;
   /** Static-context budget for the unified buildModelContext gate (chars).
    *  Over-budget contexts trim the context pack, then oldest history. */
   contextBudget?: { maxChars?: number };
@@ -687,6 +710,11 @@ export class Gitu {
       }
       ledger.setSelectedSkills([...identities.values()].filter((identity) => activeSkills.has(identity.name)));
 
+      // Autonomy policy in force for this run: whether the engine may end a run
+      // on its own, and under which explicit ceilings. Resolved before the
+      // effort plan so the budget it produces is interpreted consistently.
+      const autonomy = resolveAutonomy(this.config.autonomy);
+
       const effortPlan = planEffort(activeGoal, {
         scopeFiles: this.config.scopeFiles,
         criteriaCount: isFollowUpPhase
@@ -1043,8 +1071,6 @@ export class Gitu {
       // Recovery advice differs from generic malformed replies (provider-neutral:
       // any model that reports reasoning_content/reasoning).
       let thinkingOnlyNoAction = false;
-      // One adaptive recovery per run for a reasoning-only empty turn (see ask()).
-      let thinkingRecoveryUsed = false;
       // The most recent refused/unconfirmed provider write, preserved verbatim
       // (bounded): the anti-loop recovery controller hands it back to the model
       // so a reasoning-only spiral still converts into a concrete fix.
@@ -1086,8 +1112,25 @@ export class Gitu {
       let followUpPlanReviewHandled = false;
       let architectureAuditRejections = 0;
       let planningNudged = false;
-      const malformed = new MalformedCallTracker({ remindAt: 1, escalateAt: 2, haltAt: 3 });
+      const malformed = new MalformedCallTracker(malformedPolicyFor(autonomy));
       let actionLaneHalted = false;
+      // Protocol resets forced by unusable replies (persistent autonomy). Each
+      // one re-arms the repair budget, downgrades the action protocol when it
+      // can, and sheds the drift tail before the model is asked again.
+      let protocolResets = 0;
+      // True when the turn produced no final content at all (a contentless or
+      // reasoning-only completion). That is a provider condition, never a
+      // malformed reply, so it never counts as a strike.
+      let lastEmptyReply = false;
+      // Fail-fast keeps the original ONE-SHOT reasoning-only recovery: the
+      // escalation may run once per run, and only for a reply that streamed
+      // reasoning. Persistent autonomy is what makes it a repeating ladder.
+      let emptyEscalationUsed = false;
+      // CONSECUTIVE contentless-reply ladders. Any content resets it; once it
+      // passes MAX_EMPTY_LADDER_CYCLES the provider is genuinely not answering
+      // and the run reports that instead of looping forever.
+      let emptyLadderCycles = 0;
+      let emptyProviderGaveUp = false;
       let logicalRequestSequence = 0;
       let actionProtocolMode: 'native' | 'structured_text' | 'text' =
         this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
@@ -1106,6 +1149,9 @@ export class Gitu {
       const effortMaxTurns = effortPlan?.maxTurns ?? Number.MAX_SAFE_INTEGER;
       let effortMaxSpecialists = effortPlan?.maxSpecialists ?? Number.MAX_SAFE_INTEGER;
       const BUDGET_EXTENSIONS_MAX = 4;
+      // A user-set ceiling outranks everything below; without one, persistent
+      // autonomy extends the estimate for as long as the work keeps moving.
+      const userTurnCeiling = turnCeilingFor(autonomy);
       const budgetExtensionTurns = Number.isFinite(effortMaxTurns) ? Math.max(10, Math.ceil(effortMaxTurns / 2)) : 0;
       let budgetCap = effortMaxTurns;
       let budgetExtensions = 0;
@@ -1203,6 +1249,20 @@ export class Gitu {
           pending = '';
           streamer = createProseStreamer(sink);
         };
+        // One lane down the compatibility ladder. Native function tools are the
+        // most capable and the most likely to be rejected, so a provider that
+        // keeps producing unusable replies gets the plainest protocol left.
+        const downgradeActionProtocol = (): boolean => {
+          if (actionProtocolMode === 'native') {
+            actionProtocolMode = 'structured_text';
+            return true;
+          }
+          if (actionProtocolMode === 'structured_text') {
+            actionProtocolMode = 'text';
+            return true;
+          }
+          return false;
+        };
         this.abortController = new AbortController();
         let callUsage: LlmUsage | undefined;
         const phase = ledger.data.status === 'intake' || ledger.data.status === 'planning' || ledger.data.status === 'review' ? 'planning' : 'execution';
@@ -1282,6 +1342,93 @@ export class Gitu {
           }
           return parsed;
         };
+        /**
+         * Re-ask after a completion with no final content. Provider 502s,
+         * truncated streams, and reasoning models that spend the whole
+         * completion budget on the trace all surface identically: an empty
+         * visible reply. The ladder escalates in place — backoff retries, then
+         * less reasoning effort with a larger reserved output budget, then a
+         * protocol downgrade with a forced compaction and a patient pause — so
+         * three provider hiccups can never end a task. The last turn observed
+         * is returned either way; the caller decides what to say about it.
+         */
+        const recoverEmptyCompletion = async (
+          first: LlmTurnResult,
+        ): Promise<{ turn: LlmTurnResult; reply: string; parsed: ParsedAction | undefined }> => {
+          let turn = first;
+          let reply = actionReplyFromTurn(turn);
+          let parsed = finishParse(reply);
+          const settle = async (next: LlmTurnResult): Promise<boolean> => {
+            turn = next;
+            reply = actionReplyFromTurn(next);
+            parsed = finishParse(reply);
+            return Boolean(parsed) || Boolean(reply.trim());
+          };
+
+          const persistent = autonomy.persistent;
+          const wait = this.config.recoverySleep ?? ((ms: number) => sleepWithSignal(ms, this.abortController?.signal));
+          const retries = persistent ? MAX_EMPTY_REPLY_RETRIES : 0;
+          for (let attempt = 1; attempt <= retries; attempt += 1) {
+            if (this.aborted) return { turn, reply, parsed };
+            const delayMs = computeResilientDelay(attempt - 1, EMPTY_REPLY_RETRY_BASE_MS, EMPTY_REPLY_RETRY_MAX_MS);
+            this.emit(`recover  empty completion from provider — retry ${attempt}/${retries} in ${Math.round(delayMs / 1000)}s`);
+            await wait(delayMs);
+            if (this.aborted) return { turn, reply, parsed };
+            resetProse();
+            if (await settle(await callOnce(actionProtocolMode, 2))) return { turn, reply, parsed };
+          }
+
+          if (!persistent && (!first.metadata.reasoning || emptyEscalationUsed)) {
+            return { turn, reply, parsed };
+          }
+          emptyEscalationUsed = true;
+
+          // The reasoning trace most likely consumed the shared completion
+          // budget: reason one step less and reserve more room for the action.
+          // This escalation is the original reasoning-only recovery, so it runs
+          // under BOTH policies — only the repeats and the cooldown below belong
+          // to persistent autonomy.
+          const baseEffort = effortPlan.llmEffort ?? this.config.effort;
+          const lowerEffort = reduceEffortOneLevel(baseEffort);
+          this.emit(
+            `recover  no final content from provider — re-asking with ${lowerEffort ? `effort ${baseEffort} → ${lowerEffort}` : 'a larger reserved output budget'}`,
+          );
+          resetProse();
+          if (
+            await settle(
+              await callOnce(actionProtocolMode, 2, {
+                effort: lowerEffort ?? baseEffort,
+                outputBudgetTokens: recoveryBudgetTokens(baseEffort),
+              }),
+            )
+          ) {
+            return { turn, reply, parsed };
+          }
+          if (!persistent) return { turn, reply, parsed };
+
+          // Still nothing: change lanes and shed the drift tail. A consecutive
+          // ladder count past the limit ends the run with a provider failure —
+          // an engine cannot manufacture content a provider refuses to send,
+          // and pretending otherwise would spin forever.
+          const downgraded = downgradeActionProtocol();
+          emptyLadderCycles += 1;
+          if (emptyLadderCycles > MAX_EMPTY_LADDER_CYCLES) {
+            emptyProviderGaveUp = true;
+            this.emit(
+              `recover  provider returned no content across ${emptyLadderCycles} consecutive recovery ladders — reporting the provider failure`,
+            );
+            return { turn, reply, parsed };
+          }
+          driftCompactionRequested = true;
+          const cooldownMs = computeResilientDelay(emptyLadderCycles, EMPTY_REPLY_RETRY_BASE_MS, EMPTY_REPLY_RETRY_MAX_MS);
+          this.emit(
+            `recover  provider returned no final content again — ${downgraded ? `switching to ${actionProtocolMode} compatibility, ` : ''}compacting context, pausing ${Math.round(cooldownMs / 1000)}s before the next attempt (cycle ${emptyLadderCycles})`,
+          );
+          if (this.aborted) return { turn, reply, parsed };
+          await wait(cooldownMs);
+          return { turn, reply, parsed };
+        };
+
         let turn: LlmTurnResult;
         if (actionProtocolMode === 'native') {
           try {
@@ -1317,27 +1464,21 @@ export class Gitu {
         }
         let reply = actionReplyFromTurn(turn);
         let parsed = finishParse(reply);
-        thinkingOnlyNoAction = !parsed && turn.kind === 'empty' && Boolean(turn.metadata.reasoning);
-        if (thinkingOnlyNoAction && !thinkingRecoveryUsed) {
-          // Adaptive recovery (one per run): the reasoning trace consumed the
-          // entire output budget, so the model finished with no final action.
-          // Replaying the identical request would exhaust identically — retry
-          // once with one step less reasoning effort and a larger reserved
-          // output budget. Transports that cannot express an output budget
-          // ignore the override (see src/llm/output-budget.ts).
-          thinkingRecoveryUsed = true;
-          const baseEffort = effortPlan.llmEffort ?? this.config.effort;
-          const lowerEffort = reduceEffortOneLevel(baseEffort);
-          this.emit(
-            `recover  reasoning-only reply — one retry with ${lowerEffort ? `effort ${baseEffort} → ${lowerEffort}` : 'a larger reserved output budget'}`,
-          );
-          turn = await callOnce(actionProtocolMode, 2, {
-            effort: lowerEffort ?? baseEffort,
-            outputBudgetTokens: recoveryBudgetTokens(baseEffort),
-          });
-          reply = actionReplyFromTurn(turn);
-          parsed = finishParse(reply);
-          thinkingOnlyNoAction = !parsed && turn.kind === 'empty' && Boolean(turn.metadata.reasoning);
+        // A completion with no final content is a PROVIDER condition, not a
+        // model mistake. Upstream 5xx replies, truncated streams, and reasoning
+        // models that spend the whole completion budget on the trace all
+        // surface the same way — an empty visible reply — so it goes through
+        // the ladder before anything else can count against the model.
+        lastEmptyReply = false;
+        if (!parsed && !reply.trim()) {
+          const recovered = await recoverEmptyCompletion(turn);
+          turn = recovered.turn;
+          reply = recovered.reply;
+          parsed = recovered.parsed;
+          if (!parsed) {
+            lastEmptyReply = true;
+            thinkingOnlyNoAction = Boolean(turn.metadata.reasoning);
+          }
         }
         if (!parsed && reply.trim() && !thinkingOnlyNoAction && protocolRepairsUsed < MAX_PROTOCOL_REPAIRS) {
           // Protocol-repair layer: the reply carried content but no usable
@@ -1385,7 +1526,13 @@ export class Gitu {
           content: reply,
           ...(turn.metadata.reasoning ? { reasoningContent: turn.metadata.reasoning } : {}),
         });
-        if (!parsed) {
+        if (!parsed && lastEmptyReply && autonomy.persistent) {
+          // Already carried through the empty-completion ladder. It is waste
+          // worth recording, but it is not a model strike: a run must not end
+          // because a provider hiccupped. (A host that explicitly asked for
+          // fail-fast limits still counts it, exactly as it used to.)
+          telemetry.noteWastedCall();
+        } else if (!parsed) {
           invalidStreak += 1;
           telemetry.noteWastedCall();
           driftCompactionRequested = true;
@@ -1397,12 +1544,31 @@ export class Gitu {
               : `warn    response had no executable action (streak ${invalidStreak}) — raw reply saved to logs/parse-failures.log`,
           );
           if (verdict.halt) {
-            actionLaneHalted = true;
-            ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
-            this.emit(`halt    main execution lane stopped after ${verdict.streak} malformed/no-action replies`);
+            if (autonomy.persistent) {
+              // Last rung of the ladder, deliberately NOT the end of the run:
+              // force the strongest change of approach available and ask again.
+              protocolResets += 1;
+              malformed.reset();
+              protocolRepairsUsed = 0;
+              driftCompactionRequested = true;
+              const downgraded = downgradeActionProtocol();
+              this.emit(
+                `recover  protocol reset ${protocolResets} — ${verdict.streak} unusable replies, re-arming repair${downgraded ? ` and using ${actionProtocolMode} compatibility` : ''}`,
+              );
+              this.emit(
+                `say     Recovered from ${verdict.streak} unusable replies —${downgraded ? ` switched to ${actionProtocolMode} compatibility,` : ''} re-armed protocol repair, compacted context, and continuing (protocol reset ${protocolResets}).`,
+              );
+            } else {
+              actionLaneHalted = true;
+              ledger.addBlocker(`Main execution lane stopped after ${verdict.streak} consecutive responses without an executable action.`);
+              this.emit(`halt    main execution lane stopped after ${verdict.streak} malformed/no-action replies`);
+            }
           }
         } else {
           invalidStreak = 0;
+          // Real content arrived: the provider is answering again, so the
+          // consecutive-empty count starts over.
+          if (reply.trim()) emptyLadderCycles = 0;
           // A syntactically valid high-level action is real recovery. Tool calls
           // reset only after executor validation below, so malformed parameters
           // still accumulate across turns.
@@ -1517,6 +1683,29 @@ export class Gitu {
         }
       };
 
+      /**
+       * A repeated-action guard reached its limit. Under persistent autonomy the
+       * engine changes approach and continues: the guard's window is reset so
+       * the next repetition is measured fresh, and the model is told what to do
+       * instead of what just failed. Only an explicit fail-fast policy still
+       * lets a repeated call end the run.
+       */
+      const recoverFromRepeatedAction = (
+        blocker: string,
+        guidance: string,
+        reset: () => void,
+      ): 'continue' | 'stop' => {
+        if (!autonomy.persistent) {
+          ledger.addBlocker(blocker);
+          exitReason = 'stalled';
+          return 'stop';
+        }
+        reset();
+        this.emit(`recover  ${blocker} — continuing with a change of approach`);
+        observe(`${blocker} Do not repeat it — ${guidance}`);
+        return 'continue';
+      };
+
       const admitQueuedMessages = (): boolean => {
         const hadMessages = this.inbox.length > 0;
         while (this.inbox.length > 0) {
@@ -1567,12 +1756,10 @@ export class Gitu {
             break;
           }
           admitQueuedMessages();
-          // Reasoning-only recovery is once-per-run to bound cost, but a
-          // successful concrete action (e.g. a provider read) proves the run is
-          // progressing — re-arm the recovery so a reasoning-only blip right
-          // after real work gets corrected instead of consuming the turn.
+          // A successful concrete action (e.g. a provider read) proves the run
+          // is progressing; the next unusable reply is then treated on its own
+          // merits rather than as part of a streak.
           if (concreteActionSinceLastAsk) {
-            thinkingRecoveryUsed = false;
             concreteActionSinceLastAsk = false;
           }
 
@@ -1592,9 +1779,32 @@ export class Gitu {
               now.todos > lastProgress.todos ||
               now.browses > lastProgress.browses ||
               now.distinctOk > lastProgress.distinctOk;
-            if (progressing && budgetExtensions < BUDGET_EXTENSIONS_MAX) {
-              budgetExtensions += 1;
-              lastProgress = now;
+            // The only things that may end a run from here: an explicit user
+            // turn ceiling, a host that asked for fail-fast limits, or a run
+            // that produced NO verifiable movement across every extension
+            // window. Persistent autonomy extends without limit while progress
+            // continues — that is the fix — but a stuck run is reported rather
+            // than looped forever.
+            const mayExtend = mayExtendBudget({
+              persistent: autonomy.persistent,
+              progressing,
+              extensionsUsed: budgetExtensions,
+              extensionLimit: BUDGET_EXTENSIONS_MAX,
+            });
+            if (turns >= userTurnCeiling || !mayExtend) {
+              ledger.addBlocker(
+                `Exhausted the task's effort budget (${turns} turns used` +
+                  `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
+                  `Retry with effort=high — that raises BOTH the model's per-step reasoning effort at the provider AND the turn budget — ` +
+                  `or narrow the task.`,
+              );
+              exitReason = 'stalled';
+              this.emit(`stall   effort budget of ${budgetCap} turns reached without verified progress — stopping`);
+              break;
+            }
+            budgetExtensions += 1;
+            if (progressing) lastProgress = now;
+            {
               // Dynamic escalation: the DISCOVERED scope (files touched, distinct
               // failures) can reveal a harder task than the goal text suggested.
               // Escalated runs get bigger extensions and a wider specialist budget
@@ -1619,7 +1829,9 @@ export class Gitu {
               // snapshot), so a longer run is explainable, not just permitted.
               ledger.addBudgetExtension({
                 turn: turns,
-                reason: escalation?.reason ?? 'verified progress continued past the initial budget',
+                reason: progressing
+                  ? escalation?.reason ?? 'verified progress continued past the initial budget'
+                  : 'persistent autonomy: no verified progress in the last window — continuing with a change of approach',
                 filesChanged: ledger.data.filesChanged?.length ?? 0,
                 distinctFailures: new Set(ledger.data.actions.filter((a) => a.status === 'error' && a.errorSignature).map((a) => a.errorSignature)).size,
                 evidenceCount: ledger.data.evidence.length,
@@ -1628,23 +1840,18 @@ export class Gitu {
                 specialistBudgetAfter: Number.isFinite(effortMaxSpecialists) ? effortMaxSpecialists : -1,
               });
               this.emit(
-                `effort  ${turns} turns in, but verified progress continues — budget extended by ${budgetExtensionTurns + extraTurns} turns (extension ${budgetExtensions}/${BUDGET_EXTENSIONS_MAX})${escalation ? ` — ${escalation.reason}, specialist budget now ${effortMaxSpecialists}` : ''}`,
+                progressing
+                  ? `effort  ${turns} turns in, but verified progress continues — budget extended by ${budgetExtensionTurns + extraTurns} turns (extension ${budgetExtensions})${escalation ? ` — ${escalation.reason}, specialist budget now ${effortMaxSpecialists}` : ''}`
+                  : `effort  ${turns} turns in without new verified progress — continuing under persistent autonomy (extension ${budgetExtensions}, +${budgetExtensionTurns + extraTurns} turns); a further extension needs something to move`,
               );
               observe(
-                `Your turn budget was extended by ${budgetExtensionTurns + extraTurns} turns because you kept making verified progress. ` +
-                  (escalation ? `${escalation.reason.charAt(0).toUpperCase()}${escalation.reason.slice(1)} — delegate specialists where it helps. ` : '') +
-                  'Keep working, but steer toward completing and verifying acceptance criteria rather than exploring.',
+                progressing
+                  ? `Your turn budget was extended by ${budgetExtensionTurns + extraTurns} turns because you kept making verified progress. ` +
+                    (escalation ? `${escalation.reason.charAt(0).toUpperCase()}${escalation.reason.slice(1)} — delegate specialists where it helps. ` : '') +
+                    'Keep working, but steer toward completing and verifying acceptance criteria rather than exploring.'
+                  : `Your turn budget was extended by ${budgetExtensionTurns + extraTurns} turns, but nothing verifiable moved in the last window. ` +
+                    'Do not repeat the same attempt: change approach — a new hypothesis, a narrower scope, a different tool, or a delegated specialist — and produce verifiable progress.',
               );
-            } else {
-              ledger.addBlocker(
-                `Exhausted the task's effort budget (${turns} turns used` +
-                  `${budgetExtensions ? `, ${budgetExtensions} extension(s) granted` : ''}) without reaching completion. ` +
-                  `Retry with effort=high — that raises BOTH the model's per-step reasoning effort at the provider AND the turn budget — ` +
-                  `or narrow the task.`,
-              );
-              exitReason = 'stalled';
-              this.emit(`stall   effort budget of ${budgetCap} turns reached without verified progress — stopping`);
-              break;
             }
           }
 
@@ -1665,6 +1872,18 @@ export class Gitu {
           if (admitQueuedMessages()) continue;
 
           if (!action) {
+            if (emptyProviderGaveUp) {
+              // The provider answered with nothing across every ladder. That is
+              // a provider failure with a clear fix (change model/provider),
+              // never a malformed reply and never a task-complexity limit.
+              ledger.addBlocker(
+                `The model provider returned no content after ${MAX_EMPTY_LADDER_CYCLES + 1} consecutive recovery attempts (retries, a reduced-effort re-ask, and a protocol downgrade) on ${llm.name}. ` +
+                  'This is a provider failure, not a task limit. Switch model or provider, then resume this task — its state is preserved.',
+              );
+              exitReason = 'blocked';
+              this.emit('blocked provider returned no content after repeated recovery attempts — switch model or provider, then resume');
+              break;
+            }
             if (actionLaneHalted) {
               exitReason = 'blocked';
               break;
@@ -1710,6 +1929,15 @@ export class Gitu {
               observe(
                 `Your reply streamed only reasoning and produced no final content — the thinking phase likely consumed the entire output budget. ` +
                   'Do not restate your analysis: your entire visible reply must be exactly one short JSON action object, e.g. ' +
+                  '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}.',
+              );
+            } else if (lastEmptyReply) {
+              // The provider returned nothing (twice already retried inside
+              // ask()). There is no model mistake to correct here, so the nudge
+              // is about the transport, not about the model's formatting.
+              observe(
+                'The provider returned an empty completion, so there was no action to run — this is a provider condition, not a change of task. ' +
+                  'Send exactly one short JSON action object to continue, e.g. ' +
                   '{"thought":"...","action":{"type":"tool_call","tool":"list_files","params":{"path":"src"},"reason":"...","expected":"..."}}.',
               );
             } else {
@@ -2213,6 +2441,16 @@ export class Gitu {
                     scope: guard.lock.name,
                     confidence: 0.8,
                   });
+                  if (autonomy.persistent) {
+                    // The intervention that used to be the farewell message is
+                    // now the whole point: reset the spiral and hand it back.
+                    malformed.reset();
+                    this.emit(
+                      `recover  ${malformedVerdict.streak} rejected tool calls (${action.tool}) — resetting the spiral and continuing`,
+                    );
+                    observe(`${observedResult}\n${malformedIntervention(malformedVerdict.streak, action.tool)}`);
+                    break;
+                  }
                   ledger.addBlocker(`LLM produced ${malformedVerdict.streak} consecutive malformed tool calls (${action.tool}); task stalled.`);
                   exitReason = 'stalled';
                   this.emit('stall   malformed-call spiral detected — stopping');
@@ -2327,11 +2565,19 @@ export class Gitu {
 
               if (tracker.consecutiveCalls > 3) {
                 const blocker = `Saved connection action ${connectionActionKey} was requested more than three times without a new operation.`;
-                ledger.addBlocker(blocker);
-                exitReason = 'stalled';
-                this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
-                observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
-                break mainLoop;
+                if (
+                  recoverFromRepeatedAction(
+                    blocker,
+                    'choose a different registered read operation, revise the plan, or request a corrected connection.',
+                    () => {
+                      tracker.consecutiveCalls = 1;
+                    },
+                  ) === 'stop'
+                ) {
+                  this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
+                  break mainLoop;
+                }
+                break;
               }
               if (!this.config.connectionActionHandler) {
                 observe(
@@ -2420,11 +2666,19 @@ export class Gitu {
                 }
                 if (tracker.consecutiveFailures > 3) {
                   const blocker = `Saved connection action ${connectionActionKey} failed repeatedly.`;
-                  ledger.addBlocker(blocker);
-                  exitReason = 'stalled';
-                  this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
-                  observe(`${blocker} Choose a different registered read operation, revise the plan, or request a corrected connection.`);
-                  break mainLoop;
+                  if (
+                    recoverFromRepeatedAction(
+                      blocker,
+                      'choose a different registered read operation, revise the plan, or request a corrected connection.',
+                      () => {
+                        tracker.consecutiveFailures = 0;
+                      },
+                    ) === 'stop'
+                  ) {
+                    this.emit(`stall   repeated saved connection action stopped — ${connectionActionKey}`);
+                    break mainLoop;
+                  }
+                  break;
                 }
                 const reason = connectionEventReason((error as Error).message);
                 const exampleEcho =
@@ -2470,11 +2724,19 @@ export class Gitu {
 
               if (tracker.consecutiveCalls > 3) {
                 const blocker = `Saved connection discovery for ${action.connectionId} was requested more than three times without new results.`;
-                ledger.addBlocker(blocker);
-                exitReason = 'stalled';
-                this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
-                observe(`${blocker} Use existing discovery evidence, choose a different target, or revise the plan.`);
-                break mainLoop;
+                if (
+                  recoverFromRepeatedAction(
+                    blocker,
+                    'use existing discovery evidence, choose a different target, or revise the plan.',
+                    () => {
+                      tracker.consecutiveCalls = 1;
+                    },
+                  ) === 'stop'
+                ) {
+                  this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
+                  break mainLoop;
+                }
+                break;
               }
               if (!this.config.connectionDiscoveryHandler && !this.config.connectionActionHandler) {
                 observe(
@@ -2525,11 +2787,19 @@ export class Gitu {
                 tracker.consecutiveFailures += 1;
                 if (tracker.consecutiveFailures > 3) {
                   const blocker = `Saved connection discovery for ${action.connectionId} failed repeatedly.`;
-                  ledger.addBlocker(blocker);
-                  exitReason = 'stalled';
-                  this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
-                  observe(`${blocker} Resolve the connection error or revise the plan.`);
-                  break mainLoop;
+                  if (
+                    recoverFromRepeatedAction(
+                      blocker,
+                      'resolve the connection error or revise the plan.',
+                      () => {
+                        tracker.consecutiveFailures = 0;
+                      },
+                    ) === 'stop'
+                  ) {
+                    this.emit(`stall   repeated discovery stopped — ${discoveryKey}`);
+                    break mainLoop;
+                  }
+                  break;
                 }
                 const reason = connectionEventReason((error as Error).message);
                 this.emit(`connection ${action.connectionId} discovery failed — ${reason}`);

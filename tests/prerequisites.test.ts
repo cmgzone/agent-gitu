@@ -448,6 +448,10 @@ describe('Gitu prerequisite blocking flow', () => {
       cwd: root,
       llm,
       mode: 'fast',
+      // The directive is synthesized on the ladder's final rung, so this mock's
+      // exact call sequence is the fail-fast one (turn 1 + one retry + turn 2).
+      // Persistent autonomy only inserts extra rungs before that same rung.
+      autonomy: { persistent: false },
       onEvent: (e) => events.push(e),
       connectionContext: () => context,
       connectionActionHandler: async () => ({ message: 'Listed databases (HTTP 200).', data: { databases: [{ name: 'gitu-marketing' }] } }),

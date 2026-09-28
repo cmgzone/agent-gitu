@@ -987,6 +987,10 @@ describe('connection anti-loop progress awareness (regression)', () => {
       cwd: root,
       llm,
       mode: 'fast',
+      // The anti-loop guard's terminal stop is a fail-fast contract: under the
+      // shipped persistent policy the same repetition is a strategy change, not
+      // the end of the run (covered in tests/persistence-autonomy.test.ts).
+      autonomy: { persistent: false },
       onEvent: (text) => events.push(text),
       connectionActionHandler: async () => {
         readCount += 1;

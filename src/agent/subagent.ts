@@ -10,6 +10,7 @@ import { extractJson, LlmError, parseXmlFunctionCall, type LlmClient, type LlmMe
 import { resilientLlm } from '../llm/resilient.js';
 import { LoopDetector } from '../loop/loop-detector.js';
 import { MalformedCallTracker, malformedIntervention, malformedKindFor } from '../loop/malformed-tracker.js';
+import { malformedPolicyFor, resolveAutonomy, type AutonomyPolicy } from './autonomy.js';
 import { PolicyEngine } from '../policy/policy.js';
 import { KNOWN_TOOL_NAMES, runtimeToolNames } from '../tools/tools.js';
 import { buildSpecialistEvidenceReport, type SpecialistEvidenceReport } from './specialist-evidence.js';
@@ -117,11 +118,25 @@ export interface SubAgentRunnerDeps {
   memory?: MemoryStore;
   /** Mission id for scoped retrieval and finding publication. */
   missionId?: string;
+  /**
+   * Autonomy policy for the specialist lane. Persistent (the default) means a
+   * stuck lane changes approach and keeps working up to its own ceiling
+   * instead of ending itself; see `./autonomy.ts`. The lane is still bounded by
+   * its turn ceiling and by the parent's delegated budget, so "keep going"
+   * can never outspend the work it was delegated.
+   */
+  autonomy?: Partial<AutonomyPolicy>;
   onEvent?: (text: string) => void;
 }
 
 const DEFAULT_BASE_TURNS = 30;
 const DEFAULT_HARD_CEILING_TURNS = 150;
+/**
+ * How many times one specialist lane may reset a stuck streak before it reports
+ * a blocker. Bounds is the lane's own ceiling and the parent's budget, so this
+ * only exists to stop a lane that cannot make progress from spinning forever.
+ */
+const MAX_LANE_RECOVERIES = 4;
 const MAX_CONCURRENT_SUBAGENTS = 5;
 const DEFAULT_SPECIALIST_TURN_TIMEOUT_MS = 8 * 60_000;
 const MAX_SPECIALIST_TURN_TIMEOUT_MS = 15 * 60_000;
@@ -968,7 +983,10 @@ export class SubAgentRunner {
     // missing executable actions can stop this lane.
     let consecutiveNoAction = 0;
     let consecutiveErrors = 0;
-    const malformed = new MalformedCallTracker({ remindAt: 1, escalateAt: 2, haltAt: 3 });
+    const autonomy = resolveAutonomy(this.deps.autonomy);
+    const malformed = new MalformedCallTracker(malformedPolicyFor(autonomy));
+    // Approach changes already spent by this lane (see MAX_LANE_RECOVERIES).
+    let laneRecoveries = 0;
     let turnsUsed = 0;
     let recommendation = '';
     let stopReason: SpecialistStopReason = 'task_failed';
@@ -1215,6 +1233,21 @@ export class SubAgentRunner {
         if (!type) {
           consecutiveNoAction += 1;
           if (consecutiveNoAction >= 3) {
+            if (autonomy.persistent && laneRecoveries < MAX_LANE_RECOVERIES) {
+              laneRecoveries += 1;
+              const streak = consecutiveNoAction;
+              consecutiveNoAction = 0;
+              emit(
+                `subagent ${name} — ${streak} replies without a valid action; re-asking instead of stopping (recovery ${laneRecoveries}/${MAX_LANE_RECOVERIES})`,
+              );
+              messages.push({
+                role: 'user',
+                content:
+                  'Your replies carried no action object. Reply with EXACTLY ONE JSON object and nothing else, e.g. ' +
+                  '{"action":{"type":"tool_call","tool":"read_file","params":{"path":"src/index.ts"},"reason":"...","expected":"..."}}',
+              });
+              continue;
+            }
             blockers.push(`Specialist lane stopped after ${consecutiveNoAction} consecutive replies without a valid action`);
             status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
             recommendation = 'Return structured JSON actions (tool_call / claim_criterion / answer) each turn.';
@@ -1327,11 +1360,20 @@ export class SubAgentRunner {
             if (malformedVerdict?.escalate && !malformedVerdict.halt) {
               emit(`subagent ${name} — malformed call streak ${malformedVerdict.streak} — strategy change injected`);
             }
-            if (malformedVerdict?.halt) {
+            if (malformedVerdict?.halt && !(autonomy.persistent && laneRecoveries < MAX_LANE_RECOVERIES)) {
               blockers.push(`Repeated malformed tool calls (${malformedVerdict.streak}×): ${toolName}`);
               status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
               emit(`subagent ${name} — malformed-call spiral detected, stopping early`);
               break;
+            }
+            if (malformedVerdict?.halt) {
+              laneRecoveries += 1;
+              malformed.reset();
+              consecutiveErrors = 0;
+              if (turnBudget + 10 <= hardCeiling) turnBudget += 10;
+              emit(
+                `subagent ${name} — malformed-call spiral (${malformedVerdict.streak}× ${toolName}); resetting and continuing (recovery ${laneRecoveries}/${MAX_LANE_RECOVERIES}, budget ${turnBudget}/${hardCeiling})`,
+              );
             }
           }
 
@@ -1361,24 +1403,48 @@ export class SubAgentRunner {
             emit(`subagent ${name} progress detected — dynamically extending budget to turn ${turnBudget}/${hardCeiling}`);
           }
 
-          // Anti-loop / stagnation early exit:
+          // Anti-loop / stagnation: a lane that is stuck changes approach
+          // instead of dying. The counters reset, the intervention is handed
+          // back, and the budget extends toward this lane's ceiling so the new
+          // approach has room to work. The lane is still bounded by that
+          // ceiling and by the parent's delegated budget, and a lane that keeps
+          // re-stalling after MAX_LANE_RECOVERIES reports the blocker.
+          let recoveryNote = '';
           if (consecutiveErrors >= 5 || consecutiveNoProgress >= 6) {
-            blockers.push(
+            const stagnation =
               malformed.currentStreak >= 3
-                ? `Repeated malformed tool calls (${malformed.currentStreak}×) stalled the specialist`
-                : `Stalled after ${consecutiveErrors} consecutive errors or zero progress`,
-            );
-            status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
-            recommendation = `Review tool arguments and provide more specific guidance or schemas.`;
-            emit(`subagent ${name} — loop/stagnation detected, stopping early`);
-            break;
+                ? `Repeated malformed tool calls (${malformed.currentStreak}×)`
+                : `${Math.max(consecutiveErrors, 0)} consecutive errors / zero progress`;
+            if (autonomy.persistent && laneRecoveries < MAX_LANE_RECOVERIES) {
+              laneRecoveries += 1;
+              consecutiveErrors = 0;
+              consecutiveNoProgress = 0;
+              if (turnBudget + 10 <= hardCeiling) turnBudget += 10;
+              emit(
+                `subagent ${name} — ${stagnation}; changing approach instead of stopping (recovery ${laneRecoveries}/${MAX_LANE_RECOVERIES}, budget ${turnBudget}/${hardCeiling})`,
+              );
+              recoveryNote =
+                `\nSTAGNATION RECOVERY: ${stagnation}. Do not repeat that attempt. Change approach — a new hypothesis, a narrower scope, a different tool or file — and produce verifiable progress. ` +
+                `Your turn budget was extended to ${turnBudget}/${hardCeiling}.`;
+            } else {
+              blockers.push(
+                malformed.currentStreak >= 3
+                  ? `Repeated malformed tool calls (${malformed.currentStreak}×) stalled the specialist`
+                  : `Stalled after ${consecutiveErrors} consecutive errors or zero progress`,
+              );
+              status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
+              recommendation = `Review tool arguments and provide more specific guidance or schemas.`;
+              emit(`subagent ${name} — loop/stagnation detected, stopping early`);
+              break;
+            }
           }
 
           messages.push({
             role: 'user',
             content:
               `RESULT [${outcome.result.ok ? 'success' : 'error'}] ${outcome.record.paramsSummary}\n${outcome.result.output.slice(0, 3000)}${evidenceNote}` +
-              (malformed.currentStreak >= 3 ? `\n${malformedIntervention(malformed.currentStreak, toolName)}` : ''),
+              (malformed.currentStreak >= 3 ? `\n${malformedIntervention(malformed.currentStreak, toolName)}` : '') +
+              recoveryNote,
           });
           continue;
         }
@@ -1441,6 +1507,19 @@ export class SubAgentRunner {
         }
         consecutiveNoAction += 1;
         if (consecutiveNoAction >= 3) {
+          if (autonomy.persistent && laneRecoveries < MAX_LANE_RECOVERIES) {
+            laneRecoveries += 1;
+            consecutiveNoAction = 0;
+            emit(
+              `subagent ${name} — repeated unknown actions; changing approach instead of stopping (recovery ${laneRecoveries}/${MAX_LANE_RECOVERIES})`,
+            );
+            messages.push({
+              role: 'user',
+              content:
+                'That action type is not supported. Reply with exactly one JSON object using tool_call, claim_criterion, or answer.',
+            });
+            continue;
+          }
           blockers.push(`Specialist lane stopped after ${consecutiveNoAction} consecutive unknown actions`);
           status = filesInspected.size > 0 || filesChanged.size > 0 ? 'PARTIAL_SUCCESS' : 'BLOCKED';
           recommendation = 'Return structured JSON actions (tool_call / claim_criterion / answer) each turn.';

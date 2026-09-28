@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { createGitu, type GituFactoryDependencies } from '../coding/gitu-factory.js';
 import { GituSessionRuntime, type GituCodingSession } from '../coding/session-runtime.js';
+import { resolveAutonomy, type AutonomyPolicy } from '../agent/autonomy.js';
 import { createBudgetAccount, type BudgetAccount } from '../coding/budget.js';
 import type { ChiefResolver } from '../coding/chief.js';
 import type { CodingSession } from '../coding/contract.js';
@@ -1146,7 +1147,10 @@ export class GituServer {
     this.sessions.set(session.runId, session);
     this.saveRegistry();
     this.pushEvent(session, `cron job ${job.id} triggered (${job.every})`);
-    await this.executeRun(session, llm, { goal: job.goal, mode: 'standard', review: false, projectPath: root });
+    await this.executeRun(session, llm, {
+      goal: job.goal, mode: 'standard', review: false, projectPath: root,
+      autonomy: resolveAutonomy(loadWorkspaceSettings().autonomy),
+    });
     return session.runId;
   }
 
@@ -3921,6 +3925,7 @@ export class GituServer {
         resume: session.taskId ? { taskId: session.taskId, message } : undefined,
         conversationHistory: this.conversationHistory(session), attachments, images,
         model: session.model, actionProtocolMode: session.actionProtocolMode, autoApprove: session.autoApprove,
+        autonomy: resolveAutonomy(loadWorkspaceSettings().autonomy),
       });
     } catch (error) {
       session.status = 'blocked';
@@ -4170,7 +4175,42 @@ export class GituServer {
         ...home,
         projectsPath: projectsDir(),
         customProjectsPath: settings.projectsPath ? !isDriveRoot(settings.projectsPath) : false,
+        // The policy a new run starts with. A run may override it per request.
+        autonomy: resolveAutonomy(settings.autonomy),
       });
+      return;
+    }
+
+    // Persistent autonomy: how a coding run is allowed to end. Defaults to
+    // "keep going" — the engine recovers from provider/protocol noise instead
+    // of stopping — with an optional spend ceiling (`maxCostUsd`) as the only
+    // non-user stop. Applied to the next run; a live run is not re-policed.
+    if (path === '/api/autonomy') {
+      if (method === 'GET') {
+        this.sendJson(res, 200, resolveAutonomy(loadWorkspaceSettings().autonomy));
+        return;
+      }
+      if (method === 'POST') {
+        const body = await this.readBody(req);
+        const current = loadWorkspaceSettings().autonomy ?? {};
+        const persistent = typeof body['persistent'] === 'boolean' ? body['persistent'] : current.persistent;
+        const rawCeiling = body['maxCostUsd'];
+        // An empty field clears the ceiling: `null`/'' means "no spend limit",
+        // which is the default and must stay expressible.
+        const maxCostUsd =
+          rawCeiling === null || rawCeiling === ''
+            ? undefined
+            : Number.isFinite(Number(rawCeiling)) && Number(rawCeiling) > 0
+              ? Math.round(Number(rawCeiling) * 100) / 100
+              : current.maxCostUsd;
+        updateWorkspaceSettings({
+          autonomy: { persistent, ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) },
+        });
+        const saved = resolveAutonomy(loadWorkspaceSettings().autonomy);
+        this.sendJson(res, 200, { ok: true, ...saved });
+        return;
+      }
+      this.sendJson(res, 405, { error: 'method not allowed' });
       return;
     }
 
@@ -5027,6 +5067,19 @@ export class GituServer {
       const effort = body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined;
       const projectPath = typeof body['projectPath'] === 'string' && body['projectPath'].trim() ? body['projectPath'].trim() : undefined;
       const review = mode === 'agent' ? body['review'] === true : body['review'] !== false;
+      // Workspace default, overridable per request by the composer toggle. A
+      // caller that sends nothing gets persistent autonomy — the fix must apply
+      // to an existing installation without anyone configuring anything.
+      const requestedAutonomy = (body['autonomy'] && typeof body['autonomy'] === 'object'
+        ? (body['autonomy'] as Record<string, unknown>)
+        : {});
+      const autonomy = resolveAutonomy({
+        ...loadWorkspaceSettings().autonomy,
+        ...(typeof requestedAutonomy['persistent'] === 'boolean' ? { persistent: requestedAutonomy['persistent'] } : {}),
+        ...(Number.isFinite(Number(requestedAutonomy['maxCostUsd'])) && Number(requestedAutonomy['maxCostUsd']) > 0
+          ? { maxCostUsd: Number(requestedAutonomy['maxCostUsd']) }
+          : {}),
+      });
 
       const images = Array.isArray(body['images'])
         ? (body['images'] as Record<string, unknown>[])
@@ -5132,6 +5185,7 @@ export class GituServer {
         attachments: stored.attachments,
         model: resolvedInfo?.model ?? model,
         actionProtocolMode: resolvedInfo?.toolMode,
+        autonomy,
         });
       });
       return;
@@ -5688,6 +5742,7 @@ export class GituServer {
         model,
         actionProtocolMode,
         autoApprove: session.autoApprove,
+        autonomy: resolveAutonomy(loadWorkspaceSettings().autonomy),
       });
       this.sendJson(res, 200, { ok: true, resumed: true, safeText: text });
       return;
@@ -5779,6 +5834,8 @@ export class GituServer {
       model?: string;
       actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
       conversationHistory?: LlmMessage[];
+      /** Effective autonomy for this run (workspace default + per-run override). */
+      autonomy?: AutonomyPolicy;
     },
   ): Promise<void> {
     // Only the Gitu instance currently attached to the session may change
@@ -5810,6 +5867,10 @@ export class GituServer {
     const agentDefs = agentStore.list();
     const usage: SessionUsage = (session.usage ??= { inputTokens: 0, outputTokens: 0, cachedTokens: 0, messages: 0 });
     if (usage.costUsd === undefined && usage.messages > 0) usage.costUsd = usageCostUsd(modelMeta, usage);
+    // The only ceiling a run may hit from here: a spend limit the user set.
+    // Unset (the default) means the run is bounded by the work, not by cost.
+    const spendCeilingUsd = opts.autonomy?.maxCostUsd;
+    let spendCeilingHit: string | undefined;
     const trackUsage = (u: LlmUsage | undefined, pricing = modelMeta): void => {
       if (!isCurrentExecution()) return;
       usage.messages += 1;
@@ -5822,6 +5883,11 @@ export class GituServer {
         else usage.costIncomplete = true;
       } else usage.costIncomplete = true;
       this.persistSession(session);
+      if (spendCeilingUsd !== undefined && !spendCeilingHit && (usage.costUsd ?? 0) >= spendCeilingUsd) {
+        spendCeilingHit = `budget exhausted — $${(usage.costUsd ?? 0).toFixed(2)} of $${spendCeilingUsd.toFixed(2)} spent`;
+        this.pushEvent(session, `blocked ${spendCeilingHit}`);
+        activeGitu?.stop();
+      }
     };
     const trackedLlm = new UsageTrackingClient(llm, trackUsage);
     const subagents =
@@ -5842,6 +5908,10 @@ export class GituServer {
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
+            // Specialists inherit this run's autonomy: a delegated lane changes
+            // approach instead of dying, still bounded by its own ceiling and
+            // by this run's budget.
+            autonomy: opts.autonomy,
             onEvent: (t) => {
               if (isCurrentExecution()) this.pushEvent(session, t);
             },
@@ -6020,6 +6090,7 @@ export class GituServer {
         conversationHistory: opts.conversationHistory,
         images: opts.images,
         attachments: opts.attachments,
+        autonomy: opts.autonomy,
       },
       {
         skills,
@@ -6058,6 +6129,14 @@ export class GituServer {
     try {
       const { ledger, report } = await gitu.run(opts.goal);
       if (!isCurrentExecution()) return;
+      // A spend ceiling the user set outranks the engine's own report: it is the
+      // reason the run ended, and it must be reported as such.
+      if (spendCeilingHit) {
+        session.status = 'blocked';
+        session.error = spendCeilingHit;
+        session.report = report;
+        return;
+      }
       const pausedForDiscussion = ledger.data.blockers.includes('Paused for discussion with the user.');
       session.status = report.status === 'complete'
         ? 'completed'
@@ -6110,6 +6189,7 @@ export class GituServer {
           model: session.activeModel ?? session.model,
           actionProtocolMode: session.actionProtocolMode,
           autoApprove: session.autoApprove,
+          autonomy: opts.autonomy ?? resolveAutonomy(loadWorkspaceSettings().autonomy),
         }).catch(() => {});
       }
     } catch (err) {

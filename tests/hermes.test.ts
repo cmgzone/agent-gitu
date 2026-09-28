@@ -839,7 +839,11 @@ describe('Hermes end-to-end (mock LLM)', () => {
         }),
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', onEvent: (e) => events.push(e) });
+    // Fail-fast: this spec pins the bounded effort budget a host gets when it
+    // opts out of persistent autonomy. Under the default policy a stuck run is
+    // still bounded (progress must move every extension window), so the same
+    // stall fires — but a productive run extends without limit instead.
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', autonomy: { persistent: false }, onEvent: (e) => events.push(e) });
     const { ledger, report } = await hermes.run('do some work');
 
     expect(ledger.data.effortPlan?.maxTurns).toBe(20); // low effort budget
@@ -914,7 +918,7 @@ describe('Hermes end-to-end (mock LLM)', () => {
       () => 'One more moment.',
     ]);
 
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', protocolRepairLlm: repairLlm, onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', effort: 'low', autonomy: { persistent: false }, protocolRepairLlm: repairLlm, onEvent: (e) => events.push(e) });
     const { report, ledger } = await hermes.run('say something useful');
 
     expect(report.status).toBe('blocked');

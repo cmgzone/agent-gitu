@@ -155,6 +155,11 @@ describe('Gitu protocol-repair layer', () => {
       llm: primary,
       protocolRepairLlm: repair,
       mode: 'fast',
+      // Fail-fast: this spec characterizes the bounded repair budget a host
+      // gets when it opts out of persistent autonomy. Under the default policy
+      // a protocol reset re-arms that budget and the lane keeps working
+      // (covered in tests/persistence-autonomy.test.ts).
+      autonomy: { persistent: false },
       onEvent: (e) => events.push(e),
     }).run(GOAL);
 

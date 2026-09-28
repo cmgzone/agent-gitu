@@ -16,10 +16,29 @@ function makeProject(name: string): string {
   return dir;
 }
 
+/**
+ * A socket the peer dropped mid-poll. Specs that stop one server and start
+ * another on `port: 0` routinely reuse the just-released ephemeral port, and
+ * the keep-alive connection pooled under that origin still points at the dead
+ * server — the next request on it fails with ECONNRESET. That is transport
+ * noise, not an answer, so it is retried until the deadline instead of failing
+ * the spec; a server that is genuinely down still times out.
+ */
+function isTransientSocketError(error: unknown): boolean {
+  const code =
+    (error as { cause?: { code?: string } })?.cause?.code ?? (error as { code?: string })?.code;
+  return code === 'ECONNRESET' || code === 'ECONNREFUSED' || code === 'EPIPE' || code === 'UND_ERR_SOCKET';
+}
+
 async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 20000): Promise<T> {
   const start = Date.now();
   for (;;) {
-    const value = await fn();
+    let value: T | undefined;
+    try {
+      value = await fn();
+    } catch (error) {
+      if (!isTransientSocketError(error)) throw error;
+    }
     if (value !== undefined) return value;
     if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
     await new Promise((r) => setTimeout(r, 200));

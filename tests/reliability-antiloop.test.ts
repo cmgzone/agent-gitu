@@ -98,7 +98,9 @@ describe('Hermes — malformed-call spiral protection', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'read', verification: 'n/a' }] } }),
       ...Array.from({ length: 3 }, (_, i) => malformedRead(i)),
     ]);
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    // This suite characterizes the fail-fast contract: this host explicitly
+    // opted out of persistent autonomy, so the lane still bounds itself.
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', autonomy: { persistent: false }, onEvent: (e) => events.push(e) });
 
     const { ledger, report } = await hermes.run('read the file');
 
@@ -151,7 +153,7 @@ describe('Hermes — malformed-call spiral protection', () => {
       malformedRead(2),
       malformedRead(3),
     ]);
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast' });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', autonomy: { persistent: false } });
 
     const { ledger, report } = await hermes.run('mixed meltdown');
 
@@ -189,7 +191,7 @@ describe('Hermes — malformed-call spiral protection', () => {
         return reasoningOnlyTurn();
       },
     };
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', autonomy: { persistent: false }, onEvent: (e) => events.push(e) });
 
     const { report } = await hermes.run('think forever');
 
@@ -207,11 +209,14 @@ describe('Hermes — malformed-call spiral protection', () => {
 
 describe('SubAgentRunner — malformed-call protection', () => {
   function makeRunner(dir: string, llm: LlmClient, events: string[]) {
+    // Fail-fast: these specs characterize the bounded specialist lane a host
+    // gets when it opts out of persistent autonomy.
     return new SubAgentRunner({
       cwd: dir,
       isolate: false,
       resolveLlm: () => llm,
       agentRole: () => 'test specialist',
+      autonomy: { persistent: false },
       onEvent: (e) => events.push(e),
     });
   }

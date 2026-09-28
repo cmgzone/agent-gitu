@@ -189,7 +189,7 @@ describe('Hermes adaptive recovery after a reasoning-only turn', () => {
     return client;
   }
 
-  it('retries once with lower effort and a larger budget instead of counting the turn as malformed', async () => {
+  it('retries the empty completion at the same effort instead of counting the turn as malformed', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'output-budget-recovery-'));
     writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'budget-recovery' }));
 
@@ -216,7 +216,7 @@ describe('Hermes adaptive recovery after a reasoning-only turn', () => {
     ]);
 
     const events: string[] = [];
-    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', onEvent: (e) => events.push(e) });
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', recoverySleep: async () => {}, onEvent: (e) => events.push(e) });
 
     const { report } = await hermes.run('think forever');
 
@@ -224,15 +224,67 @@ describe('Hermes adaptive recovery after a reasoning-only turn', () => {
     // Turn 1 ran at plan effort with no budget override and came back empty…
     expect(calls[0]!.outputBudgetTokens).toBeUndefined();
     const baseEffort = calls[0]!.effort as 'low' | 'medium' | 'high' | 'max' | undefined;
-    // …the ONE recovery attempt lowered the effort and reserved extra budget…
-    expect(calls[1]!.effort).toBe(reduceEffortOneLevel(baseEffort));
-    expect(calls[1]!.outputBudgetTokens).toBe(recoveryBudgetTokens(baseEffort));
-    // …and the recovery is one-shot: later turns revert to the plan effort.
-    expect(calls[2]!.effort).toBe(baseEffort);
-    expect(calls[2]!.outputBudgetTokens).toBeUndefined();
-    expect(calls.filter((c) => c.outputBudgetTokens !== undefined)).toHaveLength(1);
+    // …and the ladder's retry re-sends the SAME request: same effort, no budget
+    // change. A provider hiccup is not a reason to change how we ask.
+    expect(calls[1]!.effort).toBe(baseEffort);
+    expect(calls[1]!.outputBudgetTokens).toBeUndefined();
+    expect(events.some((e) => e.includes('empty completion from provider — retry'))).toBe(true);
     // The recovered turn was never counted as malformed.
     expect(events.some((e) => e.includes('only reasoning with no final content'))).toBe(false);
-    expect(events.some((e) => e.includes('reasoning-only reply — one retry'))).toBe(true);
+  }, 30000);
+
+  it('escalates to lower effort and a larger reserved budget only after the retries are exhausted', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'output-budget-escalate-'));
+    writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'budget-escalate' }));
+
+    // Still nothing after the retries. Now — and only now — the ladder changes
+    // strategy: reason one step less and reserve more room for the action.
+    const stillEmpty = (): LlmTurnResult => ({
+      kind: 'empty',
+      metadata: { reasoning: 'Long deliberation consumed the entire output budget.' },
+    });
+    const calls: CapturedCall[] = [];
+    const llm = makeRecoveryLlm(calls, [
+      stillEmpty,
+      stillEmpty,
+      () => ({ kind: 'text', text: JSON.stringify({ action: { type: 'set_criteria', criteria: ['done'] } }), metadata: {} }),
+      () => ({ kind: 'text', text: JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'x', verification: 'node --version' }] } }), metadata: {} }),
+      () =>
+        ({
+          kind: 'text',
+          text: JSON.stringify({ action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' } }),
+          metadata: {},
+        }) as LlmTurnResult,
+      (_n, messages) => {
+        const text = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join(' ');
+        const ids = [...text.matchAll(/(ev-\d{8}-[0-9a-f]{6})/g)].map((m) => m[1]);
+        return {
+          kind: 'text',
+          text: JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId: ids.at(-1) ?? 'ev-missing' } }),
+          metadata: {},
+        };
+      },
+      () => ({ kind: 'text', text: JSON.stringify({ action: { type: 'complete', summary: 'done', risks: [], followUps: [] } }), metadata: {} }),
+    ]);
+
+    const events: string[] = [];
+    const hermes = new Hermes({ cwd: dir, llm, mode: 'fast', recoverySleep: async () => {}, onEvent: (e) => events.push(e) });
+
+    const { report } = await hermes.run('think forever');
+
+    expect(report.status).toBe('complete');
+    const baseEffort = calls[0]!.effort as 'low' | 'medium' | 'high' | 'max' | undefined;
+    // Both retries are the same request at the plan effort.
+    expect(calls[1]!.effort).toBe(baseEffort);
+    expect(calls[2]!.effort).toBe(baseEffort);
+    expect(calls[1]!.outputBudgetTokens).toBeUndefined();
+    expect(calls[2]!.outputBudgetTokens).toBeUndefined();
+    // The escalation is the first call that changes how the model is asked…
+    expect(calls[3]!.effort).toBe(reduceEffortOneLevel(baseEffort));
+    expect(calls[3]!.outputBudgetTokens).toBe(recoveryBudgetTokens(baseEffort));
+    expect(events.some((e) => e.includes('no final content from provider — re-asking with'))).toBe(true);
+    // …and it stays one-shot: the next turn is back to the plan effort.
+    expect(calls[4]!.effort).toBe(baseEffort);
+    expect(calls.filter((c) => c.outputBudgetTokens !== undefined)).toHaveLength(1);
   }, 30000);
 });

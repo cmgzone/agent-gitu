@@ -86,11 +86,13 @@ export function computeResilientDelay(attempt: number, baseDelayMs: number, maxD
   return Math.max(250, Math.round(raw * (0.75 + Math.random() * 0.5)));
 }
 
-export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): LlmClient {
-  const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
-  const base = opts.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
-  const cap = opts.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
-  const doSleep = opts.sleep ?? ((ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+/**
+ * Cancellable backoff sleep, shared with callers outside this wrapper (an
+ * engine re-asking after an empty completion must not make Stop wait out a
+ * timer either). Rejects on abort, matching the retry loop's expectations.
+ */
+export function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('LLM request aborted'));
       return;
@@ -104,7 +106,14 @@ export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): L
       },
       { once: true },
     );
-  }));
+  });
+}
+
+export function resilientLlm(client: LlmClient, opts: ResilienceOptions = {}): LlmClient {
+  const maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
+  const base = opts.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+  const cap = opts.maxDelayMs ?? DEFAULT_MAX_DELAY_MS;
+  const doSleep = opts.sleep ?? sleepWithSignal;
   const label = opts.label ?? client.name;
 
   const circuitKey = opts.circuitKey ?? client.rateLimitKey ?? `client:${client.name}`;

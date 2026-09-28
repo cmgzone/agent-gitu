@@ -902,7 +902,7 @@ export const UI_HTML = String.raw`<!doctype html>
     active: 'home', project: null, models: [], sessions: {}, es: null, poll: null, files: [],
     modelsLoaded: false,
     draft: '',
-    sel: { model: '', effort: 'high' },
+    sel: { model: '', effort: 'high', persistent: true, spendCeilingUsd: '' },
     settings: { autoApprove: false, autoLearn: true, projectPath: '', devMode: false, cwLearn: 'reactive' },
     setSection: 'general',
     delivery: 'steer',
@@ -1726,6 +1726,7 @@ export const UI_HTML = String.raw`<!doctype html>
       '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="control-prefix">Model</span><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
       '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
+      '<button type="button" class="pill control-pill" id="keepGoing" aria-pressed="true" title="Keep going until the task is done — the agent recovers from provider and protocol errors instead of stopping itself. Off restores the fail-fast limits.">Keep going</button>' +
       '<button type="button" class="pill" id="attachBtn" title="Attach files or documents" aria-label="Attach files or documents">' + icon('file') + '</button>' +
       '<input type="file" id="attachInput" multiple hidden>';
   }
@@ -1842,6 +1843,14 @@ export const UI_HTML = String.raw`<!doctype html>
       reader.readAsDataURL(f);
     });
   }
+  // The per-run autonomy the composer is set to. persistent:true is the default
+  // everywhere it is omitted, so this only ever narrows the policy.
+  function autonomyBody() {
+    var body = { persistent: S.sel.persistent !== false };
+    var ceiling = Number(S.sel.spendCeilingUsd);
+    if (String(S.sel.spendCeilingUsd || '').trim() && Number.isFinite(ceiling) && ceiling > 0) body.maxCostUsd = ceiling;
+    return body;
+  }
   function bindControls() {
     var model = $('model'), effort = $('effort');
     updatePlanControl();
@@ -1856,6 +1865,22 @@ export const UI_HTML = String.raw`<!doctype html>
       fillEffort('effort', provOf(model.value)); persist(); updateAttachState(); updateModelMeta();
     };
     if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
+    var keepGoing = $('keepGoing');
+    if (keepGoing) {
+      var syncKeepGoing = function () {
+        var on = S.sel.persistent !== false;
+        keepGoing.setAttribute('aria-pressed', String(on));
+        keepGoing.style.background = on ? 'var(--amber-bg)' : '';
+        keepGoing.style.borderColor = on ? 'var(--evidence)' : '';
+        keepGoing.textContent = on ? 'Keep going' : 'Fail fast';
+      };
+      syncKeepGoing();
+      keepGoing.onclick = function () {
+        S.sel.persistent = S.sel.persistent === false;
+        syncKeepGoing();
+        persist();
+      };
+    }
     var attach = $('attachBtn'), input = $('attachInput');
     if (attach) attach.onclick = function () { if (!attach.hasAttribute('disabled') && input) input.click(); };
     if (input) input.onchange = function () { onAttachFiles(input.files); input.value = ''; };
@@ -1904,6 +1929,7 @@ export const UI_HTML = String.raw`<!doctype html>
         autoApprove: S.settings.autoApprove,
         autoLearn: S.settings.autoLearn,
         effort: S.sel.effort,
+        autonomy: autonomyBody(),
         projectPath: effectiveProjectPath() || undefined,
         scope: S.settings.scope || [],
         constraints: (S.settings.constraints || '').split('\n').map(function (s) { return s.trim(); }).filter(Boolean),
@@ -2362,6 +2388,7 @@ export const UI_HTML = String.raw`<!doctype html>
               autoApprove: S.settings.autoApprove,
               autoLearn: S.settings.autoLearn,
               effort: S.sel.effort,
+              autonomy: autonomyBody(),
               projectPath: effectiveProjectPath() || undefined,
               files: attached
             })
@@ -5113,10 +5140,38 @@ export const UI_HTML = String.raw`<!doctype html>
         '<h2>Defaults</h2><div class="setcard">' +
         '<div class="setrow"><div class="grow"><div class="t">Agent workflow</div><div class="d">One conversation for questions and changes. Quick edits get focused checks. Use Plan in the composer to review a plan for one request, then continue building.</div></div><span class="chip">Always on</span></div>' +
         '<div class="setrow"><div class="grow"><div class="t">Intelligence level</div><div class="d">Reasoning effort sent to the model (dynamic per provider).</div></div><select id="gEffort"></select></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Keep going until done</div><div class="d">The agent recovers from provider and protocol errors — empty completions, malformed replies, repeated calls — instead of stopping itself mid-task. Off restores the original fail-fast limits.</div></div><input type="checkbox" id="gPersist" style="width:18px;height:18px;flex:none"></div>' +
+        '<div class="setrow"><div class="grow"><div class="t">Spend ceiling</div><div class="d">Optional per-run limit in USD. Left empty, a run is never stopped for cost — only by you, or by finishing the task.</div></div><input type="text" id="gSpend" inputmode="decimal" placeholder="none" style="width:96px;background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:6px 9px;font:inherit;font-size:13px"></div>' +
         '</div>';
       fillEffort('gEffort', provOf(S.sel.model));
       $('gEffort').value = S.sel.effort;
       $('gEffort').onchange = function () { S.sel.effort = $('gEffort').value; persist(); };
+      var gPersist = $('gPersist'), gSpend = $('gSpend');
+      if (gPersist) gPersist.checked = S.sel.persistent !== false;
+      if (gSpend) gSpend.value = String(S.sel.spendCeilingUsd || '');
+      var saveAutonomy = function () {
+        var raw = String(gSpend.value || '').trim();
+        var persistent = gPersist.checked;
+        // An empty field sends null, which clears the ceiling — "no spend
+        // limit" must stay expressible, and it is the default.
+        api('/api/autonomy', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ persistent: persistent, maxCostUsd: raw === '' ? null : raw })
+        }).then(function (saved) {
+          S.sel.persistent = saved.persistent !== false;
+          S.sel.spendCeilingUsd = saved.maxCostUsd === undefined ? '' : String(saved.maxCostUsd);
+          persist();
+          toast('Autonomy: ' + (S.sel.persistent ? 'keeps going until done' : 'fail fast') + (S.sel.spendCeilingUsd ? ' · $' + S.sel.spendCeilingUsd + ' ceiling' : ''));
+        }).catch(function (e) { toast(e.message, true); });
+      };
+      if (gPersist) gPersist.onchange = saveAutonomy;
+      if (gSpend) gSpend.onchange = saveAutonomy;
+      api('/api/home').then(function (h) {
+        if (!$('gPersist') || S.setSection !== 'general') return;
+        var a = (h && h.autonomy) || {};
+        $('gPersist').checked = a.persistent !== false;
+        if ($('gSpend')) $('gSpend').value = a.maxCostUsd === undefined ? '' : String(a.maxCostUsd);
+      }).catch(function () {});
     } else if (S.setSection === 'cowork') {
       b.innerHTML = '<h1>Cowork</h1>' +
         '<p style="color:var(--muted);font-size:12.5px;max-width:640px">Shared context for your agent team. Every teammate receives this in their system prompt, and they will update it themselves when you ask them to in a chat (or when you share something durable about you).</p>' +

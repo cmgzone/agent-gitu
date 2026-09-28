@@ -130,7 +130,11 @@ describe('SubAgentRunner — stagnation early termination', () => {
     // Every read targets a missing file → consecutive errors grow.
     const replies = Array.from({ length: 5 }, () => () => readFileAction('src/does-not-exist.txt'));
     replies.push(() => JSON.stringify({ action: { type: 'answer', summary: 'never reached' } }));
-    const runner = makeRunner(dir, scriptedLlm(replies), events);
+    // Fail-fast lane: this spec pins the bounded behavior a host gets when it
+    // opts out of persistent autonomy. Under the default the lane changes
+    // approach instead of ending (covered in tests/persistence-autonomy.test.ts
+    // for the main lane and by the recovery branches in subagent.ts).
+    const runner = makeRunner(dir, scriptedLlm(replies), events, { autonomy: { persistent: false } });
 
     const result = await runner.runOne('stumbler', 'find the missing file');
 
@@ -146,7 +150,7 @@ describe('SubAgentRunner — stagnation early termination', () => {
     const dir = makeProject();
     const events: string[] = [];
     // Prose-only replies: no valid JSON action ever.
-    const runner = makeRunner(dir, scriptedLlm([() => 'I will think about this very carefully now.']), events);
+    const runner = makeRunner(dir, scriptedLlm([() => 'I will think about this very carefully now.']), events, { autonomy: { persistent: false } });
 
     const result = await runner.runOne('brooder', 'ponder the task');
 

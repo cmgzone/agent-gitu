@@ -143,6 +143,12 @@ export interface WorkspaceSettings {
   fallbackModels?: string[];
   /** User-owned OpenAI-compatible endpoints. Credentials stay in keys.json under keyEnvVar. */
   customProviders?: CustomProviderProfile[];
+  /**
+   * Persistent autonomy for coding runs. `persistent` (default true) means a
+   * run recovers from provider/protocol noise and keeps working; `maxCostUsd`
+   * is the only spend ceiling, and it is off unless the user sets one.
+   */
+  autonomy?: { persistent?: boolean; maxCostUsd?: number };
   /** Proactive cowork learning loop. `mode` picks when coworkers learn:
    *  'reactive' = reflect after each completed turn (the original behavior),
    *  'proactive' = reflect only during the scheduled review wake,
@@ -221,6 +227,16 @@ export function sanitizeCustomProviders(value: unknown): CustomProviderProfile[]
   return out;
 }
 
+function sanitizeAutonomy(value: unknown): WorkspaceSettings['autonomy'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const src = value as Record<string, unknown>;
+  const out: NonNullable<WorkspaceSettings['autonomy']> = {};
+  if (typeof src['persistent'] === 'boolean') out.persistent = src['persistent'];
+  const ceiling = Number(src['maxCostUsd']);
+  if (Number.isFinite(ceiling) && ceiling > 0) out.maxCostUsd = Math.round(ceiling * 100) / 100;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function sanitizeCoworkLearning(value: unknown): WorkspaceSettings['coworkLearning'] | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const src = value as Record<string, unknown>;
@@ -239,7 +255,14 @@ export function loadWorkspaceSettings(): WorkspaceSettings {
   const fallbackModels = sanitizeFallbackModels(data['fallbackModels']);
   const customProviders = sanitizeCustomProviders(data['customProviders']);
   const coworkLearning = sanitizeCoworkLearning(data['coworkLearning']);
-  return { projectsPath, ...(fallbackModels ? { fallbackModels } : {}), ...(customProviders ? { customProviders } : {}), ...(coworkLearning ? { coworkLearning } : {}) };
+  const autonomy = sanitizeAutonomy(data['autonomy']);
+  return {
+    projectsPath,
+    ...(fallbackModels ? { fallbackModels } : {}),
+    ...(customProviders ? { customProviders } : {}),
+    ...(coworkLearning ? { coworkLearning } : {}),
+    ...(autonomy ? { autonomy } : {}),
+  };
 }
 
 export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): WorkspaceSettings {
@@ -259,6 +282,11 @@ export function updateWorkspaceSettings(patch: Partial<WorkspaceSettings>): Work
     const learning = sanitizeCoworkLearning(patch.coworkLearning);
     if (learning) merged.coworkLearning = learning;
     else delete merged.coworkLearning;
+  }
+  if ('autonomy' in patch) {
+    const autonomy = sanitizeAutonomy(patch.autonomy);
+    if (autonomy) merged.autonomy = autonomy;
+    else delete merged.autonomy;
   }
   saveWorkspaceSettings(merged);
   return merged;

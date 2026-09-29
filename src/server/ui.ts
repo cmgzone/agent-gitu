@@ -982,6 +982,7 @@ ${ONBOARDING_HTML}
   // Old workflow preferences must never re-enable persistent planning.
   delete S.sel.wf;
   delete S.settings.review;
+  S.sel.persistent = true;
   function persist() {
     try { localStorage.setItem('hermes.settings', JSON.stringify({ sel: S.sel, settings: S.settings, draft: credentialChatInput(S.draft || '').safeText })); } catch (e) {}
   }
@@ -1826,7 +1827,6 @@ ${ONBOARDING_HTML}
       '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="control-prefix">Model</span><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
       '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
-      '<button type="button" class="pill control-pill" id="keepGoing" aria-pressed="true" title="Keep going until the task is done — the agent recovers from provider and protocol errors instead of stopping itself. Off restores the fail-fast limits.">Keep going</button>' +
       '<button type="button" class="pill" id="attachBtn" title="Attach files or documents" aria-label="Attach files or documents">' + icon('file') + '</button>' +
       '<input type="file" id="attachInput" multiple hidden>';
   }
@@ -1946,7 +1946,7 @@ ${ONBOARDING_HTML}
   // The per-run autonomy the composer is set to. persistent:true is the default
   // everywhere it is omitted, so this only ever narrows the policy.
   function autonomyBody() {
-    var body = { persistent: S.sel.persistent !== false };
+    var body = { persistent: true };
     var ceiling = Number(S.sel.spendCeilingUsd);
     if (String(S.sel.spendCeilingUsd || '').trim() && Number.isFinite(ceiling) && ceiling > 0) body.maxCostUsd = ceiling;
     return body;
@@ -1964,22 +1964,7 @@ ${ONBOARDING_HTML}
       fillEffort('effort', provOf(model.value)); persist(); updateAttachState(); updateModelMeta();
     };
     if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
-    var keepGoing = $('keepGoing');
-    if (keepGoing) {
-      var syncKeepGoing = function () {
-        var on = S.sel.persistent !== false;
-        keepGoing.setAttribute('aria-pressed', String(on));
-        keepGoing.style.background = on ? 'var(--amber-bg)' : '';
-        keepGoing.style.borderColor = on ? 'var(--evidence)' : '';
-        keepGoing.textContent = on ? 'Keep going' : 'Fail fast';
-      };
-      syncKeepGoing();
-      keepGoing.onclick = function () {
-        S.sel.persistent = S.sel.persistent === false;
-        syncKeepGoing();
-        persist();
-      };
-    }
+
     var attach = $('attachBtn'), input = $('attachInput');
     if (attach) attach.onclick = function () { if (!attach.hasAttribute('disabled') && input) input.click(); };
     if (input) input.onchange = function () { onAttachFiles(input.files); input.value = ''; };

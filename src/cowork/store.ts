@@ -14,7 +14,7 @@ export interface CoworkAvatar {
   /** Hex accent color of the character body. */
   color: string;
   /** Character style rendered consistently throughout the UI. */
-  shape: 'orb' | 'cube';
+  shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid';
 }
 
 export interface CoworkAgent {
@@ -1693,7 +1693,7 @@ function artifactMime(name: string, supplied?: string): string {
   return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
 }
 
-const AVATAR_SHAPES = new Set(['orb', 'cube']);
+const AVATAR_SHAPES = new Set(['orb', 'cube', 'home-blob', 'diamond', 'pyramid']);
 const LEGACY_AVATAR_SHAPES = new Map<string, CoworkAvatar['shape']>([
   ['jelly', 'orb'], ['cat', 'orb'], ['sprout', 'orb'], ['ufo', 'orb'],
   ['visor', 'cube'], ['antenna', 'cube'], ['bot', 'cube'],

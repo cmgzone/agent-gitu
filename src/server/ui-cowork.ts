@@ -8,8 +8,8 @@ import { ACTIVITY_MARK_HTML, REASONING_STREAM_JS } from './ui-activity.js';
  * app's main IIFE, so it reuses the helpers there ($, esc, api, toast, S).
  *
  * Visuals: all chrome icons are inline SVG (cwIcon). Teammates use the animated
- * Blob or a cube head drawn by bundled three.js (window.__coworkAvatar, defined
- * in ui.ts), with an inline-SVG fallback. No emoji anywhere; agent
+ * homepage blob or geometric blob companions drawn by bundled three.js
+ * (window.__coworkAvatar, defined in ui.ts), with an inline-SVG fallback. Agent
  * names always come from the user — templates only prefill instructions.
  * Written as String.raw and ES5-style so no escape or interpolation surprises
  * leak into the injected markup.
@@ -436,8 +436,9 @@ export const COWORK_JS = String.raw`
   ${CHARACTER_JS}
   // ==================== COWORK MODE ====================
   var CW_COLORS = ['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b'];
-  var CW_SHAPES = ['orb', 'cube'];
+  var CW_SHAPES = ['home-blob', 'orb', 'cube', 'diamond', 'pyramid'];
   function cwAvatarShape(shape) {
+    if (CW_SHAPES.indexOf(shape) >= 0) return shape;
     return ['cube', 'visor', 'antenna', 'bot'].indexOf(shape) >= 0 ? 'cube' : 'orb';
   }
   // Neutral starting points for the INSTRUCTIONS field only. They never fill
@@ -600,15 +601,14 @@ export const COWORK_JS = String.raw`
   }
   function cwAvaSvg(avatar) {
     var color = (avatar && /^#[0-9a-f]{6}$/i.test(avatar.color)) ? avatar.color : '#8f80ff';
-    if (cwAvatarShape(avatar && avatar.shape) === 'orb') return '<svg viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><g class="cw-orb-body"><circle cx="20" cy="21" r="16" fill="' + color + '"/><ellipse cx="14" cy="12" rx="6" ry="3" fill="#fff" opacity=".13" transform="rotate(-30 14 12)"/><g class="cw-orb-eyes" fill="#fff"><rect x="14" y="15" width="3.5" height="7" rx="1.75" transform="rotate(-12 16 18)"/><rect x="23" y="14" width="3.5" height="7" rx="1.75" transform="rotate(-12 25 17)"/></g></g></svg>';
-    return '<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">' +
-      '<rect x="5" y="5" width="22" height="22" rx="3" fill="' + color + '"/>' +
-      '<rect x="10" y="12" width="3.4" height="4.6" rx=".6" fill="#10141d"/><rect x="18.6" y="12" width="3.4" height="4.6" rx=".6" fill="#10141d"/>' +
-      '<rect x="12" y="21" width="8" height="1.5" rx=".6" fill="#10141d"/></svg>';
+    var shape = cwAvatarShape(avatar && avatar.shape);
+    if (shape === 'home-blob') return cwHomeBlob(color);
+    return cwGeometricBlobSvg(shape, color);
   }
+
   function cwAvaImg(avatar) {
     avatar = { color: avatar && avatar.color, shape: cwAvatarShape(avatar && avatar.shape) };
-    if (avatar.shape === 'orb') return cwAvaSvg(avatar);
+    if (avatar.shape === 'home-blob') return cwAvaSvg(avatar);
     var url = cwAvaDataUrl(avatar);
     return url ? '<img src="' + url + '" alt="">' : cwAvaSvg(avatar);
   }
@@ -2953,7 +2953,7 @@ export const COWORK_JS = String.raw`
       systemPrompt: agent ? agent.systemPrompt : '',
       avatar: {
         color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : CW_COLORS[0],
-        shape: cwAvatarShape(agent && agent.avatar && agent.avatar.shape)
+        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape) : 'home-blob'
       },
       provider: agent ? (agent.provider || '') : (S.sel.model || '').split('::')[0],
       model: agent ? (agent.model || '') : (S.sel.model || '').split('::').slice(1).join('::'),
@@ -3007,6 +3007,9 @@ export const COWORK_JS = String.raw`
       if (wrap) wrap.innerHTML = cwAvaImg(d.avatar);
       modal.querySelectorAll('[data-shape]').forEach(function (b) { b.querySelector('.cw-shape-preview').innerHTML = cwAvaImg({ shape: b.getAttribute('data-shape'), color: d.avatar.color }); });
     }
+    if (!window.__coworkAvatar) window.addEventListener('coworkavatarsready', function onReady() {
+      if (modal.isConnected) refreshPreview();
+    }, { once: true });
     modal.querySelector('#cwAmWork').onclick = function () {
       var working = this.getAttribute('aria-pressed') !== 'true';
       this.setAttribute('aria-pressed', String(working));

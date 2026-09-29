@@ -1,3 +1,4 @@
+import { COWORK_CHARACTER_MODELS_JS } from './ui-character-models.js';
 import { HOME_CSS, HOME_BLOB_HTML } from './ui-home.js';
 import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
@@ -6505,69 +6506,10 @@ import * as THREE from '/vendor/three.module.js';
 })();
 </script>
 <script type="module">
-// Cowork cube avatars: floating heads built with the bundled three.js and
-// snapshotted to PNG data URLs so lists and chat bubbles stay cheap. The
-// module registers window.__coworkAvatar; without three.js the UI falls back
-// to inline SVG identicons.
+// Geometric blob companions, snapshotted for lightweight cowork avatars.
 import * as THREE from '/vendor/three.module.js';
 (function () {
-  function box(w, h, d, color) {
-    return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshLambertMaterial({ color: color }));
-  }
-  // The cube character is a floating head, centered in the avatar frame.
-  function buildCharacter(config) {
-    var color = /^#[0-9a-f]{6}$/i.test(config.color) ? config.color : '#8f80ff';
-    var group = new THREE.Group();
-    var head = box(10, 10, 10, color);
-    group.add(head);
-    var eyeMat = new THREE.MeshLambertMaterial({ color: 0x10141d });
-    function facePart(x, y, w, h) {
-      var part = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.6), eyeMat);
-      part.position.set(x, y, 5.05);
-      head.add(part);
-    }
-    facePart(-2.1, 1, 1.7, 2.1);
-    facePart(2.1, 1, 1.7, 2.1);
-    facePart(0, -2.6, 4, 0.7);
-    return group;
-  }
-  function renderScene(group, size) {
-    var canvas = document.createElement('canvas');
-    var renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true, preserveDrawingBuffer: true });
-    renderer.setClearColor(0x000000, 0);
-    renderer.setSize(size, size, false);
-    var scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0xffffff, 1.45));
-    var key = new THREE.DirectionalLight(0xffffff, 1.35);
-    key.position.set(6, 10, 12);
-    scene.add(key);
-    var rim = new THREE.DirectionalLight(0xffffff, 0.5);
-    rim.position.set(-8, 4, -6);
-    scene.add(rim);
-    scene.add(group);
-    var cam = new THREE.PerspectiveCamera(30, 1, 0.1, 200);
-    cam.position.set(7, 7, 32);
-    cam.lookAt(0, 0, 0);
-    group.rotation.y = -0.42;
-    renderer.render(scene, cam);
-    var url = canvas.toDataURL('image/png');
-    renderer.dispose();
-    return url;
-  }
-  window.__coworkAvatar = {
-    /** Render the configured character to a transparent PNG data URL. */
-    render: function (config, size) {
-      try {
-        return renderScene(buildCharacter(config || {}), size || 128);
-      } catch (e) {
-        return null;
-      }
-    },
-    shapes: ['cube'],
-  };
-  // Classic-script UI may have rendered SVG fallbacks before this deferred
-  // module registered the renderer — tell it to redraw the avatars.
-  window.dispatchEvent(new CustomEvent('coworkavatarsready'));
+  ${COWORK_CHARACTER_MODELS_JS}
 })();
 </script>
 </body>

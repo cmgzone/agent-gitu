@@ -98,12 +98,14 @@ describe('Flappy recovery regression — stale failure must not resurrect', () =
   it('collapses overlapping movement rereads and allows only one cached replay', () => {
     const detector = new LoopDetector();
     const firstHash = hashParams('read_file', { path: 'js/logic.js', offset: 1, limit: 180 });
-    const overlapHash = hashParams('read_file', { path: './js/logic.js', offset: 120, limit: 100, maxChars: 30000 });
-    expect(overlapHash).toBe(firstHash);
+    const sameRangeHash = hashParams('read_file', { path: './js/logic.js', offset: 1, limit: 180, maxChars: 30000 });
+    const diffRangeHash = hashParams('read_file', { path: 'js/logic.js', offset: 120, limit: 100 });
+    expect(sameRangeHash).toBe(firstHash);
+    expect(diffRangeHash).not.toBe(firstHash);
 
     const actions: ActionRecord[] = [
       { ...action('read-1', 'read_file', firstHash, 'read js/logic.js', 'pipe speed is 3.2 and movement is steady'), contextFingerprint: 'logic-v1' },
-      { ...action('read-2', 'read_file', overlapHash, 'read js/logic.js', 'same movement code; no contradictory evidence'), contextFingerprint: 'logic-v1' },
+      { ...action('read-2', 'read_file', sameRangeHash, 'read js/logic.js', 'same movement code; no contradictory evidence'), contextFingerprint: 'logic-v1' },
     ];
 
     const reusable = detector.reusableSuccessfulRead(actions, 'read_file', firstHash, 'logic-v1');

@@ -97,12 +97,14 @@ export function canonicalToolParams(tool: string, params: unknown): unknown {
 
   if (tool === 'read_file') {
     const rawOffset = Number(p['offset'] ?? 1);
-    const offset = Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1;
-    const regionSize = 200;
-    const regionStart = Math.floor((offset - 1) / regionSize) * regionSize + 1;
+    const rawLimit = Number(p['limit'] ?? 2000);
+    const startLine = Number.isFinite(rawOffset) ? Math.max(1, Math.floor(rawOffset)) : 1;
+    const limit = Number.isFinite(rawLimit) ? Math.min(2000, Math.max(1, Math.floor(rawLimit))) : 2000;
+    const endLine = startLine + limit - 1;
     return {
       path: normalizeToolPath(p['path']),
-      regionStart,
+      startLine,
+      endLine,
     };
   }
 

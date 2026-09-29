@@ -22,3 +22,6 @@ tests/agent-evals/results/*
 web-build/
 apps/mobile/dist/
 *.tsbuildinfo
+
+release-new/
+release*/

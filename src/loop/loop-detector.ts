@@ -147,6 +147,12 @@ export class LoopDetector {
     this.policy = { ...DEFAULT_LOOP_POLICY, ...policy };
   }
 
+  private lastCompactionActionId?: string;
+
+  noteCompaction(actionId?: string): void {
+    this.lastCompactionActionId = actionId;
+  }
+
   /**
    * Return the most recent real successful observation when the model has
    * already gathered the same unchanged investigation evidence enough times.
@@ -156,24 +162,36 @@ export class LoopDetector {
    */
   reusableSuccessfulRead(actions: ActionRecord[], tool: string, paramsHash: string, contextFingerprint?: string): ActionRecord | undefined {
     if (tool !== 'read_file' || !contextFingerprint) return undefined;
-    const sameAction = evidenceWindow(actions, tool, paramsHash).filter(
+    const actionsForReuse = this.lastCompactionActionId
+      ? (() => {
+          const idx = actions.findIndex((a) => a.id === this.lastCompactionActionId);
+          return idx >= 0 ? actions.slice(idx + 1) : actions;
+        })()
+      : actions;
+    const sameAction = evidenceWindow(actionsForReuse, tool, paramsHash).filter(
       (a) => a.tool === tool && a.paramsHash === paramsHash && a.contextFingerprint === contextFingerprint,
     );
     const cachedReplayExists = sameAction.some(isCachedInvestigation);
     if (cachedReplayExists) return undefined;
-    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a) && a.readObservationComplete !== false && Boolean(a.observation));
+    const realSuccesses = sameAction.filter((a) => a.status === 'success' && !isCachedInvestigation(a) && Boolean(a.observation));
     return realSuccesses.length >= this.policy.maxSameSuccessfulRead ? realSuccesses.at(-1) : undefined;
   }
 
   /** Number of successful investigation reads spent on the newest unresolved
    * command failure since its last source edit. Undefined means no unresolved
    * failing command currently owns the investigation lane. */
-  investigationPressure(actions: ActionRecord[]): { reads: number; failure?: ActionRecord } | undefined {
+  investigationPressure(actions: ActionRecord[]): { reads: number; failure?: ActionRecord; uniqueFiles: number } | undefined {
     const start = unresolvedFailureEpisodeStart(actions);
     if (start === undefined) return undefined;
     const failure = [...actions.slice(0, start + 1)].reverse().find((action) => action.tool === 'run_command' && action.status === 'error');
-    const reads = actions.slice(start + 1).filter((action) => INVESTIGATION_READ_TOOLS.has(action.tool) && action.status === 'success' && !isCachedInvestigation(action)).length;
-    return { reads, failure };
+    const episodeActions = actions.slice(start + 1).filter((action) => INVESTIGATION_READ_TOOLS.has(action.tool) && action.status === 'success' && !isCachedInvestigation(action));
+    const reads = episodeActions.length;
+    const files = new Set<string>();
+    for (const action of episodeActions) {
+      const match = action.paramsSummary.match(/(?:read|search)\s+([^\s,]+)/);
+      if (match?.[1]) files.add(match[1]);
+    }
+    return { reads, failure, uniqueFiles: files.size };
   }
 
   evaluate(actions: ActionRecord[], tool: string, paramsHash: string, errorSig: string | undefined, contextFingerprint?: string, refreshRead = false): LoopVerdict {
@@ -210,17 +228,30 @@ export class LoopDetector {
       // A repeated read is only redundant when its earlier observation is
       // complete, the exact requested range matches, and the file is still
       // the same version. Search/LSP/list calls do not carry this context.
+      const actionsForDuplication = this.lastCompactionActionId
+        ? (() => {
+            const idx = actions.findIndex((a) => a.id === this.lastCompactionActionId);
+            return idx >= 0 ? actions.slice(idx + 1) : actions;
+          })()
+        : actions;
+      const relevantSinceCompaction = evidenceWindow(actionsForDuplication, tool, paramsHash);
+      const sameActionSinceCompaction = relevantSinceCompaction.filter((a) => a.tool === tool && a.paramsHash === paramsHash);
+
       const successfulReads = tool === 'read_file' && contextFingerprint
-        ? sameAction.filter((a) => a.status === 'success' && a.contextFingerprint === contextFingerprint && a.readObservationComplete !== false && Boolean(a.observation))
+        ? sameActionSinceCompaction.filter((a) => a.status === 'success' && a.contextFingerprint === contextFingerprint && Boolean(a.observation))
         : [];
       const pressure = this.investigationPressure(actions);
-      if (!refreshRead && pressure && pressure.reads >= this.policy.maxInvestigationReadsPerFailureEpisode && successfulReads.length > 0) {
+      const adaptiveMaxReads = Math.max(
+        this.policy.maxInvestigationReadsPerFailureEpisode,
+        10 + (pressure?.uniqueFiles ?? 0) * 3,
+      );
+      if (!refreshRead && pressure && pressure.reads >= adaptiveMaxReads && successfulReads.length > 0) {
         return {
           allowed: false,
           attempts: sameAction.length,
           priorFailures,
           reason:
-            `The exact read request already succeeded for this file version. ${pressure.reads} real investigation reads followed the current verification failure. ` +
+            `The exact read request already succeeded for this file version. ${pressure.reads} real investigation reads followed the current verification failure across ${pressure.uniqueFiles} file(s). ` +
             `Use the recorded observation or request a different line range to answer a new question.`,
         };
       }

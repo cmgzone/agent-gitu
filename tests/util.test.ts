@@ -36,15 +36,15 @@ describe('hashParams', () => {
     expect(h1).not.toBe(h2);
   });
 
-  it('collapses overlapping read_file ranges in the same semantic region', () => {
+  it('normalizes path and presentation knobs for the same read_file range', () => {
     const a = hashParams('read_file', { path: './src/game.ts', offset: 1, limit: 120, maxChars: 8000 });
-    const b = hashParams('read_file', { path: 'src/game.ts', offset: 150, limit: 40, maxChars: 30000 });
+    const b = hashParams('read_file', { path: 'src/game.ts', offset: 1, limit: 120, maxChars: 30000 });
     expect(a).toBe(b);
   });
 
-  it('keeps genuinely different read_file regions distinct', () => {
-    const a = hashParams('read_file', { path: 'src/game.ts', offset: 1, limit: 200 });
-    const b = hashParams('read_file', { path: 'src/game.ts', offset: 201, limit: 200 });
+  it('keeps different read_file line ranges distinct', () => {
+    const a = hashParams('read_file', { path: 'src/game.ts', offset: 1, limit: 120 });
+    const b = hashParams('read_file', { path: 'src/game.ts', offset: 150, limit: 40 });
     expect(a).not.toBe(b);
   });
 

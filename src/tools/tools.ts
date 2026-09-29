@@ -94,7 +94,7 @@ export function runtimeToolNames(browserAvailable: boolean): string[] {
   return [...KNOWN_TOOL_NAMES].filter((name) => browserAvailable || !BROWSER_TOOL_NAMES.has(name));
 }
 
-const MAX_FILE_BYTES = 512 * 1024;
+export const MAX_FILE_BYTES = 20 * 1024 * 1024; // 20 MB ceiling for text files; output is bounded by line limit and maxChars
 const MAX_LIST_ENTRIES = 400;
 const MAX_SEARCH_MATCHES = 60;
 /** Character cap for read_file output sent to the model. Line count alone is

@@ -165,6 +165,19 @@ export class Executor {
     this.onCodingEvent?.(event);
   }
 
+  /**
+   * In-memory cache of full read_file outputs, keyed by context fingerprint.
+   * Allows serving the complete previous file content on legitimate re-reads
+   * of unchanged files without filesystem I/O or loop-prevention failures.
+   */
+  readonly readCache = new Map<string, { output: string; contextFingerprint: string; timestamp: number }>();
+
+  noteCompaction(actionId?: string): void {
+    if (typeof (this.loopDetector as unknown as { noteCompaction?: (id?: string) => void }).noteCompaction === 'function') {
+      (this.loopDetector as unknown as { noteCompaction: (id?: string) => void }).noteCompaction(actionId);
+    }
+  }
+
   dispose(): void {
     this.backgroundCommands.dispose();
   }
@@ -365,27 +378,31 @@ export class Executor {
     const reusableRead =
       !refreshRead && typeof this.loopDetector.reusableSuccessfulRead === 'function' ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash, readContextFingerprint) : undefined;
     if (reusableRead) {
-      const cached =
-        `${CACHED_INVESTIGATION_PREFIX}: ${summary}\n` +
-        `Reused action ${reusableRead.id}; no tool or filesystem read was executed.\n` +
-        `${reusableRead.observation ?? '(the prior read succeeded but its compact observation is unavailable)'}\n` +
-        `Use this unchanged evidence. Read a genuinely different region/question, or change the source before requesting this evidence again.`;
-      const record = this.ledger.recordAction({
-        stepId,
-        tool: req.tool,
-        paramsHash,
-        paramsSummary: summary,
-        status: 'success',
-        contextFingerprint: readContextFingerprint,
-        readObservationComplete: true,
-        reason: req.reason,
-        expected: req.expected,
-        observation: cached,
-        durationMs: Date.now() - started,
-      });
-      this.emit(`cache    ${summary} (reused unchanged investigation observation)`);
-      this.fileKnowledge.noteRereadAvoided();
-      return { record, result: { ok: true, output: cached } };
+      const cachedEntry = readContextFingerprint ? this.readCache.get(readContextFingerprint) : undefined;
+      const cachedContent = cachedEntry?.output ?? reusableRead.observation;
+      if (cachedContent) {
+        const cached =
+          `${CACHED_INVESTIGATION_PREFIX}: ${summary}\n` +
+          `Reused action ${reusableRead.id}; file content unchanged since last read.\n` +
+          `${cachedContent}\n` +
+          `Use this unchanged evidence. Read a genuinely different region/question, or change the source before requesting this evidence again.`;
+        const record = this.ledger.recordAction({
+          stepId,
+          tool: req.tool,
+          paramsHash,
+          paramsSummary: summary,
+          status: 'success',
+          contextFingerprint: readContextFingerprint,
+          readObservationComplete: true,
+          reason: req.reason,
+          expected: req.expected,
+          observation: excerpt(cached, 800),
+          durationMs: Date.now() - started,
+        });
+        this.emit(`cache    ${summary} (reused unchanged investigation observation)`);
+        this.fileKnowledge.noteRereadAvoided();
+        return { record, result: { ok: true, output: cached } };
+      }
     }
 
     const loopVerdict = this.loopDetector.evaluate(this.ledger.data.actions, req.tool, paramsHash, undefined, readContextFingerprint, refreshRead);
@@ -691,6 +708,22 @@ export class Executor {
 
     this.emit(`${result.ok ? 'ok       ' : 'error    '} ${summary} (${record.durationMs}ms)`);
     if (result.output) this.emit(`out      ${excerpt(result.output, 900).replace(/\n/g, ' ⏎ ')}`);
+
+    if (req.tool === 'read_file' && result.ok && readContextFingerprint) {
+      this.readCache.set(readContextFingerprint, {
+        output: result.output,
+        contextFingerprint: readContextFingerprint,
+        timestamp: Date.now(),
+      });
+    }
+    if ((req.tool === 'write_file' || req.tool === 'apply_edit') && result.ok) {
+      const changedPath = typeof req.params['path'] === 'string' ? normalizeToolPath(req.params['path']) : undefined;
+      if (changedPath) {
+        for (const [key] of this.readCache) {
+          if (key.includes(changedPath)) this.readCache.delete(key);
+        }
+      }
+    }
     if (req.tool === 'run_command') {
       const command = commandResultSource(result, req.params);
       // A command that has not finished has no outcome to report: closing its card

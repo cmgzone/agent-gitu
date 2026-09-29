@@ -1737,6 +1737,8 @@ export class Gitu {
         };
         if (compactHistory(messages, (t) => this.emit(t), compactionOpts)) {
           telemetry.noteCompaction();
+          const lastAction = ledger.data.actions.at(-1);
+          executor.noteCompaction(lastAction?.id);
           // Durable user-reference images must survive compaction: if the
           // image-bearing message was digested away, splice the active visual
           // references back in so the model never loses what the user showed it.

@@ -381,7 +381,8 @@ async function main(): Promise<void> {
       const portRaw = flags.get('port');
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
       if (!Number.isFinite(port) || port < 1 || port > 65535) throw new Error('Invalid --port');
-      const server = new GituServer({ cwd, port });
+      const host = typeof flags.get('host') === 'string' ? String(flags.get('host')) : undefined;
+      const server = new GituServer({ cwd, port, host });
       const bound = await server.start();
       console.log(`Agent Gitu Web UI running: http://localhost:${bound}`);
       console.log('Project scope: detected from the current directory at request time.');
@@ -406,7 +407,8 @@ async function main(): Promise<void> {
       const portRaw = flags.get('port');
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
       if (!Number.isFinite(port) || port < 1 || port > 65535) throw new Error('Invalid --port');
-      const server = new GituServer({ cwd, port });
+      const host = typeof flags.get('host') === 'string' ? String(flags.get('host')) : undefined;
+      const server = new GituServer({ cwd, port, host });
       const bound = await server.start();
       console.log(`Agent Gitu headless server running: http://localhost:${bound}`);
       console.log('Cowork teams, scheduled jobs and the learning loop stay active; the Web UI is still served at the same port.');

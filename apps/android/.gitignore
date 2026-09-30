@@ -1,0 +1,7 @@
+android/
+dist/
+.expo/
+node_modules/
+*.jks
+*.keystore
+local.properties

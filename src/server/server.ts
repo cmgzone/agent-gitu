@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { MobileAccess } from './mobile-access.js';
 import os from 'node:os';
 import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
@@ -255,6 +256,8 @@ export interface GituServerConfig {
   cwd: string;
   port?: number;
   host?: string;
+  /** Opt-in native/mobile access; never accepted from a query string. */
+  accessKey?: string;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
   /** Initial provider recovery delay; grows to five minutes, respecting Retry-After. */
@@ -398,6 +401,7 @@ function dedupeMemoryPatternEvents<T extends { text: string }>(events: T[]): T[]
 export class GituServer {
   private readonly indexWatchers = new Map<string, CodeIndex>();
   private readonly config: GituServerConfig;
+  private readonly mobileAccess: MobileAccess;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
   private readonly modelRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -630,6 +634,10 @@ export class GituServer {
 
   constructor(config: GituServerConfig) {
     this.config = config;
+    this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
+    if (config.host && !['127.0.0.1', 'localhost', '::1'].includes(config.host) && !this.mobileAccess.enabled) {
+      throw new Error('Remote listening requires AGENT_GITU_ACCESS_KEY (at least 32 characters).');
+    }
   }
 
   private projectRoot(): string | undefined {
@@ -4301,8 +4309,41 @@ export class GituServer {
 
     // API surface is protected for ALL methods (GET included — read endpoints
     // enumerate the filesystem), not just writes.
-    if ((path.startsWith('/api/') || (method !== 'GET' && method !== 'HEAD')) && !this.isSameOrigin(req)) {
-      this.sendJson(res, 403, { error: 'cross-origin request rejected' });
+    const mobileBearer = this.mobileAccess.bearer(req);
+    const mobileCookie = this.mobileAccess.cookie(req);
+    const credentialed = mobileBearer || mobileCookie;
+    if (path.startsWith('/api/') || path === '/mobile' || (method !== 'GET' && method !== 'HEAD')) {
+      if (this.mobileAccess.enabled && !credentialed) {
+        this.sendJson(res, 401, { error: 'An Agent Gitu access key is required.' });
+        return;
+      }
+      if (!(credentialed ? this.mobileAccess.sameOrigin(req) : this.isSameOrigin(req))) {
+        this.sendJson(res, 403, { error: 'cross-origin request rejected' });
+        return;
+      }
+    }
+
+    if (method === 'GET' && path === '/api/mobile/status') {
+      if (!mobileBearer) {
+        this.sendJson(res, 401, { error: 'Enter the access key configured on your Agent Gitu server.' });
+        return;
+      }
+      this.sendJson(res, 200, { app: 'Agent Gitu', mobileProtocol: 1 });
+      return;
+    }
+    if (method === 'GET' && path === '/mobile') {
+      if (!mobileBearer) {
+        this.sendJson(res, 401, { error: 'Mobile access key rejected.' });
+        return;
+      }
+      this.mobileAccess.issue(req, res);
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(UI_HTML);
+      return;
+    }
+    if (method === 'POST' && path === '/api/mobile/disconnect') {
+      this.mobileAccess.revoke(req, res);
+      this.sendJson(res, 200, { ok: true });
       return;
     }
 

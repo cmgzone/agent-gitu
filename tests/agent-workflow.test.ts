@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as effortPlanner from '../src/agent/effort-planner.js';
-import { agentVerificationGate } from '../src/agent/agent-workflow.js';
+import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice } from '../src/agent/agent-workflow.js';
 import { planEffort } from '../src/agent/effort-planner.js';
 import { Gitu } from '../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
@@ -27,6 +27,31 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('chooses verification itself instead of repeatedly asking the user to select checks', async () => {
+    const questions = [{ header: 'Verification', question: 'Which checks should I run: the focused test or the full build?', options: ['focused test', 'full build'] }];
+    expect(asksOnlyForVerificationChoice(questions)).toBe(true);
+    expect(asksOnlyForVerificationChoice([{ question: 'Which style do you want?', options: ['modern', 'classic'] }])).toBe(false);
+    expect(asksOnlyForVerificationChoice([{ question: 'May I run tests against production with your credentials?', options: [] }])).toBe(false);
+    expect(agentWorkflowPrompt(false)).toContain('Do not ask the user which tests');
+
+    let asked = 0;
+    let redirected = false;
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      askUserHandler: async () => { asked++; return 'focused test'; },
+      llm: new ScriptedMockLlm([read, edit,
+        action({ type: 'ask_user', questions }),
+        (_call, messages) => {
+          redirected = messages.some(message => String(message.content).includes('Do not ask the user to choose checks again.'));
+          return verify(0, messages);
+        },
+        done, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(asked).toBe(0);
+    expect(redirected).toBe(true);
+    expect(result.report.status).toBe('complete');
+  }, 30000);
+
   it('allows three different repairs to complete instead of accumulating old rejections', async () => {
     const repair = (content: string) => action({ type: 'tool_call', tool: 'write_file', params: { path: 'README.md', content }, reason: 'Repair the wording', expected: 'Correct text' });
     const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,

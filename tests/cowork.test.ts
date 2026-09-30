@@ -379,6 +379,38 @@ describe('cowork runner', () => {
     expect(store.getConversation(conv.id)!.memberIds).toContain(store.listAgents().find(a => a.name === 'new-scout')!.id);
   });
 
+  it('moves a chief-created topic and every teammate reply into the same thread', async () => {
+    const chief = store.saveAgent(makeAgentInput('topic-chief', { chiefOfStaff: true }));
+    const workers = Array.from({ length: 5 }, (_, index) => store.saveAgent(makeAgentInput(`topic-worker-${index}`)));
+    const conv = store.saveConversation({ kind: 'group', memberIds: [chief.id, ...workers.map(worker => worker.id)], chiefId: chief.id });
+    const trigger = store.appendMessage(conv.id, { role: 'user', text: 'Prepare a launch update together.', via: 'web' });
+    const seen = new Set<string>();
+    let chiefCalls = 0;
+    const result = await runConversationTurn({
+      conversation: conv, trigger, history: [trigger], append: message => store.appendMessage(conv.id, message),
+      deps: depsFor([], {
+        store, memory: CoworkMemory.forWorkspace(), toolContext: () => ({ cwd: '.' } as ToolContext),
+        resolveLlm: member => ({ complete: async (messages: unknown[]) => {
+          if (member.id === chief.id) {
+            chiefCalls++;
+            if (chiefCalls === 1) return '<tool>{"name":"team_manage","params":{"action":"create_thread","title":"Launch update","topic":"Draft and review the launch update"}}</tool>';
+            return chiefCalls === 2 ? 'Team, work on the launch update.' : 'Here is the combined launch update.';
+          }
+          seen.add(member.id);
+          expect(JSON.stringify(messages)).toContain('Launch update');
+          return `${member.name} contribution.`;
+        } } as never),
+      }),
+    });
+    const thread = store.threads(conv.id)[0]!;
+    expect(result.error).toBeUndefined();
+    expect(store.getConversation(conv.id)!.activeThreadId).toBe(thread.id);
+    expect(store.getConversation(conv.id)!.threadActivationSeq).toBe(1);
+    expect(seen).toEqual(new Set(workers.map(worker => worker.id)));
+    expect(result.messages.every(message => message.threadId === thread.id)).toBe(true);
+    expect(store.messages(conv.id).filter(message => message.threadId === thread.id)).toHaveLength(result.messages.length);
+  });
+
   it('triages an unmentioned group message through the chief alone when no teammate is needed', async () => {
     const agent = store.saveAgent(makeAgentInput('solo2'));
     const other = store.saveAgent(makeAgentInput('bystander'));
@@ -728,6 +760,25 @@ describe('cowork capability tools', () => {
     expect(store.listAgents().some((a) => a.name.toLowerCase() === 'scout')).toBe(false);
     const selfDelete = await executeCoworkTool(noopCtx, 'team_manage', { action: 'delete', name: 'chief-tool' }, chiefPerms, scope(chief));
     expect(selfDelete.ok).toBe(false);
+  });
+
+  it('gives chief-hired teammates different shapes and colors in the chief chat', async () => {
+    const teamStore = new CoworkStore(path.join(tempHome('hired-avatars'), 'cowork.json'));
+    const chief = teamStore.saveAgent(makeAgentInput('avatar-chief', { chiefOfStaff: true }));
+    const conversation = teamStore.saveConversation({ kind: 'dm', memberIds: [chief.id] });
+    const perms = { allowShell: false, allowWrites: false, allowConfig: false, chief: true, browser: false };
+    const teamScope = { store: teamStore, agent: chief, memory: CoworkMemory.forWorkspace(), conversationId: conversation.id };
+    for (const name of ['Avatar One', 'Avatar Two']) {
+      const result = await executeCoworkTool(noopCtx, 'team_manage', { action: 'create', name }, perms, teamScope);
+      expect(result.ok).toBe(true);
+    }
+    const hires = teamStore.listAgents().filter(agent => agent.id !== chief.id);
+    expect(new Set(hires.map(agent => agent.avatar.shape)).size).toBe(2);
+    expect(new Set(hires.map(agent => agent.avatar.color)).size).toBe(2);
+    expect(hires.every(agent => agent.avatar.color !== chief.avatar.color && agent.avatar.shape !== chief.avatar.shape)).toBe(true);
+    expect(teamStore.getConversation(conversation.id)!.memberIds).toEqual([chief.id, ...hires.map(agent => agent.id)]);
+    teamStore.deleteAgent(hires[0]!.id);
+    expect(teamStore.getConversation(conversation.id)!.memberIds).toEqual([chief.id, hires[1]!.id]);
   });
 
   it('folder_manage, widget_manage and chief groups/threads work end to end', async () => {

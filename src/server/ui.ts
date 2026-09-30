@@ -181,9 +181,26 @@ ${HOME_CSS}
   .composer textarea { width: 100%; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: 15px/1.5 var(--sans); padding: 10px 10px 6px; min-height: 44px; max-height: 180px; }
   .composer textarea::placeholder { color: var(--faint); }
   .composer-bar { display: flex; align-items: center; gap: 5px; padding: 2px 6px; flex-wrap: wrap; }
-  .context-trigger { display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 8px; background: none; color: var(--muted); padding: 5px 9px; font-size: 12px; }
+  .run-folder-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 7px 9px 0; }
+  .run-folder-tags[hidden] { display: none; }
+  .run-folder-tags .label { color: var(--muted); font-size: 11px; margin-right: 2px; }
+  .run-folder-tag { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: min(360px, 100%); border: 1px solid var(--border2); border-radius: 999px; background: var(--card2); color: var(--text); padding: 3px 6px 3px 9px; font-size: 11px; }
+  .run-folder-tag .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-folder-tag .permission { color: var(--muted); white-space: nowrap; }
+  .run-folder-tag button { flex: none; border: 0; background: transparent; color: var(--muted); padding: 0 2px; font: inherit; cursor: pointer; }
+  .run-folder-tag button:hover { color: var(--text); }
+  .run-folder-tag button[data-untag-folder]:hover { color: var(--err); }
+  .context-trigger { display: grid; place-items: center; width: 32px; height: 32px; flex: none; border: 0; border-radius: 50%; background: none; color: var(--muted); padding: 4px; cursor: pointer; }
   .context-trigger:hover, .context-trigger[aria-expanded="true"] { background: var(--hover); color: var(--text); }
-  .context-trigger svg { width: 14px; height: 14px; }
+  .context-trigger svg { width: 24px; height: 24px; transform: rotate(-90deg); overflow: visible; }
+  .context-ring-track { fill: none; stroke: var(--border2); stroke-width: 2.5; }
+  .context-ring-progress { fill: none; stroke: var(--context-color, var(--muted)); stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 100; transition: stroke-dashoffset .6s ease, stroke .4s ease; }
+  .context-ring-core { fill: var(--context-color, var(--muted)); opacity: .65; }
+  .context-trigger.using .context-ring-progress { animation: contextPulse 1.8s ease-in-out infinite; }
+  .context-trigger.using.unknown .context-ring-progress { stroke-dasharray: 18 82; stroke-dashoffset: 0; transform-origin: 12px 12px; animation: contextSpin 2.4s linear infinite; }
+  @keyframes contextPulse { 50% { filter: drop-shadow(0 0 2px var(--context-color, var(--muted))); opacity: .65; } }
+  @keyframes contextSpin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .context-ring-progress { animation: none !important; transition: none; } }
   .context-card { position: absolute; right: 8px; bottom: calc(100% + 8px); z-index: 65; width: min(390px, calc(100vw - 32px)); max-height: min(65vh, 560px); overflow-y: auto; padding: 15px; border: 1px solid var(--border2); border-radius: 14px; background: var(--card); box-shadow: var(--shadow-float); }
   .context-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 13px; font-weight: 650; }
   .context-card .section-h { margin-top: 14px; }
@@ -192,8 +209,8 @@ ${HOME_CSS}
   .pill { background: none; border: 0; color: var(--muted); border-radius: 8px; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
   .pill:hover { background: var(--hover); color: var(--text); }
   .control-pill { border: 1px solid transparent; }
-  #homePlusBtn { width: 32px; height: 32px; padding: 0; flex: none; justify-content: center; border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); background: color-mix(in srgb, var(--accent) 13%, var(--card)); color: var(--accent); cursor: pointer; }
-  #homePlusBtn:hover, #homePlusBtn[aria-expanded="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 22%, var(--card)); color: var(--accent); }
+  #homePlusBtn { width: 32px; height: 32px; padding: 0; flex: none; justify-content: center; border-color: var(--border2); background: transparent; color: var(--muted); cursor: pointer; }
+  #homePlusBtn:hover, #homePlusBtn[aria-expanded="true"] { border-color: var(--border2); background: var(--hover); color: var(--text); }
   #homePlusBtn svg { width: 16px; height: 16px; }
   .control-prefix { color: var(--faint); font-size: 10px; font-weight: 650; letter-spacing: .55px; text-transform: uppercase; }
   .pill select { border: 0; background: none; color: inherit; outline: none; font-size: 12.5px; appearance: none; -webkit-appearance: none; padding-right: 2px; max-width: 220px; }
@@ -944,7 +961,7 @@ ${ONBOARDING_HTML}
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <div class="modal" id="browseModal" hidden>
   <div class="box">
-    <div class="bar"><span style="font-weight:600;font-size:13px">Choose a project folder</span><span class="crumb" id="browseCrumb"></span></div>
+    <div class="bar"><span style="font-weight:600;font-size:13px" id="browseTitle">Choose a project folder</span><span class="crumb" id="browseCrumb"></span></div>
     <div class="list" id="browseList"></div>
     <div class="foot"><span class="chip ok" id="browseProjChip" style="display:none">project detected</span><span style="flex:1"></span><button class="btn ghost" id="browseCancel">Cancel</button><button class="btn dark" id="browseUse">Use this folder</button></div>
   </div>
@@ -1550,7 +1567,7 @@ ${ONBOARDING_HTML}
       : '') +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar"><button type="button" class="pill control-pill" id="homeProj" title="active project for this session — click to change" style="max-width:190px"><span class="control-prefix">Project</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></button>' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div>' +
+      '<div class="composer-bar">' + controlsHtml('<button type="button" class="pill control-pill" id="homeProj" aria-label="Project ' + esc(name) + '" title="active project for this session — click to change" style="max-width:190px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></button>') + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div>' +
       '</div>';
     var ta = $('goal');
     ta.value = S.draft;
@@ -1816,16 +1833,16 @@ ${ONBOARDING_HTML}
     plan.title = busy ? 'Available when this task finishes' : 'Pause for plan review before making changes';
     if (plus) plus.title = enabled ? 'More actions · Plan mode selected' : 'More actions · Agent mode selected';
   }
-  function controlsHtml() {
+  function controlsHtml(projectControl) {
     return '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
       '<div class="home-plus-menu" id="homePlusMenu" hidden role="menu" aria-label="More actions">' +
         '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
         '<button type="button" id="menuPlan" data-hp="plan" role="menuitemradio" aria-checked="false"><span class="ico">' + icon('layers') + '</span>Plan mode<span class="check">✓</span></button>' +
         '<button type="button" data-hp="attach" role="menuitem"><span class="ico">' + icon('file') + '</span>Choose files</button>' +
-        '<button type="button" data-hp="folder" role="menuitem"><span class="ico">' + icon('folder') + '</span>Tag project folder</button>' +
+        '<button type="button" data-hp="folder" role="menuitem"><span class="ico">' + icon('folder') + '</span>' + (S.active === 'home' ? 'Choose project folder' : 'Tag reference folder') + '</button>' +
         '<button type="button" data-hp="schedule" role="menuitem"><span class="ico">' + icon('clock') + '</span>Schedule a run</button>' +
       '</div>' +
-      '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="control-prefix">Model</span><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
+      (projectControl || '') + '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
       '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
       '<button type="button" class="pill" id="attachBtn" title="Attach files or documents" aria-label="Attach files or documents">' + icon('file') + '</button>' +
@@ -1859,6 +1876,48 @@ ${ONBOARDING_HTML}
       el.onclick = function () { pendingFor().splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
     });
     updateSendState();
+  }
+  function renderTaggedFolders(runId) {
+    var wrap = $('runFolderTags');
+    if (!wrap || S.active !== runId) return;
+    var sess = S.sessions[runId];
+    var folders = (sess && (sess.taggedFolders || (sess.session && sess.session.taggedFolders))) || [];
+    var writable = (sess && (sess.writableFolders || (sess.session && sess.session.writableFolders))) || [];
+    wrap.hidden = !folders.length;
+    wrap.innerHTML = folders.length ? '<span class="label">Tagged folders</span>' + folders.map(function (folder) {
+      var canWrite = writable.indexOf(folder) !== -1;
+      return '<span class="run-folder-tag" title="' + esc(folder) + '"><span class="name">' + icon('folder') + ' ' + esc(basename(folder)) + '</span><span class="permission">' + (canWrite ? 'Can edit' : 'Read only') + '</span><button type="button" data-folder-write="' + esc(folder) + '" title="' + (canWrite ? 'Revoke write permission' : 'Allow the agent to edit this folder') + '">' + (canWrite ? 'Revoke writes' : 'Allow writes') + '</button><button type="button" data-untag-folder="' + esc(folder) + '" aria-label="Remove folder ' + esc(basename(folder)) + '" title="Remove this folder">×</button></span>';
+    }).join('') : '';
+    wrap.querySelectorAll('[data-folder-write]').forEach(function (button) {
+      button.onclick = function () {
+        var folder = button.getAttribute('data-folder-write');
+        var grant = writable.indexOf(folder) === -1;
+        if (grant && !confirm('Allow Agent Gitu to create, edit, and delete files inside this folder for this chat?\n\n' + folder)) return;
+        api('/api/runs/' + encodeURIComponent(runId) + '/folders', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: folder, writable: grant }) })
+          .then(function (data) {
+            if (!S.sessions[runId]) return;
+            S.sessions[runId].writableFolders = data.writableFolders || [];
+            if (S.sessions[runId].session) S.sessions[runId].session.writableFolders = data.writableFolders || [];
+            renderTaggedFolders(runId);
+            toast(grant ? 'Write access granted for this chat' : 'Write access revoked');
+          }).catch(function (error) { toast(error.message, true); });
+      };
+    });
+    wrap.querySelectorAll('[data-untag-folder]').forEach(function (button) {
+      button.onclick = function () {
+        var folder = button.getAttribute('data-untag-folder');
+        api('/api/runs/' + encodeURIComponent(runId) + '/folders', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: folder }) })
+          .then(function (data) {
+            if (!S.sessions[runId]) return;
+            S.sessions[runId].taggedFolders = data.folders || [];
+            S.sessions[runId].writableFolders = data.writableFolders || [];
+            if (S.sessions[runId].session) S.sessions[runId].session.taggedFolders = data.folders || [];
+            if (S.sessions[runId].session) S.sessions[runId].session.writableFolders = data.writableFolders || [];
+            renderTaggedFolders(runId);
+            toast('Folder untagged');
+          }).catch(function (error) { toast(error.message, true); });
+      };
+    });
   }
   var MAX_PENDING_FILES = 8;
   var MAX_PENDING_FILE_BYTES = 8 * 1024 * 1024;
@@ -1999,7 +2058,7 @@ ${ONBOARDING_HTML}
           if (action === 'agent') setPlanRequested(S.active, false);
           else if (action === 'plan') setPlanRequested(S.active, true);
           else if (action === 'attach') { var ai = $('attachInput'); if (ai) ai.click(); }
-          else if (action === 'folder') openFolderBrowser();
+          else if (action === 'folder') openFolderBrowser(S.active === 'home' ? 'project' : 'tag');
           else if (action === 'schedule') openSettings('cron');
         };
       });
@@ -2095,8 +2154,8 @@ ${ONBOARDING_HTML}
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
       '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
-      '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml() + '<button type="button" class="context-trigger" id="contextToggle" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard">' + icon('layers') + ' Context</button><button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
+      '<div class="thumbs" id="thumbs" hidden></div><div class="run-folder-tags" id="runFolderTags" aria-label="Tagged reference folders" hidden></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button type="button" class="context-trigger unknown" id="contextToggle" title="Session context and token usage" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="context-ring-track" cx="12" cy="12" r="9"/><circle class="context-ring-progress" cx="12" cy="12" r="9" pathLength="100"/><circle class="context-ring-core" cx="12" cy="12" r="2"/></svg></button><button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
       '<div class="context-card" id="contextCard" hidden><div class="context-card-head"><span>Session context</span><button type="button" class="ubtn" id="contextClose" aria-label="Close context card">&times;</button></div><div id="contextCardBody"></div></div></div></div>' +
       '</div></div>';
     $('contextToggle').onclick = function () { toggleContextCard(); };
@@ -2111,6 +2170,7 @@ ${ONBOARDING_HTML}
     $('jumpLatest').onclick = function () { stickScroll($('stream'), true); };
     applyLayout();
     renderComposerTodos(runId);
+    renderTaggedFolders(runId);
   $('follow').addEventListener('keydown', function (e) {
     // Shift+Enter inserts a newline, same as the home composer — the
     // auto-grow textarea exists precisely for multi-line follow-ups.
@@ -4286,6 +4346,9 @@ ${ONBOARDING_HTML}
       S.pollFailures = 0;
       retainUsageEstimate(sess, session);
       sess.session = session;
+      sess.taggedFolders = session.taggedFolders || [];
+      sess.writableFolders = session.writableFolders || [];
+      renderTaggedFolders(runId);
       renderContextCard(runId);
       // A resumed run replays the whole history over SSE, re-creating tool
       // cards from earlier interrupted runs in the "working" state — those
@@ -4862,7 +4925,7 @@ ${ONBOARDING_HTML}
       reportStatusLine(displayStatus, currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length) + evidence + '</details>';
     var status = { complete: 'Completed', blocked: 'Blocked', aborted: 'Stopped', failed: 'Failed', paused: 'Paused' }[displayStatus] || displayStatus;
     if (report.phase && report.phase.kind === 'follow_up') status += ' · Follow-up';
-    return cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'orb', color: '#8f80ff' } }, status, body, actions);
+    return cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'home-blob', color: '#8f80ff' } }, status, body, actions);
   }
 
   function reportSideCard(report) {
@@ -5270,7 +5333,27 @@ ${ONBOARDING_HTML}
     if (visible) { closeToolPanel(); renderContextCard(S.active); }
   }
 
+  function renderContextRing(runId) {
+    var button = $('contextToggle'), sess = S.sessions[runId];
+    if (!button || !sess) return;
+    var session = sess.session, usage = session && session.usage;
+    var model = session && session.provider && session.model ? modelInfo(session.provider + '::' + session.model) : null;
+    var capacity = usage && usage.contextWindowTokens || model && model.metadata && model.metadata.contextTokens;
+    var used = usage && usage.contextTokens;
+    var known = typeof used === 'number' && typeof capacity === 'number' && capacity > 0;
+    var percent = known ? Math.min(100, Math.max(0, used / capacity * 100)) : 0;
+    var active = session && session.status === 'running';
+    button.classList.toggle('using', Boolean(active));
+    button.classList.toggle('unknown', !known);
+    button.style.setProperty('--context-color', known ? percent >= 90 ? 'var(--err)' : percent >= 70 ? 'var(--evidence)' : 'var(--ok)' : active ? 'var(--run)' : 'var(--muted)');
+    button.querySelector('.context-ring-progress').style.strokeDashoffset = String(100 - percent);
+    var title = known ? 'Context: ' + Math.round(percent) + '% · ' + used.toLocaleString() + ' / ' + capacity.toLocaleString() + ' tokens (latest model call)' : 'Context usage unavailable · open session details';
+    button.title = title;
+    button.setAttribute('aria-label', title);
+  }
+
   function renderContextCard(runId) {
+    renderContextRing(runId);
     var sess = S.sessions[runId];
     var body = $('contextCardBody');
     if (!body || !sess || $('contextCard').hidden) return;
@@ -5279,13 +5362,14 @@ ${ONBOARDING_HTML}
     var session = sess.session;
     var U = session && session.usage;
     var model = session && session.provider && session.model ? modelInfo(session.provider + '::' + session.model) : null;
-    var contextWindow = model && model.metadata && model.metadata.contextTokens;
+    var contextWindow = U && U.contextWindowTokens || model && model.metadata && model.metadata.contextTokens;
     var html = '<div class="stat-grid">';
     function stat(k, v, mono) { html += '<div class="stat"><div class="k">' + esc(k) + '</div><div class="v ' + (mono ? 'mono' : '') + '" title="' + esc(v) + '">' + esc(v) + '</div></div>'; }
     stat('Input tokens', U ? Number(U.inputTokens || 0).toLocaleString() : '—', true);
     stat('Cached tokens', U ? Number(U.cachedTokens || 0).toLocaleString() : '—', true);
     stat('Output tokens', U ? Number(U.outputTokens || 0).toLocaleString() : '—', true);
     stat('Model context window', typeof contextWindow === 'number' ? contextWindow.toLocaleString() : 'Unavailable', true);
+    stat('Latest context use', U && typeof U.contextTokens === 'number' ? U.contextTokens.toLocaleString() : 'Unavailable', true);
     html += '</div>';
     html += '<div class="section-h">Action breakdown</div>';
     if (L && L.actions.length) {
@@ -6181,9 +6265,13 @@ ${ONBOARDING_HTML}
     }
   }
 
-  function openFolderBrowser() {
+  function openFolderBrowser(mode) {
+    S.browseTagRun = mode === 'tag' && S.active !== 'home' ? S.active : null;
+    $('browseTitle').textContent = S.browseTagRun ? 'Tag a read-only reference folder' : 'Choose a project folder';
+    $('browseUse').textContent = S.browseTagRun ? 'Tag folder' : 'Use this folder';
     $('browseModal').hidden = false;
-    browseTo(effectiveProjectPath());
+    var sess = S.browseTagRun && S.sessions[S.browseTagRun];
+    browseTo((sess && sess.session && sess.session.projectPath) || effectiveProjectPath());
   }
 
   function browseTo(p, isFallback) {
@@ -6221,6 +6309,24 @@ ${ONBOARDING_HTML}
     if (up) up.onclick = function () { browseTo(d.parent || ''); };
     $('browseUse').onclick = function () {
       if (d.atRoot || !d.path) { toast('Open a folder first', true); return; }
+      if (S.browseTagRun) {
+        var runId = S.browseTagRun;
+        api('/api/runs/' + encodeURIComponent(runId) + '/folders', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: d.path }) })
+          .then(function (data) {
+            var sess = S.sessions[runId];
+            if (sess) {
+              sess.taggedFolders = data.folders || [];
+              sess.writableFolders = data.writableFolders || [];
+              if (sess.session) sess.session.taggedFolders = data.folders || [];
+              if (sess.session) sess.session.writableFolders = data.writableFolders || [];
+            }
+            if (S.active === runId) renderTaggedFolders(runId);
+            $('browseModal').hidden = true;
+            S.browseTagRun = null;
+            toast('Folder tagged for read-only access');
+          }).catch(function (error) { toast(error.message, true); });
+        return;
+      }
       S.settings.projectPath = d.path;
       persist();
       updateProjChip();

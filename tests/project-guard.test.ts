@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ProjectGuard, ProjectGuardError } from '../src/guard/project-guard.js';
+import { toolListFiles, toolReadFile, toolSearchFiles, toolWriteFile } from '../src/tools/tools.js';
 
 const TEMP_ROOT = path.join(tmpdir(), 'hermes-tests');
 
@@ -63,6 +64,40 @@ describe('ProjectGuard', () => {
     expect(guard.isInsideProject(path.join(TEMP_ROOT, 'other', 'x.ts'))).toBe(false);
     expect(() => guard.assertInside(path.join(TEMP_ROOT, 'other', 'x.ts'))).toThrow(ProjectGuardError);
     expect(() => guard.assertInside(path.join(dir, 'node_modules', 'x'))).toThrow(ProjectGuardError);
+  });
+
+  it('keeps a user-tagged folder read-only until its write permission is granted, then revokes it', () => {
+    const dir = makeProject('guard-tagged-read', { name: 'guard-tagged-read' });
+    const outside = mkdtempSync(path.join(TEMP_ROOT, 'tagged-reference-'));
+    const note = path.join(outside, 'note.txt');
+    writeFileSync(note, 'reference');
+    const privateDir = path.join(outside, '.git');
+    mkdirSync(privateDir);
+    writeFileSync(path.join(privateDir, 'config'), 'private');
+    const guard = ProjectGuard.detect(dir);
+    let folders = [outside];
+    expect(() => guard.assertReadable(note)).toThrow(ProjectGuardError);
+    guard.setTaggedReadFolders(() => folders);
+    expect(() => guard.assertReadable(note)).not.toThrow();
+    const context = { guard, cwd: dir };
+    expect(toolReadFile(context, { path: note }).output).toContain('reference');
+    expect(toolListFiles(context, { path: outside }).output).toContain('note.txt');
+    expect(toolSearchFiles(context, { path: outside, pattern: 'reference', mode: 'literal' }).output).toContain('note.txt');
+    expect(() => guard.assertInside(note)).toThrow(ProjectGuardError);
+    let writable: string[] = [];
+    guard.setTaggedWriteFolders(() => writable);
+    writable = [outside];
+    expect(() => guard.assertInside(note)).not.toThrow();
+    expect(() => guard.assertInside(path.join(outside, 'new.txt'))).not.toThrow();
+    expect(toolWriteFile(context, { path: path.join(outside, 'new.txt'), content: 'approved' }).ok).toBe(true);
+    expect(readFileSync(path.join(outside, 'new.txt'), 'utf8')).toBe('approved');
+    expect(() => guard.assertInside(path.join(privateDir, 'config'))).toThrow(ProjectGuardError);
+    expect(() => guard.assertInside(path.join(path.dirname(outside), 'sibling.txt'))).toThrow(ProjectGuardError);
+    writable = [];
+    expect(() => guard.assertInside(note)).toThrow(ProjectGuardError);
+    expect(() => guard.assertReadable(path.join(privateDir, 'config'))).toThrow(ProjectGuardError);
+    folders = [];
+    expect(() => guard.assertReadable(note)).toThrow(ProjectGuardError);
   });
 
   it('persists and reloads the lock', () => {

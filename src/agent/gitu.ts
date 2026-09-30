@@ -78,7 +78,7 @@ import {
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { applyOutputHygiene } from './output-style.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
-import { agentVerificationGate, agentWorkflowPrompt, isObservationTool } from './agent-workflow.js';
+import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction, isDurableVisualReferenceMessage } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -160,6 +160,9 @@ import {
 export interface GituConfig {
   cwd: string;
   llm: LlmClient;
+  /** Host-owned folders the user tagged in this run; readable, never writable. */
+  taggedReadFolders?: () => readonly string[];
+  taggedWriteFolders?: () => readonly string[];
   /** Read cache for provider evidence, remote state epochs, and retrieval-before-fetch. */
   providerCache?: ProviderReadCache;
   /** Universal capability registry across Native connections, MCP tools, and plugins. */
@@ -361,6 +364,7 @@ export class Gitu {
   public readonly universalRegistry: UniversalCapabilityRegistry;
   private readonly emit: (event: string) => void;
   private readonly inbox: { text: string; attachmentContext?: string }[] = [];
+  private readonly taggedFolderNotices: string[] = [];
   private aborted = false;
   private abortController?: AbortController;
   /** Last reasoning text published, so a streaming trace is not re-announced. */
@@ -375,6 +379,11 @@ export class Gitu {
 
   queueMessage(text: string, attachmentContext?: string): void {
     this.inbox.push({ text, attachmentContext });
+  }
+
+  /** A host-side scope update, not a new user task or plan change. */
+  noteTaggedFolderChange(message: string): void {
+    this.taggedFolderNotices.push(message);
   }
 
   stop(): void {
@@ -418,6 +427,8 @@ export class Gitu {
       if (err instanceof ProjectGuardError) throw err;
       throw err;
     }
+    if (this.config.taggedReadFolders) guard.setTaggedReadFolders(this.config.taggedReadFolders);
+    if (this.config.taggedWriteFolders) guard.setTaggedWriteFolders(this.config.taggedWriteFolders);
     guard.persist();
     this.emit(
       `project  locked: ${guard.lock.name} @ ${guard.activeWritableRoot} (${guard.lock.branch ?? 'no branch'}) ` +
@@ -930,6 +941,8 @@ export class Gitu {
 
       const systemPrompt = buildSystemPrompt(guard, memory, {
         scopeFiles: this.config.scopeFiles,
+        taggedReadFolders: this.config.taggedReadFolders?.(),
+        taggedWriteFolders: this.config.taggedWriteFolders?.(),
         extraConstraints: this.config.extraConstraints,
         // Ranked memory retrieval: memories relevant to THIS goal surface
         // first (relevance + scope + confidence + recency + usage).
@@ -1793,7 +1806,8 @@ export class Gitu {
       };
 
       const admitQueuedMessages = (): boolean => {
-        const hadMessages = this.inbox.length > 0;
+        const hadMessages = this.inbox.length > 0 || this.taggedFolderNotices.length > 0;
+        while (this.taggedFolderNotices.length > 0) observe(`REFERENCE FOLDER UPDATE: ${this.taggedFolderNotices.shift()}`);
         while (this.inbox.length > 0) {
           const queued = this.inbox.shift()!;
           this.emit(`user-msg ${queued.text}`);
@@ -3394,6 +3408,11 @@ export class Gitu {
               break;
             }
             case 'ask_user': {
+              if (agentWorkflow && !temporaryPlanPending && asksOnlyForVerificationChoice(action.questions)) {
+                this.emit('verification choice handled by agent — no user question');
+                observe('Choose the smallest meaningful verification for the changed result yourself. Inspect project scripts and instructions, run the check, and reuse fresh passing evidence. If a required tool or environment is genuinely unavailable, request_block with that concrete dependency. Do not ask the user to choose checks again.');
+                break;
+              }
               // Discovery-first: if saved connections exist and the question
               // asks for a resource identifier the provider could resolve, hold
               // the question ONCE so the model performs narrower provider reads

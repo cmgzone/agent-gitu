@@ -85,6 +85,8 @@ export interface CoworkRunnerDeps {
   onMessage?: (message: CoworkMessage) => void | Promise<void>;
   /** Called when an agent starts composing (UI "thinking" indicator). */
   onWorking?: (agent: CoworkAgent) => void;
+  /** A coordinator opened a shared topic during this turn. */
+  onThreadActivated?: (thread: CoworkThread) => void;
   /** Require an explicit completion state for text-only chat replies. The
    * server enables this; standalone legacy callers may omit it. */
   requireCompletionState?: boolean;
@@ -267,7 +269,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
       mission.guidance.length > 0 ? `GUIDANCE FROM THE USER:\n${mission.guidance.map((g) => `- ${g}`).join('\n')}` : '',
     ].filter(Boolean).join('\n');
     parts.push(briefing);
-  } else if (conversation.kind === 'group') {
+  } else if (conversation.kind === 'group' || members.length > 1) {
     // Mark the EFFECTIVE chief (resolveChief's fallback included), so the
     // roster agrees with the agent that actually receives the chief prompt.
     const chief = resolveChief(conversation, members);
@@ -282,7 +284,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
     );
     if (agent.id === chief?.id) {
       parts.push(
-        `YOU ARE THE CHIEF OF STAFF for this group. For broad requests: split the work, then delegate IN THIS REPLY — summon the right teammates with @Name mentions (they start working when your reply ends), or hand a private task to one teammate with the message_teammate tool. After their results arrive you synthesize them into one clear answer in a later reply. Never leave delegation for a future turn and never merely describe a plan to delegate: if a teammate is needed, summon them now. For narrow questions in your own lane, just answer directly.`,
+        `YOU ARE THE CHIEF OF STAFF for this group. For broad requests: split the work, then delegate IN THIS REPLY — summon the right teammates with @Name mentions (they start working when your reply ends), or hand a private task to one teammate with the message_teammate tool. You may create a shared topic with team_manage create_thread when it helps organize team work; do not ask the user to create or switch threads. Creating a topic starts the teammates on its brief and keeps this turn's replies together automatically. After their results arrive you synthesize them into one clear answer in a later reply. Never leave delegation for a future turn and never merely describe a plan to delegate: if a teammate is needed, summon them now. For narrow questions in your own lane, just answer directly.`,
       );
     }
   } else {
@@ -549,6 +551,10 @@ async function agentTurn(input: {
   const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
   const scope: CoworkToolScope | undefined =
     deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser, subAgents: subAgentBridgeFor(agent, conversation.id, undefined, deps) } : undefined;
+  if (scope) scope.activateThread = thread => {
+    deps.onThreadActivated?.(thread);
+    messages.push({ role: 'user', content: `TOPIC ROUTING UPDATE: Continue this task in "${thread.title}"${thread.topic ? ` — ${thread.topic}` : ''}. The team will work in this shared topic automatically. Keep the original request and completed results; do not repeat work.` });
+  };
   let reply = '';
   let lastPublicUpdate = '';
   let reasoning = '';
@@ -895,14 +901,21 @@ export async function runConversationTurn(input: {
   references?: string;
   append: (m: CoworkMessageInput) => CoworkMessage;
 }): Promise<TurnResult> {
-  const { conversation, trigger, append } = input;
-  const threadId = input.threadId ?? trigger.threadId;
+  const { trigger, append } = input;
+  let conversation = input.conversation;
+  let threadId = input.threadId ?? trigger.threadId;
+  let topicStarted = false;
   const history = input.history.filter((message) => message.threadId === threadId && message.seq <= trigger.seq);
   // Resolve citations here too: standalone callers need not pre-render them.
   // References stay separate from trigger text and are never routed as mentions.
   const references = input.references ?? input.deps.references ??
     renderReferencedMessages(input.deps.store, conversation.id, trigger, history);
-  const deps: CoworkRunnerDeps = { ...input.deps, references };
+  const deps: CoworkRunnerDeps = { ...input.deps, references, onThreadActivated: thread => {
+    threadId = thread.id;
+    topicStarted = true;
+    track({ role: 'system', text: `Topic: ${thread.title}\n${thread.topic || trigger.text}`, via: 'agent' });
+    input.deps.onThreadActivated?.(thread);
+  } };
   let members = currentMembers(conversation, deps);
   if (members.length === 0) return { messages: [], error: 'No team members in this conversation' };
   const messages: CoworkMessage[] = [];
@@ -913,15 +926,21 @@ export async function runConversationTurn(input: {
   };
 
   try {
+    let coordinatorSpoke = false;
+    let firstSpeakerId: string | undefined;
     const forced = deps.forceAgentId ? members.find((member) => member.id === deps.forceAgentId) : undefined;
-    if (conversation.kind === 'dm' || forced) {
+    if ((conversation.kind === 'dm' && members.length === 1) || forced) {
       const agent = forced ?? members[0]!;
+      firstSpeakerId = agent.id;
       deps.onWorking?.(agent);
       await agentTurn({ agent, conversation, members, history, deps, threadId, media: input.media, append: track });
-      return { messages };
+      conversation = deps.store?.getConversation(conversation.id) ?? conversation;
+      members = currentMembers(conversation, deps);
+      if (members.length < 2 || (forced && !topicStarted)) return { messages };
+      coordinatorSpoke = true;
     }
 
-    const mentioned = mentionedAgents(trigger, members);
+    const mentioned = coordinatorSpoke ? mentionedAgents([...messages].reverse().find(m => m.role === 'agent') ?? trigger, members).filter(member => member.id !== firstSpeakerId) : mentionedAgents(trigger, members);
     const workerErrors: string[] = [];
     const chief = resolveChief(conversation, members)!;
     const existingRequestIds = new Set((deps.store?.requests(conversation.id) ?? []).map((request) => request.id));
@@ -932,7 +951,19 @@ export async function runConversationTurn(input: {
     const queue: CoworkAgent[] = [...mentioned];
     const responded = new Set<string>();
     for (const agent of queue) responded.add(agent.id);
-    if (broadcast) {
+    let turnBudget = MAX_AGENT_MESSAGES_PER_TRIGGER - 1;
+    const enqueueTopicTeam = (): void => {
+      if (!topicStarted) return;
+      members = currentMembers(conversation, deps);
+      turnBudget = Math.max(turnBudget, members.length);
+      for (const member of members) {
+        if (member.id === chief.id || responded.has(member.id)) continue;
+        responded.add(member.id);
+        queue.push(member);
+      }
+    };
+    if (firstSpeakerId) responded.add(firstSpeakerId);
+    if (broadcast && !coordinatorSpoke) {
       responded.add(chief.id);
       deps.onWorking?.(chief);
       await agentTurn({
@@ -948,17 +979,19 @@ export async function runConversationTurn(input: {
       // The chief's reply is the delegation contract: seed the worker waves
       // from the teammates it summoned, not from every member.
       const triageReply = [...messages].reverse().find((m) => m.role === 'agent' && m.agentId === chief.id);
+      members = currentMembers(conversation, deps);
       for (const summoned of mentionedAgents(triageReply ?? trigger, members)) {
         if (responded.has(summoned.id)) continue;
         responded.add(summoned.id);
         queue.push(summoned);
       }
     }
+    enqueueTopicTeam();
     let count = 0;
     // Targeted chains reserve one slot for chief synthesis. A triage cascade
     // gets the summoned count, with the standard four slots available for
     // teammate-to-teammate cascades.
-    const turnBudget = broadcast ? Math.max(queue.length, MAX_AGENT_MESSAGES_PER_TRIGGER - 1) : MAX_AGENT_MESSAGES_PER_TRIGGER - 1;
+    if (broadcast) turnBudget = Math.max(queue.length, turnBudget);
     while (queue.length > 0 && count < turnBudget) {
       deps.signal?.throwIfAborted();
       members = currentMembers(conversation, deps);
@@ -990,6 +1023,7 @@ export async function runConversationTurn(input: {
           queue.push(summoned);
         }
       }
+      enqueueTopicTeam();
     }
     if (queue.length > 0) track({ role: 'system', text: `Team turn limit reached; not run: ${queue.map((a) => a.name).join(', ')}.`, via: 'web' });
     // The chief closes any multi-agent turn with a synthesis. A chief-only

@@ -5,7 +5,7 @@ import { createContext, Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { CoworkStore } from '../src/cowork/store.js';
 import { coworkWebOrigin, type CoworkProgress } from '../src/cowork/runner.js';
-import { COWORK_JS } from '../src/server/ui-cowork.js';
+import { COWORK_CSS, COWORK_JS } from '../src/server/ui-cowork.js';
 
 const esc = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 
@@ -68,6 +68,16 @@ describe('animated teammate characters and web activity', () => {
     expect(home.match(/id="([^"]+)"/)?.[1]).not.toBe(context.cwAvaImg({ shape: 'home-blob' }).match(/id="([^"]+)"/)?.[1]);
     const fallbacks = ['orb', 'cube', 'diamond', 'pyramid'].map(shape => context.cwAvaImg({ shape, color: '#3fd68f' }).replace(/cwBlobFill\d+/g, 'fill'));
     expect(new Set(fallbacks).size).toBe(4);
+  });
+
+  it('keeps the homepage motion and gives chat and panel characters room to show their faces', () => {
+    expect(COWORK_CSS).toContain('.cw-ava { width: 40px; height: 40px;');
+    expect(COWORK_CSS).toContain('.cw-row > .cw-ava { width: 46px; height: 46px; }');
+    expect(COWORK_CSS).toContain('.report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }');
+    expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 88px; height: 88px; }');
+    expect(COWORK_JS).toContain('cwAva(a, 104)');
+    expect(COWORK_JS).toContain('cwAva(m, 40)');
+    expect(COWORK_CSS).toContain('svg:not(.home-blob)');
   });
 
   it('renders and caches each geometric character independently while keeping the homepage SVG', () => {

@@ -13,6 +13,7 @@ const teammate = {
 const state = {
   agents: [teammate, { ...teammate, id: 'chief', name: 'Atlas', tagline: 'Chief of staff', chiefOfStaff: true }], skills: [],
   convs: [{ id: 'preview', kind: 'dm', title: teammate.name, memberIds: [teammate.id] }],
+  threads: [{ id: 'launch-copy', title: 'Launch copy', topic: 'Landing page copy only' }, { id: 'visual-design', title: 'Visual design', topic: 'Geometric mascot ideas' }],
   active: 'preview', infoOpen: true, busy: true, working: teammate.name,
   computersChecked: Date.now(), computers: [], pendingFiles: [], missions: [], artifacts: [], requests: [],
   msgs: [
@@ -62,10 +63,12 @@ const themeToggleHtml = () => '', bindThemeToggle = () => {};
 const loadModelCatalog = async () => {};
 ${COWORK_JS}
 ${reportSource}
-cwLearnLoad = () => {}; cwLoad = () => { cwRenderRail(); cwRenderChat(); };
+cwLearnLoad = () => {}; cwLoad = () => { cwRenderRail(); cwRenderChat(); }; cwPoll = () => {};
 const previewOptions = new URLSearchParams(location.search);
 document.documentElement.dataset.theme = previewOptions.get('theme') === 'light' ? 'light' : 'dark';
 if (previewOptions.get('character') === 'cube') S.cw.agents.forEach(function (agent) { agent.avatar.shape = 'cube'; });
+if (previewOptions.get('character') === 'home-blob') S.cw.agents.forEach(function (agent) { agent.avatar.shape = 'home-blob'; });
+if (previewOptions.get('thread') === 'launch-copy') S.cw.threadId = 'launch-copy';
 if (previewOptions.get('activity') === 'task') { S.cw.progresses[0].tool = ''; S.cw.progresses[0].text = 'Continuing automatically (checkpoint 11)…'; }
 openCowork();
 if (location.pathname === '/panel') { S.cw.infoNarrowOpen = true; cwSyncPanels(); }

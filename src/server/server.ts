@@ -1,6 +1,6 @@
 import http from 'node:http';
 import os from 'node:os';
-import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
@@ -122,6 +122,8 @@ export interface RunSessionView {
   taskId?: string;
   project?: string;
   projectPath?: string;
+  taggedFolders: string[];
+  writableFolders: string[];
   branch?: string;
   worktreePath?: string;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
@@ -202,6 +204,8 @@ interface RunSession {
   taskId?: string;
   project?: string;
   projectPath?: string;
+  taggedFolders: string[];
+  writableFolders: string[];
   branch?: string;
   worktreePath?: string;
   mode?: 'agent' | 'fast' | 'standard' | 'chat';
@@ -801,6 +805,8 @@ export class GituServer {
       goal: s.goal,
       project: s.project,
       projectPath: s.projectPath,
+      taggedFolders: s.taggedFolders,
+      writableFolders: s.writableFolders,
       branch: s.branch,
       worktreePath: s.worktreePath,
       startedAt: s.startedAt,
@@ -925,6 +931,8 @@ export class GituServer {
         taskId: entry.taskId,
         project: entry.project,
         projectPath: entry.projectPath,
+        taggedFolders: entry.taggedFolders ?? [],
+        writableFolders: (entry.writableFolders ?? []).filter((folder) => (entry.taggedFolders ?? []).includes(folder)),
         branch,
         worktreePath,
         mode,
@@ -1173,6 +1181,8 @@ export class GituServer {
       status: 'running',
       startedAt: nowIso(),
       projectPath: root,
+      taggedFolders: [],
+      writableFolders: [],
       mode: 'standard',
       events: [],
       nativeFrames: [],
@@ -1244,6 +1254,8 @@ export class GituServer {
       messageChangeSeq: changes.changeSeq,
       threadId,
       threads: store.threads(conversationId),
+      activeThreadId: store.getConversation(conversationId)?.activeThreadId ?? null,
+      threadActivationSeq: store.getConversation(conversationId)?.threadActivationSeq ?? 0,
       folders: store.folders(conversationId),
       widgets: store.widgets(conversationId),
       busy: Boolean(run?.busy),
@@ -3974,6 +3986,8 @@ export class GituServer {
       taskId: s.taskId,
       project: s.project,
       projectPath: s.projectPath,
+      taggedFolders: s.taggedFolders,
+      writableFolders: s.writableFolders,
       branch: s.branch,
       worktreePath: s.worktreePath,
       mode: s.mode,
@@ -5304,6 +5318,8 @@ export class GituServer {
         activeProvider: resolvedInfo?.providerId ?? requestedProvider,
         activeModel: resolvedInfo?.model ?? model,
         projectPath,
+        taggedFolders: [],
+        writableFolders: [],
         mode,
         autoApprove,
         events: [],
@@ -5385,6 +5401,57 @@ export class GituServer {
         return;
       }
       this.sendLocalFile(res, file.path, file.name, file.mime, url.searchParams.get('inline') === '1', method === 'HEAD');
+      return;
+    }
+
+    const runFoldersMatch = path.match(/^\/api\/runs\/([\w-]+)\/folders$/);
+    if (runFoldersMatch && (method === 'POST' || method === 'PATCH' || method === 'DELETE')) {
+      const session = this.sessions.get(runFoldersMatch[1]!);
+      if (!session) { this.sendJson(res, 404, { error: 'run not found' }); return; }
+      const body = await this.readBody(req);
+      const selected = typeof body['path'] === 'string' ? body['path'].trim() : '';
+      if (!nodePath.isAbsolute(selected)) { this.sendJson(res, 400, { error: 'Select an absolute folder path.' }); return; }
+      if (method === 'DELETE') {
+        const key = process.platform === 'win32' ? nodePath.resolve(selected).toLowerCase() : nodePath.resolve(selected);
+        const next = session.taggedFolders.filter((folder) => (process.platform === 'win32' ? folder.toLowerCase() : folder) !== key);
+        if (next.length === session.taggedFolders.length) { this.sendJson(res, 404, { error: 'folder tag not found' }); return; }
+        session.taggedFolders = next;
+        session.writableFolders = session.writableFolders.filter((folder) => (process.platform === 'win32' ? folder.toLowerCase() : folder) !== key);
+        this.persistSession(session);
+        session.gitu?.noteTaggedFolderChange(`Access to ${selected} was removed. Do not use it again unless the user tags it again.`);
+        this.sendJson(res, 200, { folders: next, writableFolders: session.writableFolders });
+        return;
+      }
+      try {
+        const folder = realpathSync(nodePath.resolve(selected));
+        if (!statSync(folder).isDirectory() || nodePath.parse(folder).root === folder) throw new Error('Choose a folder below a drive or filesystem root.');
+        const root = session.worktreePath ?? session.projectPath ?? this.projectRoot() ?? this.config.cwd;
+        const guard = ProjectGuard.detect(root);
+        if (guard.isInsideProject(folder)) guard.assertReadable(folder);
+        else guard.diagnosticReadScope(folder);
+        const key = process.platform === 'win32' ? folder.toLowerCase() : folder;
+        if (method === 'PATCH') {
+          if (!session.taggedFolders.some((item) => (process.platform === 'win32' ? item.toLowerCase() : item) === key)) {
+            this.sendJson(res, 404, { error: 'folder tag not found' }); return;
+          }
+          if (typeof body['writable'] !== 'boolean') { this.sendJson(res, 400, { error: 'writable must be true or false' }); return; }
+          session.writableFolders = session.writableFolders.filter((item) => (process.platform === 'win32' ? item.toLowerCase() : item) !== key);
+          if (body['writable']) session.writableFolders.push(folder);
+          this.persistSession(session);
+          session.gitu?.noteTaggedFolderChange(`${folder} is now ${body['writable'] ? 'writable with file tools after explicit user permission' : 'read-only; stop writing there'}.`);
+          this.sendJson(res, 200, { folders: session.taggedFolders, writableFolders: session.writableFolders });
+          return;
+        }
+        if (!session.taggedFolders.some((item) => (process.platform === 'win32' ? item.toLowerCase() : item) === key)) {
+          if (session.taggedFolders.length >= 8) throw new Error('A chat can have up to 8 tagged folders. Remove one before adding another.');
+          session.taggedFolders = [...session.taggedFolders, folder];
+          this.persistSession(session);
+          session.gitu?.noteTaggedFolderChange(`${folder} is now readable with read_file, list_files, and search_files using absolute paths. Keep all edits inside the active writable project.`);
+        }
+        this.sendJson(res, 200, { folders: session.taggedFolders, writableFolders: session.writableFolders });
+      } catch (error) {
+        this.sendJson(res, 400, { error: (error as Error).message });
+      }
       return;
     }
 
@@ -6130,13 +6197,17 @@ export class GituServer {
     // Unset (the default) means the run is bounded by the work, not by cost.
     const spendCeilingUsd = opts.autonomy?.maxCostUsd;
     let spendCeilingHit: string | undefined;
-    const trackUsage = (u: LlmUsage | undefined, pricing = modelMeta): void => {
+    const trackUsage = (u: LlmUsage | undefined, pricing = modelMeta, mainAgent = true): void => {
       if (!isCurrentExecution()) return;
       usage.messages += 1;
       if (u) {
         usage.inputTokens += u.inputTokens;
         usage.outputTokens += u.outputTokens;
         usage.cachedTokens += u.cachedTokens;
+        if (mainAgent) {
+          usage.contextTokens = Math.max(0, u.inputTokens + u.outputTokens);
+          usage.contextWindowTokens = pricing?.contextTokens;
+        }
         const cost = usageCostUsd(pricing, u);
         if (cost !== undefined) usage.costUsd = (usage.costUsd ?? 0) + cost;
         else usage.costIncomplete = true;
@@ -6163,7 +6234,7 @@ export class GituServer {
               }
               const resolved = resolveLlm({ provider: def.provider, model: def.model, workingDirectory: root });
               const pricing = modelMetadataFor(catalog, resolved.providerId, resolved.model);
-              return new UsageTrackingClient(resolved.client, (u) => trackUsage(u, pricing));
+              return new UsageTrackingClient(resolved.client, (u) => trackUsage(u, pricing, false));
             },
             agentRole: (name) => agentStore.get(name)?.role,
             agentEffort: (name) => agentStore.get(name)?.effort,
@@ -6335,6 +6406,8 @@ export class GituServer {
         extraConstraints: opts.constraints,
         effort: opts.effort,
         actionProtocolMode: opts.actionProtocolMode,
+        taggedReadFolders: () => session.taggedFolders,
+        taggedWriteFolders: () => session.writableFolders,
         // Full-precedence resolution (provider live /models → catalog → name
         // heuristic) so any vision-capable model actually receives the attached
         // images instead of having them silently skipped at run time.

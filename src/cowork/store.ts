@@ -185,6 +185,9 @@ export interface CoworkConversation {
   folders?: CoworkFolderTag[];
   /** Topic threads; messages without a threadId live in the Main thread. */
   threads?: CoworkThread[];
+  /** Topic selected by the team coordinator; revision lets clients follow a new topic once. */
+  activeThreadId?: string;
+  threadActivationSeq?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -586,6 +589,8 @@ export class CoworkStore {
       for (const conversation of this.data.conversations) {
         conversation.folders = Array.isArray(conversation.folders) ? conversation.folders.map(sanitizeFolderTag).filter((tag): tag is CoworkFolderTag => Boolean(tag)) : undefined;
         conversation.threads = Array.isArray(conversation.threads) ? conversation.threads.map(sanitizeThread).filter((thread): thread is CoworkThread => Boolean(thread)) : undefined;
+        if (!conversation.threads?.some(thread => thread.id === conversation.activeThreadId)) delete conversation.activeThreadId;
+        conversation.threadActivationSeq = Number.isSafeInteger(conversation.threadActivationSeq) && conversation.threadActivationSeq! >= 0 ? conversation.threadActivationSeq : 0;
       }
       // Repair exact legacy duplicates without reopening completed work.
       const unique = new Map<string, CoworkTodo>();
@@ -728,7 +733,7 @@ export class CoworkStore {
     // Remove the agent from every group; delete DMs that were only with them.
     data.conversations = data.conversations.filter((c) => {
       if (!c.memberIds.includes(id)) return true;
-      if (c.kind === 'dm') return false;
+      if (c.kind === 'dm' && c.memberIds[0] === id) return false;
       c.memberIds = c.memberIds.filter((m) => m !== id);
       if (c.chiefId === id) delete c.chiefId;
       return c.memberIds.length > 0;
@@ -786,6 +791,10 @@ export class CoworkStore {
       telegram: input.telegram ?? existing?.telegram,
       discord: input.discord ?? existing?.discord,
       schedule: input.schedule ?? existing?.schedule,
+      folders: existing?.folders,
+      threads: existing?.threads,
+      activeThreadId: existing?.activeThreadId,
+      threadActivationSeq: existing?.threadActivationSeq,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -917,12 +926,26 @@ export class CoworkStore {
     return thread;
   }
 
+  activateThread(conversationId: string, threadId: string): void {
+    const conversation = this.getConversation(conversationId);
+    if (!conversation || !this.getThread(conversationId, threadId)) throw new Error('Thread not found');
+    if (conversation.activeThreadId === threadId) return;
+    conversation.activeThreadId = threadId;
+    conversation.threadActivationSeq = (conversation.threadActivationSeq ?? 0) + 1;
+    conversation.updatedAt = new Date().toISOString();
+    this.save(true);
+  }
+
   /** Deleting a thread removes its messages; the Main thread cannot be deleted. */
   deleteThread(conversationId: string, threadId: string): boolean {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === conversationId);
     if (!conversation?.threads?.some((thread) => thread.id === threadId)) return false;
     conversation.threads = conversation.threads.filter((thread) => thread.id !== threadId);
+    if (conversation.activeThreadId === threadId) {
+      delete conversation.activeThreadId;
+      conversation.threadActivationSeq = (conversation.threadActivationSeq ?? 0) + 1;
+    }
     const list = data.messages[conversationId];
     if (list) {
       const tombstones = (data.messageTombstones[conversationId] ??= []);
@@ -1698,11 +1721,9 @@ const LEGACY_AVATAR_SHAPES = new Map<string, CoworkAvatar['shape']>([
   ['jelly', 'orb'], ['cat', 'orb'], ['sprout', 'orb'], ['ufo', 'orb'],
   ['visor', 'cube'], ['antenna', 'cube'], ['bot', 'cube'],
 ]);
-const AVATAR_COLORS = new Set(['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b']);
-
 function sanitizeAvatar(value: unknown, fallback: CoworkAvatar | undefined): CoworkAvatar {
   const raw = (value ?? {}) as Record<string, unknown>;
-  const color = typeof raw['color'] === 'string' && AVATAR_COLORS.has(raw['color'].toLowerCase()) ? raw['color'].toLowerCase() : fallback?.color ?? '#8f80ff';
+  const color = typeof raw['color'] === 'string' && /^#[0-9a-f]{6}$/i.test(raw['color']) ? raw['color'].toLowerCase() : fallback?.color ?? '#8f80ff';
   const suppliedShape = typeof raw['shape'] === 'string' ? raw['shape'] : '';
   const shape = AVATAR_SHAPES.has(suppliedShape) ? suppliedShape as CoworkAvatar['shape'] : LEGACY_AVATAR_SHAPES.get(suppliedShape) ?? fallback?.shape ?? 'orb';
   return { color, shape };

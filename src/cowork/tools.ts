@@ -24,7 +24,7 @@ import {
   toolWriteFile,
   validateToolParams,
 } from '../tools/tools.js';
-import type { CoworkAgent, CoworkStore, CoworkWidgetKind } from './store.js';
+import type { CoworkAgent, CoworkAvatar, CoworkStore, CoworkThread, CoworkWidgetKind } from './store.js';
 import { MAX_ARTIFACT_BYTES } from './store.js';
 import type { CoworkDelegation } from './delegation.js';
 import type { CoworkMemory } from './memory.js';
@@ -65,6 +65,8 @@ export interface CoworkToolScope {
   conversationId?: string;
   /** Topic thread the current turn belongs to; absent means the Main thread. */
   threadId?: string;
+  /** Host-owned routing update shared by every participant in the current team turn. */
+  activateThread?: (thread: CoworkThread) => void;
   /** Mission this turn belongs to, when it is mission work. Determines which
    *  envelope delegated engineering draws from. */
   missionId?: string;
@@ -204,7 +206,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   {
     name: 'team_manage',
     doc:
-      'As chief of staff: hire teammates, remove them, create a new group chat, or open a topic thread. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"} | {"action":"create_group","title":"Launch room","members":["Scout","Writer"],"chief":"Scout"} | {"action":"create_thread","title":"Launch copy","topic":"Only landing page copy"}.',
+      'As chief of staff: hire teammates, remove them, create a group chat, or start a shared topic without asking the user to switch. New hires join this conversation with distinct characters. create_thread moves the current team turn to that topic and wakes its teammates to work on the brief; all replies stay there. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"} | {"action":"create_group","title":"Launch room","members":["Scout","Writer"],"chief":"Scout"} | {"action":"create_thread","title":"Launch copy","topic":"Only landing page copy"}.',
     gate: 'chief',
   },
 ];
@@ -782,6 +784,19 @@ function coworkRecommend(scope: CoworkToolScope | undefined, params: Record<stri
   }
 }
 
+function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
+  const shapes: CoworkAvatar['shape'][] = ['orb', 'cube', 'diamond', 'pyramid', 'home-blob'];
+  const shape = shapes.reduce((best, candidate) => roster.filter(a => a.avatar.shape === candidate).length < roster.filter(a => a.avatar.shape === best).length ? candidate : best);
+  const palette = ['#43bfa5', '#f3a65a', '#62a7ef', '#ec83b0', '#b8cd5c', '#bd8be6', '#e3756c', '#71c4d6', '#d7ad64', '#7b91df'];
+  const used = new Set(roster.map(a => a.avatar.color.toLowerCase()));
+  let color = palette.find(candidate => !used.has(candidate));
+  for (let attempt = roster.length; !color; attempt++) {
+    const candidate = '#' + ((attempt * 0x9e3779) & 0xffffff).toString(16).padStart(6, '0');
+    if (!used.has(candidate)) color = candidate;
+  }
+  return { shape, color };
+}
+
 function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
   if (!scope) return { ok: false, output: 'team_manage is unavailable in this session.' };
   const { store, agent } = scope;
@@ -798,7 +813,7 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
         // A chief hiring without a full brief still gets a working teammate;
         // failing here silently (while the chief claims success) is worse.
         systemPrompt: instructions || `You are ${name}${tagline ? `, ${tagline.toLowerCase()}` : ''}. You were hired by ${agent.name} (chief of staff). Ask the user what they need and check your memories for context.`,
-        avatar: { color: '#8f80ff', shape: 'cube' },
+        avatar: nextTeammateAvatar(store.listAgents()),
         provider: agent.provider,
         model: agent.model,
         allowShell: agent.allowShell,
@@ -809,11 +824,11 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
       });
       if (scope.conversationId) {
         const conversation = store.getConversation(scope.conversationId);
-        if (conversation?.kind === 'group') store.updateConversation(conversation.id, { memberIds: [...conversation.memberIds, created.id] });
+        if (conversation) store.updateConversation(conversation.id, { memberIds: [...conversation.memberIds, created.id], chiefId: conversation.chiefId ?? agent.id });
       }
       return {
         ok: true,
-        output: `Teammate "${created.name}" created (${created.tagline || 'no tagline'}). ${scope.conversationId && store.getConversation(scope.conversationId)?.kind === 'group' ? `Added to this group. Mention @${created.name} in your reply to have them participate now.` : 'They appear in the team list; the user can open their DM or add them to a group.'} The user manages their permissions and profile.`,
+        output: `Teammate "${created.name}" created (${created.tagline || 'no tagline'}) with a distinct ${created.avatar.shape} character and color. ${scope.conversationId ? `Added to this team chat. Mention @${created.name} in your reply to have them participate now, or create a shared topic thread to start the team automatically.` : 'They appear in the team list.'} The user manages their permissions and profile.`,
       };
     }
     if (action === 'delete') {
@@ -859,9 +874,12 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
         topic: typeof params['topic'] === 'string' ? params['topic'] : undefined,
         createdByAgentId: agent.id,
       });
+      store.activateThread(scope.conversationId, thread.id);
+      scope.threadId = thread.id;
+      scope.activateThread?.(thread);
       return {
         ok: true,
-        output: `Thread "${thread.title}" created (${thread.id}) for this conversation. It appears in the thread bar — tell the user to switch to it for that topic; this turn stays in its current thread.`,
+        output: `Shared topic "${thread.title}" is active (${thread.id}). Continue the task here. Every participating teammate's work and replies belong to this topic; the team starts automatically without a user switch.`,
       };
     }
     return { ok: false, output: 'team_manage action must be "create", "delete", "create_group", or "create_thread".' };

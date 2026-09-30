@@ -75,9 +75,12 @@ export const COWORK_CSS = String.raw`
   .cw-item-main { min-width: 0; flex: 1; }
   .cw-item-name { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cw-item-sub { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cw-ava { width: 28px; height: 28px; flex: none; border-radius: 9px; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; }
+  .cw-ava { width: 40px; height: 40px; flex: none; border-radius: 13px; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; }
   .cw-ava img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .cw-ava svg { width: 100%; height: 100%; display: block; }
+  .cw-row > .cw-ava { width: 46px; height: 46px; }
+  .report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }
+  .cw-chat-head .cw-ava { width: 88px; height: 88px; }
   .cw-item .cw-flag { flex: none; color: var(--muted); display: inline-flex; }
   .cw-item .cw-flag svg { width: 14px; height: 14px; }
   .cw-flag.gold { color: var(--evidence); }
@@ -86,23 +89,29 @@ export const COWORK_CSS = String.raw`
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .cw-chat-head, .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
-  .cw-chat-head { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); min-height: 52px; }
-  .cw-chat-head .cw-tt { min-width: 0; flex: 1; }
-  .cw-chat-head .cw-tt .t1 { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+  .cw-chat-head { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 12px 72px 18px; min-height: 0; text-align: center; }
+  .cw-chat-head .cw-tt { min-width: 0; width: 100%; }
+  .cw-chat-head .cw-tt .t1 { font-weight: 700; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; justify-content: center; gap: 6px; }
+  .cw-chat-head #cwChatTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .cw-chat-head .cw-tt .t1 svg { width: 14px; height: 14px; color: var(--evidence); flex: none; }
   .cw-chat-head .cw-tt .t2 { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cw-chat-head .cw-head-badges { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: 16px; }
+  .cw-chat-head #cwBack { position: absolute; left: 12px; top: 12px; }
   .cw-chat-head .chip { flex: none; display: inline-flex; align-items: center; gap: 5px; }
   .cw-chat-head .chip svg { width: 12px; height: 12px; }
   .cw-info-toggle { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; flex: none; }
   .cw-info-toggle:hover { color: var(--text); border-color: var(--accent); }
-  .cw-threads { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-  .cw-thread { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 999px; padding: 3px 12px; font-size: 12px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
-  .cw-thread:hover { color: var(--text); border-color: var(--accent); }
-  .cw-thread.cur { color: var(--text); background: var(--selected); border-color: var(--border2); }
-  .cw-thread.new { border-style: dashed; }
-  .cw-thread-del { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 2px; display: inline-flex; }
-  .cw-thread-del:hover { color: var(--err); }
-  .cw-thread-del svg { width: 12px; height: 12px; }
+  .cw-chat-glyph { width: 40px; height: 40px; flex: none; border-radius: 13px; background: var(--card2); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
+  .cw-chat-glyph svg { width: 17px; height: 17px; }
+  .cw-item.cur .cw-chat-glyph { color: var(--accent); background: var(--selected); }
+  .cw-thread-row { display: flex; align-items: center; gap: 2px; padding-left: 12px; }
+  .cw-thread-row .cw-item { width: auto; min-width: 0; flex: 1; }
+  .cw-thread-del { width: 24px; height: 28px; flex: none; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; padding: 5px; display: inline-flex; align-items: center; justify-content: center; }
+  .cw-thread-del:hover { color: var(--err); background: var(--hover); }
+  .cw-thread-del svg { width: 13px; height: 13px; }
+  .cw-chat-new { width: calc(100% - 12px); margin-left: 12px; color: var(--muted); }
+  .cw-chat-new svg { width: 17px; height: 17px; flex: none; }
   .cw-widget-ico { background: var(--selected); color: var(--accent); }
   .cw-widget-ico svg { width: 15px; height: 15px; }
   .cw-widget-body { display: flex; flex-direction: column; gap: 7px; }
@@ -312,9 +321,30 @@ export const COWORK_CSS = String.raw`
 .cw-request .cw-credential-form > .btn { align-self: flex-start; padding: 4px 10px; font-size: 11.5px; }
   .cw-doc-modal .box { width: min(980px, 94vw); height: min(820px, 92vh); }
   .cw-doc-frame { width: 100%; flex: 1; min-height: 0; border: 0; background: #fff; }
-  .cw-info { width: 276px; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 14px; min-height: 0; }
-  .cw-info h4 { margin: 2px 0 8px; font-size: 11px; letter-spacing: .1em; color: var(--faint); font-weight: 700; }
-  .cw-info .cw-card { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 8px 2px 18px; margin-bottom: 18px; }
+  .cw-info { width: 320px; box-sizing: border-box; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 20px 28px; min-height: 0; }
+  .cw-info h4 { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .12em; color: var(--faint); font-weight: 700; }
+  .cw-info .cw-card { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 4px 0 20px; margin-bottom: 20px; }
+  .cw-profile-hero { display: flex; flex-direction: column; align-items: center; padding: 18px 0 24px; text-align: center; }
+  .cw-profile-hero .cw-ava { margin-bottom: 12px; overflow: visible; }
+  .cw-profile-name { max-width: 100%; color: var(--text); font-size: 18px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+  .cw-profile-tagline { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+  .cw-profile-hero .chip { margin-top: 12px; }
+  .cw-profile-hero .btn { margin-top: 16px; }
+  .cw-profile-section { padding: 20px 0; border-top: 1px solid var(--border); }
+  .cw-profile-section h4 { margin-bottom: 10px; }
+  .cw-profile-copy { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 210px; overflow-y: auto; }
+  .cw-profile-details { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px 12px; margin: 0; font-size: 12px; line-height: 1.45; }
+  .cw-profile-details dt { color: var(--faint); }
+  .cw-profile-details dd { min-width: 0; margin: 0; color: var(--text); overflow-wrap: anywhere; }
+  .cw-profile-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .cw-profile-skills { margin-top: 14px; font-size: 11.5px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+  .cw-profile-memory { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .cw-profile-memory strong { color: var(--text); }
+  .cw-profile-memory .btn { margin-left: auto; padding: 4px 9px; font-size: 11px; }
+  .cw-profile .cw-computer-section { border-bottom: 0; border-top: 1px solid var(--border); padding: 20px 0; margin: 0; }
+  .cw-profile .cw-computer-section p { margin: 11px 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .cw-profile .cw-computer-section .btn { margin-top: 3px; }
+  .cw-profile-footer { padding-top: 20px; border-top: 1px solid var(--border); }
   .cw-info .cw-mrow { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
   .cw-info .cw-mrow .nm { flex: 1; min-width: 0; font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cw-info .cw-mrow .tg { color: var(--muted); font-weight: 400; }
@@ -390,8 +420,8 @@ export const COWORK_CSS = String.raw`
   .cw-modal input[type=text]:focus, .cw-modal input[type=password]:focus, .cw-modal select:focus, .cw-modal textarea:focus { border-color: var(--accent); outline: none; }
   .cw-modal textarea { resize: vertical; min-height: 96px; line-height: 1.55; }
   .cw-avrow { display: flex; gap: 16px; align-items: center; margin-top: 6px; padding: 12px; background: var(--card2); border: 1px solid var(--border); border-radius: 12px; }
-  .cw-avprev { width: 104px; height: 104px; flex: none; border-radius: 14px; background: var(--card2); border: 1px solid var(--border2); overflow: hidden; display: flex; align-items: center; justify-content: center; }
-  .cw-avprev img, .cw-avprev svg { width: 92px; height: 92px; }
+  .cw-avprev { width: 128px; height: 128px; flex: none; border-radius: 14px; background: var(--card2); border: 1px solid var(--border2); overflow: hidden; display: flex; align-items: center; justify-content: center; }
+  .cw-avprev img, .cw-avprev svg { width: 116px; height: 116px; }
   .cw-avopts { flex: 1; min-width: 0; }
   .cw-avopts .cw-shapes { display: flex; flex-wrap: wrap; gap: 6px; }
   .cw-avopts .cw-shapes button { font-size: 12px; background: transparent; border: 1px solid var(--border2); color: var(--muted); border-radius: 9px; padding: 5px 13px; text-transform: capitalize; }
@@ -413,21 +443,19 @@ export const COWORK_CSS = String.raw`
   .cw-modal .cw-check input { width: 16px; height: 16px; accent-color: var(--accent); }
   .cw-modal .cw-foot { flex-shrink: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--card2); }
   @media (max-width: 1180px) {
-    .cw-info { display: none; position: static; width: min(276px, 38vw); box-sizing: border-box; background: var(--bg); }
+    .cw-info { display: none; position: static; width: min(320px, 42vw); box-sizing: border-box; background: var(--bg); }
     .cw-panel-backdrop { position: absolute; inset: 0; z-index: 50; border: 0; padding: 0; background: var(--overlay); }
     .cw.overlay-open .cw-panel-backdrop { display: block; }
     .cw-info > .cw-panel-close { display: block; margin: 0 0 16px auto; }
   }
-  @media (max-width: 720px) { .cw-msgs { padding: 14px 12px 8px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-head { padding: 8px 12px; gap: 7px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
+  @media (max-width: 720px) { .cw-msgs { padding: 14px 12px 8px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-head { padding: 10px 64px 14px; gap: 3px; } .cw-chat-head .cw-ava { width: 66px; height: 66px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw-mobile-only, .cw-rail > .cw-panel-close { display: block; }
     .cw-rail > .cw-panel-close { align-self: flex-end; margin: 8px 12px 0; }
-    .cw-chat-head { flex-wrap: wrap; }
-    .cw-chat-head .cw-tt { flex-basis: 100px; }
     .cw.rail-open .cw-rail { transform: none; } }
-  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-head { min-height: 44px; } }
+  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-head { padding-top: 6px; padding-bottom: 8px; } .cw-chat-head .cw-ava { width: 56px; height: 56px; } }
   ${CHARACTER_CSS}
 `;
 
@@ -848,7 +876,8 @@ export const COWORK_JS = String.raw`
     var html = '<div class="cw-sec">TEAM</div>';
     if (cw.agents.length === 0) html += '<div class="cw-empty-note">No teammates yet. Create the first profile — pick a name, a character and instructions.</div>';
     cw.agents.forEach(function (a) {
-      html += '<button class="cw-item" data-agent="' + esc(a.id) + '">' + cwAva(a) +
+      var selected = (cw.convs || []).some(function (c) { return c.id === cw.active && c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === a.id; });
+      html += '<button class="cw-item' + (selected ? ' cur' : '') + '" data-agent="' + esc(a.id) + '">' + cwAva(a) +
         '<span class="cw-item-main"><span class="cw-item-name">' + esc(a.name) + '</span><span class="cw-item-sub">' + esc(a.tagline || 'tap to chat') + '</span></span>' +
         (a.chiefOfStaff ? '<span class="cw-flag gold" title="Default chief of staff">' + cwIcon('crown') + '</span>' : '') + '</button>';
     });
@@ -857,14 +886,27 @@ export const COWORK_JS = String.raw`
     cw.convs.forEach(function (c) {
       var members = cwConvMembers(c);
       var sub = c.kind === 'group' ? members.map(function (m) { return m.name; }).join(', ') : (members[0] ? members[0].tagline : '');
+      var flags = (c.telegram && c.telegram.enabled ? '<span class="cw-flag" title="Telegram gateway connected">' + cwIcon('plane') + '</span>' : '') +
+        (c.schedule && c.schedule.enabled ? '<span class="cw-flag" title="Scheduled messages active">' + cwIcon('clock') + '</span>' : '');
+      if (c.id === cw.active) {
+        html += '<button class="cw-item' + (!cw.threadId ? ' cur' : '') + '" data-cwthread="" title="Main chat with ' + esc(c.title) + '">' +
+          '<span class="cw-chat-glyph">' + cwIcon('chat') + '</span>' +
+          '<span class="cw-item-main"><span class="cw-item-name">Main</span><span class="cw-item-sub">' + esc(c.title) + '</span></span>' + flags + '</button>';
+        (cw.threads || []).forEach(function (thread) {
+          html += '<div class="cw-thread-row"><button class="cw-item' + (cw.threadId === thread.id ? ' cur' : '') + '" data-cwthread="' + esc(thread.id) + '" title="' + esc(thread.topic || thread.title) + '">' +
+            '<span class="cw-chat-glyph">' + cwIcon('chat') + '</span>' +
+            '<span class="cw-item-main"><span class="cw-item-name">' + esc(thread.title) + '</span><span class="cw-item-sub">' + esc(thread.topic || c.title) + '</span></span></button>' +
+            (cw.threadId === thread.id ? '<button class="cw-thread-del" data-delthread="' + esc(thread.id) + '" title="Delete this thread" aria-label="Delete ' + esc(thread.title) + '">' + cwIcon('close') + '</button>' : '') + '</div>';
+        });
+        html += '<button class="cw-item cw-chat-new" id="cwNewThread">' + cwIcon('plus') + '<span class="cw-item-main"><span class="cw-item-name">New thread</span></span></button>';
+        return;
+      }
       var ava = c.kind === 'group'
         ? '<span class="cw-ava" style="background:var(--selected);border:1px dashed var(--border2);color:var(--muted)">' + cwIcon('users') + '</span>'
         : (members[0] ? cwAva(members[0]) : '<span class="cw-ava"></span>');
-      html += '<button class="cw-item' + (c.id === cw.active ? ' cur' : '') + '" data-conv="' + esc(c.id) + '">' + ava +
+      html += '<button class="cw-item" data-conv="' + esc(c.id) + '">' + ava +
         '<span class="cw-item-main"><span class="cw-item-name">' + esc(c.title) + '</span><span class="cw-item-sub">' + esc(sub) + '</span></span>' +
-        (c.telegram && c.telegram.enabled ? '<span class="cw-flag" title="Telegram gateway connected">' + cwIcon('plane') + '</span>' : '') +
-        (c.schedule && c.schedule.enabled ? '<span class="cw-flag" title="Scheduled messages active">' + cwIcon('clock') + '</span>' : '') +
-        '</button>';
+        flags + '</button>';
     });
     html += '<div class="cw-sec">WIDGETS</div>';
     if (!cw.widgets.length) html += '<div class="cw-empty-note">No widgets yet. Teammates pin live progress cards here; you can add one too.</div>';
@@ -881,6 +923,24 @@ export const COWORK_JS = String.raw`
     el.querySelectorAll('[data-conv]').forEach(function (b) {
       b.onclick = function () { cwOpenConv(b.getAttribute('data-conv')); };
     });
+    el.querySelectorAll('[data-cwthread]').forEach(function (b) {
+      b.onclick = function () { cwSwitchThread(b.getAttribute('data-cwthread') || null); };
+    });
+    el.querySelectorAll('[data-delthread]').forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-delthread');
+        if (!confirm('Delete this thread and its messages?')) return;
+        api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/threads/' + encodeURIComponent(id), { method: 'DELETE' })
+          .then(function () {
+            cw.threads = (cw.threads || []).filter(function (thread) { return thread.id !== id; });
+            cwSwitchThread(null);
+            toast('Thread deleted');
+          })
+          .catch(function (e) { toast(e.message, true); });
+      };
+    });
+    var addThread = $('cwNewThread');
+    if (addThread) addThread.onclick = cwNewThreadModal;
     el.querySelectorAll('[data-widget]').forEach(function (b) {
       b.onclick = function () { cwWidgetModal(b.getAttribute('data-widget')); };
     });
@@ -898,7 +958,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     var existing = null;
     cw.convs.forEach(function (c) { if (c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === agentId) existing = c; });
-    if (existing) { cwOpenConv(existing.id); return; }
+    if (existing) { if (existing.id !== cw.active) cwOpenConv(existing.id); return; }
     api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
       .then(function (d) { cw.convs.push(d.conversation); cwRenderRail(); cwOpenConv(d.conversation.id); })
       .catch(function (e) { toast(e.message, true); });
@@ -909,7 +969,9 @@ export const COWORK_JS = String.raw`
     cwSaveDraft();
     cwStopPoll();
     cw.active = id;
-    cw.threadId = threadId || null;
+    var conversation = cw.convs.find(function (item) { return item.id === id; });
+    cw.threadId = (threadId === undefined ? conversation && conversation.activeThreadId : threadId) || null;
+    cw.threadActivationSeq = conversation && conversation.threadActivationSeq || 0;
     cw.threads = [];
     cw.folders = [];
     cw.widgets = [];
@@ -958,42 +1020,13 @@ export const COWORK_JS = String.raw`
     cw.todos = [];
     cw.requests = [];
     cw.pendingFiles = [];
+    var cwRoot = $('cw');
+    if (cwRoot) cwRoot.classList.remove('rail-open');
     cwRenderRail();
     cwRenderChat();
     cwStartStream(cw.active);
     cwPoll();
     cw.timer = setInterval(cwPoll, 2000);
-  }
-
-  function cwRenderThreads() {
-    var cw = cwEnsure();
-    var el = $('cwThreads');
-    if (!el) return;
-    var html = '<button class="cw-thread' + (!cw.threadId ? ' cur' : '') + '" data-thread="" title="Main conversation">Main</button>';
-    (cw.threads || []).forEach(function (thread) {
-      html += '<button class="cw-thread' + (cw.threadId === thread.id ? ' cur' : '') + '" data-thread="' + esc(thread.id) + '" title="' + esc(thread.topic || thread.title) + '">' + esc(thread.title) + '</button>';
-      if (cw.threadId === thread.id) html += '<button class="cw-thread-del" data-delthread="' + esc(thread.id) + '" title="Delete this thread">' + cwIcon('close') + '</button>';
-    });
-    html += '<button class="cw-thread new" id="cwNewThread">' + cwIcon('plus') + ' Thread</button>';
-    el.innerHTML = html;
-    el.querySelectorAll('[data-thread]').forEach(function (b) {
-      b.onclick = function () { cwSwitchThread(b.getAttribute('data-thread') || null); };
-    });
-    el.querySelectorAll('[data-delthread]').forEach(function (b) {
-      b.onclick = function () {
-        var id = b.getAttribute('data-delthread');
-        if (!confirm('Delete this thread and its messages?')) return;
-        api('/api/cowork/conversations/' + encodeURIComponent(cw.active) + '/threads/' + encodeURIComponent(id), { method: 'DELETE' })
-          .then(function () {
-            cw.threads = (cw.threads || []).filter(function (thread) { return thread.id !== id; });
-            cwSwitchThread(null);
-            toast('Thread deleted');
-          })
-          .catch(function (e) { toast(e.message, true); });
-      };
-    });
-    var add = $('cwNewThread');
-    if (add) add.onclick = cwNewThreadModal;
   }
 
   function cwNewThreadModal() {
@@ -1019,7 +1052,6 @@ export const COWORK_JS = String.raw`
         .then(function (d) {
           modal.remove();
           cw.threads = (cw.threads || []).concat([d.thread]);
-          cwRenderThreads();
           cwSwitchThread(d.thread.id);
         })
         .catch(function (e) { toast(e.message, true); });
@@ -1060,11 +1092,11 @@ export const COWORK_JS = String.raw`
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle cw-mobile-only" id="cwBack" aria-expanded="false">Chats</button>' +
         headAva +
-        '<div class="cw-tt"><div class="t1">' + esc(conv.title) + (conv.kind === 'group' && chief ? '<span title="Chief of staff: ' + esc(chief.name) + '">' + cwIcon('crown') + '</span>' : '') + '</div>' +
-        '<div class="t2" id="cwMemberNames">' + esc(members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</div></div>' +
-        '<span class="chip ok" id="cwMissionBadge" title="An autonomous mission is running in this chat"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>' + cwIcon('target') + 'Mission</span>' +
+        '<div class="cw-tt"><div class="t1"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' + (conv.kind === 'group' && chief ? '<span title="Chief of staff: ' + esc(chief.name) + '">' + cwIcon('crown') + '</span>' : '') + '</div>' +
+        '<div class="t2" id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</div></div>' +
+        '<div class="cw-head-badges"><span class="chip ok" id="cwMissionBadge" title="An autonomous mission is running in this chat"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>' + cwIcon('target') + 'Mission</span>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
-        (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') +
+        (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
         '<button class="cw-info-toggle" id="cwInfoBtn">' + (cw.infoOpen ? 'Hide panel' : 'Chat panel') + '</button>' +
       '</div>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
@@ -1074,11 +1106,11 @@ export const COWORK_JS = String.raw`
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
         '<div class="cw-pending" id="cwPending"></div>' +
         '<div class="cw-pending cw-references" id="cwReferences" aria-label="Referenced messages"></div>' +
-        '<div class="cw-mentions" id="cwMentions"' + (conv.kind === 'group' ? '' : ' hidden') + '></div>' +
+        '<div class="cw-mentions" id="cwMentions"' + (conv.memberIds.length > 1 ? '' : ' hidden') + '></div>' +
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwPlus" title="Mission, folder or schedule" aria-label="Add mission, folder or schedule" popovertarget="cwPlusMenu">' + cwIcon('plus') + '</button>' +
         '<button class="cw-attach" id="cwAttach" title="Attach documents or files" aria-label="Attach files">' + cwIcon('paperclip') + '</button>' +
-        '<textarea id="cwInput" rows="1" placeholder="' + (conv.kind === 'group' ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
+        '<textarea id="cwInput" rows="1" placeholder="' + (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
         '<button class="cw-stop-secondary" id="cwStop" title="Stop the team" aria-label="Stop the team" hidden>' + cwIcon('stop') + '</button>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button>' +
         '<div class="cw-message-menu cw-plus-menu" id="cwPlusMenu" popover="auto" aria-label="Add to this chat">' +
@@ -1139,14 +1171,20 @@ export const COWORK_JS = String.raw`
 
   // Updating the roster must preserve the user's draft and cursor.
   function cwRenderMembers() {
+    var cw = cwEnsure();
     var conv = cwActiveConv();
     if (!conv) return;
     var members = cwConvMembers(conv);
+    var activeThread = cw.threadId ? (cw.threads || []).filter(function (thread) { return thread.id === cw.threadId; })[0] : null;
+    var title = $('cwChatTitle');
+    if (title) title.textContent = activeThread ? activeThread.title : conv.title;
     var names = $('cwMemberNames');
-    if (names) names.textContent = members.map(function (m) { return '@' + m.name; }).join(' · ');
+    if (names) names.textContent = (activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ');
+    var input = $('cwInput');
+    if (input && activeThread) input.placeholder = (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + conv.title) + ' — ' + activeThread.title;
     var men = $('cwMentions');
     if (men) men.innerHTML = '';
-    if (conv.kind === 'group' && men) {
+    if (conv.memberIds.length > 1 && men) {
       members.forEach(function (m) {
         var b = document.createElement('button');
         b.textContent = '@' + m.name;
@@ -2401,27 +2439,26 @@ export const COWORK_JS = String.raw`
       var a = members[0];
       if (!a) { el.innerHTML = ''; return; }
       el.innerHTML =
-        '<h4>TEAMMATE</h4>' +
-        '<div class="cw-card"><div class="cw-mrow">' + cwAva(a, 44) + '<span class="nm">' + esc(a.name) + ' <span class="tg">' + esc(a.tagline || '') + '</span></span></div>' +
-        '<div style="font-size:12px;color:var(--muted);margin-top:8px;white-space:pre-wrap;max-height:180px;overflow-y:auto">' + esc(a.systemPrompt.slice(0, 600)) + (a.systemPrompt.length > 600 ? '…' : '') + '</div>' +
-        '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">' +
-          '<span class="chip">' + esc((a.provider ? a.provider + ' / ' : '') + (a.model || 'default model')) + '</span>' +
-          (a.effort ? '<span class="chip">effort: ' + esc(a.effort) + '</span>' : '') +
-          (a.chiefOfStaff ? '<span class="chip" style="color:var(--evidence);display:inline-flex;align-items:center;gap:4px">' + cwIcon('crown') + 'chief of staff</span>' : '') +
-          (a.allowShell ? '<span class="chip" style="color:var(--amber)">shell allowed</span>' : '') +
-          (a.allowWrites ? '<span class="chip" style="color:var(--amber)">writes allowed</span>' : '') +
-          (a.allowConfig ? '<span class="chip" style="color:var(--amber)">tool setup</span>' : '') +
-          (a.useHostComputer ? '<span class="chip ok">using my computer</span>' : '') +
-        '</div>' +
-        (a.skills && a.skills.length ? '<div style="margin-top:8px;font-size:11.5px;color:var(--muted)">Skills: ' + esc(a.skills.join(', ')) + '</div>' : '') +
-        '<div style="margin-top:10px;font-size:11.5px;color:var(--muted);display:flex;align-items:center;gap:8px">Persistent memory: <b>' + ((cw.memoryCounts || {})[a.id] || 0) + '</b> facts <button class="btn ghost" id="cwMemClear" style="padding:2px 8px;font-size:11px">Clear</button></div>' +
-        '<div class="cw-actions"><button class="btn ghost" id="cwEditAgent">Edit profile</button></div></div>' +
-        '<h4>THREADS</h4>' +
-        '<div class="cw-card"><div class="cw-threads" id="cwThreads"></div></div>' +
-        cwComputerHtml(a) +
-        '<div class="cw-actions"><button class="btn red" id="cwDelAgent">Delete teammate</button></div>';
+        '<div class="cw-profile">' +
+          '<div class="cw-profile-hero">' + cwAva(a, 104) +
+            '<div class="cw-profile-name">' + esc(a.name) + '</div>' +
+            (a.tagline ? '<div class="cw-profile-tagline">' + esc(a.tagline) + '</div>' : '') +
+            (a.chiefOfStaff ? '<span class="chip" title="Chief of staff">' + cwIcon('crown') + ' Chief of staff</span>' : '') +
+            '<button class="btn ghost" id="cwEditAgent">Edit profile</button></div>' +
+          '<section class="cw-profile-section"><h4>ABOUT</h4><p class="cw-profile-copy">' + esc(a.systemPrompt.slice(0, 600)) + (a.systemPrompt.length > 600 ? '…' : '') + '</p></section>' +
+          '<section class="cw-profile-section"><h4>SETUP</h4><dl class="cw-profile-details">' +
+            '<dt>Model</dt><dd>' + esc((a.provider ? a.provider + ' / ' : '') + (a.model || 'Default model')) + '</dd>' +
+            (a.effort ? '<dt>Reasoning</dt><dd>' + esc(a.effort) + '</dd>' : '') +
+            '<dt>Computer</dt><dd>' + (a.useHostComputer ? 'My computer' : 'Private computer') + '</dd></dl>' +
+            ((a.allowShell || a.allowWrites || a.allowConfig) ? '<div class="cw-profile-tags" aria-label="Permissions">' +
+              (a.allowShell ? '<span class="chip">Shell</span>' : '') +
+              (a.allowWrites ? '<span class="chip">File writes</span>' : '') +
+              (a.allowConfig ? '<span class="chip">Tool setup</span>' : '') + '</div>' : '') +
+            (a.skills && a.skills.length ? '<div class="cw-profile-skills"><strong>Skills</strong><br>' + esc(a.skills.join(' · ')) + '</div>' : '') + '</section>' +
+          '<section class="cw-profile-section"><h4>MEMORY</h4><div class="cw-profile-memory"><strong>' + ((cw.memoryCounts || {})[a.id] || 0) + '</strong> facts saved<button class="btn ghost" id="cwMemClear">Clear</button></div></section>' +
+          cwComputerHtml(a, true) +
+          '<div class="cw-profile-footer"><button class="btn red" id="cwDelAgent">Delete teammate</button></div></div>';
       cwBindComputers(el);
-      cwRenderThreads();
       $('cwMemClear').onclick = function () {
         if (!confirm('Erase everything ' + a.name + ' has remembered across conversations?')) return;
         api('/api/cowork/agents/' + encodeURIComponent(a.id) + '/memory', { method: 'DELETE' }).then(function () {
@@ -2443,13 +2480,11 @@ export const COWORK_JS = String.raw`
     el.innerHTML =
       '<h4>MEMBERS</h4>' +
       '<div class="cw-card">' + members.map(function (m) {
-        return '<div class="cw-mrow">' + cwAva(m, 26) + '<span class="nm">@' + esc(m.name) + ' <span class="tg">' + esc(m.tagline || '') + '</span></span>' +
+        return '<div class="cw-mrow">' + cwAva(m, 40) + '<span class="nm">@' + esc(m.name) + ' <span class="tg">' + esc(m.tagline || '') + '</span></span>' +
           '<button class="crown' + (conv.chiefId === m.id ? ' on' : '') + '" data-chief="' + esc(m.id) + '" title="Make chief of staff">' + cwIcon('crown') + '</button>' +
           '<button data-remove="' + esc(m.id) + '" title="Remove from group">' + cwIcon('close') + '</button></div>';
       }).join('') +
       '<button class="btn ghost" id="cwAddMember" style="width:100%;margin-top:6px">Add member</button></div>' +
-      '<h4>THREADS</h4>' +
-      '<div class="cw-card"><div class="cw-threads" id="cwThreads"></div></div>' +
       members.map(cwComputerHtml).join('') +
       '<div class="cw-actions"><button class="btn red" id="cwDelConv">Delete chat</button></div>';
     el.querySelectorAll('[data-chief]').forEach(function (b) {
@@ -2471,7 +2506,6 @@ export const COWORK_JS = String.raw`
       cwAddMemberModal(conv);
     };
     cwBindComputers(el);
-    cwRenderThreads();
     $('cwDelConv').onclick = function () {
       if (!confirm('Delete this chat and its whole transcript?')) return;
       api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'DELETE' }).then(function () {
@@ -2480,20 +2514,21 @@ export const COWORK_JS = String.raw`
     };
   }
 
-  function cwComputerHtml(agent) {
+  function cwComputerHtml(agent, profile) {
+    var heading = profile ? 'COMPUTER' : esc(agent.name) + ' · COMPUTER';
     if (agent.useHostComputer) {
-      return '<div class="cw-card"><h4>' + esc(agent.name) + ' · COMPUTER</h4><div class="chip ok">My computer</div>' +
+      return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4><div class="chip ok">My computer</div>' +
         '<p style="font-size:11.5px;color:var(--muted)">Uses the Agent Gitu workspace on this computer directly. Docker is not required. Shell and file changes still follow this teammate’s permissions.</p>' +
-        '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></div>';
+        '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></section>';
     }
     var computer = (cwEnsure().computers || []).filter(function (c) { return c.agentId === agent.id; })[0] || { state: 'stopped' };
-    return '<div class="cw-card"><h4>' + esc(agent.name) + ' · COMPUTER</h4><div class="chip">' + esc(computer.state) + '</div>' +
+    return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4><div class="chip">' + esc(computer.state) + '</div>' +
       '<p style="font-size:11.5px;color:var(--muted)">Private Linux desktop, files, shell and browser. Files and browser sessions persist when stopped.</p>' +
       (computer.error ? '<p style="font-size:11.5px;color:var(--err)">' + esc(computer.error) + '</p>' : '') +
       '<div class="cw-actions"><button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="start">Start</button>' +
       '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="stop">Stop</button>' +
       '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></div>' +
-      '<div data-screen="' + esc(agent.id) + '"></div></div>';
+      '<div data-screen="' + esc(agent.id) + '"></div></section>';
   }
 
   function cwAddMemberModal(conv) {
@@ -2682,9 +2717,16 @@ export const COWORK_JS = String.raw`
     if (d.threads) cw.threads = d.threads;
     if (Array.isArray(d.folders)) cw.folders = d.folders;
     if (d.widgets) cw.widgets = d.widgets;
-    if (rosterChanged || widgetsChanged) cwRenderRail();
-    if (threadsChanged) cwRenderThreads();
-    if (rosterChanged) cwRenderMembers();
+    if (typeof d.threadActivationSeq === 'number' && d.threadActivationSeq > (cw.threadActivationSeq || 0)) {
+      cw.threadActivationSeq = d.threadActivationSeq;
+      if ((d.activeThreadId || null) !== cw.threadId && (!d.activeThreadId || cw.threads.some(function (thread) { return thread.id === d.activeThreadId; }))) {
+        cwSwitchThread(d.activeThreadId || null);
+        return;
+      }
+    }
+    if (cw.threadId && d.threads && !cw.threads.some(function (thread) { return thread.id === cw.threadId; })) { cwSwitchThread(null); return; }
+    if (rosterChanged || widgetsChanged || threadsChanged) cwRenderRail();
+    if (rosterChanged || threadsChanged) cwRenderMembers();
     if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged) cwRenderMsgs(); else cwRenderProgress();
     if (workChanged || rosterChanged) cwRenderWork();
     if (foldersChanged) cwRenderFolders();

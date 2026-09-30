@@ -179,6 +179,8 @@ export function buildSystemPrompt(
   memory: MemoryStore,
   opts: {
     scopeFiles?: string[];
+    taggedReadFolders?: readonly string[];
+    taggedWriteFolders?: readonly string[];
     extraConstraints?: string[];
     skillsSection?: string;
     mcpSection?: string;
@@ -213,6 +215,10 @@ export function buildSystemPrompt(
     opts.scopeFiles && opts.scopeFiles.length > 0
       ? `\nUSER-SELECTED SCOPE (the user chose these files to work on — prefer them, avoid everything else):\n${opts.scopeFiles.map((f) => `  - ${f}`).join('\n')}\n`
       : '';
+  const writableTags = new Set(opts.taggedWriteFolders ?? []);
+  const taggedFolderSection = opts.taggedReadFolders?.length
+    ? `\nUSER-TAGGED FOLDERS (use absolute paths with file tools; write only where the user granted permission):\n${opts.taggedReadFolders.map((folder) => `  - ${folder} (${writableTags.has(folder) ? 'read and write' : 'read only'})`).join('\n')}\n`
+    : '';
   const constraintSection = opts.extraConstraints && opts.extraConstraints.length > 0 ? `\nUSER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}\n` : '';
   const skillsSection = opts.skillsSection
     ? `\nREUSABLE SKILLS (apply them with use_skill${
@@ -242,7 +248,7 @@ export function buildSystemPrompt(
   // injected section — it taxes every model call.
   const frontendSection = opts.uiTask ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n` : '';
   return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
-${scopeSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
+${scopeSection}${taggedFolderSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
 
 PROJECT LOCK (do not violate):
   name: ${lock.name}
@@ -259,7 +265,7 @@ PROJECT LOCK (do not violate):
   typecheck_command: ${lock.typecheckCommand ?? 'unknown'}
 
 OPERATING RULES:
-1. Project boundary: only touch files inside repo_root. Never edit unrelated code.
+1. Project boundary: edit files inside the active writable root or a user-tagged folder explicitly marked read and write above. All other tagged folders are read-only. Tags do not change the task workspace. Never edit unrelated code.
 2. Read before modifying a file. Read the minimum code necessary to establish a confident hypothesis. Do not perform broad repository exploration when the user supplied a concrete file, symbol, error, stack trace, test failure, screenshot, or previous task context. Expand investigation progressively only when local evidence is insufficient. Ground every plan and edit in actual code read. Small reversible changes. One focused action per turn.
 3. Every action needs a reason and an expected outcome.
 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.

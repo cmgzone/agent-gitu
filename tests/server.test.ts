@@ -162,6 +162,61 @@ describe('HermesServer', () => {
     expect((nested.dirs as string[]).some((d) => d.endsWith('deep'))).toBe(true);
   });
 
+  it('tags a folder on one run, grants and revokes write access, and restores permissions', async () => {
+    const dir = makeProject('run-folder-tag');
+    const outside = mkdtempSync(path.join(tmpdir(), 'gitu-run-reference-'));
+    writeFileSync(path.join(outside, 'note.txt'), 'Reference material');
+    const first = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([() => 'Ready.']) });
+    servers.push(first);
+    const firstBase = `http://127.0.0.1:${await first.start()}`;
+    const created = await fetch(`${firstBase}/api/runs`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ goal: 'Review a reference folder', mode: 'chat', review: false }),
+    }).then((response) => response.json());
+    await waitFor(async () => {
+      const session = await fetch(`${firstBase}/api/runs/${created.runId}`).then((response) => response.json());
+      return session.status !== 'running' ? session : undefined;
+    });
+    const endpoint = `${firstBase}/api/runs/${created.runId}/folders`;
+    const tagged = await fetch(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: outside }),
+    });
+    expect(tagged.status).toBe(200);
+    expect((await tagged.json()).folders).toEqual([outside]);
+    const visible = await fetch(`${firstBase}/api/runs/${created.runId}`).then((response) => response.json());
+    expect(visible.taggedFolders).toEqual([outside]);
+    expect(visible.writableFolders).toEqual([]);
+    const granted = await fetch(endpoint, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: outside, writable: true }),
+    });
+    expect(granted.status).toBe(200);
+    expect((await granted.json()).writableFolders).toEqual([outside]);
+    const privateDir = path.join(outside, '.hermes');
+    mkdirSync(privateDir);
+    const rejected = await fetch(endpoint, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: privateDir }),
+    });
+    expect(rejected.status).toBe(400);
+    await first.stop();
+
+    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    servers.push(second);
+    const secondBase = `http://127.0.0.1:${await second.start()}`;
+    const restored = await fetch(`${secondBase}/api/runs/${created.runId}`).then((response) => response.json());
+    expect(restored.taggedFolders).toEqual([outside]);
+    expect(restored.writableFolders).toEqual([outside]);
+    const revoked = await fetch(`${secondBase}/api/runs/${created.runId}/folders`, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: outside, writable: false }),
+    });
+    expect(revoked.status).toBe(200);
+    expect((await revoked.json()).writableFolders).toEqual([]);
+    const removed = await fetch(`${secondBase}/api/runs/${created.runId}/folders`, {
+      method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: outside }),
+    });
+    expect(removed.status).toBe(200);
+    expect((await removed.json()).folders).toEqual([]);
+  }, 30000);
+
   it('serves the Agent Gitu SVG mark as a bundled brand asset', async () => {
     const { base } = await startServer(makeProject('brand-asset'), new ScriptedMockLlm([]));
     const res = await fetch(`${base}/brand/agent-gitu-mark.svg`);

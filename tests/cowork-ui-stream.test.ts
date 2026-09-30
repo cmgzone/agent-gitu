@@ -47,13 +47,39 @@ function ui() {
   });
   new Script(COWORK_JS).runInContext(context);
   const renderProgress = context.cwRenderProgress;
+  const renderRail = context.cwRenderRail;
   // Keep the actual snapshot, roster and stream lifecycle code. Rendering the
   // surrounding panels is covered by the browser fixture.
   for (const name of ['cwRenderRail', 'cwRenderMsgs', 'cwRenderInfo', 'cwRenderTyping', 'cwRenderProgress']) context[name] = vi.fn();
-  return { context, cw: context.S.cw, input, elements, mentions, composerFolders, folderRemove, streams, api, gateway, modals, renderProgress };
+  return { context, cw: context.S.cw, input, elements, mentions, composerFolders, folderRemove, streams, api, gateway, modals, renderProgress, renderRail };
 }
 
 describe('Cowork UI live updates', () => {
+  it('lists the selected agent’s Main chat and threads as chats in the left rail', () => {
+    const u = ui();
+    u.cw.agents = [{ id: 'mimi', name: 'mimi' }, { id: 'chief', name: 'Chief' }];
+    u.cw.convs = [
+      { id: 'dm', kind: 'dm', title: 'mimi', memberIds: ['mimi'] },
+      { id: 'group', kind: 'group', title: 'Launch room', memberIds: ['chief', 'mimi'] },
+    ];
+    u.cw.active = 'dm';
+    u.cw.threads = [{ id: 'copy', title: 'Launch copy', topic: 'Landing page only' }];
+    const rail = { innerHTML: '', querySelectorAll: () => [] };
+    u.elements.cwRail = rail;
+    u.elements.cw = { classList: { toggle() {} } };
+    u.renderRail();
+    expect(rail.innerHTML).toContain('data-agent="mimi"');
+    expect(rail.innerHTML).toContain('data-cwthread=""');
+    expect(rail.innerHTML).toContain('data-cwthread="copy"');
+    expect(rail.innerHTML).toContain('Landing page only');
+    expect(rail.innerHTML).toContain('id="cwNewThread"');
+    expect(rail.innerHTML).toContain('data-conv="group"');
+    expect(rail.innerHTML).not.toContain('data-conv="dm"');
+    u.cw.threadId = 'copy';
+    u.renderRail();
+    expect(rail.innerHTML).toContain('data-delthread="copy"');
+  });
+
   it('keeps completed actions visible while work continues and after the run ends', () => {
     const u = ui();
     const history = [

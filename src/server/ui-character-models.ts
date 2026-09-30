@@ -34,15 +34,18 @@ export const COWORK_CHARACTER_MODELS_JS = String.raw`
       group.add(mesh); return mesh;
     }
     [-1, 1].forEach(function (side) {
-      var eyeX = side * 1.25, eyeY = .45;
-      var eye = facePart(eyeX, eyeY, .43, .75, .3, 0x262144, .18);
+      var eyeX = side * (config.shape === 'cube' ? 1.35 : 1.25), eyeY = config.shape === 'pyramid' ? .2 : .45;
+      var winking = config.shape === 'diamond' && side === 1;
+      var eye = facePart(eyeX, eyeY, config.shape === 'cube' ? .52 : .43, winking ? .15 : config.shape === 'pyramid' ? .55 : .75, .3, 0x262144, .18);
       var shine = facePart(eyeX + .12, eyeY + .24, .13, .16, .08, 0xffffff, .5);
       shine.position.z = eye.position.z + .29;
+      shine.visible = !winking;
       facePart(side * 2, -.9, .6, .25, .14, 0xf4a4d2, .13);
     });
     // A happy mouth and pink tongue echo the homepage blob's expression.
     var smile = new THREE.Shape();
-    smile.moveTo(-.85, -.95); smile.quadraticCurveTo(0, -2.55, .85, -.95); smile.quadraticCurveTo(0, -1.3, -.85, -.95);
+    var smileWidth = config.shape === 'cube' ? 1.05 : config.shape === 'pyramid' ? .72 : .85;
+    smile.moveTo(-smileWidth, -.95); smile.quadraticCurveTo(0, config.shape === 'pyramid' ? -2.25 : -2.55, smileWidth, -.95); smile.quadraticCurveTo(0, -1.3, -smileWidth, -.95);
     var mouth = new THREE.Mesh(new THREE.ShapeGeometry(smile, 20), new THREE.MeshBasicMaterial({ color: 0x36234e, side: THREE.DoubleSide }));
     var positions = mouth.geometry.attributes.position;
     for (var i = 0; i < positions.count; i++) positions.setZ(i, surface(positions.getX(i), positions.getY(i)) + .16);

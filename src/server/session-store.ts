@@ -10,6 +10,9 @@ export interface SessionUsage {
   outputTokens: number;
   cachedTokens: number;
   messages: number;
+  /** Most recent main-agent prompt plus reply, rather than cumulative billed tokens. */
+  contextTokens?: number;
+  contextWindowTokens?: number;
   /** Accumulated using the price of each calling model; survives catalog expiry. */
   costUsd?: number;
   /** True if some calls had no pricing metadata. */
@@ -23,6 +26,8 @@ export interface StoredSession {
   goal: string;
   project?: string;
   projectPath?: string;
+  taggedFolders?: string[];
+  writableFolders?: string[];
   branch?: string;
   worktreePath?: string;
   startedAt: string;
@@ -102,6 +107,8 @@ export class SessionStore {
          goal TEXT,
          project TEXT,
          projectPath TEXT,
+         taggedFolders TEXT,
+         writableFolders TEXT,
          branch TEXT,
          worktreePath TEXT,
          startedAt TEXT,
@@ -164,6 +171,8 @@ export class SessionStore {
       ['sessions', 'modelRecovery TEXT'],
       ['sessions', 'branch TEXT'],
       ['sessions', 'worktreePath TEXT'],
+      ['sessions', 'taggedFolders TEXT'],
+      ['sessions', 'writableFolders TEXT'],
       // The typed companion on a prose row. Older rows simply have none and
       // restore as prose-only, exactly as they always have.
       ['events', 'typed TEXT'],
@@ -179,13 +188,15 @@ export class SessionStore {
   upsertSession(s: StoredSession): void {
     this.db
       .prepare(
-        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO sessions (runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(runId) DO UPDATE SET
            taskId = excluded.taskId,
            goal = excluded.goal,
            project = excluded.project,
            projectPath = excluded.projectPath,
+           taggedFolders = excluded.taggedFolders,
+           writableFolders = excluded.writableFolders,
            branch = excluded.branch,
            worktreePath = excluded.worktreePath,
            status = excluded.status,
@@ -209,6 +220,8 @@ export class SessionStore {
         s.goal ?? null,
         s.project ?? null,
         s.projectPath ?? null,
+        JSON.stringify(s.taggedFolders ?? []),
+        JSON.stringify(s.writableFolders ?? []),
         s.branch ?? null,
         s.worktreePath ?? null,
         s.startedAt ?? null,
@@ -307,13 +320,15 @@ export class SessionStore {
 
   listSessions(): StoredSession[] {
     const rows = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions ORDER BY startedAt DESC`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions ORDER BY startedAt DESC`)
       .all() as {
         runId: string;
         taskId: string | null;
         goal: string;
         project: string | null;
         projectPath: string | null;
+        taggedFolders: string | null;
+        writableFolders: string | null;
         branch: string | null;
         worktreePath: string | null;
         startedAt: string;
@@ -337,6 +352,8 @@ export class SessionStore {
       goal: r.goal,
       project: r.project ?? undefined,
       projectPath: r.projectPath ?? undefined,
+      taggedFolders: parseTaggedFolders(r.taggedFolders),
+      writableFolders: parseTaggedFolders(r.writableFolders),
       branch: r.branch ?? undefined,
       worktreePath: r.worktreePath ?? undefined,
       startedAt: r.startedAt,
@@ -358,13 +375,15 @@ export class SessionStore {
 
   getSessionByTaskId(taskId: string): StoredSession | undefined {
     const r = this.db
-      .prepare(`SELECT runId, taskId, goal, project, projectPath, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
+      .prepare(`SELECT runId, taskId, goal, project, projectPath, taggedFolders, writableFolders, branch, worktreePath, startedAt, status, finishedAt, mode, provider, model, requestedProvider, requestedModel, activeProvider, activeModel, report, error, usage, modelRecovery FROM sessions WHERE taskId = ? ORDER BY startedAt DESC LIMIT 1`)
       .get(taskId) as {
         runId: string;
         taskId: string | null;
         goal: string;
         project: string | null;
         projectPath: string | null;
+        taggedFolders: string | null;
+        writableFolders: string | null;
         branch: string | null;
         worktreePath: string | null;
         startedAt: string;
@@ -389,6 +408,8 @@ export class SessionStore {
       goal: r.goal,
       project: r.project ?? undefined,
       projectPath: r.projectPath ?? undefined,
+      taggedFolders: parseTaggedFolders(r.taggedFolders),
+      writableFolders: parseTaggedFolders(r.writableFolders),
       branch: r.branch ?? undefined,
       worktreePath: r.worktreePath ?? undefined,
       startedAt: r.startedAt,
@@ -451,6 +472,14 @@ export class SessionStore {
   }
 }
 
+function parseTaggedFolders(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const folders: unknown = JSON.parse(value);
+    return Array.isArray(folders) ? folders.filter((folder): folder is string => typeof folder === 'string' && path.isAbsolute(folder)) : [];
+  } catch { return []; }
+}
+
 function parseUsage(value: string | null): SessionUsage | undefined {
   if (!value) return undefined;
   try {
@@ -460,6 +489,8 @@ function parseUsage(value: string | null): SessionUsage | undefined {
       outputTokens: Number(parsed.outputTokens) || 0,
       cachedTokens: Number(parsed.cachedTokens) || 0,
       messages: Number(parsed.messages) || 0,
+      ...(typeof parsed.contextTokens === 'number' && Number.isFinite(parsed.contextTokens) && parsed.contextTokens >= 0 ? { contextTokens: parsed.contextTokens } : {}),
+      ...(typeof parsed.contextWindowTokens === 'number' && Number.isFinite(parsed.contextWindowTokens) && parsed.contextWindowTokens > 0 ? { contextWindowTokens: parsed.contextWindowTokens } : {}),
       ...(Number.isFinite(Number(parsed.costUsd)) ? { costUsd: Number(parsed.costUsd) } : {}),
       ...(parsed.costIncomplete === true ? { costIncomplete: true } : {}),
     };

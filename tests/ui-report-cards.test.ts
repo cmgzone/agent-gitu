@@ -49,6 +49,13 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(html).toContain('Paused');
     expect(html).not.toContain('Failed');
   });
+  it('shows the homepage blob for Agent Gitu in chat replies', () => {
+    const { context } = proseRenderer();
+    const html = context.reportReplyHtml({ status: 'complete', summary: 'Done.', filesChanged: [], changes: [], verification: [] }, null, '');
+    expect(html).toContain('home-blob-body');
+    expect(html).toContain('home-blob-tongue');
+    expect(html).not.toContain('cw-orb-eyes');
+  });
   it('renders telemetry as a collapsed Execution details card, not a meta line', () => {
     expect(UI_HTML).toContain("text.indexOf('telemetry ') === 0");
     expect(UI_HTML).toContain('<b>Execution details</b>');
@@ -144,8 +151,8 @@ describe('UI — narration structuring & technical disclosures', () => {
   it('renders the main report through the same bubble and rich text as Cowork', () => {
     const { context, emitted } = proseRenderer();
     const report = { summary: '### Ready\n\n**Done** with `npm test`.', status: 'complete', remainingRisks: [], followUps: [] };
-    const cowork = context.cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'orb', color: '#8f80ff' } }, 'Completed', context.cwBody(report.summary, []), '');
-    expect(context.reportReplyHtml(report, null, '')).toBe(cowork);
+    const cowork = context.cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'home-blob', color: '#8f80ff' } }, 'Completed', context.cwBody(report.summary, []), '');
+    expect(context.reportReplyHtml(report, null, '').replace(/cwHomeBlob\d+/g, 'cwHomeBlob')).toBe(cowork.replace(/cwHomeBlob\d+/g, 'cwHomeBlob'));
     context.appendSummary('run', { report, status: 'complete' });
     expect(emitted[0].innerHTML).toContain('class="cw-bubble"');
     expect(emitted[0].innerHTML).toContain('popovertarget="report-menu-run"');

@@ -52,6 +52,8 @@ export interface GituFactoryOptions {
   index?: CodeIndex;
   criteria?: string[];
   scopeFiles?: string[];
+  taggedReadFolders?: () => readonly string[];
+  taggedWriteFolders?: () => readonly string[];
   extraConstraints?: string[];
   effort?: 'low' | 'medium' | 'high' | 'max';
   actionProtocolMode?: 'auto' | 'native' | 'structured_text' | 'text';
@@ -141,6 +143,8 @@ export function buildGituConfig(options: GituFactoryOptions, deps: GituFactoryDe
     index: options.index,
     criteria: options.criteria,
     scopeFiles: options.scopeFiles,
+    taggedReadFolders: options.taggedReadFolders,
+    taggedWriteFolders: options.taggedWriteFolders,
     extraConstraints: options.extraConstraints,
     effort: options.effort,
     actionProtocolMode: options.actionProtocolMode,

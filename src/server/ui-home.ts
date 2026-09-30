@@ -1,6 +1,6 @@
 // Compact home navigation and a lightweight, decorative blob companion.
 export const HOME_CSS = String.raw`
-  .home > .home-cta { order: -1; width: min(540px, 100%); align-self: flex-start; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .home > .home-cta { order: -1; width: min(540px, 100%); align-self: center; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .home-cta-btn { --cta-accent: var(--accent); display: flex; align-items: center; gap: 12px; min-width: 0; padding: 13px 15px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); color: var(--text); text-align: left; cursor: pointer; transition: background .18s ease, border-color .18s ease, transform .18s ease; }
   .home-cta-btn.team { --cta-accent: var(--run); }
   .home-cta-btn:hover { background: var(--hover); border-color: var(--cta-accent); transform: translateY(-2px); }

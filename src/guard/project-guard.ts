@@ -234,6 +234,17 @@ export class ProjectGuard {
   }
 
   private readonly diagnosticReads = new Map<string, { real: string; directory: boolean }>();
+  /** User-selected, run-scoped folders. The host owns both lists. */
+  private taggedReadFolders?: () => readonly string[];
+  private taggedWriteFolders?: () => readonly string[];
+
+  setTaggedReadFolders(getFolders: () => readonly string[]): void {
+    this.taggedReadFolders = getFolders;
+  }
+
+  setTaggedWriteFolders(getFolders: () => readonly string[]): void {
+    this.taggedWriteFolders = getFolders;
+  }
 
   private assertPublicReadPath(absPath: string): void {
     const parts = path.resolve(absPath).split(path.sep).map(part => part.toLowerCase());
@@ -265,6 +276,22 @@ export class ProjectGuard {
       const realRel = path.relative(scope.real, real);
       if (realRel === '' || (scope.directory && realRel !== '..' && !realRel.startsWith(`..${path.sep}`) && !path.isAbsolute(realRel))) return;
     }
+    for (const folder of this.taggedReadFolders?.() ?? []) {
+      try {
+        const scope = path.resolve(folder);
+        const rel = path.relative(scope, abs);
+        if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+        this.assertPublicReadPath(scope);
+        if (!statSync(scope).isDirectory()) continue;
+        const realScope = realpathSync(scope);
+        if (realScope !== scope) continue;
+        const real = realpathSync(abs);
+        this.assertPublicReadPath(realScope);
+        this.assertPublicReadPath(real);
+        const realRel = path.relative(realScope, real);
+        if (realRel === '' || (realRel !== '..' && !realRel.startsWith(`..${path.sep}`) && !path.isAbsolute(realRel))) return;
+      } catch { /* a removed or retargeted tag cannot expand access */ }
+    }
     throw new ProjectGuardError(`Read access to ${abs} requires approval outside the locked project.`);
   }
 
@@ -285,10 +312,10 @@ export class ProjectGuard {
     this.diagnosticReads.set(scope.path, { real: scope.real, directory: scope.directory });
   }
 
-  private assertNoSymlinkEscape(absPath: string): void {
+  private assertNoSymlinkEscape(absPath: string, root = this.activeWritableRoot): void {
     let rootReal: string;
     try {
-      rootReal = realpathSync(this.activeWritableRoot);
+      rootReal = realpathSync(root);
     } catch {
       return;
     }
@@ -317,6 +344,24 @@ export class ProjectGuard {
 
   assertInside(absPath: string): void {
     if (!this.isInsideProject(absPath)) {
+      const abs = path.resolve(absPath);
+      for (const folder of this.taggedWriteFolders?.() ?? []) {
+        const scope = path.resolve(folder);
+        const rel = path.relative(scope, abs);
+        if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) continue;
+        this.assertPublicReadPath(abs);
+        this.assertPublicReadPath(scope);
+        try {
+          if (!statSync(scope).isDirectory() || realpathSync(scope) !== scope) break;
+        } catch { break; }
+        const fold = (s: string): string => (process.platform === 'win32' ? s.toLowerCase() : s);
+        const top = fold(rel.split(path.sep)[0] ?? '');
+        if (top && this.lock.ignorePaths.some((ignored) => fold(ignored) === top)) {
+          throw new ProjectGuardError(`Path ${abs} is inside an ignored directory (${top}).`);
+        }
+        this.assertNoSymlinkEscape(abs, scope);
+        return;
+      }
       throw new ProjectGuardError(
         `Path ${absPath} is outside the locked project ${this.lock.name} (${this.lock.repoRoot}).`,
       );
@@ -355,6 +400,6 @@ export class ProjectGuard {
   }
 
   toRelative(absPath: string): string {
-    return path.relative(this.activeWritableRoot, absPath).replace(/\\/g, '/');
+    return (this.isInsideProject(absPath) ? path.relative(this.activeWritableRoot, absPath) : path.resolve(absPath)).replace(/\\/g, '/');
   }
 }

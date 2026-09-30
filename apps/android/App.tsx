@@ -103,6 +103,13 @@ export default function App() {
     }
   }
 
+  async function logout() {
+    try {
+      await save(connections.filter(connection => connection.url !== active?.url));
+      setKey(''); setSettings(false); setError('');
+    } catch { Alert.alert('Could not log out', 'The saved key could not be removed. Please try again.'); }
+  }
+
   const connectionScreen = (
     <KeyboardAvoidingView style={s.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <ScrollView contentContainerStyle={s.connect} keyboardShouldPersistTaps="handled">
@@ -193,6 +200,7 @@ export default function App() {
           {busy ? <ActivityIndicator color="#111" /> : <Text style={s.buttonText}>Connect to Agent Gitu</Text>}
         </Pressable>
         <Text style={s.small}>Your saved access keys are protected on this device. Your agent runs on the computer or server you connect to.</Text>
+        {active && <Pressable accessibilityRole="button" onPress={() => void logout()} style={s.return}><Text style={{ color: '#ff9d99', fontSize: 14 }}>Log out</Text></Pressable>}
         {active && (
           <Pressable style={s.return} onPress={() => setSettings(false)}>
             <Text style={s.text}>Return to my agent</Text>
@@ -211,7 +219,7 @@ export default function App() {
         ) : !active ? (
           connectionScreen
         ) : (
-          <NativeWorkspace key={`${active.url}:${revision}`} connection={active} manageConnections={() => setSettings(true)} />
+          <NativeWorkspace key={`${active.url}:${revision}`} connection={active} manageConnections={() => setSettings(true)} logout={() => void logout()} />
         )}
         <Modal visible={settings && Boolean(active)} animationType="slide" onRequestClose={() => setSettings(false)}>
           <SafeAreaView style={s.fill}>{connectionScreen}</SafeAreaView>

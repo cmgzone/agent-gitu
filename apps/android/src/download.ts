@@ -3,7 +3,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 import type { AgentApi } from './api';
 
 export async function saveDownload(api: AgentApi, route: string, name: string, mime: string) {
-  if (Platform.OS !== 'android') { Alert.alert('Save on your phone', 'Document downloads use the Android folder picker.'); return; }
+  if (Platform.OS !== 'android') {
+    Alert.alert('Save on your phone', 'Document downloads use the Android folder picker.');
+    return;
+  }
   if (!route.startsWith('/api/') || !FileSystem.cacheDirectory) throw new Error('This document is unavailable.');
   const folder = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
   if (!folder.granted) return;
@@ -17,5 +20,7 @@ export async function saveDownload(api: AgentApi, route: string, name: string, m
     const target = await FileSystem.StorageAccessFramework.createFileAsync(folder.directoryUri, name.replace(/[\\/:*?"<>|]/g, '_'), mime);
     await FileSystem.writeAsStringAsync(target, bytes, { encoding: FileSystem.EncodingType.Base64 });
     Alert.alert('Document saved', name);
-  } finally { await FileSystem.deleteAsync(cache, { idempotent: true }).catch(() => {}); }
+  } finally {
+    await FileSystem.deleteAsync(cache, { idempotent: true }).catch(() => {});
+  }
 }

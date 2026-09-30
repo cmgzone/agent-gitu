@@ -417,7 +417,7 @@ export class GituServer {
   /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
   private coworkStore?: CoworkStore;
   private coworkMemoryStore?: CoworkMemory;
-  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
+  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; threadId?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
   private readonly coworkPollers = new Map<string, TelegramPoller>();
   /** One Discord gateway per conversation (keyed by conversation id). */
   private readonly coworkDiscords = new Map<string, DiscordGateway>();
@@ -1249,6 +1249,7 @@ export class GituServer {
   private coworkView(conversationId: string, after = 0, rosterRevision = -1, threadId: string | null = null, sinceChange = 0) {
     const store = this.cowork();
     const run = this.coworkRuns.get(conversationId);
+    const viewingActiveWork = Boolean(run?.busy && (run.threadId ?? null) === threadId);
     const missions = store.missions(conversationId);
     const activeMissions = missions.filter((mission) => mission.status === 'running' || mission.status === 'blocked');
     const recentMissions = missions.filter((mission) => mission.status !== 'running' && mission.status !== 'blocked').slice(0, 20);
@@ -1266,10 +1267,10 @@ export class GituServer {
       threadActivationSeq: store.getConversation(conversationId)?.threadActivationSeq ?? 0,
       folders: store.folders(conversationId),
       widgets: store.widgets(conversationId),
-      busy: Boolean(run?.busy),
-      working: run?.busy ? run.working ?? null : null,
-      progress: run?.progress ?? null,
-      progresses: run?.busy ? Object.values(run.progresses ?? {}) : [],
+      busy: viewingActiveWork,
+      working: viewingActiveWork ? run?.working ?? null : null,
+      progress: viewingActiveWork ? run?.progress ?? null : null,
+      progresses: viewingActiveWork ? Object.values(run?.progresses ?? {}) : [],
       workHistory: store.workHistory(conversationId, threadId).map((entry, index) => coworkActivityView(entry, store.getAgent(entry.agentId)?.name ?? 'Teammate', index)),
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
@@ -2584,6 +2585,7 @@ export class GituServer {
       const conv = store.getConversation(conversationId);
       if (!conv) break;
       const threadId = trigger.threadId;
+      run.threadId = threadId;
       // Queued future user messages must not steer the current trigger, and
       // other threads never bleed into this one.
       const history = store.messages(conversationId, 0, threadId ?? null).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);

@@ -20,7 +20,7 @@ const chief = store.saveAgent({
 });
 store.saveAgent({ name: 'Forge', systemPrompt: 'Build the requested app.', tagline: 'Engineering', avatar: { color: '#65d1bd', shape: 'diamond' } });
 const conversation = store.saveConversation({ kind: 'dm', memberIds: [chief.id] });
-store.appendMessage(conversation.id, { role: 'user', text: 'Prepare our mobile launch.', via: 'web' });
+store.appendMessage(conversation.id, { role: 'user', text: 'Prepare our mobile launch.', via: 'web', status: 'sent' });
 store.appendMessage(conversation.id, {
   role: 'system',
   agentId: chief.id,
@@ -29,6 +29,40 @@ store.appendMessage(conversation.id, {
   text: 'The mobile launch plan is ready.',
   checkpoint: { number: 2, accomplished: 'Prepared the mobile launch plan and assigned the design review.', next: 'Review the Android build with the team.' },
 });
+
+store.appendMessage(conversation.id, {
+  role: 'agent',
+  agentId: chief.id,
+  agentName: chief.name,
+  via: 'web',
+  text: [
+    '## Launch ready',
+    '**Three improvements** are ready for review.',
+    '- Compact, readable chat',
+    '- Live tools and thinking',
+    '- Project navigation',
+    '',
+    '| Feature | Result | Next action |',
+    '| --- | --- | --- |',
+    '| Chat | Ready | Review on phone |',
+    '| Files | Ready | Open the workspace |',
+    '',
+    '```ts',
+    'const preview = "A long code line that stays inside its own horizontal scroller rather than widening the phone conversation";',
+    '```',
+    '',
+    'Details: https://example.com/' + 'long-mobile-reference-'.repeat(8),
+  ].join('\n'),
+});
+for (const [text, status] of [
+  ['Prepare the mobile layout', 'done'],
+  ['Check chat and task cards', 'in_progress'],
+  ['Review the APK on a phone', 'pending'],
+] as const) {
+  const todo = store.addTodo({ conversationId: conversation.id, agentId: chief.id, text });
+  store.updateTodo(todo.id, chief.id, { status });
+}
+store.saveWidget({ conversationId: conversation.id, title: 'Launch checklist', kind: 'progress', data: { label: 'Ready for review', value: 65 } });
 const server = new GituServer({ cwd: root, host: '0.0.0.0', port: 8423, accessKey: 'gitu-mobile-fixture-key-for-tests-only', autoInstallLsp: false, llm: new ScriptedMockLlm([]) });
 await server.start();
 console.log('Android fixture ready on port 8423 (fictional data).');

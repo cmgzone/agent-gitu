@@ -119,4 +119,31 @@ describe('native phone workspace against the real server', () => {
     expect(snapshot.messages.filter(message => message.id === body.id).map(message => message.text)).toEqual([body.text]);
     await api.request(`/api/cowork/conversations/${created.conversation.id}/stop`, 'POST');
   });
+
+  it('streams a newly created teammate and keeps live activity in its own topic', async () => {
+    const created = await api.request<{ agent: { id: string; avatar: { color: string; shape: string } } }>('/api/cowork/agents', 'POST', { name: 'Live phone teammate', systemPrompt: 'Test only.', avatar: { shape: 'diamond', color: '#82b5ed' }, useHostComputer: true });
+    const roster = await api.request<{ agents: { id: string; avatar: { color: string; shape: string } }[] }>('/api/cowork/agents');
+    expect(roster.agents.find(agent => agent.id === created.agent.id)?.avatar).toEqual({ shape: 'diamond', color: '#82b5ed' });
+    const store = (server as unknown as { cowork: () => CoworkStore }).cowork();
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [created.agent.id] });
+    const topic = store.addThread({ conversationId: conv.id, title: 'Live topic' });
+    const internals = server as unknown as { coworkRuns: Map<string, unknown>; publishCowork: (id: string) => void };
+    internals.coworkRuns.set(conv.id, { busy: true, threadId: topic.id, abort: new AbortController(), queue: [], progress: { agentId: created.agent.id, agentName: 'Live phone teammate', text: 'Partial response', reasoning: 'Reviewing the task', phase: 'responding' } });
+    const main = await api.request<CoworkSnapshot>(`/api/cowork/conversations/${conv.id}/messages?thread=main`);
+    expect(main.busy).toBe(false); expect(main.progress).toBeNull();
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 10000);
+    try {
+      const response = await fetch(`${api.connection.url}/api/cowork/conversations/${conv.id}/stream?thread=${topic.id}`, { headers: { Authorization: `Bearer ${key}` }, signal: abort.signal });
+      expect(response.headers.get('content-type')).toContain('text/event-stream');
+      const reader = response.body!.getReader(), decoder = new TextDecoder();
+      let buffer = '';
+      while (!buffer.includes('\n\n')) buffer += decoder.decode((await reader.read()).value, { stream: true });
+      const data = JSON.parse(buffer.split('\n').find(line => line.startsWith('data: '))!.slice(6)) as CoworkSnapshot;
+      expect(data.progress?.text).toBe('Partial response');
+      expect(data.progress?.reasoning).toBe('Reviewing the task');
+      expect(data.roster?.agents.some(agent => agent.id === created.agent.id)).toBe(true);
+      await reader.cancel();
+    } finally { clearTimeout(timer); abort.abort(); internals.coworkRuns.delete(conv.id); }
+  }, 20000);
 });

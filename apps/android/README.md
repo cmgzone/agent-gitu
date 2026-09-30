@@ -1,11 +1,12 @@
 # Agent Gitu for Android
 
 The Android app connects to your existing Agent Gitu computer or to a hosted
-Agent Gitu server. Version 0.2 uses native React Native screens for chats,
+Agent Gitu server. Version 0.2.1 uses native React Native screens for chats,
 Cowork, teammate profiles and topics, projects and files, task progress,
 permissions, Git, Browser, scheduled work, skills, MCP, model selection and
 service connections. It has SVG navigation and the same character artwork as
 desktop, a phone composer with attachments, and immersive Android display.
+Chats use compact native Markdown, scrollable code and tables, live text/thinking/tool updates, a project drawer, and live task cards. Computer screens and question/approval cards stay accessible from chat. Log out removes the active saved connection key from this phone.
 Back returns through screens and then backgrounds the app; it never signs out.
 The agent executes work on the connected server.
 
@@ -27,7 +28,7 @@ mobile support). Build it with `npm run build`, then run:
 powershell -ExecutionPolicy Bypass -File scripts/start-mobile-server.ps1
 ```
 
-Install `release/Agent-Gitu-Android-0.2.0.apk`. Select **My computer**, enter the
+Install `release/Agent-Gitu-Android-0.2.1.apk`. Select **My computer**, enter the
 network address printed by the script and the access key from the file it
 identifies. Both devices must be on the same network; allow the Node server on
 your private network if Windows Firewall prompts. The computer must remain on.

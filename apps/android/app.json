@@ -3,18 +3,33 @@
     "name": "Agent Gitu",
     "slug": "agent-gitu-android",
     "scheme": "agentgitu",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "icon": "./assets/icon.png",
     "newArchEnabled": true,
     "android": {
       "package": "dev.agentgitu.mobile",
-      "versionCode": 2,
+      "versionCode": 3,
       "softwareKeyboardLayoutMode": "resize",
       "blockedPermissions": ["android.permission.RECORD_AUDIO", "android.permission.SYSTEM_ALERT_WINDOW"],
-      "adaptiveIcon": { "foregroundImage": "./assets/icon.png", "backgroundColor": "#111111" }
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#111111"
+      }
     },
-    "plugins": ["expo-secure-store", ["expo-build-properties", { "android": { "usesCleartextTraffic": true } }], "./plugins/with-installed-ndk.cjs", "./plugins/with-fullscreen.cjs"]
+    "plugins": [
+      "expo-secure-store",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ],
+      "./plugins/with-installed-ndk.cjs",
+      "./plugins/with-fullscreen.cjs"
+    ]
   }
 }

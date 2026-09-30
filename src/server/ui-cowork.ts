@@ -80,22 +80,19 @@ export const COWORK_CSS = String.raw`
   .cw-ava svg { width: 100%; height: 100%; display: block; }
   .cw-row > .cw-ava { width: 46px; height: 46px; }
   .report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }
-  .cw-chat-head .cw-ava { width: 88px; height: 88px; }
+  .cw-chat-head .cw-ava { width: 76px; height: 76px; }
   .cw-item .cw-flag { flex: none; color: var(--muted); display: inline-flex; }
   .cw-item .cw-flag svg { width: 14px; height: 14px; }
   .cw-flag.gold { color: var(--evidence); }
   .cw-rail-foot { padding: 10px 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
   .cw-rail-foot .btn { flex: 1; padding: 6px 10px; font-size: 12px; }
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
-  .cw-chat { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .cw-chat-head, .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
-  .cw-chat-head { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 12px 72px 18px; min-height: 0; text-align: center; }
-  .cw-chat-head .cw-tt { min-width: 0; width: 100%; }
-  .cw-chat-head .cw-tt .t1 { font-weight: 700; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; justify-content: center; gap: 6px; }
-  .cw-chat-head #cwChatTitle { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .cw-chat-head .cw-tt .t1 svg { width: 14px; height: 14px; color: var(--evidence); flex: none; }
-  .cw-chat-head .cw-tt .t2 { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .cw-chat-head .cw-head-badges { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+  .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
+  .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; pointer-events: none; }
+  .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; justify-content: center; }
+  .cw-chat-head button { pointer-events: auto; }
+  .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: 16px; }
   .cw-chat-head #cwBack { position: absolute; left: 12px; top: 12px; }
   .cw-chat-head .chip { flex: none; display: inline-flex; align-items: center; gap: 5px; }
@@ -123,7 +120,7 @@ export const COWORK_CSS = String.raw`
   .cw-widget-bar { height: 8px; border-radius: 999px; background: var(--card2); border: 1px solid var(--border); overflow: hidden; }
   .cw-widget-bar i { display: block; height: 100%; background: var(--accent); }
   .cw-widget-text { font-size: 12.5px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .cw-msgs { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 22px 12px; display: flex; flex-direction: column; gap: 16px; }
+  .cw-msgs { flex: 1; min-height: 0; margin-top: 88px; overflow-y: auto; padding: 12px 22px; display: flex; flex-direction: column; gap: 16px; }
   .cw-msgs > * { flex-shrink: 0; }
   .cw-row { display: flex; gap: 12px; max-width: min(92%, 820px); min-width: 0; }
   .cw-row.me { align-self: flex-end; flex-direction: row-reverse; max-width: min(74%, 680px); }
@@ -322,6 +319,7 @@ export const COWORK_CSS = String.raw`
   .cw-doc-modal .box { width: min(980px, 94vw); height: min(820px, 92vh); }
   .cw-doc-frame { width: 100%; flex: 1; min-height: 0; border: 0; background: #fff; }
   .cw-info { width: 320px; box-sizing: border-box; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 20px 28px; min-height: 0; }
+  .cw-info > .cw-panel-close { display: block; margin: 0 0 8px auto; }
   .cw-info h4 { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .12em; color: var(--faint); font-weight: 700; }
   .cw-info .cw-card { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 4px 0 20px; margin-bottom: 20px; }
   .cw-profile-hero { display: flex; flex-direction: column; align-items: center; padding: 18px 0 24px; text-align: center; }
@@ -448,14 +446,14 @@ export const COWORK_CSS = String.raw`
     .cw.overlay-open .cw-panel-backdrop { display: block; }
     .cw-info > .cw-panel-close { display: block; margin: 0 0 16px auto; }
   }
-  @media (max-width: 720px) { .cw-msgs { padding: 14px 12px 8px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-head { padding: 10px 64px 14px; gap: 3px; } .cw-chat-head .cw-ava { width: 66px; height: 66px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
+  @media (max-width: 720px) { .cw-msgs { margin-top: 76px; padding: 8px 12px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw-mobile-only, .cw-rail > .cw-panel-close { display: block; }
     .cw-rail > .cw-panel-close { align-self: flex-end; margin: 8px 12px 0; }
     .cw.rail-open .cw-rail { transform: none; } }
-  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-head { padding-top: 6px; padding-bottom: 8px; } .cw-chat-head .cw-ava { width: 56px; height: 56px; } }
+  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-avatar { top: 5px; } .cw-chat-head .cw-ava { width: 52px; height: 52px; } .cw-msgs { margin-top: 62px; } }
   ${CHARACTER_CSS}
 `;
 
@@ -690,7 +688,14 @@ export const COWORK_JS = String.raw`
     $('cwGear').onclick = function () { cwClosePanels(); openSettings('cowork'); };
     $('cwPanelBackdrop').onclick = cwClosePanels;
     $('cwCloseRail').onclick = cwClosePanels;
-    $('cwCloseInfo').onclick = cwClosePanels;
+    $('cwCloseInfo').onclick = function () {
+      var cw = cwEnsure();
+      if (window.innerWidth <= 1180) cw.infoNarrowOpen = false;
+      else cw.infoOpen = false;
+      cwSyncPanels();
+      var button = $('cwInfoBtn');
+      if (button) button.focus();
+    };
     $('cwAddAgent').onclick = function () { cwAgentModal(null); };
     $('cwAddGroup').onclick = function () { cwGroupModal(); };
     var learnBtn = $('cwLearn');
@@ -743,7 +748,7 @@ export const COWORK_JS = String.raw`
     var rail = root.querySelector('.cw-rail');
     rail.inert = window.innerWidth <= 720 && !railOpen;
     var button = $('cwInfoBtn');
-    if (button) { button.textContent = infoOpen ? 'Hide panel' : 'Chat panel'; button.setAttribute('aria-expanded', String(infoOpen)); }
+    if (button) { button.hidden = infoOpen; button.textContent = 'Chat panel'; button.setAttribute('aria-expanded', String(infoOpen)); }
     var back = $('cwBack');
     if (back) back.setAttribute('aria-expanded', String(railOpen));
     var closeInfo = $('cwCloseInfo');
@@ -873,41 +878,41 @@ export const COWORK_JS = String.raw`
       if (clearBtn) clearBtn.onclick = function () { cw.searchQuery = ''; cw.searchHits = []; cwRenderRail(); };
       return;
     }
+    var active = cwActiveConv();
+    var selectedAgentId = cw.selectedAgentId || (active && (active.kind === 'dm' ? active.memberIds[0] : active.chiefId || active.memberIds[0]));
     var html = '<div class="cw-sec">TEAM</div>';
     if (cw.agents.length === 0) html += '<div class="cw-empty-note">No teammates yet. Create the first profile — pick a name, a character and instructions.</div>';
     cw.agents.forEach(function (a) {
-      var selected = (cw.convs || []).some(function (c) { return c.id === cw.active && c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === a.id; });
+      var selected = selectedAgentId === a.id;
       html += '<button class="cw-item' + (selected ? ' cur' : '') + '" data-agent="' + esc(a.id) + '">' + cwAva(a) +
         '<span class="cw-item-main"><span class="cw-item-name">' + esc(a.name) + '</span><span class="cw-item-sub">' + esc(a.tagline || 'tap to chat') + '</span></span>' +
         (a.chiefOfStaff ? '<span class="cw-flag gold" title="Default chief of staff">' + cwIcon('crown') + '</span>' : '') + '</button>';
     });
-    html += '<div class="cw-sec">CHATS</div>';
-    if (cw.convs.length === 0) html += '<div class="cw-empty-note">No conversations. Open a DM from the team list, or build a group chat.</div>';
-    cw.convs.forEach(function (c) {
-      var members = cwConvMembers(c);
-      var sub = c.kind === 'group' ? members.map(function (m) { return m.name; }).join(', ') : (members[0] ? members[0].tagline : '');
-      var flags = (c.telegram && c.telegram.enabled ? '<span class="cw-flag" title="Telegram gateway connected">' + cwIcon('plane') + '</span>' : '') +
-        (c.schedule && c.schedule.enabled ? '<span class="cw-flag" title="Scheduled messages active">' + cwIcon('clock') + '</span>' : '');
-      if (c.id === cw.active) {
-        html += '<button class="cw-item' + (!cw.threadId ? ' cur' : '') + '" data-cwthread="" title="Main chat with ' + esc(c.title) + '">' +
+    html += '<div class="cw-sec">THREADS' + (active && active.kind === 'group' ? ' · ' + esc(active.title) : '') + '</div>';
+    if (!active || !selectedAgentId || !active.memberIds.includes(selectedAgentId)) {
+      html += '<div class="cw-empty-note">Select a teammate to see their threads.</div>';
+    } else {
+      var flags = (active.telegram && active.telegram.enabled ? '<span class="cw-flag" title="Telegram gateway connected">' + cwIcon('plane') + '</span>' : '') +
+        (active.schedule && active.schedule.enabled ? '<span class="cw-flag" title="Scheduled messages active">' + cwIcon('clock') + '</span>' : '');
+      html += '<button class="cw-item' + (!cw.threadId ? ' cur' : '') + '" data-cwthread="" title="Main chat with ' + esc(active.title) + '">' +
+        '<span class="cw-chat-glyph">' + cwIcon('chat') + '</span>' +
+        '<span class="cw-item-main"><span class="cw-item-name">Main</span></span>' + flags + '</button>';
+      (cw.threads || []).forEach(function (thread) {
+        html += '<div class="cw-thread-row"><button class="cw-item' + (cw.threadId === thread.id ? ' cur' : '') + '" data-cwthread="' + esc(thread.id) + '" title="' + esc(thread.topic || thread.title) + '">' +
           '<span class="cw-chat-glyph">' + cwIcon('chat') + '</span>' +
-          '<span class="cw-item-main"><span class="cw-item-name">Main</span><span class="cw-item-sub">' + esc(c.title) + '</span></span>' + flags + '</button>';
-        (cw.threads || []).forEach(function (thread) {
-          html += '<div class="cw-thread-row"><button class="cw-item' + (cw.threadId === thread.id ? ' cur' : '') + '" data-cwthread="' + esc(thread.id) + '" title="' + esc(thread.topic || thread.title) + '">' +
-            '<span class="cw-chat-glyph">' + cwIcon('chat') + '</span>' +
-            '<span class="cw-item-main"><span class="cw-item-name">' + esc(thread.title) + '</span><span class="cw-item-sub">' + esc(thread.topic || c.title) + '</span></span></button>' +
-            (cw.threadId === thread.id ? '<button class="cw-thread-del" data-delthread="' + esc(thread.id) + '" title="Delete this thread" aria-label="Delete ' + esc(thread.title) + '">' + cwIcon('close') + '</button>' : '') + '</div>';
-        });
-        html += '<button class="cw-item cw-chat-new" id="cwNewThread">' + cwIcon('plus') + '<span class="cw-item-main"><span class="cw-item-name">New thread</span></span></button>';
-        return;
-      }
-      var ava = c.kind === 'group'
-        ? '<span class="cw-ava" style="background:var(--selected);border:1px dashed var(--border2);color:var(--muted)">' + cwIcon('users') + '</span>'
-        : (members[0] ? cwAva(members[0]) : '<span class="cw-ava"></span>');
-      html += '<button class="cw-item" data-conv="' + esc(c.id) + '">' + ava +
-        '<span class="cw-item-main"><span class="cw-item-name">' + esc(c.title) + '</span><span class="cw-item-sub">' + esc(sub) + '</span></span>' +
-        flags + '</button>';
-    });
+          '<span class="cw-item-main"><span class="cw-item-name">' + esc(thread.title) + '</span>' + (thread.topic ? '<span class="cw-item-sub">' + esc(thread.topic) + '</span>' : '') + '</span></button>' +
+          (cw.threadId === thread.id ? '<button class="cw-thread-del" data-delthread="' + esc(thread.id) + '" title="Delete this thread" aria-label="Delete ' + esc(thread.title) + '">' + cwIcon('close') + '</button>' : '') + '</div>';
+      });
+      html += '<button class="cw-item cw-chat-new" id="cwNewThread">' + cwIcon('plus') + '<span class="cw-item-main"><span class="cw-item-name">New thread</span></span></button>';
+    }
+    var rooms = cw.convs.filter(function (conversation) { return conversation.kind === 'group' && conversation.memberIds.includes(selectedAgentId) && conversation.id !== cw.active; });
+    if (rooms.length) {
+      html += '<div class="cw-sec">TEAM ROOMS</div>';
+      rooms.forEach(function (room) {
+        html += '<button class="cw-item" data-conv="' + esc(room.id) + '"><span class="cw-chat-glyph">' + cwIcon('users') + '</span>' +
+          '<span class="cw-item-main"><span class="cw-item-name">' + esc(room.title) + '</span></span></button>';
+      });
+    }
     html += '<div class="cw-sec">WIDGETS</div>';
     if (!cw.widgets.length) html += '<div class="cw-empty-note">No widgets yet. Teammates pin live progress cards here; you can add one too.</div>';
     cw.widgets.forEach(function (w) {
@@ -956,9 +961,9 @@ export const COWORK_JS = String.raw`
 
   function cwOpenDm(agentId) {
     var cw = cwEnsure();
-    var existing = null;
-    cw.convs.forEach(function (c) { if (c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === agentId) existing = c; });
-    if (existing) { if (existing.id !== cw.active) cwOpenConv(existing.id); return; }
+    cw.selectedAgentId = agentId;
+    var existing = cw.convs.find(function (c) { return c.kind === 'dm' && c.memberIds[0] === agentId; });
+    if (existing) { if (existing.id !== cw.active) cwOpenConv(existing.id); else cwRenderRail(); return; }
     api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
       .then(function (d) { cw.convs.push(d.conversation); cwRenderRail(); cwOpenConv(d.conversation.id); })
       .catch(function (e) { toast(e.message, true); });
@@ -970,6 +975,10 @@ export const COWORK_JS = String.raw`
     cwStopPoll();
     cw.active = id;
     var conversation = cw.convs.find(function (item) { return item.id === id; });
+    if (conversation) {
+      if (conversation.kind === 'dm') cw.selectedAgentId = conversation.memberIds[0];
+      else if (!conversation.memberIds.includes(cw.selectedAgentId)) cw.selectedAgentId = conversation.chiefId || conversation.memberIds[0];
+    }
     cw.threadId = (threadId === undefined ? conversation && conversation.activeThreadId : threadId) || null;
     cw.threadActivationSeq = conversation && conversation.threadActivationSeq || 0;
     cw.threads = [];
@@ -1083,7 +1092,6 @@ export const COWORK_JS = String.raw`
       return;
     }
     var members = cwConvMembers(conv);
-    var chief = conv.chiefId ? cwAgentById(conv.chiefId) : null;
     var activeThread = cw.threadId ? (cw.threads || []).filter(function (t) { return t.id === cw.threadId; })[0] : null;
     var headAva = conv.kind === 'group'
       ? '<span class="cw-ava" style="background:var(--selected);border:1px solid var(--border2);color:var(--muted)">' + cwIcon('users') + '</span>'
@@ -1091,10 +1099,10 @@ export const COWORK_JS = String.raw`
     chat.innerHTML =
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle cw-mobile-only" id="cwBack" aria-expanded="false">Chats</button>' +
-        headAva +
-        '<div class="cw-tt"><div class="t1"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' + (conv.kind === 'group' && chief ? '<span title="Chief of staff: ' + esc(chief.name) + '">' + cwIcon('crown') + '</span>' : '') + '</div>' +
-        '<div class="t2" id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</div></div>' +
-        '<div class="cw-head-badges"><span class="chip ok" id="cwMissionBadge" title="An autonomous mission is running in this chat"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>' + cwIcon('target') + 'Mission</span>' +
+        '<span class="cw-chat-avatar" role="img" aria-label="' + esc((members[0] && members[0].name) || conv.title) + '">' + headAva + '</span>' +
+        '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
+        '<span id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</span>' +
+        '<span id="cwMissionBadge"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>Mission running</span>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
         '<button class="cw-info-toggle" id="cwInfoBtn">' + (cw.infoOpen ? 'Hide panel' : 'Chat panel') + '</button>' +
@@ -2987,7 +2995,7 @@ export const COWORK_JS = String.raw`
     // Gateways (Telegram/Discord) live on the agent's DM conversation. Find it
     // so the Edit-teammate modal can mirror and save them without a schema change.
     var dmConv = null;
-    if (isEdit) cw.convs.forEach(function (c) { if (c.kind === 'dm' && c.memberIds.length === 1 && c.memberIds[0] === agent.id) dmConv = c; });
+    if (isEdit) dmConv = cw.convs.find(function (c) { return c.kind === 'dm' && c.memberIds[0] === agent.id; }) || null;
     var dmGw = dmConv ? cwAgentGatewayHtml(dmConv) : null;
     var d = {
       name: agent ? agent.name : '',

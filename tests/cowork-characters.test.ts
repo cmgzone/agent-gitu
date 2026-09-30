@@ -74,7 +74,7 @@ describe('animated teammate characters and web activity', () => {
     expect(COWORK_CSS).toContain('.cw-ava { width: 40px; height: 40px;');
     expect(COWORK_CSS).toContain('.cw-row > .cw-ava { width: 46px; height: 46px; }');
     expect(COWORK_CSS).toContain('.report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }');
-    expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 88px; height: 88px; }');
+    expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 76px; height: 76px; }');
     expect(COWORK_JS).toContain('cwAva(a, 104)');
     expect(COWORK_JS).toContain('cwAva(m, 40)');
     expect(COWORK_CSS).toContain('svg:not(.home-blob)');

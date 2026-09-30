@@ -55,12 +55,13 @@ function ui() {
 }
 
 describe('Cowork UI live updates', () => {
-  it('lists the selected agent’s Main chat and threads as chats in the left rail', () => {
+  it('shows only the selected teammate’s threads and their team rooms in the left rail', () => {
     const u = ui();
     u.cw.agents = [{ id: 'mimi', name: 'mimi' }, { id: 'chief', name: 'Chief' }];
     u.cw.convs = [
       { id: 'dm', kind: 'dm', title: 'mimi', memberIds: ['mimi'] },
       { id: 'group', kind: 'group', title: 'Launch room', memberIds: ['chief', 'mimi'] },
+      { id: 'other-dm', kind: 'dm', title: 'Chief', memberIds: ['chief'] },
     ];
     u.cw.active = 'dm';
     u.cw.threads = [{ id: 'copy', title: 'Launch copy', topic: 'Landing page only' }];
@@ -75,9 +76,27 @@ describe('Cowork UI live updates', () => {
     expect(rail.innerHTML).toContain('id="cwNewThread"');
     expect(rail.innerHTML).toContain('data-conv="group"');
     expect(rail.innerHTML).not.toContain('data-conv="dm"');
+    expect(rail.innerHTML).not.toContain('data-conv="other-dm"');
+    expect(rail.innerHTML).toContain('THREADS');
+    expect(rail.innerHTML).not.toContain('CHATS');
     u.cw.threadId = 'copy';
     u.renderRail();
     expect(rail.innerHTML).toContain('data-delthread="copy"');
+  });
+
+  it('reuses a chief chat after teammates are hired into it', () => {
+    const u = ui();
+    u.cw.convs = [
+      { id: 'chief-chat', kind: 'dm', title: 'Chief', memberIds: ['chief', 'writer'] },
+      { id: 'other-chat', kind: 'dm', title: 'Writer', memberIds: ['writer'] },
+      { id: 'private-inbox', kind: 'dm', title: 'Chief inbox', memberIds: ['chief'] },
+    ];
+    u.cw.active = 'other-chat';
+    const open = vi.fn();
+    u.context.cwOpenConv = open;
+    u.context.cwOpenDm('chief');
+    expect(open).toHaveBeenCalledWith('chief-chat');
+    expect(u.api).not.toHaveBeenCalled();
   });
 
   it('keeps completed actions visible while work continues and after the run ends', () => {

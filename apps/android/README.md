@@ -27,6 +27,18 @@ your private network if Windows Firewall prompts. The computer must remain on.
 This server shares the existing Agent Gitu data. Stop the original desktop
 process first so scheduled jobs are not run by two server processes.
 
+If the phone connection times out, allow the mobile port in Windows Firewall.
+Run the following once in PowerShell **as Administrator** (use your chosen
+port if it differs from 8421):
+
+```powershell
+New-NetFirewallRule -Name 'AgentGitu-Mobile-WiFi-8421' -DisplayName 'Agent Gitu mobile on local Wi-Fi' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8421 -RemoteAddress LocalSubnet -Program 'C:\Program Files\nodejs\node.exe' -Profile Private,Public -EdgeTraversalPolicy Block
+```
+
+This also works when Windows labels your home Wi-Fi Public. The rule allows
+only local subnet connections to the mobile port; the server still requires
+the access key. The server setup builds the current source before starting.
+
 ## Connect to a hosted server
 
 Set `AGENT_GITU_ACCESS_KEY` to a random key of at least 32 characters, then run

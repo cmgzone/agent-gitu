@@ -36,7 +36,7 @@ function parseArgs(argv: string[]): ParsedArgs {
   const flags = new Map<string, string | boolean>();
   // Flags that take an explicit value. Anything else is boolean — and the
   // literal tokens false/no/off/0 DISABLE it instead of truthy-enabling it.
-  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status']);
+  const VALUE_FLAGS = new Set(['provider', 'model', 'base-url', 'port', 'host', 'type', 'criteria', 'limit', 'scope', 'visibility', 'agent', 'project', 'status']);
   const FALSEY = new Set(['false', 'no', 'off', '0']);
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -70,7 +70,7 @@ Usage:
   gitu logout                          Sign out of ChatGPT
   gitu models [--provider <name>]      List models (live from endpoint when a key is set)
   gitu models --pick [provider]        Interactive model chooser
-  gitu ui [--port 8321]                Start the Web UI (agent state viewer)
+  gitu ui [--port 8321] [--host ADDRESS] Start the Web UI (agent state viewer)
   gitu status [--json]                 Show a compact developer-workspace overview
   gitu tasks                           List task ledgers
   gitu show <taskId> [--json]          Show a focused task view (or its raw ledger)
@@ -79,7 +79,7 @@ Usage:
   gitu memory search <query>           Ranked search (--limit --scope --visibility --agent --project --type --status --json)
   gitu skill export <name> [--out D]   Export a skill as agentskills.io SKILL.md
   gitu skill import <path> [--global]  Import a SKILL.md folder (or file) into the skill store
-  gitu serve [--port 8321]             Headless server: cowork, schedules and learning run with no UI
+  gitu serve [--port 8321] [--host ADDRESS] Headless server: cowork, schedules and learning run with no UI
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)

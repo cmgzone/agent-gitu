@@ -297,11 +297,6 @@ The desktop shell (`npm run app`) is fully offline-capable: the server and UI
 run locally inside Electron; only LLM calls need network. If port 8321 is
 taken it binds a free port automatically.
 
-The Android companion app in [`apps/android`](apps/android/README.md) connects
-to this computer over a private network or to an HTTPS hosted server. It shares
-the existing chat, Cowork threads, progress summaries and permission controls.
-See the Android guide for the APK build and mobile server setup.
-
 ## Cowork mode
 
 Cowork is a second mode, opened from the home page card or the 👥 button in the

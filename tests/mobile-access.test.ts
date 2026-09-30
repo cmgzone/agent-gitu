@@ -2,18 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { request } from 'node:http';
-import { runInNewContext } from 'node:vm';
 import { afterAll, describe, expect, it } from 'vitest';
 import { GituServer } from '../src/server/server.js';
-import { connectionUrl } from '../apps/android/src/connection.js';
-import { SESSION_RECOVERY_SCRIPT } from '../apps/android/src/session-recovery.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'gitu-mobile-test-'));
 process.env['AGENT_GITU_HOME'] = path.join(root, 'home');
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const key = 'mobile-test-key-with-at-least-32-characters';
 
-describe('Android remote access', () => {
+describe('Remote access', () => {
   it('requires opt-in for network listening', () => {
     expect(() => new GituServer({ cwd: root, host: '0.0.0.0', accessKey: '' })).toThrow(/access.key/i);
     expect(() => new GituServer({ cwd: root, accessKey: 'short' })).toThrow(/32 characters/);
@@ -64,35 +61,4 @@ describe('Android remote access', () => {
     }
   }, 30000);
 
-  it('allows private computer addresses and requires HTTPS for hosted connections', () => {
-    expect(connectionUrl(' http://192.168.1.20:8421/ ', 'computer')).toBe('http://192.168.1.20:8421');
-    expect(connectionUrl('https://agent.example.com', 'hosted')).toBe('https://agent.example.com');
-    for (const url of [
-      'http://agent.example.com',
-      'https://user:pass@agent.example.com',
-      'https://agent.example.com/api',
-      'https://agent.example.com?key=secret',
-      'javascript:alert(1)',
-    ])
-      expect(() => connectionUrl(url, 'hosted')).toThrow();
-    expect(() => connectionUrl('http://8.8.8.8:8421', 'computer')).toThrow(/HTTPS/);
-  });
-
-  it('requests reconnection for expired agent sessions without changing requests or external responses', async () => {
-    const notices: string[] = [],
-      requests: unknown[][] = [];
-    const window = {
-      ReactNativeWebView: { postMessage: (text: string) => notices.push(text) },
-      fetch: async (...args: unknown[]) => {
-        requests.push(args);
-        return { status: 401, url: String(args[0]) };
-      },
-    };
-    runInNewContext(SESSION_RECOVERY_SCRIPT, { window, URL, location: { href: 'https://agent.example.com/mobile', origin: 'https://agent.example.com' } });
-    const options = { method: 'POST', body: 'original' };
-    expect(await window.fetch('https://agent.example.com/api/project', options)).toMatchObject({ status: 401 });
-    await window.fetch('https://external.example.com/api/project');
-    expect(notices).toEqual(['gitu:session-expired']);
-    expect(requests[0]).toEqual(['https://agent.example.com/api/project', options]);
-  });
 });

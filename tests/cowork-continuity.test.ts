@@ -284,18 +284,36 @@ describe('Cowork continuity across providers and restarts', () => {
     const s = setup();
     const toolRounds = 24 * 4;
     let calls = 0;
-    const complete = vi.fn(async () => ++calls <= toolRounds
-      ? '<tool>{"name":"todo_manage","params":{"action":"list"}}</tool>'
-      : 'All checks are complete.\n<cowork_state>done</cowork_state>');
+    const old = s.store.addTodo({ conversationId: s.conversation.id, agentId: s.agent.id, text: 'Earlier work' });
+    s.store.updateTodo(old.id, s.agent.id, { status: 'done' });
+    const current = s.store.addTodo({ conversationId: s.conversation.id, agentId: s.agent.id, text: 'Review current configuration' });
+    const summaries: { completed: { text: string }[]; totalActions: number }[] = [];
+    const complete = vi.fn(async (messages: LlmMessage[]) => {
+      if (String(messages[0]?.content).startsWith('CHECKPOINT SUMMARY:')) {
+        summaries.push(JSON.parse(String(messages[1]?.content)));
+        return JSON.stringify({ accomplished: summaries.length === 1 ? 'Reviewed the current configuration.' : 'Reviewed the remaining results.', next: 'Continue reviewing the verification results.' });
+      }
+      if (++calls === 1) s.store.updateTodo(current.id, s.agent.id, { status: 'done' });
+      return calls <= toolRounds ? '<tool>{"name":"todo_manage","params":{"action":"list"}}</tool>' : 'All checks are complete.\n<cowork_state>done</cowork_state>';
+    });
+    const onMessage = vi.fn();
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Run a long verification', via: 'web' });
     const result = await runConversationTurn({
       conversation: s.conversation, trigger, history: [trigger],
-      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'long-chain-test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'long-chain-test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onMessage },
       append: (message) => s.store.appendMessage(s.conversation.id, message),
     });
     expect(result.error).toBeUndefined();
-    expect(complete).toHaveBeenCalledTimes(toolRounds + 1);
-    expect(result.messages.filter((message) => message.role === 'system' && message.text.includes('continuing automatically after checkpoint'))).toHaveLength(4);
+    expect(calls).toBe(toolRounds + 1);
+    expect(complete).toHaveBeenCalledTimes(toolRounds + 5);
+    const checkpoints = result.messages.filter(message => message.checkpoint);
+    expect(checkpoints).toHaveLength(4);
+    expect(checkpoints[0]!.text).toContain('Reviewed the current configuration.');
+    expect(summaries.map(summary => summary.totalActions)).toEqual([24, 24, 24, 24]);
+    expect(summaries[0]!.completed.map(todo => todo.text)).toEqual(['Review current configuration']);
+    expect(summaries[1]!.completed).toEqual([]);
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ checkpoint: expect.objectContaining({ number: 2 }) }));
+    expect(new CoworkStore(s.file).messages(s.conversation.id).filter(message => message.checkpoint)).toHaveLength(4);
     expect(result.messages.at(-1)).toMatchObject({ role: 'agent', text: 'All checks are complete.' });
   }, 60000);
 

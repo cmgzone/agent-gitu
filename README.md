@@ -367,6 +367,11 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   reuse the existing item and preserve its status; pending identical handoffs
   and follow-ups are deduplicated. Tool checkpoints persist after every action,
   including when a later model call fails. These mechanisms apply to all providers.
+- **Progress summaries** — long Cowork turns save a plain-language update at
+  each continuation checkpoint: what was accomplished, any unresolved problems,
+  and what comes next. Work details stay collapsed beneath the update and can
+  be expanded when needed. If summarizing is unavailable, a factual update
+  from saved results lets the task continue without replaying actions.
 - **Telegram gateway** — link a bot token (@BotFather) and a chat to any
   conversation: Telegram messages arrive as user messages and every agent
   reply streams through edited messages, including tool activity and final

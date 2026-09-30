@@ -2662,7 +2662,7 @@ export class GituServer {
             this.publishCowork(conversationId);
           },
           onMessage: async (message) => {
-            if (message.agentId) {
+            if (message.agentId && !message.checkpoint) {
               activeAgents.delete(message.agentId);
               if (run.progresses) delete run.progresses[message.agentId];
             }

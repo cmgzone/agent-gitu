@@ -107,14 +107,15 @@ describe('Cowork UI live updates', () => {
     ];
     u.context.cwApplySnapshot({ busy: true, workHistory: history });
     let html = u.context.cwTranscriptHtml() as string;
-    expect(html).toContain('Recent work · 2 saved steps');
+    expect(html).toContain('Work details · 2 actions');
+    expect(html).not.toContain('data-cwworkhistory="group:main:work-1" open');
     expect(html).toContain('Read file');
     expect(html).toContain('! Failed');
     expect(html).toContain('Checking the configuration.');
     expect(html.indexOf('Ran workspace command')).toBeLessThan(html.indexOf('Read file'));
     u.context.cwApplySnapshot({ busy: false, workHistory: history });
     html = u.context.cwTranscriptHtml() as string;
-    expect(html).toContain('Recent work · 2 saved steps');
+    expect(html).toContain('Work details · 2 actions');
     expect(u.context.cwRenderMsgs).toHaveBeenCalled();
     expect(u.context.cwActivityLabel({ tool: 'run_command', toolOk: false })).toBe('Failed');
     expect(u.context.cwActivityLabel({ tool: 'read_file', toolOk: true })).toBe('Completed');
@@ -209,6 +210,23 @@ describe('Cowork UI live updates', () => {
     expect(html).toContain('View history');
     expect(html).toContain('Checkpoint 10');
     expect(html).not.toContain('is continuing automatically after checkpoint');
+  });
+
+  it('shows checkpoint accomplishments and next steps outside collapsed tool details', () => {
+    const u = ui();
+    u.cw.busy = true;
+    u.cw.workHistory = [{ id: 'edit', agentId: 'chief', tool: 'apply_edit', ok: true, ts: '2026-09-26T08:00:00Z' }];
+    u.cw.msgs = [{ id: 'summary', role: 'system', agentId: 'chief', ts: '2026-09-26T08:01:00Z', checkpoint: { number: 2, accomplished: 'Updated the reconnect handler.', issues: 'The integration check found a connection problem.', next: 'Fix the connection and rerun the check.' } }];
+    const html = u.context.cwTranscriptHtml() as string;
+    expect(html).toContain('<section class="cw-checkpoint-report"');
+    expect(html).toContain('Progress update');
+    expect(html).toContain('Updated the reconnect handler.');
+    expect(html).toContain('Needs attention:');
+    expect(html).toContain('Fix the connection and rerun the check.');
+    expect(html).toContain('Work details · 1 action');
+    expect(html.indexOf('Progress update')).toBeLessThan(html.indexOf('Work details'));
+    expect(html).not.toContain('data-cwworkhistory="group:main:edit" open');
+    expect(html).not.toContain('checkpoints completed');
   });
 
   it('keeps safe drafts separate by conversation and thread', () => {

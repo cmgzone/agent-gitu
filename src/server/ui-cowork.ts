@@ -166,6 +166,13 @@ export const COWORK_CSS = String.raw`
   .cw-work-step .action { color: var(--text); font-weight: 500; }
   .cw-work-step time { margin-left: auto; color: var(--faint); font-size: 10px; }
   .cw-work-update { margin: 3px 0 0; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cw-checkpoint-report { width: calc(100% - 40px); max-width: 740px; margin-left: 40px; padding: 14px 18px; box-sizing: border-box; border: 1px solid var(--border2); border-radius: 14px; background: var(--card); }
+  .cw-checkpoint-report header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; margin-bottom: 9px; font-size: 11px; color: var(--muted); }
+  .cw-checkpoint-report header strong { color: var(--text); font-size: 12px; }
+  .cw-checkpoint-report time { margin-left: auto; color: var(--faint); }
+  .cw-checkpoint-report p { margin: 7px 0 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cw-checkpoint-report .cw-checkpoint-next { color: var(--muted); }
+  .cw-checkpoint-report .cw-checkpoint-issues { color: var(--warn, var(--text)); }
   .cw-code { display: block; background: var(--card2); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 12px; overflow-x: auto; white-space: pre; margin: 6px 0; }
   /* Diff rows inside a code block: an edit rendered as plain text hides which
      lines were REMOVED, which is the half of the change the user needs most. */
@@ -1834,7 +1841,12 @@ export const COWORK_JS = String.raw`
       previousUpdate = update;
       return '<li><div class="cw-work-step"><span class="result' + (step.ok ? '' : ' failed') + '">' + (step.ok ? '✓ Completed' : '! Failed') + '</span><span class="action">' + esc(cwToolActivityTitle(step.tool)) + '</span><span>' + esc(step.agentName || '') + '</span><time datetime="' + esc(step.ts) + '">' + esc(cwTime(step.ts)) + '</time></div>' + narration + '</li>';
     }).join('');
-    return '<details class="cw-work-history" data-cwworkhistory="' + esc(key) + '"' + (cw.busy ? ' open' : '') + '><summary>Recent work · ' + steps.length + ' saved step' + (steps.length === 1 ? '' : 's') + '</summary><ol aria-label="Completed work, newest first">' + rows + '</ol></details>';
+    return '<details class="cw-work-history" data-cwworkhistory="' + esc(key) + '"><summary>Work details · ' + steps.length + ' action' + (steps.length === 1 ? '' : 's') + '</summary><ol aria-label="Work details, newest first">' + rows + '</ol></details>';
+  }
+
+  function cwCheckpointReportHtml(message) {
+    var checkpoint = message.checkpoint;
+    return '<section class="cw-checkpoint-report" aria-label="Progress update"><header><strong>Progress update</strong><span>' + esc(message.agentName || (cwAgentById(message.agentId) || {}).name || '') + '</span><time datetime="' + esc(message.ts) + '">' + esc(cwTime(message.ts)) + '</time></header><p>' + esc(checkpoint.accomplished) + '</p>' + (checkpoint.issues ? '<p class="cw-checkpoint-issues"><strong>Needs attention:</strong> ' + esc(checkpoint.issues) + '</p>' : '') + '<p class="cw-checkpoint-next"><strong>Next:</strong> ' + esc(checkpoint.next) + '</p></section>';
   }
 
   function cwTranscriptHtml() {
@@ -1853,7 +1865,17 @@ export const COWORK_JS = String.raw`
       if (entry.activity) {
         var steps = [];
         while (i < entries.length && entries[i].activity) { steps.push(entries[i].activity); i++; }
+        var report = entries[i] && entries[i].message;
+        if (report && report.role === 'system' && report.checkpoint) {
+          html.push(cwCheckpointReportHtml(report));
+          i++;
+        }
         html.push(cwWorkHistoryHtml(steps));
+        continue;
+      }
+      if (entry.message && entry.message.role === 'system' && entry.message.checkpoint) {
+        html.push(cwCheckpointReportHtml(entry.message));
+        i++;
         continue;
       }
       var checkpoint = entry.message && /^(.+?) is continuing automatically after checkpoint (\d+)\.$/.exec(String(entry.message.text || ''));

@@ -20,6 +20,7 @@ const state = {
     { id: 'task', role: 'user', ts: '2026-09-26T08:00:00Z', text: 'Prepare the password-change broker and verify the integration.' },
     { id: 'reply', role: 'agent', agentId: teammate.id, agentName: teammate.name, ts: '2026-09-26T08:01:00Z', text: 'The broker is ready. I am verifying the client integration and reconnect behavior.' },
     ...Array.from({ length: 9 }, (_, i) => ({ id: `checkpoint-${i + 2}`, role: 'system', ts: new Date(Date.UTC(2026, 8, 26, 8, i + 2)).toISOString(), text: `${teammate.name} is continuing automatically after checkpoint ${i + 2}.` })),
+    { id: 'progress-summary', role: 'system', agentId: teammate.id, agentName: teammate.name, ts: '2026-09-26T08:16:00Z', text: 'Updated the reconnect handler and corrected the connection problem found by the first integration check.', checkpoint: { number: 11, accomplished: 'Updated the reconnect handler and corrected the connection problem found by the first integration check.', issues: 'The updated behavior still needs a passing integration check.', next: 'Rerun the check, then confirm that messages can be sent and received after a password change.' } },
   ],
   todos: [
     { id: 'verify', agentId: teammate.id, status: 'in_progress', text: 'Verifying password-change integration and reconnect behavior' },

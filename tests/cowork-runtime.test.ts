@@ -428,9 +428,9 @@ describe('cowork streaming and tool execution', () => {
   it('keeps checkpointing beyond the old tool budget and remains stoppable', async () => {
     const controller = new AbortController();
     let calls = 0;
-    const client = { complete: async () => { if (++calls > 24 * 5) controller.abort(); return '<tool>{"name":"unknown","params":{}}</tool>'; } };
+    const client = { complete: async (messages: LlmMessage[]) => { if (String(messages[0]?.content).startsWith('CHECKPOINT SUMMARY:')) return '{}'; if (++calls > 24 * 5) controller.abort(); return '<tool>{"name":"unknown","params":{}}</tool>'; } };
     const result = await runConversationTurn(setup('budget', client, { signal: controller.signal }));
-    const checkpoints = result.messages.filter((m) => m.role === 'system' && m.text.includes('continuing automatically'));
+    const checkpoints = result.messages.filter((m) => m.role === 'system' && m.checkpoint);
     expect(checkpoints.length).toBeGreaterThan(3);
     expect(calls).toBe(121);
     expect(result.messages.at(-1)!.text).toContain('Stopped by user');
@@ -440,13 +440,14 @@ describe('cowork streaming and tool execution', () => {
   it('keeps working across a budget segment until the task finishes', async () => {
     let calls = 0;
     const client = {
-      complete: async () => {
+      complete: async (messages: LlmMessage[]) => {
+        if (String(messages[0]?.content).startsWith('CHECKPOINT SUMMARY:')) throw new Error('Summary unavailable');
         calls += 1;
         return calls <= 24 ? '<tool>{"name":"unknown","params":{}}</tool>' : 'Done after continuing.';
       },
     };
     const result = await runConversationTurn(setup('budget-finish', client));
-    expect(result.messages.some((m) => m.role === 'system' && m.text.includes('continuing automatically'))).toBe(true);
+    expect(result.messages.some((m) => m.role === 'system' && m.checkpoint?.issues?.includes('24 actions reported a problem'))).toBe(true);
     const final = result.messages.filter((m) => m.role === 'agent').at(-1)!;
     expect(final.text).toBe('Done after continuing.');
     expect(final.tools).toHaveLength(24);

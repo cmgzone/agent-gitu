@@ -63,6 +63,8 @@ export interface CoworkMessage {
   from?: string;
   /** Tool calls the agent made while composing this message. */
   tools?: { name: string; ok: boolean }[];
+  /** Durable public outcome at a continuation checkpoint. */
+  checkpoint?: { number: number; accomplished: string; issues?: string; next: string };
   /** Files attached by the user or explicitly presented by an agent. */
   artifactIds?: string[];
   /** Thread this message belongs to; absent means the Main thread. */

@@ -19,6 +19,7 @@ import type { CoworkRecall } from './recall.js';
 import type { CoworkAgent, CoworkConversation, CoworkMessage, CoworkMessageInput, CoworkMission, CoworkStore, CoworkThread } from './store.js';
 import { BROWSER_WORKFLOW_SKILL, PRODUCTIVITY_SKILL } from '../skills/builtin.js';
 import type { ToolResult } from '../types.js';
+import { summarizeCheckpoint, type CheckpointAction } from './checkpoint.js';
 
 /**
  * The cowork conversation engine.
@@ -563,6 +564,8 @@ async function agentTurn(input: {
     deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: text || lastPublicUpdate, reasoning, tool, toolOk, webUrl, detail, phase, mcpServer });
   };
   let segmentNumber = 1;
+  let checkpointActions: CheckpointAction[] = [];
+  let checkpointTodos = new Map((deps.store?.todos(conversation.id) ?? []).map(todo => [todo.id, todo.status]));
   let endedByWaiting = false;
   let repliesWithoutTools = 0;
   let nativeTools = Boolean(client.completeTurn || client.completeTurnStream);
@@ -575,7 +578,16 @@ async function agentTurn(input: {
     deps.signal?.throwIfAborted();
     if (segmentRounds >= TOOL_ROUNDS_PER_CHAT_SEGMENT) {
       segmentNumber += 1;
-      append({ role: 'system', agentId: agent.id, via: 'web', text: `${agent.name} is continuing automatically after checkpoint ${segmentNumber}.` });
+      progress('Summarizing this stage of the work…');
+      const todos = (deps.store?.todos(conversation.id) ?? []).filter(todo => todo.agentId === agent.id);
+      const completed = todos.filter(todo => todo.status === 'done' && checkpointTodos.get(todo.id) !== 'done');
+      const remaining = todos.filter(todo => ['pending', 'in_progress', 'blocked'].includes(todo.status) && initialTodos.get(todo.id) !== JSON.stringify(todo));
+      const checkpoint = await summarizeCheckpoint(client, segmentNumber, checkpointActions, completed, remaining, deps.signal);
+      const text = `${checkpoint.accomplished}${checkpoint.issues ? `\n\nNeeds attention: ${checkpoint.issues}` : ''}\n\nNext: ${checkpoint.next}`;
+      const saved = append({ role: 'system', agentId: agent.id, agentName: agent.name, via: 'web', text, checkpoint });
+      await deps.onMessage?.(saved);
+      checkpointActions = [];
+      checkpointTodos = new Map(todos.map(todo => [todo.id, todo.status]));
       progress(`Continuing automatically (checkpoint ${segmentNumber})…`);
       compactHistory(messages, text => progress(text), { keepRecent: 8 });
       messages.push({ role: 'user', content: `CONTINUE (checkpoint ${segmentNumber}): continue the current task from saved results. Do not repeat completed actions.` });
@@ -698,6 +710,7 @@ async function agentTurn(input: {
       );
       repliesWithoutTools = 0;
       usedTools.push({ name: call.tool, ok: result.ok });
+      checkpointActions.push({ tool: call.tool, detail: detail.slice(0, 400), result: { ok: result.ok, output: result.output.slice(0, 4000), status: result.status, exitCode: result.exitCode, filesTouched: result.filesTouched } });
       recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
       // A screenshot the agent took is proof the user should SEE, not just the
       // model. Persist it as an image artifact so the chat bubble renders it

@@ -43,7 +43,7 @@ describe('Android remote access', () => {
       expect((await read('/api/project', { headers: { Host: `127.0.0.1:${port}` } })).status).toBe(401);
       expect((await read(`/api/mobile/status?key=${key}`, { headers: { Host: headers.Host } })).status).toBe(401);
       const status = await read('/api/mobile/status', { headers });
-      expect(JSON.parse(status.text)).toEqual({ app: 'Agent Gitu', mobileProtocol: 1 });
+      expect(JSON.parse(status.text)).toEqual({ app: 'Agent Gitu', mobileProtocol: 1, mobileFeatures: ['native-workspace'] });
       const page = await read('/mobile', { headers });
       expect(page.status).toBe(200);
       const setCookie = page.cookie!;

@@ -61,7 +61,7 @@ it('starts the actual mobile CLI on the requested network interface with authent
     const address = `http://127.0.0.2:${port}/api/mobile/status`;
     const response = await fetch(address, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ app: 'Agent Gitu', mobileProtocol: 1 });
+    expect(await response.json()).toEqual({ app: 'Agent Gitu', mobileProtocol: 1, mobileFeatures: ['native-workspace'] });
     expect((await fetch(address, { signal: AbortSignal.timeout(5000) })).status).toBe(401);
   } finally {
     if (child.exitCode === null) {

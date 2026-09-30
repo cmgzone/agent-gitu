@@ -1,5 +1,6 @@
 android/
 dist/
+dist-web/
 .expo/
 node_modules/
 *.jks

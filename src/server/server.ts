@@ -4328,7 +4328,7 @@ export class GituServer {
         this.sendJson(res, 401, { error: 'Enter the access key configured on your Agent Gitu server.' });
         return;
       }
-      this.sendJson(res, 200, { app: 'Agent Gitu', mobileProtocol: 1 });
+      this.sendJson(res, 200, { app: 'Agent Gitu', mobileProtocol: 1, mobileFeatures: ['native-workspace'] });
       return;
     }
     if (method === 'GET' && path === '/mobile') {
@@ -5529,6 +5529,70 @@ export class GituServer {
         return;
       }
       this.sendJson(res, 200, this.sessionView(session));
+      return;
+    }
+
+    // Native clients poll bounded pages instead of depending on WebView/SSE.
+    const mobileEventsMatch = path.match(/^\/api\/mobile\/runs\/([\w-]+)\/events$/);
+    if (method === 'GET' && mobileEventsMatch) {
+      const session = this.sessions.get(mobileEventsMatch[1]!);
+      if (!session) { this.sendJson(res, 404, { error: 'run not found' }); return; }
+      const after = Math.max(-1, Number(url.searchParams.get('after') ?? '-1'));
+      if (!Number.isFinite(after)) { this.sendJson(res, 400, { error: 'invalid cursor' }); return; }
+      const events = session.events.filter(event => event.i > after).slice(0, 200);
+      const cursor = events.at(-1)?.i ?? after;
+      this.sendJson(res, 200, { session: this.sessionView(session), events, cursor, more: session.events.some(event => event.i > cursor) });
+      return;
+    }
+
+    if (path === '/api/mobile/files' && (method === 'GET' || method === 'PUT')) {
+      try {
+        const body = method === 'PUT' ? await this.readBody(req, 1_100_000) : {};
+        const requestedRoot = String(body['root'] ?? url.searchParams.get('root') ?? '').trim() || this.projectRoot() || this.config.cwd;
+        const root = realpathSync(nodePath.resolve(requestedRoot));
+        const knownRoots = [this.config.cwd, this.projectRoot(), ...[...this.sessions.values()].flatMap(session => [session.projectPath, session.worktreePath])]
+          .filter((item): item is string => Boolean(item))
+          .map(item => { try { return realpathSync(item); } catch { return nodePath.resolve(item); } });
+        const managedRoot = realpathSync(projectsDir());
+        const managedRelative = nodePath.relative(managedRoot, root);
+        const managedProject = managedRelative !== '' && managedRelative !== '..' && !managedRelative.startsWith(`..${nodePath.sep}`) && !nodePath.isAbsolute(managedRelative) && !managedRelative.includes(nodePath.sep);
+        const taggedSessions = [...this.sessions.values()].filter(session => session.taggedFolders.includes(root));
+        const taggedSession = taggedSessions.find(session => session.writableFolders.includes(root)) ?? taggedSessions[0];
+        if (!knownRoots.includes(root) && !managedProject && !taggedSession) throw new Error('Choose a known project workspace.');
+        const writable = knownRoots.includes(root) || managedProject || Boolean(taggedSession?.writableFolders.includes(root));
+        const guard = ProjectGuard.detect(taggedSession ? taggedSession.worktreePath ?? taggedSession.projectPath ?? this.config.cwd : root);
+        if (taggedSession) { guard.setTaggedReadFolders(() => taggedSession.taggedFolders); guard.setTaggedWriteFolders(() => taggedSession.writableFolders); }
+        const relative = String(body['path'] ?? url.searchParams.get('path') ?? '');
+        if (nodePath.isAbsolute(relative)) throw new Error('Choose a relative project path.');
+        const target = nodePath.resolve(root, relative);
+        // The selected project may be below its detected repository root.
+        const inside = nodePath.relative(root, target);
+        if (inside === '..' || inside.startsWith(`..${nodePath.sep}`) || nodePath.isAbsolute(inside)) throw new Error('File is outside the selected workspace.');
+        guard.assertReadable(target);
+        if (method === 'PUT') {
+          if (body['approved'] !== true) { this.sendJson(res, 403, { error: 'Confirm this file write first.' }); return; }
+          if (!writable) { this.sendJson(res, 403, { error: 'This tagged folder is read only. Grant writing permission in task details first.' }); return; }
+          guard.assertInside(target);
+          if (statSync(target).size > 1_000_000) throw new Error('Text files must be smaller than 1 MB.');
+          const old = readFileSync(target);
+          if (sha256(old.toString('utf8')) !== body['revision']) { this.sendJson(res, 409, { error: 'This file changed. Reload it before saving your edits.' }); return; }
+          if (typeof body['content'] !== 'string' || Buffer.byteLength(body['content']) > 1_000_000) throw new Error('Text files must be smaller than 1 MB.');
+          writeFileSync(target, body['content'], 'utf8');
+          this.sendJson(res, 200, { ok: true, revision: sha256(body['content']) });
+        } else if (statSync(target).isDirectory()) {
+          const entries = readdirSync(target, { withFileTypes: true }).filter(entry => {
+            if (entry.name.startsWith('.')) return false;
+            try { guard.assertReadable(nodePath.join(target, entry.name)); return !entry.isSymbolicLink(); } catch { return false; }
+          }).sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name));
+          this.sendJson(res, 200, { root, path: relative, writable, entries: entries.slice(0, 500).map(entry => ({ name: entry.name, path: nodePath.relative(root, nodePath.join(target, entry.name)), directory: entry.isDirectory() })) });
+        } else {
+          if (statSync(target).size > 1_000_000) throw new Error('Preview supports text files smaller than 1 MB.');
+          const bytes = readFileSync(target);
+          if (bytes.includes(0)) throw new Error('This file is not a text document.');
+          const content = bytes.toString('utf8');
+          this.sendJson(res, 200, { root, path: relative, writable, content, revision: sha256(content) });
+        }
+      } catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); }
       return;
     }
 

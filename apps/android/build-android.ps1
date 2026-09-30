@@ -30,5 +30,7 @@ try {
 } finally { Pop-Location }
 $releaseDirectory = Join-Path $PSScriptRoot '..\..\release'
 New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
-Copy-Item -LiteralPath 'android\app\build\outputs\apk\release\app-release.apk' -Destination (Join-Path $releaseDirectory 'Agent-Gitu-Android-0.1.0.apk')
-Write-Output 'Android APK is ready in release/Agent-Gitu-Android-0.1.0.apk'
+$gituAppVersion = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'package.json') -Raw | ConvertFrom-Json).version
+$gituApkName = "Agent-Gitu-Android-$gituAppVersion.apk"
+Copy-Item -LiteralPath 'android\app\build\outputs\apk\release\app-release.apk' -Destination (Join-Path $releaseDirectory $gituApkName)
+Write-Output "Android APK is ready in release/$gituApkName"

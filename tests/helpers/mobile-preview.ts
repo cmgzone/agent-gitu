@@ -1,12 +1,15 @@
 /** Isolated server for the Android smoke test. Contains fictional data only. */
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { GituServer } from '../../src/server/server.js';
 import { CoworkStore } from '../../src/cowork/store.js';
+import { ScriptedMockLlm } from '../../src/llm/llm.js';
 
 const root = mkdtempSync(path.join(tmpdir(), 'gitu-android-preview-'));
 process.env['AGENT_GITU_HOME'] = root;
+writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'Mobile preview' }));
+writeFileSync(path.join(root, 'README.md'), '# Mobile preview\nA document for testing native file controls.');
 const store = new CoworkStore();
 const chief = store.saveAgent({
   name: 'mimi',
@@ -26,7 +29,7 @@ store.appendMessage(conversation.id, {
   text: 'The mobile launch plan is ready.',
   checkpoint: { number: 2, accomplished: 'Prepared the mobile launch plan and assigned the design review.', next: 'Review the Android build with the team.' },
 });
-const server = new GituServer({ cwd: root, host: '0.0.0.0', port: 8423, accessKey: 'gitu-mobile-fixture-key-for-tests-only', autoInstallLsp: false });
+const server = new GituServer({ cwd: root, host: '0.0.0.0', port: 8423, accessKey: 'gitu-mobile-fixture-key-for-tests-only', autoInstallLsp: false, llm: new ScriptedMockLlm([]) });
 await server.start();
 console.log('Android fixture ready on port 8423 (fictional data).');
 for (const signal of ['SIGINT', 'SIGTERM'] as const)

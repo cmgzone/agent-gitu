@@ -1,12 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  AppState,
   BackHandler,
   Image,
   KeyboardAvoidingView,
-  Linking,
   Modal,
   Platform,
   Pressable,
@@ -19,9 +17,8 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
-import { WebView } from 'react-native-webview';
+import NativeWorkspace from './src/NativeWorkspace';
 import { checkConnection, connectionUrl, type Connection } from './src/connection';
-import { SESSION_RECOVERY_SCRIPT } from './src/session-recovery';
 
 const STORE = 'gitu.connections.v1';
 const color = { bg: '#111111', card: '#1b1b1b', border: '#353535', text: '#f5f5f5', muted: '#a1a1a1', accent: '#9984ff' };
@@ -37,17 +34,11 @@ export default function App() {
   const [key, setKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [pageError, setPageError] = useState('');
   const [revision, setRevision] = useState(0);
-  const canGoBack = useRef(false);
-  const view = useRef<WebView>(null);
-  const lastSessionRecovery = useRef(0);
-  const currentConnection = useRef(active);
-  currentConnection.current = active;
 
   useEffect(() => {
     let live = true;
-    SecureStore.getItemAsync(STORE)
+    (Platform.OS === 'web' ? Promise.resolve(null) : SecureStore.getItemAsync(STORE))
       .then((raw) => {
         if (!live || !raw) return;
         const saved = JSON.parse(raw) as { connections: Connection[]; activeUrl?: string };
@@ -68,50 +59,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let live = true;
     const back = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (settings) {
-        setSettings(false);
-        return true;
-      }
-      if (canGoBack.current) {
-        view.current?.goBack();
-        return true;
-      }
-      if (active) {
-        setSettings(true);
-        return true;
-      }
+      if (settings) { setSettings(false); return true; }
       return false;
     });
-    const resume = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && active) {
-        void checkConnection(active)
-          .then(() => {
-            if (live && pageError) {
-              setPageError('');
-              setRevision((r) => r + 1);
-            }
-          })
-          .catch((e) => {
-            if (live) setPageError(e instanceof Error ? e.message : 'Your agent is unavailable.');
-          });
-      }
-    });
-    return () => {
-      live = false;
-      back.remove();
-      resume.remove();
-    };
-  }, [active, settings, pageError]);
+    return () => back.remove();
+  }, [settings]);
 
   async function save(next: Connection[], selected?: Connection) {
-    await SecureStore.setItemAsync(STORE, JSON.stringify({ connections: next, activeUrl: selected?.url }));
+    if (Platform.OS !== 'web') await SecureStore.setItemAsync(STORE, JSON.stringify({ connections: next, activeUrl: selected?.url }));
     setConnections(next);
     setActive(selected);
-    setPageError('');
     setRevision((r) => r + 1);
-    canGoBack.current = false;
   }
 
   async function connect(candidate?: Connection) {
@@ -245,98 +204,14 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" />
+      <StatusBar style="light" hidden={Boolean(active)} />
       <SafeAreaView style={s.fill}>
         {restoring ? (
           <ActivityIndicator style={s.fill} color={color.accent} />
         ) : !active ? (
           connectionScreen
         ) : (
-          <>
-            <View style={s.connectionBar}>
-              <Pressable onPress={() => setSettings(true)} accessibilityRole="button" accessibilityLabel="Switch server or manage connections">
-                <Text style={s.small}>● {active.name}</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => {
-                  setPageError('');
-                  setRevision((r) => r + 1);
-                }}
-                accessibilityLabel="Reconnect"
-              >
-                <Text style={s.small}>Reconnect</Text>
-              </Pressable>
-            </View>
-            {pageError ? (
-              <View style={s.failure}>
-                <Text style={s.title}>Your agent is unavailable</Text>
-                <Text style={s.subtitle}>{pageError}</Text>
-                <Pressable
-                  style={s.button}
-                  onPress={() => {
-                    setPageError('');
-                    setRevision((r) => r + 1);
-                  }}
-                >
-                  <Text style={s.buttonText}>Try again</Text>
-                </Pressable>
-                <Pressable onPress={() => setSettings(true)}>
-                  <Text style={s.text}>Manage connections</Text>
-                </Pressable>
-              </View>
-            ) : (
-              <WebView
-                key={`${active.url}:${revision}`}
-                ref={view}
-                source={{ uri: `${active.url}/mobile`, headers: { Authorization: `Bearer ${active.key}` } }}
-                style={s.fill}
-                sharedCookiesEnabled
-                thirdPartyCookiesEnabled={false}
-                javaScriptEnabled
-                domStorageEnabled
-                startInLoadingState
-                setSupportMultipleWindows={false}
-                allowsBackForwardNavigationGestures
-                mixedContentMode="never"
-                onNavigationStateChange={(state) => {
-                  canGoBack.current = state.canGoBack;
-                }}
-                onShouldStartLoadWithRequest={(request) => {
-                  if (request.url === 'about:blank' || request.url.startsWith('blob:')) return true;
-                  try {
-                    if (new URL(request.url).origin === active.url) return true;
-                  } catch {
-                    return false;
-                  }
-                  if (/^https?:/.test(request.url)) void Linking.openURL(request.url).catch(() => {});
-                  return false;
-                }}
-                injectedJavaScript={SESSION_RECOVERY_SCRIPT}
-                onMessage={(event) => {
-                  if (event.nativeEvent.data !== 'gitu:session-expired' || Date.now() - lastSessionRecovery.current < 10_000) return;
-                  lastSessionRecovery.current = Date.now();
-                  void checkConnection(active)
-                    .then(() => {
-                      if (currentConnection.current?.url === active.url) setRevision((r) => r + 1);
-                    })
-                    .catch((e) => {
-                      if (currentConnection.current?.url === active.url) setPageError(e instanceof Error ? e.message : 'Reconnect to your agent.');
-                    });
-                }}
-                onError={(event) => setPageError(event.nativeEvent.description || 'Check that your agent is online.')}
-                onHttpError={(event) => {
-                  if (event.nativeEvent.url === `${active.url}/mobile` && event.nativeEvent.statusCode >= 400)
-                    setPageError('The server rejected this connection. Check your saved access key.');
-                }}
-                renderLoading={() => (
-                  <View style={s.loading}>
-                    <ActivityIndicator color={color.accent} />
-                    <Text style={s.small}>Opening your agent…</Text>
-                  </View>
-                )}
-              />
-            )}
-          </>
+          <NativeWorkspace key={`${active.url}:${revision}`} connection={active} manageConnections={() => setSettings(true)} />
         )}
         <Modal visible={settings && Boolean(active)} animationType="slide" onRequestClose={() => setSettings(false)}>
           <SafeAreaView style={s.fill}>{connectionScreen}</SafeAreaView>

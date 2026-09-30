@@ -31,6 +31,11 @@ export async function checkConnection(connection: Connection): Promise<void> {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || 'The server rejected the connection. Check the access key.');
     if (data.app !== 'Agent Gitu' || data.mobileProtocol !== 1) throw new Error('This server needs the Agent Gitu mobile update.');
+    if (!data.mobileFeatures?.includes('native-workspace')) throw new Error('Update and restart your Agent Gitu server to use the new phone screens.');
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('Could not reach your agent. Check the address, Wi-Fi, and Windows Firewall, then try again.');
+    if (error instanceof TypeError) throw new Error('Cannot reach your agent. Check that the server is online and both devices can reach it.');
+    throw error;
   } finally {
     clearTimeout(timer);
   }

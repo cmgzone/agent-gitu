@@ -26,12 +26,12 @@ export const COWORK_CSS = String.raw`
   .cw-message-menu button:disabled { opacity: .45; cursor: not-allowed; }
   .cw-message-status, .cw-message-refs { font-size: 11px; color: var(--muted); }
   .cw-message-status.failed { color: var(--err); }
-  .cw-desktop-dialog .box { width: min(1320px, calc(100vw - 32px)); max-width: none; }
-  .cw-desktop-screen { display: flex; align-items: center; justify-content: center; min-height: 160px; background: #151821; overflow: auto; }
-  .cw-desktop-screen img { display: block; width: 100%; max-height: 68dvh; object-fit: contain; }
+  .cw-desktop-dialog .box { width: min(1320px, calc(100vw - 32px)); max-width: none; height: min(860px, calc(100dvh - 32px)); max-height: calc(100dvh - 32px); }
+  .cw-desktop-screen { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 0; background: #151821; overflow: hidden; }
+  .cw-desktop-screen img { display: block; width: 100%; height: 100%; object-fit: contain; }
   .cw-desktop-screen img[hidden] { display: none; }
   .cw-desktop-placeholder { padding: 48px 24px; text-align: center; color: #c3c6d1; max-width: 520px; }
-  .cw-desktop-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; }
+  .cw-desktop-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; }
   .cw-desktop-status { flex: 1; min-width: 180px; color: var(--muted); font-size: 12px; }
   .cw-message-refs { margin-top: 6px; overflow-wrap: anywhere; }
   .cw-references > span { max-width: 280px; }

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:2';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:3';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;

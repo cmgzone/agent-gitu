@@ -52,7 +52,7 @@ describe('private desktop lifecycle', () => {
     const create = commands.find(args => args[0] === 'create')!;
     expect(create).toContain(`type=volume,src=${computer.name}-workspace,dst=/workspace`);
     expect(create).toContain(`type=volume,src=${computer.name}-home,dst=/home/agent`);
-    expect(create.at(-1)).toBe('agent-gitu-cowork:2');
+    expect(create.at(-1)).toBe('agent-gitu-cowork:3');
     expect(commands.some(args => args[0] === 'rm')).toBe(false);
   });
 
@@ -70,7 +70,7 @@ describe('private desktop lifecycle', () => {
     exec.mockImplementation(async (args) => {
       if (args[0] === 'exec') throw new Error('Container is not running');
       if (args.includes('{{.State.Running}}')) return 'false';
-      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:2';
+      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:3';
       return '';
     });
     await expect(computer.desktopScreenshot()).rejects.toThrow('Container is not running');

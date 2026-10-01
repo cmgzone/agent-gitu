@@ -106,12 +106,37 @@ export function computerCreateArgs(name: string): string[] {
   ];
 }
 
+/** Stable, machine-readable cause of an unavailable desktop. The Desktop
+ *  panel switches on this instead of parsing the human-readable message. */
+export type ComputerUnavailableReason =
+  | 'runtime_not_installed'
+  | 'browser_missing'
+  | 'display_start_failed'
+  | 'stream_failed'
+  | 'operation_not_supported'
+  | 'timeout'
+  | 'unknown';
+
 export interface ComputerStatus {
   agentId: string;
   name: string;
   state: 'stopped' | 'starting' | 'running' | 'unavailable';
   workspace: string;
   error?: string;
+  /** Present only while unavailable; classifies `error`. */
+  reason?: ComputerUnavailableReason;
+}
+
+/** Classify a provisioning failure from the broker/runtime error text.
+ *  Kept in one place so the codes stay stable across client and panel. */
+function classifyUnavailable(message: string): ComputerUnavailableReason {
+  const text = message.toLowerCase();
+  if (text.includes('unsupported desktop operation')) return 'operation_not_supported';
+  if (/docker|container runtime|command not found|enoent|cannot connect to the docker daemon/.test(text)) return 'runtime_not_installed';
+  if (/chromium|chrome|browser/.test(text)) return 'browser_missing';
+  if (/display|xvfb|x11|vnc|novnc|stream/.test(text)) return 'display_start_failed';
+  if (/timed out|timeout|aborted/.test(text)) return 'timeout';
+  return 'unknown';
 }
 
 /** One persistent container and volume per stable agent id, scoped to this Gitu home. */
@@ -119,6 +144,8 @@ export class CoworkComputer {
   readonly name: string;
   private state: ComputerStatus['state'] = 'stopped';
   private error?: string;
+  /** Machine-readable companion to `error`, cleared on a successful start. */
+  private reason?: ComputerUnavailableReason;
   private starting?: Promise<void>;
   private startupAbort?: AbortController;
   /** Recent provisioning failure — lets tool dispatch fail fast (and fall
@@ -142,7 +169,7 @@ export class CoworkComputer {
   }
 
   status(): ComputerStatus {
-    return { agentId: this.agentId, name: this.name, state: this.state, workspace: '/workspace', error: this.error };
+    return { agentId: this.agentId, name: this.name, state: this.state, workspace: '/workspace', error: this.error, reason: this.reason };
   }
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -161,6 +188,7 @@ export class CoworkComputer {
   private async provision(signal?: AbortSignal): Promise<void> {
     this.state = 'starting';
     this.error = undefined;
+    this.reason = undefined;
     try {
       await this.exec(['info', '--format', '{{.ServerVersion}}'], undefined, signal, 15_000);
       let exists = false;
@@ -208,7 +236,9 @@ export class CoworkComputer {
       this.state = 'unavailable';
       const guidance =
         process.platform === 'win32' ? 'Install/start Docker Desktop with Linux containers, then retry.' : 'Configure the server’s private desktop runtime, then retry.';
-      this.error = `Virtual computer unavailable. ${guidance} ${(err as Error).message}`;
+      const detail = (err as Error).message;
+      this.reason = classifyUnavailable(detail);
+      this.error = `Virtual computer unavailable. ${guidance} ${detail}`;
       this.lastFailure = { at: Date.now(), message: this.error };
       throw new Error(this.error);
     }

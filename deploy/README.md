@@ -38,6 +38,9 @@ on the same Coolify network, without a public domain or published host port.
 Mount `/var/run/docker.sock` only in this trusted broker container. The web app
 and desktop workers do not receive that socket. Set a stable container name
 for the broker, exposed port `8787`, and health check `/healthz`.
+Use an existing host-file mount in Coolify's Persistent Storage settings,
+with `/var/run/docker.sock` as both source and destination. Through the API,
+use a file storage with `is_host_file: true` and `fs_path: /var/run/docker.sock`.
 
 Give the broker `AGENT_GITU_COMPUTER_BROKER_OWNER` (a stable workspace ID) and
 `AGENT_GITU_COMPUTER_BROKER_KEY` (a random private key of at least 32 characters).

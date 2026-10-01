@@ -67,7 +67,7 @@ describe('private desktop lifecycle', () => {
     const create = commands.find(args => args[0] === 'create')!;
     expect(create).toContain(`type=volume,src=${computer.name}-workspace,dst=/workspace`);
     expect(create).toContain(`type=volume,src=${computer.name}-home,dst=/home/agent`);
-    expect(create.at(-1)).toBe('agent-gitu-cowork:4');
+    expect(create.at(-1)).toBe('agent-gitu-cowork:5');
     expect(commands.some(args => args[0] === 'rm')).toBe(false);
   });
 
@@ -85,7 +85,7 @@ describe('private desktop lifecycle', () => {
     exec.mockImplementation(async (args) => {
       if (args[0] === 'exec') throw new Error('Container is not running');
       if (args.includes('{{.State.Running}}')) return 'false';
-      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:4';
+      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:5';
       return '';
     });
     await expect(computer.desktopScreenshot()).rejects.toThrow('Container is not running');
@@ -122,6 +122,10 @@ it('routes screen frames to the requested agent and requires an explicit switch 
       expect(Buffer.from(screen.data.pngBase64, 'base64').toString()).toBe(agent.id);
       expect(screen.data.computer.agentId).toBe(agent.id);
     }
+    const compressed = await request(`/api/cowork/agents/${a.id}/computer`, { action: 'desktop', format: 'jpeg' });
+    expect(compressed.data.mimeType).toBe('image/jpeg');
+    expect(Buffer.from(compressed.data.imageBase64, 'base64').toString()).toBe(a.id);
+    expect(compressed.data.pngBase64).toBeUndefined();
     expect((await request('/api/cowork/agents/missing/computer', { action: 'desktop' })).status).toBe(404);
     expect((await request(`/api/cowork/agents/${host.id}/computer`, { action: 'desktop' })).status).toBe(409);
     const event = { action: 'click', x: 100, y: 200 };

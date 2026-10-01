@@ -5,6 +5,9 @@ set -eu
 # through the existing authenticated computer service over docker exec.
 # Container restarts preserve /tmp, but the previous X server is gone.
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
+# The old container is stopped before reusing its home volume. Chromium's
+# hostname/PID lock symlinks can survive that stop; profile data stays intact.
+rm -f "$HOME/browser/SingletonLock" "$HOME/browser/SingletonSocket" "$HOME/browser/SingletonCookie"
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp -noreset > /tmp/gitu-display.log 2>&1 &
 display_pid=$!
 cleanup() { kill ${service_pid:-} ${manager_pid:-} "$display_pid" 2>/dev/null || true; }
@@ -53,7 +56,7 @@ Terminal=false
 EOF
 chmod 755 "$HOME/Desktop/gitu-browser.desktop" "$HOME/Desktop/gitu-files.desktop" "$HOME/Desktop/gitu-terminal.desktop"
 xdg-mime default gitu-browser.desktop x-scheme-handler/http x-scheme-handler/https text/html
-dbus-run-session -- sh -c 'xfce4-session & session=$!; sleep 2; xfce4-terminal --title="Agent Gitu workspace" --working-directory=/workspace; wait "$session"' > /tmp/gitu-window-manager.log 2>&1 &
+dbus-run-session -- sh -c 'umask 077; printf "%s" "$DBUS_SESSION_BUS_ADDRESS" > /tmp/gitu-session-bus; xfce4-session & session=$!; sleep 2; xfce4-terminal --title="Agent Gitu workspace" --working-directory=/workspace; wait "$session"' > /tmp/gitu-window-manager.log 2>&1 &
 manager_pid=$!
 attempt=0
 until xwininfo -root -tree | grep -F 'Agent Gitu workspace' >/dev/null; do
@@ -65,6 +68,7 @@ until xwininfo -root -tree | grep -F 'Agent Gitu workspace' >/dev/null; do
   fi
   sleep 0.1
 done
+export DBUS_SESSION_BUS_ADDRESS="$(cat /tmp/gitu-session-bus)"
 node /computer/server.cjs &
 service_pid=$!
 wait "$service_pid"

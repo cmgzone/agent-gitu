@@ -2,6 +2,8 @@ import { createServer, type IncomingMessage } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { WebSocketServer } from 'ws';
+import { bridgeDesktop, localDesktopStream } from './desktop-stream.js';
 import { COWORK_COMPUTER_IMAGE as IMAGE, computerCreateArgs, dockerExec, type ComputerExec } from './computer.js';
 
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
@@ -16,7 +18,7 @@ export class ComputerBroker {
   ) {
     if (!/^[a-zA-Z0-9_-]{8,100}$/.test(owner)) throw new Error('Set a valid desktop broker owner.');
   }
-  private async owned(name: string): Promise<void> {
+  async owned(name: string): Promise<void> {
     if (!namePattern.test(name)) throw new Error('Invalid desktop container.');
     const label = await this.exec(['container', 'inspect', '--format', '{{index .Config.Labels "dev.agentgitu.broker"}}', name], undefined, undefined, 15_000);
     if (label.trim() !== this.owner) throw new Error('This desktop does not belong to this workspace.');
@@ -77,7 +79,7 @@ export function createComputerBrokerServer(key: string, owner: string, exec: Com
     const supplied = Buffer.from(header);
     return expected.length === supplied.length && timingSafeEqual(expected, supplied);
   };
-  return createServer(async (req, res) => {
+  const server = createServer(async (req, res) => {
     const send = (status: number, data: unknown) => {
       if (!res.destroyed) {
         res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
@@ -127,6 +129,21 @@ export function createComputerBrokerServer(key: string, owner: string, exec: Com
       active--;
     }
   });
+  const sockets = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
+  server.on('upgrade', (req, socket, head) => {
+    void (async () => {
+      const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
+      if (!authorized(req)) { reject(401); return; }
+      const match = req.url?.match(/^\/desktop\/(gitu-cowork-[a-f0-9]{24})$/);
+      if (!match) { reject(404); return; }
+      if (sockets.clients.size >= 16) { reject(429); return; }
+      try { await broker.owned(match[1]!); } catch { reject(403); return; }
+      if (socket.destroyed) return;
+      sockets.handleUpgrade(req, socket, head, (client) => bridgeDesktop(client, localDesktopStream(match[1]!)));
+    })().catch(() => socket.destroy());
+  });
+  server.on('close', () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); });
+  return server;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

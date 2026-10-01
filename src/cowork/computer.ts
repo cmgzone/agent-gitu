@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:4';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:5';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
@@ -223,10 +223,10 @@ export class CoworkComputer {
   }
 
   /** Screen reads never provision, restart or wake a stopped teammate. */
-  async desktopScreenshot(signal?: AbortSignal): Promise<ToolResult> {
+  async desktopScreenshot(signal?: AbortSignal, format: 'png' | 'jpeg' = 'png'): Promise<ToolResult> {
     if (this.state !== 'running') return { ok: false, output: this.error || 'Start this private desktop to view its screen.' };
     try {
-      return await this.request('desktop_screenshot', {}, signal);
+      return await this.request('desktop_screenshot', { format }, signal);
     } catch (error) {
       signal?.throwIfAborted();
       // An externally stopped/crashed container must be restartable from the
@@ -318,7 +318,7 @@ export class CoworkComputer {
         const artifact = JSON.parse(readFileSync(path.join(folder, `${artifactId}.json`), 'utf8')) as { data: string };
         return await this.request('import_file', { path: params['path'], data: artifact.data }, signal);
       }
-      const result = await this.request(tool, params, signal);
+      const result = await this.request(tool, tool === 'desktop_screenshot' ? { ...params, format: 'png' } : params, signal);
       return tool === 'desktop_screenshot' && result.ok ? { ok: true, output: 'Private Linux desktop screen (1280x800).', image: 'data:image/png;base64,' + result.output } : result;
     } catch (err) {
       return { ok: false, output: (err as Error).message };

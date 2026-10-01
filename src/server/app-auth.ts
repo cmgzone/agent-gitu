@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 const derive = (password: string, salt: string): Promise<Buffer> =>
   new Promise((resolve, reject) => {
     scrypt(password, salt, 32, { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 }, (error, key) => (error ? reject(error) : resolve(key)));
@@ -18,7 +19,7 @@ interface PasswordRecord {
 }
 interface Session {
   expires: number;
-  streams: Set<ServerResponse>;
+  streams: Set<ServerResponse | Duplex>;
   timer: NodeJS.Timeout;
 }
 
@@ -117,7 +118,7 @@ export class AppAuth {
     return true;
   }
 
-  track(req: IncomingMessage, res: ServerResponse): void {
+  track(req: IncomingMessage, res: ServerResponse | Duplex): void {
     const session = this.sessions.get(this.token(req) ?? '');
     if (!session) return;
     session.streams.add(res);

@@ -2642,7 +2642,7 @@ export const COWORK_JS = String.raw`
     document.body.appendChild(modal);
     var screen = modal.querySelector('[data-image]'), placeholder = modal.querySelector('[data-placeholder]');
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
-    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, inputQueue = Promise.resolve(), pointerStart = null, textBuffer = '', textTimer = null, clickTimer = null, suppressClick = false;
+    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, inputQueue = Promise.resolve(), pointerStart = null, textBuffer = '', textTimer = null, clickTimer = null, suppressClick = false, lastFrame = null;
     var endpoint = '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer';
     function close() {
       closed = true; clearTimeout(timer); clearTimeout(textTimer); clearTimeout(clickTimer); controller.abort(); modal.remove();
@@ -2715,28 +2715,32 @@ export const COWORK_JS = String.raw`
       start.textContent = host ? 'Use private desktop' : computer.state === 'unavailable' ? 'Retry startup' : 'Start desktop';
       start.disabled = !host && (computer.state === 'starting' || computer.state === 'running');
       stop.disabled = host || (computer.state !== 'starting' && computer.state !== 'running');
-      status.textContent = host ? 'Using My computer' : computer.state === 'running' ? 'Connected · Waiting for screen' : computer.state;
+      status.textContent = host ? 'Using My computer' : computer.state === 'running' ? lastFrame ? 'Live · Updated ' + cwTime(lastFrame) : 'Connected · Waiting for screen' : computer.state;
       if (host || computer.state !== 'running') {
+        lastFrame = null;
         screen.hidden = true; screen.removeAttribute('src'); placeholder.hidden = false;
         placeholder.textContent = host ? 'Give this teammate its own Linux desktop with a private browser and workspace. The Gitu server needs a configured desktop runtime. Its next tasks will use that private computer.' : computer.error || (computer.state === 'starting' ? 'Starting the private desktop. First startup may take several minutes.' : 'Start this teammate’s private desktop to view its screen.');
       }
     }
     async function refresh(action) {
       if (closed) return;
+      if (document.hidden && !action) { clearTimeout(timer); timer = setTimeout(function () { refresh(); }, 1000); return; }
       if (pending) { if (action) queuedAction = action; return; }
       pending = true; clearTimeout(timer);
       try {
-        var d = await api(endpoint, { signal: controller.signal, ...(action ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) } : {}) });
+        var directFrame = !action && !host && lastFrame && !screen.hidden;
+        var d = await api(endpoint, { signal: controller.signal, ...(action || directFrame ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action || 'desktop', format: 'jpeg' }) } : {}) });
         if (closed) return;
         if (d.agent) { cw.agents = cw.agents.map(function (a) { return a.id === agentId ? d.agent : a; }); cwRenderRail(); cwRenderInfo(); }
         cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== agentId; }).concat([d.computer]);
         update(d.computer);
         if (!host && d.computer.state === 'running') {
-          var frame = await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'desktop' }) });
+          var frame = directFrame ? d : await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'desktop', format: 'jpeg' }) });
           if (closed) return;
-          if (!frame.pngBase64 || !/^[A-Za-z0-9+/=]+$/.test(frame.pngBase64)) throw new Error('The desktop did not return an image.');
-          screen.src = 'data:image/png;base64,' + frame.pngBase64; screen.hidden = false; placeholder.hidden = true;
-          status.textContent = 'Live · Updated ' + cwTime(frame.capturedAt);
+          var pixels = frame.imageBase64 || frame.pngBase64, mime = frame.mimeType === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+          if (!pixels || !/^[A-Za-z0-9+/=]+$/.test(pixels)) throw new Error('The desktop did not return an image.');
+          screen.src = 'data:' + mime + ';base64,' + pixels; screen.hidden = false; placeholder.hidden = true;
+          lastFrame = frame.capturedAt; status.textContent = 'Live · Updated ' + cwTime(lastFrame);
         }
       } catch (e) {
         if (!closed) { screen.hidden = true; placeholder.hidden = false; placeholder.textContent = e.message || 'Desktop unavailable'; status.textContent = 'Could not refresh desktop'; start.disabled = false; }
@@ -2744,7 +2748,7 @@ export const COWORK_JS = String.raw`
         pending = false;
         if (!closed) {
           var nextAction = queuedAction; queuedAction = null;
-          timer = setTimeout(function () { refresh(nextAction); }, nextAction ? 0 : 2000);
+          timer = setTimeout(function () { refresh(nextAction); }, nextAction ? 0 : screen.hidden ? 2000 : 150);
         }
       }
     }

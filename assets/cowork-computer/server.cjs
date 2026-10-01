@@ -66,10 +66,10 @@ async function desktopInput(p) {
   return { ok: true, output: 'Desktop input delivered.' };
 }
 
-async function desktopScreenshot() {
+async function desktopScreenshot(format = 'png') {
   if (!process.env.DISPLAY) throw new Error('This computer has no desktop display. Stop and start it to upgrade the private desktop.');
-  const file = '/tmp/gitu-desktop.png';
-  await execFileAsync('scrot', ['--overwrite', file], { timeout: 10000 });
+  const file = format === 'jpeg' ? '/tmp/gitu-desktop.jpg' : '/tmp/gitu-desktop.png';
+  await execFileAsync('scrot', format === 'jpeg' ? ['--overwrite', '--quality', '55', file] : ['--overwrite', file], { timeout: 10000 });
   const image = fs.readFileSync(file);
   if (image.length > 5_000_000) throw new Error('Desktop screenshot exceeds 5 MB.');
   return { ok: true, output: image.toString('base64') };
@@ -140,7 +140,11 @@ async function command(id, params) {
 }
 async function browse(id, p) {
   if (cancelled.has(id)) throw new Error('Browser operation cancelled.');
-  browser ??= await chromium.launchPersistentContext('/home/agent/browser', { headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 } });
+  if (!browser) {
+    const context = await chromium.launchPersistentContext('/home/agent/browser', { headless: !process.env.DISPLAY, viewport: { width: 1280, height: 720 } });
+    browser = context;
+    context.on('close', () => { if (browser === context) browser = undefined; });
+  }
   if (cancelled.has(id)) {
     await browser.close();
     browser = undefined;
@@ -218,7 +222,7 @@ async function browse(id, p) {
 }
 async function execute({ id, tool, params: p = {} }) {
   if (tool === 'desktop_screenshot' || tool === 'desktop_input') {
-    const next = screenQueue.then(() => tool === 'desktop_screenshot' ? desktopScreenshot() : desktopInput(p));
+    const next = screenQueue.then(() => tool === 'desktop_screenshot' ? desktopScreenshot(p.format) : desktopInput(p));
     screenQueue = next.catch(() => {});
     return next;
   }

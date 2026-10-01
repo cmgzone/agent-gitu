@@ -16,7 +16,7 @@ afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 function service(name: string, processMock?: { spawn: (...args: any[]) => any; kill: (...args: any[]) => any }, desktop = false) {
   const workspace = path.join(root, name);
   fs.mkdirSync(workspace);
-  const translate = (p: string) => (p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : path.join(root, name + (p === '/tmp/gitu-desktop.png' ? '-desktop.png' : '-key')));
+  const translate = (p: string) => (p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : path.join(root, name + (p.startsWith('/tmp/gitu-desktop.') ? '-desktop' + path.extname(p) : '-key')));
   const files = {
     ...fs,
     existsSync: (p: string) => fs.existsSync(translate(p)),
@@ -42,10 +42,11 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     screenshot: vi.fn(async () => Buffer.from('screenshot-bytes')),
     locator: () => ({ innerText: async () => 'Visible page content' }),
   };
-  const launch = vi.fn(async () => ({ pages: () => [page], close: async () => {} }));
+  let closed: () => void = () => {};
+  const launch = vi.fn(async () => ({ pages: () => [page], close: async () => { closed(); }, on: (_event: string, callback: () => void) => { closed = callback; } }));
   let handler: any;
   const capture = vi.fn((_command: string, _args: string[], _options: unknown, callback: (error: Error | null, output: string) => void) => {
-    files.writeFileSync('/tmp/gitu-desktop.png', Buffer.from('desktop-' + name));
+    if (_command === 'scrot') files.writeFileSync(_args.at(-1)!, Buffer.from('desktop-' + name));
     callback(null, '');
   });
   const context: any = {
@@ -79,11 +80,26 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     page,
     handler,
     capture,
+    closeBrowser: () => closed(),
     execute: (tool: string, params: Record<string, unknown>) => context.executeTool({ id: 'test-id', tool, params }) as Promise<{ ok: boolean; output: string; image?: string }>,
   };
 }
 
 describe('virtual computer service', () => {
+  it('reopens the shared browser after the user closes its window', async () => {
+    const a = service('browser-reopen', undefined, true);
+    await a.execute('browse', { action: 'state' });
+    a.closeBrowser();
+    await a.execute('browse', { action: 'state' });
+    expect(a.launch).toHaveBeenCalledTimes(2);
+  });
+  it('uses compressed frames for the interactive viewer while retaining PNG captures', async () => {
+    const a = service('compressed-desktop', undefined, true);
+    await a.execute('desktop_screenshot', { format: 'jpeg' });
+    expect(a.capture).toHaveBeenLastCalledWith('scrot', ['--overwrite', '--quality', '55', '/tmp/gitu-desktop.jpg'], { timeout: 10000 }, expect.any(Function));
+    await a.execute('desktop_screenshot', {});
+    expect(a.capture).toHaveBeenLastCalledWith('scrot', ['--overwrite', '/tmp/gitu-desktop.png'], { timeout: 10000 }, expect.any(Function));
+  });
   it('validates desktop input before invoking X11 and keeps text out of shell commands', async () => {
     const a = service('desktop-input', undefined, true);
     for (const params of [

@@ -76,7 +76,7 @@ describe('Cowork UI live updates', () => {
     u.context.document.activeElement = screen;
     u.context.cwTime = () => 'now';
     u.api.mockImplementation(async (_url: string, options?: { body?: string }) => options?.body && JSON.parse(options.body).action === 'desktop'
-      ? { pngBase64: 'aGVsbG8=', capturedAt: 'now' } : { computer: { state: 'running', useHostComputer: false } });
+      ? { imageBase64: 'aGVsbG8=', mimeType: 'image/jpeg', capturedAt: 'now', computer: { state: 'running', useHostComputer: false } } : { computer: { state: 'running', useHostComputer: false } });
     u.context.cwOpenDesktop('chief');
     await vi.waitFor(() => expect(screen.hidden).toBe(false));
     const event = (clientX: number, clientY: number) => ({ clientX, clientY, pointerId: 1, button: 0, detail: 1, preventDefault: vi.fn() });
@@ -89,6 +89,11 @@ describe('Cowork UI live updates', () => {
     const inputs = () => u.api.mock.calls.filter(([, options]) => options?.body && JSON.parse(options.body).action === 'input').map(([, options]) => JSON.parse(options.body).input);
     await vi.waitFor(() => expect(inputs()).toHaveLength(3));
     expect(inputs()).toEqual([{ action: 'click', x: 64, y: 32, button: 1 }, { action: 'type', text: 'a' }, { action: 'key', key: 'Return' }]);
+    u.api.mockClear();
+    timers.find((timer) => timer.delay === 150)!.fn();
+    await vi.waitFor(() => expect(u.api).toHaveBeenCalledOnce());
+    expect(JSON.parse(u.api.mock.calls[0][1].body)).toEqual({ action: 'desktop', format: 'jpeg' });
+    expect(screen.src).toBe('data:image/jpeg;base64,aGVsbG8=');
   });
   it('shows only the selected teammate’s threads and their team rooms in the left rail', () => {
     const u = ui();

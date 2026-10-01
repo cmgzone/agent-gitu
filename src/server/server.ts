@@ -1,4 +1,7 @@
 import http from 'node:http';
+import { WebSocketServer } from 'ws';
+import { bridgeDesktop, connectDesktopStream } from '../cowork/desktop-stream.js';
+import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
 import { AppAuth } from './app-auth.js';
 import { authPage } from './ui-auth.js';
@@ -410,6 +413,7 @@ export class GituServer {
   private readonly config: GituServerConfig;
   private readonly mobileAccess: MobileAccess;
   private readonly appAuth: AppAuth;
+  private desktopSockets?: WebSocketServer;
   private readonly connectedApps: ComposioConnections;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
@@ -891,6 +895,26 @@ export class GituServer {
         this.sendJson(res, status, { error: msg });
       });
     });
+    const desktopSockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
+    this.desktopSockets = desktopSockets;
+    server.on('upgrade', (req, socket, head) => {
+      const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
+      if (this.appAuth.enabled && !this.appAuth.authenticated(req)) { reject(401); return; }
+      // Browsers always supply Origin on a WebSocket handshake. Reject missing
+      // Origin as well, so a cross-site socket cannot bypass the JSON CSRF gate.
+      if (!req.headers.origin || !this.isSameOrigin(req)) { reject(403); return; }
+      const match = req.url?.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer\/vnc$/);
+      if (!match) { reject(404); return; }
+      const agent = this.cowork().getAgent(match[1]!);
+      if (!agent) { reject(404); return; }
+      const computer = this.coworkComputer(agent.id);
+      if (agent.useHostComputer || computer.status().state !== 'running') { reject(409); return; }
+      if (desktopSockets.clients.size >= 16) { reject(429); return; }
+      desktopSockets.handleUpgrade(req, socket, head, (client) => {
+        this.appAuth.track(req, socket);
+        try { bridgeDesktop(client, connectDesktopStream(computer.name)); } catch { client.close(1011, 'Desktop unavailable'); }
+      });
+    });
     await new Promise<void>((resolve, reject) => {
       const onError = (err: Error): void => reject(err);
       server.once('error', onError);
@@ -993,6 +1017,8 @@ export class GituServer {
 
   async stop(): Promise<void> {
     this.appAuth.close();
+    for (const socket of this.desktopSockets?.clients ?? []) socket.terminate();
+    this.desktopSockets?.close();
     this.stopping = true;
     // Keep durable recovery dates while cancelling timers owned by this process.
     for (const timer of this.modelRecoveryTimers.values()) clearTimeout(timer);
@@ -3152,8 +3178,9 @@ export class GituServer {
         else if (body['action'] === 'desktop') {
           if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'This teammate uses My computer. Choose Use private desktop to give it its own screen.' }); return true; }
           try {
-            const shot = await computer.desktopScreenshot();
-            this.sendJson(res, shot.ok ? 200 : 503, shot.ok ? { computer: status(), pngBase64: shot.output, capturedAt: new Date().toISOString() } : { error: shot.output, computer: status() });
+            const format = body['format'] === 'jpeg' ? 'jpeg' : 'png';
+            const shot = await computer.desktopScreenshot(undefined, format);
+            this.sendJson(res, shot.ok ? 200 : 503, shot.ok ? { computer: status(), ...(format === 'jpeg' ? { imageBase64: shot.output, mimeType: 'image/jpeg' } : { pngBase64: shot.output, mimeType: 'image/png' }), capturedAt: new Date().toISOString() } : { error: shot.output, computer: status() });
           } catch (error) { this.sendJson(res, 503, { error: (error as Error).message, computer: status() }); }
           return true;
         }
@@ -4391,6 +4418,21 @@ export class GituServer {
     }
     this.appAuth.track(req, res);
     if (this.appAuth.enabled) res.setHeader('Cache-Control', 'no-store');
+
+    if (path.startsWith('/api/desktop-assets/') && method === 'GET') {
+      const asset = desktopAsset(path.slice('/api/desktop-assets/'.length));
+      if (!asset || !existsSync(asset)) { this.sendJson(res, 404, { error: 'Desktop asset not found.' }); return; }
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'x-content-type-options': 'nosniff', 'cache-control': 'private, max-age=3600' });
+      createReadStream(asset).pipe(res); return;
+    }
+    const desktopMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer\/view$/);
+    if (desktopMatch && method === 'GET') {
+      const agent = this.cowork().getAgent(desktopMatch[1]!);
+      if (!agent) { this.sendJson(res, 404, { error: 'Agent not found.' }); return; }
+      if (agent.useHostComputer || this.coworkComputer(agent.id).status().state !== 'running') { this.sendJson(res, 409, { error: 'Start the private desktop first.' }); return; }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'SAMEORIGIN', 'content-security-policy': "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; base-uri 'none'; frame-ancestors 'self'" });
+      res.end(desktopView(agent.id)); return;
+    }
 
     if (path.startsWith('/api/connected-apps')) {
       if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }

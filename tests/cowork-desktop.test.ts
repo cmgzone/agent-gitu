@@ -58,7 +58,7 @@ describe('private desktop lifecycle', () => {
 
   it('reports unavailable Docker without claiming the desktop is running', async () => {
     const computer = new CoworkComputer('no-docker', 'desktop-test', async () => { throw new Error('docker not found'); });
-    await expect(computer.start()).rejects.toThrow('Install/start Docker Desktop');
+    await expect(computer.start()).rejects.toThrow(/Install\/start Docker Desktop|private desktop runtime/);
     expect(computer.status().state).toBe('unavailable');
     expect((await computer.desktopScreenshot()).output).toContain('docker not found');
   });

@@ -8,6 +8,7 @@ import { AppAuth } from '../src/server/app-auth.js';
 import { GituServer } from '../src/server/server.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { GituApi } from '../apps/mobile/src/gitu/client.js';
+import type { ComposioConnections } from '../src/connections/composio.js';
 
 const password = 'A disposable fixture passphrase!';
 const profile = { name: 'Fixture Owner', email: 'owner@example.com' };
@@ -124,7 +125,9 @@ describe('whole-app authentication', () => {
     process.env['AGENT_GITU_PUBLIC_ORIGIN'] = origin;
     process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] = '1';
     process.env['AGENT_GITU_REGISTRATION_TOKEN'] = code;
-    const server = new GituServer({ cwd: home, port: 0, llm: new ScriptedMockLlm([]) });
+    const configure = vi.fn(async () => {});
+    const connectedApps = { configured: false, setup: { canConfigure: true, keyStorage: 'server-encrypted' }, configure } as unknown as ComposioConnections;
+    const server = new GituServer({ cwd: home, port: 0, llm: new ScriptedMockLlm([]), connectedApps });
     servers.push(server);
     try {
       const base = 'http://127.0.0.1:' + (await server.start());
@@ -165,6 +168,14 @@ describe('whole-app authentication', () => {
       expect((await call('/api/cowork/agents')).status).toBe(401);
       const cookie = login.headers['set-cookie']![0]!;
       expect((await call('/api/cowork/agents', undefined, { cookie })).status).toBe(200);
+      expect((await call('/api/connected-apps/configure', { apiKey: 'fixture-integration-key' })).status).toBe(401);
+      expect((await call('/api/connected-apps/configure', { apiKey: 'fixture-integration-key' }, { cookie })).status).toBe(200);
+      expect(configure).toHaveBeenCalledExactlyOnceWith('fixture-integration-key');
+      expect((await call('/api/connected-apps/configure', { apiKey: 'secret' }, { cookie, origin: 'https://evil.example' })).status).toBe(403);
+      expect((await call('/api/connected-apps/configure', { apiKey: 'secret' }, { cookie, 'x-forwarded-proto': 'http', origin: origin.replace('https:', 'http:') })).status).toBe(
+        403,
+      );
+      expect(configure).toHaveBeenCalledOnce();
       const auth = new AppAuth(path.join(home, 'Settings', 'app-password.json'), true, true, code);
       expect(auth.remoteRegistrationEnabled).toBe(false);
       expect(auth.canRegister(request('', 'gitu.example.com'), code)).toBe(false);

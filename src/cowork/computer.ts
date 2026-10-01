@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-const IMAGE = 'agent-gitu-cowork:2';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:2';
+const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
 
@@ -49,6 +50,62 @@ export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_00
     child.stdin.end(input ?? '');
   });
 
+/** Hosted deployments use the restricted desktop broker on their private network. */
+export const computerExec: ComputerExec = async (args, input, signal, timeoutMs = 120_000) => {
+  const broker = process.env['AGENT_GITU_COMPUTER_BROKER_URL'];
+  if (!broker) return dockerExec(args, input, signal, timeoutMs);
+  const key = process.env['AGENT_GITU_COMPUTER_BROKER_KEY'];
+  if (!key || key.length < 32) throw new Error('The private desktop runtime key is missing.');
+  const url = new URL(broker);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Invalid private desktop runtime address.');
+  const timeout = new AbortController();
+  const cancel = deadline(timeoutMs, () => timeout.abort(new Error('Virtual computer operation timed out.')));
+  try {
+    const response = await fetch(new URL('/execute', url), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
+      body: JSON.stringify({ args, input, timeoutMs }),
+      signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
+      redirect: 'error',
+    });
+    const text = await response.text();
+    if (text.length > 10_000_000) throw new Error('Virtual computer output exceeded 8 MB.');
+    const result = JSON.parse(text) as { output?: string; error?: string };
+    if (!response.ok) throw new Error(result.error ?? `Private desktop runtime returned ${response.status}.`);
+    return String(result.output ?? '');
+  } finally {
+    cancel();
+  }
+};
+
+export function computerCreateArgs(name: string): string[] {
+  return [
+    'create',
+    '--name',
+    name,
+    '--label',
+    'dev.agentgitu.cowork=true',
+    '--init',
+    '--cpus',
+    '2',
+    '--memory',
+    '2g',
+    '--pids-limit',
+    '256',
+    '--shm-size',
+    '256m',
+    '--cap-drop',
+    'ALL',
+    '--security-opt',
+    'no-new-privileges',
+    '--mount',
+    `type=volume,src=${name}-workspace,dst=/workspace`,
+    '--mount',
+    `type=volume,src=${name}-home,dst=/home/agent`,
+    IMAGE,
+  ];
+}
+
 export interface ComputerStatus {
   agentId: string;
   name: string;
@@ -75,7 +132,7 @@ export class CoworkComputer {
   constructor(
     readonly agentId: string,
     private readonly root: string,
-    private readonly exec: ComputerExec = dockerExec,
+    private readonly exec: ComputerExec = computerExec,
   ) {
     const key = createHash('sha256')
       .update(`${path.resolve(root)}:${agentId}`)
@@ -138,35 +195,7 @@ export class CoworkComputer {
           await this.exec(['rename', this.name, this.name + '-backup-' + Date.now()], undefined, signal);
           exists = false;
         }
-        await this.exec(
-          [
-            'create',
-            '--name',
-            this.name,
-            '--label',
-            'dev.agentgitu.cowork=true',
-            '--init',
-            '--cpus',
-            '2',
-            '--memory',
-            '2g',
-            '--pids-limit',
-            '256',
-            '--shm-size',
-            '256m',
-            '--cap-drop',
-            'ALL',
-            '--security-opt',
-            'no-new-privileges',
-            '--mount',
-            `type=volume,src=${this.name}-workspace,dst=/workspace`,
-            '--mount',
-            `type=volume,src=${this.name}-home,dst=/home/agent`,
-            IMAGE,
-          ],
-          undefined,
-          signal,
-        );
+        await this.exec(computerCreateArgs(this.name), undefined, signal);
       }
       // Refresh the small bundled service even for an existing container.
       // Volumes and login sessions stay intact; no image rebuild is needed.
@@ -177,7 +206,9 @@ export class CoworkComputer {
       this.lastFailure = undefined;
     } catch (err) {
       this.state = 'unavailable';
-      this.error = `Virtual computer unavailable. Install/start Docker Desktop with Linux containers, then retry. ${(err as Error).message}`;
+      const guidance =
+        process.platform === 'win32' ? 'Install/start Docker Desktop with Linux containers, then retry.' : 'Configure the server’s private desktop runtime, then retry.';
+      this.error = `Virtual computer unavailable. ${guidance} ${(err as Error).message}`;
       this.lastFailure = { at: Date.now(), message: this.error };
       throw new Error(this.error);
     }

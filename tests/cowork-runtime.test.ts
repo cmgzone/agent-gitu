@@ -289,7 +289,7 @@ describe('private virtual computers', () => {
     const a = new CoworkComputer('missing', root, exec);
     const result = await a.execute('run_command', { command: 'touch host' });
     expect(result.ok).toBe(false);
-    expect(result.output).toContain('Install/start Docker Desktop');
+    expect(result.output).toMatch(/Install\/start Docker Desktop|private desktop runtime/);
     expect(a.status().state).toBe('unavailable');
     expect(exec).toHaveBeenCalledTimes(1);
   });

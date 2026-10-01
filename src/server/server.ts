@@ -4388,12 +4388,12 @@ export class GituServer {
       res.setHeader('Cache-Control', 'no-store');
       try {
         if (path === '/api/connected-apps' && method === 'GET') {
-          if (!this.connectedApps.configured) { this.sendJson(res, 200, { configured: false, accounts: [], services: [] }); return; }
+          if (!this.connectedApps.configured) { this.sendJson(res, 200, { configured: false, ...this.connectedApps.setup, accounts: [], services: [] }); return; }
           const [catalog, accounts] = await Promise.all([this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined), this.connectedApps.accounts()]);
           this.sendJson(res, 200, { configured: true, ...catalog, accounts }); return;
         }
         if (path === '/api/connected-apps/configure' && method === 'POST') {
-          if (!AppAuth.local(req)) { this.sendJson(res, 403, { error: 'Configure the integration provider on the computer running Agent Gitu.' }); return; }
+          if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Integration setup requires an authenticated HTTPS session.' }); return; }
           const body = await this.readBody(req, 8192);
           await this.connectedApps.configure(String(body['apiKey'] ?? ''));
           this.sendJson(res, 200, { ok: true }); return;

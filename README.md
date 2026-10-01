@@ -149,8 +149,9 @@ In **Cowork → Connections**, enter your Composio project API key once, search
 for a service, choose **Connect → Continue sign-in**, and complete authorization
 with that service. Refresh to see the account status. Use **Reconnect** for
 expired access or **Disconnect** to revoke a connection. On Windows, the key is
-encrypted with DPAPI for the current OS user. Other systems can set
-`COMPOSIO_API_KEY` in the server environment. OAuth credentials are managed by
+encrypted with DPAPI for the current OS user. Hosted servers can enable
+encrypted key entry with `AGENT_GITU_SECRETS_KEY`, or set `COMPOSIO_API_KEY`
+in the server environment. OAuth credentials are managed by
 Composio and are never returned by the connection API or given to agents.
 
 Cowork agents can discover connected tools with `connected_apps`. Execution

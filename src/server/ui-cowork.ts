@@ -2657,7 +2657,7 @@ export const COWORK_JS = String.raw`
       status.textContent = host ? 'Using My computer' : computer.state === 'running' ? 'Connected · Waiting for screen' : computer.state;
       if (host || computer.state !== 'running') {
         screen.hidden = true; screen.removeAttribute('src'); placeholder.hidden = false;
-        placeholder.textContent = host ? 'Give this teammate its own Linux desktop with a private browser and workspace. Docker Desktop with Linux containers is required. Its next tasks will use that private computer.' : computer.error || (computer.state === 'starting' ? 'Starting the private desktop. First startup may take several minutes.' : 'Start this teammate’s private desktop to view its screen.');
+        placeholder.textContent = host ? 'Give this teammate its own Linux desktop with a private browser and workspace. The Gitu server needs a configured desktop runtime. Its next tasks will use that private computer.' : computer.error || (computer.state === 'starting' ? 'Starting the private desktop. First startup may take several minutes.' : 'Start this teammate’s private desktop to view its screen.');
       }
     }
     async function refresh(action) {

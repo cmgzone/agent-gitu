@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -56,6 +56,32 @@ function fixture() {
 }
 
 describe('Composio connections', () => {
+  it('encrypts hosted keys, restores them after restart, and rejects changed ciphertext or encryption keys', () => {
+    fixture();
+    vi.stubEnv('COMPOSIO_API_KEY', '');
+    vi.stubEnv('AGENT_GITU_SECRETS_KEY', 'a'.repeat(64));
+    try {
+      const keys = new ComposioKeyStore('linux');
+      expect(keys.canSave).toBe(true);
+      keys.save('disposable-hosted-composio-secret');
+      const file = path.join(process.env['AGENT_GITU_HOME']!, 'Settings', 'composio-key.encrypted.json');
+      const stored = readFileSync(file, 'utf8');
+      expect(stored).not.toContain('disposable-hosted-composio-secret');
+      expect(new ComposioKeyStore('linux').read()).toBe('disposable-hosted-composio-secret');
+      vi.stubEnv('AGENT_GITU_SECRETS_KEY', 'b'.repeat(64));
+      expect(() => keys.read()).toThrow();
+      vi.stubEnv('AGENT_GITU_SECRETS_KEY', 'a'.repeat(64));
+      const record = JSON.parse(stored);
+      record.tag = '0'.repeat(32);
+      writeFileSync(file, JSON.stringify(record));
+      expect(() => keys.read()).toThrow();
+      vi.stubEnv('AGENT_GITU_SECRETS_KEY', '');
+      expect(keys.canSave).toBe(false);
+      expect(() => keys.save('secret')).toThrow('Enable encrypted integration storage');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it.skipIf(process.platform !== 'win32')('encrypts the provider key with Windows DPAPI and can read it back', () => {
     fixture();
     vi.stubEnv('COMPOSIO_API_KEY', '');

@@ -18,6 +18,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY assets ./assets
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/start.sh /usr/local/bin/start-gitu
+COPY deploy/verify-hosted-runtime.mjs ./deploy/verify-hosted-runtime.mjs
 RUN chmod +x /usr/local/bin/start-gitu && mkdir -p /data && chown node:node /data
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1

@@ -6,12 +6,16 @@ import { COWORK_JS } from '../src/server/ui-cowork.js';
 
 function fixture() {
   const content = { innerHTML: '', querySelectorAll: () => [] };
+  const providerButton = { disabled: false };
   const elements = {
     cwChat: { innerHTML: '' },
     cwServicesContent: content,
     cwServicesBack: { onclick: undefined as undefined | (() => void) },
     cwServicesRefresh: { onclick: undefined as undefined | (() => void) },
     cwServicesSearch: { onsubmit: undefined },
+    cwProviderForm: { onsubmit: undefined as undefined | ((event: { preventDefault: () => void }) => Promise<void>), querySelector: () => providerButton },
+    cwProviderKey: { value: 'fixture-provider-key' },
+    cwProviderError: { hidden: true, textContent: '' },
   };
   const cw = { connectionsOpen: false, connectionRevision: 0, active: null };
   const api = vi.fn();
@@ -37,6 +41,19 @@ function fixture() {
 }
 
 describe('account and Connections UI', () => {
+  it('supports encrypted key setup on a hosted server without Windows instructions', async () => {
+    const f = fixture();
+    f.cw.connectionsOpen = true;
+    f.api.mockResolvedValueOnce({ configured: false, canConfigure: true, keyStorage: 'server-encrypted' });
+    await f.context.cwLoadServices('', false);
+    expect(f.content.innerHTML).toContain('encrypted on your Gitu server');
+    expect(f.content.innerHTML).not.toContain('Windows account');
+    f.api.mockResolvedValueOnce({ ok: true }).mockResolvedValueOnce({ configured: true, services: [], accounts: [] });
+    await f.elements.cwProviderForm.onsubmit!.call(f.elements.cwProviderForm, { preventDefault: vi.fn() });
+    expect(f.api).toHaveBeenCalledWith('/api/connected-apps/configure', expect.objectContaining({ body: JSON.stringify({ apiKey: 'fixture-provider-key' }) }));
+    expect(f.elements.cwProviderKey.value).toBe('');
+    await vi.waitFor(() => expect(f.content.innerHTML).toContain('Browse services'));
+  });
   it('renders registration before sign-in and supports existing password-only installations', () => {
     const registration = authPage(true, true);
     expect(registration).toContain('Create your account');

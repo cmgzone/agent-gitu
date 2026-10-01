@@ -1,5 +1,6 @@
 import { Composio } from '@composio/core';
 import { execFileSync } from 'node:child_process';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
@@ -18,16 +19,29 @@ export interface ServiceCard {
   accountId?: string;
 }
 
-/** Provider keys are protected with Windows DPAPI, scoped to the OS user. */
+/** Windows DPAPI locally; hosted keys use AES-GCM with an external runtime key. */
 export class ComposioKeyStore {
+  constructor(private readonly platform = process.platform) {}
   private get file(): string {
-    return path.join(ensureGituHome().settings, 'composio-key.dpapi');
+    return path.join(ensureGituHome().settings, this.platform === 'win32' ? 'composio-key.dpapi' : 'composio-key.encrypted.json');
+  }
+  get canSave(): boolean {
+    return this.platform === 'win32' || Boolean(this.serverKey());
+  }
+  get storage(): string {
+    return this.platform === 'win32' ? 'windows-dpapi' : 'server-encrypted';
+  }
+  private serverKey(): Buffer | undefined {
+    const key = process.env['AGENT_GITU_SECRETS_KEY'];
+    if (!key) return undefined;
+    if (!/^[a-f0-9]{64}$/i.test(key)) throw new Error('Set AGENT_GITU_SECRETS_KEY to a 32-byte hexadecimal server encryption key.');
+    return Buffer.from(key, 'hex');
   }
   get configured(): boolean {
     return Boolean(process.env['COMPOSIO_API_KEY']) || existsSync(this.file);
   }
   private crypt(value: string, decrypt: boolean): string {
-    if (process.platform !== 'win32') throw new Error('Set COMPOSIO_API_KEY on the server to configure Composio on this operating system.');
+    if (this.platform !== 'win32') throw new Error('Windows key storage is unavailable.');
     const script = `Add-Type -AssemblyName System.Security; $value = [Console]::In.ReadToEnd(); ${
       decrypt
         ? '$bytes = [Convert]::FromBase64String($value); $result = [Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Text.Encoding]::UTF8.GetString($result))'
@@ -43,10 +57,31 @@ export class ComposioKeyStore {
   }
   read(): string | undefined {
     if (process.env['COMPOSIO_API_KEY']) return process.env['COMPOSIO_API_KEY'];
-    return existsSync(this.file) ? this.crypt(readFileSync(this.file, 'utf8'), true) : undefined;
+    if (!existsSync(this.file)) return undefined;
+    if (this.platform === 'win32') return this.crypt(readFileSync(this.file, 'utf8'), true);
+    const key = this.serverKey();
+    if (!key) throw new Error('The server encryption key is missing.');
+    const record = JSON.parse(readFileSync(this.file, 'utf8')) as { version: number; iv: string; tag: string; ciphertext: string };
+    if (record.version !== 1 || !/^[a-f0-9]{24}$/.test(record.iv) || !/^[a-f0-9]{32}$/.test(record.tag)) throw new Error('The saved integration key is damaged.');
+    const decrypt = createDecipheriv('aes-256-gcm', key, Buffer.from(record.iv, 'hex'));
+    decrypt.setAAD(Buffer.from('agent-gitu:composio-key:v1'));
+    decrypt.setAuthTag(Buffer.from(record.tag, 'hex'));
+    return Buffer.concat([decrypt.update(Buffer.from(record.ciphertext, 'base64')), decrypt.final()]).toString('utf8');
   }
   save(value: string): void {
-    writeFileSync(this.file, this.crypt(value, false), { mode: 0o600 });
+    if (this.platform === 'win32') {
+      writeFileSync(this.file, this.crypt(value, false), { mode: 0o600 });
+      return;
+    }
+    const key = this.serverKey();
+    if (!key) throw new Error('Enable encrypted integration storage on the server first.');
+    const iv = randomBytes(12);
+    const encrypt = createCipheriv('aes-256-gcm', key, iv);
+    encrypt.setAAD(Buffer.from('agent-gitu:composio-key:v1'));
+    const ciphertext = Buffer.concat([encrypt.update(value, 'utf8'), encrypt.final()]);
+    writeFileSync(this.file, JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') }), {
+      mode: 0o600,
+    });
   }
 }
 
@@ -61,6 +96,9 @@ export class ComposioConnections {
   ) {}
   get configured(): boolean {
     return this.keys.configured;
+  }
+  get setup(): { canConfigure: boolean; keyStorage: string } {
+    return { canConfigure: this.keys.canSave, keyStorage: this.keys.storage };
   }
   private client(): Client {
     if (!this.sdk) {

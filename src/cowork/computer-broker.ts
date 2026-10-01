@@ -65,7 +65,7 @@ export class ComputerBroker {
       await this.owned(argv[offset]!);
       return this.exec(argv, input as string | undefined, signal, timeoutMs);
     }
-    throw new Error('Unsupported desktop operation.');
+    throw new Error(`Unsupported desktop operation: ${argv.join(' ')}`);
   }
 }
 

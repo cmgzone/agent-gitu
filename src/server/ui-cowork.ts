@@ -351,6 +351,8 @@ export const COWORK_CSS = String.raw`
   .cw-profile .cw-computer-section { border-bottom: 0; border-top: 1px solid var(--border); padding: 20px 0; margin: 0; }
   .cw-profile .cw-computer-section p { margin: 11px 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
   .cw-profile .cw-computer-section .btn { margin-top: 3px; }
+  .cw-computer-reason { color: var(--muted); font-size: 12px; line-height: 1.55; }
+  .cw-computer-reason .cw-reason-code { display: inline-block; margin-right: 6px; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--hover); color: var(--text); font-family: var(--mono); font-size: 11px; }
   .cw-profile-footer { padding-top: 20px; border-top: 1px solid var(--border); }
   .cw-info .cw-mrow { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
   .cw-info .cw-mrow .nm { flex: 1; min-width: 0; font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2557,6 +2559,25 @@ export const COWORK_JS = String.raw`
     };
   }
 
+  // Machine-readable failure reasons from the desktop service, each with the
+  // operator action that clears it. Mirrors classifyUnavailable() in
+  // src/cowork/computer.ts — keep both in sync when adding a code.
+  var CW_COMPUTER_REASONS = {
+    operation_not_supported: 'The desktop broker rejected this operation. Redeploy the broker so it runs the same build as this app.',
+    runtime_not_installed: 'No container runtime is available. Install Docker on the server and restart the Gitu service.',
+    browser_missing: 'The desktop image ships no Chromium. Rebuild the desktop image with a browser included.',
+    display_start_failed: 'The display server (Xvfb/X11/VNC) did not start. Check the desktop image and its published ports.',
+    timeout: 'The desktop did not answer in time. Retry, then check the broker logs.',
+    unknown: 'The desktop service reported an unrecognised failure. Check the broker logs for the full error.'
+  };
+
+  function cwComputerReasonHtml(computer) {
+    if (!computer || !computer.reason) return '';
+    var code = String(computer.reason);
+    var hint = CW_COMPUTER_REASONS[code] || 'The desktop service reported an unrecognised failure. Check the broker logs.';
+    return '<p class="cw-computer-reason"><span class="cw-reason-code">' + esc(code) + '</span> ' + esc(hint) + '</p>';
+  }
+
   function cwComputerHtml(agent, profile) {
     var heading = profile ? 'COMPUTER' : esc(agent.name) + ' · COMPUTER';
     if (agent.useHostComputer) {
@@ -2568,6 +2589,7 @@ export const COWORK_JS = String.raw`
     return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4><div class="chip">' + esc(computer.state) + '</div>' +
       '<p style="font-size:11.5px;color:var(--muted)">Private Linux desktop, files, shell and browser. Files and browser sessions persist when stopped.</p>' +
       (computer.error ? '<p style="font-size:11.5px;color:var(--err)">' + esc(computer.error) + '</p>' : '') +
+      cwComputerReasonHtml(computer) +
       '<div class="cw-actions"><button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="start">Start</button>' +
       '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="stop">Stop</button>' +
       '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></div>' +

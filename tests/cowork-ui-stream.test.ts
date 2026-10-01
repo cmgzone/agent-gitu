@@ -34,6 +34,7 @@ function ui() {
   const context = createContext({
     S: { active: 'cowork', cw }, window: { addEventListener: vi.fn() },
     document: {
+      documentElement: { getAttribute: () => 'light' },
       createElement: () => {
         const element = { className: '', innerHTML: '', querySelector: () => ({ onclick: null }), remove: vi.fn(), appendChild: vi.fn() };
         modals.push(element);
@@ -539,7 +540,8 @@ describe('Cowork UI live updates', () => {
     const u = ui();
     u.cw.artifacts = [{ id: 'cf-zip', name: 'bundle.zip', mime: 'application/zip', size: 512 }];
     u.context.cwPreviewFile('cf-zip');
-    expect(u.modals.at(-1)!.innerHTML).toContain('sandbox="allow-downloads"');
+    expect(u.modals.at(-1)!.innerHTML).toContain('sandbox="allow-downloads allow-popups allow-popups-to-escape-sandbox"');
+    expect(u.modals.at(-1)!.innerHTML).toContain('/preview?theme=light&amp;embedded=1');
     expect(u.context.cwFilesHtml(['cf-zip'])).toContain('data-cwpreview="cf-zip"');
   });
 

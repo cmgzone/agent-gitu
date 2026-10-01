@@ -1,15 +1,12 @@
-# Gitu UI v2 (OpenMuse-derived)
+# Gitu mobile companion (OpenMuse-derived)
 
-This app is a vendored copy of [OpenMuse](https://github.com/CopilotKit/openmuse)'s
-`apps/mobile` (MIT — see `LICENSE-OPENMUSE`), adopted as the foundation of
-Gitu's replacement UI. Plan and event contract: `../../docs/ui-v2-migration.md`.
+This is Gitu's native mobile companion, built from
+[OpenMuse](https://github.com/CopilotKit/openmuse)'s React Native/Expo app
+(MIT — see `LICENSE-OPENMUSE`). Setup and architecture are in [README.md](README.md).
 
-**Status: not yet runnable in this repo.** Upstream imports reference the
-OpenMuse pnpm workspace (`../../packages/domain`, `@copilotkit/*` v2 packages).
-Phase 2 of the migration rewires those to Gitu types and the Gitu server
-(`EXPO_PUBLIC_API_URL`), rebrands, and replaces the OpenMuse-specific screens
-(mail/calendar) with Gitu screens (Cowork, Mission Control, Agent Tree,
-Evidence Gate, Budgets, Permissions). Do not `npm install` here until then.
+The active entry uses Gitu's authenticated REST API. Original upstream screens
+are retained as inactive reference source; they are not part of the app build.
+The existing Gitu desktop/web UI remains active. The earlier proposal to replace
+it wholesale is still paused: `../../docs/ui-v2-migration.md`.
 
-The server-side counterpart (AG-UI adapter) already exists and is tested:
-`../../src/server/ag-ui.ts`, `../../tests/ag-ui-translator.test.ts`.
+The companion is served at `/companion/` after `npm run mobile:build:web`.

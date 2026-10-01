@@ -44,7 +44,7 @@ const llm: LlmClient = {
     return text;
   },
 };
-const server = new HermesServer({ cwd: path.join(process.env.AGENT_GITU_HOME, 'Workspace'), port: 0, llm });
+const server = new HermesServer({ passwordRequired: false, cwd: path.join(process.env.AGENT_GITU_HOME, 'Workspace'), port: 0, llm });
 console.log(`Cowork preview: http://127.0.0.1:${await server.start()}`);
 const autonomy = setInterval(() => (server as unknown as { coworkAutonomyTick: () => void }).coworkAutonomyTick(), 500);
 process.on('SIGINT', () => { clearInterval(autonomy); void server.stop().then(() => process.exit(0)); });

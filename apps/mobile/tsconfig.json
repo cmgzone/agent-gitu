@@ -5,10 +5,7 @@
     "noEmit": true,
     "moduleSuffixes": [".native", ""],
     "lib": ["ES2022", "DOM"],
-    "paths": {
-      "@openmuse/domain": ["../../packages/domain/src/index.ts"]
-    },
     "allowImportingTsExtensions": true
   },
-  "include": ["**/*.ts", "**/*.tsx"]
+  "include": ["App.tsx", "src/gitu/**/*.ts", "src/gitu/**/*.tsx", "src/ui.tsx"]
 }

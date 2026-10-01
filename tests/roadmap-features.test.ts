@@ -258,7 +258,7 @@ describe('semantic recall over memory + bounded store + distillation', () => {
   it('distils a transcript into candidate memories through the LLM', async () => {
     updateWorkspaceSettings({ coworkLearning: { mode: 'proactive' } });
     const reply = JSON.stringify({ memories: [{ type: 'decision', claim: 'The team chose SQLite FTS5 for cross-session recall.' }] });
-    const server = new GituServer({ cwd: WORKSPACE, port: 0, llm: { name: 'mock', complete: async () => reply } as unknown as LlmClient });
+    const server = new GituServer({ passwordRequired: false, cwd: WORKSPACE, port: 0, llm: { name: 'mock', complete: async () => reply } as unknown as LlmClient });
     const base = `http://127.0.0.1:${await server.start()}`;
     try {
       const agent = (await api(base, 'POST', '/api/cowork/agents', { name: 'distill-agent', systemPrompt: 'x' })).json.agent;
@@ -288,7 +288,7 @@ describe('semantic recall over memory + bounded store + distillation', () => {
 describe('staged skill-write approval (server flow)', () => {
   it('stages when approval is on, applies on approve, drops on reject', async () => {
     updateWorkspaceSettings({ coworkLearning: { skillApproval: true } });
-    const server = new GituServer({ cwd: WORKSPACE, port: 0, llm: { name: 'mock', complete: async () => 'ok' } as unknown as LlmClient });
+    const server = new GituServer({ passwordRequired: false, cwd: WORKSPACE, port: 0, llm: { name: 'mock', complete: async () => 'ok' } as unknown as LlmClient });
     const base = `http://127.0.0.1:${await server.start()}`;
     try {
       const agent = (await api(base, 'POST', '/api/cowork/agents', { name: 'stager', systemPrompt: 'x', allowConfig: true })).json.agent;

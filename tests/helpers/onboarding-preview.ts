@@ -9,7 +9,7 @@ import { allProviderSpecs } from '../../src/llm/providers.js';
 process.env.AGENT_GITU_HOME = mkdtempSync(path.join(tmpdir(), 'gitu-onboarding-preview-'));
 for (const provider of Object.values(allProviderSpecs())) for (const key of provider.keyEnvVars) delete process.env[key];
 delete process.env.HERMES_API_KEY;
-const server = new HermesServer({
+const server = new HermesServer({ passwordRequired: false,
   cwd: process.env.AGENT_GITU_HOME,
   port: 0,
   llm: new ScriptedMockLlm([() => 'Preview complete.']),

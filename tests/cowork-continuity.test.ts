@@ -433,7 +433,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const state = { available: true, url: 'https://example.com', title: 'Example', canBack: false, canForward: false, loading: false };
     const screenshot = vi.fn(async () => ({ pngBase64: 'aGVsbG8=', state }));
     const browser = { available: () => true, screenshot } as NonNullable<ToolContext['browser']>;
-    const server = new HermesServer({ cwd: root, browser });
+    const server = new HermesServer({ passwordRequired: false, cwd: root, browser });
     const context = (server as unknown as { coworkToolContext: (agent: typeof s.agent) => ToolContext }).coworkToolContext(s.agent);
     const computerFor = vi.fn();
     const result = await executeCoworkTool(context, 'browse', { action: 'screenshot' }, s.perms, { ...s.scope, computerFor });

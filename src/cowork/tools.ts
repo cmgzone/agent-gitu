@@ -37,6 +37,8 @@ import { closestNameMatches } from '../util.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js';
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
+import { createHash } from 'node:crypto';
+import type { ComposioConnections } from '../connections/composio.js';
 
 /**
  * Tool surface for cowork chat agents. It reuses the project's audited tool
@@ -185,6 +187,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     gate: 'config',
   },
   { name: 'list_connections', doc: 'List saved API and SSH connections (metadata only, never credentials). params: {}', gate: undefined },
+  { name: 'connected_apps', doc: 'Use services the user connected in Cowork → Connections. params: {"action":"list"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from list","approvalId":"optional"}. Choose accountId when multiple accounts exist. Every execution posts a review card. Stop and wait; after the user accepts, repeat the exact action with its approvalId. Never request provider keys or user IDs.', gate: undefined },
   { name: 'ssh_exec', doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.', gate: 'shell' },
   { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
@@ -528,6 +531,8 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return toolConfigureMcp(ctx, params);
       case 'list_connections':
         return { ok: true, output: `${toolListConnections(ctx).output}\n${new SshConnectionRegistry().renderForAgent()}` };
+      case 'connected_apps':
+        return await connectedAppTool(ctx.connectedApps, params, perms, scope);
       case 'ssh_exec': {
         if (!perms.allowShell) return blocked(tool);
         try {
@@ -795,6 +800,44 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
     if (!used.has(candidate)) color = candidate;
   }
   return { shape, color };
+}
+
+const appApprovals = new WeakMap<ComposioConnections, Map<string, { signature: string; expires: number }>>();
+async function connectedAppTool(apps: ComposioConnections | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
+  if (!apps?.configured) return { ok: false, output: 'Set up your provider and choose services in Cowork → Connections.' };
+  try {
+    if (params['action'] === 'list') return { ok: true, output: JSON.stringify(await apps.accounts()) };
+    const service = String(params['service'] ?? '');
+    if (params['action'] === 'tools') return { ok: true, output: JSON.stringify(await apps.tools(service)).slice(0, 24000) };
+    if (params['action'] !== 'execute') return { ok: false, output: 'action must be list, tools, or execute.' };
+    if (!perms.allowWrites || !perms.allowConfig || !scope?.conversationId || scope.isSubAgent) return blocked('connected_apps execution');
+    const tool = String(params['tool'] ?? '');
+    const args = params['args'];
+    if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return { ok: false, output: 'Provide the exact tool slug and an args object.' };
+    const accounts = (await apps.accounts()).filter(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled);
+    const accountId = String(params['accountId'] ?? (accounts.length === 1 ? accounts[0]!.id : ''));
+    if (!accounts.some(account => account.id === accountId)) return { ok: false, output: 'Choose an active accountId for this service from connected_apps list.' };
+    const detail = JSON.stringify({ service, accountId, tool, args });
+    if (detail.length > 16000) return { ok: false, output: 'This action is too large for review. Split it into smaller actions.' };
+    const signature = createHash('sha256').update(scope.conversationId + ':' + scope.agent.id + ':' + detail).digest('hex');
+    let pending = appApprovals.get(apps);
+    if (!pending) { pending = new Map(); appApprovals.set(apps, pending); }
+    for (const [id, approval] of pending) if (approval.expires <= Date.now()) pending.delete(id);
+    const approvalId = String(params['approvalId'] ?? '');
+    const approved = pending.get(approvalId);
+    const request = approvalId ? scope.store.getRequest(approvalId) : undefined;
+    if (approved?.signature === signature && request?.status === 'accepted' && request.conversationId === scope.conversationId && request.agentId === scope.agent.id) {
+      // Consume before awaiting the network: concurrent calls cannot replay it.
+      pending.delete(approvalId);
+      return { ok: true, output: JSON.stringify(await apps.execute(service, tool, args as Record<string, unknown>, accountId)).slice(0, 16000) };
+    }
+    const existing = [...pending].find(([id, value]) => value.signature === signature && scope.store.getRequest(id)?.status === 'open');
+    if (existing) return { ok: true, output: `Waiting for review ${existing[0]}. Stop and wait for the user.` };
+    if (pending.size >= 100) return { ok: false, output: 'Too many actions are waiting for review.' };
+    const card = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'recommendation', title: `Run ${tool}`, detail: `Review this ${service} action:\n${detail}\n\nAccept to allow this exact action once. The approval expires in 15 minutes.` });
+    pending.set(card.id, { signature, expires: Date.now() + 15 * 60 * 1000 });
+    return { ok: true, output: `Review ${card.id} posted. Stop and wait for the user. If accepted, repeat the exact action with approvalId: ${card.id}.` };
+  } catch { return { ok: false, output: 'The connected service could not complete this request. Check its status in Cowork → Connections.' }; }
 }
 
 function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {

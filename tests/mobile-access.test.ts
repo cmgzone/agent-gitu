@@ -12,12 +12,12 @@ const key = 'mobile-test-key-with-at-least-32-characters';
 
 describe('Remote access', () => {
   it('requires opt-in for network listening', () => {
-    expect(() => new GituServer({ cwd: root, host: '0.0.0.0', accessKey: '' })).toThrow(/access.key/i);
-    expect(() => new GituServer({ cwd: root, accessKey: 'short' })).toThrow(/32 characters/);
+    expect(() => new GituServer({ passwordRequired: false, cwd: root, host: '0.0.0.0', accessKey: '' })).toThrow(/access.key/i);
+    expect(() => new GituServer({ passwordRequired: false, cwd: root, accessKey: 'short' })).toThrow(/32 characters/);
   });
 
   it('pairs by header, loads with cookies, keeps Origin protection, and revokes sessions', async () => {
-    const server = new GituServer({ cwd: root, port: 0, accessKey: key, autoInstallLsp: false });
+    const server = new GituServer({ passwordRequired: false, cwd: root, port: 0, accessKey: key, autoInstallLsp: false });
     const port = await server.start();
     const base = `http://127.0.0.1:${port}`;
     const headers = { Authorization: `Bearer ${key}`, Host: `hosted.agent.test:${port}`, 'X-Forwarded-Proto': 'https' };

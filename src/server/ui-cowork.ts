@@ -323,7 +323,8 @@ export const COWORK_CSS = String.raw`
 .cw-request .cw-credential-form .cw-ssh-confirm input[type="checkbox"] { width: auto; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
 .cw-request .cw-credential-form .cw-ssh-confirm[hidden] { display: none; }
 .cw-request .cw-credential-form > .btn { align-self: flex-start; padding: 4px 10px; font-size: 11.5px; }
-  .cw-doc-modal .box { width: min(980px, 94vw); height: min(820px, 92vh); }
+  .cw-modal.cw-doc-modal .box { width: min(980px, 94vw); height: min(820px, 92dvh); max-height: 92dvh; }
+  .cw-doc-modal .bar > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cw-doc-frame { width: 100%; flex: 1; min-height: 0; border: 0; background: #fff; }
   .cw-info { width: 320px; box-sizing: border-box; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 20px 28px; min-height: 0; }
   .cw-info > .cw-panel-close { display: block; margin: 0 0 8px auto; }
@@ -664,6 +665,8 @@ export const COWORK_JS = String.raw`
   function cwConvMembers(conv) { var out = []; for (var i = 0; i < conv.memberIds.length; i++) { var a = cwAgentById(conv.memberIds[i]); if (a) out.push(a); } return out; }
 
   function openCowork() {
+    cwEnsure().connectionsOpen = false;
+    cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     S.active = 'cowork';
     document.body.classList.add('cowork');
     try { localStorage.setItem('hermes.cowork', 'open'); } catch (e) {}
@@ -683,6 +686,7 @@ export const COWORK_JS = String.raw`
           '<button class="iconbtn" id="cwAddGroup" title="New group chat" aria-label="New group chat">' + cwIcon('chat') + '</button></div>' +
           '<div class="cw-rail-search"><input type="search" id="cwSearch" placeholder="Search all chats…" title="Cross-session recall: every conversation, related phrasing included"></div>' +
           '<div class="cw-rail-scroll" id="cwRail"></div>' +
+          '<div class="cw-connection-nav"><button class="btn ghost" id="cwConnections">Connections</button><button class="btn ghost" id="cwLock">Lock app</button></div>' +
           '<div class="cw-rail-foot"><button class="btn ghost" id="cwExit">Back to workspace</button>' + themeToggleHtml() + '<button class="btn ghost" id="cwGear" title="Settings" aria-label="Settings">' + cwIcon('gear') + '</button></div>' +
         '</aside>' +
         '<section class="cw-chat" id="cwChat"></section>' +
@@ -692,6 +696,8 @@ export const COWORK_JS = String.raw`
     var gearBtn = $('cwGear');
     if (gearBtn && typeof icon === 'function') gearBtn.innerHTML = icon('gear');
     $('cwExit').onclick = cwExit;
+    $('cwConnections').onclick = function () { cwOpenConnections(); };
+    $('cwLock').onclick = function () { cwLockApp(); };
     $('cwGear').onclick = function () { cwClosePanels(); openSettings('cowork'); };
     $('cwPanelBackdrop').onclick = cwClosePanels;
     $('cwCloseRail').onclick = cwClosePanels;
@@ -729,6 +735,8 @@ export const COWORK_JS = String.raw`
   }
 
   function cwExit() {
+    cwEnsure().connectionsOpen = false;
+    cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     cwSaveDraft();
     cwStopPoll();
     document.body.classList.remove('cowork');
@@ -745,7 +753,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure(), narrow = window.innerWidth <= 1180;
     cw.panelWidth = window.innerWidth;
     var railOpen = window.innerWidth <= 720 && root.classList.contains('rail-open');
-    var infoOpen = !railOpen && !!cwActiveConv() && (narrow ? !!cw.infoNarrowOpen : cw.infoOpen);
+    var infoOpen = !cw.connectionsOpen && !railOpen && !!cwActiveConv() && (narrow ? !!cw.infoNarrowOpen : cw.infoOpen);
     var overlayOpen = railOpen;
     panel.style.display = infoOpen ? 'block' : 'none';
     root.classList.toggle('overlay-open', overlayOpen);
@@ -970,7 +978,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     cw.selectedAgentId = agentId;
     var existing = cw.convs.find(function (c) { return c.kind === 'dm' && c.memberIds[0] === agentId; });
-    if (existing) { if (existing.id !== cw.active) cwOpenConv(existing.id); else cwRenderRail(); return; }
+    if (existing) { if (existing.id !== cw.active || cw.connectionsOpen) cwOpenConv(existing.id); else cwRenderRail(); return; }
     api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
       .then(function (d) { cw.convs.push(d.conversation); cwRenderRail(); cwOpenConv(d.conversation.id); })
       .catch(function (e) { toast(e.message, true); });
@@ -978,6 +986,8 @@ export const COWORK_JS = String.raw`
 
   function cwOpenConv(id, threadId) {
     var cw = cwEnsure();
+    cw.connectionsOpen = false;
+    cw.connectionRevision = (cw.connectionRevision || 0) + 1;
     cwSaveDraft();
     cwStopPoll();
     cw.active = id;
@@ -1077,6 +1087,7 @@ export const COWORK_JS = String.raw`
 
   function cwRenderChat() {
     var cw = cwEnsure();
+    if (cw.connectionsOpen) return;
     var chat = $('cwChat');
     if (!chat) return;
     var conv = cwActiveConv();
@@ -1276,11 +1287,12 @@ export const COWORK_JS = String.raw`
     // stays sandboxed (allow-downloads keeps the fallback page's download link
     // working) on top of the server's Content-Security-Policy.
     var isPdf = /^application\/pdf/i.test(file.mime || '') || /\.pdf$/i.test(file.name || '');
+    var theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
     var modal = document.createElement('div');
     modal.className = 'modal cw-modal cw-doc-modal';
     modal.innerHTML = '<div class="box" style="display:flex;flex-direction:column"><div class="bar"><span>' + esc(file.name) + '</span><span style="flex:1"></span>' +
       '<a class="btn ghost" href="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '" download>Download</a><button class="btn ghost" data-close>Close</button></div>' +
-      '<iframe class="cw-doc-frame" title="Document preview"' + (isPdf ? '' : ' sandbox="allow-downloads"') + ' src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview"></iframe></div>';
+      '<iframe class="cw-doc-frame" title="Document preview"' + (isPdf ? '' : ' sandbox="allow-downloads allow-popups allow-popups-to-escape-sandbox"') + ' src="/api/cowork/artifacts/' + encodeURIComponent(file.id) + '/preview?theme=' + theme + '&amp;embedded=1"></iframe></div>';
     document.body.appendChild(modal);
     modal.querySelector('[data-close]').onclick = function () { modal.remove(); };
   }

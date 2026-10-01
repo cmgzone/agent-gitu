@@ -3,6 +3,17 @@
 Status: **paused** — the original Gitu UI is the active web and desktop
 interface. The proposed Expo UI cutover was reverted after review.
 
+The OpenMuse-derived client now runs as a separate **mobile companion**, not a
+desktop UI cutover. Its active entry is `apps/mobile/src/gitu/app.tsx`, backed by
+Gitu's authenticated REST API and cursor-based mobile event pages. It includes
+chat, task activity, approvals, plan review, questions and reviewed text-file
+editing. Teams connects to Cowork's shared teammate profiles, group/direct chats,
+topic threads, live activity and request decisions. Web export is served at
+`/companion/`; native Android/iOS share the
+same client. See `apps/mobile/README.md` for setup and current limits.
+The AG-UI architecture and migration phases below remain the historical,
+paused replacement proposal.
+
 ## Goal
 
 Replace the server-rendered UI (`src/server/ui*.ts`, ~660 KB of template

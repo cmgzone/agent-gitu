@@ -1075,7 +1075,7 @@ describe('cowork server routes', () => {
 
   let serverInstance: HermesServer | undefined;
   async function startServer(llm: LlmClient, extra: Partial<ConstructorParameters<typeof HermesServer>[0]> = {}): Promise<string> {
-    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm, coworkCompletionProtocol: 'legacy', ...extra });
+    const server = new HermesServer({ passwordRequired: false, cwd: path.join(home, 'Workspace'), port: 0, llm, coworkCompletionProtocol: 'legacy', ...extra });
     servers.push(server);
     serverInstance = server;
     const port = await server.start();
@@ -1164,7 +1164,7 @@ describe('cowork server routes', () => {
       () => '<tool>{"name":"list_files","params":{"path":"."}}</tool>',
       () => 'The channel audit is complete.\n<cowork_state>done</cowork_state>',
     ]);
-    const server = new HermesServer({ cwd: path.join(home, 'Workspace'), port: 0, llm });
+    const server = new HermesServer({ passwordRequired: false, cwd: path.join(home, 'Workspace'), port: 0, llm });
     servers.push(server);
     const base = `http://127.0.0.1:${await server.start()}`;
     const created = await post(base, '/api/cowork/agents', makeAgentInput('status-agent'));
@@ -1256,7 +1256,12 @@ describe('cowork server routes', () => {
     expect(view.messages.some((message) => message.artifactIds?.includes(brief.id))).toBe(true);
     const preview = await fetch(`${base}/api/cowork/artifacts/${brief.id}/preview`);
     expect(preview.status).toBe(200);
-    expect(await preview.text()).toContain('# Brief');
+    expect(await preview.text()).toContain('<h1>Brief</h1>');
+    const embeddedPreview = await fetch(`${base}/api/cowork/artifacts/${brief.id}/preview?theme=light&embedded=1`);
+    const embeddedHtml = await embeddedPreview.text();
+    expect(embeddedHtml).toContain('<html data-theme="light">');
+    expect(embeddedHtml).not.toContain('<header>');
+    expect(embeddedPreview.headers.get('content-security-policy')).toContain("default-src 'none'");
 
     // PDFs go to the browser's own viewer: inline bytes, not the HTML page.
     const pdfPreview = await fetch(`${base}/api/cowork/artifacts/${report.id}/preview`);

@@ -125,7 +125,7 @@ describe('session usage over HTTP', () => {
 
   it('accumulates tokens and messages per session and keeps them after restart', async () => {
     const dir = makeProject('lifecycle');
-    const first = new HermesServer({ cwd: dir, port: 0, llm: usageReportingLlm() });
+    const first = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: usageReportingLlm() });
     const firstPort = await first.start();
     const base = `http://127.0.0.1:${firstPort}`;
 
@@ -147,7 +147,7 @@ describe('session usage over HTTP', () => {
     expect(usage.cachedTokens).toBe(usage.messages * 20);
     await first.stop();
 
-    const second = new HermesServer({ cwd: dir, port: 0, llm: usageReportingLlm() });
+    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: usageReportingLlm() });
     const secondPort = await second.start();
     const restored = await fetch(`http://127.0.0.1:${secondPort}/api/runs/${created.runId}`).then((r) => r.json());
     expect(restored.usage).toMatchObject(usage);

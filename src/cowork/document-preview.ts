@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
+import { Marked } from 'marked';
 import { isTextLikeFile } from '../server/static-assets.js';
 import type { CoworkArtifact } from './store.js';
 
@@ -79,6 +80,40 @@ function textHtml(filePath: string): string {
   return `<pre>${esc(readFileSync(filePath, 'utf8').slice(0, 2_000_000))}</pre>`;
 }
 
+// Only generated Markdown markup is trusted. Raw HTML stays visible as text,
+// images never fetch resources, and links can only navigate to web URLs.
+const markdown = new Marked({
+  async: false,
+  gfm: true,
+  renderer: {
+    html({ text }) { return esc(text); },
+    image({ text }) { return `<span class="empty">${esc(text)}</span>`; },
+    link({ href, tokens }) {
+      const label = this.parser.parseInline(tokens);
+      if (!/^https?:\/\//i.test(href) || /[\u0000-\u0020\u007f]/.test(href)) return label;
+      try {
+        const url = new URL(href);
+        if (!['http:', 'https:'].includes(url.protocol)) return label;
+        return `<a href="${esc(url.href)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+      } catch { return label; }
+    },
+    table(token) {
+      const header = token.header.map((cell) => this.tablecell(cell)).join('');
+      const rows = token.rows.map((row) => `<tr>${row.map((cell) => this.tablecell(cell)).join('')}</tr>`).join('');
+      return `<div class="table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${rows}</tbody></table></div>`;
+    },
+  },
+});
+
+function markdownHtml(filePath: string): string {
+  return `<article class="markdown">${markdown.parse(readFileSync(filePath, 'utf8').slice(0, MAX_INLINE_BYTES), { async: false })}</article>`;
+}
+
+export interface DocumentPreviewOptions {
+  theme?: 'light' | 'dark';
+  embedded?: boolean;
+}
+
 /** SVG runs scripts as a standalone document but never inside an <img> data URL,
  *  so drawing it as an image keeps the preview inert. */
 function svgHtml(filePath: string, artifact: CoworkArtifact): string {
@@ -103,7 +138,7 @@ function unsupportedHtml(artifact: CoworkArtifact, reason: string): string {
  *  bytes, SVG renders as an inert <img>, and every other type gets an identity
  *  card with a download link — macros, scripts, external resources and embedded
  *  objects never execute. */
-export function coworkDocumentPreview(filePath: string, artifact: CoworkArtifact): string {
+export function coworkDocumentPreview(filePath: string, artifact: CoworkArtifact, options: DocumentPreviewOptions = {}): string {
   const ext = path.extname(artifact.name).toLowerCase();
   const mime = String(artifact.mime ?? '').toLowerCase();
   let body: string;
@@ -115,6 +150,7 @@ export function coworkDocumentPreview(filePath: string, artifact: CoworkArtifact
     } else if (ext === '.docx') body = docxHtml(filePath);
     else if (ext === '.xlsx') body = xlsxHtml(filePath);
     else if (ext === '.pptx') body = pptxHtml(filePath);
+    else if (['.md', '.markdown'].includes(ext) || /^text\/(?:x-)?markdown\b/.test(mime)) body = markdownHtml(filePath);
     else if (isTextLikeFile(artifact.name, artifact.mime)) body = textHtml(filePath);
     else if (/^application\/pdf\b/i.test(mime)) body = unsupportedHtml(artifact, 'Open the download below to read this PDF in your PDF viewer.');
     else if (['.doc', '.xls', '.ppt'].includes(ext)) body = unsupportedHtml(artifact, 'This legacy Office format cannot be read safely — download it, or ask for a .docx/.xlsx/.pptx version.');
@@ -126,5 +162,19 @@ export function coworkDocumentPreview(filePath: string, artifact: CoworkArtifact
     body = unsupportedHtml(artifact, 'This file could not be parsed for a preview.');
   }
   const csp = inlineImage ? "default-src 'none'; img-src data:; style-src 'unsafe-inline'" : "default-src 'none'; style-src 'unsafe-inline'";
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><title>${esc(artifact.name)}</title><style>body{margin:0;background:#0d1119;color:#e8ecf4;font:14px/1.6 Inter,system-ui,sans-serif}header{position:sticky;top:0;padding:14px 22px;background:#121824;border-bottom:1px solid #293244;font-weight:650}main{max-width:980px;margin:auto;padding:24px}p{white-space:pre-wrap}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#121824;border:1px solid #293244;border-radius:12px;padding:18px}.table-wrap{overflow:auto;background:#121824;border:1px solid #293244;border-radius:12px}table{border-collapse:collapse;min-width:100%}td{border:1px solid #293244;padding:6px 9px;white-space:pre-wrap}.slide{aspect-ratio:16/9;overflow:auto;background:#f7f5ef;color:#18202c;border-radius:12px;padding:6% 7%;margin:0 0 24px;box-shadow:0 12px 36px #0008}.slide p{font-size:clamp(15px,2vw,24px)}.slide-no{color:#64748b;font-size:12px}.image{display:flex;justify-content:center;background:#121824;border:1px solid #293244;border-radius:12px;padding:18px}.image img{max-width:100%;max-height:72vh}.placeholder{background:#121824;border:1px solid #293244;border-radius:12px;padding:22px}.btn{display:inline-block;text-decoration:none;background:#8f80ff;color:#0b0f16;border-radius:8px;padding:9px 14px;font-weight:650}.empty{color:#8f9aaf}</style></head><body><header>${esc(artifact.name)} · safe local preview</header><main>${body}</main></body></html>`;
+  const theme = options.theme === 'light' ? 'light' : 'dark';
+  return `<!doctype html><html data-theme="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${csp}"><title>${esc(artifact.name)}</title><style>
+:root{color-scheme:dark;--bg:#1b1b1b;--text:#e8e8e8;--panel:#161616;--border:#414141;--muted:#a3a3a3;--accent:#b6aaff}
+:root[data-theme="light"]{color-scheme:light;--bg:#fff;--text:#242422;--panel:#f3f3f1;--border:#dededb;--muted:#62625e;--accent:#6755c8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.7 system-ui,sans-serif;overflow-wrap:anywhere}
+header{position:sticky;top:0;padding:14px 24px;background:var(--bg);border-bottom:1px solid var(--border);font-weight:600;font-size:13px}
+main{max-width:900px;margin:auto;padding:32px clamp(20px,5vw,52px) 48px}p{white-space:pre-wrap;margin:0 0 1em}
+h1,h2,h3,h4,h5,h6{line-height:1.3;margin:1.5em 0 .65em;font-weight:650}h1{font-size:28px;letter-spacing:-.025em}h2{font-size:22px;border-bottom:1px solid var(--border);padding-bottom:.4em}h3{font-size:18px}.markdown>:first-child{margin-top:0}
+.markdown p{white-space:normal}ul,ol{padding-left:1.6em;margin:0 0 1em}li{margin:.3em 0}li>p{margin:.3em 0}a{color:var(--accent);text-underline-offset:3px}
+code{font: .9em/1.6 ui-monospace,Consolas,monospace;background:var(--panel);border-radius:4px;padding:2px 5px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}pre code{background:none;padding:0}
+blockquote{margin:1em 0;border-left:3px solid var(--border);padding:0 1em;color:var(--muted)}hr{border:0;border-top:1px solid var(--border);margin:1.8em 0}
+.table-wrap{overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:10px;margin:1em 0}table{border-collapse:collapse;min-width:100%}td,th{border:1px solid var(--border);padding:8px 12px;white-space:pre-wrap;text-align:left}th{font-weight:650}
+.slide{aspect-ratio:16/9;overflow:auto;background:#f7f5ef;color:#18202c;border-radius:12px;padding:6% 7%;margin:0 0 24px;box-shadow:0 12px 36px #0008}.slide p{font-size:clamp(15px,2vw,24px)}.slide-no{color:#64748b;font-size:12px}
+.image{display:flex;justify-content:center;background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px}.image img{max-width:100%;max-height:72vh}.placeholder{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:22px}.btn{display:inline-block;text-decoration:none;background:var(--accent);color:var(--bg);border-radius:8px;padding:9px 14px;font-weight:650}.empty{color:var(--muted)}
+</style></head><body>${options.embedded ? '' : `<header>${esc(artifact.name)}</header>`}<main>${body}</main></body></html>`;
 }

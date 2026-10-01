@@ -12,7 +12,7 @@ it('delivers saved tool activity through the conversation API without raw output
   const workspace = path.join(home, 'Workspace');
   mkdirSync(workspace, { recursive: true });
   writeFileSync(path.join(workspace, 'config.txt'), 'PRIVATE_TOOL_OUTPUT_PASSWORD=not-for-browser');
-  const server = new GituServer({ cwd: workspace, port: 0, coworkCompletionProtocol: 'legacy', llm: new ScriptedMockLlm([
+  const server = new GituServer({ passwordRequired: false, cwd: workspace, port: 0, coworkCompletionProtocol: 'legacy', llm: new ScriptedMockLlm([
     () => 'Checking the local configuration. <tool>{"name":"read_file","params":{"path":"config.txt"}}</tool>',
     () => 'The configuration check is complete.',
   ]) });

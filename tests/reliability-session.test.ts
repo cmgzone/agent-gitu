@@ -57,7 +57,7 @@ describe('HermesServer — session ↔ task ↔ git attachment (P0.1)', () => {
   });
 
   async function startServer(dir: string, llm: ScriptedMockLlm): Promise<{ base: string; server: HermesServer }> {
-    const server = new HermesServer({ cwd: dir, port: 0, llm });
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
     servers.push(server);
     const port = await server.start();
     return { base: `http://127.0.0.1:${port}`, server };

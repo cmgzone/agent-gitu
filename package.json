@@ -13,6 +13,14 @@
   "scripts": {
     "start": "node dist/cli.js",
     "ui": "node dist/cli.js ui",
+    "mobile:install": "npm --prefix apps/mobile install",
+    "mobile:start": "npm --prefix apps/mobile start",
+    "mobile:android": "npm --prefix apps/mobile run android",
+    "mobile:ios": "npm --prefix apps/mobile run ios",
+    "mobile:typecheck": "npm --prefix apps/mobile run typecheck",
+    "mobile:build:web": "npm --prefix apps/mobile run build:web",
+    "mobile:build:android": "npm --prefix apps/mobile run build:android",
+    "mobile:build:ios": "npm --prefix apps/mobile run build:ios",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "generate:brand-icons": "electron scripts/generate-brand-icons.cjs",
@@ -40,6 +48,7 @@
       "desktop/**/*",
       "dist/**/*",
       "assets/**/*",
+      "apps/mobile/dist/web/**/*",
       "node_modules/**/*",
       "package.json"
     ],
@@ -74,7 +83,7 @@
     }
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.22.3"
   },
   "license": "MIT",
   "repository": {
@@ -98,10 +107,12 @@
   "dependencies": {
     "@ag-ui/client": "^1.0.0",
     "@ag-ui/core": "^1.0.0",
+    "@composio/core": "^0.22.0",
     "@openai/codex-sdk": "^0.155.1",
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "fflate": "^0.8.3",
+    "marked": "^18.0.14",
     "pdf-lib": "^1.17.1",
     "pptxgenjs": "^4.0.1",
     "rxjs": "7.8.1",

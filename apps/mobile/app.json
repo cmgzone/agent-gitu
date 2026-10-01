@@ -1,19 +1,28 @@
 {
   "expo": {
-    "name": "OpenMuse",
-    "slug": "openmuse",
-    "scheme": "openmuse",
+    "name": "Agent Gitu",
+    "slug": "agent-gitu",
+    "scheme": "agentgitu",
+    "icon": "./assets/agent-gitu-icon.png",
     "version": "0.1.0",
     "orientation": "default",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
-    "ios": { "supportsTablet": true, "bundleIdentifier": "app.openmuse.mobile" },
-    "android": { "package": "app.openmuse.mobile" },
-    "web": { "bundler": "metro", "name": "OpenMuse — a little room for everything" },
-    "plugins": [
-      "expo-document-picker",
-      "@config-plugins/react-native-blob-util",
-      "@config-plugins/react-native-pdf"
-    ]
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.agentgitu.mobile"
+    },
+    "android": {
+      "package": "dev.agentgitu.mobile"
+    },
+    "web": {
+      "bundler": "metro",
+      "name": "Agent Gitu",
+      "favicon": "./assets/agent-gitu-icon.png"
+    },
+    "experiments": {
+      "baseUrl": "/companion"
+    },
+    "plugins": ["expo-document-picker", ["expo-build-properties", { "android": { "usesCleartextTraffic": true } }]]
   }
 }

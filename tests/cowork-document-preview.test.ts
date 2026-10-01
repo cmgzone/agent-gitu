@@ -28,6 +28,43 @@ function office(name: string, entries: Record<string, string>): string {
 }
 
 describe('Cowork document preview', () => {
+  it('renders Markdown headings, emphasis, lists, quotes, tables and code as a document', () => {
+    const file = path.join(root, 'copy-deck.md');
+    writeFileSync(file, '# Copy deck\n\n**Status:** *ready*\n\n## Product\n\n- Eyebrow: `Coming soon`\n- Body copy\n\n> Verified facts\n\n| Product | Status |\n| --- | --- |\n| Gitu | Ready |\n\n```html\n<script>literal code</script>\n```');
+    const html = coworkDocumentPreview(file, artifact('copy-deck.md', 'application/octet-stream'), { theme: 'light', embedded: true });
+    expect(html).toContain('<h1>Copy deck</h1>');
+    expect(html).toContain('<h2>Product</h2>');
+    expect(html).toContain('<strong>Status:</strong> <em>ready</em>');
+    expect(html).toContain('<li>Eyebrow: <code>Coming soon</code></li>');
+    expect(html).toContain('<blockquote>');
+    expect(html).toContain('<th>Product</th>');
+    expect(html).toContain('&lt;script&gt;literal code&lt;/script&gt;');
+    expect(html).toContain('<html data-theme="light">');
+    expect(html).not.toContain('<header>');
+    expect(html).not.toContain('<script>');
+  });
+
+  it('blocks raw HTML, unsafe links and remote image loads in Markdown', () => {
+    const file = path.join(root, 'unsafe.markdown');
+    writeFileSync(file, '<img src="https://tracker.example/pixel" onerror="alert(1)">\n\n[unsafe](javascript:alert%281%29) [encoded](javascript&#58;alert%281%29) [site](https://example.com/?a=1&b=2)\n\n![Tracking image](https://tracker.example/pixel)');
+    const html = coworkDocumentPreview(file, artifact('unsafe.markdown', 'text/plain'));
+    expect(html).toContain('&lt;img');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('href="javascript');
+    expect(html).toContain('href="https://example.com/?a=1&amp;b=2"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain('Tracking image');
+    expect(html).toContain("default-src 'none'");
+  });
+
+  it('keeps ordinary text as literal text even when it resembles Markdown', () => {
+    const file = path.join(root, 'notes.txt');
+    writeFileSync(file, '# Heading\n**literal**');
+    const html = coworkDocumentPreview(file, artifact('notes.txt', 'text/plain'));
+    expect(html).toContain('<pre># Heading\n**literal**</pre>');
+    expect(html).not.toContain('<h1>Heading</h1>');
+  });
+
   it('escapes text and blocks executable content', () => {
     const file = path.join(root, 'notes.md');
     writeFileSync(file, '<script>alert(1)</script> & notes');

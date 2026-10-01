@@ -51,7 +51,7 @@ describe('Hermes home', () => {
 
 describe('home API', () => {
   it('creates projects over HTTP and manages the workspace location', async () => {
-    const server = new HermesServer({ cwd: homeDir, port: 0, llm: new ScriptedMockLlm([]) });
+    const server = new HermesServer({ passwordRequired: false, cwd: homeDir, port: 0, llm: new ScriptedMockLlm([]) });
     const port = await server.start();
     const base = `http://127.0.0.1:${port}`;
     try {

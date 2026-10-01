@@ -56,7 +56,7 @@ async function harness(policy?: ChiefAuthorityPolicy, script: string[] = workerS
   const home = mkdtempSync(path.join(tmpdir(), 'chief-server-'));
   homes.push(home);
   process.env['AGENT_GITU_HOME'] = home;
-  const server = new GituServer({
+  const server = new GituServer({ passwordRequired: false,
     cwd: path.join(home, 'Workspace'),
     port: 0,
     llm: new ScriptedMockLlm(script.map((text) => () => text)),

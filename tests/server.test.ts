@@ -59,7 +59,7 @@ describe('HermesServer', () => {
   });
 
   it('keeps event ids monotonic when non-persisted stream deltas leave gaps', () => {
-    const server = new HermesServer({ cwd: makeProject('event-cursor'), port: 0, llm: new ScriptedMockLlm([]) });
+    const server = new HermesServer({ passwordRequired: false, cwd: makeProject('event-cursor'), port: 0, llm: new ScriptedMockLlm([]) });
     const session = {
       events: [
         { i: 0, t: '2026-01-01T00:00:00.000Z', text: 'user-msg original task' },
@@ -78,7 +78,7 @@ describe('HermesServer', () => {
   });
 
   async function startServer(dir: string, llm: ScriptedMockLlm): Promise<{ base: string; server: HermesServer }> {
-    const server = new HermesServer({ cwd: dir, port: 0, llm });
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
     servers.push(server);
     const port = await server.start();
     return { base: `http://127.0.0.1:${port}`, server };
@@ -166,7 +166,7 @@ describe('HermesServer', () => {
     const dir = makeProject('run-folder-tag');
     const outside = mkdtempSync(path.join(tmpdir(), 'gitu-run-reference-'));
     writeFileSync(path.join(outside, 'note.txt'), 'Reference material');
-    const first = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([() => 'Ready.']) });
+    const first = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([() => 'Ready.']) });
     servers.push(first);
     const firstBase = `http://127.0.0.1:${await first.start()}`;
     const created = await fetch(`${firstBase}/api/runs`, {
@@ -199,7 +199,7 @@ describe('HermesServer', () => {
     expect(rejected.status).toBe(400);
     await first.stop();
 
-    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
     const restored = await fetch(`${secondBase}/api/runs/${created.runId}`).then((response) => response.json());
@@ -259,7 +259,7 @@ describe('HermesServer', () => {
   });
 
   it('exposes the local Codex ChatGPT subscription without exposing credentials', async () => {
-    const server = new HermesServer({
+    const server = new HermesServer({ passwordRequired: false,
       cwd: makeProject('chatgpt-subscription'),
       port: 0,
       llm: new ScriptedMockLlm([]),
@@ -739,7 +739,7 @@ describe('HermesServer', () => {
 
   it('restores a chat transcript, its metadata, and conversational context after restart', async () => {
     const dir = makeProject('chat-restart');
-    const firstServer = new HermesServer({
+    const firstServer = new HermesServer({ passwordRequired: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([() => 'I remember this first reply.']),
@@ -763,7 +763,7 @@ describe('HermesServer', () => {
     await firstServer.stop();
 
     let receivedHistory = false;
-    const secondServer = new HermesServer({
+    const secondServer = new HermesServer({ passwordRequired: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([
@@ -813,7 +813,7 @@ describe('HermesServer', () => {
     // cannot carry — the real exit code above all — instead of degrading to the
     // prose fallback the moment the process ends.
     const dir = makeProject('frame-restart-command');
-    const first = new HermesServer({
+    const first = new HermesServer({ passwordRequired: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([
@@ -839,7 +839,7 @@ describe('HermesServer', () => {
     });
     await first.stop();
 
-    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
     const { rows, frames, diagnostics } = await readStream(secondBase, created.runId);
@@ -869,7 +869,7 @@ describe('HermesServer', () => {
     // restart it comes back marked as restored, and the session offers nothing
     // to answer: no promise anywhere is still waiting behind that id.
     const dir = makeProject('frame-restart-approval');
-    const first = new HermesServer({
+    const first = new HermesServer({ passwordRequired: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([
@@ -895,7 +895,7 @@ describe('HermesServer', () => {
     });
     await first.stop();
 
-    const second = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
 
@@ -1226,7 +1226,7 @@ describe('HermesServer', () => {
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
       () => JSON.stringify({ action: { type: 'request_block', reason: 'review timed out' } }),
     ]);
-    const server = new HermesServer({ cwd: dir, port: 0, llm, approvalTimeoutMs: 1500 });
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm, approvalTimeoutMs: 1500 });
     servers.push(server);
     const base = `http://127.0.0.1:${await server.start()}`;
     const created = await fetch(`${base}/api/runs`, {
@@ -1498,7 +1498,7 @@ describe('HermesServer', () => {
       type: async () => state,
       screenshot: async () => ({ pngBase64: Buffer.from('png').toString('base64'), state }),
     };
-    const server = new HermesServer({ cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: bridge });
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: bridge });
     servers.push(server);
     const port = await server.start();
     const base = `http://127.0.0.1:${port}`;

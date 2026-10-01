@@ -21,6 +21,8 @@ tests/agent-evals/results/*
 .expo/
 web-build/
 apps/mobile/dist/
+apps/mobile/android/
+apps/mobile/ios/
 *.tsbuildinfo
 
 release-new/

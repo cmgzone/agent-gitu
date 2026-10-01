@@ -165,7 +165,7 @@ describe('UI — bundled fonts (Inter + JetBrains Mono)', () => {
   it('serves woff2 files locally with immutable caching and blocks traversal', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hermes-ui-fonts-'));
     writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'ui-fonts' }));
-    const server = new HermesServer({ cwd: dir, port: 0, llm: { name: 'mock', complete: async () => '', completeStream: async (_m, _o, d) => (d(''), '') } } as never);
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: { name: 'mock', complete: async () => '', completeStream: async (_m, _o, d) => (d(''), '') } } as never);
     servers.push(server);
     const port = await server.start();
     const base = `http://127.0.0.1:${port}`;

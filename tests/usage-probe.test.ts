@@ -34,7 +34,7 @@ describe('usage across continuations', () => {
   it('keeps accumulating tokens and messages when the same session is continued', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'hermes-usage-cont-'));
     writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'probe', scripts: { test: 'node --version' } }));
-    const server = new HermesServer({ cwd: dir, port: 0, llm: usageLlm() });
+    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: usageLlm() });
     const port = await server.start();
     const base = `http://127.0.0.1:${port}`;
 

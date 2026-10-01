@@ -89,7 +89,7 @@ it('routes screen frames to the requested agent and requires an explicit switch 
   vi.spyOn(CoworkComputer.prototype, 'desktopScreenshot').mockImplementation(async function (this: CoworkComputer) {
     return { ok: true, output: Buffer.from(this.agentId).toString('base64') };
   });
-  const server = new GituServer({ cwd: home, port: 0 });
+  const server = new GituServer({ passwordRequired: false, cwd: home, port: 0 });
   try {
     const base = `http://127.0.0.1:${await server.start()}`;
     async function request(route: string, body?: unknown) {

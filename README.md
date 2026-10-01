@@ -99,6 +99,8 @@ Internal action `thought` fields and encrypted reasoning blocks are not rendered
 
 ## Quick start
 
+Use Node.js 22.22.3 or newer.
+
 `gitu` is the primary command and public API name. `hermes` remains a
 compatibility command, and existing `.hermes` task state and `hermes/*` task
 branches are retained so upgrading never loses resumable work. New task
@@ -114,6 +116,11 @@ node dist/cli.js ui --port 8321        # then open http://localhost:8321
 # Desktop app — Electron shell around the same Web UI, with the in-app browser
 npm run app                            # builds, then launches the desktop window
 
+# OpenMuse-derived mobile companion — Android, iOS and web
+npm run mobile:install
+npm run mobile:build:web                # served at /companion/ by the Gitu server
+# Setup (server access key and phone connection): apps/mobile/README.md
+
 # inside any project (package.json / pyproject.toml / cargo.toml / go.mod …)
 node dist/cli.js init
 node dist/cli.js run "Fix the streaming renderer" \
@@ -125,6 +132,39 @@ node dist/cli.js show <taskId>
 node dist/cli.js report <taskId>
 node dist/cli.js memory
 ```
+
+### Account registration and connected services
+
+Desktop and web servers require a registered workspace account by default. On first launch,
+open `http://127.0.0.1:8321` on the server computer and register with your name, email, and a unique passphrase
+of at least 15 characters. Registration creates the first workspace owner; then
+sign in with your email and password. Email is a local sign-in identifier; this
+desktop account flow does not send verification or recovery emails. The password gate protects the UI, APIs, previews,
+downloads, and mobile companion. Passwords are stored as salted scrypt hashes;
+sessions use HttpOnly cookies, expire after eight hours, and are revoked by
+**Cowork → Lock app** or a server restart. Five failed logins trigger a
+15-minute cooldown. Keep the password in your password manager.
+
+In **Cowork → Connections**, enter your Composio project API key once, search
+for a service, choose **Connect → Continue sign-in**, and complete authorization
+with that service. Refresh to see the account status. Use **Reconnect** for
+expired access or **Disconnect** to revoke a connection. On Windows, the key is
+encrypted with DPAPI for the current OS user. Other systems can set
+`COMPOSIO_API_KEY` in the server environment. OAuth credentials are managed by
+Composio and are never returned by the connection API or given to agents.
+
+Cowork agents can discover connected tools with `connected_apps`. Execution
+requires their write/config capabilities and a human review of the exact
+service, account, tool and arguments. Approvals expire after 15 minutes and
+can be used once. The server binds execution to your connected account;
+service calls are sent without automatic retries.
+
+Remote password login requires HTTPS. For an HTTPS reverse proxy running on
+the same machine, set `AGENT_GITU_TRUST_LOCAL_PROXY=1` and
+`AGENT_GITU_PUBLIC_ORIGIN=https://your-gitu-host`. The proxy must preserve Host,
+replace `X-Forwarded-Proto` with `https`, and be the only remote path to the
+loopback-bound server. Native mobile access also requires its existing access
+key; enter your registered email and password in the companion connection form.
 
 Environment for `run`:
 

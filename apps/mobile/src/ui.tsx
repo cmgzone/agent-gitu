@@ -399,7 +399,7 @@ export function LinkRow({
     </Pressable>
   );
 }
-/** OpenMuse's original capybara, shared by every assistant surface. */
+/** Gitu branding in the OpenMuse component layout. */
 export function Mascot({
   size = 42,
   variant = "sky",
@@ -413,7 +413,7 @@ export function Mascot({
     lilac: "#F1ECF9",
   }[variant];
   return (
-    <View accessibilityLabel="OpenMuse capybara" style={{ width: size, height: size }}>
+    <View accessibilityLabel="Agent Gitu" style={{ width: size, height: size }}>
       <View
         style={{
           position: "absolute",
@@ -426,7 +426,7 @@ export function Mascot({
         }}
       />
       <Image
-        source={require("../assets/capybara.png")}
+        source={require("../assets/agent-gitu-icon.png")}
         resizeMode="contain"
         style={{ width: size, height: size }}
         accessible={false}

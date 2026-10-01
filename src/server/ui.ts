@@ -6,6 +6,7 @@ import { ACTIVITY_CSS, ACTIVITY_MARK_HTML } from './ui-activity.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
+import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
 import { UI_THEME_CSS, UI_THEME_BOOTSTRAP, UI_THEME_JS } from './ui-theme.js';
@@ -920,6 +921,7 @@ ${HOME_CSS}
     #mascotWrap { display: none !important; }
   }
   ${COWORK_CSS}
+  ${CONNECTED_APPS_CSS}
   ${UI_THEME_CSS}
   ${ONBOARDING_CSS}
 </style>
@@ -975,6 +977,7 @@ ${ONBOARDING_HTML}
   ${UI_APPROACH_JS}
   ${UI_RESPONSE_JS}
   ${UI_CONNECTIONS_JS}
+  ${CONNECTED_APPS_JS}
   ${CHAT_CREDENTIAL_HELPERS_JS}
   ${UI_MODEL_CATALOG_JS}
   var S = {
@@ -1104,6 +1107,7 @@ ${ONBOARDING_HTML}
   function icon(name) { return ICONS[name] || ''; }
   function api(path, opts) {
     return fetch(path, opts).then(function (r) {
+      if (r.status === 401) return r.clone().json().catch(function () { return {}; }).then(function (data) { if (data.code === 'APP_LOCKED') { location.replace('/auth'); throw new Error('Unlock Agent Gitu to continue.'); } return r.text().then(function (t) { throw new Error(t || 'Unauthorized'); }); });
       if (!r.ok) return r.text().then(function (t) { throw new Error(t || String(r.status)); });
       return r.json();
     });

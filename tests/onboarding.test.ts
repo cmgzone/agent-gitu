@@ -30,7 +30,7 @@ describe('onboarding preferences', () => {
 
   it('serves first-run state and validates writes through the HTTP API', async () => {
     const root = isolatedHome();
-    const server = new HermesServer({ cwd: root, port: 0, llm: new ScriptedMockLlm([]) });
+    const server = new HermesServer({ passwordRequired: false, cwd: root, port: 0, llm: new ScriptedMockLlm([]) });
     const base = 'http://127.0.0.1:' + await server.start();
     try {
       expect(await fetch(base + '/api/onboarding').then(r => r.json())).toMatchObject({ completed: false });

@@ -89,7 +89,7 @@ describe('chat credential handoff', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'gitu-credential-chat-'));
     writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'credential-chat' }));
     const secret = 'github_pat_1234567890abcdefghijklmnop';
-    const server = new GituServer({ cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 200 });
+    const server = new GituServer({ passwordRequired: false, cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 200 });
     try {
       const port = await server.start();
       const created = await fetch(`http://127.0.0.1:${port}/api/runs`, {
@@ -116,7 +116,7 @@ describe('chat credential handoff', () => {
     writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'model-key-chat' }));
     const previousHome = process.env.AGENT_GITU_HOME;
     process.env.AGENT_GITU_HOME = path.join(root, 'home');
-    const server = new GituServer({ cwd: root, port: 0, approvalTimeoutMs: 1000 });
+    const server = new GituServer({ passwordRequired: false, cwd: root, port: 0, approvalTimeoutMs: 1000 });
     try {
       const port = await server.start();
       const created = await fetch(`http://127.0.0.1:${port}/api/runs`, {
@@ -147,7 +147,7 @@ describe('chat credential handoff', () => {
     writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'model-key-pause-gemini' }));
     const previousHome = process.env.AGENT_GITU_HOME;
     process.env.AGENT_GITU_HOME = path.join(root, 'gitu-home');
-    const server = new GituServer({ cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 1000 });
+    const server = new GituServer({ passwordRequired: false, cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 1000 });
     try {
       const port = await server.start();
       const created = await fetch(`http://127.0.0.1:${port}/api/runs`, {
@@ -176,7 +176,7 @@ describe('chat credential handoff', () => {
   it('uses an explicitly selected provider for a pasted model key in a continuation', async () => {
     const root = mkdtempSync(path.join(tmpdir(), 'gitu-followup-model-key-'));
     writeFileSync(path.join(root, 'package.json'), JSON.stringify({ name: 'followup-model-key' }));
-    const server = new GituServer({ cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 1000 });
+    const server = new GituServer({ passwordRequired: false, cwd: root, port: 0, llm: new ScriptedMockLlm([]), approvalTimeoutMs: 1000 });
     const runId = 'followup-model-key';
     try {
       const port = await server.start();

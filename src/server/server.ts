@@ -1,5 +1,9 @@
 import http from 'node:http';
 import { MobileAccess } from './mobile-access.js';
+import { AppAuth } from './app-auth.js';
+import { authPage } from './ui-auth.js';
+import { ComposioConnections } from '../connections/composio.js';
+import { COMPANION_DIR, companionAsset } from './mobile-companion.js';
 import os from 'node:os';
 import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
@@ -258,6 +262,9 @@ export interface GituServerConfig {
   host?: string;
   /** Opt-in native/mobile access; never accepted from a query string. */
   accessKey?: string;
+  /** Explicit opt-out for trusted embedded servers and isolated test fixtures. */
+  passwordRequired?: boolean;
+  connectedApps?: ComposioConnections;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
   /** Initial provider recovery delay; grows to five minutes, respecting Retry-After. */
@@ -402,6 +409,8 @@ export class GituServer {
   private readonly indexWatchers = new Map<string, CodeIndex>();
   private readonly config: GituServerConfig;
   private readonly mobileAccess: MobileAccess;
+  private readonly appAuth: AppAuth;
+  private readonly connectedApps: ComposioConnections;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
   private readonly modelRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -635,6 +644,8 @@ export class GituServer {
   constructor(config: GituServerConfig) {
     this.config = config;
     this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
+    this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1');
+    this.connectedApps = config.connectedApps ?? new ComposioConnections(() => this.appAuth.userId);
     if (config.host && !['127.0.0.1', 'localhost', '::1'].includes(config.host) && !this.mobileAccess.enabled) {
       throw new Error('Remote listening requires AGENT_GITU_ACCESS_KEY (at least 32 characters).');
     }
@@ -981,6 +992,7 @@ export class GituServer {
   }
 
   async stop(): Promise<void> {
+    this.appAuth.close();
     this.stopping = true;
     // Keep durable recovery dates while cancelling timers owned by this process.
     for (const timer of this.modelRecoveryTimers.values()) clearTimeout(timer);
@@ -1813,6 +1825,7 @@ export class GituServer {
         skills: SkillStore.forProject(ensureGituHome().workspace),
         mcp: McpManager.forProject(workspace),
         connections: this.connections,
+        connectedApps: this.connectedApps,
         browser: this.browserImpl(),
       };
       this.coworkTools.set(agent.id, context);
@@ -3820,7 +3833,11 @@ export class GituServer {
         return true;
       }
       try {
-        const html = coworkDocumentPreview(filePath, artifact);
+        const previewOptions = new URL(req.url ?? '/', 'http://localhost').searchParams;
+        const html = coworkDocumentPreview(filePath, artifact, {
+          theme: previewOptions.get('theme') === 'light' ? 'light' : 'dark',
+          embedded: previewOptions.get('embedded') === '1',
+        });
         // img-src data: lets the SVG preview draw its inert data URL; everything
         // else (scripts, frames, network) stays blocked by default-src 'none'.
         res.writeHead(200, {
@@ -3956,8 +3973,15 @@ export class GituServer {
    * controls BOTH (evil.com resolves to 127.0.0.1).
    */
   private isTrustedHost(host: string): boolean {
-    const name = host.replace(/^\[/, '').replace(/\]:.*$/, '').split(':')[0]?.toLowerCase() ?? '';
+    let name: string;
+    try { name = new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, '').toLowerCase(); }
+    catch { return false; }
     if (!name) return false;
+    const publicOrigin = process.env['AGENT_GITU_PUBLIC_ORIGIN'];
+    if (publicOrigin) {
+      try { const allowed = new URL(publicOrigin); if (allowed.protocol === 'https:' && allowed.host === host) return true; }
+      catch { /* Ignore an invalid configured origin. */ }
+    }
     if (name === 'localhost' || name.endsWith('.localhost')) return true;
     if (name === '::1' || name === '[::1]') return true;
     // Any IP literal (loopback or LAN) — browsers reach local servers by IP.
@@ -3979,7 +4003,7 @@ export class GituServer {
     if (typeof origin !== 'string' || origin === '' || origin === 'null') return false;
     try {
       const parsed = new URL(origin);
-      return parsed.host === host && this.isTrustedHost(parsed.host);
+      return parsed.protocol === (this.appAuth.secure(req) ? 'https:' : 'http:') && parsed.host === host && this.isTrustedHost(parsed.host);
     } catch {
       return false;
     }
@@ -4309,11 +4333,91 @@ export class GituServer {
     const path = url.pathname;
     const method = req.method ?? 'GET';
 
+    if (path === '/auth' && method === 'GET') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
+      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail));
+      return;
+    }
+    if (path.startsWith('/api/auth/')) {
+      // Credentials are accepted only as same-origin JSON, never URL parameters.
+      if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      if (path === '/api/auth/status' && method === 'GET') {
+        const authenticated = this.appAuth.authenticated(req);
+        this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, ...(authenticated ? { account: this.appAuth.account } : {}) }); return;
+      }
+      if ((path === '/api/auth/register' || path === '/api/auth/setup') && method === 'POST') {
+        if (!AppAuth.local(req)) { this.sendJson(res, 403, { error: 'Create the first account on the computer running Agent Gitu.' }); return; }
+        if (this.appAuth.configured) { this.sendJson(res, 409, { error: 'A workspace account is already registered.' }); return; }
+        try {
+          const body = await this.readBody(req, 4096);
+          await this.appAuth.setup(body['password'], { name: body['name'], email: body['email'] });
+          this.sendJson(res, 201, { ok: true });
+        } catch (err) { this.sendJson(res, 400, { error: (err as Error).message }); }
+        return;
+      }
+      if (path === '/api/auth/login' && method === 'POST') {
+        if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res, 403, { error: 'Remote password login requires HTTPS.' }); return; }
+        try {
+          const body = await this.readBody(req, 4096);
+          const result = await this.appAuth.login(req, body['password'], body['email']);
+          if (result !== 'ok') {
+            if (result === 'limited') res.setHeader('Retry-After', '900');
+            this.sendJson(res, result === 'limited' ? 429 : 401, { error: result === 'limited' ? 'Too many login attempts. Try again in 15 minutes.' : 'Incorrect email or password.' }); return;
+          }
+          this.appAuth.issue(req, res);
+          this.sendJson(res, 200, { ok: true });
+        } catch { this.sendJson(res, 400, { error: 'Invalid login request.' }); }
+        return;
+      }
+      if (path === '/api/auth/logout' && method === 'POST') {
+        this.appAuth.logout(req, res); this.sendJson(res, 200, { ok: true }); return;
+      }
+      this.sendJson(res, 404, { error: 'Authentication route not found.' }); return;
+    }
+    if (this.appAuth.enabled && !this.appAuth.authenticated(req)) {
+      if (path.startsWith('/api/')) this.sendJson(res, 401, { error: 'Unlock Agent Gitu to continue.', code: 'APP_LOCKED' });
+      else { res.writeHead(302, { location: '/auth', 'cache-control': 'no-store' }); res.end(); }
+      return;
+    }
+    this.appAuth.track(req, res);
+    if (this.appAuth.enabled) res.setHeader('Cache-Control', 'no-store');
+
+    if (path.startsWith('/api/connected-apps')) {
+      if (!this.isSameOrigin(req)) { this.sendJson(res, 403, { error: 'cross-origin request rejected' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      try {
+        if (path === '/api/connected-apps' && method === 'GET') {
+          if (!this.connectedApps.configured) { this.sendJson(res, 200, { configured: false, accounts: [], services: [] }); return; }
+          const [catalog, accounts] = await Promise.all([this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined), this.connectedApps.accounts()]);
+          this.sendJson(res, 200, { configured: true, ...catalog, accounts }); return;
+        }
+        if (path === '/api/connected-apps/configure' && method === 'POST') {
+          if (!AppAuth.local(req)) { this.sendJson(res, 403, { error: 'Configure the integration provider on the computer running Agent Gitu.' }); return; }
+          const body = await this.readBody(req, 8192);
+          await this.connectedApps.configure(String(body['apiKey'] ?? ''));
+          this.sendJson(res, 200, { ok: true }); return;
+        }
+        if (path === '/api/connected-apps/connect' && method === 'POST') {
+          const body = await this.readBody(req, 4096);
+          this.sendJson(res, 200, await this.connectedApps.connect(String(body['service'] ?? ''))); return;
+        }
+        if (path === '/api/connected-apps/disconnect' && method === 'POST') {
+          const body = await this.readBody(req, 4096);
+          await this.connectedApps.disconnect(String(body['accountId'] ?? ''));
+          this.sendJson(res, 200, { ok: true }); return;
+        }
+        this.sendJson(res, 404, { error: 'Connection route not found.' }); return;
+      } catch {
+        this.sendJson(res, 502, { error: 'Could not reach or authorize the service. Check your Composio setup and try again.' }); return;
+      }
+    }
+
     // API surface is protected for ALL methods (GET included — read endpoints
     // enumerate the filesystem), not just writes.
     const mobileBearer = this.mobileAccess.bearer(req);
     const mobileCookie = this.mobileAccess.cookie(req);
-    const credentialed = mobileBearer || mobileCookie;
+    const credentialed = mobileBearer || mobileCookie || this.appAuth.authenticated(req);
     if (path.startsWith('/api/') || path === '/mobile' || (method !== 'GET' && method !== 'HEAD')) {
       if (this.mobileAccess.enabled && !credentialed) {
         this.sendJson(res, 401, { error: 'An Agent Gitu access key is required.' });
@@ -4346,6 +4450,25 @@ export class GituServer {
     if (method === 'POST' && path === '/api/mobile/disconnect') {
       this.mobileAccess.revoke(req, res);
       this.sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    // The companion shell contains no workspace data. Its API calls still
+    // pass through the authentication and Origin checks above.
+    if (method === 'GET' && path === '/companion') {
+      res.writeHead(302, { location: '/companion/' });
+      res.end();
+      return;
+    }
+    if ((method === 'GET' || method === 'HEAD') && path.startsWith('/companion/')) {
+      const asset = companionAsset(path);
+      if (!asset) {
+        this.sendJson(res, existsSync(nodePath.join(COMPANION_DIR, 'index.html')) ? 404 : 503,
+          { error: 'Mobile companion unavailable. Run npm run mobile:build:web in the Gitu repository.' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': asset.mime, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+      if (method === 'HEAD') res.end(); else this.pipeFile(res, asset.path);
       return;
     }
 

@@ -44,7 +44,7 @@ function client(reply: (messages: LlmMessage[]) => Promise<string> | string): Ll
 }
 
 async function start(llm: LlmClient, delay = 40) {
-  const server = new GituServer({ cwd: project, port: 0, llm, autoInstallLsp: false, providerRecoveryDelayMs: delay });
+  const server = new GituServer({ passwordRequired: false, cwd: project, port: 0, llm, autoInstallLsp: false, providerRecoveryDelayMs: delay });
   servers.push(server);
   return { server, base: `http://127.0.0.1:${await server.start()}` };
 }

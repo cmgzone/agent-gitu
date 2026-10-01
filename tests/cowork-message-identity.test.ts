@@ -406,7 +406,7 @@ it('marks stopped queued messages failed and renders Retry without duplicate row
     return '';
   };
   const client: LlmClient = { name: 'queue-stop-stub', complete, completeStream: (messages, opts) => complete(messages, opts) };
-  const server = new GituServer({ cwd: home, port: 0, llm: client });
+  const server = new GituServer({ passwordRequired: false, cwd: home, port: 0, llm: client });
   try {
     const base = `http://127.0.0.1:${await server.start()}`;
     const request = async (route: string, method = 'GET', body?: unknown) => {

@@ -12,7 +12,7 @@ it('preserves identity through HTTP send replay, edits, retries, references and 
   process.env['AGENT_GITU_HOME'] = home;
   let calls = 0;
   const reply = () => { calls++; return 'The migration is ready.'; };
-  const server = new GituServer({ cwd: path.join(home, 'Workspace'), port: 0, llm: new ScriptedMockLlm(Array.from({ length: 12 }, () => reply)), coworkCompletionProtocol: 'legacy' });
+  const server = new GituServer({ passwordRequired: false, cwd: path.join(home, 'Workspace'), port: 0, llm: new ScriptedMockLlm(Array.from({ length: 12 }, () => reply)), coworkCompletionProtocol: 'legacy' });
   try {
     const base = `http://127.0.0.1:${await server.start()}`;
     async function request(route: string, method = 'GET', body?: unknown) {

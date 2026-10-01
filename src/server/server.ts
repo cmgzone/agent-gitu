@@ -644,7 +644,7 @@ export class GituServer {
   constructor(config: GituServerConfig) {
     this.config = config;
     this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
-    this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1');
+    this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN']);
     this.connectedApps = config.connectedApps ?? new ComposioConnections(() => this.appAuth.userId);
     if (config.host && !['127.0.0.1', 'localhost', '::1'].includes(config.host) && !this.mobileAccess.enabled) {
       throw new Error('Remote listening requires AGENT_GITU_ACCESS_KEY (at least 32 characters).');
@@ -4335,7 +4335,7 @@ export class GituServer {
 
     if (path === '/auth' && method === 'GET') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" });
-      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail));
+      res.end(authPage(!this.appAuth.configured, AppAuth.local(req), this.appAuth.requiresEmail, this.appAuth.remoteRegistrationEnabled && this.appAuth.secure(req)));
       return;
     }
     if (path.startsWith('/api/auth/')) {
@@ -4347,10 +4347,10 @@ export class GituServer {
         this.sendJson(res, 200, { required: this.appAuth.enabled, configured: this.appAuth.configured, requiresEmail: this.appAuth.requiresEmail, authenticated, ...(authenticated ? { account: this.appAuth.account } : {}) }); return;
       }
       if ((path === '/api/auth/register' || path === '/api/auth/setup') && method === 'POST') {
-        if (!AppAuth.local(req)) { this.sendJson(res, 403, { error: 'Create the first account on the computer running Agent Gitu.' }); return; }
         if (this.appAuth.configured) { this.sendJson(res, 409, { error: 'A workspace account is already registered.' }); return; }
         try {
           const body = await this.readBody(req, 4096);
+          if (!this.appAuth.canRegister(req, body['registrationToken'])) { this.sendJson(res, 403, { error: 'Register locally, or use the private setup code over HTTPS.' }); return; }
           await this.appAuth.setup(body['password'], { name: body['name'], email: body['email'] });
           this.sendJson(res, 201, { ok: true });
         } catch (err) { this.sendJson(res, 400, { error: (err as Error).message }); }

@@ -34,6 +34,7 @@ export class AppAuth {
     private readonly file: string,
     readonly required = true,
     private readonly trustLocalProxy = false,
+    private readonly registrationToken?: string,
   ) {
     if (existsSync(file)) {
       const record = JSON.parse(readFileSync(file, 'utf8')) as PasswordRecord;
@@ -53,6 +54,16 @@ export class AppAuth {
 
   get configured(): boolean {
     return Boolean(this.record);
+  }
+  get remoteRegistrationEnabled(): boolean {
+    return !this.configured && Boolean(this.registrationToken && this.registrationToken.length >= 32 && this.registrationToken.length <= 256);
+  }
+  canRegister(req: IncomingMessage, token?: unknown): boolean {
+    if (AppAuth.local(req)) return true;
+    if (!this.remoteRegistrationEnabled || !this.secure(req) || typeof token !== 'string' || token.length > 256) return false;
+    const expected = Buffer.from(this.registrationToken!, 'utf8');
+    const supplied = Buffer.from(token, 'utf8');
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
   }
   get enabled(): boolean {
     return this.required || this.configured;

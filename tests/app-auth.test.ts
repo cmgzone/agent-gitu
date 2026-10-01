@@ -114,6 +114,72 @@ describe('whole-app authentication', () => {
     }
   }, 60000);
 
+  it('permits hosted first-owner registration only with its private code over trusted HTTPS', async () => {
+    const names = ['AGENT_GITU_HOME', 'AGENT_GITU_PUBLIC_ORIGIN', 'AGENT_GITU_TRUST_LOCAL_PROXY', 'AGENT_GITU_REGISTRATION_TOKEN'];
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    const home = mkdtempSync(path.join(tmpdir(), 'gitu-auth-hosted-'));
+    const origin = 'https://gitu.example.com';
+    const code = 'disposable-private-registration-code-123456789';
+    process.env['AGENT_GITU_HOME'] = home;
+    process.env['AGENT_GITU_PUBLIC_ORIGIN'] = origin;
+    process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] = '1';
+    process.env['AGENT_GITU_REGISTRATION_TOKEN'] = code;
+    const server = new GituServer({ cwd: home, port: 0, llm: new ScriptedMockLlm([]) });
+    servers.push(server);
+    try {
+      const base = 'http://127.0.0.1:' + (await server.start());
+      const call = (route: string, body?: Record<string, unknown>, headers: Record<string, string> = {}) =>
+        new Promise<{ status: number; headers: IncomingMessage['headers']; text: string }>((resolve, reject) => {
+          const req = httpRequest(
+            base + route,
+            { method: body ? 'POST' : 'GET', headers: { host: 'gitu.example.com', origin, 'x-forwarded-proto': 'https', 'content-type': 'application/json', ...headers } },
+            (res) => {
+              let text = '';
+              res.setEncoding('utf8');
+              res.on('data', (chunk: string) => {
+                text += chunk;
+              });
+              res.on('end', () => resolve({ status: res.statusCode!, headers: res.headers, text }));
+            },
+          );
+          req.on('error', reject);
+          req.end(body ? JSON.stringify(body) : undefined);
+        });
+      const page = await call('/auth');
+      expect(page.text).toContain('name="registrationToken"');
+      expect(page.text).not.toContain(code);
+      const registration = { ...profile, password, registrationToken: code };
+      expect((await call('/api/auth/register', { ...registration, registrationToken: '' })).status).toBe(403);
+      expect((await call('/api/auth/register', { ...registration, registrationToken: code + 'wrong' })).status).toBe(403);
+      expect((await call('/api/auth/register', registration, { 'x-forwarded-proto': 'http', origin: origin.replace('https:', 'http:') })).status).toBe(403);
+      expect((await call('/api/auth/register', registration, { origin: 'https://evil.example' })).status).toBe(403);
+      expect((await call('/api/auth/register', registration)).status).toBe(201);
+      const stored = readFileSync(path.join(home, 'Settings', 'app-password.json'), 'utf8');
+      expect(stored).not.toContain(code);
+      expect(stored).not.toContain(password);
+      expect((await call('/api/auth/register', registration)).status).toBe(409);
+      expect((await call('/auth')).text).not.toContain('name="registrationToken"');
+      const login = await call('/api/auth/login', { email: profile.email, password });
+      expect(login.status).toBe(200);
+      expect(login.headers['set-cookie']![0]).toContain('; Secure');
+      expect((await call('/api/cowork/agents')).status).toBe(401);
+      const cookie = login.headers['set-cookie']![0]!;
+      expect((await call('/api/cowork/agents', undefined, { cookie })).status).toBe(200);
+      const auth = new AppAuth(path.join(home, 'Settings', 'app-password.json'), true, true, code);
+      expect(auth.remoteRegistrationEnabled).toBe(false);
+      expect(auth.canRegister(request('', 'gitu.example.com'), code)).toBe(false);
+      const weak = new AppAuth(path.join(home, 'weak.json'), true, true, 'short');
+      expect(weak.remoteRegistrationEnabled).toBe(false);
+    } finally {
+      await server.stop();
+      servers.splice(servers.indexOf(server), 1);
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  }, 60000);
+
   it('expires sessions and terminates streams when the app is locked', async () => {
     const auth = new AppAuth(path.join(mkdtempSync(path.join(tmpdir(), 'gitu-auth-')), 'password.json'));
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });

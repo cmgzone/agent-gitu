@@ -166,6 +166,11 @@ replace `X-Forwarded-Proto` with `https`, and be the only remote path to the
 loopback-bound server. Native mobile access also requires its existing access
 key; enter your registered email and password in the companion connection form.
 
+For a hosted workspace, follow [the Coolify deployment guide](deploy/README.md).
+Remote first-owner registration requires HTTPS and a private
+`AGENT_GITU_REGISTRATION_TOKEN` of at least 32 characters. The code is accepted
+only before the owner account exists; it cannot replace an account or sign in.
+
 Environment for `run`:
 
 ```

@@ -168,6 +168,9 @@ describe('whole-app authentication', () => {
       expect((await call('/api/cowork/agents')).status).toBe(401);
       const cookie = login.headers['set-cookie']![0]!;
       expect((await call('/api/cowork/agents', undefined, { cookie })).status).toBe(200);
+      const inputBody = { action: 'input', input: { action: 'type', text: 'test' } };
+      expect((await call('/api/cowork/agents/fixture/computer', inputBody)).status).toBe(401);
+      expect((await call('/api/cowork/agents/fixture/computer', inputBody, { cookie, origin: 'https://evil.example' })).status).toBe(403);
       expect((await call('/api/connected-apps/configure', { apiKey: 'fixture-integration-key' })).status).toBe(401);
       expect((await call('/api/connected-apps/configure', { apiKey: 'fixture-integration-key' }, { cookie })).status).toBe(200);
       expect(configure).toHaveBeenCalledExactlyOnceWith('fixture-integration-key');

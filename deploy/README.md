@@ -54,3 +54,10 @@ operations on containers bearing this workspace's ownership label. It rejects
 host bind mounts, port publication, root exec, arbitrary images and Docker
 daemon operations. Only the broker's deployment administrator can change its
 code or socket mount. Worker volumes persist when a desktop or the app stops.
+
+Private workers include XFCE, a file manager, terminal, text editor, and the
+agent's persistent Chromium profile. Both the owner and agent can operate the
+same desktop. The authenticated app relays bounded keyboard and mouse events;
+no VNC port or desktop control service is published. Click the desktop preview
+to focus keyboard input; use Browser, Files, or Terminal to open apps. Agent GUI
+input requires its shell permission, since a desktop can open a terminal.

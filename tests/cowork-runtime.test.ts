@@ -318,12 +318,24 @@ describe('private virtual computers', () => {
     const perms = { allowShell: false, allowWrites: false, allowConfig: false, chief: false, browser: true };
     const scope = { agent: { id: 'a' }, computerFor: () => computer } as never;
     const mcp = { call: vi.fn() };
-    for (const tool of ['run_command', 'write_file', 'mcp_call']) {
+    for (const tool of ['run_command', 'write_file', 'mcp_call', 'desktop_input']) {
       const params = tool === 'run_command' ? { command: 'echo hi' } : tool === 'write_file' ? { path: 'a', content: 'b' } : { tool: 'mcp:s:t' };
       expect((await executeCoworkTool({ mcp } as unknown as ToolContext, tool, params, perms, scope)).ok).toBe(false);
     }
     expect(computer.execute).not.toHaveBeenCalled();
     expect(mcp.call).not.toHaveBeenCalled();
+  });
+
+  it('routes permitted GUI tools only to the private computer', async () => {
+    const execute = vi.fn(async () => ({ ok: true, output: 'done' }));
+    const computer = { execute } as unknown as CoworkComputer;
+    const perms = { allowShell: true, allowWrites: false, allowConfig: false, chief: false, browser: true };
+    const scope = { agent: { id: 'a', useHostComputer: false }, computerFor: () => computer } as never;
+    for (const tool of ['desktop_input', 'desktop_screenshot']) expect((await executeCoworkTool({} as ToolContext, tool, { action: 'click', x: 1, y: 1 }, perms, scope)).ok).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(2);
+    const host = { agent: { id: 'a', useHostComputer: true }, computerFor: () => computer } as never;
+    expect((await executeCoworkTool({} as ToolContext, 'desktop_input', {}, perms, host)).ok).toBe(false);
+    expect(execute).toHaveBeenCalledTimes(2);
   });
 
   it('cancels the command inside the container when its caller aborts', async () => {

@@ -14,6 +14,58 @@ let browser;
 let browserQueue = Promise.resolve();
 let screenQueue = Promise.resolve();
 
+async function desktopInput(p) {
+  if (!process.env.DISPLAY) throw new Error('This computer has no desktop display.');
+  const coordinate = (value, limit) => {
+    if (!Number.isInteger(value) || value < 0 || value >= limit) throw new Error('Desktop coordinates are outside the screen.');
+    return String(value);
+  };
+  const position = () => ['mousemove', '--sync', coordinate(p.x, 1280), coordinate(p.y, 800)];
+  let args;
+  switch (p.action) {
+    case 'launch': {
+      const apps = { browser: ['node', '/computer/open-browser.cjs'], files: ['thunar', '/workspace'], terminal: ['xfce4-terminal', '--working-directory=/workspace'] };
+      const app = Object.hasOwn(apps, p.app) ? apps[p.app] : undefined;
+      if (!app) throw new Error('Unknown desktop app.');
+      await new Promise((resolve, reject) => {
+        const child = spawn(app[0], app.slice(1), { stdio: 'ignore' });
+        child.once('error', reject);
+        child.once('spawn', () => { child.unref(); resolve(); });
+      });
+      return { ok: true, output: 'Desktop app opened.' };
+    }
+    case 'click':
+    case 'double_click': {
+      const button = p.button ?? 1;
+      if (![1, 2, 3].includes(button)) throw new Error('Invalid mouse button.');
+      args = [...position(), 'click', '--clearmodifiers', '--repeat', p.action === 'double_click' ? '2' : '1', '--delay', '120', String(button)];
+      break;
+    }
+    case 'drag':
+      args = [...position(), 'mousedown', '1', 'sleep', '0.05', 'mousemove', '--sync', coordinate(p.endX, 1280), coordinate(p.endY, 800), 'sleep', '0.05', 'mouseup', '1'];
+      break;
+    case 'scroll':
+      if (!Number.isInteger(p.delta) || p.delta === 0 || Math.abs(p.delta) > 10) throw new Error('Invalid scroll amount.');
+      args = [...position(), 'click', '--repeat', String(Math.abs(p.delta)), '--delay', '20', p.delta > 0 ? '5' : '4'];
+      break;
+    case 'key':
+      if (typeof p.key !== 'string' || !/^(?:(?:ctrl|alt|shift|super)\+){0,4}(?:[a-zA-Z0-9]|F(?:[1-9]|1[0-2])|Return|BackSpace|Tab|Escape|Delete|Insert|Home|End|Page_Up|Page_Down|Left|Right|Up|Down|space)$/.test(p.key)) throw new Error('Invalid desktop key.');
+      args = ['key', '--clearmodifiers', p.key];
+      break;
+    case 'type':
+      if (typeof p.text !== 'string' || !p.text || p.text.length > 2000 || p.text.includes('\0')) throw new Error('Text must contain 1–2000 characters.');
+      args = ['type', '--clearmodifiers', '--delay', '0', '--', p.text];
+      break;
+    default:
+      throw new Error('Unknown desktop input action.');
+  }
+  try { await execFileAsync('xdotool', args, { timeout: 10000 }); }
+  finally {
+    if (p.action === 'drag') await execFileAsync('xdotool', ['mouseup', '1'], { timeout: 2000 }).catch(() => {});
+  }
+  return { ok: true, output: 'Desktop input delivered.' };
+}
+
 async function desktopScreenshot() {
   if (!process.env.DISPLAY) throw new Error('This computer has no desktop display. Stop and start it to upgrade the private desktop.');
   const file = '/tmp/gitu-desktop.png';
@@ -165,8 +217,8 @@ async function browse(id, p) {
   }
 }
 async function execute({ id, tool, params: p = {} }) {
-  if (tool === 'desktop_screenshot') {
-    const next = screenQueue.then(desktopScreenshot);
+  if (tool === 'desktop_screenshot' || tool === 'desktop_input') {
+    const next = screenQueue.then(() => tool === 'desktop_screenshot' ? desktopScreenshot() : desktopInput(p));
     screenQueue = next.catch(() => {});
     return next;
   }

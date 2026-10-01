@@ -96,7 +96,7 @@ export interface CoworkToolScope {
 }
 
 /** Tools that normally execute inside the agent's virtual computer. */
-const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'list_files', 'read_file', 'search_files', 'write_file', 'apply_edit', 'run_command', 'browse', 'share_file', 'receive_file'];
+const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'desktop_screenshot', 'desktop_input', 'list_files', 'read_file', 'search_files', 'write_file', 'apply_edit', 'run_command', 'browse', 'share_file', 'receive_file'];
 /**
  * Tools a sub-agent never holds: conversation-facing (its report goes to its
  * parent, who speaks for the subtree), teammate-waking, or future-scheduling
@@ -105,7 +105,7 @@ const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'list_file
  */
 export const SUBAGENT_BLOCKED_TOOLS = ['spawn_sub_agent', 'gitu_task', 'ask_user', 'request_credential', 'request_permission', 'recommend', 'message_teammate', 'schedule_followup'];
 /** Computer-only tools with no meaningful host equivalent. */
-const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process'];
+const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process', 'desktop_screenshot', 'desktop_input'];
 
 const HOST_FALLBACK_NOTICE =
   '[VIRTUAL COMPUTER UNAVAILABLE — tools now run on the user\'s computer. Use workspace-relative paths (never /workspace); shell commands execute on the host machine.]\n';
@@ -131,6 +131,8 @@ export interface CoworkToolDoc {
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'computer_status', doc: 'Inspect your private virtual computer and its setup status. params: {}', gate: undefined },
+  { name: 'desktop_screenshot', doc: 'See your full Linux desktop, including app windows, menus and dialogs. params: {}. Inspect the screen before choosing coordinates.', gate: 'browser' },
+  { name: 'desktop_input', doc: 'Control your private Linux desktop. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. Use browse for structured browser operations.', gate: 'shell' },
   { name: 'computer_process', doc: 'Inspect or stop a background process on your computer. params: {"action":"status","id":"..."} | {"action":"stop","id":"..."}', gate: 'shell' },
   { name: 'create_document', doc: DOCUMENT_TOOL_DOC + ' The generated file is automatically presented in this conversation.', gate: 'writes' },
   { name: 'share_file', doc: 'Present a file in the conversation as an Open/Download document card and make it available to teammates. params: {"path":"report.pdf"}.', gate: 'writes' },
@@ -380,6 +382,7 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
       return { ok: true, output: `My computer mode. Workspace: ${ctx.cwd}. Docker is not required. Browser: ${ctx.browser?.available() ? 'connected' : 'not connected; open the desktop app'}.` };
     }
     if (scope?.agent.useHostComputer && tool === 'computer_process') return { ok: false, output: 'Background process control requires the private computer. In My computer mode use a bounded run_command instead.' };
+    if (scope?.agent.useHostComputer && ['desktop_screenshot', 'desktop_input'].includes(tool)) return { ok: false, output: 'Desktop screen and input require this teammate’s private computer.' };
     if (scope?.agent.useHostComputer && COMPUTER_ROUTED_TOOLS.includes(tool) && !COMPUTER_ONLY_TOOLS.includes(tool)) {
       params = toHostPaths(params);
       return await dispatchHost();

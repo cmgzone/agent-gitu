@@ -16,6 +16,17 @@ const command = await computer.execute('run_command', { command: 'id -u', timeou
 if (!command.ok || command.output.trim() !== '1001') throw new Error('Desktop does not run as its unprivileged agent user.');
 const windows = await computer.execute('run_command', { command: 'xwininfo -root -tree', timeoutMs: 10_000 });
 if (!windows.ok || !windows.output.includes('Agent Gitu workspace')) throw new Error('Desktop workspace window is missing.');
+if (!windows.output.toLowerCase().includes('xfce4-panel')) throw new Error('Full desktop panel is missing.');
+const focus = await computer.execute('run_command', { command: 'xdotool search --name "Agent Gitu workspace" windowactivate --sync', timeoutMs: 10_000 });
+if (!focus.ok) throw new Error(focus.output);
+const typing = await computer.desktopInput({ action: 'type', text: 'printf gitu-desktop-input-check > /workspace/.gitu-desktop-smoke.txt' });
+if (!typing.ok) throw new Error(typing.output);
+await computer.desktopInput({ action: 'key', key: 'Return' });
+const typedFile = await computer.execute('run_command', { command: 'for i in 1 2 3 4 5; do test -f /workspace/.gitu-desktop-smoke.txt && break; sleep 0.2; done; cat /workspace/.gitu-desktop-smoke.txt', timeoutMs: 10_000 });
+if (!typedFile.ok || typedFile.output !== 'gitu-desktop-input-check') throw new Error('Keyboard input did not reach the desktop terminal.');
+const click = await computer.desktopInput({ action: 'click', x: 1200, y: 500, button: 1 });
+if (!click.ok) throw new Error(click.output);
+console.log('Full desktop, keyboard and mouse input are working.');
 const frame = await computer.desktopScreenshot();
 if (!frame.ok) throw new Error(frame.output);
 const png = Buffer.from(frame.output, 'base64');

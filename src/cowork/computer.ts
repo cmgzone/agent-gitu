@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:3';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:4';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
@@ -237,12 +237,18 @@ export class CoworkComputer {
     }
   }
 
+  /** Human input never starts or wakes a stopped desktop. */
+  async desktopInput(params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
+    if (this.state !== 'running') return { ok: false, output: 'Start this private desktop before controlling it.' };
+    return this.request('desktop_input', params, signal);
+  }
+
   private async request(tool: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const id = randomUUID();
     const controller = new AbortController();
     this.active.add(controller);
     const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
-    const invoke = `let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',async()=>{try{let r;for(let i=0;i<50;i++){try{r=await fetch('http://127.0.0.1:8765',{method:'POST',headers:{'x-gitu-key':require('node:fs').readFileSync('/tmp/gitu-computer-key','utf8')},body:s});break}catch(e){if(i===49)throw e;await new Promise(r=>setTimeout(r,100))}}console.log(await r.text())}catch(e){console.error(e.message);process.exitCode=1}})`;
+    const invoke = `let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',async()=>{try{let r;for(let i=0;i<300;i++){try{r=await fetch('http://127.0.0.1:8765',{method:'POST',headers:{'x-gitu-key':require('node:fs').readFileSync('/tmp/gitu-computer-key','utf8')},body:s});break}catch(e){if(i===299)throw e;await new Promise(r=>setTimeout(r,100))}}console.log(await r.text())}catch(e){console.error(e.message);process.exitCode=1}})`;
     const cancel = () => {
       // Killing docker exec alone does not stop commands inside the container.
       void this.exec(
@@ -312,7 +318,8 @@ export class CoworkComputer {
         const artifact = JSON.parse(readFileSync(path.join(folder, `${artifactId}.json`), 'utf8')) as { data: string };
         return await this.request('import_file', { path: params['path'], data: artifact.data }, signal);
       }
-      return await this.request(tool, params, signal);
+      const result = await this.request(tool, params, signal);
+      return tool === 'desktop_screenshot' && result.ok ? { ok: true, output: 'Private Linux desktop screen (1280x800).', image: 'data:image/png;base64,' + result.output } : result;
     } catch (err) {
       return { ok: false, output: (err as Error).message };
     }

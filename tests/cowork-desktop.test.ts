@@ -21,6 +21,21 @@ function dockerFixture(legacy = false) {
 }
 
 describe('private desktop lifecycle', () => {
+  it('never provisions a stopped desktop for human input and delivers running input through stdin', async () => {
+    const exec = dockerFixture();
+    const computer = new CoworkComputer('input-agent', 'desktop-test', exec);
+    expect((await computer.desktopInput({ action: 'type', text: 'hello' })).ok).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+    await computer.start();
+    exec.mockImplementation(async (args, input) => {
+      if (args[0] === 'exec') return JSON.stringify({ ok: true, output: JSON.parse(input!).params.text });
+      return '';
+    });
+    expect((await computer.desktopInput({ action: 'type', text: '-- $(private)' })).output).toBe('-- $(private)');
+    const last = exec.mock.calls.at(-1)!;
+    expect(last[0].join(' ')).not.toContain('-- $(private)');
+    expect(JSON.parse(last[1]!).tool).toBe('desktop_input');
+  });
   it('keeps two agents isolated and never restarts a running desktop to refresh its screen', async () => {
     const exec = dockerFixture();
     const a = new CoworkComputer('agent-a', 'desktop-test', exec);
@@ -52,7 +67,7 @@ describe('private desktop lifecycle', () => {
     const create = commands.find(args => args[0] === 'create')!;
     expect(create).toContain(`type=volume,src=${computer.name}-workspace,dst=/workspace`);
     expect(create).toContain(`type=volume,src=${computer.name}-home,dst=/home/agent`);
-    expect(create.at(-1)).toBe('agent-gitu-cowork:3');
+    expect(create.at(-1)).toBe('agent-gitu-cowork:4');
     expect(commands.some(args => args[0] === 'rm')).toBe(false);
   });
 
@@ -70,7 +85,7 @@ describe('private desktop lifecycle', () => {
     exec.mockImplementation(async (args) => {
       if (args[0] === 'exec') throw new Error('Container is not running');
       if (args.includes('{{.State.Running}}')) return 'false';
-      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:3';
+      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:4';
       return '';
     });
     await expect(computer.desktopScreenshot()).rejects.toThrow('Container is not running');
@@ -86,6 +101,8 @@ it('routes screen frames to the requested agent and requires an explicit switch 
   const previousHome = process.env.AGENT_GITU_HOME;
   process.env.AGENT_GITU_HOME = home;
   const start = vi.spyOn(CoworkComputer.prototype, 'start').mockResolvedValue();
+  vi.spyOn(CoworkComputer.prototype, 'status').mockImplementation(function (this: CoworkComputer) { return { agentId: this.agentId, name: this.name, state: 'running', workspace: '/workspace' }; });
+  const input = vi.spyOn(CoworkComputer.prototype, 'desktopInput').mockResolvedValue({ ok: true, output: 'delivered' });
   vi.spyOn(CoworkComputer.prototype, 'desktopScreenshot').mockImplementation(async function (this: CoworkComputer) {
     return { ok: true, output: Buffer.from(this.agentId).toString('base64') };
   });
@@ -107,6 +124,12 @@ it('routes screen frames to the requested agent and requires an explicit switch 
     }
     expect((await request('/api/cowork/agents/missing/computer', { action: 'desktop' })).status).toBe(404);
     expect((await request(`/api/cowork/agents/${host.id}/computer`, { action: 'desktop' })).status).toBe(409);
+    const event = { action: 'click', x: 100, y: 200 };
+    expect((await request(`/api/cowork/agents/${host.id}/computer`, { action: 'input', input: event })).status).toBe(409);
+    expect(input).not.toHaveBeenCalled();
+    expect((await request(`/api/cowork/agents/${a.id}/computer`, { action: 'input', input: event })).status).toBe(200);
+    expect(input).toHaveBeenCalledExactlyOnceWith(event);
+    expect((await request(`/api/cowork/agents/${a.id}/computer`, { action: 'input', input: 'invalid' })).status).toBe(400);
     expect(start).not.toHaveBeenCalled();
     const switched = await request(`/api/cowork/agents/${host.id}/computer`, { action: 'use-private' });
     expect(switched.status).toBe(202);

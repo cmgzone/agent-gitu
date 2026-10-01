@@ -28,7 +28,8 @@ export const COWORK_CSS = String.raw`
   .cw-message-status.failed { color: var(--err); }
   .cw-desktop-dialog .box { width: min(1320px, calc(100vw - 32px)); max-width: none; height: min(860px, calc(100dvh - 32px)); max-height: calc(100dvh - 32px); }
   .cw-desktop-screen { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 0; background: #151821; overflow: hidden; }
-  .cw-desktop-screen img { display: block; width: 100%; height: 100%; object-fit: contain; }
+  .cw-desktop-screen img { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: none; user-select: none; cursor: default; }
+  .cw-desktop-screen img:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .cw-desktop-screen img[hidden] { display: none; }
   .cw-desktop-placeholder { padding: 48px 24px; text-align: center; color: #c3c6d1; max-width: 520px; }
   .cw-desktop-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; }
@@ -2636,21 +2637,81 @@ export const COWORK_JS = String.raw`
     modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('aria-label', agent.name + ' desktop');
     modal.innerHTML = '<div class="box"><div class="bar"><b>' + esc(agent.name) + ' · Desktop</b><span style="flex:1"></span><button class="btn ghost" data-close>Close</button></div>' +
-      '<div class="cw-desktop-screen"><img data-image hidden alt="' + esc(agent.name) + ' private Linux desktop"><p class="cw-desktop-placeholder" data-placeholder>Connecting to this teammate’s desktop…</p></div>' +
-      '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">View only · Auto refresh</span><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
+      '<div class="cw-desktop-screen"><img data-image tabindex="0" draggable="false" hidden alt="' + esc(agent.name) + ' interactive Linux desktop" title="Click the desktop to control it. Type or paste while it is focused."><p class="cw-desktop-placeholder" data-placeholder>Connecting to this teammate’s desktop…</p></div>' +
+      '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Click to control · Auto refresh</span><button class="btn" data-browser>Browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
     document.body.appendChild(modal);
     var screen = modal.querySelector('[data-image]'), placeholder = modal.querySelector('[data-placeholder]');
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
-    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer;
+    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, inputQueue = Promise.resolve(), pointerStart = null, textBuffer = '', textTimer = null, clickTimer = null, suppressClick = false;
     var endpoint = '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer';
     function close() {
-      closed = true; clearTimeout(timer); controller.abort(); modal.remove();
+      closed = true; clearTimeout(timer); clearTimeout(textTimer); clearTimeout(clickTimer); controller.abort(); modal.remove();
       document.removeEventListener('keydown', keydown);
       if (cw.closeDesktop === close) cw.closeDesktop = null;
     }
-    function keydown(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
+    function keydown(e) { if (e.key === 'Escape' && document.activeElement !== screen) { e.preventDefault(); close(); } }
+    function sendInput(input) {
+      inputQueue = inputQueue.then(async function () {
+        if (closed || screen.hidden || host) return;
+        try {
+          await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'input', input: input }) });
+          if (!closed) { clearTimeout(timer); timer = setTimeout(function () { refresh(); }, 80); }
+        } catch (e) { if (!closed) status.textContent = e.message || 'Could not send desktop input'; }
+      });
+    }
+    function flushText() {
+      clearTimeout(textTimer); textTimer = null;
+      if (textBuffer) { var value = textBuffer; textBuffer = ''; sendInput({ action: 'type', text: value }); }
+    }
+    function point(e) {
+      var rect = screen.getBoundingClientRect(), width = screen.naturalWidth, height = screen.naturalHeight;
+      if (!width || !height) return null;
+      var scale = Math.min(rect.width / width, rect.height / height), left = rect.left + (rect.width - width * scale) / 2, top = rect.top + (rect.height - height * scale) / 2;
+      var x = Math.floor((e.clientX - left) / scale), y = Math.floor((e.clientY - top) / scale);
+      return x >= 0 && x < width && y >= 0 && y < height ? { x: x, y: y } : null;
+    }
+    screen.onpointerdown = function (e) {
+      var p = point(e); if (!p || screen.hidden) return;
+      e.preventDefault(); screen.focus(); flushText(); screen.setPointerCapture(e.pointerId);
+      pointerStart = { x: p.x, y: p.y, button: e.button === 2 ? 3 : e.button === 1 ? 2 : 1 };
+    };
+    screen.onpointerup = function (e) {
+      var from = pointerStart; pointerStart = null; if (!from) return;
+      var to = point(e) || from; screen.releasePointerCapture(e.pointerId);
+      if (from.button === 1 && (Math.abs(to.x - from.x) > 4 || Math.abs(to.y - from.y) > 4)) { suppressClick = true; sendInput({ action: 'drag', x: from.x, y: from.y, endX: to.x, endY: to.y }); }
+      else if (from.button !== 1) sendInput({ action: 'click', x: to.x, y: to.y, button: from.button });
+    };
+    screen.onclick = function (e) {
+      if (suppressClick) { suppressClick = false; return; }
+      var p = point(e); if (!p || e.detail > 1) return;
+      clearTimeout(clickTimer); clickTimer = setTimeout(function () { sendInput({ action: 'click', x: p.x, y: p.y, button: 1 }); }, 250);
+    };
+    screen.ondblclick = function (e) { var p = point(e); clearTimeout(clickTimer); if (p) sendInput({ action: 'double_click', x: p.x, y: p.y, button: 1 }); };
+    screen.onpointercancel = function () { pointerStart = null; };
+    screen.oncontextmenu = function (e) { e.preventDefault(); };
+    screen.addEventListener('wheel', function (e) { var p = point(e); if (!p || !e.deltaY) return; e.preventDefault(); flushText(); sendInput({ action: 'scroll', x: p.x, y: p.y, delta: e.deltaY > 0 ? 3 : -3 }); }, { passive: false });
+    screen.onkeydown = function (e) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') { flushText(); return; }
+      if (['Shift', 'Control', 'Alt', 'Meta'].indexOf(e.key) >= 0 || e.isComposing) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        textBuffer += e.key; if (textBuffer.length >= 1000) flushText(); else { clearTimeout(textTimer); textTimer = setTimeout(flushText, 60); }
+        return;
+      }
+      flushText();
+      var keys = { Enter: 'Return', Backspace: 'BackSpace', Escape: 'Escape', ArrowLeft: 'Left', ArrowRight: 'Right', ArrowUp: 'Up', ArrowDown: 'Down', PageUp: 'Page_Up', PageDown: 'Page_Down', ' ': 'space' };
+      var key = keys[e.key] || e.key;
+      sendInput({ action: 'key', key: (e.ctrlKey ? 'ctrl+' : '') + (e.altKey ? 'alt+' : '') + (e.metaKey ? 'super+' : '') + (e.shiftKey ? 'shift+' : '') + key });
+    };
+    screen.onpaste = function (e) {
+      var text = e.clipboardData && e.clipboardData.getData('text/plain'); if (!text) return;
+      e.preventDefault(); flushText();
+      if (text.length > 2000) { status.textContent = 'Paste up to 2000 characters at a time.'; return; }
+      sendInput({ action: 'type', text: text });
+    };
     function update(computer) {
       host = Boolean(computer.useHostComputer);
+      ['browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').disabled = host || computer.state !== 'running'; });
       start.textContent = host ? 'Use private desktop' : computer.state === 'unavailable' ? 'Retry startup' : 'Start desktop';
       start.disabled = !host && (computer.state === 'starting' || computer.state === 'running');
       stop.disabled = host || (computer.state !== 'starting' && computer.state !== 'running');
@@ -2691,6 +2752,7 @@ export const COWORK_JS = String.raw`
     modal.querySelector('[data-close]').onclick = close;
     start.onclick = function () { refresh(host ? 'use-private' : 'start'); };
     stop.onclick = function () { refresh('stop'); };
+    ['browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').onclick = function () { flushText(); sendInput({ action: 'launch', app: app }); }; });
     document.addEventListener('keydown', keydown);
     refresh(); modal.querySelector('[data-close]').focus();
   }

@@ -3140,6 +3140,15 @@ export class GituServer {
           this.coworkTools.delete(targetAgent.id);
           void computer.start().catch(() => {});
         }
+        else if (body['action'] === 'input') {
+          if (targetAgent.useHostComputer || computer.status().state !== 'running') { this.sendJson(res, 409, { error: 'Start this teammate’s private desktop before controlling it.' }); return true; }
+          if (!body['input'] || typeof body['input'] !== 'object' || Array.isArray(body['input'])) { this.sendJson(res, 400, { error: 'Desktop input is required.' }); return true; }
+          try {
+            const result = await computer.desktopInput(body['input'] as Record<string, unknown>);
+            this.sendJson(res, result.ok ? 200 : 400, result.ok ? { ok: true } : { error: result.output });
+          } catch (error) { this.sendJson(res, 503, { error: (error as Error).message }); }
+          return true;
+        }
         else if (body['action'] === 'desktop') {
           if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'This teammate uses My computer. Choose Use private desktop to give it its own screen.' }); return true; }
           try {
@@ -3167,7 +3176,7 @@ export class GituServer {
           if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Choose Use private desktop before starting this teammate’s desktop.' }); return true; }
           // Image installation can take minutes. Status is polled by the UI.
           void computer.start().catch(() => {});
-        } else { this.sendJson(res, 400, { error: 'action must be start, stop, desktop, use-private or screenshot' }); return true; }
+        } else { this.sendJson(res, 400, { error: 'action must be start, stop, desktop, input, use-private or screenshot' }); return true; }
         this.sendJson(res, 202, { computer: status(), agent: targetAgent }); return true;
       }
     }

@@ -7,9 +7,7 @@ set -eu
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp -noreset > /tmp/gitu-display.log 2>&1 &
 display_pid=$!
-cleanup() {
-  kill ${service_pid:-} ${terminal_pid:-} ${manager_pid:-} "$display_pid" 2>/dev/null || true
-}
+cleanup() { kill ${service_pid:-} ${manager_pid:-} "$display_pid" 2>/dev/null || true; }
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 attempt=0
@@ -18,16 +16,50 @@ until xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; do
   if [ "$attempt" -ge 50 ]; then cat /tmp/gitu-display.log >&2; echo 'Desktop display did not start.' >&2; exit 1; fi
   sleep 0.1
 done
-xsetroot -solid '#151821'
-openbox > /tmp/gitu-window-manager.log 2>&1 &
+# The session bus and runtime directory belong only to this private agent.
+export XDG_RUNTIME_DIR=/tmp/gitu-runtime
+mkdir -p "$XDG_RUNTIME_DIR" "$HOME/Desktop" "$HOME/.local/share/applications"
+chmod 700 "$XDG_RUNTIME_DIR"
+panel_dir="$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+if [ ! -f "$panel_dir/xfce4-panel.xml" ] && [ -f /etc/xdg/xfce4/panel/default.xml ]; then
+  mkdir -p "$panel_dir"
+  cp /etc/xdg/xfce4/panel/default.xml "$panel_dir/xfce4-panel.xml"
+fi
+cat > "$HOME/.local/share/applications/gitu-browser.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Gitu Browser
+Exec=node /computer/open-browser.cjs %u
+Icon=web-browser
+Terminal=false
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+EOF
+cp "$HOME/.local/share/applications/gitu-browser.desktop" "$HOME/Desktop/gitu-browser.desktop"
+cat > "$HOME/Desktop/gitu-files.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Workspace Files
+Exec=thunar /workspace
+Icon=system-file-manager
+Terminal=false
+EOF
+cat > "$HOME/Desktop/gitu-terminal.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Exec=xfce4-terminal --working-directory=/workspace
+Icon=utilities-terminal
+Terminal=false
+EOF
+chmod 755 "$HOME/Desktop/gitu-browser.desktop" "$HOME/Desktop/gitu-files.desktop" "$HOME/Desktop/gitu-terminal.desktop"
+xdg-mime default gitu-browser.desktop x-scheme-handler/http x-scheme-handler/https text/html
+dbus-run-session -- sh -c 'xfce4-session & session=$!; sleep 2; xfce4-terminal --title="Agent Gitu workspace" --working-directory=/workspace; wait "$session"' > /tmp/gitu-window-manager.log 2>&1 &
 manager_pid=$!
-xterm -fa 'DejaVu Sans Mono' -fs 11 -title 'Agent Gitu workspace' -geometry 90x24+24+24 -bg '#151821' -fg '#e8e8e8' > /tmp/gitu-terminal.log 2>&1 &
-terminal_pid=$!
 attempt=0
 until xwininfo -root -tree | grep -F 'Agent Gitu workspace' >/dev/null; do
   attempt=$((attempt + 1))
-  if ! kill -0 "$manager_pid" "$terminal_pid" 2>/dev/null || [ "$attempt" -ge 100 ]; then
-    cat /tmp/gitu-window-manager.log /tmp/gitu-terminal.log >&2
+  if ! kill -0 "$manager_pid" 2>/dev/null || [ "$attempt" -ge 200 ]; then
+    cat /tmp/gitu-window-manager.log >&2
     echo 'Desktop workspace window did not start.' >&2
     exit 1
   fi

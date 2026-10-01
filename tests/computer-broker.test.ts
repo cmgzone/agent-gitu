@@ -16,7 +16,7 @@ describe('private desktop broker', () => {
     expect(args).toContain('dev.agentgitu.broker=' + owner);
     expect(args).toContain('--cap-drop');
     expect(args.join(' ')).not.toMatch(/type=bind|--privileged|--publish|docker.sock/);
-    expect(args.at(-1)).toBe('agent-gitu-cowork:3');
+    expect(args.at(-1)).toBe('agent-gitu-cowork:4');
     for (const modified of [
       [...computerCreateArgs(name), '--privileged'],
       ['create', '--name', name, 'alpine'],
@@ -33,7 +33,7 @@ describe('private desktop broker', () => {
       ['exec', '--user', 'root', name, 'node', '-e', 'evil'],
       ['exec', '-i', name, 'sh', '-c', 'evil'],
       ['image', 'inspect', 'alpine'],
-      ['build', '-t', 'agent-gitu-cowork:3', '/tmp/untrusted'],
+      ['build', '-t', 'agent-gitu-cowork:4', '/tmp/untrusted'],
       ['cp', '/etc/passwd', name + ':/computer/server.cjs'],
       ['volume', 'rm', 'production-data'],
       ['run', '--privileged', 'alpine'],

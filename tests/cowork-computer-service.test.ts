@@ -84,6 +84,26 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
 }
 
 describe('virtual computer service', () => {
+  it('validates desktop input before invoking X11 and keeps text out of shell commands', async () => {
+    const a = service('desktop-input', undefined, true);
+    for (const params of [
+      { action: 'click', x: -1, y: 20 }, { action: 'click', x: 1280, y: 20 },
+      { action: 'drag', x: 1, y: 1, endX: 10, endY: 800 },
+      { action: 'click', x: 1, y: 1, button: 9 }, { action: 'scroll', x: 1, y: 1, delta: 1000 },
+      { action: 'key', key: 'Return exec evil' }, { action: 'key', key: '--window=1' },
+      { action: 'type', text: 'x'.repeat(2001) }, { action: 'type', text: 'a\0b' },
+      { action: 'launch', app: '__proto__' }, { action: 'launch', app: 'sh' },
+    ]) await expect(a.execute('desktop_input', params)).rejects.toThrow();
+    expect(a.capture).not.toHaveBeenCalled();
+    await a.execute('desktop_input', { action: 'click', x: 1279, y: 799, button: 3 });
+    expect(a.capture).toHaveBeenLastCalledWith('xdotool', ['mousemove', '--sync', '1279', '799', 'click', '--clearmodifiers', '--repeat', '1', '--delay', '120', '3'], { timeout: 10000 }, expect.any(Function));
+    const text = '--file /etc/passwd; $(evil)';
+    await a.execute('desktop_input', { action: 'type', text });
+    expect(a.capture).toHaveBeenLastCalledWith('xdotool', ['type', '--clearmodifiers', '--delay', '0', '--', text], { timeout: 10000 }, expect.any(Function));
+    await a.execute('desktop_input', { action: 'key', key: 'ctrl+alt+Return' });
+    expect(a.capture).toHaveBeenLastCalledWith('xdotool', ['key', '--clearmodifiers', 'ctrl+alt+Return'], { timeout: 10000 }, expect.any(Function));
+    await expect(service('input-no-display').execute('desktop_input', { action: 'click', x: 1, y: 1 })).rejects.toThrow('no desktop display');
+  });
   it('captures the full private desktop and puts the agent browser on that display', async () => {
     const a = service('desktop-a', undefined, true);
     const b = service('desktop-b', undefined, true);

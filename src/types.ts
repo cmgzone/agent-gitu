@@ -38,6 +38,14 @@ export interface CriterionSpec {
   evidenceType?: CriterionEvidenceType;
 }
 
+/**
+ * Lifecycle of a criterion. `failed` and `blocked` are diagnostic states that
+ * STILL gate completion — they are real obligations, reported distinctly
+ * instead of as generic "open". Only `superseded` and `not_applicable` retire a
+ * criterion from the contract, and retired criteria keep their evidence history.
+ */
+export type CriterionStatus = 'active' | 'satisfied' | 'failed' | 'blocked' | 'superseded' | 'not_applicable';
+
 export interface AcceptanceCriterion {
   id: string;
   text: string;
@@ -47,6 +55,15 @@ export interface AcceptanceCriterion {
   evidenceType?: CriterionEvidenceType;
   evidenceIds: string[];
   satisfied: boolean;
+  /** Optional lifecycle state. Absent means derived from `satisfied`
+   *  (satisfied → 'satisfied', otherwise 'active'), so ledgers written before
+   *  the lifecycle existed stay valid with no migration. */
+  status?: CriterionStatus;
+  /** The criterion that replaces this one — the history link (ac-1 → ac-8). */
+  supersededBy?: string;
+  /** Why this criterion stopped being required, and when. */
+  retiredReason?: string;
+  retiredAt?: string;
 }
 
 export type EvidenceKind = 'test' | 'build' | 'lint' | 'typecheck' | 'command' | 'diff' | 'manual' | 'log' | 'file';

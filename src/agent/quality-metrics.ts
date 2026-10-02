@@ -1,4 +1,5 @@
-import type { CompletionReport, RunQualityMetrics, TokenTelemetrySnapshot, VerificationReportItem } from '../types.js';
+import type { CompletionReport, CriterionStatus, RunQualityMetrics, TokenTelemetrySnapshot, VerificationReportItem } from '../types.js';
+import { requiredCriteria } from '../ledger/criteria.js';
 
 function clamp(value: number, min = 0, max = 1): number {
   return Math.max(min, Math.min(max, value));
@@ -11,12 +12,15 @@ function clamp(value: number, min = 0, max = 1): number {
  */
 export function scoreRunQuality(input: {
   status: CompletionReport['status'];
-  criteria: { satisfied: boolean }[];
+  criteria: { satisfied: boolean; status?: CriterionStatus }[];
   verification: VerificationReportItem[];
   telemetry?: TokenTelemetrySnapshot;
 }): RunQualityMetrics {
-  const total = input.criteria.length;
-  const satisfied = input.criteria.filter((criterion) => criterion.satisfied).length;
+  // Retired criteria (superseded / not applicable) are history: they must not
+  // depress coverage for a contract that no longer contains them.
+  const contract = requiredCriteria(input.criteria);
+  const total = contract.length;
+  const satisfied = contract.filter((criterion) => criterion.satisfied).length;
   const coverage = total === 0 ? 0 : satisfied / total;
   const authoritative = input.verification.filter((item) => item.authority !== 'historical');
   const passing = authoritative.filter((item) => item.passed).length;

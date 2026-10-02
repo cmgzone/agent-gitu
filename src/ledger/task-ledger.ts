@@ -6,6 +6,7 @@ import type {
   ArchitectureDecision,
   BudgetExtensionRecord,
   CriterionSpec,
+  CriterionStatus,
   DecisionBasis,
   FollowUpRecord,
   InvestigationDepth,
@@ -410,6 +411,72 @@ export class TaskLedger {
       this.save();
     }
     return added;
+  }
+
+  /**
+   * Move a criterion through its lifecycle, recording the transition (previous
+   * state → transition → replacement notice → new state).
+   *
+   * `superseded` and `not_applicable` remove the criterion from the task
+   * contract while keeping its id, text and evidence as history. `failed` and
+   * `blocked` stay IN the contract — the work is still owed, the state just
+   * stops pretending nothing has been tried. `active` reverses any of them, so
+   * every transition here is recoverable.
+   *
+   * Retired criteria keep `satisfied` untouched: "it was proven, then the
+   * direction changed" is the history worth preserving. What changes is that
+   * they no longer gate, count, or get delegated.
+   */
+  reviseCriteria(updates: { id: string; status: CriterionStatus; reason: string; supersededBy?: string }[]): AcceptanceCriterion[] {
+    const revised: AcceptanceCriterion[] = [];
+    for (const update of updates) {
+      const criterion = this.data.acceptanceCriteria.find((candidate) => candidate.id === update.id);
+      if (!criterion) continue;
+      const reason = String(update.reason ?? '').trim().slice(0, 240);
+      criterion.status = update.status;
+      if (update.status === 'superseded' || update.status === 'not_applicable') {
+        criterion.retiredReason = reason;
+        criterion.retiredAt = nowIso();
+        if (update.supersededBy) criterion.supersededBy = update.supersededBy;
+      } else if (update.status === 'failed' || update.status === 'blocked') {
+        // Required, but honestly not proven. Clears any stale claim of success.
+        criterion.satisfied = false;
+        criterion.retiredReason = reason;
+      } else {
+        delete criterion.supersededBy;
+        delete criterion.retiredReason;
+        delete criterion.retiredAt;
+        if (update.status === 'active') {
+          // Reactivation restores the previous proof state; the evidence gate
+          // still re-validates freshness, so stale proof cannot sneak back in.
+          criterion.satisfied = criterion.evidenceIds.some((id) => this.data.evidence.find((e) => e.id === id)?.passed === true);
+        }
+      }
+      revised.push(criterion);
+    }
+    if (revised.length > 0) this.save();
+    return revised;
+  }
+
+  /** Retire criteria and add the criteria that replace them, linking the two so
+   *  the state message can show `ac-1 SUPERSEDED → ac-8`. */
+  supersedeCriteria(ids: string[], options: { reason: string; replacements?: CriterionSpec[] }): { retired: AcceptanceCriterion[]; added: AcceptanceCriterion[] } {
+    const replacements = options.replacements ?? [];
+    const added = replacements.length
+      ? replacements.some((spec) => spec.verification || (spec.evidenceType && spec.evidenceType !== 'any'))
+        ? this.appendCriteriaFromSpecs(replacements)
+        : this.appendCriteria(replacements.map((spec) => spec.text))
+      : [];
+    const replacementId = added[0]?.id;
+    const retired = this.reviseCriteria(
+      ids.map((id) => ({ id, status: 'superseded' as const, reason: options.reason, ...(replacementId ? { supersededBy: replacementId } : {}) })),
+    );
+    return { retired, added };
+  }
+
+  /** Undo a retirement: the criterion returns to the contract. */
+  reactivateCriterion(id: string, reason: string): AcceptanceCriterion | undefined {
+    return this.reviseCriteria([{ id, status: 'active', reason }])[0];
   }
 
   setPlan(steps: PlanStepInput[]): void {

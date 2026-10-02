@@ -32,6 +32,26 @@ export interface PlanActionStep {
 
 export const PLAN_AREAS: readonly PlanArea[] = ['frontend', 'backend', 'integration', 'shared', 'database', 'infra', 'tests', 'docs'];
 
+const CRITERION_EVIDENCE_TYPES = new Set(['command_success', 'test_success', 'build_success', 'lint_success', 'typecheck_success', 'any']);
+
+/** Bounded criterion specs (text + optional pinned oracle) for new/replacement
+ *  acceptance criteria. */
+export function parseCriterionSpecs(value: unknown, cap = 10): CriterionSpec[] {
+  if (!Array.isArray(value)) return [];
+  const specs: CriterionSpec[] = [];
+  for (const raw of value.slice(0, cap)) {
+    const source = typeof raw === 'string' ? { text: raw } : raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : undefined;
+    if (!source) continue;
+    const text = String(source['text'] ?? '').trim().slice(0, 260);
+    if (!text) continue;
+    const verification = typeof source['verification'] === 'string' && source['verification'].trim() ? source['verification'].trim().slice(0, 180) : undefined;
+    const evidenceTypeRaw = String(source['evidenceType'] ?? '').trim();
+    const evidenceType = CRITERION_EVIDENCE_TYPES.has(evidenceTypeRaw) ? (evidenceTypeRaw as CriterionSpec['evidenceType']) : undefined;
+    specs.push({ text, ...(verification ? { verification } : {}), ...(evidenceType ? { evidenceType } : {}) });
+  }
+  return specs;
+}
+
 export function parseArea(value: unknown): PlanArea | undefined {
   const text = String(value ?? '')
     .trim()
@@ -52,6 +72,12 @@ export type ParsedAction =
   | { type: 'set_criteria'; criteria: string[] }
   | { type: 'set_plan'; steps: PlanActionStep[] }
   | { type: 'add_criteria'; criteria: string[] }
+  | {
+      type: 'revise_criteria';
+      reason: string;
+      updates: { id: string; disposition: 'superseded' | 'not_applicable' | 'failed' | 'blocked' | 'active'; supersededBy?: string }[];
+      replacements?: CriterionSpec[];
+    }
   | { type: 'append_plan'; steps: PlanActionStep[] }
   | {
       type: 'set_design';
@@ -127,6 +153,14 @@ export function visibleActionSummary(action: ParsedAction): string | undefined {
       return `I’m mapping the work into ${action.steps.length === 1 ? 'one verifiable step' : `${action.steps.length} verifiable steps`}.`;
     case 'add_criteria':
       return 'I’m adding the follow-up checks needed for this new scope.';
+    case 'revise_criteria': {
+      const retired = action.updates.filter((update) => update.disposition === 'superseded' || update.disposition === 'not_applicable').length;
+      const replaced = action.replacements?.length ? ` and defining ${action.replacements.length} replacement check(s)` : '';
+      const reactivated = action.updates.filter((update) => update.disposition === 'active').length;
+      if (retired > 0) return `I’m retiring ${retired === 1 ? 'an obsolete acceptance check' : `${retired} obsolete acceptance checks`} that this change replaced${replaced}.`;
+      if (reactivated > 0) return `I’m returning ${reactivated === 1 ? 'an acceptance check' : `${reactivated} acceptance checks`} to the active contract.`;
+      return 'I’m updating the state of the affected acceptance checks.';
+    }
     case 'append_plan':
       return 'I’m extending the plan for the follow-up work.';
     case 'set_design':
@@ -233,6 +267,32 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       const criteria = action['criteria'];
       if (!Array.isArray(criteria) || criteria.length === 0) return undefined;
       return { type, criteria: criteria.map(String).slice(0, 10) };
+    }
+    case 'revise_criteria': {
+      const reason = String(action['reason'] ?? '').trim().slice(0, 240);
+      // A retirement without a reason would be a silent escape from the task
+      // contract, so the reason is mandatory.
+      if (!reason) return undefined;
+      const dispositions = new Set(['superseded', 'not_applicable', 'failed', 'blocked', 'active']);
+      const rawUpdates = action['updates'] ?? action['criteria'];
+      const updates = (Array.isArray(rawUpdates) ? rawUpdates : [])
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+        .map((entry) => {
+          const id = String(entry['id'] ?? entry['criterionId'] ?? '').trim();
+          const disposition = String(entry['disposition'] ?? entry['status'] ?? 'superseded').trim().toLowerCase();
+          const supersededBy = typeof entry['supersededBy'] === 'string' && entry['supersededBy'].trim() ? entry['supersededBy'].trim() : undefined;
+          return { id, disposition, ...(supersededBy ? { supersededBy } : {}) };
+        })
+        .filter((update) => update.id && dispositions.has(update.disposition))
+        .slice(0, 20);
+      if (updates.length === 0) return undefined;
+      const replacements = parseCriterionSpecs(action['replacements'] ?? action['replacement']);
+      return {
+        type,
+        reason,
+        updates: updates as { id: string; disposition: 'superseded' | 'not_applicable' | 'failed' | 'blocked' | 'active'; supersededBy?: string }[],
+        ...(replacements.length > 0 ? { replacements } : {}),
+      };
     }
     case 'set_plan':
     case 'append_plan': {
@@ -520,6 +580,7 @@ export const KNOWN_ACTION_TYPES = new Set([
   'set_criteria',
   'set_plan',
   'add_criteria',
+  'revise_criteria',
   'append_plan',
   'set_hypothesis',
   'record_decision',
@@ -550,13 +611,13 @@ export const KNOWN_ACTION_TYPES = new Set([
 export const GITU_ACTION_TOOL: LlmToolDefinition = {
   name: 'agent_gitu_action',
   description:
-    'Submit exactly one Agent Gitu action for validation and execution. Put the normal action object (type, tool, params, reason, expected, etc.) in action. Do not describe an action in prose.',
+    'Submit exactly one Agent Gitu action for validation and execution. Put the normal action object (type, tool, params, reason, expected, etc.) in action. Do not describe an action in prose. The ACTION TYPES list in the system instructions names every valid action type; the capability contracts selected for this run document the parameters of the ones available here.',
   parameters: {
     type: 'object',
     properties: {
       action: {
         type: 'object',
-        description: 'The Agent Gitu action object. Its type must be one of the documented actions in the system instructions.',
+        description: 'The Agent Gitu action object. Its type must be one of the ACTION TYPES in the system instructions; the capability contracts for this run define that action\'s parameters.',
         additionalProperties: true,
       },
     },

@@ -6,6 +6,7 @@ import { Executor } from '../executor/executor.js';
 import { getWorkspaceFingerprint, gitExec, isGitRepo } from '../git/git.js';
 import { ProjectGuard } from '../guard/project-guard.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
+import { openCriteria, requiredCriteria } from '../ledger/criteria.js';
 import { extractJson, LlmError, parseXmlFunctionCall, type LlmClient, type LlmMessage } from '../llm/llm.js';
 import { resilientLlm } from '../llm/resilient.js';
 import { DEFAULT_LOOP_POLICY, LoopDetector } from '../loop/loop-detector.js';
@@ -1571,7 +1572,9 @@ export class SubAgentRunner {
           evidenceIds.length > 0 ? `✓ Recorded evidence: ${evidenceIds.join(', ')}` : '',
         ].filter(Boolean);
 
-        const unverified = ledger.data.acceptanceCriteria.filter((c) => !c.satisfied);
+        // Only criteria still in the contract count as unverified work; retired
+        // ones are history and must not be reported as a specialist failure.
+        const unverified = openCriteria(ledger.data.acceptanceCriteria);
         const blockedList: string[] = [
           ...blockers,
           unverified.length > 0 ? `✗ Criteria not yet verified: ${unverified.map((c) => `[${c.id}] ${c.text}`).join(', ')}` : '',
@@ -1787,7 +1790,7 @@ export class SubAgentRunner {
       stopReason,
       filesInspected: [...filesInspected],
       filesChanged: [...filesChanged],
-      criteriaStatus: (ledger?.data.acceptanceCriteria ?? []).map((c) => ({
+      criteriaStatus: requiredCriteria(ledger?.data.acceptanceCriteria ?? []).map((c) => ({
         id: c.id,
         text: c.text,
         satisfied: c.satisfied,

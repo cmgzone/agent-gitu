@@ -75,7 +75,8 @@ import {
   type TaskLedgerData,
   type VerifiedDiffSnapshot,
 } from '../types.js';
-import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
+import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage, type PromptCompositionMetrics } from './prompt.js';
+import { ACTION_GRAMMAR_FULL, contractIdsFor, type PromptCapabilityContext } from './prompt-capabilities.js';
 import { applyOutputHygiene } from './output-style.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
 import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, isObservationTool } from './agent-workflow.js';
@@ -107,6 +108,8 @@ import {
   type AskUserQuestion,
   type ExecutableRecoveryInput,
 } from './recovery-synthesizer.js';
+import { QuestionGuard, StrategyGuard, type EstablishedFact } from './strategy-guard.js';
+import { allRequiredSatisfied, criterionLabel, openCriteria, requiredCriteria } from '../ledger/criteria.js';
 import {
   collectQualityReviewDiff,
   isVerifiedDiffSnapshotCurrent,
@@ -191,6 +194,10 @@ export interface GituConfig {
   connectionRecoveryCheck?: (prerequisite: MissingPrerequisite) => Promise<ConnectionRecoveryDecision> | ConnectionRecoveryDecision;
   /** User-saved connection metadata that is safe to provide after recovery. */
   connectionContext?: () => string;
+  /** Capability selection: true when at least one saved provider connection
+   *  exists, so the provider/connection manual is injected only for runs that
+   *  can actually use it. */
+  hasSavedConnections?: () => boolean;
   /** Executes only a registered, read-only provider operation. URLs and
    * authorization headers stay inside the host adapter. */
   connectionActionHandler?: (input: { connectionId: string; operationId: string }) => Promise<{ message: string; data?: unknown }>;
@@ -476,7 +483,7 @@ export class Gitu {
       // the fingerprint to a stable "clean" hash); here we opt those evidence
       // records out explicitly. Fresh evidence from THIS phase stays strict.
       try {
-        const acceptedIds = new Set(ledger.data.acceptanceCriteria.filter((c) => c.satisfied).flatMap((c) => c.evidenceIds));
+        const acceptedIds = new Set(requiredCriteria(ledger.data.acceptanceCriteria).filter((c) => c.satisfied).flatMap((c) => c.evidenceIds));
         let rebased = 0;
         for (const ev of ledger.data.evidence) {
           if (ev.passed && acceptedIds.has(ev.id) && ev.workspaceFingerprint !== undefined) {
@@ -765,8 +772,8 @@ export class Gitu {
       const effortPlan = planEffort(activeGoal, {
         scopeFiles: this.config.scopeFiles,
         criteriaCount: isFollowUpPhase
-          ? ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).length
-          : ledger.data.acceptanceCriteria.length,
+          ? requiredCriteria(ledger.data.acceptanceCriteria).filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).length
+          : requiredCriteria(ledger.data.acceptanceCriteria).length,
         mode: ledger.data.mode,
         explicitEffort: this.config.effort,
         contextWindowTokens: this.config.contextWindowTokens,
@@ -939,6 +946,37 @@ export class Gitu {
       // after every compaction so it never silently disappears under pressure.
       const protectedSection = memory.renderProtected(guard.lock.name, 12, this.config.memoryRetrieval);
 
+      // ── Capability selection (prompt layer 2) ────────────────────────────
+      // The stable system prefix carries only the capabilities THIS run can
+      // actually use: a backend bug fix must not pay for the browser, provider,
+      // delegation, or MCP manuals. The runtime computes the facts once; the
+      // prompt composes them; no optional module is enabled "just in case".
+      const mcpServers = this.config.mcp ? this.config.mcp.servers() : [];
+      const mcpSection = mcpServers.length > 0 ? mcpServers.map((s) => `- mcp server "${s.name}" (${s.command})`).join('\n') : undefined;
+      const lspServers = lsp.hasServers() ? lsp.status().filter((s) => s.configured) : [];
+      const lspSection = lspServers.length > 0 ? lspServers.map((s) => `- ${s.server} server → lsp tools for: ${s.languageIds.join(', ')}`).join('\n') : undefined;
+      const skillCatalogSection = skills.renderForPrompt(ledger.data.activeSkills);
+      const providerContextText = ledger.data.mode === 'chat' ? undefined : this.config.connectionContext?.();
+      const initialProtocolMode: 'native' | 'structured_text' | 'text' =
+        this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
+      const capabilityContext: PromptCapabilityContext = {
+        protocolMode: initialProtocolMode,
+        // Fresh work still has to plan; execution turns do not pay for the
+        // planning tutorial.
+        planningRelevant: ledger.data.status === 'intake' || ledger.data.status === 'planning' || ledger.data.status === 'review',
+        uiTask: isFrontendGoal(activeGoal),
+        hasBrowser: this.config.browser ? this.config.browser.available() : false,
+        vision: this.config.supportsImages ?? false,
+        lspAvailable: lspServers.length > 0,
+        skillsAvailable: true,
+        autoLearn: this.config.autoLearn ?? true,
+        mcpAvailable: mcpServers.length > 0,
+        connectionsRelevant: Boolean(this.config.hasSavedConnections?.() ?? this.config.safestProviderRead?.()),
+        delegationAvailable: Boolean(this.config.agentsSection),
+        testCommand: guard.lock.testCommand ?? undefined,
+      };
+      let promptComposition: PromptCompositionMetrics | undefined;
+
       const systemPrompt = buildSystemPrompt(guard, memory, {
         scopeFiles: this.config.scopeFiles,
         taggedReadFolders: this.config.taggedReadFolders?.(),
@@ -948,31 +986,24 @@ export class Gitu {
         // first (relevance + scope + confidence + recency + usage).
         memorySection,
         protectedSection,
-        skillsSection: skills.renderForPrompt(ledger.data.activeSkills),
+        skillsSection: skillCatalogSection,
         agentsSection: this.config.agentsSection,
-        mcpSection: this.config.mcp
-          ? this.config.mcp
-              .servers()
-              .map((s) => `- mcp server "${s.name}" (${s.command})`)
-              .join('\n') || undefined
-          : undefined,
-        lspSection: lsp.hasServers()
-          ? lsp
-              .status()
-              .filter((s) => s.configured)
-              .map((s) => `- ${s.server} server → lsp tools for: ${s.languageIds.join(', ')}`)
-              .join('\n')
-          : undefined,
-        vision: this.config.supportsImages ?? false,
-        hasBrowser: this.config.browser ? this.config.browser.available() : false,
-        autoLearn: this.config.autoLearn ?? true,
-        uiTask: isFrontendGoal(activeGoal),
+        mcpSection,
+        lspSection,
+        vision: capabilityContext.vision,
+        hasBrowser: capabilityContext.hasBrowser,
+        autoLearn: capabilityContext.autoLearn,
+        uiTask: capabilityContext.uiTask,
         agentWorkflow,
         planRequested: temporaryPlanPending,
         // Keep only the quality bar's non-negotiable contract in the stable
         // system prefix. Its full procedure is supplied by the active-skill
         // state block on activation and after every compaction.
         uiQualityContract: skills.get('frontend-quality-bar') ? renderSkillContract(skills.get('frontend-quality-bar')!, 440) : undefined,
+        capabilityContext,
+        onMetrics: (metrics) => {
+          promptComposition = metrics;
+        },
       });
       // Strategy CONTENT comes from the skill layer (shadowable); the
       // classify-and-inject mechanism stays here in core.
@@ -1020,7 +1051,7 @@ export class Gitu {
       if (assembled.imagesSkipped) this.emit('images   skipped — model does not support images');
       const messages = assembled.messages;
 
-      if (resumeNote && ledger.data.mode !== 'chat' && ledger.data.acceptanceCriteria.length > 0 && ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied)) {
+      if (resumeNote && ledger.data.mode !== 'chat' && requiredCriteria(ledger.data.acceptanceCriteria).length > 0 && allRequiredSatisfied(ledger.data.acceptanceCriteria)) {
         messages.push({
           role: 'user',
           content:
@@ -1032,7 +1063,7 @@ export class Gitu {
       // the model verifies through the provider's own reads from turn one:
       // DNS/port probes against internal identifiers and premature BLOCKED
       // declarations were the failure modes of real provider deployments.
-      const providerContext = ledger.data.mode === 'chat' ? undefined : this.config.connectionContext?.();
+      const providerContext = providerContextText;
       if (providerContext) {
         messages.push({
           role: 'user',
@@ -1106,6 +1137,14 @@ export class Gitu {
       // strategy, context pack, resumed conversation, user images) forms the
       // byte-stable prefix that providers can prefix-cache across turns.
       const telemetry = new RunTelemetry();
+      if (promptComposition) {
+        // Prompt-architecture telemetry: how much of each call is the durable
+        // core vs. the capability contracts selected for this run.
+        telemetry.notePromptComposition(promptComposition.coreChars, promptComposition.capabilityChars);
+        this.emit(
+          `prompt   core ${promptComposition.coreChars} · contracts ${promptComposition.capabilityChars} [${contractIdsFor(capabilityContext).join(', ')}] · modules ${promptComposition.moduleChars}`,
+        );
+      }
       let prefixEnd = messages.length;
       if (ledger.data.contextPack) {
         telemetry.filesInContextPack =
@@ -1155,7 +1194,10 @@ export class Gitu {
       let connectionFailureStreak = 0;
       /** Stable provider reads promoted to project memory this run (deduped per operation). */
       const promotedConnectionFacts = new Set<string>();
-      const connectionOperationAttempts = new Map<string, number>();
+      // Runtime-owned loop policy: exhausted strategies are refused before they
+      // execute, and questions the task already answers never reach the user.
+      const strategyGuard = new StrategyGuard();
+      const questionGuard = new QuestionGuard();
       let lastExecutedActionTag: string | undefined;
       // Capability-resolution must be followed by a concrete action; a model
       // that re-requests the same missing capability instead of proposing the
@@ -1191,8 +1233,10 @@ export class Gitu {
       let emptyLadderCycles = 0;
       let emptyProviderGaveUp = false;
       let logicalRequestSequence = 0;
-      let actionProtocolMode: 'native' | 'structured_text' | 'text' =
-        this.config.actionProtocolMode === 'structured_text' || this.config.actionProtocolMode === 'text' ? this.config.actionProtocolMode : 'native';
+      let actionProtocolMode: 'native' | 'structured_text' | 'text' = initialProtocolMode;
+      // Text-protocol runs already carry the full grammar in the system prompt;
+      // a run that downgrades mid-flight gets it injected once (see `ask`).
+      let fullGrammarInjected = initialProtocolMode !== 'native';
       const actionsAtStart = ledger.data.actions.length;
       let conversationControl = conversationIntent(resumeNote ?? activeGoal);
       let preservePausedWork = Boolean(conversationControl && this.config.resume && !resumedCompletedScope);
@@ -1216,7 +1260,7 @@ export class Gitu {
       let budgetExtensions = 0;
       const progressSnapshot = (): { evidence: number; satisfied: number; files: number; todos: number; browses: number; distinctOk: number } => ({
         evidence: new Set(ledger.data.evidence.filter(e => e.passed && !e.stale).map(e => `${e.command ?? e.label}:${e.workspaceFingerprint}`)).size,
-        satisfied: ledger.data.acceptanceCriteria.filter((c) => c.satisfied).length,
+        satisfied: requiredCriteria(ledger.data.acceptanceCriteria).filter((c) => c.satisfied).length,
         files: ledger.data.filesChanged?.length ?? 0,
         // Checked todos are real execution progress — they let fine-grained
         // breakdowns keep the dynamic budget alive without new evidence records.
@@ -1284,13 +1328,28 @@ export class Gitu {
         planDesign: isFollowUpPhase ? undefined : ledger.data.planDesign,
       });
 
+      /** Active decisions and mandatory instructions may already pin the value a
+       * question is about. Those are passed to the question guard so the model
+       * cannot re-ask for something this task has established. */
+      const establishedFactsForQuestions = (): EstablishedFact[] => [
+        ...(ledger.data.architectureDecisions ?? [])
+          .filter((decision) => decision.status === 'active')
+          .map((decision) => ({
+            text: `${decision.decision}${decision.rejected.length ? ` (rejected: ${decision.rejected.map((rejected) => rejected.alternative).join(', ')})` : ''}`,
+            source: `decision ${decision.id}`,
+          })),
+        ...(ledger.data.taskAuthority?.instructions ?? [])
+          .filter((instruction) => instruction.status === 'active' && (instruction.enforcement === 'hard' || instruction.type === 'requirement'))
+          .map((instruction) => ({ text: instruction.text, source: 'active instruction' })),
+      ];
+
       const ask = async (note?: string): Promise<ParsedAction | undefined> => {
         const conversationNote = conversationControl
           ? `USER CONVERSATION REQUEST: ${conversationControl === 'pause' ? 'Execution is paused. Discuss or answer first; do not run tools or change the plan.' : 'Answer the user question first; only read-only inspection needed for that answer is allowed.'} Use complete with chat:true and a natural response, or ask_user when their input is needed. Preserve unfinished work and wait for a new instruction before continuing it.`
           : '';
         const liveConnections = this.config.connectionContext?.();
         const liveContext = liveConnections ? `CURRENT REGISTERED CONNECTIONS AND CAPABILITIES (refresh, metadata only):\n${liveConnections}` : '';
-        messages.push({ role: 'user', content: buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope(), fileKnowledgeSection()) });
+        messages.push({ role: 'user', content: buildStateMessage(ledger, [note, conversationNote, liveContext].filter(Boolean).join('\n\n'), activeSkillsSection(), activePhaseStateScope(), fileKnowledgeSection(), strategyGuard.render()) });
         this.emit('think  reviewing task state and choosing the next action');
         let pending = '';
         let lastFlush = Date.now();
@@ -1324,16 +1383,31 @@ export class Gitu {
           pending = '';
           streamer = createProseStreamer(sink);
         };
+        // A mid-run protocol downgrade leaves the model holding a native tool
+        // vocabulary (or nothing) while actions must now be emitted as text.
+        // The full grammar is injected into the conversation exactly once, so
+        // compatibility mode stays self-sufficient for the rest of the run.
+        const ensureFullActionGrammar = (): void => {
+          if (fullGrammarInjected) return;
+          fullGrammarInjected = true;
+          messages.push({
+            role: 'user',
+            content: `ACTION PROTOCOL CHANGED — native action tools are no longer used for this run. Full grammar for the compatibility mode:\n\n${ACTION_GRAMMAR_FULL}\n\nContinue with the progress prose plus exactly one JSON action object per turn.`,
+          });
+          this.emit('protocol injected the full action grammar for compatibility mode');
+        };
         // One lane down the compatibility ladder. Native function tools are the
         // most capable and the most likely to be rejected, so a provider that
         // keeps producing unusable replies gets the plainest protocol left.
         const downgradeActionProtocol = (): boolean => {
           if (actionProtocolMode === 'native') {
             actionProtocolMode = 'structured_text';
+            ensureFullActionGrammar();
             return true;
           }
           if (actionProtocolMode === 'structured_text') {
             actionProtocolMode = 'text';
+            ensureFullActionGrammar();
             return true;
           }
           return false;
@@ -1520,6 +1594,7 @@ export class Gitu {
             // only the two remaining transport attempts on compatibility.
             if (!(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
             actionProtocolMode = 'structured_text';
+            ensureFullActionGrammar();
             this.emit('protocol native tools unsupported by this provider — using structured action compatibility');
             resetProse();
             try {
@@ -1527,6 +1602,7 @@ export class Gitu {
             } catch (fallbackErr) {
               if (!(fallbackErr instanceof LlmError) || fallbackErr.details.kind !== 'tool_protocol_incompatible') throw fallbackErr;
               actionProtocolMode = 'text';
+              ensureFullActionGrammar();
               this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
               resetProse();
               turn = await callOnce('text', 1);
@@ -1538,6 +1614,7 @@ export class Gitu {
           } catch (err) {
             if (actionProtocolMode !== 'structured_text' || !(err instanceof LlmError) || err.details.kind !== 'tool_protocol_incompatible') throw err;
             actionProtocolMode = 'text';
+            ensureFullActionGrammar();
             this.emit('protocol JSON mode unsupported by this provider — using text action compatibility');
             resetProse();
             turn = await callOnce('text', 2);
@@ -1829,6 +1906,12 @@ export class Gitu {
             (intent ? '\nAnswer naturally before doing further work. The existing goal and unfinished plan remain on hold.' :
               steered.kind === 'CORRECT' ? '\nRevise affected plan steps and replace obsolete todos for the new direction; reactivate a cancelled step with status:pending after revising it, or append the replacement steps. Do not continue the rejected provider.' : ''));
           applyFollowUpToLedger(ledger, queued.text);
+          // A user message changes the world: it may grant exactly the access a
+          // failed strategy was missing, so exhaustion is re-opened here rather
+          // than staying closed for the rest of the run.
+          for (const unlocked of strategyGuard.noteExternalChange()) {
+            this.emit(`runtime  strategy re-opened by user input — ${unlocked.label}`);
+          }
           if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
             const extraTurns = Math.max(budgetExtensionTurns, 10);
             budgetCap = turns + extraTurns;
@@ -2020,9 +2103,7 @@ export class Gitu {
                   openSteps: ledger.data.plan
                     .filter((step) => step.status === 'pending' || step.status === 'in_progress')
                     .map((step) => ({ id: step.id, description: step.description, verification: step.verification })),
-                  unclaimedCriteria: ledger.data.acceptanceCriteria
-                    .filter((criterion) => !criterion.satisfied)
-                    .map((criterion) => `${criterion.id} ${criterion.text.slice(0, 80)}`),
+                  unclaimedCriteria: openCriteria(ledger.data.acceptanceCriteria).map((criterion) => `${criterion.id} ${criterion.text.slice(0, 80)}`),
                 }),
               );
             } else if (thinkingOnlyNoAction) {
@@ -2074,7 +2155,7 @@ export class Gitu {
           if (temporaryPlanPending && !conversationControl) {
             const discovery = action.type === 'tool_call' ? isObservationTool(action.tool, action.params)
               : action.type === 'parallel' ? action.calls.every(call => isObservationTool(call.tool, call.params))
-              : ['set_criteria', 'add_criteria', 'set_design', 'set_plan', 'append_plan', 'show_plan', 'set_hypothesis', 'record_decision', 'ask_user'].includes(action.type);
+              : ['set_criteria', 'add_criteria', 'revise_criteria', 'set_design', 'set_plan', 'append_plan', 'show_plan', 'set_hypothesis', 'record_decision', 'ask_user'].includes(action.type);
             if (!discovery) {
               observe('Plan requested for this turn: inspect with read-only tools, propose set_plan, and wait for approval before execution.');
               continue;
@@ -2088,11 +2169,14 @@ export class Gitu {
               const criteriaAlreadySet = ledger.data.acceptanceCriteria.length > 0;
               const hasEvidence = ledger.data.evidence.length > 0;
               if (userCriteriaProvided) {
-                observe('Acceptance criteria were provided by the user and are immutable. Work against the existing criteria; do not redefine them.');
+                observe(
+                  'Acceptance criteria were provided by the user and are immutable — you may not retire or redefine them. Work against them; ' +
+                    'if the user changes direction, their own correction retires the criteria it contradicts. If one looks genuinely impossible, report why instead of dropping it.',
+                );
                 break;
               }
               if (criteriaAlreadySet && (hasEvidence || ledger.data.planApproved)) {
-                const completedScope = ledger.data.acceptanceCriteria.every((criterion) => criterion.satisfied);
+                const completedScope = allRequiredSatisfied(ledger.data.acceptanceCriteria);
                 if (resumeNote && completedScope) {
                   const adds = EvidenceEngine.normalizeCriteria(action.criteria);
                   const added = adds.some((s) => s.verification || (s.evidenceType && s.evidenceType !== 'any'))
@@ -2113,7 +2197,9 @@ export class Gitu {
                 }
                 observe(
                   'Criteria are locked once a plan is approved or evidence is recorded; they cannot be redefined. ' +
-                    'For a new scope in a resumed completed task, use add_criteria instead; otherwise continue working against them.',
+                    'For a new scope in a resumed completed task, use add_criteria instead. ' +
+                    'If the USER changed direction, architecture or target and a criterion no longer applies, use revise_criteria: retire it (disposition superseded / not_applicable) with the reason and add the criterion that replaces it. ' +
+                    'Never retire a criterion to avoid work it still describes.',
                 );
                 break;
               }
@@ -2144,6 +2230,87 @@ export class Gitu {
               );
               break;
             }
+            case 'revise_criteria': {
+              const updates = action.updates;
+              const missingIds = updates.filter((update) => !ledger.data.acceptanceCriteria.some((criterion) => criterion.id === update.id));
+              if (missingIds.length === updates.length) {
+                observe(
+                  `No known criteria in that request (${updates.map((update) => update.id).join(', ')}). Use the ac-N ids shown in TASK STATE.`,
+                );
+                break;
+              }
+              // User-supplied criteria are the user's contract, not the agent's to
+              // amend: the model may only mark them failed/blocked, never retire
+              // them. Direction changes retire them through the user's own
+              // correction (supersedeConflictingAuthority), not through this action.
+              const isRetirement = (disposition: string): boolean => disposition === 'superseded' || disposition === 'not_applicable';
+              if (userCriteriaProvided && updates.some((update) => isRetirement(update.disposition))) {
+                observe(
+                  'Those acceptance criteria were supplied by the user, so the runtime refuses to retire them. ' +
+                    'Keep working against them (marking one failed or blocked is allowed), or ask the user to change the requirement; a user correction retires them automatically.',
+                );
+                break;
+              }
+              const retirementIds = updates.filter((update) => isRetirement(update.disposition)).map((update) => update.id);
+              if (retirementIds.length > 0 && !(action.replacements?.length ?? 0) && updates.every((update) => !update.supersededBy)) {
+                observe(
+                  'Retiring a criterion needs a replacement in the same action (replacements) or an explicit supersededBy id, so the task keeps a contract after the change. ' +
+                    'Add the criterion that now describes success, or use disposition "not_applicable" with the concrete reason nothing replaces it.',
+                );
+                break;
+              }
+              if (retirementIds.length > 0) {
+                // Use the ledger's coupled retirement: replacements are appended and
+                // linked as the supersededBy target in one transition.
+                const superseded = updates.filter((update) => update.disposition === 'superseded').map((update) => update.id);
+                const supersedeResult = superseded.length
+                  ? ledger.supersedeCriteria(superseded, { reason: action.reason, replacements: action.replacements ?? [] })
+                  : undefined;
+                const others = updates.filter((update) => update.disposition !== 'superseded');
+                const revised = others.length > 0
+                  ? ledger.reviseCriteria(
+                      others.map((update) => ({
+                        id: update.id,
+                        status: update.disposition,
+                        reason: action.reason,
+                        ...(update.supersededBy ? { supersededBy: update.supersededBy } : {}),
+                      })),
+                    )
+                  : [];
+                const retired = [...(supersedeResult?.retired ?? []), ...revised.filter((criterion) => isRetirement(criterion.status ?? ''))];
+                const added = supersedeResult?.added ?? [];
+                for (const criterion of retired) {
+                  this.emit(`criteria ${criterion.id} ${criterionLabel(criterion)} — ${criterion.retiredReason ?? action.reason}`);
+                }
+                for (const criterion of revised.filter((candidate) => !isRetirement(candidate.status ?? ''))) {
+                  this.emit(`criteria ${criterion.id} ${criterionLabel(criterion)} — ${action.reason}`);
+                }
+                for (const criterion of added) this.emit(`criteria added "${criterion.text}" (${criterion.id})`);
+                observe(
+                  `ACCEPTANCE CRITERIA UPDATED (history preserved):\n` +
+                    retired.map((criterion) => `  ${criterion.id} [${criterionLabel(criterion)}]${criterion.supersededBy ? ` → ${criterion.supersededBy}` : ''} — ${criterion.retiredReason ?? action.reason}`).join('\n') +
+                    (added.length > 0 ? `\n${added.map((criterion) => `  ${criterion.id} [open] ${criterion.text}`).join('\n')}` : '') +
+                    '\nThe retired criteria stay in the task history and no longer gate completion. Verify the replacement criteria, then complete.',
+                );
+              } else {
+                const revised = ledger.reviseCriteria(
+                  updates.map((update) => ({
+                    id: update.id,
+                    status: update.disposition,
+                    reason: action.reason,
+                    ...(update.supersededBy ? { supersededBy: update.supersededBy } : {}),
+                  })),
+                );
+                for (const criterion of revised) this.emit(`criteria ${criterion.id} ${criterionLabel(criterion)} — ${action.reason}`);
+                observe(
+                  `CRITERIA STATE UPDATED:\n${revised
+                    .map((criterion) => `  ${criterion.id} [${criterionLabel(criterion)}] ${criterion.text}`)
+                    .join('\n')}\n` +
+                    'Failed and blocked criteria stay required — they are reported honestly, not dropped. Complete only with passing evidence for every required criterion.',
+                );
+              }
+              break;
+            }
             case 'set_plan':
             case 'append_plan': {
               // A completed task's plan is immutable history. Even if the model
@@ -2163,7 +2330,7 @@ export class Gitu {
                   // A strict review requested by the user still applies to a new
                   // phase, but it receives only the new criteria/steps — never a
                   // costly replay of work that was already approved.
-                  criteria: ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id)).map((criterion) => criterion.text),
+                  criteria: requiredCriteria(ledger.data.acceptanceCriteria.filter((criterion) => !activeWorkPhase.priorCriterionIds.includes(criterion.id))).map((criterion) => criterion.text),
                   steps: append
                     ? ledger.data.plan
                         .filter((step) => !activeWorkPhase.priorPlanStepIds.includes(step.id))
@@ -2516,14 +2683,14 @@ export class Gitu {
               if (!outcome.result.ok) {
                 // Targeted failure recovery: hand back the compact state needed to
                 // diagnose THIS failure — not a replay of the whole conversation.
-                const openCriteria = ledger.data.acceptanceCriteria.filter((c) => !c.satisfied);
+                const outstanding = openCriteria(ledger.data.acceptanceCriteria);
                 const recentFiles = ledger.data.filesChanged.slice(-5);
                 observedResult +=
                   `\nRECOVERY (targeted, not the full history):\n` +
                   `  failure: ${outcome.record.paramsSummary}\n` +
                   (outcome.record.errorSignature ? `  signature: ${outcome.record.errorSignature}\n` : '') +
-                  (openCriteria.length
-                    ? `  open criteria: ${openCriteria
+                  (outstanding.length
+                    ? `  open criteria: ${outstanding
                         .map((c) => `${c.id}:${c.text}`)
                         .join('; ')
                         .slice(0, 300)}\n`
@@ -2599,8 +2766,19 @@ export class Gitu {
               break;
             }
             case 'capability_action': {
+              // A capability that already failed twice is exhausted for this task:
+              // re-proposing it cannot succeed, so the runtime refuses it here
+              // instead of spending another approval card on the same route.
               const registered = this.universalRegistry.get(action.capability);
+              const strategyLabel = registered?.label ?? action.capability;
+              const strategyVerdict = strategyGuard.evaluate('capability', action.capability, strategyLabel);
+              if (!strategyVerdict.allowed) {
+                this.emit(`capability ${action.capability} blocked — exhausted strategy`);
+                observe(strategyGuard.blockedNote('capability', action.capability, strategyLabel));
+                break;
+              }
               if (!registered) {
+                strategyGuard.noteFailure('capability', action.capability, strategyLabel, 'unavailable', 'not in the registered capability catalog');
                 observe(
                   `CAPABILITY NOT AVAILABLE: ${action.capability} is not in this host's registered capability catalog. Use a capability id shown in TASK STATE, or research official documentation before proposing a new connection operation.`,
                 );
@@ -2632,12 +2810,20 @@ export class Gitu {
               const disclosure = connectionResultDisclosure(result.data);
               const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
               if (result.status === 'ok' || result.status === 'cached') {
+                strategyGuard.noteSuccess('capability', action.capability);
                 concreteActionSinceLastAsk = true;
                 this.emit(`capability ${action.capability} ${result.status}`);
                 observe(
                   `CAPABILITY RESULT [${result.status.toUpperCase()}${result.evidenceId ? ` ${result.evidenceId}` : ''}]: ${result.message}${rendered}${disclosure.truncated ? `\n${PROVIDER_TRUNCATED_GUIDANCE}` : ''}\nUse this result as evidence for the next step. A granted approval applies only to this exact invocation.`,
                 );
               } else {
+                strategyGuard.noteFailure(
+                  'capability',
+                  action.capability,
+                  strategyLabel,
+                  result.status === 'rejected' ? 'rejected' : 'failed',
+                  result.message,
+                );
                 this.emit(`capability ${action.capability} ${result.status} — ${connectionEventReason(result.message)}`);
                 observe(
                   `CAPABILITY ${result.status.toUpperCase()}: ${result.message}\nDo not retry an unchanged write. Use the provider result or official documentation to correct the next action.`,
@@ -2925,16 +3111,15 @@ export class Gitu {
               // repeated documented operation is still bounded by its immutable
               // connection/id/method/path identity.
               const operationKey = `${action.connectionId}:${action.operation.id}:${action.operation.method}:${action.operation.path}`;
-              const operationAttempts = (connectionOperationAttempts.get(operationKey) ?? 0) + 1;
-              connectionOperationAttempts.set(operationKey, operationAttempts);
-              if (operationAttempts > 3) {
+              const operationVerdict = strategyGuard.evaluate('connection-operation', operationKey, action.operation.label);
+              if (!operationVerdict.allowed) {
                 this.emit(`connection proposal paused — repeated ${operationKey}`);
-                observe(
-                  `CONNECTION OPERATION PAUSED: ${action.operation.label} was proposed more than three times. Do not retry it unchanged; inspect the provider documentation, use read discovery, or ask the user for a different target.`,
-                );
+                observe(strategyGuard.blockedNote('connection-operation', operationKey, action.operation.label));
                 break;
               }
+              strategyGuard.noteAttempt('connection-operation', operationKey, action.operation.label);
               if (!this.config.connectionOperationHandler) {
+                strategyGuard.noteFailure('connection-operation', operationKey, action.operation.label, 'unavailable', 'no provider-operation approval channel on this host');
                 observe(
                   'This host does not yet provide a provider-operation approval channel. Do not treat that as provider failure: gather documentation and request a user decision or a host update instead of claiming the task is complete.',
                 );
@@ -2948,7 +3133,7 @@ export class Gitu {
                   ...(action.documentationUrl ? { documentationUrl: action.documentationUrl } : {}),
                   reason: action.reason,
                 });
-                connectionOperationAttempts.delete(operationKey);
+                strategyGuard.noteSuccess('connection-operation', operationKey);
                 this.providerCache.advanceStateEpoch(action.connectionId);
                 ledger.syncProviderState(this.providerCache.getEpochs(), this.providerCache.listEvidence());
                 const disclosure = connectionResultDisclosure(result.data);
@@ -2960,6 +3145,7 @@ export class Gitu {
                 );
               } catch (error) {
                 const message = (error as Error).message;
+                strategyGuard.noteFailure('connection-operation', operationKey, action.operation.label, 'unknown', message);
                 // Post-grant failures are NOT all "not run": a refused or
                 // mid-flight-unknown request may still have reached the
                 // provider. Re-running a non-idempotent write on a false
@@ -3043,8 +3229,12 @@ export class Gitu {
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const gate = evidence.gate(ledger.data, currentFp);
               const verificationPhaseData = activePhaseData();
-              const criterionCommands = verificationPhaseData.acceptanceCriteria.length
-                ? new Set(verificationPhaseData.acceptanceCriteria.flatMap((criterion) => [
+              // Only criteria still in the contract name verification commands.
+              // A retired criterion must not force a stale command to keep
+              // passing before the task can complete.
+              const requiredPhaseCriteria = requiredCriteria(verificationPhaseData.acceptanceCriteria);
+              const criterionCommands = requiredPhaseCriteria.length
+                ? new Set(requiredPhaseCriteria.flatMap((criterion) => [
                     criterion.verification,
                     ...criterion.evidenceIds.map((id) => ledger.data.evidence.find((item) => item.id === id)?.command),
                   ].filter((command): command is string => Boolean(command)).map((command) => command.trim().replace(/\s+/g, ' ').toLowerCase())))
@@ -3329,7 +3519,7 @@ export class Gitu {
                   const reviewingUi = isUiTask(phaseData);
                   const reviewMsgs = buildQualityReviewMessages({
                     goal: activeGoal,
-                    criteria: phaseData.acceptanceCriteria.map((criterion) => criterion.text),
+                    criteria: requiredCriteria(phaseData.acceptanceCriteria).map((criterion) => criterion.text),
                     filesChanged: verifiedDiff.changedFiles,
                     diffStat: verifiedDiff.diffStat,
                     diffBody: verifiedDiff.diffBody,
@@ -3433,9 +3623,27 @@ export class Gitu {
                   break;
                 }
               }
+              // Dedup against the ledger BEFORE the user is disturbed: a question
+              // already asked and answered in this task, or already pinned by an
+              // active decision/instruction, is answered from the record instead.
+              const questionDecision = questionGuard.evaluate(action.questions, establishedFactsForQuestions());
+              if (!questionDecision.deliver) {
+                this.emit('question answered from the ledger — the user was not asked');
+                observe(
+                  `QUESTION REFUSED BY RUNTIME POLICY — this task already answers it:\n${questionDecision.answers.map((recorded) => `- ${recorded}`).join('\n')}\n` +
+                    'Use the recorded answer. Only if the user genuinely changed direction, record a new decision that supersedes the old one and then ask a genuinely new question.',
+                );
+                break;
+              }
+              if (questionDecision.answers.length > 0) {
+                observe(
+                  `ALREADY ANSWERED FROM THE LEDGER (these were not asked):\n${questionDecision.answers.map((recorded) => `- ${recorded}`).join('\n')}`,
+                );
+              }
               if (this.config.askUserHandler) {
-                this.emit(`ask-user ${action.questions.length} question(s) for you`);
-                const answer = await this.config.askUserHandler(action.questions);
+                this.emit(`ask-user ${questionDecision.questions.length} question(s) for you`);
+                const answer = await this.config.askUserHandler(questionDecision.questions);
+                questionGuard.noteAnswer(questionDecision.questions, answer);
                 this.emit('ask-user answered');
                 observe(`User answered your clarifying questions:\n${answer}\nUse these answers to set criteria and plan.`);
               } else {

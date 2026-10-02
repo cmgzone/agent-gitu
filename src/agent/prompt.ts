@@ -6,8 +6,10 @@ import { builtinSkillByName } from '../skills/builtin.js';
 import { renderDecisions } from './architecture.js';
 import { agentWorkflowPrompt } from './agent-workflow.js';
 import { DOCUMENT_TOOL_DOC } from '../tools/productivity.js';
+import { criterionLabel, isCriterionRetired, requiredCriteria } from '../ledger/criteria.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { loadOutputStyle } from './output-style.js';
+import { buildCapabilityContracts, type PromptCapabilityContext } from './prompt-capabilities.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
 //
@@ -27,6 +29,9 @@ const STATE_EVIDENCE_CAP = 12;
 const STATE_EVIDENCE_MAX_CHARS = 260;
 const STATE_FILES_CAP = 20;
 const STATE_DECISIONS_MAX_CHARS = 2_400;
+/** Retired criteria are visible history, not the contract: bound how many of
+ *  them a turn pays for. */
+const STATE_RETIRED_CRITERIA_CAP = 4;
 const STATE_TRANSCRIPT_ACTIONS = 6;
 const STATE_FULL_PLAN_MAX_STEPS = 10;
 
@@ -174,7 +179,12 @@ export function renderFullPlanMessage(ledger: TaskLedger): string {
   return parts.join('\n\n');
 }
 
-export function buildSystemPrompt(
+/**
+ * @deprecated Pre-layering monolith (fixed ~30K-char manual on every call).
+ * No longer called by the runtime; kept briefly as a rollback reference while
+ * the layered composition lands. Delete after one release.
+ */
+function buildLegacySystemPrompt(
   guard: ProjectGuard,
   memory: MemoryStore,
   opts: {
@@ -270,7 +280,7 @@ OPERATING RULES:
 3. Every action needs a reason and an expected outcome.
 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
 5. Never claim success without evidence. Run verification commands (tests, typecheck, build, lint).
-6. ${opts.agentWorkflow ? 'Formal criteria are optional. Verify changes with a fresh meaningful check before completion; any recorded criteria still require passing evidence.' : 'A task is complete ONLY when every acceptance criterion is linked to passing evidence.'}
+6. ${opts.agentWorkflow ? 'Formal criteria are optional. Verify changes with a fresh meaningful check before completion; any recorded criteria still require passing evidence.' : 'A task is complete ONLY when every acceptance criterion is linked to passing evidence.'} When a user change of direction, architecture, or target makes a criterion obsolete, retire it with revise_criteria (superseded / not_applicable) and add the criterion that replaces it in the same action — never leave an unsatisfiable criterion open, and never retire one to avoid work it still describes.
 7. "I changed something" is not "the task is complete".
 ${learnRule}
 ${opts.agentWorkflow ? agentWorkflowPrompt(Boolean(opts.planRequested)) : ''}
@@ -298,6 +308,7 @@ Intake/planning actions:
 {"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
 {"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
 {"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
+{"thought":"...","action":{"type":"revise_criteria","reason":"why this criterion no longer applies","updates":[{"id":"ac-1","disposition":"superseded"}],"replacements":[{"text":"the criterion that now describes success","verification":"command that proves it"}]}}  (retire an obsolete criterion and add what replaces it. disposition superseded|not_applicable retires it from the contract; failed|blocked keeps it required but reports the honest state; active brings a retired one back. Requires a reason, and a supersession needs a replacement or an explicit supersededBy id.)
 {"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
 {"thought":"...","action":{"type":"set_hypothesis","text":"current hypothesis about the problem/solution"}}
 
@@ -430,6 +441,193 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.` + outputStyleSection();
 }
 
+// ── Layered system prompt (core + optional modules + capability contracts) ──
+//
+// Architecture:
+//   CORE         — identity, durable principles, project boundary, authority
+//                  order, memory tier, protocol envelope. Small and stable.
+//   MODULES      — task-specific context (scope, catalogs, UI quality bar,
+//                  agent workflow) injected only when the run actually has it.
+//   CAPABILITIES — buildCapabilityContracts(ctx): the action grammar plus the
+//                  tool manuals and provider guidance relevant to THIS run.
+//   PRESENTATION — the user-editable output-style contract.
+//
+// Hard enforcement lives in the runtime (StrategyGuard, evidence gates,
+// approval policy, action validation), not in prompt prose. Changing task
+// facts — goal, plan, criteria, evidence, decisions, blockers — are rendered
+// per turn by buildStateMessage (the world-state layer), not restated here.
+
+export interface PromptCompositionMetrics {
+  /** Always-on core: identity, principles, boundary, authority, protocol. */
+  coreChars: number;
+  /** Capability contracts selected for this run. */
+  capabilityChars: number;
+  /** Optional task modules (scope, catalogs, UI quality, workflow). */
+  moduleChars: number;
+}
+
+export interface SystemPromptOptions {
+  scopeFiles?: string[];
+  taggedReadFolders?: readonly string[];
+  taggedWriteFolders?: readonly string[];
+  extraConstraints?: string[];
+  skillsSection?: string;
+  mcpSection?: string;
+  agentsSection?: string;
+  lspSection?: string;
+  vision?: boolean;
+  hasBrowser?: boolean;
+  autoLearn?: boolean;
+  memoryQuery?: string;
+  /** Prebuilt RELEVANT MEMORY section — when provided it replaces the static
+   *  stored-memory block (memory enters context via buildModelContext). */
+  memorySection?: string;
+  /** Tier 1 PROTECTED memory (ACTIVE CONSTRAINTS & DECISIONS) — durable
+   *  guidance that survives compaction regardless of lexical relevance. */
+  protectedSection?: string;
+  uiTask?: boolean;
+  agentWorkflow?: boolean;
+  planRequested?: boolean;
+  /** Overrides the frontend-quality-bar builtin (user skill shadowing). */
+  uiQualityInstructions?: string;
+  /** Compact, durable frontend skill contract. */
+  uiQualityContract?: string;
+  /** Per-run capability selection. When omitted, the context is derived from
+   *  the options above (a run with no capability signals gets only the core
+   *  manuals). */
+  capabilityContext?: Partial<PromptCapabilityContext>;
+  /** One-shot composition metrics for prompt-architecture telemetry/tests. */
+  onMetrics?: (metrics: PromptCompositionMetrics) => void;
+}
+
+const CORE_PRINCIPLES = `CORE PRINCIPLES (durable, applies to every call):
+1. Autonomy & persistence — pursue the user's goal to completion. Make routine, reversible decisions yourself and keep moving; escalate only decisions that genuinely belong to the user.
+2. Boundary & safety — act only inside the LOCKED project boundary below. Destructive, irreversible, or outward-facing actions stay behind runtime approval, and user instructions constrain them further.
+3. Inspect before editing — read the real code first and ground every plan and edit in what you actually read; prefer the smallest reversible change that addresses the cause.
+4. Root cause — fix what the evidence shows, not the symptom or the first plausible guess.
+5. Evidence over claims — run the real verification commands; never claim success without fresh evidence from the current workspace.
+6. Adapt on evidence — when evidence disproves an approach, change it instead of repeating the failed action; the runtime remembers exhausted strategies and refuses duplicates.
+7. Available facts — never ask the user for information the repository, tools, memory, or task state already provide.
+8. Communication — before acting, write concise plain-language progress: the concrete finding, what you are doing, and why it matters.
+9. Authority — current explicit user instructions strictly override all agent defaults, strategies, and assumptions.`;
+
+const CORE_AUTHORITY_ORDER = `AUTHORITY ORDER (how conflicts are decided):
+1. SAFETY & BOUNDARY — repository boundary, security, user approvals, destructive policy. Never overridden.
+2. CURRENT EXPLICIT USER INSTRUCTIONS — highest runtime authority; they override every agent default, strategy, and assumption (e.g. "don't use specialists", "only edit file X", "no npm install").
+3. CURRENT USER GOAL & INTENT — what must ultimately be achieved.
+4. ACCEPTANCE CRITERIA — the verifiable proofs required for completion.
+5. ACTIVE VISUAL REFERENCES — designs, mockups, screenshots provided for fidelity.
+6. ARCHITECTURE DECISIONS — documented technical choices.
+7. CURRENT PLAN & SUBTASKS — the dynamic execution path; adapt when evidence disproves it.
+8. AGENT DEFAULTS & RECOMMENDATIONS — lowest priority; superseded by any user directive.`;
+
+const CORE_PROTOCOL = `PROTOCOL — every turn: first write plain natural-language progress for the user (no JSON, no code fences; it is streamed live and must not expose private deliberation), then on a new line EXACTLY ONE JSON action object. The runtime validates and executes it; the capability contracts below define the action vocabulary and the tools available to this run.`;
+
+function projectLockSection(lock: ProjectGuard['lock']): string {
+  return `PROJECT LOCK (do not violate):
+  name: ${lock.name}
+  repo_root: ${lock.repoRoot}
+  common_repository_root: ${lock.workspace?.repositoryRoot ?? lock.repoRoot}
+  active_worktree_root: ${lock.workspace?.worktreeRoot ?? lock.repoRoot}
+  active_writable_root: ${lock.workspace?.writableRoot ?? lock.repoRoot}
+  branch: ${lock.branch ?? '(none)'}
+  tech_stack: ${lock.techStack.join(', ') || 'unknown'}
+  entrypoints: ${lock.entrypoints.join(', ') || 'unknown'}
+  test_command: ${lock.testCommand ?? 'unknown'}
+  build_command: ${lock.buildCommand ?? 'unknown'}
+  lint_command: ${lock.lintCommand ?? 'unknown'}
+  typecheck_command: ${lock.typecheckCommand ?? 'unknown'}`;
+}
+
+/** Merge an explicit capability context with signals derivable from options. */
+function normalizeCapabilityContext(guard: ProjectGuard, opts: SystemPromptOptions): PromptCapabilityContext {
+  const given = opts.capabilityContext ?? {};
+  const lock = guard.lock;
+  return {
+    protocolMode: given.protocolMode ?? 'native',
+    planningRelevant: given.planningRelevant ?? false,
+    uiTask: given.uiTask ?? opts.uiTask ?? false,
+    hasBrowser: given.hasBrowser ?? opts.hasBrowser ?? false,
+    vision: given.vision ?? opts.vision ?? false,
+    lspAvailable: given.lspAvailable ?? Boolean(opts.lspSection),
+    skillsAvailable: given.skillsAvailable ?? Boolean(opts.skillsSection),
+    autoLearn: given.autoLearn ?? opts.autoLearn ?? true,
+    mcpAvailable: given.mcpAvailable ?? Boolean(opts.mcpSection),
+    connectionsRelevant: given.connectionsRelevant ?? false,
+    delegationAvailable: given.delegationAvailable ?? Boolean(opts.agentsSection),
+    testCommand: given.testCommand ?? lock.testCommand ?? undefined,
+  };
+}
+
+/** Always-on core: identity, durable principles, boundary, authority, memory. */
+function buildCoreSystemPrompt(guard: ProjectGuard, memory: MemoryStore, opts: SystemPromptOptions): string {
+  const lock = guard.lock;
+  const storedMemory = opts.memorySection ? '' : `STORED MEMORY (from previous work on this project):\n${memory.renderForPrompt(lock.name)}`;
+  return [
+    'You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.',
+    CORE_PRINCIPLES,
+    projectLockSection(lock),
+    CORE_AUTHORITY_ORDER,
+    storedMemory,
+    opts.protectedSection ?? '',
+    CORE_PROTOCOL,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+/** Optional task modules — injected only when the run actually has them. */
+function buildOptionalModules(opts: SystemPromptOptions): string[] {
+  const autoLearn = opts.autoLearn ?? true;
+  const modules: string[] = [];
+  if (opts.scopeFiles?.length) {
+    modules.push(`USER-SELECTED SCOPE (the user chose these files to work on — prefer them, avoid everything else):\n${opts.scopeFiles.map((f) => `  - ${f}`).join('\n')}`);
+  }
+  const writableTags = new Set(opts.taggedWriteFolders ?? []);
+  if (opts.taggedReadFolders?.length) {
+    modules.push(
+      `USER-TAGGED FOLDERS (use absolute paths with file tools; write only where the user granted permission):\n${opts.taggedReadFolders.map((folder) => `  - ${folder} (${writableTags.has(folder) ? 'read and write' : 'read only'})`).join('\n')}`,
+    );
+  }
+  if (opts.extraConstraints?.length) {
+    modules.push(`USER CONSTRAINTS:\n${opts.extraConstraints.map((c) => `  - ${c}`).join('\n')}`);
+  }
+  if (opts.skillsSection) {
+    modules.push(
+      `AVAILABLE SKILLS (this task's catalog; the SKILLS contract below defines use_skill and create_skill${autoLearn ? ', including proactive skill creation' : ''}):\n${opts.skillsSection}`,
+    );
+  }
+  if (opts.mcpSection) {
+    modules.push(`CONNECTED MCP SERVERS (tools are exposed as mcp:<server>:<tool> and require approval):\n${opts.mcpSection}`);
+  }
+  if (opts.agentsSection) {
+    modules.push(`DELEGATABLE SPECIALIST AGENTS (run them IN PARALLEL with the delegate tool — see the DELEGATION contract):\n${opts.agentsSection}`);
+  }
+  if (opts.lspSection) {
+    modules.push(`LSP SERVERS (configured for this workspace; see the LSP contract for when to use them):\n${opts.lspSection}`);
+  }
+  if (opts.uiTask) {
+    modules.push(opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions);
+  }
+  if (opts.agentWorkflow) {
+    modules.push(agentWorkflowPrompt(Boolean(opts.planRequested)));
+  }
+  return modules;
+}
+
+/**
+ * Layered composition (the runtime default): small core + task modules +
+ * per-run capability contracts + presentation.
+ */
+export function buildSystemPrompt(guard: ProjectGuard, memory: MemoryStore, opts: SystemPromptOptions = {}): string {
+  const ctx = normalizeCapabilityContext(guard, opts);
+  const contracts = buildCapabilityContracts(ctx);
+  const core = buildCoreSystemPrompt(guard, memory, opts);
+  const moduleBlock = buildOptionalModules(opts).join('\n\n');
+  opts.onMetrics?.({ coreChars: core.length, capabilityChars: contracts.length, moduleChars: moduleBlock.length });
+  return [core, moduleBlock, contracts, outputStyleSection()].filter(Boolean).join('\n\n');
+}
+
 /** Presentation contract appended to every orchestrator system prompt. */
 function outputStyleSection(): string {
   return `\n\nOUTPUT STYLE (presentation contract for every user-visible reply — your summaries and chat replies are rendered as Markdown):\n${loadOutputStyle()}\n`;
@@ -445,7 +643,17 @@ export interface TaskStateScope {
   files?: string[];
 }
 
-export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkillsSection?: string, scope?: TaskStateScope, fileKnowledgeSection?: string): string {
+export function buildStateMessage(
+  ledger: TaskLedger,
+  extra?: string,
+  activeSkillsSection?: string,
+  scope?: TaskStateScope,
+  fileKnowledgeSection?: string,
+  /** Runtime-owned policy state (exhausted strategies, blocked transitions).
+   *  Rendered last so the enforced next-step contract is the most recent thing
+   *  the model reads before choosing an action. */
+  runtimePolicySection?: string,
+): string {
   const d = ledger.data;
   // A full 30-step plan can exceed the useful working-memory budget on every
   // planning turn. Small plans remain rich for review; larger ones use the
@@ -501,12 +709,29 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
 
   const authorityBlock = authorityParts.join('\n\n');
 
-  const criteria = scopedCriteria
-    .map(
+  // Lifecycle-aware: retired criteria are history and never gate completion,
+  // so they render as a bounded tail AFTER the criteria that still count. A
+  // direction change stays visible (ac-1 SUPERSEDED → ac-8) without the whole
+  // retired backlog taxing every turn.
+  const activeCriteria = requiredCriteria(scopedCriteria);
+  const retiredCriteria = scopedCriteria.filter((criterion) => isCriterionRetired(criterion));
+  const criteria = [
+    ...activeCriteria.map(
       (c) =>
-        `  ${c.id}: [${c.satisfied ? 'SATISFIED' : 'open'}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`,
-    )
-    .join('\n');
+        `  ${c.id}: [${criterionLabel(c)}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.evidenceIds.length ? ` (evidence: ${c.evidenceIds.join(', ')})` : ''}`,
+    ),
+    ...(retiredCriteria.length > 0
+      ? [
+          `  (retired history — these no longer gate completion)`,
+          ...retiredCriteria
+            .slice(-STATE_RETIRED_CRITERIA_CAP)
+            .map(
+              (c) =>
+                `  ${c.id}: [${criterionLabel(c)}] ${trunc(c.text, STATE_CRITERION_MAX_CHARS)}${c.retiredReason ? ` — ${trunc(c.retiredReason, 140)}` : ''}`,
+            ),
+        ]
+      : []),
+  ].join('\n');
   const evidence = scopedEvidence
     .slice(-STATE_EVIDENCE_CAP)
     .map((e) => `  ${e.id}: [${e.passed ? 'PASS' : 'FAIL'}] (${e.kind}) ${trunc(`${e.label}${e.command ? ` — ${e.command}` : ''}`, STATE_EVIDENCE_MAX_CHARS)}`)
@@ -558,6 +783,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
       : '',
     `RECENT ACTIONS:\n${ledger.transcriptTail(STATE_TRANSCRIPT_ACTIONS)}`,
     extra ? `SYSTEM NOTE: ${trunc(extra, 900)}` : '',
+    runtimePolicySection ?? '',
     'Respond with exactly one JSON action.',
   ]
     .filter(Boolean)

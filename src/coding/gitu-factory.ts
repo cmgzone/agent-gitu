@@ -159,6 +159,9 @@ export function buildGituConfig(options: GituFactoryOptions, deps: GituFactoryDe
     prerequisiteRecovery: { providers: [deps.connections.asPrerequisiteProvider()] },
     connections: deps.connections,
     connectionContext: deps.connectionContext,
+    // Capability selection: the provider/connection manual is injected only
+    // when a saved connection actually exists for this run.
+    hasSavedConnections: () => deps.connections.list().length > 0,
     connectionActionHandler: deps.connectionActionHandler,
     safestProviderRead: deps.safestProviderRead,
     connectionOperationHandler: deps.connectionOperationHandler,

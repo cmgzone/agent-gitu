@@ -1,5 +1,6 @@
 import type { AcceptanceCriterion, CriterionEvidenceType, CriterionSpec, Evidence, EvidenceKind, TaskLedgerData } from '../types.js';
 import { errorSignature, excerpt, normalizeErrorText, nowIso, shortId } from '../util.js';
+import { isCriterionRetired, requiredCriteria } from '../ledger/criteria.js';
 
 /**
  * Mapping from structured criterion evidence types to the EvidenceKind
@@ -287,6 +288,17 @@ export class EvidenceEngine {
   ): { ok: boolean; reason: string } {
     const criterion = ledger.acceptanceCriteria.find((c) => c.id === criterionId);
     if (!criterion) return { ok: false, reason: `Unknown acceptance criterion: ${criterionId}` };
+    // A retired criterion is history: its goal no longer applies, so fresh
+    // evidence must be attached to the criterion that replaced it.
+    if (isCriterionRetired(criterion)) {
+      const replacement = criterion.supersededBy ? ` It was replaced by ${criterion.supersededBy}.` : '';
+      return {
+        ok: false,
+        reason:
+          `${criterionId} is ${criterion.status === 'not_applicable' ? 'not applicable' : 'superseded'}${criterion.retiredReason ? ` (${criterion.retiredReason})` : ''} and is no longer part of the task contract.${replacement} ` +
+          'Attach evidence to the active criterion instead — retiring a criterion is not a way to prove it.',
+      };
+    }
     const evidence = ledger.evidence.find((e) => e.id === evidenceId);
     if (!evidence) return { ok: false, reason: `Unknown evidence: ${evidenceId}` };
     if (!evidence.passed) {
@@ -353,8 +365,13 @@ export class EvidenceEngine {
   gate(ledger: TaskLedgerData, currentFingerprint?: string): GateResult {
     const missing: string[] = [];
     let satisfiedCount = 0;
+    // Only criteria that are still part of the contract gate completion.
+    // Superseded / not-applicable criteria are preserved as history and never
+    // counted, so a direction change cannot leave the task permanently locked by
+    // evidence for a goal that no longer exists.
+    const required = requiredCriteria(ledger.acceptanceCriteria);
 
-    for (const c of ledger.acceptanceCriteria) {
+    for (const c of required) {
       // Recompute staleness against the CURRENT fingerprint (never latched):
       // evidence captured against a fingerprint the workspace has since
       // returned to is fresh again, not permanently stale.
@@ -398,10 +415,10 @@ export class EvidenceEngine {
     }
 
     return {
-      open: ledger.acceptanceCriteria.length > 0 && missing.length === 0,
+      open: required.length > 0 && missing.length === 0,
       missing,
       satisfiedCount,
-      totalCount: ledger.acceptanceCriteria.length,
+      totalCount: required.length,
     };
   }
 

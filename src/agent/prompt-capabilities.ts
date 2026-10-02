@@ -56,7 +56,7 @@ export interface PromptContract {
  * universal envelope.
  */
 export const ACTION_GRAMMAR_NATIVE =
-  'ACTION TYPES (one per turn, inside {"thought","action"}): intake: set_criteria, set_design, set_plan, add_criteria, append_plan, set_hypothesis, propose_repair, record_decision; execution: tool_call (stepId, tool, params, reason, expected; optional intent/expectation/observation/semanticVerdict/investigationIntent), connection_action, connection_operation, parallel{calls[<=6]}, delegate{tasks[<=6]}, toggle_todo, complete_step, revise_step, show_plan; closure: claim_criterion{criterionId,evidenceId,justification}, complete{summary,risks,followUps}, request_block{reason,prerequisite?}, ask_user{questions}, report_finding{claim,kind,severity,location}.';
+  'ACTION TYPES (one per turn, inside {"thought","action"}): intake: set_criteria, revise_criteria, set_design, set_plan, add_criteria, append_plan, set_hypothesis, propose_repair, record_decision; execution: tool_call (stepId, tool, params, reason, expected; optional intent/expectation/observation/semanticVerdict/investigationIntent), connection_action, connection_operation, parallel{calls[<=6]}, delegate{tasks[<=6]}, toggle_todo, complete_step, revise_step, show_plan; closure: claim_criterion{criterionId,evidenceId,justification}, complete{summary,risks,followUps}, request_block{reason,prerequisite?}, ask_user{questions}, report_finding{claim,kind,severity,location}.';
 
 /**
  * Full action grammar for structured_text / text providers. This must remain
@@ -69,6 +69,7 @@ Intake/planning:
 {"action":{"type":"set_design","design":{"frontend":"views/controls/data-flow","backend":"routes/contracts/schema","integration":"shared contracts"}}}  (bounded notes before set_plan for multi-surface work; omit irrelevant sections)
 {"action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo"]}...]}}  (<=30 steps, <=8 subtasks each)
 {"action":{"type":"add_criteria","criteria":[...]}} / {"action":{"type":"append_plan","steps":[...]}}  (follow-up scope in a completed task; never erase prior criteria/evidence)
+{"action":{"type":"revise_criteria","reason":"why this criterion no longer applies","updates":[{"id":"ac-N","disposition":"superseded"}],"replacements":[{"text":"the criterion that now describes success","verification":"command that proves it"}]}}  (change direction, architecture or target: superseded|not_applicable retires a criterion from the contract while keeping its history; failed|blocked keeps it required and reports the honest state; active brings a retired one back. Needs a reason, and a supersession needs a replacement or an explicit supersededBy id)
 {"action":{"type":"set_hypothesis","text":"current hypothesis","target":"repair-target kind when known"}}  (confidence is telemetry only)
 {"action":{"type":"propose_repair","targetKind":"...","targetDescription":"...","intendedEffect":"state change","reversible":true,"requiresApproval":false,"evidenceBasis":["ev-..."]}}  (decision sufficiency -> ACT_NOW)
 {"action":{"type":"record_decision","decision":"one line","alternatives":[...],"repoEvidence":"...","requirements":[...],"rejected":[{"alternative","reason"}],"reconsiderIf":"...","basis":"explicit-requirement|repository-constraint|recommendation|preference","supersedes":"ad-..."}}
@@ -133,7 +134,8 @@ const CONNECTIONS_CONTRACT = `CONNECTIONS & PROVIDERS (saved credentials; the ho
 - web_fetch {"url":"https://docs.example.com","render":true} is intentionally anonymous — NEVER put credentials in it. For saved providers use connection_action with the exact registered read operation; missing operation -> propose one documented connection_operation (safe GETs auto-register and run; writes need explicit user approval). Research official docs FIRST for writes.
 - request_block with a structured prerequisite BEFORE declaring a missing credential/connection/permission blocked: include providerHint + the capability ids needed, and connectionSetup (label, baseUrl, documentationUrl, validationPath, validationCapability) when official docs expose a read-only validation route. The user sees a private connection form ONLY for missing credentials or positively rejected ones (401/expired) — never for a missing operation.
 - RESOURCE FOLLOW-UP DISCOVERY: truncated/incomplete provider result or missing resource id -> chain narrower reads automatically (list -> locate by name -> get(id) -> status). Ask the user only after deterministic reads are exhausted.
-- Verify provider-managed resources through REGISTERED READS (read back state), not DNS/ping probes; internal identifiers are not public DNS names. One failed verification method does not block a task — switch to a valid path (provider read-back, app health, logs).`;
+- Verify provider-managed resources through REGISTERED READS (read back state), not DNS/ping probes; internal identifiers are not public DNS names. One failed verification method does not block a task — switch to a valid path (provider read-back, app health, logs).
+- MANAGE REGISTRATIONS at runtime: list_mcp / configure_mcp for MCP server command metadata, list_connections / update_connection for connection labels and documentation URLs. MCP tools are exposed as mcp:<server>:<tool> and require approval; credentials always stay in secure settings.`;
 
 const DELEGATION_CONTRACT = `DELEGATION (specialist agents run in parallel, <=6, each gets a WORK HANDOFF — not your conversation):
 {"action":{"type":"delegate","tasks":[{"agent":"<registered specialist name>","task":"one concrete outcome: file/symbol boundary, what to change or verify, what is OUT of scope, expected verification"}]}}  ("agent" is the registered specialist name, never a model/provider string; vague "look into it" is rejected)
@@ -161,7 +163,18 @@ const PLANNING_CONTRACT = `PLANNING QUALITY (match ceremony to complexity):
 
 const FINDINGS_CONTRACT = `FINDINGS: the moment you NOTICE a vulnerability, bug, or data risk, report_finding it — do not wait for completion. Every finding faces independent reproduction; only reproduced findings reach the user as confirmed.`;
 
-const COMPLETION_CONTRACT = `COMPLETION & ESCALATION: claim_criterion links evidence to criteria (criterionId + evidenceId + why it proves it); "complete" requires every criterion claimed — write a plain-language outcome summary (the host builds the report). request_block is reserved for a concrete external prerequisite only the user/host can provide, and MUST include the structured prerequisite. It is rejected for done/stop/give-up, bugs, missing skills/tools/dependencies, failed builds/tests, or other implementation problems—repair or work around those. ask_user is for genuine ambiguities BEFORE planning. In chat-close ("chat":true) no actions may have been taken.`;
+const COMPLETION_CONTRACT = `COMPLETION & ESCALATION: claim_criterion links evidence to criteria (criterionId + evidenceId + why it proves it); "complete" requires every criterion claimed — write a plain-language outcome summary (the host builds the report). request_block is reserved for a concrete external prerequisite only the user/host can provide, and MUST include the structured prerequisite. It is rejected for done/stop/give-up, bugs, missing skills/tools/dependencies, failed builds/tests, or other implementation problems—repair or work around those. ask_user is for genuine ambiguities BEFORE planning. In chat-close ("chat":true) no actions may have been taken. When a direction change, architecture change, or new evidence makes a criterion obsolete, retire it with revise_criteria (superseded / not_applicable) and add what replaces it in the same action — never retire one to avoid work it still describes, and never leave an unsatisfiable criterion open.`;
+
+const MEMORY_CONTRACT = `MEMORY (durable project knowledge across runs):
+- memory {"action":"list","type":"decision","limit":25} / {"action":"search","query":"...","limit":8} — inspect what the run already learned.
+- memory {"action":"promote","id":"mem-...","to":"verified","evidence":"what confirms it"} — candidate -> verified ("durable" also allowed with evidence).
+- memory {"action":"record_verified","type":"decision","claim":"...","scope":"project-name","evidence":"code + passing test","replaces":["mem-..."]} — verified claim that replaces an outdated memory; evidence required.
+- memory {"action":"verify","id":"mem-...","evidence":"re-checked against the current code"} / {"action":"archive","id":"mem-..."} — retire a stale memory.
+- memory {"action":"promote_scope","id":"mem-...","to":"project","reason":"useful beyond this mission"} — widen scope; one-way.`;
+
+const TOOLS_CONTRACT = `REGISTERED RUNTIME TOOLS (validate every parameter at execution time; call them when the work calls for them):
+- create_document {"path":"brief.docx","title":"...","sections":[{"heading":"...","body":"..."}]} — writes a real document by extension (docx/pdf/pptx/xlsx).
+- schedule_manage {"action":"list" | "create","every":"1d","goal":"..." | "cancel","id":"sch-..."} — manages recurring scheduled runs.`;
 
 /**
  * Select and render the contracts relevant to this run. Order is stable:
@@ -172,6 +185,8 @@ export function buildCapabilityContracts(ctx: PromptCapabilityContext): string {
 
   contracts.push(FILESYSTEM_CONTRACT);
   contracts.push(testingContract(ctx.testCommand));
+  contracts.push(MEMORY_CONTRACT);
+  contracts.push(TOOLS_CONTRACT);
 
   if (ctx.lspAvailable) contracts.push(LSP_CONTRACT);
   if (ctx.hasBrowser) contracts.push(browserContract(ctx.vision));
@@ -188,7 +203,7 @@ export function buildCapabilityContracts(ctx: PromptCapabilityContext): string {
 
 /** Per-contract visibility, exported for tests and telemetry attribution. */
 export function contractIdsFor(ctx: PromptCapabilityContext): string[] {
-  const ids: string[] = ['grammar', 'filesystem', 'testing'];
+  const ids: string[] = ['grammar', 'filesystem', 'testing', 'memory', 'tools'];
   if (ctx.lspAvailable) ids.push('lsp');
   if (ctx.hasBrowser) ids.push('browser');
   if (ctx.mcpAvailable || ctx.connectionsRelevant) ids.push('connections');

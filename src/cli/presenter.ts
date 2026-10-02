@@ -1,4 +1,5 @@
 import type { CompletionReport, MemoryEntry, MemoryStatsSnapshot, ProjectLock, TaskLedgerData } from '../types.js';
+import { requiredCriteria } from '../ledger/criteria.js';
 
 export interface CliPresenterOptions {
   color?: boolean;
@@ -181,14 +182,16 @@ export function createCliPresenter(options: CliPresenterOptions = {}) {
   };
 
   const taskDetails = (task: TaskLedgerData): string => {
-    const completedCriteria = task.acceptanceCriteria.filter((criterion) => criterion.satisfied).length;
+    // Retired criteria are history, not unfinished work: they stay in the task record but not in the progress ratio.
+    const requiredTaskCriteria = requiredCriteria(task.acceptanceCriteria);
+    const completedCriteria = requiredTaskCriteria.filter((criterion) => criterion.satisfied).length;
     const completedPlan = task.plan.filter((step) => step.status === 'done').length;
     const passingEvidence = task.evidence.filter((evidence) => evidence.passed).length;
     const activeStep = task.plan.find((step) => step.status === 'in_progress') ?? task.plan.find((step) => step.status === 'pending');
     const lines = [
       `${status(task.status)}  ${paint('Mode', 'dim')}: ${task.mode}`,
       `${paint('Goal', 'dim')}: ${task.goal}`,
-      `${paint('Progress', 'dim')}: ${ratio(completedCriteria, task.acceptanceCriteria.length)} criteria  ${symbols.bullet} ${ratio(completedPlan, task.plan.length)} plan steps  ${symbols.bullet} ${ratio(passingEvidence, task.evidence.length)} passing checks`,
+      `${paint('Progress', 'dim')}: ${ratio(completedCriteria, requiredTaskCriteria.length)} criteria  ${symbols.bullet} ${ratio(completedPlan, task.plan.length)} plan steps  ${symbols.bullet} ${ratio(passingEvidence, task.evidence.length)} passing checks`,
       `${paint('Next', 'dim')}: ${activeStep ? activeStep.description : task.status === 'completed' ? 'Task is complete; review the report or start a follow-up.' : 'No next step recorded yet.'}`,
       `${paint('Project', 'dim')}: ${task.project.name}${task.gitBranch ? `  ${symbols.bullet} ${task.gitBranch}` : ''}`,
     ];

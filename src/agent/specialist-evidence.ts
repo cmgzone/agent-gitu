@@ -1,5 +1,6 @@
 import { commandsMatch, evidenceKindForType, isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
 import type { CriterionEvidenceType, EvidenceKind, TaskLedgerData } from '../types.js';
+import { requiredCriteria } from '../ledger/criteria.js';
 
 /**
  * P1.1 — Specialist Evidence Inheritance.
@@ -72,8 +73,11 @@ export function buildSpecialistEvidenceReport(
   ledger: TaskLedgerData,
   runStatus: string,
 ): SpecialistEvidenceReport | undefined {
-  if (!ledger.acceptanceCriteria || ledger.acceptanceCriteria.length === 0) return undefined;
-  const entries: SpecialistEvidenceReportEntry[] = ledger.acceptanceCriteria.map((c) => {
+  // Retired criteria are history: a specialist is never asked to prove a goal
+  // that is no longer part of the task contract.
+  const contract = ledger.acceptanceCriteria ? requiredCriteria(ledger.acceptanceCriteria) : [];
+  if (contract.length === 0) return undefined;
+  const entries: SpecialistEvidenceReportEntry[] = contract.map((c) => {
     const satisfied = c.satisfied && c.evidenceIds.length > 0;
     const status: SpecialistEvidenceStatus = satisfied
       ? 'satisfied'

@@ -9,6 +9,7 @@ import type {
   UserInstruction,
 } from '../types.js';
 import type { TaskLedger } from '../ledger/task-ledger.js';
+import { isCriterionRetired } from '../ledger/criteria.js';
 import { shortId } from '../util.js';
 
 export interface FollowUpClassificationResult {
@@ -665,6 +666,25 @@ export function supersedeConflictingAuthority(ledger: TaskLedger, correctionText
       if (textHits([step.description, step.verification, ...(step.subtasks ?? []).map(todo => todo.text)].join(' '))) {
         ledger.reviseStep(step.id, { status: 'cancelled' }, `Superseded by user request: ${correctionText}`);
       }
+    }
+    // Criteria respond ONLY to strong rejections, exactly like plan steps: a
+    // criterion is a work item, so contrastive prose ("not the X") must never
+    // drop an acceptance check. Retiring one here is user-driven — the user's
+    // own sentence becomes the reason — and applies to criteria that were never
+    // satisfied, which are the ones that can lock a task after a direction
+    // change. Satisfied criteria already do not gate, so they stay untouched.
+    // The retirement keeps the criterion's evidence as history and can be
+    // reversed with revise_criteria disposition "active".
+    for (const criterion of ledger.data.acceptanceCriteria) {
+      if (isCriterionRetired(criterion) || criterion.satisfied) continue;
+      if (!textHits([criterion.text, criterion.verification ?? ''].join(' '))) continue;
+      ledger.reviseCriteria([
+        {
+          id: criterion.id,
+          status: 'superseded',
+          reason: `Superseded by the user's correction: "${correctionText.slice(0, 160)}"`,
+        },
+      ]);
     }
   }
   if (superseded.length > 0) ledger.save();

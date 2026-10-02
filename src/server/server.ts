@@ -897,8 +897,24 @@ export class GituServer {
     });
     const desktopSockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false });
     this.desktopSockets = desktopSockets;
+    let lastDesktopRejection = 0;
     server.on('upgrade', (req, socket, head) => {
-      const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
+      const reject = (code: number) => {
+        // Report handshake failures without logging session cookies, credentials,
+        // paths or untrusted header values. Limit repeated reconnect messages.
+        if (Date.now() - lastDesktopRejection >= 30_000) {
+          lastDesktopRejection = Date.now();
+          console.warn('[desktop-stream]', JSON.stringify({
+            status: code,
+            authenticated: this.appAuth.authenticated(req),
+            originProvided: Boolean(req.headers.origin),
+            sameOrigin: this.isSameOrigin(req),
+            secure: this.appAuth.secure(req),
+            trustedHost: typeof req.headers.host === 'string' && this.isTrustedHost(req.headers.host),
+          }));
+        }
+        socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`);
+      };
       if (this.appAuth.enabled && !this.appAuth.authenticated(req)) { reject(401); return; }
       // Browsers always supply Origin on a WebSocket handshake. Reject missing
       // Origin as well, so a cross-site socket cannot bypass the JSON CSRF gate.

@@ -37,6 +37,8 @@ describe('shared live desktop connection', () => {
     vi.stubEnv('AGENT_GITU_HOME', home);
     vi.stubEnv('AGENT_GITU_COMPUTER_BROKER_URL', privateBase);
     vi.stubEnv('AGENT_GITU_COMPUTER_BROKER_KEY', key);
+    vi.stubEnv('AGENT_GITU_PUBLIC_ORIGIN', 'https://gitu.example');
+    vi.stubEnv('AGENT_GITU_TRUST_LOCAL_PROXY', '1');
     let running = true;
     vi.spyOn(CoworkComputer.prototype, 'status').mockImplementation(function (this: CoworkComputer) { return { agentId: this.agentId, name: this.name, state: running ? 'running' : 'stopped', workspace: '/workspace' }; });
     vi.spyOn(CoworkComputer.prototype, 'stop').mockResolvedValue();
@@ -76,6 +78,14 @@ describe('shared live desktop connection', () => {
       client.send(Buffer.from([5, 1, 0, 10, 0, 20]));
       expect((await reply)[0]).toEqual(Buffer.from([5, 1, 0, 10, 0, 20]));
       expect(localDesktopStream).toHaveBeenLastCalledWith(expect.stringMatching(/^gitu-cowork-[a-f0-9]{24}$/));
+      // TLS terminates at Coolify, then nginx forwards the public host/scheme
+      // over loopback. The browser's HTTPS Origin must still be accepted.
+      const proxyHeaders = { cookie, host: 'gitu.example', origin: 'https://gitu.example', 'x-forwarded-proto': 'https' };
+      expect(await rejected(url, { ...proxyHeaders, 'x-forwarded-proto': 'http' })).toBe(403);
+      const proxied = new WebSocket(url, { headers: proxyHeaders });
+      try {
+        expect((await once(proxied, 'message'))[0].toString()).toBe('RFB 003.008\n');
+      } finally { proxied.terminate(); }
       const closed = once(client, 'close');
       expect((await post('/api/auth/logout', {}, cookie)).status).toBe(200);
       await closed;

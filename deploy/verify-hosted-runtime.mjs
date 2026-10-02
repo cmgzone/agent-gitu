@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CoworkComputer, computerExec } from '../dist/cowork/computer.js';
 import { ComposioKeyStore } from '../dist/connections/composio.js';
+import { connectDesktopStream } from '../dist/cowork/desktop-stream.js';
 
 const home = process.env.AGENT_GITU_HOME;
 if (!home || !process.env.AGENT_GITU_COMPUTER_BROKER_URL) throw new Error('Hosted desktop runtime is not configured.');
@@ -32,6 +33,47 @@ if (!frame.ok) throw new Error(frame.output);
 const png = Buffer.from(frame.output, 'base64');
 if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('Desktop did not return a PNG screen.');
 console.log(JSON.stringify({ desktop: 'working', width: png.readUInt32BE(16), height: png.readUInt32BE(20), bytes: png.length, unprivileged: true }));
+// Negotiate the real stream and send keyboard events over that same channel.
+const liveStream = connectDesktopStream(computer.name);
+let streamBuffer = Buffer.alloc(0), streamError, readWaiter;
+const streamTimer = setTimeout(() => liveStream.destroy(new Error('Private desktop stream timed out.')), 20_000);
+liveStream.on('data', (chunk) => { streamBuffer = Buffer.concat([streamBuffer, chunk]); readWaiter?.(); });
+liveStream.on('error', (error) => { streamError = error; readWaiter?.(); });
+liveStream.on('close', () => { streamError ??= new Error('Private desktop stream closed.'); readWaiter?.(); });
+async function streamRead(size) {
+  while (streamBuffer.length < size) {
+    if (streamError) throw streamError;
+    await new Promise((resolve) => { readWaiter = resolve; });
+  }
+  readWaiter = undefined;
+  const value = streamBuffer.subarray(0, size); streamBuffer = streamBuffer.subarray(size);
+  return value;
+}
+try {
+  if ((await streamRead(12)).toString() !== 'RFB 003.008\n') throw new Error('Live desktop protocol is missing.');
+  liveStream.write(Buffer.from('RFB 003.008\n'));
+  const count = (await streamRead(1))[0], security = await streamRead(count);
+  if (!security.includes(1)) throw new Error('Private loopback desktop negotiation failed.');
+  liveStream.write(Buffer.from([1]));
+  if ((await streamRead(4)).readUInt32BE() !== 0) throw new Error('Private desktop rejected its authenticated tunnel.');
+  liveStream.write(Buffer.from([1])); // Shared session: never disconnect another viewer.
+  const init = await streamRead(24);
+  if (init.readUInt16BE(0) !== 1280 || init.readUInt16BE(2) !== 800) throw new Error('Live desktop has the wrong dimensions.');
+  const nameLength = init.readUInt32BE(20);
+  if (nameLength > 4096) throw new Error('Invalid live desktop name.');
+  await streamRead(nameLength);
+  const events = [];
+  for (const keysym of [...'printf gitu-live-stream-input-check > /workspace/.gitu-stream-smoke.txt'].map((c) => c.codePointAt(0)).concat([0xff0d])) {
+    for (const down of [1, 0]) { const event = Buffer.alloc(8); event[0] = 4; event[1] = down; event.writeUInt32BE(keysym, 4); events.push(event); }
+  }
+  await computer.execute('run_command', { command: 'xdotool search --name "Agent Gitu workspace" windowactivate --sync', timeoutMs: 10_000 });
+  liveStream.write(Buffer.concat(events));
+  const streamedInput = await computer.execute('run_command', { command: 'for i in 1 2 3 4 5; do test -f /workspace/.gitu-stream-smoke.txt && break; sleep 0.2; done; cat /workspace/.gitu-stream-smoke.txt', timeoutMs: 10_000 });
+  if (!streamedInput.ok || streamedInput.output !== 'gitu-live-stream-input-check') throw new Error('Live keyboard input did not reach the shared desktop.');
+} finally {
+  clearTimeout(streamTimer); liveStream.destroy();
+}
+console.log('Authenticated live desktop streaming is working.');
 const browser = await computer.execute('browse', { action: 'state' });
 if (!browser.ok) throw new Error(browser.output);
 console.log('Private Chromium browser is working.');

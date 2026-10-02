@@ -3155,7 +3155,7 @@ export class GituServer {
       if (!targetAgent) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
       const computer = this.coworkComputer(computerMatch[1]!);
       const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer });
-      if (method === 'GET') { this.sendJson(res, 200, { computer: status() }); return true; }
+      if (method === 'GET') { await computer.refreshStatus(); this.sendJson(res, 200, { computer: status() }); return true; }
       if (method === 'POST') {
         const body = await this.readBody(req);
         if (body['action'] === 'use-private') {

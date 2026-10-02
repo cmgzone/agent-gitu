@@ -56,44 +56,52 @@ function ui() {
 }
 
 describe('Cowork UI live updates', () => {
-  it('maps desktop input through fitted image coordinates and keeps typing ordered', async () => {
+  it('keeps a live frame connected across status polls and disconnects it on stop or close', async () => {
     const u = ui();
     const timers: { fn: () => void; delay: number }[] = [];
     const controls: Record<string, any> = {};
-    const screen: any = {
-      hidden: true, naturalWidth: 1280, naturalHeight: 800,
-      getBoundingClientRect: () => ({ left: 100, top: 100, width: 640, height: 500 }),
-      focus: vi.fn(), setPointerCapture: vi.fn(), releasePointerCapture: vi.fn(), removeAttribute: vi.fn(),
-      addEventListener: (event: string, fn: unknown) => { screen['on' + event] = fn; },
+    const screen: any = { hidden: true, src: '', contentWindow: {}, focus: vi.fn(),
+      getAttribute: () => screen.src,
+      removeAttribute: vi.fn(() => { screen.src = ''; }),
     };
-    const modal = { setAttribute: vi.fn(), remove: vi.fn(), querySelector: (selector: string) => selector === '[data-image]' ? screen : (controls[selector] ??= { focus: vi.fn() }) };
+    const modal = { setAttribute: vi.fn(), remove: vi.fn(), querySelector: (selector: string) => selector === '[data-desktop]' ? screen : (controls[selector] ??= { focus: vi.fn() }) };
     u.context.AbortController = AbortController;
     u.context.setTimeout = (fn: () => void, delay: number) => { timers.push({ fn, delay }); return timers.length; };
     u.context.clearTimeout = vi.fn();
     u.context.document.createElement = () => modal;
     u.context.document.addEventListener = vi.fn();
     u.context.document.removeEventListener = vi.fn();
-    u.context.document.activeElement = screen;
-    u.context.cwTime = () => 'now';
-    u.api.mockImplementation(async (_url: string, options?: { body?: string }) => options?.body && JSON.parse(options.body).action === 'desktop'
-      ? { imageBase64: 'aGVsbG8=', mimeType: 'image/jpeg', capturedAt: 'now', computer: { state: 'running', useHostComputer: false } } : { computer: { state: 'running', useHostComputer: false } });
+    u.context.window.removeEventListener = vi.fn();
+    u.context.window.location = { origin: 'https://gitu.example' };
+    let running = true;
+    u.api.mockImplementation(async (_url: string, options?: { body?: string }) => {
+      if (options?.body && JSON.parse(options.body).action === 'stop') running = false;
+      return { computer: { state: running ? 'running' : 'stopped', useHostComputer: false } };
+    });
     u.context.cwOpenDesktop('chief');
     await vi.waitFor(() => expect(screen.hidden).toBe(false));
-    const event = (clientX: number, clientY: number) => ({ clientX, clientY, pointerId: 1, button: 0, detail: 1, preventDefault: vi.fn() });
-    screen.onpointerdown(event(132, 120)); // Letterbox margin: no remote input.
-    expect(screen.focus).not.toHaveBeenCalled();
-    screen.onpointerdown(event(132, 166)); screen.onpointerup(event(132, 166)); screen.onclick(event(132, 166));
-    timers.find((timer) => timer.delay === 250)!.fn();
-    screen.onkeydown({ key: 'a', preventDefault: vi.fn(), stopPropagation: vi.fn() });
-    screen.onkeydown({ key: 'Enter', preventDefault: vi.fn(), stopPropagation: vi.fn() });
-    const inputs = () => u.api.mock.calls.filter(([, options]) => options?.body && JSON.parse(options.body).action === 'input').map(([, options]) => JSON.parse(options.body).input);
-    await vi.waitFor(() => expect(inputs()).toHaveLength(3));
-    expect(inputs()).toEqual([{ action: 'click', x: 64, y: 32, button: 1 }, { action: 'type', text: 'a' }, { action: 'key', key: 'Return' }]);
+    expect(screen.src).toBe('/api/cowork/agents/chief/computer/view');
+    expect(u.api).toHaveBeenCalledOnce();
+    const message = u.context.window.addEventListener.mock.calls.find(([event]: [string]) => event === 'message')[1];
+    message({ origin: 'https://evil.example', source: screen.contentWindow, data: { type: 'gitu-desktop', state: 'Live · Shared desktop' } });
+    expect(controls['[data-status]'].textContent).toBe('Connecting to live desktop…');
+    message({ origin: 'https://gitu.example', source: {}, data: { type: 'gitu-desktop', state: 'Live · Shared desktop' } });
+    expect(controls['[data-status]'].textContent).toBe('Connecting to live desktop…');
+    message({ origin: 'https://gitu.example', source: screen.contentWindow, data: { type: 'gitu-desktop', state: 'Live · Shared desktop' } });
+    const original = screen.src;
     u.api.mockClear();
-    timers.find((timer) => timer.delay === 150)!.fn();
+    timers.at(-1)!.fn();
     await vi.waitFor(() => expect(u.api).toHaveBeenCalledOnce());
-    expect(JSON.parse(u.api.mock.calls[0][1].body)).toEqual({ action: 'desktop', format: 'jpeg' });
-    expect(screen.src).toBe('data:image/jpeg;base64,aGVsbG8=');
+    await vi.waitFor(() => expect(timers).toHaveLength(2));
+    expect(u.api.mock.calls[0][1].body).toBeUndefined();
+    expect(screen.src).toBe(original);
+    expect(controls['[data-status]'].textContent).toBe('Live · Shared desktop');
+    controls['[data-stop]'].onclick();
+    expect(screen.src).toBe('');
+    await vi.waitFor(() => expect(controls['[data-status]'].textContent).toBe('stopped'));
+    u.cw.closeDesktop();
+    expect(modal.remove).toHaveBeenCalledOnce();
+    expect(u.context.window.removeEventListener).toHaveBeenCalledWith('message', message);
   });
   it('shows only the selected teammate’s threads and their team rooms in the left rail', () => {
     const u = ui();

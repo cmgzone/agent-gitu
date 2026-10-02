@@ -130,16 +130,20 @@ export function createComputerBrokerServer(key: string, owner: string, exec: Com
     }
   });
   const sockets = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
+  let pendingSockets = 0;
   server.on('upgrade', (req, socket, head) => {
     void (async () => {
       const reject = (code: number) => { socket.end(`HTTP/1.1 ${code} Rejected\r\nConnection: close\r\n\r\n`); };
       if (!authorized(req)) { reject(401); return; }
       const match = req.url?.match(/^\/desktop\/(gitu-cowork-[a-f0-9]{24})$/);
       if (!match) { reject(404); return; }
-      if (sockets.clients.size >= 16) { reject(429); return; }
-      try { await broker.owned(match[1]!); } catch { reject(403); return; }
-      if (socket.destroyed) return;
-      sockets.handleUpgrade(req, socket, head, (client) => bridgeDesktop(client, localDesktopStream(match[1]!)));
+      if (sockets.clients.size + pendingSockets >= 16) { reject(429); return; }
+      pendingSockets++;
+      try {
+        try { await broker.owned(match[1]!); } catch { reject(403); return; }
+        if (socket.destroyed) return;
+        sockets.handleUpgrade(req, socket, head, (client) => bridgeDesktop(client, localDesktopStream(match[1]!)));
+      } finally { pendingSockets--; }
     })().catch(() => socket.destroy());
   });
   server.on('close', () => { for (const socket of sockets.clients) socket.terminate(); sockets.close(); });

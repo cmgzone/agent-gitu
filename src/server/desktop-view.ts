@@ -35,7 +35,7 @@ function connect(){
   rfb.qualityLevel=6; rfb.compressionLevel=2;
   rfb.addEventListener('connect',()=>{message.hidden=true;status('Live · Shared desktop');rfb.focus();});
   rfb.addEventListener('disconnect',()=>{if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
-  rfb.addEventListener('securityfailure',()=>{message.hidden=false;message.textContent='Desktop access was rejected.';});
+  rfb.addEventListener('securityfailure',()=>{message.hidden=false;message.textContent='Desktop access was rejected.';status(message.textContent);});
 }
 addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);rfb?.disconnect();});
 connect();

@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-# No display or control ports leave the container. Gitu retrieves screen frames
-# through the existing authenticated computer service over docker exec.
+# The desktop stream listens only inside this sandbox. The authenticated
+# broker carries it over Docker stdio; no VNC port is published on the VPS.
 # Container restarts preserve /tmp, but the previous X server is gone.
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # The old container is stopped before reusing its home volume. Chromium's
@@ -10,7 +10,7 @@ rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 rm -f "$HOME/browser/SingletonLock" "$HOME/browser/SingletonSocket" "$HOME/browser/SingletonCookie"
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp -noreset > /tmp/gitu-display.log 2>&1 &
 display_pid=$!
-cleanup() { kill ${service_pid:-} ${manager_pid:-} "$display_pid" 2>/dev/null || true; }
+cleanup() { kill ${service_pid:-} ${vnc_pid:-} ${manager_pid:-} "$display_pid" 2>/dev/null || true; }
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 attempt=0
@@ -69,6 +69,14 @@ until xwininfo -root -tree | grep -F 'Agent Gitu workspace' >/dev/null; do
   sleep 0.1
 done
 export DBUS_SESSION_BUS_ADDRESS="$(cat /tmp/gitu-session-bus)"
+x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -wait 20 -defer 10 > /tmp/gitu-desktop-stream.log 2>&1 &
+vnc_pid=$!
+attempt=0
+until node -e "const s=require('node:net').connect(5900,'127.0.0.1');s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1));s.setTimeout(1000,()=>process.exit(1));"; do
+  attempt=$((attempt + 1))
+  if ! kill -0 "$vnc_pid" 2>/dev/null || [ "$attempt" -ge 50 ]; then cat /tmp/gitu-desktop-stream.log >&2; echo 'Desktop streaming did not start.' >&2; exit 1; fi
+  sleep 0.1
+done
 node /computer/server.cjs &
 service_pid=$!
 wait "$service_pid"

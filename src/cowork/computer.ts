@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:5';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:6';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
@@ -250,6 +250,15 @@ export class CoworkComputer {
     if (this.starting) await this.starting.catch(() => {});
     if (this.state === 'running') await this.exec(['stop', '--time', '2', this.name], undefined, undefined, 15_000);
     this.state = 'stopped';
+  }
+
+  /** Status polling detects a stopped container without capturing a frame. */
+  async refreshStatus(): Promise<ComputerStatus> {
+    if (this.state === 'running') {
+      const running = await this.exec(['container', 'inspect', '--format', '{{.State.Running}}', this.name], undefined, undefined, 15_000);
+      if (running.trim() === 'false') this.state = 'stopped';
+    }
+    return this.status();
   }
 
   /** Screen reads never provision, restart or wake a stopped teammate. */

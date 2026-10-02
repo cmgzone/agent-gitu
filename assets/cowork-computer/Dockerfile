@@ -10,7 +10,7 @@ RUN sed -i 's/\r$//' /computer/start-desktop.sh && chmod 755 /computer/start-des
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV DISPLAY=:99
 RUN mv /root/.cache/ms-playwright /ms-playwright && chmod -R a+rX /ms-playwright
-RUN apt-get update && apt-get install -y --no-install-recommends xfce4 xfce4-terminal dbus-x11 xdotool mousepad adwaita-icon-theme xdg-utils && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends xfce4 xfce4-terminal dbus-x11 xdotool mousepad adwaita-icon-theme xdg-utils x11vnc && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /tmp/.X11-unix /tmp/.ICE-unix && chmod 1777 /tmp/.X11-unix /tmp/.ICE-unix
 USER agent
 WORKDIR /workspace

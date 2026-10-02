@@ -38,13 +38,17 @@ export class ComputerBroker {
       if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name) || !same(argv, computerCreateArgs(name))) throw new Error('Unsafe desktop creation rejected.');
       return this.exec([...argv.slice(0, -1), '--label', `dev.agentgitu.broker=${this.owner}`, IMAGE], undefined, signal, 120_000);
     }
-    if (argv[0] === 'container' && argv[1] === 'inspect' && argv[2] === '--format' && ['{{.Config.Image}}', '{{.State.Running}}'].includes(argv[3]!) && argv.length === 5) {
+    if (argv[0] === 'container' && argv[1] === 'inspect' && argv[2] === '--format' && ['{{.Config.Image}}', '{{.State.Running}}', '{{.State.Status}}'].includes(argv[3]!) && argv.length === 5) {
       await this.owned(argv[4]!);
       return this.exec(argv, undefined, signal, 15_000);
     }
     if (argv[0] === 'start' && argv.length === 2) {
       await this.owned(argv[1]!);
       return this.exec(argv, undefined, signal, 120_000);
+    }
+    if (['pause', 'unpause'].includes(argv[0]!) && argv.length === 2) {
+      await this.owned(argv[1]!);
+      return this.exec(argv, undefined, signal, 15_000);
     }
     if (argv[0] === 'stop' && argv.length === 4 && argv[1] === '--time' && argv[2] === '2') {
       await this.owned(argv[3]!);

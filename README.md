@@ -367,8 +367,17 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   start builds `assets/cowork-computer/Dockerfile` and downloads Chromium;
   allow several minutes. **Open desktop** connects to that teammate's shared
   XFCE desktop through a live stream. Click, type, drag windows, and scroll;
-  the teammate operates the same browser, terminal, and files. Browser, Files,
-  Terminal, and Start/Stop controls remain available. Teammates on My computer can explicitly
+  the teammate operates the same desktop, terminal, and files. **Browser** opens
+  regular Google Chrome with its own persistent profile for manual sign-in;
+  **Agent browser** opens the browser used by automated tools. These profiles
+  are separate; signing in manually does not sign the automated browser in.
+  **Take control** pauses agent keyboard, browser and shell actions, and
+  **Return to agent** releases them. Agents can request this human step with
+  `computer_handoff`, which posts a question card and waits for completion.
+  **Sleep** freezes the desktop and preserves open apps; **Wake desktop**
+  resumes them. **Lock** locks the whole app with your account password and
+  retains human control. Fullscreen, Files, Terminal and Start/Stop are available.
+  Teammates on My computer can explicitly
   switch using **Use private desktop** while idle. This uses Docker containers,
   not a separate hypervisor VM. Upgrading an older private computer preserves
   its workspace/home volumes and retains the old container as a backup.

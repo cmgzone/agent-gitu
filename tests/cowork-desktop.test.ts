@@ -67,7 +67,7 @@ describe('private desktop lifecycle', () => {
     const create = commands.find(args => args[0] === 'create')!;
     expect(create).toContain(`type=volume,src=${computer.name}-workspace,dst=/workspace`);
     expect(create).toContain(`type=volume,src=${computer.name}-home,dst=/home/agent`);
-    expect(create.at(-1)).toBe('agent-gitu-cowork:6');
+    expect(create.at(-1)).toBe('agent-gitu-cowork:7');
     expect(commands.some(args => args[0] === 'rm')).toBe(false);
   });
 
@@ -85,7 +85,7 @@ describe('private desktop lifecycle', () => {
     exec.mockImplementation(async (args) => {
       if (args[0] === 'exec') throw new Error('Container is not running');
       if (args.includes('{{.State.Running}}')) return 'false';
-      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:6';
+      if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:7';
       return '';
     });
     await expect(computer.desktopScreenshot()).rejects.toThrow('Container is not running');
@@ -130,6 +130,9 @@ it('routes screen frames to the requested agent and requires an explicit switch 
     expect((await request(`/api/cowork/agents/${host.id}/computer`, { action: 'desktop' })).status).toBe(409);
     const event = { action: 'click', x: 100, y: 200 };
     expect((await request(`/api/cowork/agents/${host.id}/computer`, { action: 'input', input: event })).status).toBe(409);
+    for (const action of ['take-control', 'return-control', 'sleep']) expect((await request(`/api/cowork/agents/${host.id}/computer`, { action })).status).toBe(409);
+    expect((await request(`/api/cowork/agents/${a.id}/computer`, { action: 'take-control' })).status).toBe(202);
+    expect((await request(`/api/cowork/agents/${a.id}/computer`, { action: 'return-control' })).status).toBe(202);
     expect(input).not.toHaveBeenCalled();
     expect((await request(`/api/cowork/agents/${a.id}/computer`, { action: 'input', input: event })).status).toBe(200);
     expect(input).toHaveBeenCalledExactlyOnceWith(event);

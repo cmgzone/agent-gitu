@@ -6,6 +6,8 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
 import { cleanTelegramText, parseTelegramRequestAction, sendTelegramDocument, sendTelegramRequestCard, TelegramReplyStream, TelegramTypingIndicator, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
 import { CoworkStore, type CoworkRequest } from '../src/cowork/store.js';
+import { CoworkMemory } from '../src/cowork/memory.js';
+import { MemoryStore } from '../src/memory/memory-store.js';
 import { buildCoworkMessages, runConversationTurn, type CoworkRunnerDeps, type CoworkProgress } from '../src/cowork/runner.js';
 import { executeCoworkTool, stripToolMarkers } from '../src/cowork/tools.js';
 import type { LlmClient, LlmMessage, LlmOptions } from '../src/llm/llm.js';
@@ -383,6 +385,22 @@ describe('cowork streaming and tool execution', () => {
     expect(result.messages[0]!.text).toBe('Final answer');
     expect(progress.every((p) => !/secret|<t|never visible/.test(p.text))).toBe(true);
     expect(stripToolMarkers('Hello <tool>{broken}</tool>')).toBe('Hello');
+  });
+  it('posts a desktop handoff card and stops before executing further agent actions', async () => {
+    const client = { complete: vi.fn(async () => '<tool>{"name":"computer_handoff","params":{"reason":"Please sign in manually"}}</tool><tool>{"name":"run_command","params":{"command":"echo must-not-run"}}</tool>') };
+    const computer = new CoworkComputer('handoff-runtime', root, vi.fn<ComputerExec>());
+    const input = setup('handoff-runtime', client, { computerFor: () => computer });
+    input.agent.useHostComputer = false;
+    input.store.saveAgent(input.agent);
+    input.deps.store = input.store;
+    input.deps.memory = new CoworkMemory(MemoryStore.forProject(path.join(root, 'handoff-memory')), 'handoff');
+    const result = await runConversationTurn(input);
+    expect(client.complete).toHaveBeenCalledOnce();
+    expect(result.messages.at(-1)!.text).toContain('waiting');
+    const requests = input.store.requests(input.conversation.id);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ kind: 'question', status: 'open', title: 'Your turn on the desktop' });
+    expect(computer.status()).toMatchObject({ control: 'user', handoff: { requestId: requests[0]!.id } });
   });
 
   it('never executes calls after cancellation, even if the model ignores the signal', async () => {

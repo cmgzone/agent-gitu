@@ -16,7 +16,7 @@ describe('private desktop broker', () => {
     expect(args).toContain('dev.agentgitu.broker=' + owner);
     expect(args).toContain('--cap-drop');
     expect(args.join(' ')).not.toMatch(/type=bind|--privileged|--publish|docker.sock/);
-    expect(args.at(-1)).toBe('agent-gitu-cowork:6');
+    expect(args.at(-1)).toBe('agent-gitu-cowork:7');
     for (const modified of [
       [...computerCreateArgs(name), '--privileged'],
       ['create', '--name', name, 'alpine'],
@@ -33,7 +33,7 @@ describe('private desktop broker', () => {
       ['exec', '--user', 'root', name, 'node', '-e', 'evil'],
       ['exec', '-i', name, 'sh', '-c', 'evil'],
       ['image', 'inspect', 'alpine'],
-      ['build', '-t', 'agent-gitu-cowork:6', '/tmp/untrusted'],
+      ['build', '-t', 'agent-gitu-cowork:7', '/tmp/untrusted'],
       ['cp', '/etc/passwd', name + ':/computer/server.cjs'],
       ['volume', 'rm', 'production-data'],
       ['run', '--privileged', 'alpine'],
@@ -52,6 +52,17 @@ describe('private desktop broker', () => {
     await f.broker.execute(args, 'sandbox input', 3_000_000, signal);
     expect(f.exec).toHaveBeenLastCalledWith(args, 'sandbox input', signal, 3_000_000);
     await expect(f.broker.execute(['info', '--format', '{{.ServerVersion}}'], undefined, 0)).rejects.toThrow('deadline');
+  });
+  it('allows sleep and wake only for owned desktops with no additional arguments', async () => {
+    const f = fixture();
+    for (const action of ['pause', 'unpause']) {
+      await f.broker.execute([action, name]);
+      expect(f.exec).toHaveBeenLastCalledWith([action, name], undefined, undefined, 15_000);
+      await expect(f.broker.execute([action, 'coolify-proxy'])).rejects.toThrow();
+      await expect(f.broker.execute([action, name, '--all'])).rejects.toThrow();
+    }
+    f.exec.mockResolvedValue('other-owner');
+    await expect(f.broker.execute(['pause', name])).rejects.toThrow('does not belong');
   });
   it('authenticates remote lifecycle requests before accessing Docker and supports the hosted client', async () => {
     const f = fixture(),

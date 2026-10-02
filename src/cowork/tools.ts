@@ -103,7 +103,7 @@ const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'desktop_s
  * (an ephemeral worker has no future wake). `spawn_sub_agent` is refused at
  * dispatch as well, by depth. The child prompt omits these from its docs.
  */
-export const SUBAGENT_BLOCKED_TOOLS = ['spawn_sub_agent', 'gitu_task', 'ask_user', 'request_credential', 'request_permission', 'recommend', 'message_teammate', 'schedule_followup'];
+export const SUBAGENT_BLOCKED_TOOLS = ['spawn_sub_agent', 'gitu_task', 'computer_handoff', 'ask_user', 'request_credential', 'request_permission', 'recommend', 'message_teammate', 'schedule_followup'];
 /** Computer-only tools with no meaningful host equivalent. */
 const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process', 'desktop_screenshot', 'desktop_input'];
 
@@ -131,8 +131,9 @@ export interface CoworkToolDoc {
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'computer_status', doc: 'Inspect your private virtual computer and its setup status. params: {}', gate: undefined },
+  { name: 'computer_handoff', doc: 'Give the user control of your private desktop and pause your task for a human step. params: {"reason":"Please sign in using the regular Browser, then return control."}. Use this for manual login, verification, approval or a step the user must perform. Never include passwords, codes or secrets in the reason. The user can operate the desktop and choose Return to agent when done. Do not keep interacting while waiting.', gate: undefined },
   { name: 'desktop_screenshot', doc: 'See your full Linux desktop, including app windows, menus and dialogs. params: {}. Inspect the screen before choosing coordinates.', gate: 'browser' },
-  { name: 'desktop_input', doc: 'Control your private Linux desktop. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. Use browse for structured browser operations.', gate: 'shell' },
+  { name: 'desktop_input', doc: 'Control your private Linux desktop. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|agent_browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. Use browse for structured browser operations.', gate: 'shell' },
   { name: 'computer_process', doc: 'Inspect or stop a background process on your computer. params: {"action":"status","id":"..."} | {"action":"stop","id":"..."}', gate: 'shell' },
   { name: 'create_document', doc: DOCUMENT_TOOL_DOC + ' The generated file is automatically presented in this conversation.', gate: 'writes' },
   { name: 'share_file', doc: 'Present a file in the conversation as an Open/Download document card and make it available to teammates. params: {"path":"report.pdf"}.', gate: 'writes' },
@@ -583,6 +584,14 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return coworkTodoManage(scope, params);
       case 'ask_user':
         return coworkAskUser(scope, params);
+      case 'computer_handoff': {
+        if (!scope?.conversationId || !scope.computerFor || scope.agent.useHostComputer) return { ok: false, output: 'A desktop handoff requires a private computer and conversation.' };
+        const reason = String(params['reason'] ?? '').trim();
+        if (!reason || reason.length > 500) return { ok: false, output: 'Describe the human step in 1–500 characters without credentials.' };
+        const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: 'Your turn on the desktop', detail: reason + '\nOpen this teammate’s desktop. When finished, choose Return to agent or answer Done — continue.', options: ['Done — continue', 'Cancel handoff'] });
+        scope.computerFor(scope.agent.id).setControl('user', reason, request.id);
+        return { ok: true, output: `Desktop control given to the user. Question ${request.id} posted. Stop working and wait for the user to return control.` };
+      }
       case 'request_credential':
         return coworkRequestCredential(scope, params);
       case 'request_permission':

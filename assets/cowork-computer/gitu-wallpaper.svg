@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1600" viewBox="0 0 2560 1600">
+  <defs>
+    <linearGradient id="night" x2="1" y2="1"><stop stop-color="#101429"/><stop offset=".5" stop-color="#191b37"/><stop offset="1" stop-color="#2d2047"/></linearGradient>
+    <radialGradient id="light"><stop stop-color="#ad91ef" stop-opacity=".55"/><stop offset="1" stop-color="#7251d1" stop-opacity="0"/></radialGradient>
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2=".8"><stop stop-color="#8062d0"/><stop offset=".4" stop-color="#ab95e4"/><stop offset="1" stop-color="#493576"/></linearGradient>
+    <linearGradient id="edge" x2="1"><stop stop-color="#b8adf7" stop-opacity=".05"/><stop offset=".5" stop-color="#e0d5ff" stop-opacity=".65"/><stop offset="1" stop-color="#ad91ef" stop-opacity=".05"/></linearGradient>
+    <linearGradient id="low" x1="0" y1="0" x2=".6" y2="1"><stop stop-color="#493477"/><stop offset="1" stop-color="#15162d"/></linearGradient>
+  </defs>
+  <path fill="url(#night)" d="M0 0h2560v1600H0z"/>
+  <ellipse cx="1920" cy="550" rx="1100" ry="850" fill="url(#light)"/>
+  <path d="M-180 1180C350 780 700 1400 1240 925S2060 410 2800 950v850H-180Z" fill="url(#wave)"/>
+  <path d="M-180 1180C350 780 700 1400 1240 925S2060 410 2800 950" fill="none" stroke="url(#edge)" stroke-width="3"/>
+  <path d="M-150 1450C560 1070 990 1650 1510 1160S2200 1050 2720 1220v580H-150Z" fill="url(#low)"/>
+  <path d="M-150 1450C560 1070 990 1650 1510 1160S2200 1050 2720 1220" fill="none" stroke="#a898d8" stroke-opacity=".2" stroke-width="2"/>
+  <g fill="#e5dcff" opacity=".35"><circle cx="420" cy="225" r="2"/><circle cx="835" cy="430" r="1.5"/><circle cx="1530" cy="185" r="2"/><circle cx="2220" cy="305" r="1.5"/><circle cx="1170" cy="570" r="1"/></g>
+  <g transform="translate(2260 124)" fill="none" stroke="#e0d5ff" stroke-width="5" opacity=".65"><rect width="112" height="112" rx="34"/><path d="M79 46a29 29 0 1 0 0 33V62H57" stroke-linecap="round" stroke-linejoin="round"/></g>
+</svg>

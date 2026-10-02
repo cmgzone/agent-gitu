@@ -25,19 +25,33 @@ export function desktopView(agentId: string): string {
   const endpoint = JSON.stringify('/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div><script type="module">
 import RFB from '/api/desktop-assets/core/rfb.js';
-let rfb, timer, closed=false;
+let rfb, timer, frames, closed=false;
 const message=document.getElementById('message'),screen=document.getElementById('screen');
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
+function stopFrames(){clearInterval(frames);frames=undefined;}
 function connect(){
   if(closed)return;
-  rfb=new RFB(screen,(location.protocol==='https:'?'wss://':'ws://')+location.host+${endpoint},{shared:true});
+  const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+${endpoint});
+  rfb=new RFB(screen,socket,{shared:true});
   rfb.scaleViewport=true; rfb.resizeSession=false; rfb.viewOnly=false;
   rfb.qualityLevel=6; rfb.compressionLevel=2;
-  rfb.addEventListener('connect',()=>{message.hidden=true;status('Live · Shared desktop');rfb.focus();});
-  rfb.addEventListener('disconnect',()=>{if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
+  rfb.addEventListener('connect',()=>{
+    message.hidden=true;status('Live · Shared desktop');rfb.focus();
+    // LibVNCServer has no ContinuousUpdates extension. Keep incremental
+    // requests ready so every redraw does not wait another network round trip.
+    // These ten-byte requests send pixels only when the desktop changes.
+    frames=setInterval(()=>{
+      const canvas=screen.querySelector('canvas');
+      if(closed||document.hidden||socket.readyState!==WebSocket.OPEN||socket.bufferedAmount>8192||!canvas?.width||!canvas.height)return;
+      const packet=new Uint8Array(10),view=new DataView(packet.buffer);
+      packet[0]=3;packet[1]=1;view.setUint16(6,canvas.width);view.setUint16(8,canvas.height);
+      socket.send(packet);
+    },40);
+  });
+  rfb.addEventListener('disconnect',()=>{stopFrames();if(closed)return;message.hidden=false;message.textContent='Reconnecting to desktop…';status('Reconnecting…');timer=setTimeout(connect,2000);});
   rfb.addEventListener('securityfailure',()=>{message.hidden=false;message.textContent='Desktop access was rejected.';status(message.textContent);});
 }
-addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);rfb?.disconnect();});
+addEventListener('pagehide',()=>{closed=true;clearTimeout(timer);stopFrames();rfb?.disconnect();});
 connect();
 </script></body></html>`;
 }

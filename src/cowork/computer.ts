@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:6';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:7';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
@@ -120,7 +120,9 @@ export type ComputerUnavailableReason =
 export interface ComputerStatus {
   agentId: string;
   name: string;
-  state: 'stopped' | 'starting' | 'running' | 'unavailable';
+  state: 'stopped' | 'starting' | 'running' | 'sleeping' | 'unavailable';
+  control?: 'shared' | 'user';
+  handoff?: { reason: string; requestId?: string };
   workspace: string;
   error?: string;
   /** Present only while unavailable; classifies `error`. */
@@ -144,6 +146,9 @@ export class CoworkComputer {
   readonly name: string;
   private state: ComputerStatus['state'] = 'stopped';
   private error?: string;
+  private control: 'shared' | 'user' = 'shared';
+  private handoff?: ComputerStatus['handoff'];
+  private readonly controlFile: string;
   /** Machine-readable companion to `error`, cleared on a successful start. */
   private reason?: ComputerUnavailableReason;
   private starting?: Promise<void>;
@@ -166,16 +171,49 @@ export class CoworkComputer {
       .digest('hex')
       .slice(0, 24);
     this.name = `gitu-cowork-${key}`;
+    this.controlFile = path.join(root, 'computer-control', key + '.json');
+    if (existsSync(this.controlFile)) {
+      // A damaged control file must never silently grant the agent control.
+      this.control = 'user';
+      try {
+        const saved = JSON.parse(readFileSync(this.controlFile, 'utf8')) as { control?: string; handoff?: ComputerStatus['handoff'] };
+        if (saved.control === 'shared') this.control = 'shared';
+        else if (typeof saved.handoff?.reason === 'string') this.handoff = {
+          reason: saved.handoff.reason.slice(0, 500),
+          requestId: typeof saved.handoff.requestId === 'string' ? saved.handoff.requestId : undefined,
+        };
+      } catch { this.handoff = { reason: 'Desktop control could not be restored. Return control when ready.' }; }
+    }
   }
 
   status(): ComputerStatus {
-    return { agentId: this.agentId, name: this.name, state: this.state, workspace: '/workspace', error: this.error, reason: this.reason };
+    return { agentId: this.agentId, name: this.name, state: this.state, control: this.control, handoff: this.handoff, workspace: '/workspace', error: this.error, reason: this.reason };
+  }
+
+  setControl(control: 'shared' | 'user', reason?: string, requestId?: string): void {
+    const handoff = control === 'user' && reason ? { reason: reason.slice(0, 500), requestId: requestId ?? this.handoff?.requestId } : undefined;
+    mkdirSync(path.dirname(this.controlFile), { recursive: true });
+    writeFileSync(this.controlFile + '.tmp', JSON.stringify({ control, handoff }), { mode: 0o600 });
+    renameSync(this.controlFile + '.tmp', this.controlFile);
+    this.control = control; this.handoff = handoff;
+    if (control === 'user') for (const controller of this.active) controller.abort(new Error('The user has taken control of the desktop.'));
+  }
+
+  async sleep(): Promise<void> {
+    if (this.state !== 'running') throw new Error('Start the desktop before putting it to sleep.');
+    this.setControl('user', 'Desktop is sleeping. Wake it when you are ready.');
+    await this.exec(['pause', this.name], undefined, undefined, 15_000);
+    this.state = 'sleeping';
   }
 
   async start(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (this.starting) return this.starting;
     if (this.state === 'running') return;
+    if (this.state === 'sleeping' && (await this.exec(['container', 'inspect', '--format', '{{.Config.Image}}', this.name], undefined, signal, 15_000)).trim() === IMAGE) {
+      await this.exec(['unpause', this.name], undefined, signal, 15_000);
+      this.state = 'running'; return;
+    }
     this.startupAbort = new AbortController();
     const combined = signal ? AbortSignal.any([signal, this.startupAbort.signal]) : this.startupAbort.signal;
     this.starting = this.provision(combined).finally(() => {
@@ -219,6 +257,7 @@ export class CoworkComputer {
         if (legacyImage) {
           // Keep the old container as a recoverable backup. The replacement
           // reuses the same named volumes, preserving files and browser logins.
+          if ((await this.exec(['container', 'inspect', '--format', '{{.State.Status}}', this.name], undefined, signal, 15_000)).trim() === 'paused') await this.exec(['unpause', this.name], undefined, signal, 15_000);
           await this.exec(['stop', '--time', '2', this.name], undefined, signal);
           await this.exec(['rename', this.name, this.name + '-backup-' + Date.now()], undefined, signal);
           exists = false;
@@ -228,7 +267,10 @@ export class CoworkComputer {
       // Refresh the small bundled service even for an existing container.
       // Volumes and login sessions stay intact; no image rebuild is needed.
       await this.exec(['cp', path.join(ASSETS, 'server.cjs'), `${this.name}:/computer/server.cjs`], undefined, signal);
-      if (exists) await this.exec(['stop', '--time', '2', this.name], undefined, signal);
+      if (exists) {
+        if ((await this.exec(['container', 'inspect', '--format', '{{.State.Status}}', this.name], undefined, signal, 15_000)).trim() === 'paused') await this.exec(['unpause', this.name], undefined, signal, 15_000);
+        await this.exec(['stop', '--time', '2', this.name], undefined, signal);
+      }
       await this.exec(['start', this.name], undefined, signal);
       this.state = 'running';
       this.lastFailure = undefined;
@@ -248,15 +290,26 @@ export class CoworkComputer {
     this.startupAbort?.abort();
     for (const controller of this.active) controller.abort();
     if (this.starting) await this.starting.catch(() => {});
+    if (this.state === 'sleeping') { await this.exec(['unpause', this.name], undefined, undefined, 15_000); this.state = 'running'; }
     if (this.state === 'running') await this.exec(['stop', '--time', '2', this.name], undefined, undefined, 15_000);
     this.state = 'stopped';
   }
 
-  /** Status polling detects a stopped container without capturing a frame. */
+  /** Restore paused/running state after an app restart without waking it. */
   async refreshStatus(): Promise<ComputerStatus> {
-    if (this.state === 'running') {
-      const running = await this.exec(['container', 'inspect', '--format', '{{.State.Running}}', this.name], undefined, undefined, 15_000);
-      if (running.trim() === 'false') this.state = 'stopped';
+    if (this.state !== 'starting' && this.state !== 'unavailable') {
+      try {
+        const state = (await this.exec(['container', 'inspect', '--format', '{{.State.Status}}', this.name], undefined, undefined, 15_000)).trim();
+        if (this.state === 'stopped' && ['paused', 'running'].includes(state)) {
+          const image = (await this.exec(['container', 'inspect', '--format', '{{.Config.Image}}', this.name], undefined, undefined, 15_000)).trim();
+          if (image !== IMAGE) return this.status();
+        }
+        if (state === 'paused') this.state = 'sleeping';
+        else if (state === 'running') this.state = 'running';
+        else if (['created', 'exited', 'dead'].includes(state)) this.state = 'stopped';
+      } catch (error) {
+        if (/no such|not found/i.test((error as Error).message)) this.state = 'stopped';
+      }
     }
     return this.status();
   }
@@ -332,6 +385,9 @@ export class CoworkComputer {
     try {
       signal?.throwIfAborted();
       if (tool === 'computer_status') return { ok: true, output: JSON.stringify(this.status()) };
+      if (this.state === 'stopped' && this.control === 'user') await this.refreshStatus();
+      if (this.state === 'sleeping') return { ok: false, output: 'The user put this desktop to sleep. Wait for them to wake it; do not switch computers.' };
+      if (this.control === 'user' && ['desktop_input', 'browse', 'run_command', 'computer_process'].includes(tool)) return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
       // A recent provisioning failure is retried only after the cooldown, so
       // callers can fall back to the user's computer without 15s Docker probes
       // on every tool call.

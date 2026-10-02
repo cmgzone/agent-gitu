@@ -2173,6 +2173,8 @@ export class GituServer {
     }
     const resolved = store.resolveRequest(request.id, status, response);
     if (!resolved) return { ok: false, statusCode: 404, error: 'request not found or already answered' };
+    const handoffComputer = this.coworkComputer(request.agentId);
+    if (handoffComputer?.status().handoff?.requestId === request.id && !/^cancel/i.test(response ?? '')) handoffComputer.setControl('shared');
     const agent = store.getAgent(request.agentId);
     if (resolved.status === 'approved' && agent && request.permission) {
       const patch = request.permission === 'shell' ? { allowShell: true }
@@ -3191,6 +3193,20 @@ export class GituServer {
           } catch (error) { this.sendJson(res, 503, { error: (error as Error).message }); }
           return true;
         }
+        else if (body['action'] === 'take-control') {
+          if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Control is available on the private desktop.' }); return true; }
+          computer.setControl('user', 'You have control. Return to agent when you are finished.');
+        }
+        else if (body['action'] === 'return-control') {
+          if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Control is available on the private desktop.' }); return true; }
+          const handoff = computer.status().handoff;
+          computer.setControl('shared');
+          if (handoff?.requestId && store.getRequest(handoff.requestId)?.status === 'open') this.resolveCoworkRequestAction(handoff.requestId, 'answer', 'Done — continue');
+        }
+        else if (body['action'] === 'sleep') {
+          if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Sleep is available on the private desktop.' }); return true; }
+          await computer.sleep();
+        }
         else if (body['action'] === 'desktop') {
           if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'This teammate uses My computer. Choose Use private desktop to give it its own screen.' }); return true; }
           try {
@@ -3219,7 +3235,7 @@ export class GituServer {
           if (targetAgent.useHostComputer) { this.sendJson(res, 409, { error: 'Choose Use private desktop before starting this teammate’s desktop.' }); return true; }
           // Image installation can take minutes. Status is polled by the UI.
           void computer.start().catch(() => {});
-        } else { this.sendJson(res, 400, { error: 'action must be start, stop, desktop, input, use-private or screenshot' }); return true; }
+        } else { this.sendJson(res, 400, { error: 'action must be start, stop, sleep, take-control, return-control, desktop, input, use-private or screenshot' }); return true; }
         this.sendJson(res, 202, { computer: status(), agent: targetAgent }); return true;
       }
     }
@@ -3846,6 +3862,8 @@ export class GituServer {
         ? `Credential saved as connection "${credentialConnection.label}" (id: ${credentialConnection.id})`
         : response || status;
       const resolved = store.resolveRequest(request.id, status, credentialConnection ? answer : response);
+      const handoffComputer = this.coworkComputer(request.agentId);
+      if (resolved && handoffComputer.status().handoff?.requestId === request.id && !/^cancel/i.test(response ?? '')) handoffComputer.setControl('shared');
       const agent = store.getAgent(request.agentId);
       if (resolved?.status === 'approved' && agent && request.permission) {
         const patch = request.permission === 'shell' ? { allowShell: true }

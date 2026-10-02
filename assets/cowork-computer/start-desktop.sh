@@ -7,7 +7,9 @@ set -eu
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # The old container is stopped before reusing its home volume. Chromium's
 # hostname/PID lock symlinks can survive that stop; profile data stays intact.
-rm -f "$HOME/browser/SingletonLock" "$HOME/browser/SingletonSocket" "$HOME/browser/SingletonCookie"
+for profile in "$HOME/browser" "$HOME/manual-browser"; do
+  rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
+done
 Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp -noreset > /tmp/gitu-display.log 2>&1 &
 display_pid=$!
 cleanup() { kill ${service_pid:-} ${vnc_pid:-} ${manager_pid:-} "$display_pid" 2>/dev/null || true; }
@@ -31,9 +33,9 @@ fi
 cat > "$HOME/.local/share/applications/gitu-browser.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Gitu Browser
+Name=Google Chrome
 Exec=node /computer/open-browser.cjs %u
-Icon=web-browser
+Icon=google-chrome
 Terminal=false
 MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
 EOF
@@ -69,7 +71,7 @@ until xwininfo -root -tree | grep -F 'Agent Gitu workspace' >/dev/null; do
   sleep 0.1
 done
 export DBUS_SESSION_BUS_ADDRESS="$(cat /tmp/gitu-session-bus)"
-x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -noxdamage -repeat -wait 20 -defer 10 > /tmp/gitu-desktop-stream.log 2>&1 &
+x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -repeat -input_skip 1 -input_eagerly -wait 10 -defer 0 -setdefer -2 -nonap -sb 0 -nowait_bog > /tmp/gitu-desktop-stream.log 2>&1 &
 vnc_pid=$!
 attempt=0
 until node -e "const s=require('node:net').connect(5900,'127.0.0.1');s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1));s.setTimeout(1000,()=>process.exit(1));"; do

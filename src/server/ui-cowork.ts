@@ -33,6 +33,20 @@ export const COWORK_CSS = String.raw`
   .cw-desktop-placeholder { padding: 48px 24px; text-align: center; color: #c3c6d1; max-width: 520px; }
   .cw-desktop-toolbar { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px; }
   .cw-desktop-status { flex: 1; min-width: 180px; color: var(--muted); font-size: 12px; }
+  .cw-desktop-dialog .box { background: #171624; color: #efeafa; border: 1px solid #b29bff26; border-radius: 20px; box-shadow: 0 24px 100px #05040c88; overflow: hidden; }
+  .cw-desktop-dialog .bar { background: #211e31; border-bottom: 1px solid #c4b5fd1a; padding: 12px 16px; }
+  .cw-desktop-dialog .btn { background: #2a263b; border: 1px solid #c4b5fd24; color: #eee9fb; border-radius: 10px; padding: 8px 11px; font-size: 12px; }
+  .cw-desktop-dialog .btn:hover { background: #3a3154; }
+  .cw-desktop-dialog .btn:focus-visible { outline: 2px solid #b5a0f4; outline-offset: 2px; }
+  .cw-desktop-toolbar { background: #211e31; gap: 6px; padding: 10px 14px; }
+  .cw-desktop-status { color: #c6bed8; min-width: 140px; }
+  .cw-desktop-dialog .chip { color: #c6bed8; background: #ffffff05; border-color: #c4b5fd24; }
+  .cw-desktop-handoff { padding: 10px 16px; background: #7660ba28; border-bottom: 1px solid #bba7ff24; color: #e2d8fc; font-size: 13px; }
+  .cw-desktop-handoff[hidden] { display: none; }
+  .cw-desktop-handoff b { margin-right: 10px; }
+  .cw-desktop-dialog [data-control] { background: #7660ba; border-color: #a993e1; }
+  .cw-desktop-dialog .box:fullscreen { width: 100vw; height: 100dvh; max-height: none; border-radius: 0; }
+  @media(max-width:720px) { .cw-desktop-status { flex-basis: 100%; } .cw-desktop-dialog .chip { display: none; } }
   .cw-message-refs { margin-top: 6px; overflow-wrap: anywhere; }
   .cw-references > span { max-width: 280px; }
 
@@ -2657,18 +2671,20 @@ export const COWORK_JS = String.raw`
     modal.className = 'modal cw-desktop-dialog';
     modal.setAttribute('role', 'dialog'); modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('aria-label', agent.name + ' desktop');
-    modal.innerHTML = '<div class="box"><div class="bar"><b>' + esc(agent.name) + ' · Desktop</b><span style="flex:1"></span><button class="btn ghost" data-close>Close</button></div>' +
+    modal.innerHTML = '<div class="box"><div class="bar"><b>' + esc(agent.name) + ' · Desktop</b><span style="flex:1"></span><button class="btn ghost" data-fullscreen>Fullscreen</button><button class="btn ghost" data-close>Close</button></div>' +
+      '<div class="cw-desktop-handoff" data-handoff hidden><b>Your turn</b><span data-handoff-reason></span></div>' +
       '<div class="cw-desktop-screen"><iframe data-desktop hidden title="' + esc(agent.name) + ' interactive Linux desktop" allow="clipboard-read; clipboard-write"></iframe><p class="cw-desktop-placeholder" data-placeholder>Connecting to this teammate’s desktop…</p></div>' +
-      '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Live · Click to control</span><button class="btn" data-browser>Browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
+      '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Shared computer</span><button class="btn" data-browser title="Regular Google Chrome for manual sign-in">Browser</button><button class="btn" data-agent_browser title="Browser used by the agent’s automated tools">Agent browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-control>Take control</button><button class="btn" data-sleep title="Pause the desktop and preserve open windows">Sleep</button><button class="btn" data-lock title="Lock the app with your password">Lock</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
     document.body.appendChild(modal);
     var screen = modal.querySelector('[data-desktop]'), placeholder = modal.querySelector('[data-placeholder]');
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
-    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, streamState = 'Connecting to live desktop…';
+    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, userControl = false, streamState = 'Connecting to live desktop…';
     var endpoint = '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer';
     function disconnect() {
       screen.hidden = true; screen.removeAttribute('src'); streamState = 'Connecting to live desktop…';
     }
     function close() {
+      if (document.fullscreenElement === modal.querySelector('.box')) document.exitFullscreen().catch(function () {});
       closed = true; clearTimeout(timer); controller.abort(); disconnect(); modal.remove();
       document.removeEventListener('keydown', keydown);
       window.removeEventListener('message', desktopMessage);
@@ -2683,20 +2699,25 @@ export const COWORK_JS = String.raw`
     async function launch(app) {
       if (closed || screen.hidden || host) return;
       try {
+        if (app === 'browser') await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'take-control' }) });
         await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'input', input: { action: 'launch', app: app } }) });
         if (!closed) screen.focus();
       } catch (e) { if (!closed) status.textContent = e.message || 'Could not open application'; }
     }
     function update(computer) {
       host = Boolean(computer.useHostComputer);
-      ['browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').disabled = host || computer.state !== 'running'; });
-      start.textContent = host ? 'Use private desktop' : computer.state === 'unavailable' ? 'Retry startup' : 'Start desktop';
+      ['browser', 'agent_browser', 'files', 'terminal', 'control', 'sleep'].forEach(function (app) { modal.querySelector('[data-' + app + ']').disabled = host || computer.state !== 'running'; });
+      userControl = computer.control === 'user';
+      modal.querySelector('[data-control]').textContent = userControl ? 'Return to agent' : 'Take control';
+      modal.querySelector('[data-handoff]').hidden = !userControl;
+      modal.querySelector('[data-handoff-reason]').textContent = computer.handoff?.reason || 'The agent is waiting while you use the computer. Return control when finished.';
+      start.textContent = host ? 'Use private desktop' : computer.state === 'sleeping' ? 'Wake desktop' : computer.state === 'unavailable' ? 'Retry startup' : 'Start desktop';
       start.disabled = !host && (computer.state === 'starting' || computer.state === 'running');
-      stop.disabled = host || (computer.state !== 'starting' && computer.state !== 'running');
+      stop.disabled = host || (computer.state !== 'starting' && computer.state !== 'running' && computer.state !== 'sleeping');
       status.textContent = host ? 'Using My computer' : computer.state === 'running' ? streamState : computer.state;
       if (host || computer.state !== 'running') {
         disconnect(); placeholder.hidden = false;
-        placeholder.textContent = host ? 'Give this teammate its own Linux desktop with a private browser and workspace. Its next tasks will use that private computer.' : computer.error || (computer.state === 'starting' ? 'Starting the private desktop. First startup may take several minutes.' : 'Start this teammate’s private desktop to view its screen.');
+        placeholder.textContent = host ? 'Give this teammate its own Linux desktop with a private browser and workspace. Its next tasks will use that private computer.' : computer.error || (computer.state === 'sleeping' ? 'Sleeping. Your apps and open windows are preserved. Wake the desktop to continue.' : computer.state === 'starting' ? 'Starting the private desktop. First startup may take several minutes.' : 'Start this teammate’s private desktop to view its screen.');
       } else {
         if (!screen.getAttribute('src')) screen.src = endpoint + '/view';
         screen.hidden = false; placeholder.hidden = true;
@@ -2724,7 +2745,17 @@ export const COWORK_JS = String.raw`
     modal.querySelector('[data-close]').onclick = close;
     start.onclick = function () { refresh(host ? 'use-private' : 'start'); };
     stop.onclick = function () { disconnect(); refresh('stop'); };
-    ['browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').onclick = function () { launch(app); }; });
+    ['browser', 'agent_browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').onclick = function () { launch(app); }; });
+    modal.querySelector('[data-control]').onclick = function () { refresh(userControl ? 'return-control' : 'take-control'); };
+    modal.querySelector('[data-sleep]').onclick = function () { disconnect(); refresh('sleep'); };
+    modal.querySelector('[data-lock]').onclick = async function () {
+      try { if (!host) await api(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'take-control' }) }); }
+      finally { close(); cwLockApp(); }
+    };
+    modal.querySelector('[data-fullscreen]').onclick = function () {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else modal.querySelector('.box').requestFullscreen?.();
+    };
     document.addEventListener('keydown', keydown);
     window.addEventListener('message', desktopMessage);
     refresh(); modal.querySelector('[data-close]').focus();

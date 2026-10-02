@@ -14,6 +14,28 @@ let browser;
 let browserQueue = Promise.resolve();
 let screenQueue = Promise.resolve();
 
+async function configureDesktop() {
+  if (!process.env.DISPLAY) return;
+  const property = (channel, name, type, value) => execFileAsync('xfconf-query', ['-c', channel, '-p', name, '-s', value], { timeout: 5000 })
+    .catch(() => execFileAsync('xfconf-query', ['-c', channel, '-p', name, '-n', '-t', type, '-s', value], { timeout: 5000 }));
+  // Refresh these settings in cached desktops as well as newly built images.
+  // DAMAGE avoids full-screen polling; input and redraws never wait for idle
+  // naps or batches of ten events. The VNC listener remains loopback-only.
+  await Promise.all([
+    execFileAsync('x11vnc', ['-R', 'xdamage,input_skip:1,input_eagerly,wait:10,defer:0,setdefer:-2,nonap,sb:0,nowait_bog'], { timeout: 5000 }),
+    property('xfwm4', '/general/use_compositing', 'bool', 'false'),
+    property('xfwm4', '/general/theme', 'string', 'Arc-Dark'),
+    property('xsettings', '/Net/ThemeName', 'string', 'Arc-Dark'),
+    property('xsettings', '/Net/IconThemeName', 'string', 'Papirus-Dark'),
+    property('xsettings', '/Gtk/FontName', 'string', 'Inter 10'),
+    property('xfce4-panel', '/panels/panel-1/size', 'uint', '32'),
+    property('xfce4-panel', '/panels/panel-2/size', 'uint', '48'),
+  ]);
+  const properties = (await execFileAsync('xfconf-query', ['-c', 'xfce4-desktop', '-l'], { timeout: 5000 })).stdout.split('\n').filter((name) => /\/backdrop\/.*\/last-image$/.test(name));
+  if (!properties.length) properties.push('/backdrop/screen0/monitorscreen/workspace0/last-image');
+  await Promise.all(properties.map((name) => property('xfce4-desktop', name, 'string', '/computer/gitu-wallpaper.svg')));
+}
+
 async function desktopInput(p) {
   if (!process.env.DISPLAY) throw new Error('This computer has no desktop display.');
   const coordinate = (value, limit) => {
@@ -24,7 +46,7 @@ async function desktopInput(p) {
   let args;
   switch (p.action) {
     case 'launch': {
-      const apps = { browser: ['node', '/computer/open-browser.cjs'], files: ['thunar', '/workspace'], terminal: ['xfce4-terminal', '--working-directory=/workspace'] };
+      const apps = { browser: ['node', '/computer/open-browser.cjs'], agent_browser: ['node', '/computer/open-agent-browser.cjs'], files: ['thunar', '/workspace'], terminal: ['xfce4-terminal', '--working-directory=/workspace'] };
       const app = Object.hasOwn(apps, p.app) ? apps[p.app] : undefined;
       if (!app) throw new Error('Unknown desktop app.');
       await new Promise((resolve, reject) => {
@@ -315,4 +337,4 @@ http
       }
     });
   })
-  .listen(8765, '127.0.0.1');
+  .listen(8765, '127.0.0.1', () => { configureDesktop().catch((error) => console.error('Desktop input tuning failed:', error.message)); });

@@ -19,10 +19,10 @@ async function configureDesktop() {
   const property = (channel, name, type, value) => execFileAsync('xfconf-query', ['-c', channel, '-p', name, '-s', value], { timeout: 5000 })
     .catch(() => execFileAsync('xfconf-query', ['-c', channel, '-p', name, '-n', '-t', type, '-s', value], { timeout: 5000 }));
   // Refresh these settings in cached desktops as well as newly built images.
-  // DAMAGE avoids full-screen polling; input and redraws never wait for idle
-  // naps or batches of ten events. The VNC listener remains loopback-only.
+  // Poll the virtual framebuffer reliably instead of relying on DAMAGE hints.
+  // Input and redraws never wait for idle naps or batches of ten events.
   await Promise.all([
-    execFileAsync('x11vnc', ['-R', 'xdamage,input_skip:1,input_eagerly,wait:10,defer:0,setdefer:-2,nonap,sb:0,nowait_bog'], { timeout: 5000 }),
+    execFileAsync('x11vnc', ['-R', 'noxdamage,input_skip:1,input_eagerly,wait:10,defer:0,setdefer:-2,nonap,sb:0,nowait_bog'], { timeout: 5000 }),
     property('xfwm4', '/general/use_compositing', 'bool', 'false'),
     property('xfwm4', '/general/theme', 'string', 'Arc-Dark'),
     property('xsettings', '/Net/ThemeName', 'string', 'Arc-Dark'),
@@ -31,9 +31,24 @@ async function configureDesktop() {
     property('xfce4-panel', '/panels/panel-1/size', 'uint', '32'),
     property('xfce4-panel', '/panels/panel-2/size', 'uint', '48'),
   ]);
+  // XFCE's image loader can omit SVG support in minimal containers. Render the
+  // bundled vector once with the existing browser and use a native PNG backdrop.
+  const wallpaper = '/tmp/gitu-wallpaper.png';
+  if (!fs.existsSync(wallpaper)) {
+    const renderer = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    try {
+      const page = await renderer.newPage({ viewport: { width: 2560, height: 1600 } });
+      await page.setContent(fs.readFileSync('/computer/gitu-wallpaper.svg', 'utf8'));
+      await page.addStyleTag({ content: 'html,body{margin:0}svg{display:block}' });
+      await page.screenshot({ path: wallpaper });
+    } finally { await renderer.close(); }
+  }
   const properties = (await execFileAsync('xfconf-query', ['-c', 'xfce4-desktop', '-l'], { timeout: 5000 })).stdout.split('\n').filter((name) => /\/backdrop\/.*\/last-image$/.test(name));
   if (!properties.length) properties.push('/backdrop/screen0/monitorscreen/workspace0/last-image');
-  await Promise.all(properties.map((name) => property('xfce4-desktop', name, 'string', '/computer/gitu-wallpaper.svg')));
+  await Promise.all(properties.flatMap((name) => [
+    property('xfce4-desktop', name, 'string', wallpaper),
+    property('xfce4-desktop', name.replace(/last-image$/, 'image-style'), 'int', '5'),
+  ]));
 }
 
 async function desktopInput(p) {

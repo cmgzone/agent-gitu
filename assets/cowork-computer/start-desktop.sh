@@ -71,7 +71,7 @@ until xwininfo -root -tree | grep -F 'Agent Gitu workspace' >/dev/null; do
   sleep 0.1
 done
 export DBUS_SESSION_BUS_ADDRESS="$(cat /tmp/gitu-session-bus)"
-x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -repeat -input_skip 1 -input_eagerly -wait 10 -defer 0 -setdefer -2 -nonap -sb 0 -nowait_bog > /tmp/gitu-desktop-stream.log 2>&1 &
+x11vnc -display "$DISPLAY" -localhost -rfbport 5900 -forever -shared -nopw -repeat -noxdamage -input_skip 1 -input_eagerly -wait 10 -defer 0 -setdefer -2 -nonap -sb 0 -nowait_bog > /tmp/gitu-desktop-stream.log 2>&1 &
 vnc_pid=$!
 attempt=0
 until node -e "const s=require('node:net').connect(5900,'127.0.0.1');s.on('connect',()=>{s.destroy();process.exit(0)});s.on('error',()=>process.exit(1));s.setTimeout(1000,()=>process.exit(1));"; do

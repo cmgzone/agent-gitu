@@ -6,6 +6,11 @@ if [[ ! "${AGENT_GITU_PUBLIC_ORIGIN:-}" =~ ^https://[^/]+$ ]]; then
 fi
 mkdir -p "$AGENT_GITU_HOME/Workspace"
 chown node:node "$AGENT_GITU_HOME" "$AGENT_GITU_HOME/Workspace"
+# Earlier root-run deployment checks created this state directory as root.
+# Repair only desktop control files, leaving all other persisted data intact.
+mkdir -p "$AGENT_GITU_HOME/Cowork/computer-control"
+chown node:node "$AGENT_GITU_HOME/Cowork" "$AGENT_GITU_HOME/Cowork/computer-control"
+find -P "$AGENT_GITU_HOME/Cowork/computer-control" -maxdepth 1 -type f -exec chown --no-dereference node:node {} +
 cd "$AGENT_GITU_HOME/Workspace"
 # Gitu binds only to loopback; the local proxy is its only remote entry point.
 # Run the agent as node so its shell tools never run as root.

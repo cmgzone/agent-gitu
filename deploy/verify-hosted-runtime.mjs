@@ -7,6 +7,7 @@ import { connectDesktopStream } from '../dist/cowork/desktop-stream.js';
 
 const home = process.env.AGENT_GITU_HOME;
 if (!home || !process.env.AGENT_GITU_COMPUTER_BROKER_URL) throw new Error('Hosted desktop runtime is not configured.');
+if (process.getuid?.() !== 1000) throw new Error('Run verification as the app runtime user, not root.');
 console.log('Verifying private desktop runtime connectivity.');
 await computerExec(['info', '--format', '{{.ServerVersion}}']);
 // A separate persistent test desktop avoids interrupting an active teammate.
@@ -23,8 +24,8 @@ if (!windows.output.toLowerCase().includes('xfce4-panel')) throw new Error('Full
 const tuning = await computer.execute('run_command', { command: 'x11vnc -Q wait,defer,input_skip,nap,sb; xfconf-query -c xfwm4 -p /general/use_compositing', timeoutMs: 10_000 });
 if (!tuning.ok || !tuning.output.includes('wait:10') || !tuning.output.includes('defer:0') || !tuning.output.includes('input_skip:1') || !tuning.output.includes('nap:0') || !tuning.output.trim().endsWith('false')) throw new Error('Responsive desktop input settings were not applied: ' + tuning.output);
 console.log('Responsive desktop input settings are working.');
-const appearance = await computer.execute('run_command', { command: 'xfconf-query -c xsettings -p /Net/IconThemeName; xfconf-query -c xsettings -p /Net/ThemeName; xfconf-query -c xfce4-desktop -lv', timeoutMs: 10_000 });
-if (!appearance.ok || !appearance.output.includes('Papirus-Dark') || !appearance.output.includes('Arc-Dark') || !appearance.output.includes('/computer/gitu-wallpaper.svg')) throw new Error('Desktop appearance settings were not applied.');
+const appearance = await computer.execute('run_command', { command: 'for i in 1 2 3 4 5 6 7 8 9 10; do xfconf-query -c xfce4-desktop -lv | grep -q /tmp/gitu-wallpaper.png && break; sleep 1; done; xfconf-query -c xsettings -p /Net/IconThemeName; xfconf-query -c xsettings -p /Net/ThemeName; xfconf-query -c xfce4-desktop -lv', timeoutMs: 15_000 });
+if (!appearance.ok || !appearance.output.includes('Papirus-Dark') || !appearance.output.includes('Arc-Dark') || !appearance.output.includes('/tmp/gitu-wallpaper.png')) throw new Error('Desktop appearance settings were not applied.');
 const chrome = await computer.execute('run_command', { command: 'google-chrome-stable --version; node /computer/open-browser.cjs about:blank; for i in 1 2 3 4 5; do xwininfo -root -tree | grep -q "Google Chrome" && break; sleep 1; done; xwininfo -root -tree', timeoutMs: 15_000 });
 if (!chrome.ok || !chrome.output.includes('Google Chrome')) throw new Error('Regular Chrome did not start.');
 console.log('Wallpaper, icons and the separate regular Chrome browser are working.');
@@ -45,7 +46,7 @@ if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') throw new Error('
 console.log(JSON.stringify({ desktop: 'working', width: png.readUInt32BE(16), height: png.readUInt32BE(20), bytes: png.length, unprivileged: true }));
 // Negotiate the real stream and send keyboard events over that same channel.
 const liveStream = connectDesktopStream(computer.name);
-let streamBuffer = Buffer.alloc(0), streamError, readWaiter;
+let streamBuffer = Buffer.alloc(0), streamError, readWaiter, updateTimer;
 const streamTimer = setTimeout(() => liveStream.destroy(new Error('Private desktop stream timed out.')), 20_000);
 liveStream.on('data', (chunk) => { streamBuffer = Buffer.concat([streamBuffer, chunk]); readWaiter?.(); });
 liveStream.on('error', (error) => { streamError = error; readWaiter?.(); });
@@ -72,16 +73,40 @@ try {
   const nameLength = init.readUInt32BE(20);
   if (nameLength > 4096) throw new Error('Invalid live desktop name.');
   await streamRead(nameLength);
+  const frameRequest = (incremental) => {
+    const packet = Buffer.alloc(10); packet[0] = 3; packet[1] = incremental ? 1 : 0;
+    packet.writeUInt16BE(1280, 6); packet.writeUInt16BE(800, 8); liveStream.write(packet);
+  };
+  async function readFrame() {
+    let type;
+    do { type = (await streamRead(1))[0]; } while (type === 2); // Bell
+    if (type !== 0) throw new Error('Unexpected desktop update message: ' + type);
+    const rectangles = (await streamRead(3)).readUInt16BE(1);
+    let pixels = 0;
+    for (let i = 0; i < rectangles; i++) {
+      const rectangle = await streamRead(12);
+      if (rectangle.readInt32BE(8) !== 0) throw new Error('Unexpected raw desktop encoding.');
+      const area = rectangle.readUInt16BE(4) * rectangle.readUInt16BE(6);
+      await streamRead(area * (init[4] / 8)); pixels += area;
+    }
+    return pixels;
+  }
+  frameRequest(false);
+  if (!(await readFrame())) throw new Error('Initial desktop frame is empty.');
+  updateTimer = setInterval(() => frameRequest(true), 40);
   const events = [];
   for (const keysym of [...'printf gitu-live-stream-input-check > /workspace/.gitu-stream-smoke.txt'].map((c) => c.codePointAt(0)).concat([0xff0d])) {
     for (const down of [1, 0]) { const event = Buffer.alloc(8); event[0] = 4; event[1] = down; event.writeUInt32BE(keysym, 4); events.push(event); }
   }
   await computer.execute('run_command', { command: 'xdotool search --name "Agent Gitu workspace" windowactivate --sync', timeoutMs: 10_000 });
   liveStream.write(Buffer.concat(events));
+  let updatedPixels = 0;
+  while (!updatedPixels) updatedPixels = await readFrame();
+  console.log('Desktop redraws continue during live keyboard input.');
   const streamedInput = await computer.execute('run_command', { command: 'for i in 1 2 3 4 5; do test -f /workspace/.gitu-stream-smoke.txt && break; sleep 0.2; done; cat /workspace/.gitu-stream-smoke.txt', timeoutMs: 10_000 });
   if (!streamedInput.ok || streamedInput.output !== 'gitu-live-stream-input-check') throw new Error('Live keyboard input did not reach the shared desktop.');
 } finally {
-  clearTimeout(streamTimer); liveStream.destroy();
+  clearTimeout(streamTimer); clearInterval(updateTimer); liveStream.destroy();
 }
 console.log('Authenticated live desktop streaming is working.');
 const browser = await computer.execute('browse', { action: 'state' });

@@ -365,9 +365,10 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   start Docker Desktop with Linux containers enabled. Use **Start** in the
   agent's computer card, or let its first computer tool start it. The first
   start builds `assets/cowork-computer/Dockerfile` and downloads Chromium;
-  allow several minutes. **Open desktop** shows that teammate's Linux desktop
-  and visible Chromium window, refreshing every two seconds. The viewer is
-  view-only, with Start/Stop controls. Teammates on My computer can explicitly
+  allow several minutes. **Open desktop** connects to that teammate's shared
+  XFCE desktop through a live stream. Click, type, drag windows, and scroll;
+  the teammate operates the same browser, terminal, and files. Browser, Files,
+  Terminal, and Start/Stop controls remain available. Teammates on My computer can explicitly
   switch using **Use private desktop** while idle. This uses Docker containers,
   not a separate hypervisor VM. Upgrading an older private computer preserves
   its workspace/home volumes and retains the old container as a backup.

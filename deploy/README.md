@@ -57,7 +57,11 @@ code or socket mount. Worker volumes persist when a desktop or the app stops.
 
 Private workers include XFCE, a file manager, terminal, text editor, and the
 agent's persistent Chromium profile. Both the owner and agent can operate the
-same desktop. The authenticated app relays bounded keyboard and mouse events;
-no VNC port or desktop control service is published. Click the desktop preview
+same desktop. The authenticated app streams screen updates and keyboard/mouse
+input using noVNC over a same-origin WebSocket. Nginx must forward the Upgrade
+header as in the bundled configuration. The broker verifies workspace ownership
+and relays only to loopback port 5900 inside that unprivileged worker. No VNC
+port or desktop control service is published. Locking the app closes the stream.
+Click the desktop
 to focus keyboard input; use Browser, Files, or Terminal to open apps. Agent GUI
 input requires its shell permission, since a desktop can open a terminal.

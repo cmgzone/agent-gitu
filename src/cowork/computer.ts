@@ -387,7 +387,7 @@ export class CoworkComputer {
       if (tool === 'computer_status') return { ok: true, output: JSON.stringify(this.status()) };
       if (this.state === 'stopped' && this.control === 'user') await this.refreshStatus();
       if (this.state === 'sleeping') return { ok: false, output: 'The user put this desktop to sleep. Wait for them to wake it; do not switch computers.' };
-      if (this.control === 'user' && ['desktop_input', 'browse', 'run_command', 'computer_process'].includes(tool)) return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
+      if (this.control === 'user' && ['desktop_input', 'browse', 'run_command', 'computer_process', 'write_file', 'apply_edit', 'receive_file'].includes(tool)) return { ok: false, output: 'The user has control of this desktop. Wait for the handoff response or ask_user; do not interact with their apps or fall back to another computer.' };
       // A recent provisioning failure is retried only after the cooldown, so
       // callers can fall back to the user's computer without 15s Docker probes
       // on every tool call.

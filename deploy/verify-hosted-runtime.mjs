@@ -11,6 +11,8 @@ console.log('Verifying private desktop runtime connectivity.');
 await computerExec(['info', '--format', '{{.ServerVersion}}']);
 // A separate persistent test desktop avoids interrupting an active teammate.
 const computer = new CoworkComputer('deployment-runtime-check', path.join(home, 'Cowork'));
+// Reset only this dedicated fixture after an interrupted verification run.
+computer.setControl('shared');
 console.log('Preparing the private desktop image; the first build can take several minutes.');
 await computer.start();
 const command = await computer.execute('run_command', { command: 'id -u', timeoutMs: 10_000 });

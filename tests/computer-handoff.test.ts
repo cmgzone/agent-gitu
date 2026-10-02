@@ -20,7 +20,7 @@ it('persists human control, blocks agent input, and wakes without restarting ope
     const computer = new CoworkComputer('shared', root, exec);
     await computer.start();
     computer.setControl('user', 'Please sign in manually', 'human-step');
-    for (const tool of ['browse', 'desktop_input', 'run_command', 'computer_process']) {
+    for (const tool of ['browse', 'desktop_input', 'run_command', 'computer_process', 'write_file', 'apply_edit', 'receive_file']) {
       const before = exec.mock.calls.length;
       expect((await computer.execute(tool, {})).output).toContain('user has control');
       expect(exec.mock.calls.length).toBe(before);

@@ -26,7 +26,7 @@ function viewer() {
   let sequence = 0;
   const script = desktopView('shared-agent').match(/<script type="module">([\s\S]*?)<\/script>/)![1]!.replace(/^import RFB from .*;$/m, '');
   runInNewContext(script, {
-    RFB: Client, WebSocket: Channel, Uint8Array, DataView, document,
+    RFB: Client, WebSocket: Channel, Uint8Array, DataView, URLSearchParams, document,
     location: { protocol: 'https:', host: 'gitu.example', origin: 'https://gitu.example' },
     parent: { postMessage: vi.fn() },
     addEventListener: (event: string, callback: () => void) => { pageEvents[event] = callback; },

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Script } from 'node:vm';
@@ -388,7 +388,7 @@ describe('cowork streaming and tool execution', () => {
   });
   it('posts a desktop handoff card and stops before executing further agent actions', async () => {
     const client = { complete: vi.fn(async () => '<tool>{"name":"computer_handoff","params":{"reason":"Please sign in manually"}}</tool><tool>{"name":"run_command","params":{"command":"echo must-not-run"}}</tool>') };
-    const computer = new CoworkComputer('handoff-runtime', root, vi.fn<ComputerExec>());
+    const computer = new CoworkComputer('handoff-runtime', root, vi.fn<ComputerExec>().mockResolvedValue(''));
     const input = setup('handoff-runtime', client, { computerFor: () => computer });
     input.agent.useHostComputer = false;
     input.store.saveAgent(input.agent);
@@ -399,8 +399,27 @@ describe('cowork streaming and tool execution', () => {
     expect(result.messages.at(-1)!.text).toContain('waiting');
     const requests = input.store.requests(input.conversation.id);
     expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({ kind: 'question', status: 'open', title: 'Your turn on the desktop' });
+    expect(requests[0]).toMatchObject({ kind: 'question', desktopHandoff: true, status: 'open', title: 'Your turn on the desktop' });
     expect(computer.status()).toMatchObject({ control: 'user', handoff: { requestId: requests[0]!.id } });
+  });
+
+  it('attaches private desktop media to an agent reply as a downloadable chat artifact', async () => {
+    const bytes = Buffer.from([0, 255, 73, 128, 4]);
+    const exec: ComputerExec = async (args) => args[0] === 'exec' ? JSON.stringify({ ok: true, output: bytes.toString('base64') }) : '{}';
+    const computer = new CoworkComputer('media-runtime', root, exec);
+    const client = { complete: vi.fn()
+      .mockResolvedValueOnce('<tool>{"name":"share_file","params":{"path":"/home/agent/Downloads/clip.mp4"}}</tool>')
+      .mockResolvedValueOnce('Here is your video.') };
+    const input = setup('media-runtime', client, { computerFor: () => computer });
+    input.agent.useHostComputer = false; input.agent.allowWrites = true;
+    input.store.saveAgent(input.agent);
+    input.deps.store = input.store;
+    input.deps.memory = new CoworkMemory(MemoryStore.forProject(path.join(root, 'media-memory')), 'media');
+    const result = await runConversationTurn(input);
+    const ids = result.messages.at(-1)!.artifactIds;
+    expect(ids).toHaveLength(1);
+    expect(input.store.getArtifact(ids![0]!)).toMatchObject({ name: 'clip.mp4', mime: 'video/mp4', agentId: input.agent.id, size: bytes.length });
+    expect(readFileSync(input.store.artifactPath(ids![0]!)!).equals(bytes)).toBe(true);
   });
 
   it('never executes calls after cancellation, even if the model ignores the signal', async () => {

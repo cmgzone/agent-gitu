@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { bridgeDesktop, localDesktopStream } from './desktop-stream.js';
-import { COWORK_COMPUTER_IMAGE as IMAGE, computerCreateArgs, dockerExec, type ComputerExec } from './computer.js';
+import { COWORK_COMPUTER_IMAGE as IMAGE, MAX_COMPUTER_MESSAGE_BYTES, computerCreateArgs, dockerExec, type ComputerExec } from './computer.js';
 
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 const namePattern = /^gitu-cowork-[a-f0-9]{24}(?:-backup-\d{10,16})?$/;
@@ -26,7 +26,7 @@ export class ComputerBroker {
   async execute(args: unknown, input?: unknown, timeoutMs: unknown = 120_000, signal?: AbortSignal): Promise<string> {
     if (!Array.isArray(args) || args.length > 60 || args.some((a) => typeof a !== 'string' || a.length > 20_000)) throw new Error('Invalid desktop operation.');
     const argv = args as string[];
-    if (input !== undefined && (typeof input !== 'string' || input.length > 8_000_000)) throw new Error('Invalid desktop input.');
+    if (input !== undefined && (typeof input !== 'string' || input.length > MAX_COMPUTER_MESSAGE_BYTES)) throw new Error('Invalid desktop input.');
     if (typeof timeoutMs !== 'number' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || (argv[0] !== 'exec' && (timeoutMs > 900_000 || timeoutMs === 0)))
       throw new Error('Invalid desktop deadline.');
     if (same(argv, ['info', '--format', '{{.ServerVersion}}']) || same(argv, ['image', 'inspect', IMAGE])) {
@@ -121,7 +121,7 @@ export function createComputerBrokerServer(key: string, owner: string, exec: Com
       const chunks: Buffer[] = [];
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 10_000_000) throw new Error('Desktop request too large.');
+        if (size > MAX_COMPUTER_MESSAGE_BYTES) throw new Error('Desktop request too large.');
         chunks.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>;

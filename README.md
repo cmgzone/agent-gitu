@@ -373,7 +373,10 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   are separate; signing in manually does not sign the automated browser in.
   **Take control** pauses agent keyboard, browser, shell and file changes, and
   **Return to agent** releases them. Agents can request this human step with
-  `computer_handoff`, which posts a question card and waits for completion.
+  `computer_handoff`, which opens that teammate's desktop in the active chat,
+  posts a question card, and waits for completion. Closing the viewer leaves the
+  agent paused; the card's **Open computer** button reopens it. Taking control
+  keeps the live viewer connected and does not wait behind status polls.
   **Sleep** freezes the desktop and preserves open apps; **Wake desktop**
   resumes them. **Lock** locks the whole app with your account password and
   retains human control. Fullscreen, Files, Terminal and Start/Stop are available.
@@ -389,6 +392,12 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   permission switches still apply. Existing Workspace files remain in place.
 - **Tools and skills** — agents read/search and edit their own computer files.
   Use `share_file` and `receive_file` to pass artifacts within a conversation.
+  Private computers can attach files up to 20 MB from `/workspace` or their
+  standard Downloads, Desktop, Documents, Pictures, Music and Videos folders
+  below `/home/agent`. Files appear in chat with preview and download controls.
+  Browser profiles and other private home files are excluded from file exports.
+  Private desktops use the VPS's outbound Internet connection for web browsing;
+  no desktop ports need to be published for Internet access.
   Shell and writes are enabled per profile. Skills, memory and connections
   remain app services; MCP runs as a trusted host extension, with separate
   per-agent manager/configuration, and calling it requires shell, write and

@@ -5,7 +5,8 @@ import { desktopView } from '../src/server/desktop-view.js';
 function viewer() {
   const intervals = new Map<number, () => void>();
   const retries = new Map<number, () => void>();
-  const pageEvents: Record<string, () => void> = {};
+  const pageEvents: Record<string, (event?: unknown) => void> = {};
+  const parent = { postMessage: vi.fn() };
   const canvas = { width: 1280, height: 800 };
   const document = { hidden: false, getElementById: (id: string) => id === 'screen' ? { querySelector: () => canvas } : { hidden: false, textContent: '' } };
   const sockets: Channel[] = [], connections: Client[] = [];
@@ -19,6 +20,7 @@ function viewer() {
   class Client {
     events: Record<string, () => void> = {};
     focus = vi.fn();
+    sendKey = vi.fn();
     disconnect = vi.fn(() => this.events.disconnect?.());
     constructor(_screen: unknown, readonly channel: Channel) { connections.push(this); }
     addEventListener(event: string, callback: () => void) { this.events[event] = callback; }
@@ -28,17 +30,31 @@ function viewer() {
   runInNewContext(script, {
     RFB: Client, WebSocket: Channel, Uint8Array, DataView, URLSearchParams, document,
     location: { protocol: 'https:', host: 'gitu.example', origin: 'https://gitu.example' },
-    parent: { postMessage: vi.fn() },
-    addEventListener: (event: string, callback: () => void) => { pageEvents[event] = callback; },
+    parent,
+    addEventListener: (event: string, callback: (event?: unknown) => void) => { pageEvents[event] = callback; },
     setInterval: (callback: () => void) => { const id = ++sequence; intervals.set(id, callback); return id; },
     clearInterval: (id: number) => intervals.delete(id),
     setTimeout: (callback: () => void) => { const id = ++sequence; retries.set(id, callback); return id; },
     clearTimeout: (id: number) => retries.delete(id),
   });
-  return { intervals, retries, document, sockets, connections, canvas, pageEvents };
+  return { intervals, retries, document, sockets, connections, canvas, pageEvents, parent };
 }
 
 describe('live desktop update pipeline', () => {
+  it('focuses the existing viewer and releases modifiers only for its same-origin parent', () => {
+    const v = viewer(); v.connections[0]!.events.connect!();
+    const client = v.connections[0]!;
+    client.focus.mockClear();
+    const data = { type: 'gitu-desktop-control', action: 'focus' };
+    v.pageEvents.message!({ origin: 'https://evil.example', source: v.parent, data });
+    v.pageEvents.message!({ origin: 'https://gitu.example', source: {}, data });
+    expect(client.sendKey).not.toHaveBeenCalled(); expect(client.focus).not.toHaveBeenCalled();
+    v.pageEvents.message!({ origin: 'https://gitu.example', source: v.parent, data });
+    expect(client.focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(client.sendKey).toHaveBeenCalledWith(0xffe3, 'ControlLeft', false);
+    expect(client.sendKey).toHaveBeenCalledTimes(8);
+    expect(v.sockets).toHaveLength(1); expect(client.disconnect).not.toHaveBeenCalled();
+  });
   it('waits for authentication and RFB negotiation, then sends only incremental requests for the negotiated canvas', () => {
     const v = viewer();
     expect(v.intervals.size).toBe(0);

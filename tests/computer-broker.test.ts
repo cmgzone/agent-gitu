@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerBroker, createComputerBrokerServer } from '../src/cowork/computer-broker.js';
-import { computerCreateArgs, computerExec, type ComputerExec } from '../src/cowork/computer.js';
+import { MAX_COMPUTER_MESSAGE_BYTES, computerCreateArgs, computerExec, type ComputerExec } from '../src/cowork/computer.js';
 
 const owner = 'test-workspace-owner';
 const name = 'gitu-cowork-' + 'a'.repeat(24);
@@ -9,6 +9,26 @@ const fixture = () => {
   return { exec, broker: new ComputerBroker(owner, exec) };
 };
 describe('private desktop broker', () => {
+  it('carries a full 20 MB attachment through the authenticated hosted transport in both directions', async () => {
+    const key = 'disposable-media-broker-key-for-tests';
+    const media = Buffer.alloc(20_000_000, 73).toString('base64');
+    const payload = JSON.stringify({ tool: 'import_file', params: { path: 'clip.mp4', data: media } });
+    const exec: ComputerExec = async (args, input) => args[0] === 'container' ? owner : input!;
+    const server = createComputerBrokerServer(key, owner, exec);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    vi.stubEnv('AGENT_GITU_COMPUTER_BROKER_URL', `http://127.0.0.1:${(server.address() as { port: number }).port}`);
+    vi.stubEnv('AGENT_GITU_COMPUTER_BROKER_KEY', key);
+    try {
+      const args = ['exec', '-i', name, 'node', '-e', 'process.stdin.pipe(process.stdout)'];
+      const returned = await computerExec(args, payload);
+      expect(Buffer.from(JSON.parse(returned).params.data, 'base64').length).toBe(20_000_000);
+      expect(returned === payload).toBe(true);
+      await expect(new ComputerBroker(owner, exec).execute(args, 'x'.repeat(MAX_COMPUTER_MESSAGE_BYTES + 1))).rejects.toThrow('input');
+    } finally {
+      vi.unstubAllEnvs(); server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 15_000);
   it('creates only bounded unprivileged desktops with workspace ownership labels', async () => {
     const f = fixture();
     await f.broker.execute(computerCreateArgs(name));

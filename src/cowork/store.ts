@@ -404,6 +404,8 @@ export interface CoworkRequest {
   permission?: 'shell' | 'writes' | 'config' | 'host';
   /** Credential requests carry connection metadata only — never the secret. */
   credential?: CoworkRequestCredential;
+  /** A desktop handoff opens the requesting teammate's computer in the UI. */
+  desktopHandoff?: boolean;
   status: 'open' | 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed' | 'provided';
   response?: string;
   telegramNotifiedAt?: string;
@@ -1589,7 +1591,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1609,6 +1611,7 @@ export class CoworkStore {
       options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))].slice(0, 6),
       permission: input.permission,
       credential,
+      desktopHandoff: input.kind === 'question' && input.desktopHandoff === true ? true : undefined,
       status: 'open',
       createdAt: new Date().toISOString(),
     };
@@ -1711,6 +1714,8 @@ function artifactMime(name: string, supplied?: string): string {
   const known: Record<string, string> = {
     '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8', '.json': 'application/json; charset=utf-8', '.csv': 'text/csv; charset=utf-8',
     '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.ogv': 'video/ogg',
+    '.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg', '.opus': 'audio/ogg', '.flac': 'audio/flac',
     '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

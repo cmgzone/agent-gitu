@@ -55,7 +55,77 @@ function ui() {
   return { context, cw: context.S.cw, input, elements, mentions, composerFolders, folderRemove, streams, api, gateway, modals, renderProgress, renderRail };
 }
 
+function desktopUi() {
+  const u = ui();
+  const timers: { fn: () => void; delay: number }[] = [];
+  const controls: Record<string, any> = {};
+  const screen: any = { hidden: true, src: '', contentWindow: { postMessage: vi.fn() }, focus: vi.fn(),
+    getAttribute: () => screen.src, removeAttribute: vi.fn(() => { screen.src = ''; }) };
+  const modal = { setAttribute: vi.fn(), remove: vi.fn(), querySelector: (selector: string) => selector === '[data-desktop]' ? screen : (controls[selector] ??= { focus: vi.fn() }) };
+  u.context.AbortController = AbortController;
+  u.context.setTimeout = (fn: () => void, delay: number) => { timers.push({ fn, delay }); return timers.length; };
+  u.context.clearTimeout = vi.fn();
+  u.context.document.createElement = vi.fn(() => modal);
+  u.context.document.addEventListener = vi.fn(); u.context.document.removeEventListener = vi.fn();
+  u.context.window.removeEventListener = vi.fn(); u.context.window.location = { origin: 'https://gitu.example' };
+  return { ...u, timers, controls, screen, modal };
+}
+
 describe('Cowork UI live updates', () => {
+  it('takes control without waiting for a pending status poll and ignores its late stale response', async () => {
+    const u = desktopUi();
+    let finishPoll!: (value: unknown) => void;
+    u.api.mockResolvedValueOnce({ computer: { state: 'running', control: 'shared' } });
+    u.context.cwOpenDesktop('chief');
+    await vi.waitFor(() => expect(u.screen.hidden).toBe(false));
+    u.api.mockImplementation((_url: string, options?: { body?: string }) => options?.body
+      ? Promise.resolve({ computer: { state: 'running', control: 'user' } })
+      : new Promise((resolve) => { finishPoll = resolve; }));
+    u.timers.at(-1)!.fn();
+    const original = u.screen.src;
+    await u.controls['[data-control]'].onclick();
+    expect(u.api).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(u.api.mock.calls[2]![1].body).action).toBe('take-control');
+    expect(u.controls['[data-control]'].textContent).toBe('Return to agent');
+    expect(u.screen.focus).toHaveBeenCalled();
+    expect(u.screen.contentWindow.postMessage).toHaveBeenCalledWith({ type: 'gitu-desktop-control', action: 'focus' }, 'https://gitu.example');
+    finishPoll({ computer: { state: 'running', control: 'shared' } });
+    await vi.waitFor(() => expect(u.timers).toHaveLength(2));
+    expect(u.controls['[data-control]'].textContent).toBe('Return to agent');
+    expect(u.screen.src).toBe(original); expect(u.screen.removeAttribute).not.toHaveBeenCalled();
+    u.context.cwOpenDesktop('chief');
+    expect(u.context.document.createElement).toHaveBeenCalledOnce();
+    expect(u.api).toHaveBeenCalledTimes(3);
+  });
+
+  it('opens a desktop once for a handoff and lets the user close it without reopening or resuming the agent', async () => {
+    const u = desktopUi();
+    u.api.mockResolvedValue({ computer: { state: 'running', control: 'user' } });
+    const request = { id: 'human-step', conversationId: 'group', agentId: 'chief', desktopHandoff: true, status: 'open' };
+    u.context.cwApplySnapshot({ requests: [request] });
+    await vi.waitFor(() => expect(u.screen.hidden).toBe(false));
+    expect(u.cw.desktopSession.agentId).toBe('chief');
+    expect(u.context.cwRequestHtml(request)).toContain('data-cwhandoff="chief"');
+    u.context.cwApplySnapshot({ requests: [request] });
+    expect(u.context.document.createElement).toHaveBeenCalledOnce();
+    u.cw.closeDesktop();
+    u.context.cwApplySnapshot({ requests: [request] });
+    expect(u.context.document.createElement).toHaveBeenCalledOnce();
+    expect(u.api).toHaveBeenCalledOnce();
+  });
+
+  it('only opens active-chat handoffs and never replaces a desktop the user already has open', () => {
+    const u = ui();
+    const open = u.context.cwOpenDesktop = vi.fn();
+    const request = { id: 'human-step', conversationId: 'other', agentId: 'chief', desktopHandoff: true, status: 'open' };
+    u.context.cwApplySnapshot({ requests: [request] });
+    u.context.cwApplySnapshot({ requests: [{ ...request, conversationId: 'group', status: 'answered' }] });
+    expect(open).not.toHaveBeenCalled();
+    u.cw.desktopSession = { agentId: 'another-agent' };
+    u.context.cwApplySnapshot({ requests: [{ ...request, conversationId: 'group' }] });
+    expect(open).not.toHaveBeenCalled();
+    expect(u.context.cwRequestHtml({ ...request, conversationId: 'group' })).toContain('Open computer');
+  });
   it('keeps a live frame connected across status polls and disconnects it on stop or close', async () => {
     const u = ui();
     const timers: { fn: () => void; delay: number }[] = [];

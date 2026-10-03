@@ -1477,6 +1477,7 @@ export const COWORK_JS = String.raw`
     else if (request.kind === 'recommendation') controls = '<button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="accept">Accept</button><button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="dismiss">Dismiss</button>';
     else if (request.kind === 'credential') controls = cwCredentialFormHtml(request);
     else controls = (request.options || []).map(function (option) { return '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="answer" data-response="' + esc(option) + '">' + esc(option) + '</button>'; }).join('') + '<input data-cwanswer="' + esc(request.id) + '" aria-label="Answer: ' + esc(request.title) + '" placeholder="Type your answer"><button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="answer">Send</button>';
+    if (request.desktopHandoff && request.status === 'open') controls = '<button class="btn dark" data-cwhandoff="' + esc(request.agentId) + '">Open computer</button>' + controls;
     if (cw.requestPending && cw.requestPending[request.id]) controls = controls.replace(/<(button|input)\b/g, '<$1 disabled');
     return '<div class="cw-row cw-request-row" data-cwrequest-row="' + esc(request.id) + '">' + cwAva(agent) + '<div class="cw-bubble">' +
       '<div class="cw-meta"><span class="nm">' + esc(agent ? agent.name : 'Teammate') + '</span><span class="tg">' + cwTime(request.createdAt) + '</span></div>' +
@@ -1504,6 +1505,9 @@ export const COWORK_JS = String.raw`
 
   function cwBindRequests(el) {
     var cw = cwEnsure();
+    el.querySelectorAll('[data-cwhandoff]').forEach(function (button) {
+      button.onclick = function () { cwOpenDesktop(button.getAttribute('data-cwhandoff')); };
+    });
     el.querySelectorAll('[data-cwrequest]').forEach(function (button) {
       button.onclick = function () {
         var id = button.getAttribute('data-cwrequest');
@@ -2666,6 +2670,7 @@ export const COWORK_JS = String.raw`
   function cwOpenDesktop(agentId) {
     var cw = cwEnsure(), agent = cwAgentById(agentId);
     if (!agent) return;
+    if (cw.desktopSession && cw.desktopSession.agentId === agentId) { cw.desktopSession.focus(); return; }
     if (cw.closeDesktop) cw.closeDesktop();
     var modal = document.createElement('div');
     modal.className = 'modal cw-desktop-dialog';
@@ -2678,7 +2683,7 @@ export const COWORK_JS = String.raw`
     document.body.appendChild(modal);
     var screen = modal.querySelector('[data-desktop]'), placeholder = modal.querySelector('[data-placeholder]');
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
-    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, userControl = false, streamState = 'Connecting to live desktop…';
+    var controller = new AbortController(), timer = null, closed = false, pending = false, queuedAction = null, host = agent.useHostComputer, userControl = false, controlPending = false, controlRevision = 0, lastComputer = null, streamState = 'Connecting to live desktop…';
     var endpoint = '/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer';
     function disconnect() {
       screen.hidden = true; screen.removeAttribute('src'); streamState = 'Connecting to live desktop…';
@@ -2689,25 +2694,55 @@ export const COWORK_JS = String.raw`
       document.removeEventListener('keydown', keydown);
       window.removeEventListener('message', desktopMessage);
       if (cw.closeDesktop === close) cw.closeDesktop = null;
+      if (cw.desktopSession?.agentId === agentId) cw.desktopSession = null;
     }
     function keydown(e) { if (e.key === 'Escape' && document.activeElement !== screen) { e.preventDefault(); close(); } }
     function desktopMessage(e) {
       if (closed || screen.hidden || e.origin !== window.location.origin || e.source !== screen.contentWindow || !e.data || e.data.type !== 'gitu-desktop') return;
       if (['Live · Shared desktop', 'Reconnecting…', 'Desktop access was rejected.'].indexOf(e.data.state) < 0) return;
       streamState = e.data.state; status.textContent = streamState;
+      if (userControl && streamState === 'Live · Shared desktop') focusDesktop();
+    }
+    function focusDesktop() {
+      if (closed || screen.hidden) return;
+      screen.focus();
+      screen.contentWindow?.postMessage({ type: 'gitu-desktop-control', action: 'focus' }, window.location.origin);
+    }
+    // Ownership must not wait for a Docker status poll or reconnect the viewer.
+    async function changeControl(action) {
+      if (closed || host || controlPending) return false;
+      controlPending = true; controlRevision++;
+      modal.querySelector('[data-control]').disabled = true;
+      status.textContent = action === 'take-control' ? 'Giving you control…' : 'Returning control to the agent…';
+      try {
+        var d = await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) });
+        if (closed) return false;
+        cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== agentId; }).concat([d.computer]);
+        update(d.computer);
+        if (action === 'take-control') focusDesktop();
+        return true;
+      } catch (e) {
+        if (!closed) status.textContent = e.message || 'Could not change desktop control';
+        return false;
+      } finally {
+        controlPending = false;
+        if (!closed) modal.querySelector('[data-control]').disabled = host || lastComputer?.state !== 'running';
+      }
     }
     async function launch(app) {
       if (closed || screen.hidden || host) return;
       try {
-        if (app === 'browser') await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'take-control' }) });
+        if (app === 'browser' && !userControl && !await changeControl('take-control')) return;
         await api(endpoint, { method: 'POST', signal: controller.signal, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'input', input: { action: 'launch', app: app } }) });
-        if (!closed) screen.focus();
+        focusDesktop();
       } catch (e) { if (!closed) status.textContent = e.message || 'Could not open application'; }
     }
     function update(computer) {
+      lastComputer = computer;
       host = Boolean(computer.useHostComputer);
       ['browser', 'agent_browser', 'files', 'terminal', 'control', 'sleep'].forEach(function (app) { modal.querySelector('[data-' + app + ']').disabled = host || computer.state !== 'running'; });
       userControl = computer.control === 'user';
+      modal.querySelector('[data-control]').disabled = controlPending || host || computer.state !== 'running';
       modal.querySelector('[data-control]').textContent = userControl ? 'Return to agent' : 'Take control';
       modal.querySelector('[data-handoff]').hidden = !userControl;
       modal.querySelector('[data-handoff-reason]').textContent = computer.handoff?.reason || 'The agent is waiting while you use the computer. Return control when finished.';
@@ -2728,25 +2763,28 @@ export const COWORK_JS = String.raw`
       if (document.hidden && !action) { clearTimeout(timer); timer = setTimeout(function () { refresh(); }, 3000); return; }
       if (pending) { if (action) queuedAction = action; return; }
       pending = true; clearTimeout(timer);
+      var revision = controlRevision;
       try {
         var d = await api(endpoint, { signal: controller.signal, ...(action ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: action }) } : {}) });
         if (closed) return;
+        if (!action && (revision !== controlRevision || controlPending)) return;
         if (d.agent) { cw.agents = cw.agents.map(function (a) { return a.id === agentId ? d.agent : a; }); cwRenderRail(); cwRenderInfo(); }
         cw.computers = (cw.computers || []).filter(function (c) { return c.agentId !== agentId; }).concat([d.computer]);
         update(d.computer);
       } catch (e) {
-        if (!closed) { status.textContent = e.message || 'Desktop connection unavailable'; start.disabled = false; if (screen.hidden) { placeholder.hidden = false; placeholder.textContent = status.textContent; } }
+        if (!closed && (action || (revision === controlRevision && !controlPending))) { status.textContent = e.message || 'Desktop connection unavailable'; start.disabled = false; if (screen.hidden) { placeholder.hidden = false; placeholder.textContent = status.textContent; } }
       } finally {
         pending = false;
         if (!closed) { var nextAction = queuedAction; queuedAction = null; timer = setTimeout(function () { refresh(nextAction); }, nextAction ? 0 : 3000); }
       }
     }
     cw.closeDesktop = close;
+    cw.desktopSession = { agentId: agentId, focus: focusDesktop };
     modal.querySelector('[data-close]').onclick = close;
     start.onclick = function () { refresh(host ? 'use-private' : 'start'); };
     stop.onclick = function () { disconnect(); refresh('stop'); };
     ['browser', 'agent_browser', 'files', 'terminal'].forEach(function (app) { modal.querySelector('[data-' + app + ']').onclick = function () { launch(app); }; });
-    modal.querySelector('[data-control]').onclick = function () { refresh(userControl ? 'return-control' : 'take-control'); };
+    modal.querySelector('[data-control]').onclick = function () { return changeControl(userControl ? 'return-control' : 'take-control'); };
     modal.querySelector('[data-sleep]').onclick = function () { disconnect(); refresh('sleep'); };
     modal.querySelector('[data-lock]').onclick = async function () {
       try { if (!host) await api(endpoint, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'take-control' }) }); }
@@ -2758,8 +2796,26 @@ export const COWORK_JS = String.raw`
     };
     document.addEventListener('keydown', keydown);
     window.addEventListener('message', desktopMessage);
+    var cached = (cw.computers || []).find(function (computer) { return computer.agentId === agentId; });
+    if (cached?.state === 'running' && !agent.useHostComputer) update(cached);
     refresh(); modal.querySelector('[data-close]').focus();
   }
+
+  function cwShowDesktopHandoffs() {
+    var cw = cwEnsure();
+    if (S.active !== 'cowork' || !cw.active || document.hidden) return;
+    var seen = cw.desktopHandoffsSeen || (cw.desktopHandoffsSeen = Object.create(null));
+    (cw.requests || []).forEach(function (request) {
+      if (!request.desktopHandoff || request.status !== 'open' || request.conversationId !== cw.active || seen[request.id]) return;
+      var agent = cwAgentById(request.agentId);
+      if (!agent || agent.useHostComputer) return;
+      seen[request.id] = true;
+      // Keep an already open computer usable; other handoffs retain their Open button.
+      if (!cw.desktopSession || cw.desktopSession.agentId === request.agentId) cwOpenDesktop(request.agentId);
+    });
+  }
+
+  if (typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', function () { if (!document.hidden) cwShowDesktopHandoffs(); });
 
 
   function cwStartStream(convId) {
@@ -2842,6 +2898,7 @@ export const COWORK_JS = String.raw`
     cwRenderTyping();
     if (missionsChanged || subAgentsChanged) { cwRenderMissionBadge(); cwRenderInfo(); }
     if (rosterChanged || foldersChanged || (wasBusy && !cw.busy)) cwRenderInfo();
+    cwShowDesktopHandoffs();
   }
 
   function cwPoll() {

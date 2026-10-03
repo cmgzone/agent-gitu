@@ -13,9 +13,11 @@ const cancelled = new Set();
 let browser;
 let browserQueue = Promise.resolve();
 let screenQueue = Promise.resolve();
+const shareRoots = ['/workspace', ...['Downloads', 'Desktop', 'Documents', 'Pictures', 'Music', 'Videos'].map((folder) => '/home/agent/' + folder)];
 
 async function configureDesktop() {
   if (!process.env.DISPLAY) return;
+  for (const folder of shareRoots.slice(1)) fs.mkdirSync(folder, { recursive: true, mode: 0o700 });
   const property = (channel, name, type, value) => execFileAsync('xfconf-query', ['-c', channel, '-p', name, '-s', value], { timeout: 5000 })
     .catch(() => execFileAsync('xfconf-query', ['-c', channel, '-p', name, '-n', '-t', type, '-s', value], { timeout: 5000 }));
   // Refresh these settings in cached desktops as well as newly built images.
@@ -112,13 +114,13 @@ async function desktopScreenshot(format = 'png') {
   return { ok: true, output: image.toString('base64') };
 }
 
-function safePath(value = '.') {
+function safePath(value = '.', roots = ['/workspace']) {
   const resolved = path.resolve('/workspace', String(value));
-  const within = (p) => p === '/workspace' || p.startsWith('/workspace/');
-  if (!within(resolved)) throw new Error('Path must stay inside /workspace.');
+  const within = (p) => roots.some((root) => p === root || p.startsWith(root + '/'));
+  if (!within(resolved)) throw new Error('Path must stay inside /workspace or an allowed desktop file folder.');
   let ancestor = resolved;
   while (!fs.existsSync(ancestor)) ancestor = path.dirname(ancestor);
-  if (!within(fs.realpathSync(ancestor))) throw new Error('Symlink leaves /workspace.');
+  if (!within(fs.realpathSync(ancestor))) throw new Error('Symlink leaves /workspace or the allowed desktop file folders.');
   return resolved;
 }
 function smallFile(file) {
@@ -259,7 +261,10 @@ async function browse(id, p) {
 }
 async function execute({ id, tool, params: p = {} }) {
   if (tool === 'desktop_screenshot' || tool === 'desktop_input') {
-    const next = screenQueue.then(() => tool === 'desktop_screenshot' ? desktopScreenshot(p.format) : desktopInput(p));
+    const next = screenQueue.then(() => {
+      if (cancelled.has(id)) throw new Error('Computer operation cancelled.');
+      return tool === 'desktop_screenshot' ? desktopScreenshot(p.format) : desktopInput(p);
+    });
     screenQueue = next.catch(() => {});
     return next;
   }
@@ -286,7 +291,7 @@ async function execute({ id, tool, params: p = {} }) {
       return {
         ok: true,
         output: fs
-          .readdirSync(file(), { withFileTypes: true })
+          .readdirSync(safePath(p.path, shareRoots), { withFileTypes: true })
           .slice(0, 400)
           .map((e) => e.name + (e.isDirectory() ? '/' : ''))
           .join('\n'),
@@ -295,13 +300,19 @@ async function execute({ id, tool, params: p = {} }) {
     case 'import_file': {
       const target = file();
       const content = tool === 'import_file' ? Buffer.from(p.data, 'base64') : String(p.content ?? '');
-      if (Buffer.byteLength(content) > 2_000_000) throw new Error('File exceeds 2 MB limit.');
+      const limit = tool === 'import_file' ? 20_000_000 : 2_000_000;
+      if (Buffer.byteLength(content) > limit) throw new Error('File exceeds ' + limit / 1_000_000 + ' MB limit.');
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.writeFileSync(target, content);
       return { ok: true, output: `Wrote ${p.path}` };
     }
-    case 'export_file':
-      return { ok: true, output: smallFile(file()).toString('base64') };
+    case 'export_file': {
+      const target = safePath(p.path, shareRoots);
+      const info = fs.statSync(target);
+      if (!info.isFile()) throw new Error('Only regular files can be attached to chat.');
+      if (info.size > 20_000_000) throw new Error('Chat attachments cannot exceed 20 MB.');
+      return { ok: true, output: fs.readFileSync(target).toString('base64') };
+    }
     case 'apply_edit': {
       const text = smallFile(file()).toString('utf8');
       if (typeof p.oldString !== 'string' || !p.oldString || typeof p.newString !== 'string') throw new Error('oldString and newString are required.');
@@ -334,7 +345,7 @@ http
     let body = '';
     req.on('data', (data) => {
       body += data;
-      if (body.length > 4_000_000) req.destroy();
+      if (body.length > 28_000_000) req.destroy();
     });
     req.on('end', async () => {
       res.setHeader('content-type', 'application/json');

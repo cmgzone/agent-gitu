@@ -40,6 +40,12 @@ if(diagnostic){
 }
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
 function stopFrames(){clearInterval(frames);frames=undefined;}
+addEventListener('message',event=>{
+  if(event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control'||event.data.action!=='focus'||closed)return;
+  // A modifier held by the previous controller must not affect the next user's typing.
+  for(const [keysym,code] of [[0xffe1,'ShiftLeft'],[0xffe2,'ShiftRight'],[0xffe3,'ControlLeft'],[0xffe4,'ControlRight'],[0xffe9,'AltLeft'],[0xffea,'AltRight'],[0xffeb,'MetaLeft'],[0xffec,'MetaRight']])rfb?.sendKey(keysym,code,false);
+  rfb?.focus({preventScroll:true});
+});
 function connect(){
   if(closed)return;
   const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+${endpoint});

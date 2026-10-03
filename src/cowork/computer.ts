@@ -9,6 +9,8 @@ import { commandTimeout, deadline } from '../tools/command-timeout.js';
 export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:7';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
+// A 20 MB binary attachment becomes about 27 MB when carried as base64 JSON.
+export const MAX_COMPUTER_MESSAGE_BYTES = 28_000_000;
 export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
 
 export interface CoworkSharedFile {
@@ -29,9 +31,9 @@ export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_00
     });
     child.stdout.on('data', (data: Buffer) => {
       output += data.toString();
-      if (output.length > 8_000_000) {
+      if (output.length > MAX_COMPUTER_MESSAGE_BYTES) {
         child.kill();
-        reject(new Error('Virtual computer output exceeded 8 MB.'));
+        reject(new Error('Virtual computer transfer exceeded its size limit.'));
       }
     });
     child.stderr.on('data', (data: Buffer) => {
@@ -69,7 +71,7 @@ export const computerExec: ComputerExec = async (args, input, signal, timeoutMs 
       redirect: 'error',
     });
     const text = await response.text();
-    if (text.length > 10_000_000) throw new Error('Virtual computer output exceeded 8 MB.');
+    if (text.length > MAX_COMPUTER_MESSAGE_BYTES) throw new Error('Virtual computer transfer exceeded its size limit.');
     const result = JSON.parse(text) as { output?: string; error?: string };
     if (!response.ok) throw new Error(result.error ?? `Private desktop runtime returned ${response.status}.`);
     return String(result.output ?? '');
@@ -402,11 +404,11 @@ export class CoworkComputer {
           const exported = await this.request('export_file', params, signal);
           if (!exported.ok) return exported;
           const artifactId = randomUUID();
-          const name = path.basename(String(params['path'] ?? 'file'));
+          const name = path.posix.basename(String(params['path'] ?? 'file'));
           mkdirSync(folder, { recursive: true });
           writeFileSync(path.join(folder, `${artifactId}.json`), JSON.stringify({ agentId: this.agentId, path: params['path'], data: exported.output }));
           onSharedFile?.({ artifactId, name, dataBase64: exported.output });
-          return { ok: true, output: `Shared ${String(params['path'])}. Artifact id: ${artifactId}. Teammates in this conversation can use receive_file with this id.` };
+          return { ok: true, output: `Attached ${name} to chat with Open/Download controls. Artifact id: ${artifactId}. Teammates in this conversation can use receive_file with this id.` };
         }
         const artifactId = String(params['artifactId'] ?? '');
         if (!/^[a-f0-9-]{36}$/.test(artifactId)) throw new Error('Invalid artifact id.');

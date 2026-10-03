@@ -16,7 +16,9 @@ afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 function service(name: string, processMock?: { spawn: (...args: any[]) => any; kill: (...args: any[]) => any }, desktop = false) {
   const workspace = path.join(root, name);
   fs.mkdirSync(workspace);
-  const translate = (p: string) => (p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : path.join(root, name + (p.startsWith('/tmp/gitu-desktop.') ? '-desktop' + path.extname(p) : '-key')));
+  const home = path.join(root, name + '-home');
+  fs.mkdirSync(home);
+  const translate = (p: string) => p.startsWith('/workspace') ? path.join(workspace, p.slice('/workspace'.length)) : p.startsWith('/home/agent') ? path.join(home, p.slice('/home/agent'.length)) : path.join(root, name + (p.startsWith('/tmp/gitu-desktop.') ? '-desktop' + path.extname(p) : '-key'));
   const files = {
     ...fs,
     existsSync: (p: string) => fs.existsSync(translate(p)),
@@ -28,7 +30,9 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     realpathSync: (p: string) => {
       const real = fs.realpathSync(translate(p));
       const relative = path.relative(workspace, real);
-      return !relative.startsWith('..') && !path.isAbsolute(relative) ? '/workspace' + (relative ? '/' + relative.replaceAll('\\', '/') : '') : real;
+      if (!relative.startsWith('..') && !path.isAbsolute(relative)) return '/workspace' + (relative ? '/' + relative.replaceAll('\\', '/') : '');
+      const homeRelative = path.relative(home, real);
+      return !homeRelative.startsWith('..') && !path.isAbsolute(homeRelative) ? '/home/agent' + (homeRelative ? '/' + homeRelative.replaceAll('\\', '/') : '') : real;
     },
   };
   let url = 'about:blank';
@@ -73,19 +77,67 @@ function service(name: string, processMock?: { spawn: (...args: any[]) => any; k
     clearTimeout,
     process: { kill: processMock?.kill ?? process.kill, env: { DISPLAY: desktop ? ':99' : undefined } },
   };
-  runInNewContext(source + '\nglobalThis.executeTool = execute;', context);
+  runInNewContext(source + '\nglobalThis.executeTool = execute; globalThis.cancelTool = id => cancelled.add(id);', context);
   return {
     workspace,
+    home,
     launch,
     page,
     handler,
     capture,
     closeBrowser: () => closed(),
-    execute: (tool: string, params: Record<string, unknown>) => context.executeTool({ id: 'test-id', tool, params }) as Promise<{ ok: boolean; output: string; image?: string }>,
+    cancel: (id: string) => context.cancelTool(id),
+    execute: (tool: string, params: Record<string, unknown>, id = 'test-id') => context.executeTool({ id, tool, params }) as Promise<{ ok: boolean; output: string; image?: string }>,
   };
 }
 
 describe('virtual computer service', () => {
+  it('does not replay a cancelled agent click after an earlier screen capture finishes', async () => {
+    const a = service('cancelled-desktop-queue', undefined, true);
+    const capture = a.capture.getMockImplementation()!;
+    let finish!: () => void;
+    a.capture.mockImplementationOnce((command, args, options, callback) => { finish = () => capture(command, args, options, callback); });
+    const frame = a.execute('desktop_screenshot', {}, 'frame');
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const queued = a.execute('desktop_input', { action: 'click', x: 100, y: 100 }, 'old-agent-input');
+    a.cancel('old-agent-input');
+    const rejected = expect(queued).rejects.toThrow('cancelled');
+    finish();
+    await frame; await rejected;
+    expect(a.capture).toHaveBeenCalledOnce();
+    expect(a.capture.mock.calls[0]![0]).toBe('scrot');
+  });
+  it('exports downloaded media above the text limit and imports it into another workspace', async () => {
+    const a = service('download-media');
+    const b = service('receive-media');
+    const downloads = path.join(a.home, 'Downloads');
+    fs.mkdirSync(downloads);
+    const media = Buffer.alloc(3_000_001, 73);
+    fs.writeFileSync(path.join(downloads, 'clip.mp4'), media);
+    expect((await a.execute('list_files', { path: '/home/agent/Downloads' })).output).toBe('clip.mp4');
+    const exported = await a.execute('export_file', { path: '/home/agent/Downloads/clip.mp4' });
+    expect(Buffer.from(exported.output, 'base64').equals(media)).toBe(true);
+    await b.execute('import_file', { path: 'clip.mp4', data: exported.output });
+    expect(fs.readFileSync(path.join(b.workspace, 'clip.mp4')).equals(media)).toBe(true);
+    fs.writeFileSync(path.join(downloads, 'too-large.mp4'), Buffer.alloc(20_000_001));
+    await expect(a.execute('export_file', { path: '/home/agent/Downloads/too-large.mp4' })).rejects.toThrow('20 MB');
+    await expect(a.execute('export_file', { path: '/home/agent/Downloads' })).rejects.toThrow('regular files');
+  });
+
+  it('does not export browser profiles or symlinks from downloads to private files', async () => {
+    const a = service('download-guard');
+    const downloads = path.join(a.home, 'Downloads');
+    const profile = path.join(a.home, 'manual-browser');
+    fs.mkdirSync(downloads); fs.mkdirSync(profile);
+    fs.writeFileSync(path.join(profile, 'Cookies'), 'private');
+    fs.symlinkSync(profile, path.join(downloads, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
+    for (const tool of ['export_file', 'list_files']) {
+      for (const target of ['/home/agent/manual-browser/Cookies', '/home/agent/Downloads/../manual-browser/Cookies', '/home/agent/Downloads/escape/Cookies']) {
+        await expect(a.execute(tool, { path: target })).rejects.toThrow(/workspace/);
+      }
+    }
+    await expect(a.execute('write_file', { path: '/home/agent/Downloads/clip.mp4', content: 'overwrite' })).rejects.toThrow(/workspace/);
+  });
   it('reopens the shared browser after the user closes its window', async () => {
     const a = service('browser-reopen', undefined, true);
     await a.execute('browse', { action: 'state' });

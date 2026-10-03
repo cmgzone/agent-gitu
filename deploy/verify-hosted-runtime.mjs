@@ -4,6 +4,7 @@ import path from 'node:path';
 import { CoworkComputer, computerExec } from '../dist/cowork/computer.js';
 import { ComposioKeyStore } from '../dist/connections/composio.js';
 import { connectDesktopStream } from '../dist/cowork/desktop-stream.js';
+import { CoworkStore } from '../dist/cowork/store.js';
 
 const home = process.env.AGENT_GITU_HOME;
 if (!home || !process.env.AGENT_GITU_COMPUTER_BROKER_URL) throw new Error('Hosted desktop runtime is not configured.');
@@ -29,6 +30,22 @@ if (!appearance.ok || !appearance.output.includes('Papirus-Dark') || !appearance
 const chrome = await computer.execute('run_command', { command: 'google-chrome-stable --version; node /computer/open-browser.cjs about:blank; for i in 1 2 3 4 5; do xwininfo -root -tree | grep -q "Google Chrome" && break; sleep 1; done; xwininfo -root -tree', timeoutMs: 15_000 });
 if (!chrome.ok || !chrome.output.includes('Google Chrome')) throw new Error('Regular Chrome did not start.');
 console.log('Wallpaper, icons and the separate regular Chrome browser are working.');
+const internet = await computer.execute('run_command', { command: 'node -e \'fetch("https://example.com",{signal:AbortSignal.timeout(15000)}).then(r=>{if(!r.ok)throw Error("HTTP "+r.status);console.log("desktop-internet-ok")}).catch(e=>{console.error(e.message);process.exitCode=1})\'', timeoutMs: 20_000 });
+if (!internet.ok || !internet.output.includes('desktop-internet-ok')) throw new Error('VPS desktop Internet access failed: ' + internet.output);
+console.log('VPS desktop DNS and outbound HTTPS Internet access are working.');
+const media = await computer.execute('run_command', { command: 'node -e \'const fs=require("node:fs");fs.mkdirSync("/home/agent/Downloads",{recursive:true});fs.writeFileSync("/home/agent/Downloads/deployment-media.bin",Buffer.alloc(20000000,73))\'', timeoutMs: 10_000 });
+if (!media.ok) throw new Error(media.output);
+let mediaId;
+const attachment = await computer.execute('share_file', { path: '/home/agent/Downloads/deployment-media.bin' }, undefined, 'deployment-media-check', (file) => {
+  const bytes = Buffer.from(file.dataBase64, 'base64');
+  if (file.name !== 'deployment-media.bin' || bytes.length !== 20_000_000 || bytes[0] !== 73 || bytes.at(-1) !== 73) throw new Error('Desktop media was corrupted during transfer.');
+  mediaId = file.artifactId;
+});
+if (!attachment.ok || !mediaId) throw new Error('Desktop media attachment failed: ' + attachment.output);
+const receivedMedia = await computer.execute('receive_file', { artifactId: mediaId, path: 'deployment-media-copy.bin' }, undefined, 'deployment-media-check');
+if (!receivedMedia.ok) throw new Error('Desktop media import failed: ' + receivedMedia.output);
+rmSync(path.join(home, 'Cowork', 'artifacts', 'deployment-media-check', mediaId + '.json'));
+console.log('20 MB desktop downloads can be attached and received without corruption.');
 const focus = await computer.execute('run_command', { command: 'xdotool search --name "Agent Gitu workspace" windowactivate --sync', timeoutMs: 10_000 });
 if (!focus.ok) throw new Error(focus.output);
 const typing = await computer.desktopInput({ action: 'type', text: 'printf gitu-desktop-input-check > /workspace/.gitu-desktop-smoke.txt' });
@@ -143,3 +160,18 @@ try {
   rmSync(temporaryHome, { recursive: true, force: true });
 }
 console.log(JSON.stringify({ ownerAccountPreserved: existsSync(path.join(home, 'Settings', 'app-password.json')) }));
+// Opt in for a service upgrade; ordinary deployments leave active desktops alone.
+if (process.argv.includes('--refresh-desktops')) {
+  let refreshed = 0;
+  for (const agent of new CoworkStore().listAgents()) {
+    if (agent.useHostComputer) continue;
+    const desktop = new CoworkComputer(agent.id, path.join(home, 'Cowork'));
+    const status = await desktop.refreshStatus();
+    if (status.state !== 'running') continue;
+    await desktop.stop();
+    await desktop.start();
+    if (!(await desktop.desktopScreenshot()).ok) throw new Error('An upgraded desktop did not return its screen.');
+    refreshed++;
+  }
+  console.log(JSON.stringify({ existingDesktopsRefreshed: refreshed, filesAndProfilesPreserved: true }));
+}

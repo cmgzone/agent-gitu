@@ -136,7 +136,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'desktop_input', doc: 'Control your private Linux desktop. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|agent_browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. Use browse for structured browser operations.', gate: 'shell' },
   { name: 'computer_process', doc: 'Inspect or stop a background process on your computer. params: {"action":"status","id":"..."} | {"action":"stop","id":"..."}', gate: 'shell' },
   { name: 'create_document', doc: DOCUMENT_TOOL_DOC + ' The generated file is automatically presented in this conversation.', gate: 'writes' },
-  { name: 'share_file', doc: 'Present a file in the conversation as an Open/Download document card and make it available to teammates. params: {"path":"report.pdf"}.', gate: 'writes' },
+  { name: 'share_file', doc: 'Attach a real file to the conversation as an Open/Download card, with image/audio/video previews. params: {"path":"report.pdf"}. Private desktops also accept absolute paths in /home/agent/Downloads, Desktop, Documents, Pictures, Music, or Videos. Use list_files to locate files there. Maximum 20 MB per file; share the actual file, not just its path in a reply.', gate: 'writes' },
   { name: 'receive_file', doc: 'Copy a shared conversation artifact into your computer. params: {"artifactId":"...","path":"report.md"}', gate: 'writes' },
   { name: 'list_files', doc: 'List files in a folder. params: {"path":"src"}', gate: undefined },
   { name: 'read_file', doc: 'Read a text file. params: {"path":"src/x.ts"}', gate: undefined },
@@ -588,8 +588,12 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         if (!scope?.conversationId || !scope.computerFor || scope.agent.useHostComputer) return { ok: false, output: 'A desktop handoff requires a private computer and conversation.' };
         const reason = String(params['reason'] ?? '').trim();
         if (!reason || reason.length > 500) return { ok: false, output: 'Describe the human step in 1–500 characters without credentials.' };
-        const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', title: 'Your turn on the desktop', detail: reason + '\nOpen this teammate’s desktop. When finished, choose Return to agent or answer Done — continue.', options: ['Done — continue', 'Cancel handoff'] });
-        scope.computerFor(scope.agent.id).setControl('user', reason, request.id);
+        const computer = scope.computerFor(scope.agent.id);
+        if (computer.status().state === 'stopped') await computer.refreshStatus();
+        if (computer.status().state === 'sleeping') return { ok: false, output: 'The desktop is sleeping. Wait for the user to wake it before requesting a handoff.' };
+        await computer.start(scope.signal);
+        const request = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'question', desktopHandoff: true, title: 'Your turn on the desktop', detail: reason + '\nYour desktop will open here. When finished, choose Return to agent or answer Done — continue.', options: ['Done — continue', 'Cancel handoff'] });
+        computer.setControl('user', reason, request.id);
         return { ok: true, output: `Desktop control given to the user. Question ${request.id} posted. Stop working and wait for the user to return control.` };
       }
       case 'request_credential':

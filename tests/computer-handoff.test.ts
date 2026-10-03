@@ -35,6 +35,8 @@ it('persists human control, blocks agent input, and wakes without restarting ope
     expect(exec.mock.calls.length).toBe(before);
     await restored.start();
     expect(restored.status()).toMatchObject({ state: 'running', control: 'user' });
+    expect(restored.status().handoff).toEqual({ reason: 'You have control. Return to agent when you are finished.', requestId: 'human-step' });
+    expect(new CoworkComputer('shared', root, exec).status().handoff).toEqual(restored.status().handoff);
     expect(exec.mock.calls.filter(([args]) => args[0] === 'start')).toHaveLength(1);
     expect(exec.mock.calls.filter(([args]) => args[0] === 'unpause')).toHaveLength(1);
     restored.setControl('shared');

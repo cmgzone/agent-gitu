@@ -208,13 +208,19 @@ export class CoworkComputer {
     this.state = 'sleeping';
   }
 
+  private clearSleepingHandoff(): void {
+    if (this.control === 'user' && this.handoff?.reason === 'Desktop is sleeping. Wake it when you are ready.') {
+      this.setControl('user', 'You have control. Return to agent when you are finished.', this.handoff.requestId);
+    }
+  }
+
   async start(signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (this.starting) return this.starting;
     if (this.state === 'running') return;
     if (this.state === 'sleeping' && (await this.exec(['container', 'inspect', '--format', '{{.Config.Image}}', this.name], undefined, signal, 15_000)).trim() === IMAGE) {
       await this.exec(['unpause', this.name], undefined, signal, 15_000);
-      this.state = 'running'; return;
+      this.state = 'running'; this.clearSleepingHandoff(); return;
     }
     this.startupAbort = new AbortController();
     const combined = signal ? AbortSignal.any([signal, this.startupAbort.signal]) : this.startupAbort.signal;
@@ -275,6 +281,7 @@ export class CoworkComputer {
       }
       await this.exec(['start', this.name], undefined, signal);
       this.state = 'running';
+      this.clearSleepingHandoff();
       this.lastFailure = undefined;
     } catch (err) {
       this.state = 'unavailable';
@@ -307,7 +314,7 @@ export class CoworkComputer {
           if (image !== IMAGE) return this.status();
         }
         if (state === 'paused') this.state = 'sleeping';
-        else if (state === 'running') this.state = 'running';
+        else if (state === 'running') { this.state = 'running'; this.clearSleepingHandoff(); }
         else if (['created', 'exited', 'dead'].includes(state)) this.state = 'stopped';
       } catch (error) {
         if (/no such|not found/i.test((error as Error).message)) this.state = 'stopped';

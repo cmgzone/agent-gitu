@@ -25,10 +25,13 @@ export function desktopView(agentId: string): string {
   const endpoint = JSON.stringify('/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div><script type="module">
 import RFB from '/api/desktop-assets/core/rfb.js';
-let rfb, timer, frames, monitorTimer, closed=false;
+let rfb, activeSocket, timer, frames, monitorTimer, closed=false;
 const message=document.getElementById('message'),screen=document.getElementById('screen');
-const diagnostic=new URLSearchParams(location.search).has('diagnostic');
-let received=0,bytes=0,requests=0,inputs=0,lastRead=0,clientError='';
+const options=new URLSearchParams(location.search),diagnostic=options.has('diagnostic');
+// Leave update scheduling to noVNC. A timed stream of extra requests can
+// keep legacy servers processing input instead of drawing the next frame.
+const pipeline=diagnostic&&options.get('pipeline')==='1';
+let received=0,bytes=0,requests=0,inputs=0,keyPackets=0,pointerPackets=0,buttonPackets=0,lastRead=0,clientError='';
 if(diagnostic){
   const monitor=document.createElement('pre');
   monitor.style.cssText='position:fixed;right:8px;top:8px;padding:8px;background:#171624e8;color:#eee;font:12px monospace;pointer-events:none;z-index:10';
@@ -36,7 +39,7 @@ if(diagnostic){
   screen.addEventListener('keydown',()=>inputs++,true);screen.addEventListener('pointerdown',()=>inputs++,true);
   addEventListener('error',event=>{clientError=event.message;});
   addEventListener('unhandledrejection',event=>{clientError=String(event.reason?.message||event.reason);});
-  monitorTimer=setInterval(()=>{const canvas=screen.querySelector('canvas');monitor.textContent='Received: '+received+' / '+bytes+' bytes\\nRequests: '+requests+' / Inputs: '+inputs+'\\nLast update: '+(lastRead?Math.round(performance.now()-lastRead)+'ms':'waiting')+' / '+document.visibilityState+'\\nCanvas: '+canvas?.width+'x'+canvas?.height+(clientError?'\\nError: '+clientError:'');},250);
+  monitorTimer=setInterval(()=>{const canvas=screen.querySelector('canvas');monitor.textContent='Received: '+received+' / '+bytes+' bytes\\nRequests: '+requests+' / Inputs: '+inputs+'\\nSent: '+keyPackets+' keys / '+pointerPackets+' pointers / '+buttonPackets+' clicks\\nQueued: '+(activeSocket?.bufferedAmount||0)+' bytes / Pipeline: '+pipeline+'\\nLast update: '+(lastRead?Math.round(performance.now()-lastRead)+'ms':'waiting')+' / '+document.visibilityState+'\\nCanvas: '+canvas?.width+'x'+canvas?.height+(clientError?'\\nError: '+clientError:'');},250);
 }
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
 function stopFrames(){clearInterval(frames);frames=undefined;}
@@ -49,7 +52,12 @@ addEventListener('message',event=>{
 function connect(){
   if(closed)return;
   const socket=new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+${endpoint});
-  if(diagnostic)socket.addEventListener('message',event=>{received++;bytes+=event.data.byteLength||0;lastRead=performance.now();});
+  activeSocket=socket;
+  if(diagnostic){
+    socket.addEventListener('message',event=>{received++;bytes+=event.data.byteLength||0;lastRead=performance.now();});
+    const send=socket.send.bind(socket);
+    socket.send=data=>{const packet=ArrayBuffer.isView(data)?new Uint8Array(data.buffer,data.byteOffset,data.byteLength):new Uint8Array(data);if(packet[0]===4)keyPackets++;if(packet[0]===5){pointerPackets++;if(packet[1])buttonPackets++;}send(data);};
+  }
   rfb=new RFB(screen,socket,{shared:true});
   rfb.scaleViewport=true; rfb.resizeSession=false; rfb.viewOnly=false;
   rfb.qualityLevel=6; rfb.compressionLevel=2;
@@ -58,7 +66,7 @@ function connect(){
     // LibVNCServer has no ContinuousUpdates extension. Keep incremental
     // requests ready so every redraw does not wait another network round trip.
     // These ten-byte requests send pixels only when the desktop changes.
-    frames=setInterval(()=>{
+    if(pipeline)frames=setInterval(()=>{
       const canvas=screen.querySelector('canvas');
       if(closed||document.hidden||socket.readyState!==WebSocket.OPEN||socket.bufferedAmount>8192||!canvas?.width||!canvas.height)return;
       const packet=new Uint8Array(10),view=new DataView(packet.buffer);

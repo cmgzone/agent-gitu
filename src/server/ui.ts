@@ -4633,10 +4633,17 @@ ${ONBOARDING_HTML}
     var old = stream.querySelectorAll('.qcard');
     for (var j = 0; j < old.length; j++) old[j].remove();
     var selections = {};
+    var questions = (q.questions || []).filter(function(qq){return qq && typeof qq === 'object';}).map(function(qq){
+      var options = Array.isArray(qq.options) ? qq.options : [];
+      return { question: qq.question, header: qq.header, options: options.map(function(option){
+        var label = typeof option === 'string' ? option : option && typeof option === 'object' ? option.label : '';
+        return typeof label === 'string' && label.trim() !== '[object Object]' ? label.trim() : '';
+      }).filter(Boolean) };
+    });
     var div = document.createElement('div');
     div.className = 'qcard';
     var html = '<h3>Agent Gitu has a few questions before starting</h3>';
-    q.questions.forEach(function (qq, qi) {
+    questions.forEach(function (qq, qi) {
       html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(qq.question) + '</div><div class="opts">';
       qq.options.forEach(function (op, oi) {
         html += '<button class="opt" data-q="' + qi + '" data-o="' + oi + '">' + esc(op) + '</button>';
@@ -4655,13 +4662,13 @@ ${ONBOARDING_HTML}
       var siblings = div.querySelectorAll('.opt[data-q="' + qi + '"]');
       for (var i2 = 0; i2 < siblings.length; i2++) siblings[i2].classList.remove('sel');
       btn.classList.add('sel');
-      selections[qi] = q.questions[Number(qi)].options[Number(btn.getAttribute('data-o'))];
+      selections[qi] = questions[Number(qi)].options[Number(btn.getAttribute('data-o'))];
     };
     $('qSend').onclick = function () {
       if (this.disabled) return;
       this.disabled = true;
       var restore = (function (b) { return function () { b.disabled = false; }; })(this);
-      var answers = q.questions.map(function (qq, qi2) {
+      var answers = questions.map(function (qq, qi2) {
         var custom = div.querySelector('.custom[data-q="' + qi2 + '"]');
         var val = (custom && custom.value.trim()) || selections[qi2] || '(no answer)';
         return qq.question + ' — ' + val;

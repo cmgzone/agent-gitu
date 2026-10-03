@@ -32,7 +32,9 @@ class PreviewConnections extends ComposioConnections {
     return {
       services: ['Gmail', 'Google Drive', 'Slack', 'Notion', 'GitHub', 'Outlook', 'Google Calendar', 'HubSpot']
         .filter((name) => name.toLowerCase().includes(search.toLowerCase()))
-        .map((name) => ({ name, slug: name.toLowerCase().replaceAll(' ', ''), status: name === 'Gmail' ? 'ACTIVE' : name === 'Slack' ? 'EXPIRED' : undefined })),
+        .map((name) => ({ name, slug: name.toLowerCase().replaceAll(' ', ''),
+          logo: ['Gmail', 'Google Drive', 'Slack', 'GitHub'].includes(name) ? `https://cdn.jsdelivr.net/gh/ComposioHQ/open-logos@master/${name.toLowerCase().replaceAll(' ', '')}.svg` : undefined,
+          status: name === 'Gmail' ? 'ACTIVE' : name === 'Slack' ? 'EXPIRED' : undefined })),
     };
   }
   override async accounts() {
@@ -49,7 +51,14 @@ class PreviewConnections extends ComposioConnections {
   }
 }
 const apps = new PreviewConnections(() => auth.userId);
-const server = new GituServer({ cwd: home.workspace, port: Number(process.argv[2] ?? 0), llm: new ScriptedMockLlm([]), connectedApps: apps });
+const previewLlm = new ScriptedMockLlm([
+  () => JSON.stringify({ action: { type: 'ask_user', questions: [{
+    header: 'Product card style', question: 'What should the product cards look like?',
+    options: [ { label: 'Larger images', description: 'Give product photos more space.' }, { label: 'Premium cards', description: 'Use an editorial layout.' }, 'Compact cards' ],
+  }] } }),
+  () => JSON.stringify({ action: { type: 'complete', summary: 'Received your product card preference.' } }),
+]);
+const server = new GituServer({ cwd: home.workspace, port: Number(process.argv[2] ?? 0), llm: previewLlm, connectedApps: apps });
 console.log(`Connections UI fixture: http://127.0.0.1:${await server.start()}`);
 process.on('SIGINT', () => {
   void server.stop().then(() => process.exit(0));

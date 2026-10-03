@@ -2118,8 +2118,8 @@ export class Gitu {
                 );
                 break;
               }
-              ledger.setCriteria(action.criteria);
-              this.emit(`criteria ${action.criteria.map((c) => `"${c}"`).join('; ')}`);
+              ledger.setCriteriaFromSpecs(EvidenceEngine.normalizeCriteria(action.criteria));
+              this.emit(`criteria ${ledger.data.acceptanceCriteria.map((c) => `"${c.text}"`).join('; ')}`);
               observe(agentWorkflow ? 'Criteria recorded. Continue with the requested work; a formal plan is optional unless the user requested plan review.' : 'Criteria recorded. Now propose a plan (set_plan) with small, verifiable steps.');
               break;
             }
@@ -3045,10 +3045,11 @@ export class Gitu {
               const gate = evidence.gate(ledger.data, currentFp);
               const verificationPhaseData = activePhaseData();
               const criterionCommands = verificationPhaseData.acceptanceCriteria.length
-                ? new Set(verificationPhaseData.acceptanceCriteria.flatMap((criterion) => [
-                    criterion.verification,
-                    ...criterion.evidenceIds.map((id) => ledger.data.evidence.find((item) => item.id === id)?.command),
-                  ].filter((command): command is string => Boolean(command)).map((command) => command.trim().replace(/\s+/g, ' ').toLowerCase())))
+                // Linked evidence is supporting history, not a growing list of
+                // mandatory commands. Only explicitly pinned checks must all run.
+                ? new Set(verificationPhaseData.acceptanceCriteria.map((criterion) => criterion.verification)
+                    .filter((command): command is string => Boolean(command))
+                    .map((command) => command.trim().replace(/\s+/g, ' ').toLowerCase()))
                 : undefined;
               const lightweight = agentWorkflow
                 ? agentVerificationGate(verificationPhaseData, agentBaselineFingerprint, currentFp, criterionCommands)

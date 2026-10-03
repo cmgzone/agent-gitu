@@ -49,9 +49,9 @@ export function parseSubtasks(value: unknown): string[] | undefined {
 }
 
 export type ParsedAction =
-  | { type: 'set_criteria'; criteria: string[] }
+  | { type: 'set_criteria'; criteria: (string | CriterionSpec)[] }
   | { type: 'set_plan'; steps: PlanActionStep[] }
-  | { type: 'add_criteria'; criteria: string[] }
+  | { type: 'add_criteria'; criteria: (string | CriterionSpec)[] }
   | { type: 'append_plan'; steps: PlanActionStep[] }
   | {
       type: 'set_design';
@@ -232,7 +232,23 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
     case 'add_criteria': {
       const criteria = action['criteria'];
       if (!Array.isArray(criteria) || criteria.length === 0) return undefined;
-      return { type, criteria: criteria.map(String).slice(0, 10) };
+      const parsed = criteria.flatMap((criterion): (string | CriterionSpec)[] => {
+        if (typeof criterion === 'string') {
+          const text = criterion.trim();
+          return text && text !== '[object Object]' ? [text] : [];
+        }
+        if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return [];
+        const spec = criterion as Record<string, unknown>;
+        const text = typeof spec['text'] === 'string' ? spec['text'].trim() : '';
+        if (!text || text === '[object Object]') return [];
+        const verification = typeof spec['verification'] === 'string' ? spec['verification'].trim() : '';
+        const evidenceType = spec['evidenceType'];
+        return [{ text, ...(verification ? { verification } : {}),
+          ...(['command_success', 'test_success', 'build_success', 'lint_success', 'typecheck_success', 'any'].includes(String(evidenceType))
+            ? { evidenceType: evidenceType as CriterionSpec['evidenceType'] } : {}),
+        }];
+      }).slice(0, 10);
+      return parsed.length ? { type, criteria: parsed } : undefined;
     }
     case 'set_plan':
     case 'append_plan': {
@@ -488,10 +504,14 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       const questions = action['questions'];
       if (!Array.isArray(questions) || questions.length === 0) return undefined;
       const parsed = (questions as Record<string, unknown>[])
+        .filter((q) => q && typeof q === 'object' && !Array.isArray(q))
         .map((q) => ({
-          question: String(q['question'] ?? ''),
+          question: typeof q['question'] === 'string' ? q['question'].trim() : '',
           header: typeof q['header'] === 'string' ? q['header'] : undefined,
-          options: Array.isArray(q['options']) ? (q['options'] as unknown[]).map(String).slice(0, 6) : [],
+          options: Array.isArray(q['options']) ? [...new Set((q['options'] as unknown[]).map((option) => {
+            const label = typeof option === 'string' ? option : option && typeof option === 'object' && !Array.isArray(option) ? (option as Record<string, unknown>)['label'] : undefined;
+            return typeof label === 'string' && label.trim() !== '[object Object]' ? label.trim() : '';
+          }).filter(Boolean))].slice(0, 6) : [],
         }))
         .filter((q) => q.question);
       if (parsed.length === 0) return undefined;

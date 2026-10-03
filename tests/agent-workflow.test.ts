@@ -302,8 +302,45 @@ describe('unified Agent workflow', () => {
 
     expect(result.ledger.data.evidence.map(e => e.passed)).toEqual([false, true]);
     expect(result.ledger.data.acceptanceCriteria[0]?.satisfied).toBe(true);
+    expect(result.ledger.data.acceptanceCriteria[0]).toMatchObject({
+      text: 'The corrected wording passes its configured check',
+      verification: 'node check.cjs', evidenceType: 'command_success',
+    });
     expect(result.report.status).toBe('complete');
   }, 30000);
+
+  it('reuses current supporting evidence without requiring obsolete linked commands', async () => {
+    const claim: Reply = (_call, messages) => {
+      const evidenceId = [...messages].reverse().map(message => /EVIDENCE RECORDED: (ev-\d{8}-[0-9a-f]{6}) \[PASS\]/.exec(String(message.content))?.[1]).find(Boolean);
+      return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId } });
+    };
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([
+        action({ type: 'set_criteria', criteria: ['The corrected wording is verified'] }),
+        edit, verify, claim,
+        action({ type: 'tool_call', tool: 'write_file', params: { path: 'notes.md', content: 'Updated verification notes' }, reason: 'Record the result', expected: 'Notes saved' }),
+        action({ type: 'tool_call', tool: 'run_command', params: { command: 'node check.cjs --focused' }, reason: 'Verify the final workspace', expected: 'Correct wording' }),
+        claim, done, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(result.ledger.data.acceptanceCriteria[0]?.evidenceIds).toHaveLength(2);
+    expect(result.report.status).toBe('complete');
+  }, 30000);
+
+  it('allows a corrected diagnostic to replace an earlier unpinned failure', () => {
+    const data = { actions: [{ tool: 'write_file', status: 'success' }], evidence: [
+      { command: 'node wrong-assertion.cjs', passed: false, workspaceFingerprint: 'after' },
+      { command: 'node corrected-assertion.cjs', passed: true, workspaceFingerprint: 'after' },
+    ] } as unknown as TaskLedgerData;
+    expect(agentVerificationGate(data, 'before', 'after').open).toBe(true);
+    data.evidence.push({ command: 'node wrong-assertion.cjs', passed: false, workspaceFingerprint: 'after', outputExcerpt: 'Expected 200, got 500' } as TaskLedgerData['evidence'][number]);
+    const gate = agentVerificationGate(data, 'before', 'after');
+    expect(gate.open).toBe(false);
+    expect(gate.reason).toContain('node wrong-assertion.cjs');
+    expect(gate.reason).toContain('Expected 200, got 500');
+    data.evidence.push({ command: 'node -e "console.log(\'PASS\')"', passed: true, workspaceFingerprint: 'after' } as TaskLedgerData['evidence'][number]);
+    expect(agentVerificationGate(data, 'before', 'after').open).toBe(false);
+  });
 
   it('still blocks a later failure of the required verification command', () => {
     const data = { actions: [{ tool: 'write_file', status: 'success' }], evidence: [

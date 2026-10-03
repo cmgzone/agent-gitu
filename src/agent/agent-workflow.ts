@@ -1,5 +1,5 @@
 import type { TaskLedgerData } from '../types.js';
-import { isTrivialEvidenceCommand } from '../evidence/evidence.js';
+import { isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
 import type { AskUserQuestion } from './recovery-synthesizer.js';
 
 /** Conservative discovery allowlist for temporary planning and conversational reads. */
@@ -19,16 +19,18 @@ export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint:
   const work = actions.some(a => !(a.observationOnly ?? isObservationTool(a.tool)));
   if (!work && baselineFingerprint === currentFingerprint) return { open: true, reason: 'Conversation or read-only investigation.' };
 
-  const checks = data.evidence.filter(e => e.command && !isTrivialEvidenceCommand(e.command));
+  const checks = data.evidence.filter(e => e.command && !isTrivialEvidenceCommand(e.command) && !isManufacturedEvidenceCommand(e.command));
   const commandKey = (command: string): string => command.trim().replace(/\s+/g, ' ').toLowerCase();
   const latest = new Map<string, typeof checks[number]>();
   for (const check of checks) latest.set(commandKey(check.command!), check);
-  const fresh = [...latest.values()].filter(e => !e.stale && e.workspaceFingerprint === currentFingerprint);
+  const fresh = checks.filter(e => latest.get(commandKey(e.command!)) === e && !e.stale && e.workspaceFingerprint === currentFingerprint);
   // Formal criteria identify the checks that are required for completion.
   // A failed exploratory command remains history unless a criterion requires
   // it; the evidence gate separately validates every linked criterion.
-  if (fresh.some(e => !e.passed && (!criterionCommands || criterionCommands.has(commandKey(e.command!))))) {
-    return { open: false, reason: 'A required check still fails on the current workspace. Resolve it or report the blocker.' };
+  const failing = fresh.find(e => !e.passed && criterionCommands?.has(commandKey(e.command!)))
+    ?? (!criterionCommands?.size && fresh.at(-1)?.passed === false ? fresh.at(-1) : undefined);
+  if (failing) {
+    return { open: false, reason: `Verification failed: ${failing.command}. ${failing.outputExcerpt?.slice(0, 600) ?? ''} Resolve this check or replace an incorrect diagnostic with a meaningful passing check; pinned criterion commands remain required.` };
   }
   if (criterionCommands?.size) {
     const requiredPassing = [...criterionCommands].every(command =>

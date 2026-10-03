@@ -62,6 +62,22 @@ describe('uiVisualGate', () => {
     expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'new-source' }).verified).toBe(false);
   });
 
+  it('requires another look after a direct edit even if a bounded fingerprint happens to match', () => {
+    const data = ledger({ filesChanged: ['large.html'], actions: [
+      action({ tool: 'browse', paramsSummary: 'browse screenshot', verifiedWorkspaceFingerprint: 'same-source' }),
+      action({ tool: 'apply_edit', paramsSummary: 'edit large.html' }),
+    ] });
+    expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'same-source' }).verified).toBe(false);
+  });
+
+  it('keeps conservative command freshness when the workspace scan is incomplete', () => {
+    const data = ledger({ filesChanged: ['index.html'], actions: [
+      action({ tool: 'browse', paramsSummary: 'browse screenshot', verifiedWorkspaceFingerprint: 'partial-source' }),
+      action({ tool: 'run_command', paramsSummary: 'node change-large-file.cjs' }),
+    ] });
+    expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'partial-source' }).verified).toBe(false);
+  });
+
   it('reuses clean structured evidence for text-only models without waiving visual checks for vision models', () => {
     const data = ledger({ filesChanged: ['index.html'], actions: [
       action({ tool: 'browse', paramsSummary: 'browse evidence', observation: 'BROWSER EVIDENCE: no findings', verifiedWorkspaceFingerprint: 'verified-source' }),

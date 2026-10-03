@@ -77,8 +77,10 @@ export function uiVisualGate(
   const screenshotAt = screenshot?.createdAt;
   const cleanEvidenceAt = cleanEvidence?.createdAt;
   const editAt = lastMatchingAction(data, (a) => FILE_EDIT_TOOLS.has(a.tool) && !a.observationOnly && a.status === 'success')?.createdAt;
+  const directEditAt = lastMatchingAction(data, (a) => ['write_file', 'apply_edit'].includes(a.tool) && a.status === 'success')?.createdAt;
   const lookIsCurrent = (look: ActionRecord): boolean => {
-    if (opts.workspaceFingerprint && opts.workspaceFingerprint !== 'unknown-fp' && look.verifiedWorkspaceFingerprint) {
+    if (directEditAt && directEditAt > look.createdAt) return false;
+    if (opts.workspaceFingerprint && opts.workspaceFingerprint !== 'unknown-fp' && !opts.workspaceFingerprint.startsWith('partial-') && look.verifiedWorkspaceFingerprint) {
       return look.verifiedWorkspaceFingerprint === opts.workspaceFingerprint;
     }
     // Older ledgers have no browser fingerprint. Preserve their conservative

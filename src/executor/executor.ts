@@ -33,6 +33,8 @@ import {
   toolDelegate,
   toolListFiles,
   toolListConnections,
+  toolConnectionRead,
+  toolInspectConnectionResponse,
   toolListMcp,
   toolListSkills,
   toolMemory,
@@ -69,6 +71,7 @@ const EXECUTOR_TOOL_NAMES = [
   'browse', 'browser', 'delegate', 'agent_status', 'list_skills', 'create_skill',
   'update_skill', 'use_skill', 'use_skill_reference', 'memory', 'list_mcp',
   'configure_mcp', 'list_connections', 'update_connection', 'run_command',
+  'connection_read', 'inspect_connection_response',
   'create_document', 'schedule_manage', 'lsp_diagnostics', 'lsp_definition',
   'lsp_references', 'lsp_hover', 'lsp_symbols',
 ];
@@ -582,6 +585,12 @@ export class Executor {
           break;
         case 'list_connections':
           result = toolListConnections(ctx);
+          break;
+        case 'connection_read':
+          result = await toolConnectionRead(ctx, req.params);
+          break;
+        case 'inspect_connection_response':
+          result = toolInspectConnectionResponse(ctx, req.params);
           break;
         case 'update_connection':
           result = toolUpdateConnection(ctx, req.params);

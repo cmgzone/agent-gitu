@@ -2003,7 +2003,8 @@ export class Gitu {
                   this.emit(`recover  controller executing a safe provider read — ${safeRead.connectionId}/${safeRead.operationId}`);
                   try {
                     const result = await this.config.connectionActionHandler(safeRead);
-                    const rendered = result.data === undefined ? '' : `\nDATA (bounded and secret-redacted):\n${JSON.stringify(result.data).slice(0, 8_000)}`;
+                    const disclosure = connectionResultDisclosure(result.data);
+                    const rendered = disclosure.text ? `\nDATA (bounded and secret-redacted):\n${disclosure.text}` : '';
                     this.emit(`connection ${safeRead.connectionId}/${safeRead.operationId} completed`);
                     recoveryEvidence = `The recovery controller already ran the read for you — ACTUAL provider state right now:\n${result.message}${rendered}\nGround your next action in this data.\n`;
                   } catch (error) {

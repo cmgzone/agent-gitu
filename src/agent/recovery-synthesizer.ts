@@ -1,4 +1,5 @@
 import { normalizeConnectionSetupHint } from '../connections/connections.js';
+import { connectionResponses } from '../connections/response-data.js';
 import type { MissingPrerequisite } from '../types.js';
 
 export interface AskUserQuestion {
@@ -66,19 +67,26 @@ const PROVIDER_TRUNCATED_MARKER = '[response omitted: exceeds safe connection ou
 const PROVIDER_TRUNCATED_CHARS = 32_000;
 export const PROVIDER_TRUNCATED_GUIDANCE =
   'PROVIDER RESULT TRUNCATED/INCOMPLETE — do NOT ask the user for resource ids or identifiers yet. ' +
+  'If a responseId is present, use inspect_connection_response to search the full snapshot, page through it, or inspect nested fields. ' +
   'Run deterministic provider discovery first with narrower saved-connection reads: list/locate the resource, ' +
   'resolve its UUID, then fetch the exact resource (get(id) → status → environment). ' +
   'Only ask the user after those reads are exhausted or genuinely unavailable.';
 
-/** Render a bounded, redacted provider result for model context and flag when
- * the payload was truncated/incomplete. A truncated list is a signal to do a
- * NARROWER read (get-by-id), never a reason to ask the user for identifiers. */
+/** Render a compact provider preview while retaining full redacted data for
+ * dynamic inspection. Preview size never limits which records can be found. */
 export function connectionResultDisclosure(data: unknown): { text: string; truncated: boolean } {
   if (data === undefined) return { text: '', truncated: false };
   const raw = JSON.stringify(data);
   const truncated = raw.length >= PROVIDER_TRUNCATED_CHARS || raw.includes(PROVIDER_TRUNCATED_MARKER);
-  const text = truncated ? `${raw.slice(0, 48_000)}\n…(provider result truncated)` : raw;
-  return { text, truncated };
+  if (raw.includes(PROVIDER_TRUNCATED_MARKER)) return { text: `${raw}\n…(provider result truncated)`, truncated: true };
+  if (raw.length <= 3_000) return { text: raw, truncated: false };
+  const store = connectionResponses();
+  try {
+    const view = store.inspect({ responseId: store.put(data) });
+    return { text: JSON.stringify(view), truncated: !view.complete || truncated };
+  } catch {
+    return { text: JSON.stringify({ complete: false, message: 'Provider result is too large for a response snapshot. Use documented API pagination, filters, or a narrower read. This is not a complete inventory.' }), truncated: true };
+  }
 }
 
 /** A user question that asks for a provider-resolvable resource identifier

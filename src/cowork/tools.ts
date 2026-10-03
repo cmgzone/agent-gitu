@@ -11,6 +11,8 @@ import {
   toolConfigureMcp,
   toolCreateSkill,
   toolListConnections,
+  toolConnectionRead,
+  toolInspectConnectionResponse,
   toolListFiles,
   toolListMcp,
   toolListSkills,
@@ -191,6 +193,8 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     gate: 'config',
   },
   { name: 'list_connections', doc: 'List saved API and SSH connections (metadata only, never credentials). params: {}', gate: undefined },
+  { name: 'connection_read', doc: 'Read a saved API connection. params: {"connectionId":"exact saved id","operationId":"registered read id","query":{"page":2}}. query is optional; use only documented filters/pagination. For a missing read, consult official docs then supply operation:{id,label,capability,method:"GET",path,risk:"read"} and documentationUrl instead of operationId. New documented reads run with the saved credential. Results include a responseId for inspection. Never send credentials, headers, or an absolute URL.', gate: undefined },
+  { name: 'inspect_connection_response', doc: 'Inspect the FULL redacted saved response without another network request. params: {"responseId":"id from a read","path":"/data/0","offset":0,"limit":20,"fields":["id","name"],"search":"literal text","mode":"data|keys"}. All except responseId are optional. path is a JSON Pointer (empty string = root). Search scans the entire selected collection before pagination. Follow nextOffset; inspect a record path or select fields for details. Compact previews are not complete inventories; follow documented API pagination when present.', gate: undefined },
   { name: 'connected_apps', doc: 'Use services the user connected in Cowork → Connections. params: {"action":"list"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from list","approvalId":"optional"}. Choose accountId when multiple accounts exist. Every execution posts a review card. Stop and wait; after the user accepts, repeat the exact action with its approvalId. Never request provider keys or user IDs.', gate: undefined },
   { name: 'ssh_exec', doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.', gate: 'shell' },
   { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
@@ -543,6 +547,10 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return toolConfigureMcp(ctx, params);
       case 'list_connections':
         return { ok: true, output: `${toolListConnections(ctx).output}\n${new SshConnectionRegistry().renderForAgent()}` };
+      case 'connection_read':
+        return toolConnectionRead(ctx, params);
+      case 'inspect_connection_response':
+        return toolInspectConnectionResponse(ctx, params);
       case 'connected_apps':
         return await connectedAppTool(ctx.connectedApps, params, perms, scope);
       case 'ssh_exec': {

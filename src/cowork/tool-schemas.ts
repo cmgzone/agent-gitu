@@ -36,6 +36,8 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   mcp_call: { fields: { tool: text, args: object }, required: ['tool'] },
   configure_mcp: { fields: { name: text, command: text, args: strings, global: boolean }, required: ['name', 'command'] },
   list_connections: { fields: {} },
+  connection_read: { fields: { connectionId: text, operationId: text, operation: object, documentationUrl: text, query: object }, required: ['connectionId'] },
+  inspect_connection_response: { fields: { responseId: text, path: text, offset: number, limit: number, fields: strings, search: text, mode: text }, required: ['responseId'] },
   connected_apps: { fields: { action: text, service: text, tool: text, args: object, accountId: text, approvalId: text }, required: ['action'] },
   ssh_exec: { fields: { connectionId: text, command: text }, required: ['connectionId', 'command'] },
   update_connection: { fields: { connectionId: text, label: text }, required: ['connectionId'] },

@@ -11,7 +11,8 @@ import type { CriterionSpec, MemoryRetrievalContext, SpecialistHandoff, ToolResu
 import { errorSignature, excerpt, sha256 } from '../util.js';
 import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
-import { ConnectionRegistry } from '../connections/connections.js';
+import { ConnectionRegistry, normalizeConnectionDocumentationUrl, type ConnectionOperation } from '../connections/connections.js';
+import { connectionResponses, type ConnectionResponseQuery } from '../connections/response-data.js';
 import type { ComposioConnections } from '../connections/composio.js';
 import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-timeout.js';
 import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
@@ -74,6 +75,8 @@ export const KNOWN_TOOL_NAMES = new Set([
   'list_mcp',
   'configure_mcp',
   'list_connections',
+  'connection_read',
+  'inspect_connection_response',
   'update_connection',
   'use_skill',
   'use_skill_reference',
@@ -589,6 +592,19 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
     case 'list_mcp':
     case 'list_connections':
       return { valid: true };
+    case 'connection_read': {
+      const err = checkNonEmptyString('connectionId');
+      if (err) return { valid: false, error: err };
+      if (typeof p['operationId'] !== 'string' && (!p['operation'] || typeof p['operation'] !== 'object' || Array.isArray(p['operation']))) return { valid: false, error: 'Use an operationId from list_connections or an operation derived from official documentation.' };
+      if (p['query'] !== undefined && (!p['query'] || typeof p['query'] !== 'object' || Array.isArray(p['query']))) return { valid: false, error: 'query must be an object of documented pagination/filter parameters.' };
+      return { valid: true };
+    }
+    case 'inspect_connection_response': {
+      const err = checkNonEmptyString('responseId');
+      if (err) return { valid: false, error: err };
+      for (const key of ['path', 'search']) if (p[key] !== undefined && typeof p[key] !== 'string') return { valid: false, error: `${key} must be a string.` };
+      return { valid: true };
+    }
     case 'lsp_diagnostics':
     case 'lsp_symbols': {
       const err = checkNonEmptyString('path');
@@ -1886,6 +1902,30 @@ export function toolConfigureMcp(ctx: ToolContext, params: Record<string, unknow
 export function toolListConnections(ctx: ToolContext): ToolResult {
   const registry = ctx.connections ?? new ConnectionRegistry();
   return { ok: true, output: registry.renderForAgent() };
+}
+
+export async function toolConnectionRead(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const registry = ctx.connections ?? new ConnectionRegistry();
+    const operation = params['operation'] as ConnectionOperation | undefined;
+    const documentationUrl = normalizeConnectionDocumentationUrl(params['documentationUrl']);
+    if (operation && (operation.method !== 'GET' || operation.risk !== 'read')) return fail('connection_read accepts read-only GET operations. Use the normal write approval flow for mutations.');
+    if (operation && !documentationUrl) return fail('A new read operation needs an official HTTPS documentationUrl. Read the provider documentation first.');
+    const result = await registry.resolveAndExecuteRead({
+      connectionId: String(params['connectionId'] ?? ''),
+      ...(typeof params['operationId'] === 'string' ? { operationId: params['operationId'] } : {}),
+      ...(operation ? { operation, documented: true } : {}),
+    }, params['query'] as Record<string, unknown> | undefined);
+    const store = connectionResponses();
+    const view = store.inspect({ responseId: store.put(result.data) });
+    return { ok: true, output: `${result.message}\n${JSON.stringify(view)}` };
+  } catch (error) { return fail(`connection_read failed: ${(error as Error).message}`); }
+}
+
+export function toolInspectConnectionResponse(_ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+  try {
+    return { ok: true, output: JSON.stringify(connectionResponses().inspect(params as unknown as ConnectionResponseQuery)) };
+  } catch (error) { return fail(`inspect_connection_response failed: ${(error as Error).message}`); }
 }
 
 export function toolUpdateConnection(ctx: ToolContext, params: Record<string, unknown>): ToolResult {

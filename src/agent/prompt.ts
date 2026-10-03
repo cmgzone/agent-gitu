@@ -371,6 +371,8 @@ Tools:
 - list_mcp {} (refreshes every registered MCP server and returns exact tool names, descriptions, input schemas, and connection errors)
 - configure_mcp {"name":"server-name","command":"executable","args":["arg"],"global":false} (add or edit MCP command metadata; credentials stay in secure settings; call list_mcp afterward)
 - list_connections {} (refresh saved connection ids, capabilities, operations, and auth availability; never returns credentials)
+- connection_read {connectionId,operationId,query?} (saved GET with documented pagination/filters; missing read: operation + documentationUrl)
+- inspect_connection_response {responseId,path?,offset?,limit?,fields?,search?,mode?:"data"|"keys"} (inspect the full redacted snapshot; JSON Pointer paths; search all records before paging; follow nextOffset and provider pagination before claiming an inventory is complete)
 - update_connection {"connectionId":"saved-id","label":"new label","documentationUrl":"https://official.example/api"} (edit safe metadata; endpoint or credential changes use the secure connection form)
 
 Completion/escalation:

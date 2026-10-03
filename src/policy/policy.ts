@@ -114,6 +114,8 @@ export class PolicyEngine {
       case 'list_skills':
       case 'list_mcp':
       case 'list_connections':
+      case 'connection_read':
+      case 'inspect_connection_response':
       case 'use_skill':
       case 'lsp_diagnostics':
       case 'lsp_definition':

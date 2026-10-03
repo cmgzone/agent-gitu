@@ -8,7 +8,7 @@ export function isObservationTool(tool: string, params: Record<string, unknown> 
   // treated as a new command action.
   if (tool === 'run_command') return String(params['action'] ?? 'run') === 'status';
   if (['read_file', 'search_files', 'list_files', 'web_fetch', 'list_skills', 'use_skill', 'use_skill_reference',
-    'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'agent_status', 'list_mcp', 'list_connections'].includes(tool)) return true;
+    'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'agent_status', 'list_mcp', 'list_connections', 'connection_read', 'inspect_connection_response'].includes(tool)) return true;
   if (tool === 'schedule_manage') return params['action'] === 'list';
   return tool === 'browse' && ['screenshot', 'evidence'].includes(String(params['action']));
 }

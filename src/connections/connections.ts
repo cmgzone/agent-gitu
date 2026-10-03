@@ -5,6 +5,7 @@ import { SkillStore } from '../skills/skills.js';
 import type { Capability, ConnectionSetupHint, MissingPrerequisite } from '../types.js';
 import { nowIso, readJson, sha256, writeJson } from '../util.js';
 import { ensureGituHome } from '../workspace/home.js';
+import { readConnectionResponse } from './response-data.js';
 import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor, catalogProvider } from './catalog.js';
 import {
   UniversalDiscoveryEngine,
@@ -216,7 +217,8 @@ export interface ConnectionInvocationResult {
   ok: boolean;
   status: number;
   message: string;
-  /** Bounded provider output with secret-like fields removed. */
+  /** Full transport-bounded provider output with secrets removed. Model
+   * messages use response previews and snapshot inspection separately. */
   data?: unknown;
   /** Resolved operation definition when known */
   operation?: ConnectionOperation;
@@ -506,51 +508,6 @@ function scrubKnownConnectionSecrets(text: string, secrets: readonly string[]): 
 function storedConnectionSecrets(id: string): string[] {
   const token = loadStoredKeys()[keyRef(id)]?.trim();
   return token ? [token] : [];
-}
-
-function redactProviderData(value: unknown, secrets: readonly string[] = [], depth = 0): unknown {
-  if (depth > 6) return '[truncated]';
-  if (typeof value === 'string') {
-    return scrubKnownConnectionSecrets(value, secrets)
-      .replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s/@:]+:[^\s/@]+@/gi, '$1://<redacted>@')
-      .slice(0, 4_000);
-  }
-  if (Array.isArray(value)) return value.slice(0, 100).map((item) => redactProviderData(item, secrets, depth + 1));
-  if (value && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
-      out[key] = /(?:token|secret|password|authorization|api[_-]?key|credential)/i.test(key) ? '<redacted>' : redactProviderData(item, secrets, depth + 1);
-    }
-    return out;
-  }
-  return value;
-}
-
-async function boundedResponseData(response: Response, secrets: readonly string[] = [], limit = 48 * 1024): Promise<unknown> {
-  if (!response.body) return undefined;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      size += next.value.byteLength;
-      if (size > limit) {
-        await reader.cancel();
-        return '[response omitted: exceeds safe connection output limit]';
-      }
-      chunks.push(next.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  const text = new TextDecoder().decode(bytes).trim();
-  if (!text) return undefined;
-  try { return redactProviderData(JSON.parse(text), secrets); } catch { return redactProviderData(text, secrets); }
 }
 
 function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
@@ -957,7 +914,7 @@ export class ConnectionRegistry {
     return Boolean(loadStoredKeys()[keyRef(id)]?.trim());
   }
 
-  async invokeOperation(id: string, operation: ConnectionOperation, body?: unknown): Promise<ConnectionInvocationResult> {
+  async invokeOperation(id: string, operation: ConnectionOperation, body?: unknown, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
 
@@ -970,8 +927,23 @@ export class ConnectionRegistry {
       throw new ConnectionInvocationError('not-run', 'A read-only GET operation cannot include a request body.', 'CONFIG_INVALID');
     }
 
-    // Phase 3: Exact rejected-operation protection (fail locally without hitting the provider again)
-    const paramsHash = encoded ? sha256(encoded) : undefined;
+    const url = new URL(operation.path, `${profile.baseUrl}/`);
+    if (query !== undefined) {
+      if (operation.method !== 'GET') throw new ConnectionInvocationError('not-run', 'Query parameters are supported for read-only GET operations only.', 'CONFIG_INVALID');
+      if (!query || typeof query !== 'object' || Array.isArray(query) || Object.keys(query).length > 100) throw new ConnectionInvocationError('not-run', 'query must be an object with at most 100 parameters.', 'CONFIG_INVALID');
+      for (const [key, raw] of Object.entries(query)) {
+        if (!key || key.length > 120 || /[\u0000-\u001f\u007f]/.test(key) || SECRET_BODY_FIELD_RE.test(key)) throw new ConnectionInvocationError('not-run', 'Query contains an unsafe or credential-like field. Use secure connection setup for credentials.', 'CONFIG_INVALID');
+        const values = Array.isArray(raw) ? raw : [raw];
+        if (values.length > 100) throw new ConnectionInvocationError('not-run', 'Too many values for a query parameter.', 'CONFIG_INVALID');
+        for (const value of values) {
+          if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) throw new ConnectionInvocationError('not-run', 'Query values must be strings, finite numbers, booleans, or arrays of these.', 'CONFIG_INVALID');
+          url.searchParams.append(key, String(value));
+        }
+      }
+      if (url.search.length > 8_000) throw new ConnectionInvocationError('not-run', 'Connection query parameters are too large.', 'CONFIG_INVALID');
+    }
+    // Reject only this invocation, including its pagination/filter parameters.
+    const paramsHash = query ? sha256(url.search) : encoded ? sha256(encoded) : undefined;
     const rejected = this.isOperationRejected(profile.id, operation.id, operation.method, operation.path, paramsHash);
     if (rejected) {
       throw new ConnectionInvocationError(
@@ -990,7 +962,7 @@ export class ConnectionRegistry {
 
     let response: Response;
     try {
-      response = await fetch(new URL(operation.path, `${profile.baseUrl}/`), {
+      response = await fetch(url, {
         method: operation.method,
         headers: { accept: 'application/json', authorization: `Bearer ${token}`, ...(encoded ? { 'content-type': 'application/json' } : {}) },
         ...(encoded ? { body: encoded } : {}),
@@ -1008,7 +980,7 @@ export class ConnectionRegistry {
 
     if (!response.ok) {
       this.updateValidation(profile.id, 'failed');
-      const detail = await boundedResponseData(response, secrets).catch(() => undefined);
+      const detail = await readConnectionResponse(response, secrets).catch(() => undefined);
       const detailText = detail === undefined ? '' : ` Provider said: ${JSON.stringify(detail).slice(0, 4_000)}`;
 
       if (response.status === 401) {
@@ -1067,11 +1039,11 @@ export class ConnectionRegistry {
     this.recordAuth(profile.id, 'valid');
     let data: unknown;
     try {
-      data = await boundedResponseData(response, secrets);
-    } catch {
+      data = await readConnectionResponse(response, secrets);
+    } catch (error) {
       throw new ConnectionInvocationError(
         'sent-unknown',
-        `The provider accepted the operation (HTTP ${response.status}) but its response could not be read. Treat the operation as POSSIBLY completed — verify provider state before re-running anything non-idempotent.`,
+        `The provider accepted the operation (HTTP ${response.status}) but its response could not be read. ${scrubKnownConnectionSecrets((error as Error).message, secrets)} Treat the operation as POSSIBLY completed — verify provider state before re-running anything non-idempotent.`,
         'PROVIDER_UNREACHABLE',
       );
     }
@@ -1089,7 +1061,7 @@ export class ConnectionRegistry {
     };
   }
 
-  async invoke(id: string, operationId: string, body?: unknown): Promise<ConnectionInvocationResult> {
+  async invoke(id: string, operationId: string, body?: unknown, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
     const canonical = canonicalOperationId(operationId);
@@ -1098,7 +1070,7 @@ export class ConnectionRegistry {
       this.recordCapability(profile.id, { miss: [canonical] });
       throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.', 'CONNECTED_MISSING_OPERATION');
     }
-    return this.invokeOperation(id, operation, body);
+    return this.invokeOperation(id, operation, body, query);
   }
 
   async discover(request: DiscoveryRequest): Promise<DiscoveryResult> {
@@ -1131,7 +1103,9 @@ export class ConnectionRegistry {
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),
       });
-      const data = await boundedResponseData(response, secrets).catch(() => undefined);
+      // Discovery needs the whole redacted collection to match records beyond
+      // the initial preview. Read failures must not become an empty inventory.
+      const data = await readConnectionResponse(response, secrets);
       return {
         ok: response.ok,
         status: response.status,
@@ -1152,7 +1126,7 @@ export class ConnectionRegistry {
     return engine.discover({ ...request, connectionId: profile.id });
   }
 
-  async invokeRead(id: string, operationId: string): Promise<ConnectionInvocationResult> {
+  async invokeRead(id: string, operationId: string, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
     const operation = this.operation(id, operationId);
     if (!operation) {
       this.recordCapability(id, { miss: [canonicalOperationId(operationId)] });
@@ -1161,7 +1135,7 @@ export class ConnectionRegistry {
     if (operation.risk !== 'read' || operation.method !== 'GET') {
       throw new Error('Only registered read-only GET connection operations may be used by an agent.');
     }
-    return this.invoke(id, operation.id);
+    return this.invoke(id, operation.id, undefined, query);
   }
 
   /**
@@ -1172,7 +1146,7 @@ export class ConnectionRegistry {
    * channel, NEVER prompt for a credential, and NEVER ask the user to
    * manually register a catalog-backed operation.
    */
-  async resolveAndExecuteRead(input: ResolveConnectionOperationInput): Promise<ConnectionInvocationResult> {
+  async resolveAndExecuteRead(input: ResolveConnectionOperationInput, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
     const resolution = this.resolveConnectionOperation(input);
     if (resolution.resolution === 'insufficient_scope') {
       throw new ConnectionInvocationError('not-run', resolution.reason, 'CONNECTED_INSUFFICIENT_SCOPE');
@@ -1192,13 +1166,13 @@ export class ConnectionRegistry {
     if (resolution.resolution === 'provisional') {
       // Phase 2: Execute candidate operation PROVISIONALLY.
       // Only persist into connection profile upon success (HTTP 2xx).
-      const result = await this.invokeOperation(resolution.connectionId, resolution.operation);
+      const result = await this.invokeOperation(resolution.connectionId, resolution.operation, undefined, query);
       if (result.ok) {
         this.registerApprovedOperation(resolution.connectionId, resolution.operation, true);
       }
       return result;
     }
-    return this.invokeRead(resolution.connectionId, resolution.operation.id);
+    return this.invokeRead(resolution.connectionId, resolution.operation.id, query);
   }
 
   /**

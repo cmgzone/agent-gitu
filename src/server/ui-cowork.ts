@@ -874,6 +874,7 @@ export const COWORK_JS = String.raw`
       cw.skills = d.availableSkills || [];
       cw.memoryCounts = d.memoryCounts || {};
       cw.computers = d.computers || [];
+      cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
       return api('/api/cowork/conversations');
     }).then(function (d) {
@@ -2511,7 +2512,7 @@ export const COWORK_JS = String.raw`
           '<section class="cw-profile-section"><h4>SETUP</h4><dl class="cw-profile-details">' +
             '<dt>Model</dt><dd>' + esc((a.provider ? a.provider + ' / ' : '') + (a.model || 'Default model')) + '</dd>' +
             (a.effort ? '<dt>Reasoning</dt><dd>' + esc(a.effort) + '</dd>' : '') +
-            '<dt>Computer</dt><dd>' + (a.useHostComputer ? 'My computer' : 'Private computer') + '</dd></dl>' +
+            '<dt>Computer</dt><dd>' + (a.useHostComputer ? 'My computer' : a.cloudConnectionId ? 'Cloud computer' : 'Private computer') + '</dd></dl>' +
             ((a.allowShell || a.allowWrites || a.allowConfig) ? '<div class="cw-profile-tags" aria-label="Permissions">' +
               (a.allowShell ? '<span class="chip">Shell</span>' : '') +
               (a.allowWrites ? '<span class="chip">File writes</span>' : '') +
@@ -2603,7 +2604,7 @@ export const COWORK_JS = String.raw`
         '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></section>';
     }
     var computer = (cwEnsure().computers || []).filter(function (c) { return c.agentId === agent.id; })[0] || { state: 'stopped' };
-    return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4><div class="chip">' + esc(computer.state) + '</div>' +
+    return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4>' + (agent.cloudConnectionId ? '<div class="chip">Cloud computer</div> ' : '') + '<div class="chip">' + esc(computer.state) + '</div>' +
       '<p style="font-size:11.5px;color:var(--muted)">Private Linux desktop, files, shell and browser. Files and browser sessions persist when stopped.</p>' +
       (computer.error ? '<p style="font-size:11.5px;color:var(--err)">' + esc(computer.error) + '</p>' : '') +
       cwComputerReasonHtml(computer) +
@@ -3147,6 +3148,43 @@ export const COWORK_JS = String.raw`
 
   // ------------------- modals -------------------
 
+  function cwCloudServerModal(onSaved) {
+    var modal = document.createElement('div');
+    modal.className = 'modal cw-modal';
+    modal.innerHTML = '<div class="box" style="width:min(540px,calc(100vw - 32px))"><div class="bar"><strong>Add cloud server</strong><span style="flex:1"></span><button type="button" class="btn ghost" data-cancel>Cancel</button></div>' +
+      '<form class="cw-body"><label style="display:block;margin-bottom:14px">Server name<input style="display:block;width:100%;margin-top:6px" name="label" required maxlength="120" placeholder="My VPS" autocomplete="off"></label><label style="display:block;margin-bottom:14px">SSH address<input style="display:block;width:100%;margin-top:6px" name="address" type="url" required placeholder="ssh://user@host:22" autocomplete="off" spellcheck="false"></label><label style="display:block;margin-bottom:14px">SSH password<input style="display:block;width:100%;margin-top:6px" name="password" type="password" required autocomplete="new-password"></label>' +
+      '<button type="button" class="btn ghost" data-check>Check server identity</button><p class="cw-note" data-fingerprint hidden style="overflow-wrap:anywhere"></p><label data-confirm hidden><input name="confirm" type="checkbox" style="width:auto"> This fingerprint matches my hosting console or known server key.</label><p data-error role="alert" style="color:var(--err)" hidden></p><button type="submit" class="btn dark" data-connect disabled>Connect server</button></form></div>';
+    document.body.appendChild(modal);
+    var form = modal.querySelector('form'), address = form.elements.address, check = modal.querySelector('[data-check]'), connect = modal.querySelector('[data-connect]');
+    var fingerprint = '', checkedAddress = '', busy = false;
+    function update() { connect.disabled = busy || !fingerprint || !form.elements.confirm.checked || checkedAddress !== address.value.trim(); }
+    function error(message) { var el = modal.querySelector('[data-error]'); el.textContent = message || ''; el.hidden = !message; }
+    modal.querySelector('[data-cancel]').onclick = function () { modal.remove(); };
+    address.oninput = function () { fingerprint = ''; checkedAddress = ''; form.elements.confirm.checked = false; modal.querySelector('[data-confirm]').hidden = true; modal.querySelector('[data-fingerprint]').hidden = true; update(); };
+    form.elements.confirm.onchange = update;
+    check.onclick = function () {
+      if (!address.reportValidity()) return;
+      var target = address.value.trim();
+      check.disabled = true; fingerprint = ''; form.elements.confirm.checked = false; update(); error('');
+      api('/api/cowork/cloud-servers/host-key', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ baseUrl: target }) }).then(function (result) {
+        if (!modal.isConnected || target !== address.value.trim()) return;
+        checkedAddress = target; fingerprint = result.hostFingerprint;
+        modal.querySelector('[data-fingerprint]').textContent = fingerprint; modal.querySelector('[data-fingerprint]').hidden = false; modal.querySelector('[data-confirm]').hidden = false;
+      }).catch(function (e) { error(e.message); }).finally(function () { check.disabled = false; update(); });
+    };
+    form.onsubmit = function (event) {
+      event.preventDefault();
+      if (connect.disabled || !form.reportValidity()) return;
+      busy = true; check.disabled = true; update(); error('');
+      api('/api/cowork/cloud-servers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label: form.elements.label.value.trim(), baseUrl: checkedAddress, password: form.elements.password.value, hostFingerprint: fingerprint }) }).then(function (result) {
+        form.elements.password.value = '';
+        var cw = cwEnsure(); cw.cloudServers = (cw.cloudServers || []).filter(function (server) { return server.id !== result.server.id; }).concat([result.server]);
+        modal.remove(); onSaved(result.server);
+      }).catch(function (e) { error(e.message); }).finally(function () { busy = false; check.disabled = false; update(); });
+    };
+    form.elements.label.focus();
+  }
+
   function cwAgentModal(agent) {
     var cw = cwEnsure();
     var isEdit = Boolean(agent && agent.id);
@@ -3171,6 +3209,8 @@ export const COWORK_JS = String.raw`
       allowWrites: agent ? Boolean(agent.allowWrites) : false,
       allowConfig: agent ? Boolean(agent.allowConfig) : false,
       useHostComputer: agent ? Boolean(agent.useHostComputer) : true,
+      computerMode: agent && agent.cloudConnectionId ? 'cloud' : agent && !agent.useHostComputer ? 'private' : 'local',
+      cloudConnectionId: agent ? agent.cloudConnectionId || '' : '',
       chiefOfStaff: agent ? Boolean(agent.chiefOfStaff) : false
     };
     var modal = document.createElement('div');
@@ -3202,13 +3242,29 @@ export const COWORK_JS = String.raw`
           '<label><input type="checkbox" id="cwAmShell"' + (d.allowShell ? ' checked' : '') + '> Allow run_command</label>' +
           '<label><input type="checkbox" id="cwAmWrites"' + (d.allowWrites ? ' checked' : '') + '> Allow file writes</label>' +
           '<label><input type="checkbox" id="cwAmConfig"' + (d.allowConfig ? ' checked' : '') + '> Allow tool setup (add MCP servers, create skills, manage connections, create projects)</label>' +
-          '<label><input type="checkbox" id="cwAmHost"' + (d.useHostComputer ? ' checked' : '') + '> My computer — no Docker required (uncheck for a private computer)</label>' +
         '</div>' +
-        '<div class="cw-note">“Use my computer” gives this teammate direct access to the Agent Gitu workspace on this Windows computer, so Docker does not need to be started. Shell, writes and tool setup remain opt-in per agent.</div>' +
+        '<label for="cwAmComputer">Computer</label><select id="cwAmComputer"><option value="local"' + (d.computerMode === 'local' ? ' selected' : '') + '>My computer</option><option value="cloud"' + (d.computerMode === 'cloud' ? ' selected' : '') + '>Cloud computer</option><option value="private"' + (d.computerMode === 'private' ? ' selected' : '') + '>Private desktop on this computer</option></select>' +
+        '<div id="cwAmCloud"' + (d.computerMode !== 'cloud' ? ' hidden' : '') + '><label for="cwAmCloudServer">Cloud server</label><select id="cwAmCloudServer"></select><button type="button" class="btn ghost" id="cwAmCloudAdd" style="margin-top:8px">Add cloud server</button></div>' +
+        '<div class="cw-note" id="cwAmComputerNote"></div>' +
         (dmGw ? dmGw.html : '') +
       '</div>' +
       '<div class="cw-foot"><button class="btn ghost" id="cwAmDel"' + (isEdit ? '' : ' hidden') + '>Delete</button><span style="flex:1"></span><button class="btn dark" id="cwAmSave">' + (isEdit ? 'Save changes' : 'Create teammate') + '</button></div></div>';
     document.body.appendChild(modal);
+    var computerSel = modal.querySelector('#cwAmComputer');
+    var cloudSel = modal.querySelector('#cwAmCloudServer');
+    function renderCloudServers(selected) {
+      var servers = cw.cloudServers || [];
+      cloudSel.innerHTML = '<option value="">Choose a server…</option>' + servers.map(function (server) { return '<option value="' + esc(server.id) + '"' + (server.id === selected ? ' selected' : '') + (!server.hasCredential ? ' disabled' : '') + '>' + esc(server.label) + ' · ' + esc(server.host) + (!server.hasCredential ? ' (reconnect required)' : '') + '</option>'; }).join('');
+      if (selected && !servers.some(function (server) { return server.id === selected; })) cloudSel.innerHTML += '<option value="' + esc(selected) + '" selected disabled>Saved server is missing — reconnect it</option>';
+    }
+    function updateComputerChoice() {
+      modal.querySelector('#cwAmCloud').hidden = computerSel.value !== 'cloud';
+      modal.querySelector('#cwAmComputerNote').textContent = computerSel.value === 'cloud' ? 'A private Linux desktop on your server. You and the teammate can use the same screen, hand off control, and share files. The server needs Docker. Cloud tasks stay on the selected server.' : computerSel.value === 'private' ? 'A separate Linux desktop on this computer. Requires Docker here. Files and browser sessions are kept when stopped.' : 'Uses this Gitu app’s local workspace and browser. Docker is not required. Shell and file changes follow the permissions above.';
+    }
+    computerSel.onchange = updateComputerChoice;
+    renderCloudServers(d.cloudConnectionId);
+    updateComputerChoice();
+    modal.querySelector('#cwAmCloudAdd').onclick = function () { cwCloudServerModal(function (server) { renderCloudServers(server.id); }); };
     if (dmGw) dmGw.bind();
     function refreshPreview() {
       var wrap = modal.querySelector('#cwAmAvaWrap');
@@ -3290,6 +3346,7 @@ export const COWORK_JS = String.raw`
     }).catch(function () { if (modal.isConnected) toast('Could not refresh models; showing the last catalog', true); });
     modal.querySelector('#cwAmCancel').onclick = function () { modal.remove(); };
     modal.querySelector('#cwAmSave').onclick = function () {
+      if (computerSel.value === 'cloud' && (!cloudSel.value || cloudSel.selectedOptions[0].disabled)) { toast('Choose a saved cloud server or add one first.', true); return; }
       var body = {
         id: isEdit ? agent.id : undefined,
         name: $('cwAmName').value,
@@ -3303,7 +3360,8 @@ export const COWORK_JS = String.raw`
         allowShell: $('cwAmShell').checked,
         allowWrites: $('cwAmWrites').checked,
         allowConfig: $('cwAmConfig').checked,
-        useHostComputer: $('cwAmHost').checked,
+        useHostComputer: computerSel.value === 'local',
+        cloudConnectionId: computerSel.value === 'cloud' ? cloudSel.value : '',
         chiefOfStaff: $('cwAmChief').checked
       };
       api('/api/cowork/agents', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })

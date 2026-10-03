@@ -77,7 +77,7 @@ export interface CoworkToolScope {
    *  envelope delegated engineering draws from. */
   missionId?: string;
   signal?: AbortSignal;
-  computerFor?: (agentId: string) => CoworkComputer;
+  computerFor?: (agentId: string, agent?: CoworkAgent) => CoworkComputer;
   /** Set after the first host fallback in a turn (virtual computer unavailable). */
   hostFallbackNoticed?: boolean;
   /** Absolute folders tagged for this conversation; host tools may work inside them. */
@@ -402,14 +402,14 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
       return await dispatchHost();
     }
     if (scope?.computerFor && COMPUTER_ROUTED_TOOLS.includes(tool)) {
-      const computer = scope.computerFor(scope.agent.id);
+      const computer = scope.computerFor(scope.agent.id, scope.agent);
       const result = await computer.execute(tool, params, scope.signal, scope.conversationId, (file) => {
         if (!scope.conversationId) throw new Error('File sharing requires a conversation.');
         const artifact = scope.store.addArtifact({ id: file.artifactId, conversationId: scope.conversationId, agentId: scope.agent.id, name: file.name, dataBase64: file.dataBase64 });
         (scope.artifactIds ??= []).push(artifact.id);
       });
       const computerOnly = COMPUTER_ONLY_TOOLS.includes(tool);
-      if (result.ok || computerOnly || computer.status().state !== 'unavailable') return result;
+      if (result.ok || computerOnly || scope.agent.cloudConnectionId || computer.status().state !== 'unavailable') return result;
       // The virtual computer cannot start (no Docker, daemon down, …) — the
       // user asked for host fallback: run the tool on the user's computer.
       const first = !scope.hostFallbackNoticed;
@@ -927,6 +927,7 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
         allowWrites: agent.allowWrites,
         allowConfig: agent.allowConfig,
         useHostComputer: agent.useHostComputer,
+        cloudConnectionId: agent.cloudConnectionId,
         skills: agent.skills,
       });
       if (scope.conversationId) {

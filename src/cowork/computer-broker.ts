@@ -18,9 +18,10 @@ export class ComputerBroker {
   ) {
     if (!/^[a-zA-Z0-9_-]{8,100}$/.test(owner)) throw new Error('Set a valid desktop broker owner.');
   }
-  async owned(name: string): Promise<void> {
+  async owned(name: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (!namePattern.test(name)) throw new Error('Invalid desktop container.');
-    const label = await this.exec(['container', 'inspect', '--format', '{{index .Config.Labels "dev.agentgitu.broker"}}', name], undefined, undefined, 15_000);
+    const label = await this.exec(['container', 'inspect', '--format', '{{index .Config.Labels "dev.agentgitu.broker"}}', name], undefined, signal, 15_000);
     if (label.trim() !== this.owner) throw new Error('This desktop does not belong to this workspace.');
   }
   async execute(args: unknown, input?: unknown, timeoutMs: unknown = 120_000, signal?: AbortSignal): Promise<string> {
@@ -39,34 +40,34 @@ export class ComputerBroker {
       return this.exec([...argv.slice(0, -1), '--label', `dev.agentgitu.broker=${this.owner}`, IMAGE], undefined, signal, 120_000);
     }
     if (argv[0] === 'container' && argv[1] === 'inspect' && argv[2] === '--format' && ['{{.Config.Image}}', '{{.State.Running}}', '{{.State.Status}}'].includes(argv[3]!) && argv.length === 5) {
-      await this.owned(argv[4]!);
+      await this.owned(argv[4]!, signal);
       return this.exec(argv, undefined, signal, 15_000);
     }
     if (argv[0] === 'start' && argv.length === 2) {
-      await this.owned(argv[1]!);
+      await this.owned(argv[1]!, signal);
       return this.exec(argv, undefined, signal, 120_000);
     }
     if (['pause', 'unpause'].includes(argv[0]!) && argv.length === 2) {
-      await this.owned(argv[1]!);
+      await this.owned(argv[1]!, signal);
       return this.exec(argv, undefined, signal, 15_000);
     }
     if (argv[0] === 'stop' && argv.length === 4 && argv[1] === '--time' && argv[2] === '2') {
-      await this.owned(argv[3]!);
+      await this.owned(argv[3]!, signal);
       return this.exec(argv, undefined, signal, 15_000);
     }
     if (argv[0] === 'rename' && argv.length === 3 && argv[2]!.startsWith(argv[1]! + '-backup-') && namePattern.test(argv[2]!)) {
-      await this.owned(argv[1]!);
+      await this.owned(argv[1]!, signal);
       return this.exec(argv, undefined, signal, 15_000);
     }
     if (argv[0] === 'cp' && argv.length === 3 && argv[1] === path.join(ASSETS, 'server.cjs') && argv[2]!.endsWith(':/computer/server.cjs')) {
-      await this.owned(argv[2]!.split(':')[0]!);
+      await this.owned(argv[2]!.split(':')[0]!, signal);
       return this.exec(argv, undefined, signal, 15_000);
     }
     // The program runs as the image's unprivileged agent user in an owned sandbox.
     // No user, mount, network, capability, privilege or image flags can be supplied.
     const offset = argv[1] === '-i' ? 2 : 1;
     if (argv[0] === 'exec' && argv[offset + 1] === 'node' && argv[offset + 2] === '-e' && argv.length >= offset + 4 && argv.length <= offset + 5) {
-      await this.owned(argv[offset]!);
+      await this.owned(argv[offset]!, signal);
       return this.exec(argv, input as string | undefined, signal, timeoutMs);
     }
     throw new Error(`Unsupported desktop operation: ${argv.join(' ')}`);

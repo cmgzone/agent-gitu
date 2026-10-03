@@ -5,7 +5,8 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createBudgetAccount } from '../src/coding/budget.js';
 import { CoworkMemory } from '../src/cowork/memory.js';
 import { createSubAgentChildRunner, runMissionSession, type CoworkRunnerDeps } from '../src/cowork/runner.js';
-import { CoworkStore, type SubAgentInstance } from '../src/cowork/store.js';
+import { CoworkStore, type CoworkAgent, type SubAgentInstance } from '../src/cowork/store.js';
+import type { CoworkComputer } from '../src/cowork/computer.js';
 import { CoworkSubAgentRunner, CoworkSubAgents, buildSubAgentEvidenceReport, evaluateSubAgentEvidence, type SubAgentChildRunInput, type SubAgentEvidenceReport, type SubAgentToolScope } from '../src/cowork/subagents.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import type { LlmClient, LlmMessage } from '../src/llm/llm.js';
@@ -192,6 +193,21 @@ describe('spawn_sub_agent execution', () => {
 });
 
 describe('isolated child turn', () => {
+  it('inherits the selected cloud server and routes child tools there', async () => {
+    const { dir, store, marketing, runner, scope } = setup('child-cloud');
+    store.saveAgent({ ...marketing, useHostComputer: false, cloudConnectionId: 'ssh-fixture' });
+    const llm = mockLlm([toolCall('list_files', { path: '.' }), 'REPORT: cloud-only.txt is available on the cloud computer.']);
+    const computerFor = vi.fn((_id: string, child?: CoworkAgent) => {
+      expect(child).toMatchObject({ useHostComputer: false, cloudConnectionId: 'ssh-fixture' });
+      return { execute: async () => ({ ok: true, output: 'cloud-only.txt' }) } as unknown as CoworkComputer;
+    });
+    const deps = runnerDeps(dir, store, llm, { computerFor });
+    const result = await runner.run(scope(), createSubAgentChildRunner(deps), { role: 'researcher', objective: 'Inspect files on the selected cloud computer' });
+    expect(result.ok).toBe(true);
+    expect(computerFor).toHaveBeenCalledOnce();
+    expect(String(llm.seen[1]!.at(-1)!.content)).toContain('cloud-only.txt');
+  });
+
   it('executes tools under the narrowed grant and reports only as a tool result', async () => {
     const { dir, store, conversation, runner, scope } = setup('child-loop');
     const llm = mockLlm([

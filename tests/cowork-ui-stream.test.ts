@@ -409,8 +409,9 @@ describe('Cowork UI live updates', () => {
     expect(classes.size).toBe(0);
   });
 
-  it('includes direct-computer permission, member picker, work cards and document previews', () => {
-    expect(COWORK_JS).toContain('id="cwAmHost"');
+  it('includes the local/cloud computer selector, member picker, work cards and document previews', () => {
+    expect(COWORK_JS).toContain('id="cwAmComputer"');
+    expect(COWORK_JS).toContain('id="cwAmCloudServer"');
     expect(COWORK_JS).toContain('function cwAddMemberModal');
     expect(COWORK_JS).not.toContain("prompt('Add member");
     expect(COWORK_JS).toContain('data-cwrequest');

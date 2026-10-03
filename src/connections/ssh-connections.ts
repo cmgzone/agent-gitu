@@ -101,6 +101,7 @@ function openSsh(profile: Pick<SshConnectionProfile, 'host' | 'port' | 'username
     client.connect({
       host: profile.host, port: profile.port, username: profile.username, password,
       tryKeyboard: true, readyTimeout: TIMEOUT_MS, hostHash: 'sha256',
+      keepaliveInterval: 10_000, keepaliveCountMax: 3,
       hostVerifier: (hash: string) => {
         hostKeyMismatch = profile.hostFingerprint !== displayFingerprint(hash);
         return !hostKeyMismatch;
@@ -127,6 +128,16 @@ export class SshConnectionRegistry {
     return profiles.length ? profiles.map((profile) =>
       `- ${profile.id}: ${profile.label} [SSH ${profile.username}@${profile.host}:${profile.port}; credential ${profile.hasCredential ? 'available' : 'missing'}; host key pinned; use ssh_exec only for authorized commands]`,
     ).join('\n') : 'No saved SSH connections.';
+  }
+
+  /** A pinned, authenticated transport for the cloud desktop. Credentials stay
+   *  in the registry; callers receive only the live SSH connection. */
+  async openClient(id: string): Promise<Client> {
+    const profile = this.get(id);
+    if (!profile) throw new Error('Saved SSH connection not found.');
+    const password = loadStoredKeys()[keyRef(id)];
+    if (!password) throw new Error('Saved SSH password is missing.');
+    return openSsh(profile, password);
   }
 
   async saveAndValidate(input: { label: string; baseUrl: string; password: string; hostFingerprint: string }): Promise<SshConnectionView> {

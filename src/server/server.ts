@@ -1,6 +1,7 @@
 import http from 'node:http';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { bridgeDesktop, connectDesktopStream } from '../cowork/desktop-stream.js';
+import { CloudComputerTransport } from '../cowork/cloud-computer.js';
 import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
 import { AppAuth } from './app-auth.js';
@@ -42,7 +43,7 @@ import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import { runConversationTurn, runMissionSession, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
-import { CoworkComputer } from '../cowork/computer.js';
+import { CoworkComputer, hostedComputerExec } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
 import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
@@ -414,6 +415,7 @@ export class GituServer {
   private readonly mobileAccess: MobileAccess;
   private readonly appAuth: AppAuth;
   private desktopSockets?: WebSocketServer;
+  private readonly desktopAgents = new Map<WebSocket, string>();
   private readonly connectedApps: ComposioConnections;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
@@ -440,6 +442,8 @@ export class GituServer {
   private coworkTimer?: ReturnType<typeof setInterval>;
   private readonly coworkTools = new Map<string, ToolContext>();
   private readonly coworkComputers = new Map<string, CoworkComputer>();
+  private readonly cloudComputers = new Map<string, CloudComputerTransport>();
+  private readonly coworkComputerTargets = new Map<string, string>();
   private readonly coworkBrowserLease = new CoworkBrowserLease();
   private readonly coworkAgentLocks = new Map<string, Promise<void>>();
   /** Engineering delegation: `gitu_task` → a fresh Agent Gitu session. */
@@ -928,7 +932,16 @@ export class GituServer {
       if (desktopSockets.clients.size >= 16) { reject(429); return; }
       desktopSockets.handleUpgrade(req, socket, head, (client) => {
         this.appAuth.track(req, socket);
-        try { bridgeDesktop(client, connectDesktopStream(computer.name)); } catch { client.close(1011, 'Desktop unavailable'); }
+        this.desktopAgents.set(client, agent.id);
+        client.once('close', () => this.desktopAgents.delete(client));
+        const opening = new AbortController();
+        client.once('close', () => opening.abort());
+        void (async () => {
+          if (agent.cloudConnectionId === 'hosted' && !process.env['AGENT_GITU_COMPUTER_BROKER_URL']) throw new Error('Gitu cloud is unavailable.');
+          const desktop = agent.cloudConnectionId && agent.cloudConnectionId !== 'hosted' ? await this.cloudComputer(agent.cloudConnectionId).desktopStream(computer.name, opening.signal) : connectDesktopStream(computer.name);
+          if (client.readyState !== WebSocket.OPEN) { desktop.destroy(); return; }
+          bridgeDesktop(client, desktop);
+        })().catch(() => client.close(1011, 'Desktop unavailable'));
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -1356,13 +1369,53 @@ export class GituServer {
     return this.coworkMemoryStore;
   }
 
-  private coworkComputer(agentId: string): CoworkComputer {
+  private cloudComputer(connectionId: string): CloudComputerTransport {
+    let transport = this.cloudComputers.get(connectionId);
+    if (!transport) {
+      transport = new CloudComputerTransport(connectionId, ensureGituHome().root);
+      this.cloudComputers.set(connectionId, transport);
+    }
+    return transport;
+  }
+
+  private cloudServers(): { id: string; label: string; host: string; hasCredential: boolean }[] {
+    const servers = new SshConnectionRegistry().list().map(({ id, label, host, hasCredential }) => ({ id, label, host, hasCredential }));
+    if (process.env['AGENT_GITU_COMPUTER_BROKER_URL'] && (process.env['AGENT_GITU_COMPUTER_BROKER_KEY']?.length ?? 0) >= 32) servers.unshift({ id: 'hosted', label: 'Gitu cloud', host: 'This server', hasCredential: true });
+    return servers;
+  }
+
+  private coworkComputer(agentId: string, selectedAgent?: CoworkAgent): CoworkComputer {
+    const agent = this.cowork().getAgent(agentId) ?? selectedAgent;
+    const cloudId = agent?.useHostComputer ? undefined : agent?.cloudConnectionId;
+    const target = cloudId && cloudId !== 'hosted' ? cloudId : 'private';
     let computer = this.coworkComputers.get(agentId);
+    if (computer && this.coworkComputerTargets.get(agentId) !== target) {
+      computer.setControl('user', 'Computer selection changed.');
+      void computer.stop().catch(() => {});
+      this.coworkComputers.delete(agentId);
+      computer = undefined;
+    }
     if (!computer) {
-      computer = new CoworkComputer(agentId, nodePath.join(ensureGituHome().root, 'Cowork'));
+      const root = nodePath.join(ensureGituHome().root, 'Cowork');
+      computer = cloudId && cloudId !== 'hosted'
+        ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true })
+        : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted' });
       this.coworkComputers.set(agentId, computer);
+      this.coworkComputerTargets.set(agentId, target);
     }
     return computer;
+  }
+
+  private coworkComputerBusy(agentId: string): boolean {
+    return this.coworkAgentLocks.has(agentId) || this.cowork().listConversations().some((conversation) => conversation.memberIds.includes(agentId) && this.coworkRuns.get(conversation.id)?.busy);
+  }
+
+  private async resetCoworkComputer(agentId: string): Promise<void> {
+    for (const [socket, owner] of this.desktopAgents) if (owner === agentId) socket.close(1000, 'Computer selection changed');
+    const previous = this.coworkComputers.get(agentId);
+    this.coworkComputers.delete(agentId);
+    this.coworkComputerTargets.delete(agentId);
+    await previous?.stop().catch(() => {});
   }
 
   /** Host context is only for trusted skills/connections/MCP. File, shell and
@@ -1725,7 +1778,7 @@ export class GituServer {
     const agent = this.cowork().getAgent(input.agentId);
     if (!agent) throw new Error('That teammate no longer exists.');
     if (!agent.useHostComputer) {
-      throw new Error('Engineering delegation needs a workspace this machine can execute in. Switch the teammate to “My computer” mode; the private computer has no coding runtime yet.');
+      throw new Error('Engineering delegation requires a local project workspace. On the selected private or cloud computer, use the file, shell and browser tools directly for coding.');
     }
     const root = workspacePath(input.workspace);
     // Pricing is the host's to know — it owns the catalog and the credential — so
@@ -2136,6 +2189,8 @@ export class GituServer {
     for (const context of this.coworkTools.values()) context.mcp?.killAll();
     for (const run of this.coworkRuns.values()) { run.queue.length = 0; run.abort.abort(); }
     await Promise.allSettled([...this.coworkComputers.values()].map((computer) => computer.stop()));
+    for (const transport of this.cloudComputers.values()) transport.close();
+    this.cloudComputers.clear();
   }
 
   private recordCoworkTelegramError(conversationId: string, message: string): void {
@@ -2695,7 +2750,7 @@ export class GituServer {
           agents: store.listAgents(),
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
-          computerFor: (agentId) => this.coworkComputer(agentId),
+          computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
           delegation: this.delegation(),
           withAgent: (agent, work) => this.withCoworkAgent(agent.id, abort.signal, work),
           store,
@@ -2865,7 +2920,7 @@ export class GituServer {
           agents: store.listAgents(),
           resolveLlm: (a) => this.coworkMissionLlm(a, account, () => abort.abort(new Error('Mission budget exhausted.'))),
           toolContext: (a) => this.coworkToolContext(a),
-          computerFor: (agentId) => this.coworkComputer(agentId),
+          computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
           delegation: this.delegation(),
           withAgent: (a, work) => this.withCoworkAgent(a.id, abort.signal, work),
           store,
@@ -3097,6 +3152,24 @@ export class GituServer {
   private async coworkRoutes(req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string): Promise<boolean> {
     const store = this.cowork();
 
+    if (path === '/api/cowork/cloud-servers' && method === 'GET') {
+      this.sendJson(res, 200, { servers: this.cloudServers() });
+      return true;
+    }
+    if ((path === '/api/cowork/cloud-servers' || path === '/api/cowork/cloud-servers/host-key') && method === 'POST') {
+      const body = await this.readBody(req);
+      try {
+        if (path.endsWith('/host-key')) this.sendJson(res, 200, { hostFingerprint: await probeSshHost(String(body['baseUrl'] ?? '')) });
+        else {
+          const server = await new SshConnectionRegistry().saveAndValidate({
+            label: String(body['label'] ?? ''), baseUrl: String(body['baseUrl'] ?? ''), password: String(body['password'] ?? ''), hostFingerprint: String(body['hostFingerprint'] ?? ''),
+          });
+          this.sendJson(res, 200, { server });
+        }
+      } catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); }
+      return true;
+    }
+
     if (path === '/api/cowork/agents') {
       if (method === 'GET') {
         // The shared skill library comes from the cowork workspace; it powers
@@ -3112,31 +3185,43 @@ export class GituServer {
         const agents = store.listAgents();
         const memoryCounts: Record<string, number> = {};
         for (const agent of agents) memoryCounts[agent.id] = this.coworkMemory().count(agent);
-        this.sendJson(res, 200, { agents, availableSkills, memoryCounts, computers: agents.map((a) => this.coworkComputer(a.id).status()), profile: store.userProfile() });
+        this.sendJson(res, 200, { agents, availableSkills, memoryCounts, computers: agents.map((a) => this.coworkComputer(a.id).status()), cloudServers: this.cloudServers(), profile: store.userProfile() });
         return true;
       }
       if (method === 'POST') {
         const body = await this.readBody(req);
         try {
-          const agent = store.saveAgent({
-            id: typeof body['id'] === 'string' && body['id'] ? body['id'] : undefined,
-            name: String(body['name'] ?? ''),
-            avatar: body['avatar'] && typeof body['avatar'] === 'object' ? (body['avatar'] as Record<string, unknown>) : undefined,
-            tagline: typeof body['tagline'] === 'string' ? body['tagline'] : undefined,
-            systemPrompt: String(body['systemPrompt'] ?? ''),
-            provider: typeof body['provider'] === 'string' ? body['provider'] : undefined,
-            model: typeof body['model'] === 'string' ? body['model'] : undefined,
-            effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
-            skills: Array.isArray(body['skills']) ? body['skills'].map(String) : [],
-            allowShell: body['allowShell'] === true,
-            allowWrites: body['allowWrites'] === true,
-            allowConfig: body['allowConfig'] === true,
-            useHostComputer: body['useHostComputer'] === true,
-            chiefOfStaff: body['chiefOfStaff'] === true,
-          });
-          const oldContext = this.coworkTools.get(agent.id);
-          oldContext?.mcp?.killAll();
-          this.coworkTools.delete(agent.id);
+          const existing = typeof body['id'] === 'string' ? store.getAgent(body['id']) : undefined;
+          const useHostComputer = body['useHostComputer'] === undefined ? existing?.useHostComputer ?? true : body['useHostComputer'] === true;
+          const cloudConnectionId = useHostComputer ? undefined : typeof body['cloudConnectionId'] === 'string' ? body['cloudConnectionId'].trim() || undefined : existing?.cloudConnectionId;
+          if (cloudConnectionId && !this.cloudServers().some((server) => server.id === cloudConnectionId && server.hasCredential)) throw new Error('Choose a saved cloud server with a working credential.');
+          const changingComputer = Boolean(existing && (existing.useHostComputer !== useHostComputer || existing.cloudConnectionId !== cloudConnectionId));
+          if (existing && changingComputer && this.coworkComputerBusy(existing.id)) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish, or stop its task before changing computers.' }); return true; }
+          let agent!: CoworkAgent;
+          const save = async () => {
+            agent = store.saveAgent({
+              id: typeof body['id'] === 'string' && body['id'] ? body['id'] : undefined,
+              name: String(body['name'] ?? ''),
+              avatar: body['avatar'] && typeof body['avatar'] === 'object' ? (body['avatar'] as Record<string, unknown>) : undefined,
+              tagline: typeof body['tagline'] === 'string' ? body['tagline'] : undefined,
+              systemPrompt: String(body['systemPrompt'] ?? ''),
+              provider: typeof body['provider'] === 'string' ? body['provider'] : undefined,
+              model: typeof body['model'] === 'string' ? body['model'] : undefined,
+              effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
+              skills: Array.isArray(body['skills']) ? body['skills'].map(String) : [],
+              allowShell: body['allowShell'] === true,
+              allowWrites: body['allowWrites'] === true,
+              allowConfig: body['allowConfig'] === true,
+              useHostComputer,
+              cloudConnectionId: cloudConnectionId ?? '',
+              chiefOfStaff: body['chiefOfStaff'] === true,
+            });
+            if (changingComputer) await this.resetCoworkComputer(agent.id);
+            this.coworkTools.get(agent.id)?.mcp?.killAll();
+            this.coworkTools.delete(agent.id);
+          };
+          if (existing && changingComputer) await this.withCoworkAgent(existing.id, new AbortController().signal, save);
+          else await save();
           this.sendJson(res, 200, { ok: true, agent });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
@@ -3173,11 +3258,11 @@ export class GituServer {
       if (!targetAgent) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
       const computer = this.coworkComputer(computerMatch[1]!);
       const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer });
-      if (method === 'GET') { await computer.refreshStatus(); this.sendJson(res, 200, { computer: status() }); return true; }
+      if (method === 'GET') { if (!targetAgent.useHostComputer) await computer.refreshStatus(); this.sendJson(res, 200, { computer: status() }); return true; }
       if (method === 'POST') {
         const body = await this.readBody(req);
         if (body['action'] === 'use-private') {
-          const inUse = this.coworkAgentLocks.has(targetAgent.id) || store.listConversations().some((conversation) => conversation.memberIds.includes(targetAgent!.id) && this.coworkRuns.get(conversation.id)?.busy);
+          const inUse = this.coworkComputerBusy(targetAgent.id);
           if (inUse) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish, or stop its task before changing computers.' }); return true; }
           targetAgent = store.saveAgent({ ...targetAgent, useHostComputer: false });
           this.coworkTools.get(targetAgent.id)?.mcp?.killAll();

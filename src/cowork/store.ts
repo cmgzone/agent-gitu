@@ -40,6 +40,8 @@ export interface CoworkAgent {
   allowConfig: boolean;
   /** Route file, shell and browser tools directly to the shared user workspace. */
   useHostComputer: boolean;
+  /** Saved, host-key-pinned SSH server for a remote private desktop. */
+  cloudConnectionId?: string;
   /** Default chief-of-staff suggestion when assembling new groups. */
   chiefOfStaff: boolean;
   createdAt: string;
@@ -699,6 +701,7 @@ export class CoworkStore {
     if (!name) throw new Error('Agent name is required');
     if (!input.systemPrompt.trim()) throw new Error('Agent instructions are required');
     const existing = input.id ? data.agents.find((a) => a.id === input.id) : undefined;
+    if (input.cloudConnectionId && !/^[a-zA-Z0-9_-]{1,120}$/.test(input.cloudConnectionId)) throw new Error('Cloud server selection is invalid.');
     if (data.agents.some((a) => a.id !== existing?.id && a.name.toLowerCase() === name.toLowerCase())) throw new Error('Agent names must be unique so mentions identify one teammate.');
     const agent: CoworkAgent = {
       id: existing?.id ?? `ca-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
@@ -714,6 +717,7 @@ export class CoworkStore {
       allowWrites: input.allowWrites ?? existing?.allowWrites ?? false,
       allowConfig: input.allowConfig ?? existing?.allowConfig ?? false,
       useHostComputer: input.useHostComputer ?? existing?.useHostComputer ?? true,
+      cloudConnectionId: (input.useHostComputer ?? existing?.useHostComputer ?? true) ? undefined : (input.cloudConnectionId !== undefined ? input.cloudConnectionId.trim() || undefined : existing?.cloudConnectionId),
       chiefOfStaff: input.chiefOfStaff ?? existing?.chiefOfStaff ?? false,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };

@@ -80,6 +80,12 @@ export const computerExec: ComputerExec = async (args, input, signal, timeoutMs 
   }
 };
 
+/** Explicit hosted selection must never fall through to a local Docker host. */
+export const hostedComputerExec: ComputerExec = (args, input, signal, timeoutMs) => {
+  if (!process.env['AGENT_GITU_COMPUTER_BROKER_URL']) return Promise.reject(new Error('Gitu cloud is not configured on this server. Choose a saved cloud connection.'));
+  return computerExec(args, input, signal, timeoutMs);
+};
+
 export function computerCreateArgs(name: string): string[] {
   return [
     'create',
@@ -167,6 +173,7 @@ export class CoworkComputer {
     readonly agentId: string,
     private readonly root: string,
     private readonly exec: ComputerExec = computerExec,
+    private readonly runtime: { key: string; cloud?: boolean } = { key: 'default' },
   ) {
     const key = createHash('sha256')
       .update(`${path.resolve(root)}:${agentId}`)
@@ -251,13 +258,14 @@ export class CoworkComputer {
           await this.exec(['image', 'inspect', IMAGE], undefined, signal, 15_000);
         } catch {
           signal?.throwIfAborted();
-          let build = CoworkComputer.builds.get(IMAGE);
+          const buildKey = this.runtime.key + ':' + IMAGE;
+          let build = CoworkComputer.builds.get(buildKey);
           if (!build) {
             // Shared build is independent of one chat's Stop; no agent tools run here.
             build = this.exec(['build', '-t', IMAGE, ASSETS], undefined, undefined, 900_000).finally(() => {
-              CoworkComputer.builds.delete(IMAGE);
+              CoworkComputer.builds.delete(buildKey);
             });
-            CoworkComputer.builds.set(IMAGE, build);
+            CoworkComputer.builds.set(buildKey, build);
           }
           await withAbort(build, signal);
           signal?.throwIfAborted();
@@ -286,7 +294,7 @@ export class CoworkComputer {
     } catch (err) {
       this.state = 'unavailable';
       const guidance =
-        process.platform === 'win32' ? 'Install/start Docker Desktop with Linux containers, then retry.' : 'Configure the server’s private desktop runtime, then retry.';
+        this.runtime.cloud ? 'Check the saved cloud server connection and Docker on that server, then retry.' : process.platform === 'win32' ? 'Install/start Docker Desktop with Linux containers, then retry.' : 'Configure the server’s private desktop runtime, then retry.';
       const detail = (err as Error).message;
       this.reason = classifyUnavailable(detail);
       this.error = `Virtual computer unavailable. ${guidance} ${detail}`;

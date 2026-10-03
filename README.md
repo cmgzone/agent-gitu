@@ -375,8 +375,19 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   Messages arriving while the team works are queued and answered in order.
 - **Optional computers** — new teammates default to **My computer**, using the
   Agent Gitu workspace and desktop browser without Docker. Existing profiles
-  keep their computer selection. Uncheck My computer in the profile to use
-  a private computer. Each private computer gets a persistent Linux container
+  keep their computer selection. Choose **Cloud computer** in the teammate's
+  profile to use **Gitu cloud** on a hosted deployment, or a saved SSH server.
+  **Add cloud server** verifies the server key and saves its credential without
+  sending it to the agent. The remote server needs Docker and permission to use
+  it; the installed app does not need Docker for cloud tasks. SSH transports
+  screen/input and tools through one pinned, encrypted connection. Each agent
+  gets private persistent workspace/home volumes, and the same desktop supports
+  takeover, handoff, sleep, and downloadable chat attachments. Cloud failures
+  stay on that target and do not silently execute on the local machine.
+  Stop active work before changing computers. Switching keeps the old volumes
+  so choosing that computer again restores its files and browser sessions.
+  **Private desktop on this computer** retains the existing local Docker option.
+  Each private computer gets a persistent Linux container
   with its own `/workspace`, shell and Chromium browser session. Install and
   start Docker Desktop with Linux containers enabled. Use **Start** in the
   agent's computer card, or let its first computer tool start it. The first
@@ -404,7 +415,7 @@ sidebar. Instead of task runs it gives you a messaging-style team surface:
   Stop preserves the volumes; deleting a teammate retains its computer data.
   Long-running app servers use `run_command` with `background: true`; agents
   inspect their output or stop them with `computer_process`.
-  If Docker is unavailable, the tool dispatcher reports its host fallback;
+  If Docker is unavailable for a local private desktop, the tool dispatcher reports its host fallback;
   permission switches still apply. Existing Workspace files remain in place.
 - **Tools and skills** — agents read/search and edit their own computer files.
   Use `share_file` and `receive_file` to pass artifacts within a conversation.

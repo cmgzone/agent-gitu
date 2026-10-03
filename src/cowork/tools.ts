@@ -39,6 +39,7 @@ import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js'
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { createHash } from 'node:crypto';
 import type { ComposioConnections } from '../connections/composio.js';
+import { coworkToolSchema } from './tool-schemas.js';
 
 /**
  * Tool surface for cowork chat agents. It reuses the project's audited tool
@@ -242,6 +243,13 @@ export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowW
       additionalProperties: false,
     },
   };
+}
+
+/** Each tool carries its own parameters; the legacy wrapper remains readable. */
+export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition[] {
+  const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
+  return COWORK_TOOLS.filter(tool => isGated(tool.gate, perms) && (tool.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)))
+    .map(tool => ({ name: tool.name, description: tool.doc, parameters: coworkToolSchema(tool.name) }));
 }
 
 function isGated(gate: CoworkToolDoc['gate'], perms: CoworkToolPerms): boolean {

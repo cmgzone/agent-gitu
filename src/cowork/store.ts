@@ -455,6 +455,7 @@ export interface CoworkData {
   widgets: CoworkWidget[];
   /** Spend envelopes, so ceilings survive a restart with their spend. */
   budgets?: CoworkBudgetData;
+  contextCheckpoints?: CoworkContextCheckpoint[];
 }
 
 export interface CoworkWorkEntry {
@@ -467,6 +468,16 @@ export interface CoworkWorkEntry {
   ok: boolean;
   output: string;
   ts: string;
+}
+
+/** Bounded model context; original messages remain available through history. */
+export interface CoworkContextCheckpoint {
+  conversationId: string;
+  agentId: string;
+  threadId?: string;
+  throughSeq: number;
+  summary: string;
+  updatedAt: string;
 }
 
 export const EMPTY_COWORK_DATA: CoworkData = { agents: [], conversations: [], messages: {}, messageTombstones: {}, missions: [], subAgents: [], followUps: [], inbox: [], artifacts: [], todos: [], requests: [], workLog: [], widgets: [] };
@@ -588,6 +599,7 @@ export class CoworkStore {
         workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
         widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
         budgets: sanitizeBudgets(parsed.budgets),
+        contextCheckpoints: Array.isArray(parsed.contextCheckpoints) ? parsed.contextCheckpoints.filter(entry => entry && typeof entry.conversationId === 'string' && typeof entry.agentId === 'string' && Number.isSafeInteger(entry.throughSeq) && entry.throughSeq > 0 && typeof entry.summary === 'string').map(entry => ({ ...entry, summary: entry.summary.slice(0, 8_000) })) : [],
       };
       // Repair older documents: conversations gain well-formed folders/threads.
       for (const conversation of this.data.conversations) {
@@ -753,6 +765,7 @@ export class CoworkStore {
     data.todos = data.todos.filter((todo) => todo.agentId !== id && conversationIds.has(todo.conversationId));
     data.requests = data.requests.filter((request) => request.agentId !== id && conversationIds.has(request.conversationId));
     data.workLog = data.workLog.filter((entry) => entry.agentId !== id && conversationIds.has(entry.conversationId));
+    data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
     data.budgets = pruneBudgets(data.budgets, conversationIds, new Set(data.missions.map((mission) => mission.id)));
     this.save(true);
@@ -946,6 +959,7 @@ export class CoworkStore {
     const conversation = data.conversations.find((candidate) => candidate.id === conversationId);
     if (!conversation?.threads?.some((thread) => thread.id === threadId)) return false;
     conversation.threads = conversation.threads.filter((thread) => thread.id !== threadId);
+    data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.conversationId !== conversationId || entry.threadId !== threadId);
     if (conversation.activeThreadId === threadId) {
       delete conversation.activeThreadId;
       conversation.threadActivationSeq = (conversation.threadActivationSeq ?? 0) + 1;
@@ -968,6 +982,7 @@ export class CoworkStore {
     if (!data.conversations.some((c) => c.id === id)) return false;
     data.conversations = data.conversations.filter((c) => c.id !== id);
     delete data.messages[id];
+    data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.conversationId !== id);
     data.missions = data.missions.filter((mission) => mission.conversationId !== id);
     data.subAgents = data.subAgents.filter((instance) => instance.conversationId !== id);
     data.followUps = data.followUps.filter((followUp) => followUp.conversationId !== id);
@@ -1091,6 +1106,7 @@ export class CoworkStore {
       message.mentionedAgentIds = this.resolveMentions(conversationId, patch.mentionedAgentIds) ?? [];
     }
     message.revision += 1;
+    this.invalidateContext(conversationId, message.threadId, message.seq);
     message.changeSeq = this.nextChangeSeq(conversationId);
     this.save();
     return message;
@@ -1128,6 +1144,7 @@ export class CoworkStore {
     const removed = list[index]!;
     const changeSeq = this.nextChangeSeq(conversationId);
     list.splice(index, 1);
+    this.invalidateContext(conversationId, removed.threadId, removed.seq);
     const tombstones = (data.messageTombstones[conversationId] ??= []);
     tombstones.push({ id: removed.id, changeSeq, threadId: removed.threadId });
     this.save();
@@ -1579,6 +1596,28 @@ export class CoworkStore {
 
   workHistory(conversationId: string, threadId: string | null = null): CoworkWorkEntry[] {
     return this.load().workLog.filter((entry) => entry.conversationId === conversationId && (entry.threadId ?? null) === threadId).slice(-200);
+  }
+
+  contextCheckpoint(conversationId: string, agentId: string, threadId?: string): CoworkContextCheckpoint | undefined {
+    const entry = this.load().contextCheckpoints?.find(item => item.conversationId === conversationId && item.agentId === agentId && item.threadId === threadId);
+    return entry ? { ...entry } : undefined;
+  }
+
+  saveContextCheckpoint(input: Omit<CoworkContextCheckpoint, 'updatedAt'>): void {
+    const data = this.load();
+    if (!data.conversations.some(item => item.id === input.conversationId) || !data.agents.some(item => item.id === input.agentId)) return;
+    const entries = data.contextCheckpoints ??= [];
+    const index = entries.findIndex(item => item.conversationId === input.conversationId && item.agentId === input.agentId && item.threadId === input.threadId);
+    if (index >= 0 && entries[index]!.throughSeq > input.throughSeq) return;
+    const entry = { ...input, summary: input.summary.slice(0, 8_000), updatedAt: new Date().toISOString() };
+    if (index >= 0) entries[index] = entry;
+    else entries.push(entry);
+    this.save();
+  }
+
+  private invalidateContext(conversationId: string, threadId: string | undefined, seq: number): void {
+    const data = this.load();
+    data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.conversationId !== conversationId || entry.threadId !== threadId || entry.throughSeq < seq);
   }
 
   // Interactive cards: user questions, capability permission, recommendations.

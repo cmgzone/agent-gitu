@@ -20,6 +20,8 @@ export const DIGEST_HEADER_PREFIX = 'COMPACTED HISTORY —';
 export const DIGEST_FAILURES_MARKER = 'KEY FAILURES — HISTORICAL (the live TASK STATE alone decides what is still active; resolved/superseded failures are NOT candidates for investigation):';
 export const DIGEST_DECISIONS_MARKER = 'KEY DECISIONS (still binding):';
 export const DIGEST_EVIDENCE_MARKER = 'EVIDENCE ALREADY RECORDED:';
+const SNAPSHOT_BEGIN = 'TASK SNAPSHOT BEGIN:';
+const SNAPSHOT_END = 'TASK SNAPSHOT END.';
 
 /** Digest size ceiling: unbounded excerpts could re-inject megabytes into
  *  context, defeating the very budget that triggered compaction. */
@@ -41,13 +43,24 @@ export function boundedDigest(lines: string[], maxChars = COMPACT_DIGEST_MAX_CHA
 }
 
 /** Split a previous digest message back into its excerpt/decision/failure/evidence lines. */
-export function parseCarriedDigest(text: string): { lines: string[]; decisions: string[]; failures: string[]; evidence: string[] } {
+export function parseCarriedDigest(text: string): { lines: string[]; decisions: string[]; failures: string[]; evidence: string[]; snapshot?: string } {
   const lines: string[] = [];
   const decisions: string[] = [];
   const failures: string[] = [];
   const evidence: string[] = [];
+  const snapshotLines: string[] = [];
+  let inSnapshot = false;
   let section: 'lines' | 'decisions' | 'failures' | 'evidence' = 'lines';
   for (const line of text.split('\n')) {
+    if (line === SNAPSHOT_BEGIN) {
+      inSnapshot = true;
+      continue;
+    }
+    if (inSnapshot) {
+      if (line === SNAPSHOT_END) inSnapshot = false;
+      else snapshotLines.push(line);
+      continue;
+    }
     if (line.startsWith(DIGEST_HEADER_PREFIX)) continue;
     if (line.startsWith('KEY DECISIONS')) {
       section = 'decisions';
@@ -67,7 +80,7 @@ export function parseCarriedDigest(text: string): { lines: string[]; decisions: 
     else if (section === 'failures') failures.push(line);
     else evidence.push(line);
   }
-  return { lines, decisions, failures, evidence };
+  return { lines, decisions, failures, evidence, ...(snapshotLines.length ? { snapshot: snapshotLines.join('\n') } : {}) };
 }
 
 export interface DigestMaterial {
@@ -77,6 +90,7 @@ export interface DigestMaterial {
   evidenceLines: string[];
   /** Messages that were themselves previous digests (counted, not re-excerpted). */
   carriedMessages: number;
+  snapshot?: string;
 }
 
 /** Lines that state a binding decision — the durable floor keeps them in full. */
@@ -95,6 +109,7 @@ export function extractDigestMaterial(old: LlmMessage[]): DigestMaterial {
   const failures: string[] = [];
   const evidenceLines: string[] = [];
   let carriedMessages = 0;
+  let snapshot: string | undefined;
   for (const m of old) {
     const text = typeof m.content === 'string' ? m.content : '[image attached]';
     const flat = text.replace(/\s+/g, ' ').trim();
@@ -104,11 +119,13 @@ export function extractDigestMaterial(old: LlmMessage[]): DigestMaterial {
       decisions.push(...carried.decisions);
       failures.push(...carried.failures);
       evidenceLines.push(...carried.evidence);
+      if (carried.snapshot) snapshot = carried.snapshot;
       const countMatch = /(\d+) earlier messages/.exec(flat);
       carriedMessages += countMatch ? Number(countMatch[1]) : 1;
       continue;
     }
     excerptLines.push(`${m.role}: ${flat.slice(0, 220)}`);
+    if (m.toolCalls?.length) excerptLines.push(`Tool calls: ${JSON.stringify(m.toolCalls).slice(0, 1200)}`);
     const lines = text.split('\n');
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li]!;
@@ -128,7 +145,7 @@ export function extractDigestMaterial(old: LlmMessage[]): DigestMaterial {
       }
     }
   }
-  return { excerptLines, decisions, failures, evidenceLines, carriedMessages };
+  return { excerptLines, decisions, failures, evidenceLines, carriedMessages, snapshot };
 }
 
 /** Assemble the digest message content. Format is stable — parsers rely on it. */
@@ -148,7 +165,7 @@ export function buildDigestContent(opts: {
     (keptDecisions.length ? `\n${DIGEST_DECISIONS_MARKER}\n${keptDecisions.join('\n')}` : '') +
     (keptFailures.length ? `\n${DIGEST_FAILURES_MARKER}\n${keptFailures.join('\n')}` : '') +
     (keptEvidence.length ? `\n${DIGEST_EVIDENCE_MARKER}\n${keptEvidence.join('\n')}` : '');
-  const snapshotBlock = opts.snapshot ? `\n${opts.snapshot}\n` : '';
+  const snapshotBlock = opts.snapshot ? `\n${SNAPSHOT_BEGIN}\n${opts.snapshot}\n${SNAPSHOT_END}\n` : '';
   return (
     `${DIGEST_HEADER_PREFIX} ${opts.condensedCount} earlier messages were condensed into the excerpts below. ` +
     `The TASK STATE message that follows is authoritative (goal, criteria, architecture decisions, evidence, current state); do not re-read or repeat work already recorded there.` +
@@ -160,7 +177,7 @@ export function buildDigestContent(opts: {
 export function buildHistoryDigest(dropped: LlmMessage[], priorDigestContent?: string): { content: string; condensedCount: number } {
   const material = extractDigestMaterial(dropped);
   let priorCondensed = 0;
-  let prior: { lines: string[]; decisions: string[]; failures: string[]; evidence: string[] } = {
+  let prior: ReturnType<typeof parseCarriedDigest> = {
     lines: [],
     decisions: [],
     failures: [],
@@ -177,6 +194,7 @@ export function buildHistoryDigest(dropped: LlmMessage[], priorDigestContent?: s
     decisions: [...prior.decisions, ...material.decisions],
     failures: [...prior.failures, ...material.failures],
     evidence: [...prior.evidence, ...material.evidenceLines],
+    snapshot: material.snapshot ?? prior.snapshot,
   });
   return { content, condensedCount };
 }
@@ -199,6 +217,7 @@ export function compressDigest(content: string, maxChars = DIGEST_TARGET_CHARS):
   const headerEnd = content.indexOf('\n');
   const header = headerEnd > 0 ? content.slice(0, headerEnd) : content;
   const preserved =
+    (parsed.snapshot ? `\n${SNAPSHOT_BEGIN}\n${parsed.snapshot}\n${SNAPSHOT_END}\n` : '') +
     (parsed.decisions.length ? `\n${DIGEST_DECISIONS_MARKER}\n${parsed.decisions.join('\n')}` : '') +
     (parsed.failures.length ? `\n${DIGEST_FAILURES_MARKER}\n${parsed.failures.join('\n')}` : '') +
     (parsed.evidence.length ? `\n${DIGEST_EVIDENCE_MARKER}\n${parsed.evidence.join('\n')}` : '');

@@ -58,6 +58,34 @@ describe('model-aware compaction policy', () => {
 });
 
 describe('compactHistory honors a derived policy', () => {
+  it('counts native arguments when deciding to compact older exchanges', () => {
+    const messages: LlmMessage[] = [
+      { role: 'system', content: 'SYS' },
+      { role: 'user', content: 'Write the notes.' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'large-write', name: 'write_file', arguments: { path: 'notes.txt', content: 'x'.repeat(90_000) } }] },
+      { role: 'tool', toolCallId: 'large-write', content: 'Write succeeded.' },
+      ...Array.from({ length: 6 }, (_, i): LlmMessage => ({ role: i % 2 ? 'user' : 'assistant', content: `Later ${i}` })),
+    ];
+    expect(compactHistory(messages, undefined, { keepRecent: 4 })).toBe(true);
+    expect(messages.some(message => message.toolCalls?.length)).toBe(false);
+    expect(String(messages[1]?.content)).toContain('notes.txt');
+  });
+
+  it('keeps a complete native exchange when the desired tail starts between its results', () => {
+    const messages: LlmMessage[] = [
+      { role: 'system', content: 'SYS' },
+      ...Array.from({ length: 24 }, (_, i): LlmMessage => ({ role: i % 2 ? 'user' : 'assistant', content: `Earlier ${i}` })),
+      { role: 'assistant', content: '', toolCalls: Array.from({ length: 4 }, (_, i) => ({ id: `call-${i}`, name: 'list_files', arguments: { path: '.' } })) },
+      ...Array.from({ length: 4 }, (_, i): LlmMessage => ({ role: 'tool', toolCallId: `call-${i}`, content: `Result ${i}` })),
+      { role: 'user', content: 'Continue.' },
+    ];
+    expect(compactHistory(messages, undefined, { keepRecent: 4, triggerMessages: 8 })).toBe(true);
+    expect(messages.filter(message => message.role === 'tool')).toHaveLength(4);
+    for (const result of messages.filter(message => message.role === 'tool')) {
+      expect(messages.some(message => message.toolCalls?.some(call => call.id === result.toolCallId))).toBe(true);
+    }
+  });
+
   it('compacts a history that exceeds a small model’s derived budget', () => {
     const policy = compactionPolicyForWindow(32_768);
     const messages: LlmMessage[] = [{ role: 'system', content: 'SYS' }];

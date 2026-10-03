@@ -16,6 +16,7 @@ export const COMPACT_RECENT_MESSAGE_MAX_CHARS = 6_000;
 export function estimateMessageChars(messages: LlmMessage[]): number {
   let total = 0;
   for (const m of messages) {
+    if (m.toolCalls?.length) total += JSON.stringify(m.toolCalls).length;
     if (typeof m.content === 'string') total += m.content.length;
     else {
       for (const part of m.content) {
@@ -145,6 +146,12 @@ export interface CompactionOptions {
 export function compactRecentMessage(message: LlmMessage, maxChars = COMPACT_RECENT_MESSAGE_MAX_CHARS): boolean {
   if (typeof message.content !== 'string' || message.content.length <= maxChars) return false;
   const text = message.content;
+  if (text.startsWith('COMPACTED HISTORY')) {
+    const compressed = compressDigest(text, maxChars);
+    if (compressed === text) return false;
+    message.content = compressed;
+    return true;
+  }
   const headBudget = Math.floor(maxChars * 0.4);
   const tailBudget = Math.floor(maxChars * 0.35);
   const diagnostic = /RESULT \[error\]|\b(error|failed|exception|assertion)\b/i.test(text) ? extractFailureDigest(text, Math.floor(maxChars * 0.25)) : '';
@@ -240,7 +247,15 @@ export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) 
       }
       break;
     }
-    const keepFrom = messages.length - retained;
+    let keepFrom = messages.length - retained;
+    // Keep a native call with its results rather than retaining orphaned tool
+    // messages. Oversized complete exchanges can still be reduced below.
+    for (const message of messages.slice(keepFrom)) {
+      if (!message.toolCallId) continue;
+      const callIndex = messages.findIndex(item => item.toolCalls?.some(call => call.id === message.toolCallId));
+      if (callIndex > 0 && callIndex < keepFrom) keepFrom = callIndex;
+    }
+    if (keepFrom <= 1) break;
     const old = messages.splice(1, keepFrom - 1);
     compactedMessages += old.length;
     // Digest material extraction lives in the shared context core so the
@@ -254,9 +269,10 @@ export function compactHistory(messages: LlmMessage[], onEvent?: (text: string) 
     let digest = buildDigestContent({
       condensedCount: material.carriedMessages + old.length,
       excerptLines: material.excerptLines,
+      decisions: material.decisions,
       failures: keptFailures,
       evidence: keptEvidence,
-      snapshot: opts.snapshot,
+      snapshot: opts.snapshot ?? material.snapshot,
     });
     // The shared digest target is intentionally lower than its hard ceiling:
     // a durable summary must leave room for the next state message.

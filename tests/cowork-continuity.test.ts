@@ -8,7 +8,7 @@ import { MemoryStore } from '../src/memory/memory-store.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { SkillStore } from '../src/skills/skills.js';
 import { buildCoworkMessages, runConversationTurn, runMissionSession } from '../src/cowork/runner.js';
-import { executeCoworkTool, coworkNativeTool } from '../src/cowork/tools.js';
+import { executeCoworkTool, coworkNativeTools } from '../src/cowork/tools.js';
 import { LlmError, type LlmClient, type LlmMessage, type LlmTurnResult } from '../src/llm/llm.js';
 import type { ToolContext } from '../src/tools/tools.js';
 import { HermesServer } from '../src/server/server.js';
@@ -59,7 +59,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Check the files', via: 'web' });
     const result = await runConversationTurn({
       conversation: s.conversation, trigger, history: [trigger],
-      deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onProgress: p => frames.push({ text: p.text, tool: p.tool }) },
+      deps: { agents: [s.agent], resolveLlm: () => withReview(llm), toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onProgress: p => frames.push({ text: p.text, tool: p.tool }) },
       append: m => s.store.appendMessage(s.conversation.id, m),
     });
     expect(result.error).toBeUndefined();
@@ -104,7 +104,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Check the mailbox again', via: 'web' });
     const result = await runConversationTurn({
       conversation: s.conversation, trigger, history: [trigger],
-      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      deps: { agents: [s.agent], resolveLlm: () => withReview({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
       append: (message) => s.store.appendMessage(s.conversation.id, message),
     });
     expect(result.error).toBeUndefined();
@@ -123,7 +123,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Please do the work', via: 'web' });
     const result = await runConversationTurn({
       conversation: s.conversation, trigger, history: [trigger],
-      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      deps: { agents: [s.agent], resolveLlm: () => withReview({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
       append: (message) => s.store.appendMessage(s.conversation.id, message),
     });
     expect(result.error).toBeUndefined();
@@ -173,8 +173,8 @@ describe('Cowork continuity across providers and restarts', () => {
       return 'The verified value is 42.\n<cowork_state>done</cowork_state>';
     });
     const llm = withReview({ name: 'test', complete } as LlmClient, ({ checklist }) => {
-      expect(checklist).toContainEqual(expect.objectContaining({ id: todo.id, status: 'pending' }));
-      return { state: 'working', reason: 'The saved verification item is still open; read the file.' };
+      const done = checklist.some(item => item.id === todo.id && item.status === 'done');
+      return { state: done ? 'done' : 'working', reason: done ? 'The file was checked and the value is reported.' : 'The saved verification item is still open; read the file.' };
     });
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Continue verifying the file', via: 'web' });
     const result = await runConversationTurn({
@@ -199,7 +199,7 @@ describe('Cowork continuity across providers and restarts', () => {
       return calls % 2 ? 'Checking.\n<cowork_state>working</cowork_state>' : '<tool>{"name":"list_files","params":{"path":"."}}</tool>';
     });
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Complete the checks', via: 'web' });
-    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => ({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => withReview({ name: 'test', complete } as LlmClient), toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
     expect(result.error).toBeUndefined();
     expect(complete).toHaveBeenCalledTimes(13);
     expect(result.messages.at(-1)?.tools).toHaveLength(6);
@@ -219,7 +219,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const s = setup();
     const replies = ['I will inspect the files.\n<cowork_state>done</cowork_state>', '<tool>{"name":"list_files","params":{"path":"."}}</tool>', 'The files are checked.\n<cowork_state>done</cowork_state>'];
     const complete = vi.fn(async () => replies.shift()!);
-    const llm = withReview({ name: 'test', complete } as LlmClient, () => ({ state: 'working', reason: 'There is only a promise; inspect the files with the available tool.' }));
+    const llm = withReview({ name: 'test', complete } as LlmClient, ({ candidate }) => candidate.startsWith('The files are checked.') ? { state: 'done', reason: 'The directory listing supports the requested check.' } : { state: 'working', reason: 'There is only a promise; inspect the files with the available tool.' });
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Inspect the files', via: 'web' });
     const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger], deps: { agents: [s.agent], resolveLlm: () => llm, toolContext: () => s.ctx, store: s.store, memory: s.memory, autoLearn: false, requireCompletionState: true }, append: m => s.store.appendMessage(s.conversation.id, m) });
     expect(result.error).toBeUndefined();
@@ -245,13 +245,14 @@ describe('Cowork continuity across providers and restarts', () => {
   it('executes native OpenRouter calls and preserves tool results for the next round', async () => {
     const s = setup();
     let rounds = 0;
-    const complete = vi.fn(async () => { throw new Error('Verified final reply must not need another paid request'); });
+    const complete = vi.fn(async () => JSON.stringify({ state: 'done', reason: 'The requested write succeeded.' }));
     const llm: LlmClient = { name: 'native-test', complete, completeStream: vi.fn(), completeTurn: async (messages, options): Promise<LlmTurnResult> => {
       expect(options?.protocolMode).toBe('native');
-      expect(options?.tools?.[0]?.name).toBe('cowork_tool');
-      if (++rounds === 1) return { kind: 'tool_calls', calls: [{ name: 'cowork_tool', arguments: { name: 'write_file', params: { path: 'native.txt', content: '42' } } }], metadata: {} };
+      expect(options?.tools?.some(tool => tool.name === 'write_file')).toBe(true);
+      if (++rounds === 1) return { kind: 'tool_calls', calls: [{ id: 'native-write', name: 'write_file', arguments: { path: 'native.txt', content: '42' } }], metadata: {} };
       expect(JSON.stringify(messages)).toContain('TOOL RESULT write_file (ok=true)');
-      expect(messages.some(message => typeof message.content === 'string' && message.content.includes('<tool>{"name":"write_file"'))).toBe(true);
+      expect(messages.some(message => message.toolCalls?.some(call => call.id === 'native-write' && call.name === 'write_file'))).toBe(true);
+      expect(messages.some(message => message.role === 'tool' && message.toolCallId === 'native-write')).toBe(true);
       return { kind: 'text', text: 'Saved 42.\n<cowork_state>done</cowork_state>', metadata: {} };
     } };
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Save 42 to native.txt', via: 'web' });
@@ -259,16 +260,16 @@ describe('Cowork continuity across providers and restarts', () => {
     expect(result.error).toBeUndefined();
     expect(readFileSync(path.join(root, 'native.txt'), 'utf8')).toBe('42');
     expect(result.messages.at(-1)?.text).toBe('Saved 42.');
-    expect(complete).not.toHaveBeenCalled();
-    const tool = coworkNativeTool({ ...s.agent, allowWrites: false }, false);
-    expect(JSON.stringify(tool.parameters)).not.toContain('write_file');
-    expect(JSON.stringify(tool.parameters)).not.toContain('browse');
+    expect(complete).toHaveBeenCalledOnce();
+    const tools = coworkNativeTools({ ...s.agent, allowWrites: false }, false);
+    expect(tools.some(tool => tool.name === 'write_file')).toBe(false);
+    expect(tools.some(tool => tool.name === 'browse')).toBe(false);
   });
 
   it('falls back to text tools only when the endpoint rejects native functions', async () => {
     const s = setup();
     let rounds = 0;
-    const llm = { name: 'native-fallback', completeTurn: async (_messages: LlmMessage[], options: { protocolMode?: string }): Promise<LlmTurnResult> => {
+    const llm = { name: 'native-fallback', complete: async () => JSON.stringify({ state: 'done', reason: 'The requested file check was performed.' }), completeTurn: async (_messages: LlmMessage[], options: { protocolMode?: string }): Promise<LlmTurnResult> => {
       if (++rounds === 1) throw new LlmError('Tools unsupported', { kind: 'tool_protocol_incompatible' });
       expect(options.protocolMode).toBeUndefined();
       return { kind: 'text', text: rounds === 2 ? '<tool>{"name":"list_files","params":{"path":"."}}</tool>' : 'Checked.\n<cowork_state>done</cowork_state>', metadata: {} };
@@ -300,7 +301,7 @@ describe('Cowork continuity across providers and restarts', () => {
     const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Run a long verification', via: 'web' });
     const result = await runConversationTurn({
       conversation: s.conversation, trigger, history: [trigger],
-      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'long-chain-test', complete }) as LlmClient, toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onMessage },
+      deps: { agents: [s.agent], resolveLlm: () => withReview({ name: 'long-chain-test', complete } as LlmClient), toolContext: () => s.ctx, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true, onMessage },
       append: (message) => s.store.appendMessage(s.conversation.id, message),
     });
     expect(result.error).toBeUndefined();

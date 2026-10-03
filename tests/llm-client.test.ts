@@ -10,6 +10,7 @@ import {
   parseXmlFunctionCall,
   xmlMarkerHoldBack,
   type LlmActivityEvent,
+  type LlmMessage,
 } from '../src/llm/llm.js';
 
 describe('OpenAiCompatClient retry behavior', () => {
@@ -36,6 +37,37 @@ describe('OpenAiCompatClient retry behavior', () => {
 
   const client = () => new OpenAiCompatClient({ apiKey: 'sk-x', baseUrl: 'https://example.test/v1', model: 'm' });
   const msg = [{ role: 'user' as const, content: 'hi' }];
+
+  it('replays native tool calls and matching results with their IDs and reasoning', async () => {
+    mockFetch(async (_url, init) => {
+      expect(JSON.parse(String(init?.body)).messages).toEqual([
+        { role: 'user', content: 'Read the file.' },
+        { role: 'assistant', content: '', reasoning_content: 'Read before editing.', tool_calls: [{ id: 'read-1', type: 'function', function: { name: 'read_file', arguments: '{"path":"notes.txt"}' } }] },
+        { role: 'tool', content: 'Saved notes', tool_call_id: 'read-1' },
+      ]);
+      return jsonResponse({ choices: [{ message: { content: 'Read.' } }] });
+    });
+    await client().complete([
+      { role: 'user', content: 'Read the file.' },
+      { role: 'assistant', content: '', reasoningContent: 'Read before editing.', toolCalls: [{ id: 'read-1', name: 'read_file', arguments: { path: 'notes.txt' } }] },
+      { role: 'tool', content: 'Saved notes', toolCallId: 'read-1' },
+    ], { protocolMode: 'native' });
+  });
+
+  it.each(['text', 'native'] as const)('preserves incomplete tool observations as text without orphaned IDs (%s)', async protocolMode => {
+    mockFetch(async (_url, init) => {
+      const messages = JSON.parse(String(init?.body)).messages;
+      expect(messages.every((message: Record<string, unknown>) => message.role !== 'tool' && !message.tool_calls && !message.tool_call_id)).toBe(true);
+      expect(JSON.stringify(messages)).toContain('Saved notes');
+      expect(messages[0].content).toContain('"name":"read_file"');
+      return jsonResponse({ choices: [{ message: { content: 'Continue.' } }] });
+    });
+    const history: LlmMessage[] = [
+      { role: 'assistant', content: '', toolCalls: [{ id: 'read-1', name: 'read_file', arguments: { path: 'notes.txt' } }, { id: 'list-2', name: 'list_files', arguments: {} }] },
+      { role: 'tool', content: 'Saved notes', toolCallId: 'read-1' },
+    ];
+    await client().complete(history, { protocolMode });
+  });
 
   it('requests Gemini thought summaries without overriding the selected effort', async () => {
     mockFetch(async (_url, init) => {

@@ -2,8 +2,11 @@ import { outputCapabilityFor, resolveOutputBudgetTokens, type OutputBudgetCapabi
 import type { ProviderCapabilities } from './providers.js';
 
 export interface LlmMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | LlmContentPart[];
+  /** Native calls and matching results stay associated across model rounds. */
+  toolCalls?: LlmToolCall[];
+  toolCallId?: string;
   /**
    * Provider-native reasoning trace that accompanied THIS assistant message.
    * DeepSeek's thinking mode requires the original `reasoning_content` to be
@@ -592,9 +595,21 @@ export class OpenAiCompatClient implements LlmClient {
 
   private buildBody(messages: LlmMessage[], opts: LlmOptions, stream: boolean): Record<string, unknown> {
     const style = effortStyleFor(this.baseUrl);
+    const nativeCallIds = new Set<string>();
+    if (opts.protocolMode === 'native') {
+      // A compacted or paused exchange may be incomplete. Replay only complete
+      // groups; the remaining observations still reach the model as plain text.
+      for (const [index, message] of messages.entries()) {
+        if (!message.toolCalls?.length) continue;
+        const results = messages.slice(index + 1, index + 1 + message.toolCalls.length);
+        if (results.every(item => item.role === 'tool') && message.toolCalls.every(call => call.id && results.some(item => item.toolCallId === call.id))) {
+          for (const call of message.toolCalls) nativeCallIds.add(call.id!);
+        }
+      }
+    }
     const body: Record<string, unknown> = {
       model: this.model,
-      messages: messages.map((message) => this.toWireMessage(message)),
+      messages: messages.map((message) => this.toWireMessage(message, nativeCallIds)),
       temperature: opts.temperature ?? 0.2,
     };
     if (stream) {
@@ -657,14 +672,21 @@ export class OpenAiCompatClient implements LlmClient {
    * wire and get rejected. Assistant history keeps its reasoning trace so
    * DeepSeek-style thinking loops receive the state they require across turns.
    *
-   * Tool calls are deliberately NOT replayed: the harness executes tools
-   * itself and answers with a normal user observation, so an assistant
-   * `tool_calls` message without the matching `role: "tool"` results is an
-   * invalid history that strict OpenAI-compatible providers (including
-   * official DeepSeek and OpenAI) reject with HTTP 400.
+   * Native exchanges are replayed only with all matching results. Text-only
+   * endpoints and incomplete compacted groups receive the same actions and
+   * observations as text, without orphaned call IDs.
    */
-  private toWireMessage(message: LlmMessage): Record<string, unknown> {
-    const wire: Record<string, unknown> = { role: message.role, content: message.content };
+  private toWireMessage(message: LlmMessage, nativeCallIds: Set<string>): Record<string, unknown> {
+    const nativeCalls = message.toolCalls?.length && message.toolCalls.every(call => call.id && nativeCallIds.has(call.id));
+    const nativeResult = message.role === 'tool' && message.toolCallId && nativeCallIds.has(message.toolCallId);
+    const callsAsText = message.toolCalls && !nativeCalls
+      ? message.toolCalls.map(call => `<tool>${JSON.stringify({ name: call.name, params: call.arguments })}</tool>`).join('\n') : '';
+    const wire: Record<string, unknown> = {
+      role: message.role === 'tool' && !nativeResult ? 'user' : message.role,
+      content: callsAsText ? `${typeof message.content === 'string' ? message.content : ''}\n${callsAsText}` : message.content,
+    };
+    if (nativeCalls) wire['tool_calls'] = message.toolCalls!.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }));
+    if (nativeResult) wire['tool_call_id'] = message.toolCallId;
     if (message.role === 'assistant' && message.reasoningContent) {
       wire['reasoning_content'] = message.reasoningContent;
     }

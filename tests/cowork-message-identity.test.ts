@@ -436,7 +436,7 @@ it('marks stopped queued messages failed and renders Retry without duplicate row
     // Evaluate the actual UI row renderer against the server's final snapshot.
     const { createContext, Script } = await import('node:vm');
     const { COWORK_JS } = await import('../src/server/ui-cowork.js');
-    const context = createContext({ S: { cw: { active: conv.id, msgs: users, agents: [], convs: [conv] } }, window: { addEventListener: () => {} }, esc: (s: unknown) => String(s ?? ''), $: () => null });
+    const context = createContext({ S: { cw: { active: conv.id, msgs: users, agents: [], convs: [conv] } }, window: { addEventListener: () => {} }, document: { addEventListener: () => {} }, esc: (s: unknown) => String(s ?? ''), $: () => null });
     new Script(COWORK_JS).runInContext(context);
     const html = users.map((m) => context.cwBubbleHtml(m)).join('');
     expect(html.match(/class="cw-row me"/g)).toHaveLength(2);

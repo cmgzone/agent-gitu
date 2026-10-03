@@ -1163,6 +1163,7 @@ describe('cowork server routes', () => {
       },
       () => '<tool>{"name":"list_files","params":{"path":"."}}</tool>',
       () => 'The channel audit is complete.\n<cowork_state>done</cowork_state>',
+      () => JSON.stringify({ state: 'done', reason: 'The requested channel listing was checked.' }),
     ]);
     const server = new HermesServer({ passwordRequired: false, cwd: path.join(home, 'Workspace'), port: 0, llm });
     servers.push(server);

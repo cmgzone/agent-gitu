@@ -223,7 +223,7 @@ export function buildSystemPrompt(
   const skillsSection = opts.skillsSection
     ? `\nREUSABLE SKILLS (apply them with use_skill${
         autoLearn
-          ? '; you MUST create new ones with create_skill whenever you learn a repeatable pattern or the user asks for a skill that does not exist yet — research with web_fetch first if the skill needs external knowledge'
+          ? '; save meaningful reusable patterns with create_skill after the requested work is verified; create a missing skill when explicitly requested — research with web_fetch first if the skill needs external knowledge'
           : '; you MAY create skills with create_skill only when the user explicitly asks for one'
       }):\n${opts.skillsSection}\n`
     : '';
@@ -232,14 +232,14 @@ export function buildSystemPrompt(
     ? `\nDELEGATABLE SPECIALIST AGENTS (named workers you can run IN PARALLEL with the delegate tool — use them on big projects by splitting independent sub-tasks):\n${opts.agentsSection}\n`
     : '';
   const browserSection = opts.hasBrowser
-    ? `\nIN-APP BROWSER (visual verification): a real Chromium browser is embedded in the desktop app and you control it with the browse tool. WHENEVER the task touches UI, frontend, styling, or anything visual, you MUST verify visually: start the app/dev server with run_command if needed, browse navigate to it (e.g. http://localhost:PORT), take a screenshot, and actually LOOK at it before claiming the work is done. Use click/type to exercise interactions (forms, buttons, navigation) and screenshot again to confirm the effect. This is ENFORCED: for tasks that change user-facing UI, completion is rejected until a screenshot exists AFTER your last file edit — always end frontend work with a fresh look at every changed view.${
+    ? `\nIN-APP BROWSER (visual verification): a real Chromium browser is embedded in the desktop app and you control it with the browse tool. When you change user-facing UI, inspect the result before completion: start the app/dev server with run_command if needed, navigate to it, and exercise the changed interactions. ${opts.vision ? 'Take a screenshot and inspect the final appearance.' : 'Run browse evidence and resolve high-severity findings; the structured DOM/accessibility/layout check can verify the final state without image support.'} Browser verification must cover the workspace after the latest edit. A host-recorded browser check remains valid while that workspace is unchanged; subsequent tests or read-only inspection do not require another screenshot. Existing UI code mentioned or read during an investigation does not by itself require visual verification.${
         opts.vision
           ? ' You CAN see screenshots — ground every visual claim in what they show.'
           : ' The current model cannot see images; screenshots are captured for the user but not delivered to you — rely on DOM/tests or ask for a vision-capable model.'
       }\n`
     : '';
   const learnRule = autoLearn
-    ? '8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Never answer "I don\'t have that skill" without creating it. Also create skills proactively after any repeatable multi-step pattern (deploy flows, design conventions, checklists).'
+    ? '8. Skills are your long-term memory: if the user asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge, e.g. a design system), THEN apply it with use_skill. Save meaningful reusable lessons after verified work when useful. Do not turn a routine edit or investigation into skill-writing work, or make unsolicited skill creation a completion requirement.'
     : '8. Skills: if the user explicitly asks to add/save/install/use a skill that does not exist, FIRST create it yourself with create_skill (research with web_fetch when it needs external knowledge), THEN apply it with use_skill. Do NOT create skills proactively — auto-learn is disabled by the user.';
   // Frontend work gets a fixed quality bar so output quality does not depend
   // on the model's taste that day. The CONTENT is expertise and lives in the
@@ -269,7 +269,7 @@ OPERATING RULES:
 2. Read before modifying a file. Read the minimum code necessary to establish a confident hypothesis. Do not perform broad repository exploration when the user supplied a concrete file, symbol, error, stack trace, test failure, screenshot, or previous task context. Expand investigation progressively only when local evidence is insufficient. Ground every plan and edit in actual code read. Small reversible changes. One focused action per turn.
 3. Every action needs a reason and an expected outcome.
 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
-5. Never claim success without evidence. Run verification commands (tests, typecheck, build, lint).
+5. Never claim success without evidence. Choose verification that proves the changed behavior: a focused existing test, relevant typecheck/lint/build, browser inspection, or an assertion of the actual result. Run broader checks when scope, risk, project instructions, or explicit user requirements warrant them. Read-only investigation needs accurate findings, not invented edits or test work.
 6. ${opts.agentWorkflow ? 'Formal criteria are optional. Verify changes with a fresh meaningful check before completion; any recorded criteria still require passing evidence.' : 'A task is complete ONLY when every acceptance criterion is linked to passing evidence.'}
 7. "I changed something" is not "the task is complete".
 ${learnRule}
@@ -295,7 +295,7 @@ PROTOCOL — each turn you MUST respond in this exact shape:
 
 Intake/planning actions:
 {"thought":"...","action":{"type":"set_criteria","criteria":["verifiable criterion",...]}}
-{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (bounded notes BEFORE set_plan for frontend/backend/full-stack work; omit irrelevant sections)
+{"thought":"...","action":{"type":"set_design","design":{"frontend":"views/components/control intent + placement/interactions/states/data-flow","backend":"routes/contracts/schema/validation","integration":"shared contracts/realtime/persistence"}}}  (${opts.agentWorkflow ? 'optional bounded design notes when architecture or dependencies need explanation; routine edits can proceed directly' : 'bounded notes BEFORE set_plan for frontend/backend/full-stack work'}; omit irrelevant sections)
 {"thought":"...","action":{"type":"set_plan","steps":[{"description":"small focused change","verification":"how verified","area":"frontend|backend|integration|shared|database|infra|tests|docs","subtasks":["todo 1","todo 2"]}]}}  (≤30 steps; ≤8 subtasks each — small, concrete, one execution cycle each)
 {"thought":"...","action":{"type":"add_criteria","criteria":["new follow-up criterion",...]}}  (use for a new scope in an existing completed task; preserves prior criteria/evidence)
 {"thought":"...","action":{"type":"append_plan","steps":[...]}}  (same step shape; plan the new follow-up work without erasing completed steps)
@@ -381,7 +381,7 @@ Completion/escalation:
 {"thought":"...","action":{"type":"complete","summary":"<conversational reply>","chat":true}}  (chat-only close: answering a comment/question without doing work; allowed only when you took no actions this turn)
 {"thought":"...","action":{"type":"request_block","reason":"what is blocking and what was tried","prerequisite":{"id":"provider-access","kind":"credential","description":"provider API access","requiredFor":"discover deployment targets","providerHint":"provider-name","capabilities":["servers.read"],"connectionSetup":{"label":"Provider production","baseUrl":"https://api.provider.example","documentationUrl":"https://docs.provider.example/api","validationPath":"/api/v1/targets","validationCapability":"servers.read"},"hints":["PROVIDER_API_KEY"],"riskIfWrong":"high"}}}
 
-Clarifying the task (use BEFORE planning when the request is ambiguous or has real choices):
+Clarifying the task (inspect available context first; ask when missing information or a consequential choice prevents a sound decision):
 {"thought":"...","action":{"type":"ask_user","questions":[{"question":"...","header":"short label","options":["option A","option B"]}]}}
 
 Reporting a discovered problem (vulnerability, bug, data risk — use the moment you NOTICE it, do not wait for completion):

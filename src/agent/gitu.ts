@@ -2213,8 +2213,9 @@ export class Gitu {
                 // richer design/breakdown helps multi-surface work, but simple
                 // tasks should not pay for ceremony.
                 const areas = new Set(action.steps.map((s) => s.area).filter(Boolean));
-                const wantsDesign = effortPlan.complexity !== 'low' && !ledger.data.planDesign && !planningNudged;
-                const wantsTodos = effortPlan.complexity !== 'low' && action.steps.length >= 3 && !action.steps.some((s) => s.subtasks?.length);
+                const deeperPlanUseful = !agentWorkflow || riskPlan.strictVerification || areas.size >= 2;
+                const wantsDesign = deeperPlanUseful && effortPlan.complexity !== 'low' && !ledger.data.planDesign && !planningNudged;
+                const wantsTodos = deeperPlanUseful && effortPlan.complexity !== 'low' && action.steps.length >= 3 && !action.steps.some((s) => s.subtasks?.length);
                 let note = 'Plan recorded. Execute one step at a time. Verify with commands; evidence ids will be reported.';
                 if (wantsDesign || wantsTodos) {
                   planningNudged = true;
@@ -2413,6 +2414,7 @@ export class Gitu {
 
               if (outcome.result.ok && (action.tool === 'create_document' || action.tool === 'schedule_manage' || (action.tool === 'browse' && ['screenshot', 'evidence'].includes(String(action.params['action']))))) {
                 const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                if (action.tool === 'browse') outcome.record.verifiedWorkspaceFingerprint = currentFp;
                 const ev = evidence.record(ledger.data, {
                   kind: action.tool === 'create_document' ? 'file' : action.tool === 'browse' ? 'manual' : 'log',
                   label: `${action.tool}: ${action.expected || 'Verified tool result'}`,
@@ -3071,6 +3073,7 @@ export class Gitu {
               const visual = uiVisualGate(activePhaseData(), {
                 browserAvailable: Boolean(this.config.browser?.available()),
                 visionAvailable: this.config.supportsImages ?? false,
+                workspaceFingerprint: currentFp,
               });
               if (!visual.verified && !chatOnly) {
                 rejectCompletion('visual-verification', visual.reason ?? 'Inspect the final UI state with the browser', currentFp);
@@ -3080,7 +3083,7 @@ export class Gitu {
               // Active visual reference validation
               const activeVisualRefs = typeof ledger.activeVisualReferences === 'function' ? ledger.activeVisualReferences() : [];
               if (!chatOnly && activeVisualRefs.length > 0) {
-                const referenceLook = uiVisualGate({ ...activePhaseData(), filesChanged: ['visual-reference.html'] }, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: true });
+                const referenceLook = uiVisualGate({ ...activePhaseData(), filesChanged: ['visual-reference.html'] }, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: true, workspaceFingerprint: currentFp });
                 if (!referenceLook.verified) {
                   rejectCompletion('visual-reference', referenceLook.reason ?? 'Compare the final state with the active visual references', currentFp);
                   break;
@@ -3305,7 +3308,7 @@ export class Gitu {
               const phaseData = { ...activePhaseData(), filesChanged: [...new Set([...activePhaseData().filesChanged, ...verifiedDiff.changedFiles])] };
               // The actual phase diff catches UI edits even without a frontend
               // plan, while excluding UI files changed in an earlier request.
-              const finalVisual = uiVisualGate(phaseData, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false });
+              const finalVisual = uiVisualGate(phaseData, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false, workspaceFingerprint: currentFp });
               if (!chatOnly && !finalVisual.verified) {
                 rejectCompletion('visual-verification', finalVisual.reason ?? 'Inspect the final UI state', currentFp);
                 break;
@@ -3439,7 +3442,7 @@ export class Gitu {
                 this.emit(`ask-user ${action.questions.length} question(s) for you`);
                 const answer = await this.config.askUserHandler(action.questions);
                 this.emit('ask-user answered');
-                observe(`User answered your clarifying questions:\n${answer}\nUse these answers to set criteria and plan.`);
+                observe(`User answered your clarifying questions:\n${answer}\n${agentWorkflow ? 'Apply these answers and continue the requested work; create a plan or criteria only when useful.' : 'Use these answers to set criteria and plan.'}`);
               } else {
                 observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
               }
@@ -3467,6 +3470,10 @@ export class Gitu {
                   reason: call.reason,
                   expected: call.expected,
                 });
+                if (call.tool === 'browse' && outcomes[index]?.result.ok && ['screenshot', 'evidence'].includes(String(call.params['action']))) {
+                  outcomes[index]!.record.verifiedWorkspaceFingerprint = await getWorkspaceFingerprint(guard.activeWritableRoot);
+                  ledger.save();
+                }
               };
               await Promise.all(otherCalls.map(({ call, index }) => runOne(call, index)));
               for (const { call, index } of browserCalls) {

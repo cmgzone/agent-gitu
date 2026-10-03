@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as effortPlanner from '../src/agent/effort-planner.js';
-import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice } from '../src/agent/agent-workflow.js';
+import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, isObservationTool } from '../src/agent/agent-workflow.js';
+import type { BrowserBridge } from '../src/browser/browser.js';
 import { planEffort } from '../src/agent/effort-planner.js';
 import { Gitu } from '../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
@@ -27,6 +28,78 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('classifies only safe inspection commands as observation, without treating checks or writes as conversation', () => {
+    for (const command of ['git status --short', 'git diff --stat', 'git log -3 --oneline', 'pwd', 'node --version', 'Get-Content README.md | Select-Object -First 10']) {
+      expect(isObservationTool('run_command', { command }), command).toBe(true);
+    }
+    for (const command of ['npm test', 'git status && node change.cjs', 'node --version && node change.cjs', 'git diff --output=changes.txt', 'git diff --ext-diff', 'git push', 'node -e "require(\'fs\').writeFileSync(\'x\', \'y\')"', 'Get-Content README.md > copy.md']) {
+      expect(isObservationTool('run_command', { command }), command).toBe(false);
+    }
+    expect(isObservationTool('run_command', { action: 'stop', command: 'git status' })).toBe(false);
+  });
+
+  it('finishes a real shell investigation without inventing another verification command', async () => {
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([
+        action({ type: 'tool_call', tool: 'run_command', params: { command: 'node --version' }, reason: 'Inspect the installed Node version', expected: 'Installed version' }),
+        action({ type: 'complete', summary: 'The installed Node version was reported by node --version.' }),
+      ]),
+    }).run('What Node version is installed?');
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.actions).toHaveLength(1);
+    expect(result.ledger.data.actions[0]).toMatchObject({ tool: 'run_command', status: 'success', observationOnly: true });
+    expect(result.ledger.data.actions[0]?.observation).toMatch(/v\d+\.\d+/);
+  }, 30000);
+
+  it.each([false, true])('reuses the actual browser workspace stamp after an unchanged check (parallel=%s)', async (parallel) => {
+    const dir = project();
+    writeFileSync(path.join(dir, 'index.html'), '<h1>Helo world</h1>\n');
+    writeFileSync(path.join(dir, 'check.cjs'), "require('node:assert/strict').equal(require('node:fs').readFileSync('index.html', 'utf8'), '<h1>Hello world</h1>\\n');\n");
+    let screenshots = 0;
+    const state = { available: true, url: 'http://localhost:3000/', title: 'Greeting', canBack: false, canForward: false, loading: false };
+    const browser = {
+      available: () => true,
+      state: () => state,
+      screenshot: async () => { screenshots++; return { pngBase64: 'x'.repeat(300), state, textDigest: 'Hello world' }; },
+    } as BrowserBridge;
+    const look = { tool: 'browse', params: { action: 'screenshot' }, reason: 'Inspect the final greeting', expected: 'Correct greeting' };
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false, browser,
+      llm: new ScriptedMockLlm([
+        action({ type: 'tool_call', tool: 'read_file', params: { path: 'index.html' }, reason: 'Read greeting', expected: 'Current greeting' }),
+        action({ type: 'tool_call', tool: 'write_file', params: { path: 'index.html', content: '<h1>Hello world</h1>\n' }, reason: 'Correct the greeting', expected: 'Correct greeting' }),
+        action(parallel ? { type: 'parallel', calls: [
+          { tool: 'read_file', params: { path: 'README.md' }, reason: 'Inspect the project greeting documentation', expected: 'Current documentation' },
+          look,
+        ] } : { type: 'tool_call', ...look }),
+        verify, done, reviewer,
+      ]),
+    }).run('Correct the typo in index.html');
+    expect(result.report.status, JSON.stringify(result.ledger.data.blockers)).toBe('complete');
+    expect(screenshots).toBe(1);
+    expect(result.ledger.data.actions.find(a => a.tool === 'browse')?.verifiedWorkspaceFingerprint).toBeTruthy();
+    expect(result.ledger.data.actions.filter(a => a.tool === 'run_command')).toHaveLength(1);
+  }, 30000);
+
+  it('does not turn a useful single-surface plan into a second design and todo round', async () => {
+    let planningNudge = false;
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([
+        action({ type: 'set_plan', steps: [
+          { description: 'Inspect the greeting', verification: 'Read the current wording', area: 'backend' },
+          { description: 'Inspect the configured check', verification: 'Read check.cjs', area: 'backend' },
+          { description: 'Explain findings', verification: 'Summarize the observed files', area: 'backend' },
+        ] }),
+        (_call, messages) => {
+          planningNudge = messages.some(message => String(message.content).includes('PLANNING NOTE:'));
+          return read(0, messages);
+        },
+        action({ type: 'complete', summary: 'The greeting contains a typo.' }),
+      ]),
+    }).run('Investigate how the greeting behaves');
+    expect(result.report.status).toBe('complete');
+    expect(planningNudge).toBe(false);
+  }, 30000);
+
   it('chooses verification itself instead of repeatedly asking the user to select checks', async () => {
     const questions = [{ header: 'Verification', question: 'Which checks should I run: the focused test or the full build?', options: ['focused test', 'full build'] }];
     expect(asksOnlyForVerificationChoice(questions)).toBe(true);

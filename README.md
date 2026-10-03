@@ -40,6 +40,21 @@ Lock project → criteria → context pack → plan →
   when all criteria have passing evidence → complete → report + memory
 ```
 
+The default Agent workflow scales this loop to the request. For a routine edit,
+Gitu reads the target, makes the change, runs a focused check, and explains the
+result. Plans, design notes, and formal criteria are optional unless requested;
+recorded criteria still require passing evidence. A useful single-surface plan
+does not trigger another design or todo round. Larger or risky work retains
+the stronger review and permission checks.
+
+Read-only shell inspection can answer a repository or environment question
+without inventing another verification command. Browser checks are bound to
+the inspected workspace version: unchanged tests and inspection preserve them,
+while a later source change requires a fresh look. Legacy browser records keep
+their conservative timestamp checks. Permission denials remain enforced;
+Gitu explains the denied action and chooses an authorized alternative when
+available.
+
 ### The guarantees
 
 | Mechanism                           | What it prevents                                                                                                                                                                |

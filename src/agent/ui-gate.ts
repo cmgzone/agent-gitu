@@ -27,11 +27,11 @@ function isCleanEvidenceAction(a: ActionRecord): boolean {
   return isEvidenceAction(a) && typeof a.observation === 'string' && a.observation.includes('BROWSER EVIDENCE') && !/high:/.test(a.observation);
 }
 
-function lastMatchingActionAt(data: TaskLedgerData, pred: (a: ActionRecord) => boolean): string | undefined {
+function lastMatchingAction(data: TaskLedgerData, pred: (a: ActionRecord) => boolean): ActionRecord | undefined {
   for (let i = data.actions.length - 1; i >= 0; i--) {
     const a = data.actions[i];
     if (!a) continue;
-    if (pred(a)) return a.createdAt;
+    if (pred(a)) return a;
   }
   return undefined;
 }
@@ -67,14 +67,26 @@ export interface UiVisualGate {
  */
 export function uiVisualGate(
   data: TaskLedgerData,
-  opts: { browserAvailable: boolean; /** Whether the model can actually see screenshots. */ visionAvailable?: boolean },
+  opts: { browserAvailable: boolean; /** Whether the model can actually see screenshots. */ visionAvailable?: boolean; workspaceFingerprint?: string },
 ): UiVisualGate {
   if (!isUiTask(data)) return { required: false, verified: true };
   if (!opts.browserAvailable) return { required: true, verified: false, reason: 'the final UI needs browser verification, but no browser is available; enable the browser or report this dependency' };
   const visionAvailable = opts.visionAvailable ?? true;
-  const screenshotAt = lastMatchingActionAt(data, isScreenshotAction);
-  const cleanEvidenceAt = lastMatchingActionAt(data, isCleanEvidenceAction);
-  const editAt = lastMatchingActionAt(data, (a) => FILE_EDIT_TOOLS.has(a.tool) && a.status === 'success');
+  const screenshot = lastMatchingAction(data, isScreenshotAction);
+  const cleanEvidence = lastMatchingAction(data, isCleanEvidenceAction);
+  const screenshotAt = screenshot?.createdAt;
+  const cleanEvidenceAt = cleanEvidence?.createdAt;
+  const editAt = lastMatchingAction(data, (a) => FILE_EDIT_TOOLS.has(a.tool) && !a.observationOnly && a.status === 'success')?.createdAt;
+  const lookIsCurrent = (look: ActionRecord): boolean => {
+    if (opts.workspaceFingerprint && opts.workspaceFingerprint !== 'unknown-fp' && look.verifiedWorkspaceFingerprint) {
+      return look.verifiedWorkspaceFingerprint === opts.workspaceFingerprint;
+    }
+    // Older ledgers have no browser fingerprint. Preserve their conservative
+    // timestamp check rather than trusting the name of a shell command.
+    return !editAt || editAt <= look.createdAt;
+  };
+  const requiredLook = visionAvailable ? screenshot : (screenshotAt && cleanEvidenceAt ? (screenshotAt > cleanEvidenceAt ? screenshot : cleanEvidence) : (screenshot ?? cleanEvidence));
+  if (requiredLook && lookIsCurrent(requiredLook)) return { required: true, verified: true };
   const freshestLookAt = screenshotAt && cleanEvidenceAt ? (screenshotAt > cleanEvidenceAt ? screenshotAt : cleanEvidenceAt) : (screenshotAt ?? cleanEvidenceAt);
   if (!freshestLookAt) {
     return {
@@ -85,11 +97,11 @@ export function uiVisualGate(
         : 'this task changed user-facing UI but no look was ever taken — run browse evidence (structured pass) or browse screenshot after the last edit',
     };
   }
-  if (editAt && editAt > freshestLookAt) {
+  if (requiredLook && !lookIsCurrent(requiredLook)) {
     return {
       required: true,
       verified: false,
-      reason: 'UI files were edited AFTER your last look at the page — the final state was never seen',
+      reason: 'The workspace changed AFTER your last look at the page — the final state was never seen. Inspect it with browse screenshot or browse evidence.',
     };
   }
   if (visionAvailable && (!screenshotAt || (editAt && editAt > screenshotAt))) {

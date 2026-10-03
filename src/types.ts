@@ -120,6 +120,8 @@ export type ActionStatus = 'success' | 'error' | 'denied' | 'blocked' | 'skipped
 export interface ActionRecord {
   /** Host-computed from actual parameters, never model-assigned. */
   observationOnly?: boolean;
+  /** Host-computed workspace version inspected by a successful browser look. */
+  verifiedWorkspaceFingerprint?: string;
   id: string;
   stepId?: string;
   tool: string;

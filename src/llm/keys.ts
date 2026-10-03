@@ -2,7 +2,12 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
-import { readJson, writeJson } from '../util.js';
+import { readCredentialJson, updateCredentialJson } from './credential-file.js';
+
+function keyRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid credential record.');
+  return value as Record<string, unknown>;
+}
 
 function keyFiles(): string[] {
   return [path.join(ensureGituHome().settings, 'keys.json'), path.join(os.homedir(), '.hermes', 'keys.json')];
@@ -11,7 +16,7 @@ function keyFiles(): string[] {
 export function loadStoredKeys(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const file of [...keyFiles()].reverse()) {
-    const data = readJson<Record<string, unknown>>(file) ?? {};
+    const data = readCredentialJson(file, keyRecord) ?? {};
     for (const [k, v] of Object.entries(data)) {
       if (typeof v === 'string' && v) out[k] = v;
     }
@@ -62,17 +67,16 @@ export function mergedEnv(): NodeJS.ProcessEnv {
 
 export function setStoredKey(envVar: string, key: string): void {
   const file = keyFiles()[0]!;
-  const data = readJson<Record<string, unknown>>(file) ?? {};
-  data[envVar] = key;
-  writeJson(file, data);
+  updateCredentialJson(file, keyRecord, (current) => ({ ...current, [envVar]: key }));
 }
 
 export function removeStoredKey(envVar: string): void {
   for (const file of keyFiles()) {
-    const data = readJson<Record<string, unknown>>(file);
-    if (data && envVar in data) {
-      delete data[envVar];
-      writeJson(file, data);
-    }
+    if (readCredentialJson(file, keyRecord) === undefined) continue;
+    updateCredentialJson(file, keyRecord, (current) => {
+      if (!current || !(envVar in current)) return undefined;
+      delete current[envVar];
+      return current;
+    });
   }
 }

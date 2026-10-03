@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
+import { readCredentialFile, readCredentialJson, writeCredentialFile } from '../llm/credential-file.js';
 
 export interface ConnectedApp {
   id: string;
@@ -38,7 +39,7 @@ export class ComposioKeyStore {
     return Buffer.from(key, 'hex');
   }
   get configured(): boolean {
-    return Boolean(process.env['COMPOSIO_API_KEY']) || existsSync(this.file);
+    return Boolean(process.env['COMPOSIO_API_KEY']) || existsSync(this.file) || existsSync(`${this.file}.bak`);
   }
   private crypt(value: string, decrypt: boolean): string {
     if (this.platform !== 'win32') throw new Error('Windows key storage is unavailable.');
@@ -57,11 +58,17 @@ export class ComposioKeyStore {
   }
   read(): string | undefined {
     if (process.env['COMPOSIO_API_KEY']) return process.env['COMPOSIO_API_KEY'];
-    if (!existsSync(this.file)) return undefined;
-    if (this.platform === 'win32') return this.crypt(readFileSync(this.file, 'utf8'), true);
+    if (this.platform === 'win32') {
+      const saved = readCredentialFile(this.file, (value) => value);
+      return saved === undefined ? undefined : this.crypt(saved, true);
+    }
+    const record = readCredentialJson(this.file, (value) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid encrypted credential record.');
+      return value as { version: number; iv: string; tag: string; ciphertext: string };
+    });
+    if (!record) return undefined;
     const key = this.serverKey();
     if (!key) throw new Error('The server encryption key is missing.');
-    const record = JSON.parse(readFileSync(this.file, 'utf8')) as { version: number; iv: string; tag: string; ciphertext: string };
     if (record.version !== 1 || !/^[a-f0-9]{24}$/.test(record.iv) || !/^[a-f0-9]{32}$/.test(record.tag)) throw new Error('The saved integration key is damaged.');
     const decrypt = createDecipheriv('aes-256-gcm', key, Buffer.from(record.iv, 'hex'));
     decrypt.setAAD(Buffer.from('agent-gitu:composio-key:v1'));
@@ -70,7 +77,7 @@ export class ComposioKeyStore {
   }
   save(value: string): void {
     if (this.platform === 'win32') {
-      writeFileSync(this.file, this.crypt(value, false), { mode: 0o600 });
+      writeCredentialFile(this.file, this.crypt(value, false));
       return;
     }
     const key = this.serverKey();
@@ -79,8 +86,9 @@ export class ComposioKeyStore {
     const encrypt = createCipheriv('aes-256-gcm', key, iv);
     encrypt.setAAD(Buffer.from('agent-gitu:composio-key:v1'));
     const ciphertext = Buffer.concat([encrypt.update(value, 'utf8'), encrypt.final()]);
-    writeFileSync(this.file, JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') }), {
-      mode: 0o600,
+    writeCredentialFile(this.file, JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') }), (text) => {
+      JSON.parse(text);
+      return text;
     });
   }
 }

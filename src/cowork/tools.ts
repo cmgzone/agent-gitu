@@ -39,6 +39,7 @@ import { closestNameMatches } from '../util.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
 import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js';
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
+import { ConnectionRegistry } from '../connections/connections.js';
 import { createHash } from 'node:crypto';
 import type { ComposioConnections } from '../connections/composio.js';
 import { coworkToolSchema } from './tool-schemas.js';
@@ -211,7 +212,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
     gate: undefined,
   },
   { name: 'ask_user', doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}. Never use this for API keys, tokens or logins — use request_credential so the secret goes into the secure connection store, not chat.', gate: undefined },
-  { name: 'request_credential', doc: 'Ask for a credential through a private form; the secret never enters chat. For an API token use {"prompt":"...","provider":"github","baseUrl":"https://api.github.com","label":"github","validationPath":"/user"}. For an SSH password use {"prompt":"...","provider":"ssh","baseUrl":"ssh://user@host:22","label":"server"}; the user confirms the server host key, then the password is tested and saved for ssh_exec. Stop and wait after asking.', gate: undefined },
+  { name: 'request_credential', doc: 'Check list_connections and reuse saved credentials first. Ask through a private form only when a key is absent or the provider has reported it invalid/expired; a missing operation, 403, 404 or unknown auth state does not mean the key was lost. For a new API token use {"prompt":"...","provider":"github","baseUrl":"https://api.github.com","label":"github","validationPath":"/user"}; to reconnect use the exact saved connectionId. For SSH use {"prompt":"...","provider":"ssh","baseUrl":"ssh://user@host:22","label":"server"}; the user confirms the host key, then the password is tested and saved for ssh_exec. Stop and wait only if a credential request was actually posted. Users can replace a working key directly in Connections.', gate: undefined },
   { name: 'request_permission', doc: 'Ask the user to enable one capability for you. params: {"permission":"shell|writes|config|host","reason":"exact work that needs it"}. host means use the shared user workspace directly without Docker. Stop and wait after asking.', gate: undefined },
   { name: 'recommend', doc: 'Post a recommendation card the user can accept or dismiss. params: {"title":"Use PostgreSQL","reason":"why","action":"what I will do if accepted"}', gate: undefined },
   {
@@ -307,7 +308,7 @@ function unknownTool(tool: string, perms: CoworkToolPerms, subAgent = false): To
   parts.push(perms.allowConfig
     ? '3. The capability belongs to an external service? Call list_mcp to see existing integrations and configure_mcp to add a server that provides it.'
     : '3. The capability belongs to an external service? Call list_mcp to see existing integrations; if none fits and config is disabled for you, request_permission for config.');
-  parts.push('4. Missing credentials, an API key, or an account you do not have? Call request_credential so the user enters it in a secure form (it is saved as a connection, never typed into chat) — never stop silently when only a key or login is missing.');
+  parts.push('4. Need an API or account? Check list_connections first and use saved credentials through connection_read; discover documented operations when needed. Unknown auth, a missing operation, 403 or 404 is not evidence that a key was lost. If a credential is absent or confirmed invalid/expired, call request_credential for a secure form, using the exact connectionId to reconnect. Continue with the saved connection if the tool returns a reuse instruction instead of posting a card.');
   parts.push('Stop only after all four fail, and then tell the user precisely what you need (which service, which key, which permission) so they can unblock you.');
   return { ok: false, output: parts.join('\n') };
 }
@@ -613,7 +614,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         return { ok: true, output: `Desktop control given to the user. Question ${request.id} posted. Stop working and wait for the user to return control.` };
       }
       case 'request_credential':
-        return coworkRequestCredential(scope, params);
+        return coworkRequestCredential(ctx, scope, params);
       case 'request_permission':
         return coworkRequestPermission(scope, params);
       case 'recommend':
@@ -749,17 +750,17 @@ function coworkAskUser(scope: CoworkToolScope | undefined, params: Record<string
   }
 }
 
-function coworkRequestCredential(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
+function coworkRequestCredential(ctx: ToolContext, scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {
   if (!scope?.conversationId) return { ok: false, output: 'request_credential requires a conversation.' };
   const prompt = String(params['prompt'] ?? params['question'] ?? '').trim();
-  const provider = String(params['provider'] ?? params['providerHint'] ?? '').trim();
+  let provider = String(params['provider'] ?? params['providerHint'] ?? '').trim();
   if (!prompt) return { ok: false, output: 'request_credential requires "prompt" — what you need and why (never include the secret itself).' };
   if (!provider) return { ok: false, output: 'request_credential requires "provider" — the service slug, e.g. "github".' };
-  const connectionId = String(params['connectionId'] ?? '').trim();
-  const baseUrl = String(params['baseUrl'] ?? params['base_url'] ?? '').trim();
-  if (!connectionId && !baseUrl) return { ok: false, output: 'request_credential requires "baseUrl" for a new connection (or "connectionId" to re-authorize an existing one).' };
+  let connectionId = String(params['connectionId'] ?? '').trim();
+  let baseUrl = String(params['baseUrl'] ?? params['base_url'] ?? '').trim();
+  const ssh = provider.toLowerCase() === 'ssh' || /^ssh:/i.test(baseUrl);
   if (baseUrl) {
-    if (provider.toLowerCase() === 'ssh' || /^ssh:/i.test(baseUrl)) {
+    if (ssh) {
       try { parseSshUrl(baseUrl); }
       catch (error) { return { ok: false, output: (error as Error).message }; }
     } else {
@@ -769,11 +770,42 @@ function coworkRequestCredential(scope: CoworkToolScope | undefined, params: Rec
       if (url.protocol !== 'https:' && !(url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname.toLowerCase()))) {
         return { ok: false, output: 'API connections require HTTPS (or localhost HTTP). For SSH, use provider "ssh" and an ssh://user@host:port address.' };
       }
+      if (url.username || url.password || url.search || url.hash || url.pathname !== '/') return { ok: false, output: 'Use the API origin without credentials, query parameters or an endpoint path.' };
+      baseUrl = url.origin;
     }
   }
-  const label = String(params['label'] ?? '').trim();
-  const validationPath = String(params['validationPath'] ?? params['validation_path'] ?? '').trim();
+  let label = String(params['label'] ?? '').trim();
+  let validationPath = String(params['validationPath'] ?? params['validation_path'] ?? '').trim();
   try {
+    if (!ssh) {
+      const registry = ctx.connections ?? new ConnectionRegistry();
+      const profiles = registry.list();
+      const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+      const ref = normalize(connectionId || provider);
+      const exact = connectionId ? profiles.find((profile) => profile.id === ref) : undefined;
+      const matches = exact ? [exact] : profiles.filter((profile) =>
+        (profile.id === ref || normalize(profile.provider) === ref || normalize(profile.label) === ref || (!connectionId && baseUrl === profile.baseUrl)) &&
+        (!baseUrl || profile.baseUrl === baseUrl),
+      );
+      if (exact && baseUrl && exact.baseUrl !== baseUrl) return { ok: false, output: `Saved connection ${exact.id} uses a different API origin. Use its saved endpoint, or omit connectionId to set up a separate connection.` };
+      if (matches.length > 1) return { ok: false, output: `Multiple saved connections match: ${matches.map((profile) => `${profile.id} (${profile.label}, ${profile.baseUrl})`).join('; ')}. Select the exact connectionId with list_connections and use connection_read before requesting another key.` };
+      const saved = matches[0];
+      if (saved) {
+        if (saved.hasCredential && saved.authState?.status !== 'invalid' && saved.authState?.status !== 'expired') {
+          const readOperations = saved.operations.filter((operation) => operation.risk === 'read').map((operation) => operation.id);
+          return { ok: false, output: `Saved connection ${saved.id} already has a credential (auth ${saved.authState?.status ?? 'unknown'}). No credential form was posted. Continue using connection_read with connectionId "${saved.id}"${readOperations.length ? ` and a read operation: ${readOperations.join(', ')}` : '; resolve a documented GET operation if needed'}. Missing operations, scope errors and unknown auth do not mean the key is missing. Users can replace a working key in Connections.` };
+        }
+        connectionId = saved.id;
+        provider = saved.provider;
+        baseUrl = saved.baseUrl;
+        label ||= saved.label;
+        validationPath ||= saved.operations.find((operation) => operation.id === 'validate' && operation.risk === 'read')?.path
+          ?? saved.operations.find((operation) => operation.risk === 'read')?.path ?? '';
+      } else if (connectionId) {
+        return { ok: false, output: 'That saved connection was not found. Use list_connections to select its exact id, or omit connectionId and provide baseUrl for a new connection.' };
+      }
+    }
+    if (!connectionId && !baseUrl) return { ok: false, output: 'request_credential requires "baseUrl" for a new connection (or "connectionId" to re-authorize an existing one).' };
     const request = scope.store.addRequest({
       conversationId: scope.conversationId,
       agentId: scope.agent.id,

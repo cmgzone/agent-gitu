@@ -68,6 +68,11 @@ describe('Composio connections', () => {
       const stored = readFileSync(file, 'utf8');
       expect(stored).not.toContain('disposable-hosted-composio-secret');
       expect(new ComposioKeyStore('linux').read()).toBe('disposable-hosted-composio-secret');
+      writeFileSync(file, '{interrupted');
+      expect(new ComposioKeyStore('linux').read()).toBe('disposable-hosted-composio-secret');
+      keys.save('disposable-hosted-composio-secret');
+      expect(new ComposioKeyStore('linux').read()).toBe('disposable-hosted-composio-secret');
+      writeFileSync(file, stored);
       vi.stubEnv('AGENT_GITU_SECRETS_KEY', 'b'.repeat(64));
       expect(() => keys.read()).toThrow();
       vi.stubEnv('AGENT_GITU_SECRETS_KEY', 'a'.repeat(64));

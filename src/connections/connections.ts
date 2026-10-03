@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { loadStoredKeys, removeStoredKey, setStoredKey } from '../llm/keys.js';
+import { readCredentialJson, updateCredentialJson } from '../llm/credential-file.js';
 import type { PrerequisiteProvider, ProviderCapabilityResult, ProviderRecoveryInput, ProviderRecoveryResult } from '../recovery/prerequisites.js';
 import { SkillStore } from '../skills/skills.js';
 import type { Capability, ConnectionSetupHint, MissingPrerequisite } from '../types.js';
-import { nowIso, readJson, sha256, writeJson } from '../util.js';
+import { nowIso, sha256 } from '../util.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { readConnectionResponse } from './response-data.js';
 import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor, catalogProvider } from './catalog.js';
@@ -594,7 +595,16 @@ export class ConnectionRegistry {
   }
 
   private profiles(): ConnectionProfile[] {
-    const raw = readJson<unknown>(connectionFile());
+    return this.decodeProfiles(readCredentialJson(connectionFile(), (raw) => {
+      this.decodeProfiles(raw);
+      return raw;
+    }));
+  }
+
+  private decodeProfiles(raw: unknown): ConnectionProfile[] {
+    if (raw !== undefined && !Array.isArray(raw) && !(raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>)['connections']))) {
+      throw new Error('Invalid connection metadata.');
+    }
     const values: unknown[] = Array.isArray(raw)
       ? raw
       : raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>)['connections'])
@@ -611,8 +621,11 @@ export class ConnectionRegistry {
     return out;
   }
 
-  private saveProfiles(profiles: ConnectionProfile[]): void {
-    writeJson(connectionFile(), { version: 1, connections: profiles });
+  private mutateProfiles(update: (profiles: ConnectionProfile[]) => ConnectionProfile[]): void {
+    updateCredentialJson(connectionFile(), (raw) => {
+      this.decodeProfiles(raw);
+      return raw;
+    }, (raw) => ({ version: 1, connections: update(this.decodeProfiles(raw)) }));
   }
 
   list(): ConnectionProfileView[] {
@@ -736,8 +749,7 @@ export class ConnectionRegistry {
   }
 
   save(draft: ConnectionDraft): ConnectionProfileView {
-    const id = slug(draft.id || draft.provider || draft.label, '');
-    const existing = this.get(id);
+    let id = slug(draft.id || draft.provider || draft.label, '');
     const label = compactText(draft.label, 120);
     const provider = slug(draft.provider, '');
     const baseUrl = normalizeBaseUrl(draft.baseUrl);
@@ -751,30 +763,44 @@ export class ConnectionRegistry {
       throw new Error('Each registered operation must use one of the connection capabilities.');
     }
     const token = typeof draft.token === 'string' ? draft.token.trim() : '';
-    if (!token && !loadStoredKeys()[keyRef(id)]?.trim()) {
-      throw new Error('An API key or token is required for a new connection.');
-    }
     if (token.length > 16_384) throw new Error('The credential is too large.');
-    this.assertGeneratedSkillAvailable(id);
     const now = nowIso();
-    const profile: ConnectionProfile = {
-      id, label, provider, baseUrl, capabilities, operations,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      ...(documentationUrl ? { documentationUrl } : {}),
-      ...(existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
-      ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
-      ...(token ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } } : {
-        ...(existing?.authState ? { authState: existing.authState } : {}),
-        ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
-      }),
-      // Operation registration rewrites the profile; the provider's recorded
-      // route rejections (do-not-retry memory) must survive that rewrite.
-      ...(existing?.rejectedOperations?.length ? { rejectedOperations: existing.rejectedOperations } : {}),
-    };
-    const next = [...this.profiles().filter((candidate) => candidate.id !== id), profile];
-    this.saveProfiles(next);
-    if (token) setStoredKey(keyRef(id), token);
+    let profile!: ConnectionProfile;
+    this.mutateProfiles((profiles) => {
+      const collision = profiles.find((candidate) => candidate.id === id);
+      // New forms do not supply an id. Two servers/accounts for one provider
+      // must not silently replace each other's profile and credential.
+      if (!draft.id && collision && (collision.baseUrl !== baseUrl || collision.provider !== provider || collision.label !== label)) {
+        const suffix = slug(label, '') !== provider ? label : new URL(baseUrl).hostname;
+        const preferred = slug(`${provider}-${suffix}`);
+        id = preferred;
+        for (let index = 2; profiles.some((candidate) => candidate.id === id); index++) {
+          const tail = `-${index}`;
+          id = `${preferred.slice(0, 63 - tail.length)}${tail}`;
+        }
+      }
+      const existing = profiles.find((candidate) => candidate.id === id);
+      if (!token && !loadStoredKeys()[keyRef(id)]?.trim()) throw new Error('An API key or token is required for a new connection.');
+      this.assertGeneratedSkillAvailable(id);
+      profile = {
+        id, label, provider, baseUrl, capabilities, operations,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        ...(documentationUrl ? { documentationUrl } : {}),
+        ...(existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
+        ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
+        ...(token ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } } : {
+          ...(existing?.authState ? { authState: existing.authState } : {}),
+          ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
+        }),
+        // Operation registration rewrites the profile; the provider's recorded
+        // route rejections (do-not-retry memory) must survive that rewrite.
+        ...(existing?.rejectedOperations?.length ? { rejectedOperations: existing.rejectedOperations } : {}),
+      };
+      // Persist the key before publishing metadata that says it is configured.
+      if (token) setStoredKey(keyRef(id), token);
+      return [...profiles.filter((candidate) => candidate.id !== id), profile];
+    });
     this.syncGlobalSkill(profile);
     return { ...profile, hasCredential: true };
   }
@@ -782,8 +808,10 @@ export class ConnectionRegistry {
   remove(id: string): boolean {
     const profile = this.get(id);
     if (!profile) return false;
-    this.saveProfiles(this.profiles().filter((candidate) => candidate.id !== profile.id));
-    removeStoredKey(keyRef(profile.id));
+    this.mutateProfiles((profiles) => {
+      removeStoredKey(keyRef(profile.id));
+      return profiles.filter((candidate) => candidate.id !== profile.id);
+    });
     // The skill is information about this saved connection, so remove it with
     // the connection. A user-authored skill of the same name is never created
     // by this registry because names are namespaced.
@@ -822,13 +850,10 @@ export class ConnectionRegistry {
     // invocation result: a successful write reported as failed invites a
     // duplicate retry.
     try {
-      const profiles = this.profiles();
-      const current = profiles.find((profile) => profile.id === id);
-      if (!current) return;
-      current.lastValidatedAt = nowIso();
-      current.lastValidationStatus = status;
-      current.updatedAt = nowIso();
-      this.saveProfiles(profiles);
+      this.withProfile(id, (current) => {
+        current.lastValidatedAt = nowIso();
+        current.lastValidationStatus = status;
+      });
     } catch {
       /* best effort */
     }
@@ -836,12 +861,14 @@ export class ConnectionRegistry {
 
   private withProfile(id: string, mutate: (profile: ConnectionProfile) => void): void {
     try {
-      const profiles = this.profiles();
-      const current = profiles.find((profile) => profile.id === id);
-      if (!current) return;
-      mutate(current);
-      current.updatedAt = nowIso();
-      this.saveProfiles(profiles);
+      this.mutateProfiles((profiles) => {
+        const current = profiles.find((profile) => profile.id === id);
+        if (current) {
+          mutate(current);
+          current.updatedAt = nowIso();
+        }
+        return profiles;
+      });
     } catch {
       /* state recording is best-effort; an invocation result is never amended */
     }

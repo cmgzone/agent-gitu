@@ -49,7 +49,7 @@ const schemas: Record<string, { fields: Fields; required?: string[] }> = {
   folder_manage: { fields: { action: text, path: text, label: text, id: text }, required: ['action'] },
   widget_manage: { fields: { action: text, id: text, title: text, kind: text, icon: text, data: object }, required: ['action'] },
   ask_user: { fields: { question: text, detail: text, options: strings }, required: ['question'] },
-  request_credential: { fields: { prompt: text, provider: text, baseUrl: text, label: text, validationPath: text }, required: ['prompt', 'provider'] },
+  request_credential: { fields: { prompt: text, provider: text, connectionId: text, baseUrl: text, label: text, validationPath: text }, required: ['prompt', 'provider'] },
   request_permission: { fields: { permission: text, reason: text }, required: ['permission', 'reason'] },
   recommend: { fields: { title: text, reason: text, action: text }, required: ['title', 'reason', 'action'] },
   team_manage: { fields: { action: text, name: text, tagline: text, instructions: text, title: text, topic: text, members: strings, chief: text }, required: ['action'] },

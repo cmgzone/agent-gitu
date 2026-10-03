@@ -10,6 +10,13 @@ Mount a dedicated persistent volume at `/data`. It holds the account password
 hash, projects, SQLite state, chats, and settings. Keep the same volume on
 redeployments. The agent runs as the unprivileged `node` user.
 
+Connection credentials and profile metadata use atomic saves with protected
+`.bak` files in `/data/Settings`. Back up this directory as private data.
+Unreadable files recover from the last good backup; if both copies are damaged,
+Gitu reports a storage error and preserves them. SQLite `.lock.sqlite` files
+coordinate concurrent writers and contain no credentials. Adding another server
+or account for the same provider keeps its keys in a separate profile.
+
 Set these environment variables as runtime-only values in Coolify:
 
 - `AGENT_GITU_PUBLIC_ORIGIN=https://your-gitu-app-domain`

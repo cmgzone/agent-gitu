@@ -358,34 +358,65 @@ export const COWORK_CSS = String.raw`
   .cw-modal.cw-doc-modal .box { width: min(980px, 94vw); height: min(820px, 92dvh); max-height: 92dvh; }
   .cw-doc-modal .bar > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cw-doc-frame { width: 100%; flex: 1; min-height: 0; border: 0; background: #fff; }
-  .cw-info { width: 320px; box-sizing: border-box; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 18px 20px 28px; min-height: 0; }
-  .cw-info > .cw-panel-close { display: block; margin: 0 0 8px auto; }
+  .cw-info { width: 320px; box-sizing: border-box; flex: none; border-left: 1px solid var(--border); overflow-y: auto; padding: 0 18px 24px; min-height: 0; background: var(--bg); }
+  .cw-info-bar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 -18px 18px; padding: 10px 14px 10px 18px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+  .cw-info-title { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text); font-size: 12px; font-weight: 600; }
+  .cw-info-title svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+  .cw-profile-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; }
+  .cw-profile-close:hover { color: var(--text); background: var(--hover); }
+  .cw-profile-close svg { width: 18px; height: 18px; }
   .cw-info h4 { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .12em; color: var(--faint); font-weight: 700; }
   .cw-info .cw-card { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 4px 0 20px; margin-bottom: 20px; }
-  .cw-profile-hero { display: flex; flex-direction: column; align-items: center; padding: 6px 0 24px; text-align: center; }
-  .cw-profile-hero .cw-ava { margin-bottom: 4px; overflow: visible; }
-  .cw-profile-name { max-width: 100%; color: var(--text); font-size: 20px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
-  .cw-profile-hero .cw-persona-status { margin-top: 10px; max-width: 100%; }
+  .cw-profile-hero { display: flex; align-items: center; gap: 14px; padding: 0 0 12px; }
+  .cw-profile-portrait { display: flex; align-items: center; justify-content: center; flex: none; width: 104px; height: 104px; border-radius: 28px; background: radial-gradient(circle, color-mix(in srgb, var(--accent) 12%, transparent), transparent 72%); }
+  .cw-profile-hero .cw-ava { overflow: visible; }
+  .cw-profile-identity { flex: 1; min-width: 0; }
+  .cw-profile-name { margin: 0; max-width: 100%; color: var(--text); font-size: 21px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
   .cw-profile-tagline { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-  .cw-profile-hero .chip { margin-top: 12px; }
-  .cw-profile-hero .btn { margin-top: 16px; }
-  .cw-profile-section { padding: 20px 0; border-top: 1px solid var(--border); }
-  .cw-profile-section h4 { margin-bottom: 10px; }
-  .cw-profile-copy { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 210px; overflow-y: auto; }
-  .cw-profile-details { display: grid; grid-template-columns: 74px minmax(0, 1fr); gap: 10px 12px; margin: 0; font-size: 12px; line-height: 1.45; }
-  .cw-profile-details dt { color: var(--faint); }
+  .cw-profile-hero .chip { display: inline-flex; align-items: center; gap: 5px; margin-top: 9px; font-size: 10.5px; }
+  .cw-profile-presence { margin-bottom: 12px; }
+  .cw-profile-presence .cw-persona-status { width: fit-content; max-width: 100%; border: 1px solid var(--border); border-radius: 999px; padding: 4px 9px; font-size: 11px; }
+  .cw-profile-edit { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 34px; margin-bottom: 18px; border-radius: 10px; font-size: 12px; }
+  .cw-profile-edit svg, .cw-profile-tags svg, .cw-profile-footer svg, .cw-profile-memory svg { width: 14px; height: 14px; flex: none; }
+  .cw-profile-section { padding: 17px 0; border-top: 1px solid var(--border); }
+  .cw-profile-heading, .cw-info .cw-profile-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 13px; color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: 0; }
+  .cw-profile-heading svg { width: 16px; height: 16px; color: var(--muted); flex: none; }
+  .cw-profile-copy, .cw-profile-description { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+  .cw-profile-copy { white-space: pre-wrap; padding-top: 12px; }
+  .cw-profile-copy h5 { margin: 16px 0 7px; color: var(--text); font-size: 12px; font-weight: 600; }
+  .cw-profile-copy h5:first-child { margin-top: 0; }
+  .cw-profile-instructions { margin-top: 12px; }
+  .cw-profile-instructions summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; font-size: 11.5px; font-weight: 500; color: var(--text); cursor: pointer; list-style: none; }
+  .cw-profile-instructions summary::-webkit-details-marker { display: none; }
+  .cw-profile-instructions summary svg { width: 14px; height: 14px; color: var(--muted); flex: none; transition: transform .15s ease; }
+  .cw-profile-instructions[open] summary svg { transform: rotate(180deg); }
+  .cw-profile-details { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 14px 10px; margin: 0; font-size: 12px; line-height: 1.45; }
+  .cw-profile-details dt { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); }
+  .cw-profile-details dt svg { width: 14px; height: 14px; margin-top: 2px; flex: none; }
   .cw-profile-details dd { min-width: 0; margin: 0; color: var(--text); overflow-wrap: anywhere; }
-  .cw-profile-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .cw-profile-skills { margin-top: 14px; font-size: 11.5px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
-  .cw-profile-memory { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-  .cw-profile-memory strong { color: var(--text); }
-  .cw-profile-memory .btn { margin-left: auto; padding: 4px 9px; font-size: 11px; }
-  .cw-profile .cw-computer-section { border-bottom: 0; border-top: 1px solid var(--border); padding: 20px 0; margin: 0; }
-  .cw-profile .cw-computer-section p { margin: 11px 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
-  .cw-profile .cw-computer-section .btn { margin-top: 3px; }
+  .cw-profile-provider { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted); }
+  .cw-profile-tags, .cw-profile-skills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .cw-profile-tags { margin-top: 16px; }
+  .cw-profile-tags .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; }
+  .cw-profile-skill { display: inline-flex; padding: 5px 8px; border-radius: 7px; background: var(--hover); color: var(--text); font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; max-width: 100%; box-sizing: border-box; }
+  .cw-profile-empty { font-size: 12px; color: var(--muted); }
+  .cw-profile-memory { display: flex; align-items: center; gap: 10px; font-size: 11.5px; color: var(--muted); }
+  .cw-profile-memory strong { color: var(--text); font-size: 21px; font-weight: 600; }
+  .cw-profile-memory .btn { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding: 5px 8px; font-size: 11px; }
+  .cw-info .cw-profile .cw-computer-section { border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin: 0 0 18px; background: color-mix(in srgb, var(--card) 55%, transparent); }
+  .cw-computer-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .cw-computer-summary .chip { font-size: 10.5px; }
+  .cw-computer-summary .cw-computer-state { margin-left: auto; text-transform: capitalize; }
+  .cw-profile .cw-computer-section p { margin: 10px 0 12px; color: var(--muted); font-size: 11.5px; line-height: 1.55; }
+  .cw-computer-buttons { display: flex; flex-direction: column; gap: 7px; }
+  .cw-computer-buttons .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; border-radius: 8px; font-size: 11.5px; }
+  .cw-computer-buttons .btn svg { width: 14px; height: 14px; flex: none; }
+  .cw-computer-secondary { display: flex; gap: 7px; }
+  .cw-computer-secondary .btn { flex: 1; }
   .cw-computer-reason { color: var(--muted); font-size: 12px; line-height: 1.55; }
   .cw-computer-reason .cw-reason-code { display: inline-block; margin-right: 6px; padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--hover); color: var(--text); font-family: var(--mono); font-size: 11px; }
-  .cw-profile-footer { padding-top: 20px; border-top: 1px solid var(--border); }
+  .cw-profile-footer { padding-top: 16px; border-top: 1px solid var(--border); }
+  .cw-profile-footer .btn { display: inline-flex; align-items: center; gap: 7px; padding: 6px 0; border: 0; color: var(--err); background: transparent; font-size: 11.5px; }
   .cw-info .cw-mrow { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
   .cw-info .cw-mrow .nm { flex: 1; min-width: 0; font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cw-info .cw-mrow .tg { color: var(--muted); font-weight: 400; }
@@ -487,10 +518,9 @@ export const COWORK_CSS = String.raw`
     .cw-info { display: none; position: static; width: min(320px, 42vw); box-sizing: border-box; background: var(--bg); }
     .cw-panel-backdrop { position: absolute; inset: 0; z-index: 50; border: 0; padding: 0; background: var(--overlay); }
     .cw.overlay-open .cw-panel-backdrop { display: block; }
-    .cw-info > .cw-panel-close { display: block; margin: 0 0 16px auto; }
   }
   @media (max-width: 720px) { .cw-msgs { padding: 98px 12px 8px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-panel-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
-  @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; }
+  @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; } .cw-profile-close { min-width: 40px; min-height: 40px; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw-mobile-only, .cw-rail > .cw-panel-close { display: block; }
@@ -554,6 +584,14 @@ export const COWORK_JS = String.raw`
     ,search: CW_SVG_OPEN + '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>'
     ,eye: CW_SVG_OPEN + '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
     ,plug: CW_SVG_OPEN + '<path d="M9 2v6M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>'
+    ,user: CW_SVG_OPEN + '<circle cx="12" cy="8" r="4"/><path d="M4 21v-2a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v2"/></svg>'
+    ,monitor: CW_SVG_OPEN + '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8M12 16v5"/></svg>'
+    ,cpu: CW_SVG_OPEN + '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg>'
+    ,sliders: CW_SVG_OPEN + '<path d="M4 7h4M12 7h8M4 17h8M16 17h4"/><circle cx="10" cy="7" r="2"/><circle cx="14" cy="17" r="2"/></svg>'
+    ,memory: CW_SVG_OPEN + '<path d="M12 3v18M12 5a4 4 0 0 0-7-2 4 4 0 0 0-2 6 4 4 0 0 0 0 6 4 4 0 0 0 6 6 3 3 0 0 0 3-3M12 5a4 4 0 0 1 7-2 4 4 0 0 1 2 6 4 4 0 0 1 0 6 4 4 0 0 1-6 6 3 3 0 0 1-3-3"/></svg>'
+    ,trash: CW_SVG_OPEN + '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></svg>'
+    ,chevron: CW_SVG_OPEN + '<path d="m6 9 6 6 6-6"/></svg>'
+    ,play: CW_SVG_OPEN + '<path d="m7 4 14 8-14 8z"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
@@ -748,7 +786,7 @@ export const COWORK_JS = String.raw`
           '<div class="cw-rail-foot"><button class="btn ghost" id="cwExit">Back to workspace</button>' + themeToggleHtml() + '<button class="btn ghost" id="cwGear" title="Settings" aria-label="Settings">' + cwIcon('gear') + '</button></div>' +
         '</aside>' +
         '<section class="cw-chat" id="cwChat"></section>' +
-        '<aside class="cw-info" id="cwInfoPanel"><button class="cw-info-toggle cw-panel-close" id="cwCloseInfo">Close panel</button><div id="cwInfo"></div></aside>' +
+        '<aside class="cw-info" id="cwInfoPanel" aria-label="Chat details"><div class="cw-info-bar"><div class="cw-info-title">' + cwIcon('user') + '<span id="cwInfoTitle">Teammate profile</span></div><button class="cw-profile-close" id="cwCloseInfo" aria-label="Close panel" title="Close panel">' + cwIcon('close') + '</button></div><div id="cwInfo"></div></aside>' +
       '</div>';
     // The app's gear icon is registered in ICONS; reuse its markup.
     var gearBtn = $('cwGear');
@@ -825,7 +863,7 @@ export const COWORK_JS = String.raw`
     var back = $('cwBack');
     if (back) back.setAttribute('aria-expanded', String(railOpen));
     var closeInfo = $('cwCloseInfo');
-    if (closeInfo) closeInfo.textContent = window.innerWidth <= 720 ? 'Back to chat' : 'Close panel';
+    if (closeInfo) { var closeLabel = window.innerWidth <= 720 ? 'Back to chat' : 'Close panel'; closeInfo.setAttribute('aria-label', closeLabel); closeInfo.title = closeLabel; }
     if (nearBottom) messages.scrollTop = messages.scrollHeight;
   }
 
@@ -2533,6 +2571,23 @@ export const COWORK_JS = String.raw`
     setTimeout(function () { var g = modal.querySelector('#cwMmGoal'); if (g) g.focus(); }, 0);
   }
 
+  function cwProfileHeading(iconName, title) {
+    return '<h4 class="cw-profile-heading">' + cwIcon(iconName) + '<span>' + esc(title) + '</span></h4>';
+  }
+  function cwProfileDescription(text) {
+    var paragraphs = String(text || '').split(/\n\s*\n/).map(function (p) { return p.replace(/^\s*#{1,6}\s+.*$/gm, '').trim(); });
+    var description = (paragraphs.find(function (p) { return p; }) || '').replace(/\*\*|\x60/g, '').replace(/^>\s*/gm, '').replace(/\s+/g, ' ').trim();
+    if (description.length <= 200) return description;
+    var end = description.lastIndexOf(' ', 200);
+    return description.slice(0, end > 120 ? end : 200) + '…';
+  }
+  function cwProfileInstructionsHtml(text) {
+    // Instructions are profile content, not executable markup or embeds.
+    return esc(text || '').replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>').split('\n').map(function (line) {
+      var heading = /^\s*#{1,6}\s+(.+)$/.exec(line);
+      return heading ? '<h5>' + heading[1] + '</h5>' : line;
+    }).join('\n');
+  }
   function cwRenderInfo() {
     var cw = cwEnsure();
     var conv = cwActiveConv();
@@ -2540,30 +2595,32 @@ export const COWORK_JS = String.raw`
     if (!el) return;
     if (!conv) { el.innerHTML = ''; return; }
     var members = cwConvMembers(conv);
+    var title = $('cwInfoTitle');
+    if (title) title.textContent = conv.kind === 'dm' ? 'Teammate profile' : 'Team details';
     if (conv.kind === 'dm') {
       var a = members[0];
       if (!a) { el.innerHTML = ''; return; }
       el.innerHTML =
         '<div class="cw-profile">' +
-          '<div class="cw-profile-hero">' + cwAva(a, 144) +
-            '<div class="cw-profile-name">' + esc(a.name) + '</div>' +
+          '<div class="cw-profile-hero"><div class="cw-profile-portrait">' + cwAva(a, 96) + '</div><div class="cw-profile-identity">' +
+            '<h2 class="cw-profile-name">' + esc(a.name) + '</h2>' +
             (a.tagline ? '<div class="cw-profile-tagline">' + esc(a.tagline) + '</div>' : '') +
-            cwCharacterStatusHtml(a, false) +
-            (a.chiefOfStaff ? '<span class="chip" title="Chief of staff">' + cwIcon('crown') + ' Chief of staff</span>' : '') +
-            '<button class="btn ghost" id="cwEditAgent">Edit profile</button></div>' +
-          '<section class="cw-profile-section"><h4>ABOUT</h4><p class="cw-profile-copy">' + esc(a.systemPrompt.slice(0, 600)) + (a.systemPrompt.length > 600 ? '…' : '') + '</p></section>' +
-          '<section class="cw-profile-section"><h4>SETUP</h4><dl class="cw-profile-details">' +
-            '<dt>Model</dt><dd>' + esc((a.provider ? a.provider + ' / ' : '') + (a.model || 'Default model')) + '</dd>' +
-            (a.effort ? '<dt>Reasoning</dt><dd>' + esc(a.effort) + '</dd>' : '') +
-            '<dt>Computer</dt><dd>' + (a.useHostComputer ? 'My computer' : a.cloudConnectionId ? 'Cloud computer' : 'Private computer') + '</dd></dl>' +
-            ((a.allowShell || a.allowWrites || a.allowConfig) ? '<div class="cw-profile-tags" aria-label="Permissions">' +
-              (a.allowShell ? '<span class="chip">Shell</span>' : '') +
-              (a.allowWrites ? '<span class="chip">File writes</span>' : '') +
-              (a.allowConfig ? '<span class="chip">Tool setup</span>' : '') + '</div>' : '') +
-            (a.skills && a.skills.length ? '<div class="cw-profile-skills"><strong>Skills</strong><br>' + esc(a.skills.join(' · ')) + '</div>' : '') + '</section>' +
-          '<section class="cw-profile-section"><h4>MEMORY</h4><div class="cw-profile-memory"><strong>' + ((cw.memoryCounts || {})[a.id] || 0) + '</strong> facts saved<button class="btn ghost" id="cwMemClear">Clear</button></div></section>' +
+            (a.chiefOfStaff ? '<span class="chip" title="Chief of staff">' + cwIcon('crown') + ' Chief of staff</span>' : '') + '</div></div>' +
+          '<div class="cw-profile-presence">' + cwCharacterStatusHtml(a, false) + '</div>' +
+          '<button class="btn ghost cw-profile-edit" id="cwEditAgent">' + cwIcon('edit') + 'Edit profile</button>' +
           cwComputerHtml(a, true) +
-          '<div class="cw-profile-footer"><button class="btn red" id="cwDelAgent">Delete teammate</button></div></div>';
+          '<section class="cw-profile-section">' + cwProfileHeading('sliders', 'Configuration') + '<dl class="cw-profile-details">' +
+            '<dt>' + cwIcon('cpu') + 'Model</dt><dd>' + esc(a.model || 'Default model') + (a.provider ? '<span class="cw-profile-provider">' + esc(a.provider) + '</span>' : '') + '</dd>' +
+            (a.effort ? '<dt>' + cwIcon('bolt') + 'Reasoning</dt><dd>' + esc(a.effort) + '</dd>' : '') + '</dl>' +
+            ((a.allowShell || a.allowWrites || a.allowConfig) ? '<div class="cw-profile-tags" aria-label="Permissions">' +
+              (a.allowShell ? '<span class="chip">' + cwIcon('terminal') + 'Shell</span>' : '') +
+              (a.allowWrites ? '<span class="chip">' + cwIcon('file') + 'File writes</span>' : '') +
+              (a.allowConfig ? '<span class="chip">' + cwIcon('plug') + 'Tool setup</span>' : '') + '</div>' : '') + '</section>' +
+          '<section class="cw-profile-section">' + cwProfileHeading('bolt', 'Skills') +
+            (a.skills && a.skills.length ? '<div class="cw-profile-skills">' + a.skills.map(function (skill) { return '<span class="cw-profile-skill">' + esc(skill) + '</span>'; }).join('') + '</div>' : '<div class="cw-profile-empty">No skills assigned</div>') + '</section>' +
+          '<section class="cw-profile-section">' + cwProfileHeading('memory', 'Memory') + '<div class="cw-profile-memory"><strong>' + ((cw.memoryCounts || {})[a.id] || 0) + '</strong><span>facts saved</span><button class="btn ghost" id="cwMemClear" title="Clear saved memory">' + cwIcon('trash') + 'Clear</button></div></section>' +
+          '<section class="cw-profile-section">' + cwProfileHeading('user', 'About') + '<p class="cw-profile-description">' + esc(cwProfileDescription(a.systemPrompt)) + '</p><details class="cw-profile-instructions"><summary><span>Personality &amp; instructions</span>' + cwIcon('chevron') + '</summary><div class="cw-profile-copy">' + cwProfileInstructionsHtml(a.systemPrompt) + '</div></details></section>' +
+          '<div class="cw-profile-footer"><button class="btn ghost" id="cwDelAgent">' + cwIcon('trash') + 'Delete teammate</button></div></div>';
       cwBindComputers(el);
       $('cwMemClear').onclick = function () {
         if (!confirm('Erase everything ' + a.name + ' has remembered across conversations?')) return;
@@ -2591,7 +2648,7 @@ export const COWORK_JS = String.raw`
           '<button data-remove="' + esc(m.id) + '" title="Remove from group">' + cwIcon('close') + '</button></div>';
       }).join('') +
       '<button class="btn ghost" id="cwAddMember" style="width:100%;margin-top:6px">Add member</button></div>' +
-      members.map(cwComputerHtml).join('') +
+      members.map(function (member) { return cwComputerHtml(member, false); }).join('') +
       '<div class="cw-actions"><button class="btn red" id="cwDelConv">Delete chat</button></div>';
     el.querySelectorAll('[data-chief]').forEach(function (b) {
       b.onclick = function () {
@@ -2640,20 +2697,20 @@ export const COWORK_JS = String.raw`
   }
 
   function cwComputerHtml(agent, profile) {
-    var heading = profile ? 'COMPUTER' : esc(agent.name) + ' · COMPUTER';
+    var heading = cwProfileHeading('monitor', profile ? 'Computer' : agent.name + ' · Computer');
     if (agent.useHostComputer) {
-      return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4><div class="chip ok">My computer</div>' +
-        '<p style="font-size:11.5px;color:var(--muted)">Uses the Agent Gitu workspace on this computer directly. Docker is not required. Shell and file changes still follow this teammate’s permissions.</p>' +
-        '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></section>';
+      return '<section class="cw-card cw-computer-section">' + heading + '<div class="cw-computer-summary"><span class="chip">My computer</span></div>' +
+        '<p>Works with the workspace, files and apps on this computer.</p>' +
+        '<div class="cw-computer-buttons"><button class="btn dark" data-computer="' + esc(agent.id) + '" data-action="desktop">' + cwIcon('monitor') + 'Open desktop</button></div></section>';
     }
     var computer = (cwEnsure().computers || []).filter(function (c) { return c.agentId === agent.id; })[0] || { state: 'stopped' };
-    return '<section class="cw-card cw-computer-section"><h4>' + heading + '</h4>' + (agent.cloudConnectionId ? '<div class="chip">Cloud computer</div> ' : '') + '<div class="chip">' + esc(computer.state) + '</div>' +
-      '<p style="font-size:11.5px;color:var(--muted)">Private Linux desktop, files, shell and browser. Files and browser sessions persist when stopped.</p>' +
+    return '<section class="cw-card cw-computer-section">' + heading + '<div class="cw-computer-summary"><span class="chip">' + (agent.cloudConnectionId ? 'Cloud computer' : 'Private computer') + '</span><span class="chip cw-computer-state' + (computer.state === 'running' ? ' ok' : '') + '">' + esc(computer.state) + '</span></div>' +
+      '<p>Shared desktop with a browser, files and terminal. Files and browser sessions stay saved when stopped.</p>' +
       (computer.error ? '<p style="font-size:11.5px;color:var(--err)">' + esc(computer.error) + '</p>' : '') +
       cwComputerReasonHtml(computer) +
-      '<div class="cw-actions"><button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="start">Start</button>' +
-      '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="stop">Stop</button>' +
-      '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="desktop">Open desktop</button></div>' +
+      '<div class="cw-computer-buttons"><button class="btn dark" data-computer="' + esc(agent.id) + '" data-action="desktop">' + cwIcon('monitor') + 'Open desktop</button>' +
+      '<div class="cw-computer-secondary"><button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="start">' + cwIcon('play') + 'Start</button>' +
+      '<button class="btn ghost" data-computer="' + esc(agent.id) + '" data-action="stop">' + cwIcon('stop') + 'Stop</button></div></div>' +
       '<div data-screen="' + esc(agent.id) + '"></div></section>';
   }
 

@@ -74,7 +74,7 @@ describe('animated teammate characters and web activity', () => {
     expect(COWORK_CSS).toContain('.cw-row > .cw-ava { width: 46px; height: 46px; }');
     expect(COWORK_CSS).toContain('.report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }');
     expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 76px; height: 76px; }');
-    expect(COWORK_JS).toContain('cwAva(a, 144)');
+    expect(COWORK_JS).toContain('cwAva(a, 96)');
     expect(COWORK_JS).toContain('cwAva(m, 40)');
     expect(COWORK_CSS).toContain('svg:not(.home-blob)');
   });
@@ -85,6 +85,20 @@ describe('animated teammate characters and web activity', () => {
     for (const shape of ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'cube']) {
       expect(context.cwAvaImg({ shape, color: '#8f80ff' })).toContain('<img src="/characters/');
     }
+  });
+
+  it('keeps complete profile instructions readable while treating their HTML as text', () => {
+    const { context } = ui();
+    const prompt = '# Identity\n\nYou are **Mina**, a research partner.\n\n' + 'Keep the complete instructions. '.repeat(30) + '\n\n# Tools\n<script>alert(1)</script>\n<iframe src="https://example.com"></iframe>';
+    expect(context.cwProfileDescription(prompt)).toBe('You are Mina, a research partner.');
+    const instructions = context.cwProfileInstructionsHtml(prompt);
+    expect(instructions).toContain('<h5>Identity</h5>');
+    expect(instructions).toContain('<b>Mina</b>');
+    expect(instructions).toContain('Keep the complete instructions. '.repeat(30));
+    expect(instructions).toContain('&lt;script&gt;');
+    expect(instructions).toContain('&lt;iframe');
+    expect(instructions).not.toContain('<script');
+    expect(instructions).not.toContain('<iframe');
   });
 
   it('migrates removed characters on reload while preserving teammates and their colors', () => {

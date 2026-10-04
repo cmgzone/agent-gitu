@@ -113,7 +113,11 @@ export const COWORK_CSS = String.raw`
   .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
   .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; background: transparent; border: 0; box-shadow: none; pointer-events: none; }
   .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; max-width: calc(100% - 150px); background: transparent; }
-  .cw-chat-avatar .cw-persona-status { max-width: 100%; font-size: 11px; line-height: 16px; }
+  .cw-chat-avatar .cw-persona-status { max-width: 100%; box-sizing: border-box; padding: 3px 10px; font-size: 11px; line-height: 16px; color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--border2) 65%, transparent); border-radius: 999px;
+    background: linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.03)), color-mix(in srgb, var(--bg) 68%, transparent);
+    backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4);
+    box-shadow: 0 2px 12px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.12); }
   .cw-chat-avatar .cw-ava { overflow: visible; }
   .cw-chat-head button { pointer-events: auto; }
   .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

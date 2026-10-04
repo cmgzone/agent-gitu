@@ -720,14 +720,16 @@ export const COWORK_JS = String.raw`
   function cwAgentById(id) { var cw = cwEnsure(); for (var i = 0; i < cw.agents.length; i++) if (cw.agents[i].id === id) return cw.agents[i]; return null; }
   function cwCharacterActivity(agentId) {
     var cw = cwEnsure();
-    if ((cw.requests || []).some(function (r) { return r.status === 'open' && (!agentId || r.agentId === agentId); })) return 'Waiting for you';
-    if (!cw.busy) return 'Ready';
-    var ps = cw.progresses && cw.progresses.length ? cw.progresses : (cw.progress ? [cw.progress] : []);
-    var progress = ps.find(function (p) { return !agentId || p.agentId === agentId; });
-    if (progress) return cwActivityLabel(progress);
-    var member = cwAgentById(agentId), conv = cwActiveConv();
-    if (!agentId || member && cw.working === member.name || !ps.length && conv && conv.memberIds.indexOf(agentId) >= 0) return 'Thinking…';
-    return 'Ready';
+    // Questions can stay open across turns. Show this agent's live work first,
+    // without making a paused teammate appear busy when another agent works.
+    if (cw.busy) {
+      var ps = cw.progresses && cw.progresses.length ? cw.progresses : (cw.progress ? [cw.progress] : []);
+      var progress = ps.find(function (p) { return !agentId || p.agentId === agentId; });
+      if (progress) return cwActivityLabel(progress);
+      var member = cwAgentById(agentId), conv = cwActiveConv();
+      if (!agentId || member && cw.working === member.name || !ps.length && !cw.working && conv && conv.kind === 'dm' && conv.memberIds[0] === agentId) return 'Thinking…';
+    }
+    return (cw.requests || []).some(function (r) { return r.status === 'open' && (!agentId || r.agentId === agentId); }) ? 'Waiting for you' : 'Ready';
   }
   function cwCharacterStatusHtml(agent, rail) {
     var activity = cwCharacterActivity(agent && agent.id);

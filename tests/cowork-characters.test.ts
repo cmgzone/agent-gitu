@@ -139,13 +139,68 @@ describe('animated teammate characters and web activity', () => {
     expect(headerText.textContent).toBe('AI teammate · Working…');
     u.context.S.cw.requests = [{ status: 'open', agentId: 'jelly' }];
     u.context.cwUpdateCharacterActivity();
+    expect(headerText.textContent).toBe('AI teammate · Working…');
+    expect(railText.textContent).toBe('Working…');
+    u.cw.busy = false;
+    u.context.cwUpdateCharacterActivity();
     expect(headerText.textContent).toBe('AI teammate · Waiting for you');
     u.context.S.cw.requests[0].status = 'answered';
-    u.cw.busy = false;
     u.context.cwUpdateCharacterActivity();
     expect(headerText.textContent).toBe('AI teammate · Ready');
     expect(attrs['data-active']).toBe('false');
     expect(u.replacements()).toBe(0);
+  });
+
+  it('shows resumed work ahead of an unanswered request in every live phase', () => {
+    const { context, cw } = ui();
+    context.S.cw.requests = [{ status: 'open', agentId: 'jelly' }];
+    cw.busy = false;
+    expect(context.cwCharacterActivity('jelly')).toBe('Waiting for you');
+    cw.busy = true;
+    for (const phase of ['thinking', 'reasoning', 'responding', 'working'] as const) {
+      cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: '', phase }];
+      expect(context.cwCharacterActivity('jelly').toLowerCase()).toBe(phase + '…');
+    }
+    cw.progresses[0]!.tool = 'run_command';
+    expect(context.cwCharacterActivity('jelly')).toBe('Working…');
+    cw.busy = false;
+    // The previous progress record must not keep a stopped agent active.
+    expect(context.cwCharacterActivity('jelly')).toBe('Waiting for you');
+    context.S.cw.requests[0].status = 'answered';
+    expect(context.cwCharacterActivity('jelly')).toBe('Ready');
+  });
+
+  it('keeps a paused teammate waiting while the team and another teammate work', () => {
+    const { context, cw } = ui();
+    context.S.cw.agents.push({ id: 'mina', name: 'Mina' });
+    context.S.cw.active = 'group';
+    context.S.cw.convs = [{ id: 'group', kind: 'group', memberIds: ['jelly', 'mina'] }];
+    context.S.cw.requests = [{ status: 'open', agentId: 'jelly' }];
+    cw.progresses = [{ agentId: 'mina', agentName: 'Mina', text: '', tool: 'read_file' }];
+    expect(context.cwCharacterActivity('jelly')).toBe('Waiting for you');
+    expect(context.cwCharacterActivity('mina')).toBe('Working…');
+    expect(context.cwCharacterActivity(null)).toBe('Working…');
+    cw.busy = false;
+    expect(context.cwCharacterActivity('mina')).toBe('Ready');
+    expect(context.cwCharacterActivity(null)).toBe('Waiting for you');
+  });
+
+  it('shows thinking at the start of a DM without attributing other agents work to it', () => {
+    const { context, cw } = ui();
+    context.S.cw.active = 'dm';
+    context.S.cw.convs = [{ id: 'dm', kind: 'dm', memberIds: ['jelly'] }];
+    context.S.cw.requests = [{ status: 'open', agentId: 'jelly' }];
+    cw.progresses = [];
+    expect(context.cwCharacterActivity('jelly')).toBe('Thinking…');
+    expect(context.cwCharacterActivity(null)).toBe('Thinking…');
+    context.S.cw.working = 'Mina';
+    expect(context.cwCharacterActivity('jelly')).toBe('Waiting for you');
+    context.S.cw.working = 'Jelly';
+    expect(context.cwCharacterActivity('jelly')).toBe('Thinking…');
+    context.S.cw.working = null;
+    context.S.cw.convs[0].kind = 'group';
+    expect(context.cwCharacterActivity('jelly')).toBe('Waiting for you');
+    expect(context.cwCharacterActivity(null)).toBe('Thinking…');
   });
 
   it('keeps live avatars while prose streams, showing a site icon but no command or path text', () => {

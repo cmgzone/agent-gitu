@@ -15,6 +15,8 @@ export const HOME_CSS = String.raw`
   .home-character { width:96px; height:96px; object-fit:contain; animation:homeCharacterFloat 5s ease-in-out infinite; }
   @keyframes homeCharacterFloat { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-5px); } }
   .home .home-brand-lockup h1 { width: auto; }
+  .home-composer-wrap { width:min(760px,100%); min-width:0; }
+  .home-composer-wrap .composer { width:100%; }
   .home-blob { width: clamp(72px, 10vw, 108px); height: auto; flex: none; overflow: visible; }
   .home-blob-body { transform-origin: 60px 83px; animation: homeBlobBob 5s ease-in-out infinite; }
   .home-blob-eye { transform-box: fill-box; transform-origin: center; animation: homeBlobBlink 6s ease-in-out infinite; }

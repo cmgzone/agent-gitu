@@ -38,6 +38,7 @@ export const UI_BUTTON_CSS = String.raw`
 export const UI_BUTTON_JS = String.raw`
   function actionIconName(label) {
     var text = String(label || '').trim().toLowerCase();
+    if (/^(report|message) actions$/.test(text)) return 'more';
     if (/delete|remove|revoke/.test(text)) return 'trash';
     if (/close|cancel|dismiss|skip/.test(text)) return 'x';
     if (/always allow/.test(text)) return 'shield';
@@ -65,6 +66,7 @@ export const UI_BUTTON_JS = String.raw`
   }
   function actionSvg(name) {
     var paths = {
+      more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
       trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
       lock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 8 0v4"/>',
       download: '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/>',

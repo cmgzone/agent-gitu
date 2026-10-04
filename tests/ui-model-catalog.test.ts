@@ -24,7 +24,7 @@ function renderMenus(chatProvider: ReturnType<typeof provider>, settingsProvider
   const context = {
     S: { models: [chatProvider], sel: { model: '' } }, prov: [settingsProvider], wrap,
     providerIsUsable: () => true, modelSearchText: (_p: unknown, m: { id: string }) => m.id,
-    esc: String, titleCase: String, isFreeModelId: () => false, modelMetaText: () => '', markMatch: String,
+    esc: String, titleCase: String, isFreeModelId: () => false, modelMetaText: () => '', modelBrandHtml: () => '', markMatch: String,
   };
   const result = runInNewContext(
     UI_MODEL_CATALOG_JS +

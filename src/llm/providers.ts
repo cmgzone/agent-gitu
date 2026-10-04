@@ -377,6 +377,8 @@ export interface ModelInfo {
 
 /** Provider-specific limits, USD prices per one million tokens, and live modality. */
 export interface ModelMetadata {
+  /** Publisher identity from the catalog, independent of the serving provider. */
+  canonicalModelId?: string;
   contextTokens?: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -597,6 +599,7 @@ export function parseModelCatalog(value: unknown): ModelCatalog {
       const limit = isRecord(model['limit']) ? model['limit'] : {};
       const cost = isRecord(model['cost']) ? model['cost'] : {};
       const metadata: ModelMetadata = {
+        ...(typeof model['canonical_model_id'] === 'string' && /^[a-z0-9-]+\/[a-z0-9._:/-]+$/i.test(model['canonical_model_id']) ? { canonicalModelId: model['canonical_model_id'] } : {}),
         contextTokens: finiteNumber(limit['context']),
         inputTokens: finiteNumber(limit['input']),
         outputTokens: finiteNumber(limit['output']),
@@ -606,7 +609,7 @@ export function parseModelCatalog(value: unknown): ModelCatalog {
         vision: catalogModelVision(model),
         source: 'models.dev',
       };
-      if (Object.values(metadata).some((v) => typeof v === 'number') || metadata.vision !== undefined) models.set(modelId, metadata);
+      if (Object.values(metadata).some((v) => typeof v === 'number') || metadata.vision !== undefined || metadata.canonicalModelId) models.set(modelId, metadata);
     }
     if (models.size > 0) catalog.set(providerId, models);
   }

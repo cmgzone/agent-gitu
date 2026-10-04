@@ -1,4 +1,5 @@
 import { codexSubscriptionInfo } from './codex-subscription.js';
+import { modelBrandFor } from './model-brand.js';
 import {
   allProviderSpecs,
   cachedLiveModels,
@@ -26,8 +27,8 @@ function normalizeModels(models: readonly ModelInfo[]): ModelInfo[] {
     const id = model.id.trim();
     if (!id) continue;
     const existing = unique.get(id);
-    if (!existing) unique.set(id, { id, vision: model.vision });
-    else if (existing.vision === undefined) existing.vision = model.vision;
+    if (!existing) unique.set(id, { id, vision: model.vision, ...(model.ownedBy ? { ownedBy: model.ownedBy } : {}) });
+    else { if (existing.vision === undefined) existing.vision = model.vision; if (!existing.ownedBy && model.ownedBy) existing.ownedBy = model.ownedBy; }
   }
   return [...unique.values()];
 }
@@ -83,6 +84,8 @@ export async function resolveModelCatalog(deps: Partial<ModelCatalogDependencies
     live,
     models: models.map((mi) => ({
       id: mi.id,
+      ...(mi.ownedBy ? { ownedBy: mi.ownedBy } : {}),
+      brand: modelBrandFor(catalog, spec.id, mi, spec.custom),
       // Explicit live modality (including false) wins over catalog and heuristic.
       vision: mi.vision ?? resolveSupportedImages(catalog, spec.id, mi.id),
       free: isFreeModel(mi.id),

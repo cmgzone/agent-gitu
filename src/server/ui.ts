@@ -2,6 +2,7 @@ import { HOME_CSS, HOME_CHARACTER_HTML } from './ui-home.js';
 import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
 import { UI_BUTTON_CSS, UI_BUTTON_JS } from './ui-buttons.js';
+import { UI_SEARCH_CSS } from './ui-search.js';
 import { COWORK_GALLERY_CSS, COWORK_GALLERY_JS } from './ui-gallery.js';
 import { COWORK_PROFILE_CSS, COWORK_PROFILE_JS } from './ui-cowork-profile.js';
 import { REPORT_DETAILS_CSS, REPORT_DETAILS_JS } from './ui-report-details.js';
@@ -236,11 +237,30 @@ ${HOME_CSS}
   .model-item .mi-top { display: flex; align-items: center; gap: 8px; }
   .model-item .mi-prov { color: var(--muted); font-size: 10.5px; flex: none; }
   .model-item .mi-meta { margin-left: auto; color: var(--faint); font-size: 10px; font-family: var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 58%; flex: none; }
-  .model-item .mi-name { font-weight: 600; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-item .mi-name { display:flex;align-items:center;gap:8px;font-weight: 600; margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model-item .mi-name .vmark { color: var(--blue); font-style: normal; }
   .model-empty { color: var(--faint); font-size: 12px; padding: 10px 9px; text-align: center; line-height: 1.5; }
   .model-list mark { background: var(--selected); color: inherit; border-radius: 3px; }
   .model-count { padding: 5px 10px 2px; margin-top: 4px; border-top: 1px solid var(--border); color: var(--faint); font-size: 10.5px; text-align: right; }
+  .composer-topline { display:flex; align-items:center; gap:12px; min-width:0; padding:0 8px 8px; }
+  .composer-workspace { display:inline-flex; align-items:center; gap:7px; min-width:0; max-width:calc(100% - 44px); padding:5px 0; color:var(--muted); font:inherit; font-size:12px; }
+  .composer-workspace span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .composer-topline .context-trigger { margin-left:auto; }
+  .composer-workspace svg { width:15px; height:15px; flex:none; }
+  .composer-bar { flex-wrap:nowrap; gap:8px; }
+  .composer-bar .model-control { min-width:0; flex:1; max-width:calc(100% - 88px); }
+  .model-pick { max-width:100%; }
+  .model-pick .mp-label { display:inline-flex; align-items:center; gap:7px; min-width:0; }
+  .model-short-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .model-brand { position:relative; display:inline-grid; place-items:center; width:19px; height:19px; flex:none; }
+  .model-brand-logo { position:absolute; inset:0; width:18px; height:18px; object-fit:contain; opacity:0; }
+  .model-brand.loaded .model-brand-logo { opacity:1; }
+  .model-brand-fallback { display:grid;place-items:center;width:18px;height:18px;border-radius:5px;background:var(--selected);color:var(--accent);font-size:9px;font-weight:650; }
+  .model-brand.loaded .model-brand-fallback { opacity:0; }
+  :root:not([data-theme="light"]) .model-brand-logo { filter:invert(1); }
+  .model-menu-settings { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 8px 4px; border-top:1px solid var(--border); margin-top:6px; font-size:12px; color:var(--muted); }
+  .model-menu-settings select { max-width:150px; padding:6px 8px; border:1px solid var(--border); border-radius:7px; color:var(--text); background:var(--card); font:inherit; }
+  @media(min-width:721px) { .model-menu { top:auto; bottom:calc(100% + 10px); } }
   .send { margin-left: auto; width: 32px; height: 32px; border-radius: 10px; border: 0; background: var(--accent); color: var(--on-accent); font-size: 14px; transition: opacity .16s ease; }
   .send:not(:disabled):hover { opacity: .85; }
   /* Send ⇄ Stop: while the agent runs the same button stops it. */
@@ -928,6 +948,7 @@ ${HOME_CSS}
   ${UI_THEME_CSS}
   ${ONBOARDING_CSS}
   ${UI_BUTTON_CSS}
+  ${UI_SEARCH_CSS}
   ${COWORK_GALLERY_CSS}
   ${COWORK_PROFILE_CSS}
   ${REPORT_DETAILS_CSS}
@@ -1567,7 +1588,7 @@ ${ONBOARDING_HTML}
       '<span class="cta-ico" aria-hidden="true">' + icon('users') + '</span>' +
       '<span class="cta-body"><span class="cta-t">Cowork</span><span class="cta-d" id="homeCoworkDesc">Meet your team</span></span><span class="cta-arrow" aria-hidden="true">&#8599;</span></button>' +
       '</nav>' +
-      '<header class="home-brand"><div class="home-brand-kicker" aria-hidden="true">&lt;/&gt; Ideas into action</div>' +
+      '<header class="home-brand">' +
       '<div class="home-brand-lockup">' + ${JSON.stringify(HOME_CHARACTER_HTML)} + '<h1><span>Agent</span><span><span class="home-brand-name">Gitu</span><i class="home-brand-spark" aria-hidden="true"></i></span></h1></div>' +
       '<p class="home-brand-copy">A little spark. A working idea. Let’s build it.</p></header>' +
       '<div class="home-particles" aria-hidden="true"></div>' +
@@ -1576,9 +1597,10 @@ ${ONBOARDING_HTML}
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
           '<div class="meta-line">Choose a provider and add a key to start your first task.</div><span class="setup-action">Open provider settings →</span></button>'
       : '') +
+      '<div class="home-composer-wrap"><div class="composer-topline"><button type="button" class="composer-workspace" id="homeProj" aria-label="Project '+esc(name)+'" title="Choose project">'+icon('folder')+'<span>'+esc(name)+'</span></button></div>' +
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml('<button type="button" class="pill control-pill" id="homeProj" aria-label="Project ' + esc(name) + '" title="active project for this session — click to change" style="max-width:190px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + icon('folder') + ' ' + esc(name) + '</span></button>') + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div></div>' +
       '</div>';
     var ta = $('goal');
     ta.value = S.draft;
@@ -1656,23 +1678,20 @@ ${ONBOARDING_HTML}
   }
   function modelLabelText(value) {
     var parts = String(value || '').split('::');
-    var pid = parts[0], mid = parts[1];
-    for (var i = 0; i < S.models.length; i++) {
-      var p = S.models[i];
-      if (p.id !== pid) continue;
-      for (var j = 0; j < p.models.length; j++) {
-        if (p.models[j].id !== mid) continue;
-        return p.id + ' / ' + prettyModelName(mid) + (p.models[j].free ? ' (free)' : '');
-      }
-      return p.id + ' / ' + prettyModelName(mid);
-    }
-    return String(value || '');
+    var mid = parts.slice(1).join('::') || parts[0];
+    return prettyModelName(String(mid || '').split('/').pop());
+  }
+  function modelBrandHtml(value,info) {
+    var parts=String(value||'').split('::'),model=info||modelInfo(value),brand=model&&model.brand;
+    var id=brand&&brand.id||model&&model.ownedBy||parts.slice(1).join('::').split('/')[0]||parts[0],initial=String(id||'AI').slice(0,2).toUpperCase();
+    var url=brand&&brand.iconUrl,valid=typeof url==='string'&&/^\/api\/model-icons\/(lab|provider)\/[a-z0-9][a-z0-9-]{0,63}\.svg$/.test(url);
+    return '<span class="model-brand" aria-hidden="true"><span class="model-brand-fallback">'+esc(initial)+'</span>'+(valid?'<img class="model-brand-logo" src="'+esc(url)+'" width="18" height="18" loading="lazy" alt="" onload="this.parentElement.classList.add(\'loaded\')" onerror="this.parentElement.classList.remove(\'loaded\');this.remove()">':'')+'</span>';
   }
   function syncModelLabel() {
     var lab = $('modelLabel');
     var model = $('model');
     var text = model ? modelLabelText(model.value) : '';
-    if (lab) lab.textContent = text || (S.modelsLoaded ? 'Choose model' : 'Loading models…');
+    if (lab) lab.innerHTML = (text?modelBrandHtml(model.value):'')+'<span class="model-short-name">'+esc(text || (S.modelsLoaded ? 'Choose model' : 'Loading models…'))+'</span>';
     var pick = $('modelPick');
     if (pick) {
       pick.title = text ? 'Model: ' + text : 'Choose model';
@@ -1722,7 +1741,7 @@ ${ONBOARDING_HTML}
         html += '<button type="button" class="model-item' + (val === cur ? ' cur' : '') + '" data-val="' + esc(val) + '" role="option" aria-selected="' + (val === cur ? 'true' : 'false') + '">' +
           '<div class="mi-top"><span class="mi-prov">' + markMatch(g.p.id, q) + '</span>' +
           '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span></div>' +
-          '<div class="mi-name">' + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+          '<div class="mi-name">' + modelBrandHtml(val,m) + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
           '</button>';
       });
     });
@@ -1844,7 +1863,7 @@ ${ONBOARDING_HTML}
     plan.title = busy ? 'Available when this task finishes' : 'Pause for plan review before making changes';
     if (plus) plus.title = enabled ? 'More actions · Plan mode selected' : 'More actions · Agent mode selected';
   }
-  function controlsHtml(projectControl) {
+  function controlsHtml() {
     return '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
       '<div class="home-plus-menu" id="homePlusMenu" hidden role="menu" aria-label="More actions">' +
         '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
@@ -1853,9 +1872,8 @@ ${ONBOARDING_HTML}
         '<button type="button" data-hp="folder" role="menuitem"><span class="ico">' + icon('folder') + '</span>' + (S.active === 'home' ? 'Choose project folder' : 'Tag reference folder') + '</button>' +
         '<button type="button" data-hp="schedule" role="menuitem"><span class="ico">' + icon('clock') + '</span>Schedule a run</button>' +
       '</div>' +
-      (projectControl || '') + '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
-      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
-      '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
+      '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span></button>' +
+      '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div><div class="model-menu-settings"><label for="effort">Reasoning effort</label><select id="effort" aria-label="Reasoning effort"></select><span class="model-meta" id="modelMeta"></span></div></div></span>' +
       '<input type="file" id="attachInput" multiple hidden>';
   }
   function currentVision() {
@@ -2162,12 +2180,15 @@ ${ONBOARDING_HTML}
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
-      '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
+      '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer-topline"><button type="button" class="composer-workspace" id="runProject" aria-label="Project '+esc(effectiveProjectName())+'" title="Choose project">'+icon('folder')+'<span>'+esc(effectiveProjectName())+'</span></button>' +
+      '<button type="button" class="context-trigger unknown" id="contextToggle" title="Session context and token usage" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="context-ring-track" cx="12" cy="12" r="9"/><circle class="context-ring-progress" cx="12" cy="12" r="9" pathLength="100"/><circle class="context-ring-core" cx="12" cy="12" r="2"/></svg></button></div>' +
+      '<div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div><div class="run-folder-tags" id="runFolderTags" aria-label="Tagged reference folders" hidden></div>' +
-      '<div class="composer-bar">' + controlsHtml() + '<button type="button" class="context-trigger unknown" id="contextToggle" title="Session context and token usage" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="context-ring-track" cx="12" cy="12" r="9"/><circle class="context-ring-progress" cx="12" cy="12" r="9" pathLength="100"/><circle class="context-ring-core" cx="12" cy="12" r="2"/></svg></button><button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
+      '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send2" aria-label="Send message">&#8593;</button></div>' +
       '<div class="context-card" id="contextCard" hidden><div class="context-card-head"><span>Session context</span><button type="button" class="ubtn" id="contextClose" aria-label="Close context card">&times;</button></div><div id="contextCardBody"></div></div></div></div>' +
       '</div></div>';
     $('contextToggle').onclick = function () { toggleContextCard(); };
+    $('runProject').onclick = openFolderBrowser;
     $('contextClose').onclick = function () { toggleContextCard(false); };
     renderApproach(sess);
     $('approachPanel').open = Boolean(sess.approachOpen);
@@ -5846,7 +5867,7 @@ ${ONBOARDING_HTML}
               '<div class="mi-top"><span class="mi-prov">' + (m.free ? 'free · no credits needed' : '') + '</span>' +
               '<span class="mi-meta">' + esc(modelMetaText(m)) + '</span>' +
               (val === curVal ? '<span class="mi-cur" title="current default">&#10003;</span>' : '') + '</div>' +
-              '<div class="mi-name">' + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
+              '<div class="mi-name">' + modelBrandHtml(val,m) + markMatch(titleCase(m.id), q) + (m.vision ? ' <i class="vmark" title="supports images">&#9672;</i>' : '') + '</div>' +
               '</button>';
           }).join('') || '<div class="model-empty">No models match &ldquo;' + esc(q) + '&rdquo;<br><span style="font-size:11px">Try a model name</span></div>';
           var hl = list.querySelector('.model-item');
@@ -6164,7 +6185,7 @@ ${ONBOARDING_HTML}
         var skills = all.filter(function (sk) { return !q || sk.name.indexOf(q) >= 0 || (sk.description || '').toLowerCase().indexOf(q) >= 0; });
         b.innerHTML = '<h1>Skills</h1>' +
           '<p style="color:var(--muted);font-size:12.5px">Reusable step-by-step knowledge. The agent applies them with use_skill and learns new ones with create_skill.</p>' +
-          '<div style="display:flex;gap:8px;margin:12px 0"><input type="text" id="skSearch" placeholder="Search skills…" value="' + esc(S.skillQuery || '') + '" style="flex:1;border:1px solid var(--border2);border-radius:8px;background:var(--card2);color:var(--text);padding:7px 10px">' +
+          '<div style="display:flex;gap:8px;margin:12px 0"><input type="text" id="skSearch" placeholder="Search skills…" value="' + esc(S.skillQuery || '') + '" style="flex:1">' +
           '<button class="btn dark" id="skNew">+ New skill</button></div>' +
           '<div class="setcard" id="skFormCard" hidden style="margin-bottom:12px"><div class="setlist">' +
           '<input id="skName" placeholder="skill name (e.g. deploy-checklist)">' +

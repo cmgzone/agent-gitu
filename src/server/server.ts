@@ -6,6 +6,7 @@ import { desktopAsset, desktopView } from './desktop-view.js';
 import { MobileAccess } from './mobile-access.js';
 import { AppAuth } from './app-auth.js';
 import { authPage } from './ui-auth.js';
+import { modelIcon } from './model-icons.js';
 import { ComposioConnections } from '../connections/composio.js';
 import { COMPANION_DIR, companionAsset } from './mobile-companion.js';
 import os from 'node:os';
@@ -5124,6 +5125,14 @@ export class GituServer {
       res.writeHead(200, { 'content-type': contentType, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
       this.pipeFile(res, assetPath);
       return;
+    }
+
+    if (method === 'GET' && path.startsWith('/api/model-icons/')) {
+      const match = path.match(/^\/api\/model-icons\/(lab|provider)\/([a-z0-9][a-z0-9-]{0,63})\.svg$/);
+      const image = match ? await modelIcon(match[1]!, match[2]!) : undefined;
+      if (!image) { res.writeHead(404, { 'cache-control': 'private, max-age=60' }); res.end(); return; }
+      res.writeHead(200, { 'content-type': 'image/svg+xml', 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; sandbox" });
+      res.end(image); return;
     }
 
     if (method === 'GET' && path.startsWith('/brand/')) {

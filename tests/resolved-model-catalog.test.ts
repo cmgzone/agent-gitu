@@ -29,6 +29,12 @@ function dependencies(specs: ProviderSpec[]) {
 const ids = (row: Awaited<ReturnType<typeof resolveModelCatalog>>['providers'][number]) => row.models.map((m) => m.id);
 
 describe('resolveModelCatalog', () => {
+  it('preserves live publisher metadata through normalization and exposes only a safe local icon URL', async () => {
+    const deps=dependencies([spec('openrouter',{publicModels:true})]);
+    deps.cachedLiveModels.mockResolvedValue([{id:'new-author/model-1',ownedBy:'new-author'}]);
+    const {providers}=await resolveModelCatalog(deps);
+    expect(providers[0]?.models[0]).toMatchObject({ownedBy:'new-author',brand:{id:'new-author',kind:'lab',iconUrl:'/api/model-icons/lab/new-author.svg'}});
+  });
   it('discovers unknown models, replaces seeds and enriches normalized IDs with live modality precedence', async () => {
     const deps = dependencies([spec('alpha', { publicModels: true })]);
     const discovered = [
@@ -50,7 +56,7 @@ describe('resolveModelCatalog', () => {
     expect(ids(row)).toEqual(['future-release:free', 'catalog-only', 'new-vision-model', 'unrecognized', 'alpha-default']);
     expect(row.models[0]).toMatchObject({ id: 'future-release:free', vision: false, free: true, metadata: { source: 'models.dev', contextTokens: 12345, inputPricePerMillion: 0.25, vision: true } });
     expect(row.models[1]?.vision).toBe(true);
-    expect(row.models[2]).toEqual({ id: 'new-vision-model', vision: true, free: false, metadata: undefined });
+    expect(row.models[2]).toEqual({ id: 'new-vision-model', vision: true, free: false, metadata: undefined, brand: { id:'alpha', kind:'provider', iconUrl:'/api/model-icons/provider/alpha.svg' } });
     expect(row.models[3]?.vision).toBe(true);
     expect(row.models[4]?.metadata?.outputPricePerMillion).toBe(2);
     expect(row).toMatchObject({ live: true, hasKey: false, usable: false, publicModels: true });
@@ -101,8 +107,8 @@ describe('resolveModelCatalog', () => {
       hasKey: true, auth: 'api-key', signedIn: false, planType: undefined,
       available: true, usable: true, publicModels: false, live: true,
       models: [
-        { id: 'new-release', vision: false, free: false, metadata: undefined },
-        { id: 'team-choice', vision: false, free: false, metadata: undefined },
+        expect.objectContaining({ id: 'new-release', vision: false, free: false, metadata: undefined }),
+        expect.objectContaining({ id: 'team-choice', vision: false, free: false, metadata: undefined }),
       ],
       effortLevels: custom.effortLevels, effortLabels: { high: 'Deep' }, maxEffort: 'distinct',
       keyEnvVars: custom.keyEnvVars, baseUrl: custom.baseUrl, custom: true, toolMode: 'structured_text',

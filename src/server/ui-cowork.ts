@@ -92,6 +92,7 @@ export const COWORK_CSS = String.raw`
   .cw-teammate .cw-ava { width: 48px; height: 48px; overflow: visible; }
   .cw-teammate .cw-item-name { margin-bottom: 5px; }
   .cw-persona-status { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: 11px; }
+  .cw-persona-status[hidden] { display: none; }
   .cw-persona-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex: none; opacity: .65; }
   .cw-persona-status[data-active=true]::before { background: var(--accent); opacity: 1; }
   .cw-persona-status > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -100,6 +101,7 @@ export const COWORK_CSS = String.raw`
   .cw-ava svg { width: 100%; height: 100%; display: block; }
   .cw-row > .cw-ava { width: 46px; height: 46px; }
   .report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }
+  .cw-msgs .cw-row > .cw-ava { display: none; }
   .cw-chat-head .cw-ava { width: 76px; height: 76px; }
   .cw-item .cw-flag { flex: none; color: var(--muted); display: inline-flex; }
   .cw-item .cw-flag svg { width: 14px; height: 14px; }
@@ -687,8 +689,8 @@ export const COWORK_JS = String.raw`
   }
   function cwCharacterStatusHtml(agent, rail) {
     var activity = cwCharacterActivity(agent && agent.id);
-    var label = rail ? activity + (activity === 'Ready' && agent.tagline ? ' · ' + agent.tagline : '') : 'AI teammate · ' + activity;
-    return '<span class="cw-persona-status" data-cw-agent-status="' + esc(agent.id) + '" data-status-surface="' + (rail ? 'rail' : 'profile') + '" data-active="' + (activity !== 'Ready') + '"><span>' + esc(label) + '</span></span>';
+    var label = rail ? (activity === 'Ready' ? agent.tagline || '' : activity) : 'AI teammate · ' + activity;
+    return '<span class="cw-persona-status"' + (!label ? ' hidden' : '') + ' data-cw-agent-status="' + esc(agent.id) + '" data-status-surface="' + (rail ? 'rail' : 'profile') + '" data-active="' + (activity !== 'Ready') + '"><span>' + esc(label) + '</span></span>';
   }
   function cwUpdateCharacterActivity() {
     var cw = cwEnsure();
@@ -696,9 +698,10 @@ export const COWORK_JS = String.raw`
       var agent = cwAgentById(node.getAttribute('data-cw-agent-status'));
       if (!agent) return;
       var activity = cwCharacterActivity(agent.id);
-      var label = node.getAttribute('data-status-surface') === 'rail' ? activity + (activity === 'Ready' && agent.tagline ? ' · ' + agent.tagline : '') : 'AI teammate · ' + activity;
+      var label = node.getAttribute('data-status-surface') === 'rail' ? (activity === 'Ready' ? agent.tagline || '' : activity) : 'AI teammate · ' + activity;
       var text = node.querySelector('span');
       if (text && text.textContent !== label) text.textContent = label;
+      node.hidden = !label;
       node.setAttribute('data-active', String(activity !== 'Ready'));
     });
     var header = $('cwCharacterStatus');

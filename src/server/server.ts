@@ -74,7 +74,7 @@ import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspace
 import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
-import { BRAND_DIR, BRAND_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
+import { BRAND_DIR, BRAND_FILES, CHARACTERS_DIR, CHARACTER_FILES, FONT_FILES, FONTS_DIR, VENDOR_THREE, VENDOR_THREE_CORE, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from './static-assets.js';
 
 export interface PendingApproval {
   id: string;
@@ -5057,6 +5057,19 @@ export class GituServer {
       this.sendJson(res, 200, await resolveModelCatalog({
         codexSubscriptionInfo: this.config.codexSubscriptionInfo,
       }));
+      return;
+    }
+
+    if (method === 'GET' && path.startsWith('/characters/')) {
+      const assetName = path.slice('/characters/'.length);
+      const contentType = Object.hasOwn(CHARACTER_FILES, assetName) ? CHARACTER_FILES[assetName] : undefined;
+      const assetPath = contentType ? nodePath.join(CHARACTERS_DIR, assetName) : undefined;
+      if (!contentType || !assetPath || !existsSync(assetPath)) {
+        this.sendJson(res, 404, { error: 'character asset not found' });
+        return;
+      }
+      res.writeHead(200, { 'content-type': contentType, 'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
+      this.pipeFile(res, assetPath);
       return;
     }
 

@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { BRAND_FILES, FONT_FILES, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from '../src/server/static-assets.js';
+import { BRAND_FILES, CHARACTER_FILES, FONT_FILES, isPreviewableMime, isTextLikeFile, mimeForFile, safeFileName } from '../src/server/static-assets.js';
 
 describe('static asset policy', () => {
   it('allows only bundled names and safe download file names', () => {
     expect(FONT_FILES['inter-latin-400-normal.woff2']).toBe('font/woff2');
     expect(BRAND_FILES['agent-gitu-logo.svg']).toBe('image/svg+xml');
+    expect(CHARACTER_FILES['purple.png']).toBe('image/png');
+    expect(Object.hasOwn(CHARACTER_FILES, '../LICENSE')).toBe(false);
+    expect(Object.hasOwn(CHARACTER_FILES, 'constructor')).toBe(false);
     expect(safeFileName('../unsafe\\report?.txt')).toBe('report-.txt');
   });
 

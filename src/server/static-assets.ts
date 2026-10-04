@@ -16,6 +16,13 @@ export const VENDOR_THREE = path.join(moduleDir, '../../node_modules/three/build
 export const VENDOR_THREE_CORE = path.join(moduleDir, '../../node_modules/three/build/three.core.min.js');
 export const FONTS_DIR = path.join(moduleDir, '../../assets/fonts');
 export const BRAND_DIR = path.join(moduleDir, '../../assets');
+export const CHARACTERS_DIR = path.join(BRAND_DIR, 'cowork-dots');
+export const CHARACTER_FILES: Record<string, string> = {
+  'blue.png': 'image/png',
+  'mint.png': 'image/png',
+  'orange.png': 'image/png',
+  'purple.png': 'image/png',
+};
 
 export const FONT_FILES: Record<string, string> = {
   'inter-latin-400-normal.woff2': 'font/woff2',

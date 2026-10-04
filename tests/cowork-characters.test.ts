@@ -28,7 +28,7 @@ function ui() {
             : [tool],
   };
   const cw = { busy: true, agents: [{ id: 'jelly', name: 'Jelly', avatar: { shape: 'jelly', color: '#8f80ff' } }], progresses: [{ agentId: 'jelly', agentName: 'Jelly', text: 'First', tool: 'browse', webUrl: 'https://example.com' }] as CoworkProgress[] };
-  const context = createContext({ window: { addEventListener() {} }, S: { cw }, esc, URL, $: (id: string) => id === 'cwLive' ? live : id === 'cwMsgs' ? { scrollHeight: 100, scrollTop: 0, clientHeight: 100 } : null });
+  const context = createContext({ window: { addEventListener() {} }, document: { addEventListener() {}, querySelectorAll: () => [] }, S: { cw }, esc, URL, $: (id: string) => id === 'cwLive' ? live : id === 'cwMsgs' ? { scrollHeight: 100, scrollTop: 0, clientHeight: 100 } : null });
   new Script(COWORK_JS).runInContext(context);
   return { context, cw, live, text, label, tool, replacements: () => replacements };
 }
@@ -39,7 +39,7 @@ describe('animated teammate characters and web activity', () => {
     try {
       const file = path.join(dir, 'cowork.json');
       const store = new CoworkStore(file);
-      for (const shape of ['home-blob', 'orb', 'cube', 'diamond', 'pyramid']) {
+      for (const shape of ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'orb', 'cube', 'diamond', 'pyramid']) {
         const agent = store.saveAgent({ name: shape, systemPrompt: 'Help.', avatar: { shape, color: '#3fd68f' } });
         store.saveAgent({ id: agent.id, name: shape, systemPrompt: 'Help with research.' });
         expect(new CoworkStore(file).listAgents().find(a => a.id === agent.id)?.avatar).toEqual({ shape, color: '#3fd68f' });
@@ -47,27 +47,26 @@ describe('animated teammate characters and web activity', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  it('offers the homepage blob and geometric companions with safe fallbacks', () => {
+  it('offers four bundled plush characters with safe legacy fallbacks', () => {
     const { context } = ui();
-    expect(Array.from(context.CW_SHAPES)).toEqual(['home-blob', 'orb', 'cube', 'diamond', 'pyramid']);
-    expect(Object.values(context.CW_CHARACTER_NAMES)).toEqual(['Home Blob', 'Round', 'Cube', 'Diamond', 'Pyramid']);
-    expect(context.cwAvaImg({ shape: 'orb', color: '#3fd68f' })).toContain('cw-orb-eyes');
-    const cube = context.cwAvaImg({ shape: 'cube', color: '#3fd68f' });
-    expect(cube).toContain('width="28" height="28"');
-    expect(cube).not.toContain('height="5"');
-    expect(context.cwAvaImg({ shape: 'cat', color: '#3fd68f' })).toContain('cw-orb-eyes');
-    expect(context.cwAvaImg({ shape: 'cat', color: '"><script>bad</script>' })).not.toContain('<script>');
+    expect(Array.from(context.CW_SHAPES)).toEqual(['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple']);
+    expect(Object.values(context.CW_CHARACTER_NAMES)).toEqual(['Blue', 'Mint', 'Orange', 'Purple']);
+    for (const shape of ['home-blob', 'orb', 'cube', 'cat', 'diamond', 'pyramid']) {
+      expect(context.cwAvaImg({ shape, color: '#3fd68f' })).toContain('/characters/mint.png');
+    }
+    expect(context.cwAvaImg({ shape: 'cat', color: '<script>bad</script>' })).toContain('/characters/purple.png');
+    expect(context.cwAvaImg({ shape: 'dot-../../secret', color: '#5ba8ff' })).toContain('/characters/blue.png');
   });
 
-  it('keeps the homepage expression and unique gradient ids for repeated avatars', () => {
+  it('ships the original transparent PNGs and their license locally', () => {
     const { context } = ui();
-    const home = context.cwAvaImg({ shape: 'home-blob', color: '#8f80ff' });
-    expect(home).toContain('home-blob-tongue');
-    expect(home).toContain('#9580ff');
-    expect(context.cwAvaImg({ shape: 'home-blob', color: '#3fd68f' })).toContain('#3fd68f');
-    expect(home.match(/id="([^"]+)"/)?.[1]).not.toBe(context.cwAvaImg({ shape: 'home-blob' }).match(/id="([^"]+)"/)?.[1]);
-    const fallbacks = ['orb', 'cube', 'diamond', 'pyramid'].map(shape => context.cwAvaImg({ shape, color: '#3fd68f' }).replace(/cwBlobFill\d+/g, 'fill'));
-    expect(new Set(fallbacks).size).toBe(4);
+    for (const color of ['blue', 'mint', 'orange', 'purple']) {
+      expect(context.cwAvaImg({ shape: 'dot-' + color })).toContain('/characters/' + color + '.png');
+      const png = readFileSync(new URL('../assets/cowork-dots/' + color + '.png', import.meta.url));
+      expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+      expect(png[25]).toBe(6); // RGBA preserves the transparent background.
+    }
+    expect(readFileSync(new URL('../assets/cowork-dots/LICENSE', import.meta.url), 'utf8')).toContain('MIT License');
   });
 
   it('keeps the homepage motion and gives chat and panel characters room to show their faces', () => {
@@ -75,26 +74,17 @@ describe('animated teammate characters and web activity', () => {
     expect(COWORK_CSS).toContain('.cw-row > .cw-ava { width: 46px; height: 46px; }');
     expect(COWORK_CSS).toContain('.report-flat .cw-row > .cw-ava { width: 64px; height: 64px; }');
     expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 76px; height: 76px; }');
-    expect(COWORK_JS).toContain('cwAva(a, 104)');
+    expect(COWORK_JS).toContain('cwAva(a, 144)');
     expect(COWORK_JS).toContain('cwAva(m, 40)');
     expect(COWORK_CSS).toContain('svg:not(.home-blob)');
   });
 
-  it('renders and caches each geometric character independently while keeping the homepage SVG', () => {
+  it('renders plush images immediately even when WebGL is unavailable', () => {
     const { context } = ui();
-    const renders: string[] = [];
-    context.window.__coworkAvatar = { render: (avatar: { shape: string; color: string }) => {
-      renders.push(avatar.shape + avatar.color);
-      return 'data:image/png;base64,' + avatar.shape;
-    } };
-    for (const shape of ['orb', 'cube', 'diamond', 'pyramid']) {
-      expect(context.cwAvaImg({ shape, color: '#8f80ff' })).toContain('data:image/png;base64,' + shape);
-      context.cwAvaImg({ shape, color: '#8f80ff' });
+    context.window.__coworkAvatar = { render: () => { throw new Error('WebGL unavailable'); } };
+    for (const shape of ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple', 'home-blob', 'cube']) {
+      expect(context.cwAvaImg({ shape, color: '#8f80ff' })).toContain('<img src="/characters/');
     }
-    context.cwAvaImg({ shape: 'home-blob', color: '#8f80ff' });
-    expect(renders).toHaveLength(4);
-    context.cwAvaImg({ shape: 'cube', color: '#3fd68f' });
-    expect(renders).toHaveLength(5);
   });
 
   it('migrates removed characters on reload while preserving teammates and their colors', () => {
@@ -113,6 +103,35 @@ describe('animated teammate characters and web activity', () => {
       expect(migrated.every(agent => agent.avatar.color === '#3fd68f' && agent.systemPrompt === 'Keep my profile.')).toBe(true);
       expect(JSON.parse(readFileSync(file, 'utf8')).agents.map((agent: { avatar: { shape: string } }) => agent.avatar.shape)).toEqual(migrated.map(agent => agent.avatar.shape));
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('updates character activity in place through thinking, work, handoff and idle', () => {
+    const u = ui();
+    const headerText = { textContent: '' };
+    const railText = { textContent: '' };
+    const attrs: Record<string, string> = {};
+    const status = { title: '', querySelector: () => headerText, setAttribute: (key: string, value: string) => { attrs[key] = value; } };
+    const rail = { querySelector: () => railText, getAttribute: (key: string) => key === 'data-cw-agent-status' ? 'jelly' : 'rail', setAttribute() {} };
+    u.context.document = { querySelectorAll: () => [rail] };
+    u.context.$ = (id: string) => id === 'cwCharacterStatus' ? status : null;
+    u.context.S.cw.active = 'dm';
+    u.context.S.cw.convs = [{ id: 'dm', kind: 'dm', memberIds: ['jelly'] }];
+    u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', phase: 'thinking', text: '' }];
+    u.context.cwUpdateCharacterActivity();
+    expect(headerText.textContent).toBe('AI teammate · Thinking…');
+    expect(railText.textContent).toBe('Thinking…');
+    u.cw.progresses[0]!.tool = 'run_command';
+    u.context.cwUpdateCharacterActivity();
+    expect(headerText.textContent).toBe('AI teammate · Working…');
+    u.context.S.cw.requests = [{ status: 'open', agentId: 'jelly' }];
+    u.context.cwUpdateCharacterActivity();
+    expect(headerText.textContent).toBe('AI teammate · Waiting for you');
+    u.context.S.cw.requests[0].status = 'answered';
+    u.cw.busy = false;
+    u.context.cwUpdateCharacterActivity();
+    expect(headerText.textContent).toBe('AI teammate · Ready');
+    expect(attrs['data-active']).toBe('false');
+    expect(u.replacements()).toBe(0);
   });
 
   it('keeps live avatars while prose streams, showing a site icon but no command or path text', () => {

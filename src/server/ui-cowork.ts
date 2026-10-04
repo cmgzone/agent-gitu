@@ -7,9 +7,8 @@ import { ACTIVITY_MARK_HTML, REASONING_STREAM_JS } from './ui-activity.js';
  * Exported as CSS + JS snippets injected into UI_HTML. The JS runs inside the
  * app's main IIFE, so it reuses the helpers there ($, esc, api, toast, S).
  *
- * Visuals: all chrome icons are inline SVG (cwIcon). Teammates use the animated
- * homepage blob or geometric blob companions drawn by bundled three.js
- * (window.__coworkAvatar, defined in ui.ts), with an inline-SVG fallback. Agent
+ * Visuals: all chrome icons are inline SVG (cwIcon). Teammates use locally
+ * bundled OpenDots plush images with activity driven by real progress. Agent
  * names always come from the user — templates only prefill instructions.
  * Written as String.raw and ES5-style so no escape or interpolation surprises
  * leak into the injected markup.
@@ -89,6 +88,13 @@ export const COWORK_CSS = String.raw`
   .cw-item-main { min-width: 0; flex: 1; }
   .cw-item-name { display: block; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cw-item-sub { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cw-teammate { gap: 8px; padding: 10px 8px; min-height: 62px; }
+  .cw-teammate .cw-ava { width: 48px; height: 48px; overflow: visible; }
+  .cw-teammate .cw-item-name { margin-bottom: 5px; }
+  .cw-persona-status { display: flex; align-items: center; gap: 5px; min-width: 0; color: var(--muted); font-size: 11px; }
+  .cw-persona-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); flex: none; opacity: .65; }
+  .cw-persona-status[data-active=true]::before { background: var(--accent); opacity: 1; }
+  .cw-persona-status > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .cw-ava { width: 40px; height: 40px; flex: none; border-radius: 13px; overflow: hidden; display: inline-flex; align-items: center; justify-content: center; }
   .cw-ava img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .cw-ava svg { width: 100%; height: 100%; display: block; }
@@ -104,7 +110,9 @@ export const COWORK_CSS = String.raw`
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
   .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; pointer-events: none; }
-  .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; justify-content: center; }
+  .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; max-width: calc(100% - 150px); background: transparent; }
+  .cw-chat-avatar .cw-persona-status { max-width: 100%; font-size: 11px; line-height: 16px; }
+  .cw-chat-avatar .cw-ava { overflow: visible; }
   .cw-chat-head button { pointer-events: auto; }
   .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: 16px; }
@@ -134,7 +142,7 @@ export const COWORK_CSS = String.raw`
   .cw-widget-bar { height: 8px; border-radius: 999px; background: var(--card2); border: 1px solid var(--border); overflow: hidden; }
   .cw-widget-bar i { display: block; height: 100%; background: var(--accent); }
   .cw-widget-text { font-size: 12.5px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .cw-msgs { flex: 1; min-height: 0; margin-top: 88px; overflow-y: auto; padding: 12px 22px; display: flex; flex-direction: column; gap: 16px; }
+  .cw-msgs { flex: 1; min-height: 0; margin-top: 112px; overflow-y: auto; padding: 12px 22px; display: flex; flex-direction: column; gap: 16px; }
   .cw-msgs > * { flex-shrink: 0; }
   .cw-row { display: flex; gap: 12px; max-width: min(92%, 820px); min-width: 0; }
   .cw-row.me { align-self: flex-end; flex-direction: row-reverse; max-width: min(74%, 680px); }
@@ -344,9 +352,10 @@ export const COWORK_CSS = String.raw`
   .cw-info > .cw-panel-close { display: block; margin: 0 0 8px auto; }
   .cw-info h4 { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .12em; color: var(--faint); font-weight: 700; }
   .cw-info .cw-card { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 4px 0 20px; margin-bottom: 20px; }
-  .cw-profile-hero { display: flex; flex-direction: column; align-items: center; padding: 18px 0 24px; text-align: center; }
-  .cw-profile-hero .cw-ava { margin-bottom: 12px; overflow: visible; }
-  .cw-profile-name { max-width: 100%; color: var(--text); font-size: 18px; font-weight: 700; line-height: 1.25; overflow-wrap: anywhere; }
+  .cw-profile-hero { display: flex; flex-direction: column; align-items: center; padding: 6px 0 24px; text-align: center; }
+  .cw-profile-hero .cw-ava { margin-bottom: 4px; overflow: visible; }
+  .cw-profile-name { max-width: 100%; color: var(--text); font-size: 20px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+  .cw-profile-hero .cw-persona-status { margin-top: 10px; max-width: 100%; }
   .cw-profile-tagline { margin-top: 5px; color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
   .cw-profile-hero .chip { margin-top: 12px; }
   .cw-profile-hero .btn { margin-top: 16px; }
@@ -470,14 +479,14 @@ export const COWORK_CSS = String.raw`
     .cw.overlay-open .cw-panel-backdrop { display: block; }
     .cw-info > .cw-panel-close { display: block; margin: 0 0 16px auto; }
   }
-  @media (max-width: 720px) { .cw-msgs { margin-top: 76px; padding: 8px 12px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
+  @media (max-width: 720px) { .cw-msgs { margin-top: 98px; padding: 8px 12px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw-mobile-only, .cw-rail > .cw-panel-close { display: block; }
     .cw-rail > .cw-panel-close { align-self: flex-end; margin: 8px 12px 0; }
     .cw.rail-open .cw-rail { transform: none; } }
-  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-avatar { top: 5px; } .cw-chat-head .cw-ava { width: 52px; height: 52px; } .cw-msgs { margin-top: 62px; } }
+  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-avatar { top: 5px; } .cw-chat-head .cw-ava { width: 52px; height: 52px; } .cw-msgs { margin-top: 84px; } }
   ${CHARACTER_CSS}
 `;
 
@@ -485,11 +494,20 @@ export const COWORK_JS = String.raw`
   ${REASONING_STREAM_JS}
   ${CHARACTER_JS}
   // ==================== COWORK MODE ====================
-  var CW_COLORS = ['#8f80ff', '#5ba8ff', '#3fd68f', '#c9a86a', '#ff6465', '#e670c8', '#4ec3d9', '#9dd65b'];
-  var CW_SHAPES = ['home-blob', 'orb', 'cube', 'diamond', 'pyramid'];
-  function cwAvatarShape(shape) {
+  var CW_DOT_COLORS = { 'dot-blue': '#5ba8ff', 'dot-mint': '#3fd68f', 'dot-orange': '#c9a86a', 'dot-purple': '#8f80ff' };
+  var CW_SHAPES = ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
+  function cwAvatarShape(shape, color) {
     if (CW_SHAPES.indexOf(shape) >= 0) return shape;
-    return ['cube', 'visor', 'antenna', 'bot'].indexOf(shape) >= 0 ? 'cube' : 'orb';
+    // Existing profiles keep their identity and settings; display the plush
+    // closest to their saved color until the user picks one explicitly.
+    if (!/^#[0-9a-f]{6}$/i.test(color || '')) return 'dot-purple';
+    var rgb = [1, 3, 5].map(function (i) { return parseInt(color.slice(i, i + 2), 16); });
+    var best = 'dot-purple', distance = Infinity;
+    CW_SHAPES.forEach(function (candidate) {
+      var d = [1, 3, 5].reduce(function (sum, i, channel) { return sum + Math.pow(rgb[channel] - parseInt(CW_DOT_COLORS[candidate].slice(i, i + 2), 16), 2); }, 0);
+      if (d < distance) { best = candidate; distance = d; }
+    });
+    return best;
   }
   // Neutral starting points for the INSTRUCTIONS field only. They never fill
   // the name (users name their own agents) and carry no branding.
@@ -639,28 +657,10 @@ export const COWORK_JS = String.raw`
     cw.pollPromise = null;
   }
 
-  // ---- avatars: three.js voxel characters, SVG identicon fallback ----
-  window.__cwAvaCache = {};
-  function cwAvaDataUrl(avatar) {
-    var key = (avatar && avatar.color || '') + '|' + (avatar && avatar.shape || '');
-    if (window.__cwAvaCache[key]) return window.__cwAvaCache[key];
-    var url = null;
-    if (window.__coworkAvatar && window.__coworkAvatar.render) url = window.__coworkAvatar.render(avatar || {}, 96);
-    if (url) window.__cwAvaCache[key] = url;
-    return url;
-  }
-  function cwAvaSvg(avatar) {
-    var color = (avatar && /^#[0-9a-f]{6}$/i.test(avatar.color)) ? avatar.color : '#8f80ff';
-    var shape = cwAvatarShape(avatar && avatar.shape);
-    if (shape === 'home-blob') return cwHomeBlob(color);
-    return cwGeometricBlobSvg(shape, color);
-  }
-
+  // Bundled transparent images share a browser cache across every surface.
   function cwAvaImg(avatar) {
-    avatar = { color: avatar && avatar.color, shape: cwAvatarShape(avatar && avatar.shape) };
-    if (avatar.shape === 'home-blob') return cwAvaSvg(avatar);
-    var url = cwAvaDataUrl(avatar);
-    return url ? '<img src="' + url + '" alt="">' : cwAvaSvg(avatar);
+    var shape = cwAvatarShape(avatar && avatar.shape, avatar && avatar.color);
+    return '<img src="/characters/' + shape.slice(4) + '.png?v=opendots1" alt="" width="512" height="512" draggable="false">';
   }
   function cwAva(agent, size) {
     var style = size ? ' style="width:' + size + 'px;height:' + size + 'px;border-radius:' + Math.round(size * 0.32) + 'px"' : '';
@@ -669,14 +669,44 @@ export const COWORK_JS = String.raw`
     return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }) + '</span>';
   }
   function cwAgentById(id) { var cw = cwEnsure(); for (var i = 0; i < cw.agents.length; i++) if (cw.agents[i].id === id) return cw.agents[i]; return null; }
-  // The three.js renderer registers in a deferred module, possibly after the
-  // first paint; redraw SVG fallbacks as real characters once it is ready.
-  window.addEventListener('coworkavatarsready', function () {
-    if (S.active !== 'cowork') return;
-    cwRenderRail();
-    cwRenderMsgs();
-    cwRenderInfo();
-  });
+  function cwCharacterActivity(agentId) {
+    var cw = cwEnsure();
+    if ((cw.requests || []).some(function (r) { return r.status === 'open' && (!agentId || r.agentId === agentId); })) return 'Waiting for you';
+    if (!cw.busy) return 'Ready';
+    var ps = cw.progresses && cw.progresses.length ? cw.progresses : (cw.progress ? [cw.progress] : []);
+    var progress = ps.find(function (p) { return !agentId || p.agentId === agentId; });
+    if (progress) return cwActivityLabel(progress);
+    var member = cwAgentById(agentId), conv = cwActiveConv();
+    if (!agentId || member && cw.working === member.name || !ps.length && conv && conv.memberIds.indexOf(agentId) >= 0) return 'Thinking…';
+    return 'Ready';
+  }
+  function cwCharacterStatusHtml(agent, rail) {
+    var activity = cwCharacterActivity(agent && agent.id);
+    var label = rail ? activity + (activity === 'Ready' && agent.tagline ? ' · ' + agent.tagline : '') : 'AI teammate · ' + activity;
+    return '<span class="cw-persona-status" data-cw-agent-status="' + esc(agent.id) + '" data-status-surface="' + (rail ? 'rail' : 'profile') + '" data-active="' + (activity !== 'Ready') + '"><span>' + esc(label) + '</span></span>';
+  }
+  function cwUpdateCharacterActivity() {
+    var cw = cwEnsure();
+    document.querySelectorAll('[data-cw-agent-status]').forEach(function (node) {
+      var agent = cwAgentById(node.getAttribute('data-cw-agent-status'));
+      if (!agent) return;
+      var activity = cwCharacterActivity(agent.id);
+      var label = node.getAttribute('data-status-surface') === 'rail' ? activity + (activity === 'Ready' && agent.tagline ? ' · ' + agent.tagline : '') : 'AI teammate · ' + activity;
+      var text = node.querySelector('span');
+      if (text && text.textContent !== label) text.textContent = label;
+      node.setAttribute('data-active', String(activity !== 'Ready'));
+    });
+    var header = $('cwCharacterStatus');
+    if (header) {
+      var conv = cwActiveConv(), activity = cwCharacterActivity(conv && conv.kind === 'dm' ? conv.memberIds[0] : null);
+      var label = (conv && conv.kind === 'group' ? 'AI team' : 'AI teammate') + ' · ' + activity;
+      if (cw.queued) label += ' · ' + cw.queued + ' queued';
+      var text = header.querySelector('span');
+      if (text && text.textContent !== label) text.textContent = label;
+      header.title = label;
+      header.setAttribute('data-active', String(activity !== 'Ready'));
+    }
+  }
   function cwActiveConv() { var cw = cwEnsure(); for (var i = 0; i < cw.convs.length; i++) if (cw.convs[i].id === cw.active) return cw.convs[i]; return null; }
   function cwConvMembers(conv) { var out = []; for (var i = 0; i < conv.memberIds.length; i++) { var a = cwAgentById(conv.memberIds[i]); if (a) out.push(a); } return out; }
 
@@ -916,8 +946,8 @@ export const COWORK_JS = String.raw`
     if (cw.agents.length === 0) html += '<div class="cw-empty-note">No teammates yet. Create the first profile — pick a name, a character and instructions.</div>';
     cw.agents.forEach(function (a) {
       var selected = selectedAgentId === a.id;
-      html += '<button class="cw-item' + (selected ? ' cur' : '') + '" data-agent="' + esc(a.id) + '">' + cwAva(a) +
-        '<span class="cw-item-main"><span class="cw-item-name">' + esc(a.name) + '</span><span class="cw-item-sub">' + esc(a.tagline || 'tap to chat') + '</span></span>' +
+      html += '<button class="cw-item cw-teammate' + (selected ? ' cur' : '') + '" data-agent="' + esc(a.id) + '">' + cwAva(a) +
+        '<span class="cw-item-main"><span class="cw-item-name">' + esc(a.name) + '</span>' + cwCharacterStatusHtml(a, true) + '</span>' +
         (a.chiefOfStaff ? '<span class="cw-flag gold" title="Default chief of staff">' + cwIcon('crown') + '</span>' : '') + '</button>';
     });
     html += '<div class="cw-sec">THREADS' + (active && active.kind === 'group' ? ' · ' + esc(active.title) : '') + '</div>';
@@ -1134,7 +1164,7 @@ export const COWORK_JS = String.raw`
     chat.innerHTML =
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle cw-mobile-only" id="cwBack" aria-expanded="false">Chats</button>' +
-        '<span class="cw-chat-avatar" role="img" aria-label="' + esc((members[0] && members[0].name) || conv.title) + '">' + headAva + '</span>' +
+        '<div class="cw-chat-avatar"><span role="img" aria-label="' + esc((members[0] && members[0].name) || conv.title) + '">' + headAva + '</span><span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span></span></div>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
         '<span id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</span>' +
         '<span id="cwMissionBadge"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>Mission running</span>' +
@@ -2503,9 +2533,10 @@ export const COWORK_JS = String.raw`
       if (!a) { el.innerHTML = ''; return; }
       el.innerHTML =
         '<div class="cw-profile">' +
-          '<div class="cw-profile-hero">' + cwAva(a, 104) +
+          '<div class="cw-profile-hero">' + cwAva(a, 144) +
             '<div class="cw-profile-name">' + esc(a.name) + '</div>' +
             (a.tagline ? '<div class="cw-profile-tagline">' + esc(a.tagline) + '</div>' : '') +
+            cwCharacterStatusHtml(a, false) +
             (a.chiefOfStaff ? '<span class="chip" title="Chief of staff">' + cwIcon('crown') + ' Chief of staff</span>' : '') +
             '<button class="btn ghost" id="cwEditAgent">Edit profile</button></div>' +
           '<section class="cw-profile-section"><h4>ABOUT</h4><p class="cw-profile-copy">' + esc(a.systemPrompt.slice(0, 600)) + (a.systemPrompt.length > 600 ? '…' : '') + '</p></section>' +
@@ -2945,6 +2976,7 @@ export const COWORK_JS = String.raw`
 
   function cwRenderTyping() {
     var cw = cwEnsure();
+    cwUpdateCharacterActivity();
     var el = $('cwTyping');
     var btn = $('cwSend');
     if (!el || !btn) return;
@@ -3198,8 +3230,8 @@ export const COWORK_JS = String.raw`
       tagline: agent ? agent.tagline : '',
       systemPrompt: agent ? agent.systemPrompt : '',
       avatar: {
-        color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : CW_COLORS[0],
-        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape) : 'home-blob'
+        color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#8f80ff',
+        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-purple'
       },
       provider: agent ? (agent.provider || '') : (S.sel.model || '').split('::')[0],
       model: agent ? (agent.model || '') : (S.sel.model || '').split('::').slice(1).join('::'),
@@ -3224,9 +3256,8 @@ export const COWORK_JS = String.raw`
         '<div class="cw-avrow">' +
           '<span class="cw-avprev" id="cwAmAvaWrap">' + cwAvaImg(d.avatar) + '</span>' +
           '<div class="cw-avopts">' +
-            '<div class="cw-shapes" id="cwAmShapes" role="group" aria-label="Bot character">' + CW_SHAPES.map(function (s) { return '<button type="button" data-shape="' + s + '" aria-pressed="' + (s === d.avatar.shape) + '"' + (s === d.avatar.shape ? ' class="cur"' : '') + '><span class="cw-shape-preview">' + cwAvaImg({ shape: s, color: d.avatar.color }) + '</span>' + CW_CHARACTER_NAMES[s] + '</button>'; }).join('') + '</div>' +
-            '<div class="cw-colors" id="cwAmColors">' + CW_COLORS.map(function (c) { return '<button type="button" data-color="' + c + '" style="background:' + c + '"' + (c === d.avatar.color ? ' class="cur"' : '') + ' aria-label="color ' + c + '"></button>'; }).join('') + '</div>' +
-            '<div class="cw-avhint">A little personality, always in motion. Watch your bot bounce, blink and wiggle while it works.</div>' +
+            '<div class="cw-shapes" id="cwAmShapes" role="group" aria-label="Teammate character">' + CW_SHAPES.map(function (s) { return '<button type="button" data-shape="' + s + '" aria-pressed="' + (s === d.avatar.shape) + '"' + (s === d.avatar.shape ? ' class="cur"' : '') + '><span class="cw-shape-preview">' + cwAvaImg({ shape: s }) + '</span>' + CW_CHARACTER_NAMES[s] + '</button>'; }).join('') + '</div>' +
+            '<div class="cw-avhint">Choose a plush teammate. Its activity follows the work in your chat.</div>' +
             '<button type="button" class="cw-preview-work" id="cwAmWork" aria-pressed="false">Preview working animation</button>' +
           '</div>' +
         '</div>' +
@@ -3271,9 +3302,6 @@ export const COWORK_JS = String.raw`
       if (wrap) wrap.innerHTML = cwAvaImg(d.avatar);
       modal.querySelectorAll('[data-shape]').forEach(function (b) { b.querySelector('.cw-shape-preview').innerHTML = cwAvaImg({ shape: b.getAttribute('data-shape'), color: d.avatar.color }); });
     }
-    if (!window.__coworkAvatar) window.addEventListener('coworkavatarsready', function onReady() {
-      if (modal.isConnected) refreshPreview();
-    }, { once: true });
     modal.querySelector('#cwAmWork').onclick = function () {
       var working = this.getAttribute('aria-pressed') !== 'true';
       this.setAttribute('aria-pressed', String(working));
@@ -3283,17 +3311,10 @@ export const COWORK_JS = String.raw`
     modal.querySelectorAll('[data-shape]').forEach(function (b) {
       b.onclick = function () {
         d.avatar.shape = b.getAttribute('data-shape');
+        d.avatar.color = CW_DOT_COLORS[d.avatar.shape];
         modal.querySelectorAll('[data-shape]').forEach(function (x) { x.classList.remove('cur'); x.setAttribute('aria-pressed', 'false'); });
         b.classList.add('cur');
         b.setAttribute('aria-pressed', 'true');
-        refreshPreview();
-      };
-    });
-    modal.querySelectorAll('[data-color]').forEach(function (b) {
-      b.onclick = function () {
-        d.avatar.color = b.getAttribute('data-color');
-        modal.querySelectorAll('[data-color]').forEach(function (x) { x.classList.remove('cur'); });
-        b.classList.add('cur');
         refreshPreview();
       };
     });

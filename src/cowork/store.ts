@@ -9,12 +9,12 @@ import { ensureGituHome } from '../workspace/home.js';
  * whole team, every transcript, and gateway settings.
  */
 
-/** Saved appearance for animated vector characters and voxel avatars. */
+/** Saved plush character choice, retaining legacy avatar styles on disk. */
 export interface CoworkAvatar {
-  /** Hex accent color of the character body. */
+  /** Hex accent color, also used to match legacy avatars to a plush. */
   color: string;
   /** Character style rendered consistently throughout the UI. */
-  shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid';
+  shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-blue' | 'dot-mint' | 'dot-orange' | 'dot-purple';
 }
 
 export interface CoworkAgent {
@@ -1766,7 +1766,7 @@ function artifactMime(name: string, supplied?: string): string {
   return known[path.extname(name).toLowerCase()] ?? (typeof supplied === 'string' && /^[\w.+-]+\/[\w.+-]+(?:;.*)?$/.test(supplied) ? supplied : 'application/octet-stream');
 }
 
-const AVATAR_SHAPES = new Set(['orb', 'cube', 'home-blob', 'diamond', 'pyramid']);
+const AVATAR_SHAPES = new Set(['orb', 'cube', 'home-blob', 'diamond', 'pyramid', 'dot-blue', 'dot-mint', 'dot-orange', 'dot-purple']);
 const LEGACY_AVATAR_SHAPES = new Map<string, CoworkAvatar['shape']>([
   ['jelly', 'orb'], ['cat', 'orb'], ['sprout', 'orb'], ['ufo', 'orb'],
   ['visor', 'cube'], ['antenna', 'cube'], ['bot', 'cube'],

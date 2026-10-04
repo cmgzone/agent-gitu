@@ -1,4 +1,3 @@
-import { COWORK_CHARACTER_MODELS_JS } from './ui-character-models.js';
 import { HOME_CSS, HOME_BLOB_HTML } from './ui-home.js';
 import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
@@ -6620,13 +6619,6 @@ import * as THREE from '/vendor/three.module.js';
   }
   mascotVisible = !mascotIsHidden();
   if (mascotVisible) rafId = requestAnimationFrame(tick);
-})();
-</script>
-<script type="module">
-// Geometric blob companions, snapshotted for lightweight cowork avatars.
-import * as THREE from '/vendor/three.module.js';
-(function () {
-  ${COWORK_CHARACTER_MODELS_JS}
 })();
 </script>
 </body>

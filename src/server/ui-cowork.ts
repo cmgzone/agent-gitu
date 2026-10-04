@@ -109,7 +109,7 @@ export const COWORK_CSS = String.raw`
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
-  .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; pointer-events: none; }
+  .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; background: transparent; border: 0; box-shadow: none; pointer-events: none; }
   .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; max-width: calc(100% - 150px); background: transparent; }
   .cw-chat-avatar .cw-persona-status { max-width: 100%; font-size: 11px; line-height: 16px; }
   .cw-chat-avatar .cw-ava { overflow: visible; }
@@ -121,6 +121,10 @@ export const COWORK_CSS = String.raw`
   .cw-chat-head .chip svg { width: 12px; height: 12px; }
   .cw-info-toggle { border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; flex: none; }
   .cw-info-toggle:hover { color: var(--text); border-color: var(--accent); }
+  .cw-panel-toggle { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 8px; background: transparent; box-shadow: none; color: var(--muted); }
+  .cw-panel-toggle svg { width: 20px; height: 20px; }
+  .cw-panel-toggle:hover { color: var(--text); }
+  .cw-panel-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .cw-chat-glyph { width: 40px; height: 40px; flex: none; border-radius: 13px; background: var(--card2); color: var(--muted); display: inline-flex; align-items: center; justify-content: center; }
   .cw-chat-glyph svg { width: 17px; height: 17px; }
   .cw-item.cur .cw-chat-glyph { color: var(--accent); background: var(--selected); }
@@ -142,7 +146,7 @@ export const COWORK_CSS = String.raw`
   .cw-widget-bar { height: 8px; border-radius: 999px; background: var(--card2); border: 1px solid var(--border); overflow: hidden; }
   .cw-widget-bar i { display: block; height: 100%; background: var(--accent); }
   .cw-widget-text { font-size: 12.5px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-  .cw-msgs { flex: 1; min-height: 0; margin-top: 112px; overflow-y: auto; padding: 12px 22px; display: flex; flex-direction: column; gap: 16px; }
+  .cw-msgs { flex: 1; min-height: 0; margin-top: 0; overflow-y: auto; padding: 112px 22px 12px; display: flex; flex-direction: column; gap: 16px; }
   .cw-msgs > * { flex-shrink: 0; }
   .cw-row { display: flex; gap: 12px; max-width: min(92%, 820px); min-width: 0; }
   .cw-row.me { align-self: flex-end; flex-direction: row-reverse; max-width: min(74%, 680px); }
@@ -479,14 +483,14 @@ export const COWORK_CSS = String.raw`
     .cw.overlay-open .cw-panel-backdrop { display: block; }
     .cw-info > .cw-panel-close { display: block; margin: 0 0 16px auto; }
   }
-  @media (max-width: 720px) { .cw-msgs { margin-top: 98px; padding: 8px 12px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
+  @media (max-width: 720px) { .cw-msgs { padding: 98px 12px 8px; gap: 14px; } .cw-row, .cw-row.me { max-width: 100%; } .cw-composer-wrap { padding: 8px 12px 12px; } .cw-chat-avatar { top: 7px; } .cw-chat-head .cw-ava { width: 62px; height: 62px; } .cw-file { min-width: 0; flex-wrap: wrap; } .cw-file-actions { margin-left: auto; } .cw-modal .box { max-width: 96vw; } .cw-modal .cw-2col { grid-template-columns: 1fr; } .cw-info-toggle, .cw-panel-toggle, .cw-send, .cw-attach { min-height: 40px; min-width: 40px; } }
   @media (max-width: 720px) { .cw-info { width: 100%; border-left: 0; }
     .cw.info-open .cw-chat { display: none; }
     .cw-rail { width: min(300px, 86vw); position: fixed; inset: 0 auto 0 0; z-index: 80; transform: translateX(-105%); transition: transform .18s ease; box-shadow: 14px 0 40px rgba(0,0,0,.48); background: var(--bg); }
     .cw-mobile-only, .cw-rail > .cw-panel-close { display: block; }
     .cw-rail > .cw-panel-close { align-self: flex-end; margin: 8px 12px 0; }
     .cw.rail-open .cw-rail { transform: none; } }
-  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-avatar { top: 5px; } .cw-chat-head .cw-ava { width: 52px; height: 52px; } .cw-msgs { margin-top: 84px; } }
+  @media (max-height: 600px) { .cw-work { max-height: 18dvh; } .cw-pending, .cw-mentions { max-height: 40px; } .cw-chat-avatar { top: 5px; } .cw-chat-head .cw-ava { width: 52px; height: 52px; } .cw-msgs { padding-top: 84px; } }
   ${CHARACTER_CSS}
 `;
 
@@ -524,6 +528,7 @@ export const COWORK_JS = String.raw`
     users: CW_SVG_OPEN + '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     plus: CW_SVG_OPEN + '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     chat: CW_SVG_OPEN + '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+    panel: CW_SVG_OPEN + '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M15 3v18"/></svg>',
     crown: CW_SVG_OPEN + '<path d="M2 18h20"/><path d="M3 18l1.5-9L9 13l3-7 3 7 4.5-4L21 18"/></svg>',
     plane: CW_SVG_OPEN + '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>',
     clock: CW_SVG_OPEN + '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
@@ -809,7 +814,7 @@ export const COWORK_JS = String.raw`
     var rail = root.querySelector('.cw-rail');
     rail.inert = window.innerWidth <= 720 && !railOpen;
     var button = $('cwInfoBtn');
-    if (button) { button.hidden = infoOpen; button.textContent = 'Chat panel'; button.setAttribute('aria-expanded', String(infoOpen)); }
+    if (button) { button.hidden = infoOpen; button.setAttribute('aria-expanded', String(infoOpen)); }
     var back = $('cwBack');
     if (back) back.setAttribute('aria-expanded', String(railOpen));
     var closeInfo = $('cwCloseInfo');
@@ -1170,7 +1175,7 @@ export const COWORK_JS = String.raw`
         '<span id="cwMissionBadge"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>Mission running</span>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
-        '<button class="cw-info-toggle" id="cwInfoBtn">' + (cw.infoOpen ? 'Hide panel' : 'Chat panel') + '</button>' +
+        '<button class="cw-panel-toggle" id="cwInfoBtn" aria-label="Chat panel" title="Chat panel" aria-controls="cwInfoPanel" aria-expanded="false">' + cwIcon('panel') + '</button>' +
       '</div>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<div class="cw-typing" id="cwTyping" hidden></div>' +

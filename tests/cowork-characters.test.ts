@@ -4,8 +4,9 @@ import path from 'node:path';
 import { createContext, Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { CoworkStore } from '../src/cowork/store.js';
-import { coworkWebOrigin, type CoworkProgress } from '../src/cowork/runner.js';
+import { coworkAppService, coworkWebOrigin, type CoworkProgress } from '../src/cowork/runner.js';
 import { COWORK_CSS, COWORK_JS } from '../src/server/ui-cowork.js';
+import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 
 const esc = (value: unknown) => String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!);
 
@@ -124,7 +125,8 @@ describe('animated teammate characters and web activity', () => {
     const headerText = { textContent: '' };
     const railText = { textContent: '' };
     const attrs: Record<string, string> = {};
-    const status = { title: '', querySelector: () => headerText, setAttribute: (key: string, value: string) => { attrs[key] = value; } };
+    const icon = { hidden: true, innerHTML: '' };
+    const status = { title: '', querySelector: (selector: string) => selector === '.cw-persona-tool' ? icon : headerText, setAttribute: (key: string, value: string) => { attrs[key] = value; } };
     const rail = { querySelector: () => railText, getAttribute: (key: string) => key === 'data-cw-agent-status' ? 'jelly' : 'rail', setAttribute() {} };
     u.context.document = { querySelectorAll: () => [rail] };
     u.context.$ = (id: string) => id === 'cwCharacterStatus' ? status : null;
@@ -137,6 +139,13 @@ describe('animated teammate characters and web activity', () => {
     u.cw.progresses[0]!.tool = 'run_command';
     u.context.cwUpdateCharacterActivity();
     expect(headerText.textContent).toBe('AI teammate · Working…');
+    expect(icon.innerHTML).toContain('Running a command');
+    expect(icon.hidden).toBe(false);
+    expect(attrs['data-tool']).toBe('true');
+    u.cw.progresses[0]!.tool = 'connected_apps';
+    u.cw.progresses[0]!.appService = 'facebook';
+    u.context.cwUpdateCharacterActivity();
+    expect(icon.innerHTML).toContain('facebook.com.ico');
     u.context.S.cw.requests = [{ status: 'open', agentId: 'jelly' }];
     u.context.cwUpdateCharacterActivity();
     expect(headerText.textContent).toBe('AI teammate · Working…');
@@ -144,6 +153,9 @@ describe('animated teammate characters and web activity', () => {
     u.cw.busy = false;
     u.context.cwUpdateCharacterActivity();
     expect(headerText.textContent).toBe('AI teammate · Waiting for you');
+    expect(icon.hidden).toBe(true);
+    expect(icon.innerHTML).toBe('');
+    expect(attrs['data-tool']).toBe('false');
     u.context.S.cw.requests[0].status = 'answered';
     u.context.cwUpdateCharacterActivity();
     expect(headerText.textContent).toBe('AI teammate · Ready');
@@ -279,38 +291,133 @@ describe('animated teammate characters and web activity', () => {
     expect(u.live.innerHTML).toBe('');
   });
 
-  it('keeps the shared footer animation stable for concurrent teammates and queued work', () => {
+  it('keeps header activity and stop/queue controls live without a footer activity row', () => {
     const u = ui();
-    const status = { textContent: '', title: '' };
-    let html = '', replacements = 0;
-    const typing = {
-      hidden: true,
-      get innerHTML() { return html; },
-      set innerHTML(value: string) { html = value; replacements++; },
-      querySelector: () => html ? status : null,
-    };
+    const status = { textContent: '' };
+    const header = { title: '', querySelector: (selector: string) => selector === 'span' ? status : null, setAttribute() {} };
     const button = { classList: { toggle() {} }, innerHTML: '', title: '', setAttribute() {} };
     const input = { value: '' };
     u.context.document = { querySelectorAll: () => [] };
-    u.context.$ = (id: string) => id === 'cwTyping' ? typing : id === 'cwSend' ? button : id === 'cwInput' ? input : null;
+    u.context.$ = (id: string) => id === 'cwCharacterStatus' ? header : id === 'cwSend' ? button : id === 'cwInput' ? input : null;
+    u.context.S.cw.active = 'group';
+    u.context.S.cw.convs = [{ id: 'group', kind: 'group', memberIds: ['jelly', 'writer'] }];
     u.context.S.cw.queued = 2;
     u.cw.progresses = [
       { agentId: 'jelly', agentName: 'Jelly', phase: 'reasoning', text: '' },
       { agentId: 'writer', agentName: 'Writer', phase: 'responding', text: 'Hello' },
     ];
     u.context.cwRenderTyping();
-    expect(status.textContent).toBe('Jelly · Reasoning…  ·  Writer · Responding… · 2 queued');
+    expect(status.textContent).toBe('AI team · Reasoning… · 2 queued');
+    expect(button.title).toBe('Stop the team');
     u.cw.progresses[0]!.phase = 'working';
+    input.value = 'A follow-up message';
     u.context.cwRenderTyping();
-    expect(status.textContent).toContain('Jelly · Working…');
-    expect(replacements).toBe(1);
-    expect(html).toContain('role="status"');
-    expect(html).toContain('thinking-waves');
+    expect(status.textContent).toBe('AI team · Working… · 2 queued');
+    expect(button.title).toBe('Queue this message while the team works');
     u.cw.busy = false;
+    u.context.S.cw.queued = 0;
+    input.value = '';
     u.context.cwRenderTyping();
-    expect(typing.hidden).toBe(true);
-    expect(html).toBe('');
+    expect(status.textContent).toBe('AI team · Ready');
     expect(button.title).toBe('Send (Enter)');
+  });
+
+  it('renders saved app approvals as readable fields without changing their exact action', () => {
+    const { context } = ui();
+    const request = { id: 'review-facebook', agentId: 'jelly', kind: 'recommendation', status: 'open', createdAt: '2026-10-04T06:00:00Z', title: 'Run FACEBOOK_LIST_PAGES', detail: 'Review this facebook action:\n' + JSON.stringify({ service: 'facebook', accountId: 'ca_preview_account', tool: 'FACEBOOK_LIST_PAGES', args: {} }) + '\n\nAccept to allow this exact action once. The approval expires in 15 minutes.' };
+    const before = JSON.stringify(request);
+    const html = context.cwRequestHtml(request);
+    expect(html).toContain('App approval');
+    expect(html).toContain('List pages');
+    expect(html).toContain('Facebook · Connected account');
+    expect(html).toContain('facebook.com.ico');
+    expect(html).not.toContain('FACEBOOK_LIST_PAGES');
+    expect(html).not.toContain('&quot;accountId&quot;');
+    expect(html).not.toContain('args');
+    expect(html).toContain('<details class="cw-action-account"><summary>Account details</summary>');
+    expect(html).toContain('Connection: ca_preview_account');
+    expect(html).toContain('data-cwrequest="review-facebook" data-action="accept"');
+    expect(html).toContain('data-action="always-allow"');
+    expect(html).not.toContain('data-action="accept" disabled');
+    expect(JSON.stringify(request)).toBe(before);
+  });
+
+  it('preserves every action input and escapes untrusted values in the review', () => {
+    const { context } = ui();
+    const args = { to: ['first@example.com', 'second@example.com'], messageBody: 'Complete message '.repeat(50), options: { sendNow: false, subject: '<img src=x onerror=alert(1)>' } };
+    const presentation = context.cwAppApprovalPresentation({ kind: 'recommendation', title: 'Run GMAIL_SEND_EMAIL', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'ca_<script>', tool: 'GMAIL_SEND_EMAIL', args }) });
+    expect(presentation.valid).toBe(true);
+    expect(presentation.title).toBe('Send email');
+    expect(presentation.html).toContain('<dt>Message body</dt>');
+    expect(presentation.html).toContain(args.messageBody);
+    expect(presentation.html).toContain('first@example.com');
+    expect(presentation.html).toContain('second@example.com');
+    expect(presentation.html).toContain('<dt>Send now</dt><dd>No</dd>');
+    expect(presentation.html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(presentation.html).toContain('ca_&lt;script&gt;');
+    expect(presentation.html).not.toContain('<img src=x');
+    expect(presentation.html).not.toContain('<script>');
+  });
+
+  it('keeps incomplete action reviews from accepting and leaves ordinary recommendations alone', () => {
+    const { context } = ui();
+    const request = { id: 'review-incomplete', agentId: 'jelly', kind: 'recommendation', status: 'open', createdAt: '2026-10-04T06:00:00Z', title: 'Run GMAIL_SEND_EMAIL', detail: 'Review this gmail action:\n{"service":"gmail","args":' };
+    const html = context.cwRequestHtml(request);
+    expect(html).toContain('action details are incomplete');
+    expect(html).toContain('data-action="accept" disabled');
+    expect(html).toContain('data-action="dismiss">Dismiss');
+    expect(html).not.toContain('data-action="always-allow"');
+    expect(html).not.toContain('&quot;service&quot;');
+    const mismatched = { ...request, detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'ca_preview', tool: 'GMAIL_DELETE_EMAIL', args: {} }) };
+    expect(context.cwAppApprovalPresentation(mismatched).valid).toBe(false);
+    const ordinary = { ...request, title: 'Try a cleaner layout', detail: 'Use larger images and less text.' };
+    expect(context.cwAppApprovalPresentation(ordinary)).toBe(null);
+    expect(context.cwRequestHtml(ordinary)).toContain(ordinary.detail);
+    expect(context.cwRequestHtml(ordinary)).not.toContain('data-action="accept" disabled');
+  });
+
+  it('reviews full stored inputs even when an older bounded description is incomplete', () => {
+    const { context } = ui();
+    const message = 'Full message '.repeat(300);
+    const request = { kind: 'recommendation', title: 'Run GMAIL_SEND_EMAIL', detail: 'Review this gmail action:\n{', appAction: { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND_EMAIL', args: { message } } };
+    const presentation = context.cwAppApprovalPresentation(request);
+    expect(presentation.valid).toBe(true);
+    expect(presentation.html).toContain(message);
+  });
+
+  it('replaces approval follow-up instructions with clear events while preserving other notices', () => {
+    const { context } = ui();
+    const request = { id: 'review', agentId: 'jelly', kind: 'recommendation', status: 'accepted', resolvedAt: '2026-10-04T06:00:00Z', title: 'Run FACEBOOK_LIST_PAGES', detail: 'Review this facebook action:\n' + JSON.stringify({ service: 'facebook', accountId: 'own', tool: 'FACEBOOK_LIST_PAGES', args: {} }) };
+    context.S.cw.requests = [request];
+    const before = JSON.stringify(request);
+    const confirmation = context.cwSystemEventHtml({ text: 'Recommendation accepted: accepted.', ts: request.resolvedAt });
+    expect(confirmation).toContain('You approved List pages');
+    expect(confirmation).toContain('Jelly · Facebook');
+    const instruction = 'The user responded to your recommendation "Run FACEBOOK_LIST_PAGES": accepted. Continue from that decision and report what you do.';
+    const resumed = context.cwSystemEventHtml({ text: 'Follow-up reminder from @Jelly: ' + instruction + '. Act on it with your tools and report the result to the user here.' });
+    expect(resumed).toContain('Jelly resumed work');
+    expect(resumed).toContain('After your response · List pages · Facebook');
+    expect(resumed).not.toContain('FACEBOOK_LIST_PAGES');
+    expect(resumed).not.toContain('Act on it with your tools');
+    expect(resumed).not.toContain('Continue from that decision');
+    expect(JSON.stringify(request)).toBe(before);
+    expect(context.cwSystemEventHtml({ text: 'Error: the provider is unavailable.' })).toBe(null);
+    const scheduled = context.cwSystemEventHtml({ text: 'Follow-up reminder from @Jelly: Check <img src=x> tomorrow. Act on it with your tools and report the result to the user here.' });
+    expect(scheduled).toContain('Scheduled follow-up · Jelly');
+    expect(scheduled).toContain('Check &lt;img src=x&gt; tomorrow');
+    expect(scheduled).not.toContain('<img src=x>');
+  });
+
+  it('shows saved app permissions with their scope and a revoke control', () => {
+    const { context } = ui();
+    new Script(CONNECTED_APPS_JS).runInContext(context);
+    const html = context.cwAppPermissionsHtml([{ id: 'cap-preview', agentName: '<script>', service: 'facebook', tool: 'FACEBOOK_LIST_PAGES', accountId: 'ca_preview_account' }]);
+    expect(html).toContain('Always allowed actions');
+    expect(html).toContain('List pages');
+    expect(html).toContain('@&lt;script&gt; · Facebook');
+    expect(html).toContain('data-cwrevokeapp="cap-preview"');
+    expect(html).not.toContain('<script>');
+    expect(context.cwAppPermissionsHtml([])).toBe('');
   });
 
   it('shows a globe without a URL and handles completed, failed and non-web tools', () => {
@@ -322,5 +429,19 @@ describe('animated teammate characters and web activity', () => {
     expect(context.cwWebActivity({ tool: 'web_fetch', toolOk: true })).toContain('Page read');
     expect(context.cwWebActivity({ tool: 'search_files' })).toBe('');
     expect(context.cwWebActivity({ tool: 'browse', webUrl: 'javascript:alert(1)' })).not.toContain('<img');
+  });
+
+  it('only exposes a toolkit slug for connected-app icons, with a safe unknown-app fallback', () => {
+    const { context } = ui();
+    expect(coworkAppService('connected_apps', { service: 'GMAIL', accountId: 'private-account', args: { token: 'private-token' } })).toBe('gmail');
+    for (const service of ['https://user:password@example.com', '<script>', 'gmail?token=private', 12]) {
+      expect(coworkAppService('connected_apps', { service })).toBeUndefined();
+    }
+    expect(coworkAppService('read_file', { service: 'gmail' })).toBeUndefined();
+    const unknown = context.cwToolIconHtml({ tool: 'connected_apps', appService: 'unknown_app' });
+    expect(unknown).toContain('<svg');
+    expect(unknown).toContain('Unknown app');
+    expect(unknown).not.toContain('<img');
+    expect(context.cwToolIconHtml({ tool: 'connected_apps', appService: '<script>' })).not.toContain('<script>');
   });
 });

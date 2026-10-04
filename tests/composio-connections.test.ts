@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ComposioConnections, ComposioKeyStore } from '../src/connections/composio.js';
 import { executeCoworkTool, type CoworkToolScope } from '../src/cowork/tools.js';
 import { CoworkStore } from '../src/cowork/store.js';
+import { GituServer } from '../src/server/server.js';
 import type { ToolContext } from '../src/tools/tools.js';
 
 type Client = ReturnType<NonNullable<ConstructorParameters<typeof ComposioConnections>[2]>>;
@@ -172,5 +173,70 @@ describe('Composio connections', () => {
     const denied = await executeCoworkTool(ctx, 'connected_apps', params, { ...perms, allowWrites: false }, scope);
     expect(denied.ok).toBe(false);
     expect((await run(params, { ...scope, isSubAgent: true })).ok).toBe(false);
+  });
+
+  it('persists Always allow for one teammate, tool and account and restores review after revocation', async () => {
+    const f = fixture();
+    const store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.', allowWrites: true, allowConfig: true });
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const scope = { store, agent, conversationId: conv.id } as CoworkToolScope;
+    const ctx = { connectedApps: f.apps } as ToolContext;
+    const perms = { allowWrites: true, allowConfig: true, allowShell: false, chief: false, browser: false };
+    const params = { action: 'execute', service: 'gmail', tool: 'GMAIL_SEND', args: { to: 'first@example.com', text: 'A full message. '.repeat(200) } };
+    await executeCoworkTool(ctx, 'connected_apps', { ...params, alwaysAllow: true }, perms, scope);
+    expect(f.execute).not.toHaveBeenCalled(); // A model flag cannot grant permission.
+    const card = store.requests(conv.id)[0]!;
+    expect(card.appAction?.args).toEqual(params.args);
+    const permission = store.allowAppActionForRequest(card.id);
+    store.resolveRequest(card.id, 'accepted', 'Always allowed');
+    const reloaded = new CoworkStore();
+    expect(reloaded.appPermissions()).toEqual([permission]);
+    expect(reloaded.getRequest(card.id)?.appAction?.args).toEqual(params.args);
+    const resumed = { ...scope, store: reloaded };
+    await executeCoworkTool(ctx, 'connected_apps', params, perms, resumed);
+    await executeCoworkTool(ctx, 'connected_apps', { ...params, args: { to: 'second@example.com' } }, perms, resumed);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    for (const change of [{ accountId: 'other' }, { service: 'slack' }, { tool: 'GMAIL_DELETE' }]) {
+      expect(reloaded.appActionAllowed(agent.id, { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', ...change })).toBe(false);
+    }
+    expect(reloaded.appActionAllowed('other-agent', { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND' })).toBe(false);
+    await executeCoworkTool(ctx, 'connected_apps', params, { ...perms, allowWrites: false }, resumed);
+    await executeCoworkTool(ctx, 'connected_apps', params, perms, { ...resumed, isSubAgent: true });
+    await executeCoworkTool(ctx, 'connected_apps', { ...params, tool: 'GMAIL_DELETE' }, perms, resumed);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(reloaded.revokeAppPermission(permission.id)).toBe(true);
+    expect(new CoworkStore().appPermissions()).toEqual([]);
+    await executeCoworkTool(ctx, 'connected_apps', params, perms, resumed);
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    expect(reloaded.openRequests(conv.id).some(request => request.appAction?.tool === 'GMAIL_SEND')).toBe(true);
+  });
+
+  it('grants Always allow through the user card and exposes a revoke control through the API', async () => {
+    const f = fixture();
+    const server = new GituServer({ cwd: process.env['AGENT_GITU_HOME']!, port: 0, passwordRequired: false, llm: { name: 'fixture', async complete() { return 'Done.'; } }, coworkCompletionProtocol: 'legacy' });
+    Object.assign(server, { connectedApps: f.apps });
+    const store = (server as unknown as { cowork(): CoworkStore }).cowork();
+    const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.' });
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const card = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Run GMAIL_SEND', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', args: { to: 'first@example.com' } }) });
+    const ordinary = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Try larger images', detail: 'A regular recommendation.' });
+    const base = 'http://127.0.0.1:' + await server.start();
+    try {
+      const bad = await fetch(`${base}/api/cowork/requests/${ordinary.id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'always-allow' }) });
+      expect(bad.status).toBe(400);
+      expect(store.appPermissions()).toEqual([]);
+      const allowed = await fetch(`${base}/api/cowork/requests/${card.id}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'always-allow', service: 'slack', accountId: 'attacker', tool: 'OTHER' }) });
+      expect(allowed.status).toBe(200);
+      const result = await allowed.json();
+      expect(result.request).toMatchObject({ status: 'accepted', response: 'Always allowed' });
+      const permissions = store.appPermissions();
+      expect(permissions).toHaveLength(1);
+      expect(permissions[0]).toMatchObject({ agentId: agent.id, service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND' });
+      const connections = await fetch(`${base}/api/connected-apps`).then(response => response.json());
+      expect(connections.appPermissions[0]).toMatchObject({ id: permissions[0]!.id, agentName: 'Writer' });
+      expect(await fetch(`${base}/api/connected-apps/permissions/${permissions[0]!.id}`, { method: 'DELETE' }).then(response => response.status)).toBe(200);
+      expect(new CoworkStore().appPermissions()).toEqual([]);
+    } finally { await server.stop(); }
   });
 });

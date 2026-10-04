@@ -3924,8 +3924,12 @@ export class GituServer {
         status = action === 'approve' ? 'approved' : 'denied';
       }
       else if (request.kind === 'recommendation') {
-        if (action !== 'accept' && action !== 'dismiss') { this.sendJson(res, 400, { error: 'action must be accept or dismiss' }); return true; }
-        status = action === 'accept' ? 'accepted' : 'dismissed';
+        if (!['accept', 'dismiss', 'always-allow'].includes(action)) { this.sendJson(res, 400, { error: 'action must be accept, dismiss or always-allow' }); return true; }
+        if (action === 'always-allow') {
+          try { store.allowAppActionForRequest(request.id); }
+          catch { this.sendJson(res, 400, { error: 'A complete app action review is required for Always allow.' }); return true; }
+        }
+        status = action === 'dismiss' ? 'dismissed' : 'accepted';
       }
       else if (request.kind === 'credential') {
         // The secret never reaches this endpoint: the card already saved it via
@@ -3943,10 +3947,11 @@ export class GituServer {
         if (!response) { this.sendJson(res, 400, { error: 'an answer is required' }); return true; }
         status = 'answered';
       }
+      const requestResponse = action === 'always-allow' ? 'Always allowed' : response;
       const answer = credentialConnection
         ? `Credential saved as connection "${credentialConnection.label}" (id: ${credentialConnection.id})`
-        : response || status;
-      const resolved = store.resolveRequest(request.id, status, credentialConnection ? answer : response);
+        : requestResponse || status;
+      const resolved = store.resolveRequest(request.id, status, credentialConnection ? answer : requestResponse);
       const handoffComputer = this.coworkComputer(request.agentId);
       if (resolved && handoffComputer.status().handoff?.requestId === request.id && !/^cancel/i.test(response ?? '')) handoffComputer.setControl('shared');
       const agent = store.getAgent(request.agentId);
@@ -4558,9 +4563,15 @@ export class GituServer {
       res.setHeader('Cache-Control', 'no-store');
       try {
         if (path === '/api/connected-apps' && method === 'GET') {
-          if (!this.connectedApps.configured) { this.sendJson(res, 200, { configured: false, ...this.connectedApps.setup, accounts: [], services: [] }); return; }
+          const appPermissions = this.cowork().appPermissions().map(permission => ({ ...permission, agentName: this.cowork().getAgent(permission.agentId)?.name ?? 'Teammate' }));
+          if (!this.connectedApps.configured) { this.sendJson(res, 200, { configured: false, ...this.connectedApps.setup, accounts: [], services: [], appPermissions }); return; }
           const [catalog, accounts] = await Promise.all([this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined), this.connectedApps.accounts()]);
-          this.sendJson(res, 200, { configured: true, ...catalog, accounts }); return;
+          this.sendJson(res, 200, { configured: true, ...catalog, accounts, appPermissions }); return;
+        }
+        const permissionMatch = path.match(/^\/api\/connected-apps\/permissions\/([\w-]+)$/);
+        if (permissionMatch && method === 'DELETE') {
+          const removed = this.cowork().revokeAppPermission(permissionMatch[1]!);
+          this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'App permission not found.' }); return;
         }
         if (path === '/api/connected-apps/configure' && method === 'POST') {
           if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Integration setup requires an authenticated HTTPS session.' }); return; }
@@ -4575,6 +4586,7 @@ export class GituServer {
         if (path === '/api/connected-apps/disconnect' && method === 'POST') {
           const body = await this.readBody(req, 4096);
           await this.connectedApps.disconnect(String(body['accountId'] ?? ''));
+          this.cowork().revokeAppAccountPermissions(String(body['accountId'] ?? ''));
           this.sendJson(res, 200, { ok: true }); return;
         }
         this.sendJson(res, 404, { error: 'Connection route not found.' }); return;

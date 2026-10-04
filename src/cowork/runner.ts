@@ -130,6 +130,8 @@ export interface CoworkProgress {
   detail?: string;
   /** For `mcp_call`: the MCP server the tool belongs to ("github" of mcp:github:create_issue). */
   mcpServer?: string;
+  /** Public toolkit slug for a connected app's activity icon; no action inputs. */
+  appService?: string;
   /** Public HTTP origin only; never expose URL credentials or query strings. */
   webUrl?: string;
 }
@@ -148,6 +150,11 @@ export function coworkMcpServer(tool: string, params: Record<string, unknown>): 
   const qualified = typeof params['tool'] === 'string' ? params['tool'] : '';
   const parts = qualified.split(':');
   return parts.length >= 2 && parts[1] ? parts[1] : undefined;
+}
+
+export function coworkAppService(tool: string, params: Record<string, unknown>): string | undefined {
+  const service = params['service'];
+  return tool === 'connected_apps' && typeof service === 'string' && /^[a-z][a-z0-9_-]{0,63}$/i.test(service) ? service.toLowerCase() : undefined;
 }
 
 export interface TurnResult {
@@ -542,9 +549,9 @@ async function agentTurn(input: {
   let reply = '';
   let lastPublicUpdate = '';
   let reasoning = '';
-  const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string, detail?: string, phase: CoworkProgress['phase'] = 'working', mcpServer?: string) => {
+  const progress = (text: string, tool?: string, toolOk?: boolean, webUrl?: string, detail?: string, phase: CoworkProgress['phase'] = 'working', mcpServer?: string, appService?: string) => {
     if (text.trim()) lastPublicUpdate = text;
-    deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: text || lastPublicUpdate, reasoning, tool, toolOk, webUrl, detail, phase, mcpServer });
+    deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: text || lastPublicUpdate, reasoning, tool, toolOk, webUrl, detail, phase, mcpServer, appService });
   };
   let segmentNumber = 1;
   let checkpointActions: CheckpointAction[] = [];
@@ -688,7 +695,7 @@ async function agentTurn(input: {
       }
       ctx ??= deps.toolContext(agent);
       const detail = summarizeParams(call.tool, call.params);
-      progress(visibleCoworkText(reply), call.tool, undefined, coworkWebOrigin(call.tool, call.params), detail, undefined, coworkMcpServer(call.tool, call.params));
+      progress(visibleCoworkText(reply), call.tool, undefined, coworkWebOrigin(call.tool, call.params), detail, undefined, coworkMcpServer(call.tool, call.params), coworkAppService(call.tool, call.params));
       const result = await executeCoworkTool(
         ctx,
         call.tool,
@@ -724,7 +731,7 @@ async function agentTurn(input: {
           detail,
         );
       } else {
-        progress(visibleCoworkText(reply), call.tool, result.ok, coworkWebOrigin(call.tool, call.params), detail, undefined, coworkMcpServer(call.tool, call.params));
+        progress(visibleCoworkText(reply), call.tool, result.ok, coworkWebOrigin(call.tool, call.params), detail, undefined, coworkMcpServer(call.tool, call.params), coworkAppService(call.tool, call.params));
       }
       appendResult(call, result);
       if (result.ok && ['ask_user', 'request_permission', 'computer_handoff'].includes(call.tool)) {
@@ -1122,11 +1129,11 @@ export async function runMissionSession(input: {
     let waiting = false;
     let lastPublicUpdate = '';
     let reasoning = '';
-    const publicProgress = (raw: string, tool?: string, toolOk?: boolean, detail?: string, webUrl?: string, mcpServer?: string, phase: CoworkProgress['phase'] = 'working') => {
+    const publicProgress = (raw: string, tool?: string, toolOk?: boolean, detail?: string, webUrl?: string, mcpServer?: string, phase: CoworkProgress['phase'] = 'working', appService?: string) => {
       // Mission status JSON is a machine-readable checkpoint, not chat prose.
       const visible = stripToolMarkers(raw, true).split(/(?:^|\n)\s*\{/)[0]!.trim();
       if (visible) lastPublicUpdate = visible;
-      deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: visible || lastPublicUpdate, reasoning, tool, toolOk, detail, webUrl, mcpServer, phase });
+      deps.onProgress?.({ agentId: agent.id, agentName: agent.name, text: visible || lastPublicUpdate, reasoning, tool, toolOk, detail, webUrl, mcpServer, phase, appService });
     };
     try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS_PER_TURN; round++) {
@@ -1180,7 +1187,7 @@ export async function runMissionSession(input: {
         }
         deps.signal?.throwIfAborted();
         ctx ??= deps.toolContext(agent);
-        publicProgress(reply, call.tool, undefined, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params));
+        publicProgress(reply, call.tool, undefined, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
         const result = await executeCoworkTool(
           ctx,
           call.tool,
@@ -1190,7 +1197,7 @@ export async function runMissionSession(input: {
         );
         recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
         messages.push(toolResultMessage(call.tool, result, supportsImages));
-        publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params));
+        publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
         if (result.ok && ['ask_user', 'request_permission', 'computer_handoff'].includes(call.tool)) { waiting = true; break; }
       }
       if (waiting) break;
@@ -1362,7 +1369,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
           trail.push({ tool: call.tool, params: call.params, result });
           recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
           messages.push(toolResultMessage(call.tool, result, false));
-          deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok, detail: summarizeParams(call.tool, call.params), webUrl: coworkWebOrigin(call.tool, call.params), mcpServer: coworkMcpServer(call.tool, call.params) });
+          deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: stripToolMarkers(reply), tool: call.tool, toolOk: result.ok, detail: summarizeParams(call.tool, call.params), webUrl: coworkWebOrigin(call.tool, call.params), mcpServer: coworkMcpServer(call.tool, call.params), appService: coworkAppService(call.tool, call.params) });
         }
       }
     } finally {

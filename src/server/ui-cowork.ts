@@ -110,7 +110,7 @@ export const COWORK_CSS = String.raw`
   .cw-rail-foot .btn { flex: 1; padding: 6px 10px; font-size: 12px; }
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-  .cw-typing, .cw-composer-wrap { flex-shrink: 0; }
+  .cw-composer-wrap { flex-shrink: 0; }
   .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; background: transparent; border: 0; box-shadow: none; pointer-events: none; }
   .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; max-width: calc(100% - 150px); background: transparent; }
   .cw-chat-avatar .cw-persona-status { max-width: 100%; box-sizing: border-box; padding: 3px 10px; font-size: 11px; line-height: 16px; color: var(--text);
@@ -119,6 +119,9 @@ export const COWORK_CSS = String.raw`
     backdrop-filter: blur(16px) saturate(1.4); -webkit-backdrop-filter: blur(16px) saturate(1.4);
     box-shadow: 0 2px 12px rgba(0,0,0,.12), inset 0 1px 0 rgba(255,255,255,.12); }
   .cw-chat-avatar .cw-ava { overflow: visible; }
+  #cwCharacterStatus[data-tool=true]::before { display: none; }
+  .cw-persona-tool { display: inline-flex; flex: none; order: -1; font-style: normal; }
+  .cw-persona-tool[hidden] { display: none; }
   .cw-chat-head button { pointer-events: auto; }
   .cw-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
   .cw-chat-head #cwInfoBtn { position: absolute; right: 16px; top: 16px; }
@@ -177,6 +180,10 @@ export const COWORK_CSS = String.raw`
   .cw-sys { align-self: center; text-align: left; font-size: 12px; line-height: 1.6; color: var(--muted); background: transparent; border: 0; padding: 4px 12px; max-width: 90%; overflow-wrap: anywhere; }
   .cw-sys summary { cursor: pointer; font-weight: 600; }
   .cw-sys .cw-sys-detail { white-space: pre-wrap; margin-top: 8px; max-height: 280px; overflow: auto; }
+  .cw-event-row { display: flex; align-items: flex-start; gap: 8px; }
+  .cw-event-row > svg { width: 14px; height: 14px; flex: none; margin-top: 3px; }
+  .cw-event-row strong { color: var(--text); font-weight: 500; }
+  .cw-event-row .cw-event-detail { display: block; font-size: 11px; }
   .cw-checkpoints { align-self: center; width: fit-content; max-width: min(90%, 560px); color: var(--muted); font-size: 11.5px; }
   .cw-checkpoints summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; padding: 6px 11px; border: 1px solid var(--border2); border-radius: 999px; background: var(--card2); }
   .cw-checkpoints summary::-webkit-details-marker { display: none; }
@@ -224,8 +231,6 @@ export const COWORK_CSS = String.raw`
   .cw-h4, .cw-h5, .cw-h6 { font-size: 13px; color: var(--muted); }
   .cw-embed { margin: 8px 0 4px; }
   .cw-embed iframe { display: block; width: 100%; max-width: 520px; aspect-ratio: 16 / 9; height: auto; border: 1px solid var(--border2); border-radius: 10px; background: #000; }
-  .cw-typing { display: flex; align-items: center; gap: 8px; padding: 2px 22px 10px; font-size: 12px; color: var(--muted); }
-  .cw-typing .dots { display: inline-flex; gap: 3px; }
   .cw-progress-activity { margin-left: auto; }
   .cw-progress-activity .wtext { font-size: 11px; }
   #cwLive { display: flex; flex-direction: column; gap: 10px; }
@@ -340,6 +345,16 @@ export const COWORK_CSS = String.raw`
   .cw-request .k { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
   .cw-request .t { font-size: 12.5px; font-weight: 650; margin-top: 3px; }
   .cw-request .d { font-size: 11.5px; color: var(--muted); margin-top: 3px; white-space: pre-wrap; }
+  .cw-action-service { display: inline-flex; align-items: center; gap: 6px; margin: 8px 0; color: var(--muted); font-size: 12px; }
+  .cw-action-service svg { width: 14px; height: 14px; }
+  .cw-action-fields { display: grid; grid-template-columns: minmax(70px, 1fr) minmax(0, 3fr); gap: 6px 12px; margin: 8px 0; font-size: 12px; }
+  .cw-action-fields dt { color: var(--muted); overflow-wrap: anywhere; }
+  .cw-action-fields dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .cw-action-fields .cw-action-fields { margin: 0; }
+  .cw-action-values { margin: 0; padding-left: 18px; }
+  .cw-action-values li + li { margin-top: 4px; }
+  .cw-action-account { margin-top: 8px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+  .cw-action-account summary { cursor: pointer; }
   .cw-request .cw-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .cw-request .cw-actions .btn { padding: 4px 10px; font-size: 11.5px; }
   .cw-request input { flex: 1; min-width: 150px; background: var(--card2); border: 1px solid var(--border2); color: var(--text); border-radius: 7px; padding: 5px 8px; }
@@ -613,6 +628,8 @@ export const COWORK_JS = String.raw`
     playwright: 'playwright.dev', puppeteer: 'pptr.dev', browserbase: 'browserbase.com', zapier: 'zapier.com', n8n: 'n8n.io',
     grafana: 'grafana.com', datadog: 'datadoghq.com', snowflake: 'snowflake.com', telegram: 'telegram.org', x: 'x.com',
     twitter: 'x.com', linkedin: 'linkedin.com', reddit: 'reddit.com', wordpress: 'wordpress.org', webflow: 'webflow.com',
+    facebook: 'facebook.com', instagram: 'instagram.com', googledrive: 'drive.google.com',
+    googlecalendar: 'calendar.google.com', googlesheets: 'sheets.google.com', outlook: 'outlook.com',
   };
 
   /** A site/brand favicon that removes itself when it cannot load, revealing the glyph under it. */
@@ -632,6 +649,10 @@ export const COWORK_JS = String.raw`
   function cwToolIconHtml(p) {
     var tool = p && p.tool;
     if (!tool) return '';
+    if (tool === 'connected_apps') {
+      var service = String(p.appService || '').toLowerCase();
+      return '<span class="cw-tool-ico" title="' + esc(service ? cwActionWords(service) : 'Connected app') + '">' + cwIcon('plug') + cwFaviconHtml(CW_MCP_DOMAINS[service]) + '</span>';
+    }
     if (['browse', 'web_fetch', 'web_search', 'search_web'].indexOf(tool) >= 0) {
       // The server sends origin-only URLs; parse the host without depending on URL().
       var match = /^https?:\/\/([^/?#]+)/i.exec(String((p && p.webUrl) || ''));
@@ -757,6 +778,15 @@ export const COWORK_JS = String.raw`
       if (text && text.textContent !== label) text.textContent = label;
       header.title = label;
       header.setAttribute('data-active', String(activity !== 'Ready'));
+      var icon = header.querySelector('.cw-persona-tool');
+      if (icon) {
+        var ps = cw.busy ? (cw.progresses && cw.progresses.length ? cw.progresses : (cw.progress ? [cw.progress] : [])) : [];
+        var progress = ps.find(function (p) { return !conv || conv.kind !== 'dm' || p.agentId === conv.memberIds[0]; });
+        var iconHtml = progress ? cwToolIconHtml(progress) : '';
+        if (icon._iconHtml !== iconHtml) { icon._iconHtml = iconHtml; icon.innerHTML = iconHtml; }
+        icon.hidden = !iconHtml;
+        header.setAttribute('data-tool', String(Boolean(iconHtml)));
+      }
     }
   }
   function cwActiveConv() { var cw = cwEnsure(); for (var i = 0; i < cw.convs.length; i++) if (cw.convs[i].id === cw.active) return cw.convs[i]; return null; }
@@ -1216,7 +1246,7 @@ export const COWORK_JS = String.raw`
     chat.innerHTML =
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle cw-mobile-only" id="cwBack" aria-expanded="false">Chats</button>' +
-        '<div class="cw-chat-avatar"><span role="img" aria-label="' + esc((members[0] && members[0].name) || conv.title) + '">' + headAva + '</span><span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span></span></div>' +
+        '<div class="cw-chat-avatar"><span role="img" aria-label="' + esc((members[0] && members[0].name) || conv.title) + '">' + headAva + '</span><span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span><i class="cw-persona-tool" aria-hidden="true" hidden></i></span></div>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
         '<span id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</span>' +
         '<span id="cwMissionBadge"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>Mission running</span>' +
@@ -1225,7 +1255,6 @@ export const COWORK_JS = String.raw`
         '<button class="cw-panel-toggle" id="cwInfoBtn" aria-label="Chat panel" title="Chat panel" aria-controls="cwInfoPanel" aria-expanded="false">' + cwIcon('panel') + '</button>' +
       '</div>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
-      '<div class="cw-typing" id="cwTyping" hidden></div>' +
       '<div class="cw-composer-wrap">' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
@@ -1550,22 +1579,64 @@ export const COWORK_JS = String.raw`
     });
   }
 
+  function cwActionWords(value) {
+    var text = String(value).replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').toLowerCase();
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+  function cwAppActionName(tool, service) {
+    var prefix = String(service).toUpperCase() + '_';
+    return cwActionWords(String(tool).toUpperCase().indexOf(prefix) === 0 ? String(tool).slice(prefix.length) : tool);
+  }
+  function cwActionValueHtml(value) {
+    if (value === null) return 'Not set';
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (Array.isArray(value)) return value.length ? '<ul class="cw-action-values">' + value.map(function (item) { return '<li>' + cwActionValueHtml(item) + '</li>'; }).join('') + '</ul>' : 'None';
+    if (typeof value === 'object') {
+      var keys = Object.keys(value);
+      return keys.length ? '<dl class="cw-action-fields">' + keys.map(function (key) { return '<dt>' + esc(cwActionWords(key)) + '</dt><dd>' + cwActionValueHtml(value[key]) + '</dd>'; }).join('') + '</dl>' : 'None';
+    }
+    return esc(value === '' ? '(empty)' : value);
+  }
+  function cwAppApprovalPresentation(request) {
+    // Older saved cards carry the exact action in their detail text. Format it
+    // for review without changing the payload or the approval's signature.
+    var heading = request.kind === 'recommendation' && /^Review this ([\w-]+) action:\r?\n/.exec(request.detail || '');
+    var title = /^Run ([\w-]+)$/.exec(request.title || '');
+    if (!heading || !title) return null;
+    var service = heading[1], tool = title[1];
+    var names = { gmail: 'Gmail', gdrive: 'Google Drive', googledrive: 'Google Drive', gcalendar: 'Google Calendar', googlecalendar: 'Google Calendar', googlesheets: 'Google Sheets' };
+    var serviceName = names[service.toLowerCase()] || cwActionWords(service);
+    var actionName = cwAppActionName(tool, service);
+    var payload = request.appAction;
+    if (payload === undefined) try { payload = JSON.parse(request.detail.slice(heading[0].length).split(/\r?\n/)[0]); } catch (e) {}
+    var valid = payload && payload.service === service && payload.tool === tool && typeof payload.accountId === 'string' && payload.accountId && payload.args && typeof payload.args === 'object' && !Array.isArray(payload.args);
+    var html = '<div class="cw-action-service">' + cwToolIconHtml({ tool: 'connected_apps', appService: service }) + '<span>' + esc(serviceName) + ' · Connected account</span></div>';
+    if (valid) {
+      if (Object.keys(payload.args).length) html += cwActionValueHtml(payload.args);
+      html += '<div class="d">Accept once, or always allow this tool for this teammate and account. Manage saved permissions in Connections.</div>' +
+        '<details class="cw-action-account"><summary>Account details</summary><div>Connection: ' + esc(payload.accountId) + '</div></details>';
+    } else html += '<div class="d">The action details are incomplete. Ask your teammate to create a fresh review.</div>';
+    return { title: actionName, serviceName: serviceName, html: html, valid: Boolean(valid) };
+  }
   function cwRequestHtml(request) {
     var cw = cwEnsure();
     var agent = cwAgentById(request.agentId);
-    var label = request.kind === 'permission' ? 'Permission request' : request.kind === 'question' ? 'Question' : request.kind === 'credential' ? 'Secure credential request' : 'Recommendation';
+    var appApproval = cwAppApprovalPresentation(request);
+    var label = appApproval ? 'App approval' : request.kind === 'permission' ? 'Permission request' : request.kind === 'question' ? 'Question' : request.kind === 'credential' ? 'Secure credential request' : 'Recommendation';
     var controls = '';
-    if (request.status !== 'open') controls = '<span class="cw-request-result">' + esc(request.status.charAt(0).toUpperCase() + request.status.slice(1)) + (request.response ? ' · ' + esc(request.response) : '') + '</span>';
+    if (request.status !== 'open') controls = '<span class="cw-request-result">' + (appApproval && request.response === 'Always allowed' ? 'Always allowed' : esc(request.status.charAt(0).toUpperCase() + request.status.slice(1)) + (request.response ? ' · ' + esc(request.response) : '')) + '</span>';
     else if (request.kind === 'permission') controls = '<button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="approve">Allow</button><button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="deny">Deny</button>';
     else if (request.kind === 'recommendation') controls = '<button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="accept">Accept</button><button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="dismiss">Dismiss</button>';
     else if (request.kind === 'credential') controls = cwCredentialFormHtml(request);
     else controls = (request.options || []).map(function (option) { return '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="answer" data-response="' + esc(option) + '">' + esc(option) + '</button>'; }).join('') + '<input data-cwanswer="' + esc(request.id) + '" aria-label="Answer: ' + esc(request.title) + '" placeholder="Type your answer"><button class="btn dark" data-cwrequest="' + esc(request.id) + '" data-action="answer">Send</button>';
+    if (appApproval && !appApproval.valid && request.status === 'open') controls = controls.replace('data-action="accept"', 'data-action="accept" disabled');
+    if (appApproval && appApproval.valid && request.status === 'open') controls = controls.replace('<button class="btn ghost"', '<button class="btn ghost" data-cwrequest="' + esc(request.id) + '" data-action="always-allow" title="Always allow this teammate to use this tool with this account. Revoke in Connections.">Always allow</button><button class="btn ghost"');
     if (request.desktopHandoff && request.status === 'open') controls = '<button class="btn dark" data-cwhandoff="' + esc(request.agentId) + '">Open computer</button>' + controls;
     if (cw.requestPending && cw.requestPending[request.id]) controls = controls.replace(/<(button|input)\b/g, '<$1 disabled');
     return '<div class="cw-row cw-request-row" data-cwrequest-row="' + esc(request.id) + '">' + cwAva(agent) + '<div class="cw-bubble">' +
       '<div class="cw-meta"><span class="nm">' + esc(agent ? agent.name : 'Teammate') + '</span><span class="tg">' + cwTime(request.createdAt) + '</span></div>' +
-      '<div class="cw-request"><div class="k">' + label + '</div><div class="t">' + esc(request.title) + '</div>' +
-      (request.detail ? '<div class="d">' + esc(request.detail) + '</div>' : '') + '<div class="cw-actions">' + controls + '</div></div></div></div>';
+      '<div class="cw-request"><div class="k">' + label + '</div><div class="t">' + esc(appApproval ? appApproval.title : request.title) + '</div>' +
+      (appApproval ? appApproval.html : request.detail ? '<div class="d">' + esc(request.detail) + '</div>' : '') + '<div class="cw-actions">' + controls + '</div></div></div></div>';
   }
 
   function cwRenderWork() {
@@ -1779,11 +1850,36 @@ export const COWORK_JS = String.raw`
     return html + '</div>';
   }
 
+  function cwSystemEventHtml(message) {
+    var cw = cwEnsure(), text = String(message.text || '');
+    var reminder = /^Follow-up reminder from @([^:\n]+): ([\s\S]+)\. Act on it with your tools and report the result to the user here\.$/.exec(text);
+    var instruction = reminder ? reminder[2] : text;
+    var decision = /^The user responded to your (recommendation|question|permission) "([\s\S]+)": ([\s\S]+)\. Continue from that decision and report what you do\.$/.exec(instruction);
+    var confirmation = /^(Recommendation|Question|Permission) (accepted|dismissed|answered|approved|denied): ([\s\S]+)\.$/.exec(text);
+    var request = (cw.requests || []).slice().reverse().find(function (r) {
+      if (decision) return r.kind === decision[1] && r.title === decision[2] && r.status !== 'open' && String(r.response || r.status) === decision[3];
+      return confirmation && r.kind === confirmation[1].toLowerCase() && r.status === confirmation[2] && String(r.response || r.status) === confirmation[3] && Math.abs(Date.parse(r.resolvedAt) - Date.parse(message.ts)) < 3000;
+    });
+    if (!request && !reminder) return null;
+    var agent = request && cwAgentById(request.agentId), app = request && cwAppApprovalPresentation(request);
+    var title, detail, icon = 'clock';
+    if (request) {
+      var action = app ? app.title : request.title;
+      if (decision) { title = (reminder ? reminder[1] : agent ? agent.name : 'Your teammate') + ' resumed work'; detail = 'After your response · ' + action; icon = 'bolt'; }
+      else { title = (request.response === 'Always allowed' ? 'You always allowed ' : request.status === 'accepted' || request.status === 'approved' ? 'You approved ' : request.status === 'dismissed' || request.status === 'denied' ? 'You declined ' : 'You answered ') + action; detail = agent ? agent.name : ''; icon = 'check'; }
+      if (app) detail += (detail ? ' · ' : '') + app.serviceName;
+    } else { title = 'Scheduled follow-up · ' + reminder[1]; detail = reminder[2]; }
+    return '<div class="cw-sys cw-event-row">' + cwIcon(icon) + '<div><strong>' + esc(title) + '</strong><span class="cw-event-detail">' + esc(detail) + '</span>' + cwFilesHtml(message.artifactIds) + '</div></div>';
+  }
   function cwBubbleHtml(m) {
     var conv = cwActiveConv();
     var members = conv ? cwConvMembers(conv) : [];
     var agent = m.agentId ? cwAgentById(m.agentId) : null;
-    if (m.role === 'system') return m.text.length > 240 ? '<details class="cw-sys"><summary>' + esc(m.text.slice(0, 110)) + '…</summary><div class="cw-sys-detail">' + esc(m.text) + '</div>' + cwFilesHtml(m.artifactIds) + '</details>' : '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';
+    if (m.role === 'system') {
+      var event = cwSystemEventHtml(m);
+      if (event !== null) return event;
+      return m.text.length > 240 ? '<details class="cw-sys"><summary>' + esc(m.text.slice(0, 110)) + '…</summary><div class="cw-sys-detail">' + esc(m.text) + '</div>' + cwFilesHtml(m.artifactIds) + '</details>' : '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';
+    }
     if (m.role === 'user') {
       var via = '';
       if (m.via === 'telegram') via = ' · Telegram' + (m.from ? ' — ' + esc(m.from) : '');
@@ -3048,34 +3144,11 @@ export const COWORK_JS = String.raw`
   function cwRenderTyping() {
     var cw = cwEnsure();
     cwUpdateCharacterActivity();
-    var el = $('cwTyping');
-    var btn = $('cwSend');
-    if (!el || !btn) return;
     document.querySelectorAll('[data-cw-avatar]').forEach(function (node) {
       var id = node.getAttribute('data-cw-avatar');
       var member = cwAgentById(id);
       node.classList.toggle('working', Boolean(cw.busy && member && (cw.working === member.name || (cw.progresses || []).some(function (p) { return p.agentId === id; }))));
     });
-    if (cw.busy) {
-      // Update only the label: keep the animation alive across stream deltas.
-      if (!el.querySelector('.wtext')) el.innerHTML = '<span class="activity-indicator" role="status" aria-live="polite">${ACTIVITY_MARK_HTML}<span class="wtext"></span></span>';
-      var ps = cw.progresses && cw.progresses.length ? cw.progresses : (cw.progress ? [cw.progress] : []);
-      var indicator = el.querySelector('.activity-indicator');
-      var phase = cwProgressPhase(ps[0]);
-      if (indicator && indicator._phase !== phase) {
-        indicator._phase = phase;
-        indicator.className = String(indicator.className || '').replace(/\s*phase-\w+/g, '') + ' phase-' + phase;
-      }
-      var label = ps.length ? ps.map(function (p) { return p.agentName + ' · ' + cwActivityLabel(p); }).join('  ·  ') : (cw.working || 'The team') + ' · Thinking…';
-      if (cw.queued) label += ' · ' + cw.queued + ' queued';
-      var status = el.querySelector('.wtext');
-      if (status.textContent !== label) status.textContent = label;
-      status.title = label;
-      el.hidden = false;
-    } else {
-      el.hidden = true;
-      el.innerHTML = '';
-    }
     cwRenderComposerAction();
   }
 

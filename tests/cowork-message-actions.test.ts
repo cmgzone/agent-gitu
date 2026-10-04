@@ -383,6 +383,8 @@ describe('Cowork message actions', () => {
 
   it('keeps reference chips deduplicated and independent of member @mentions', () => {
     const u = fixture();
+    u.cw.agents.push({ id: 'writer', name: 'Writer' });
+    u.cw.convs[0].memberIds.push('writer');
     u.cw.msgs = [message({ text: '<script>' })];
     u.input.value = 'Draft';
     u.context.cwMessageAction('reference', 'm1');

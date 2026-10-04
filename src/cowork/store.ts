@@ -394,6 +394,42 @@ export interface CoworkRequestCredential {
   connectionId?: string;
 }
 
+export interface CoworkAppAction {
+  service: string;
+  accountId: string;
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export interface CoworkAppPermission {
+  id: string;
+  agentId: string;
+  service: string;
+  accountId: string;
+  tool: string;
+  createdAt: string;
+}
+
+function sanitizeAppAction(value: unknown): CoworkAppAction | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const action = value as Partial<CoworkAppAction>;
+  if (typeof action.service !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/i.test(action.service) || typeof action.tool !== 'string' || !/^[\w-]{1,180}$/.test(action.tool) || typeof action.accountId !== 'string' || !action.accountId || action.accountId.length > 512 || !action.args || typeof action.args !== 'object' || Array.isArray(action.args)) return undefined;
+  const text = JSON.stringify({ service: action.service, accountId: action.accountId, tool: action.tool, args: action.args });
+  return text.length <= 16000 ? JSON.parse(text) as CoworkAppAction : undefined;
+}
+
+/** Also understands saved cards created before structured action metadata. */
+export function coworkRequestAppAction(request: CoworkRequest): CoworkAppAction | undefined {
+  if (request.kind !== 'recommendation') return undefined;
+  try {
+    if (request.appAction !== undefined) return sanitizeAppAction(request.appAction);
+    const heading = /^Review this ([\w-]+) action:\r?\n/.exec(request.detail);
+    if (!heading) return undefined;
+    const action = sanitizeAppAction(JSON.parse(request.detail.slice(heading[0].length).split(/\r?\n/)[0]!));
+    return action && action.service === heading[1] && request.title === `Run ${action.tool}` ? action : undefined;
+  } catch { return undefined; }
+}
+
 export interface CoworkRequest {
   id: string;
   conversationId: string;
@@ -401,6 +437,8 @@ export interface CoworkRequest {
   kind: 'permission' | 'question' | 'recommendation' | 'credential';
   title: string;
   detail: string;
+  /** Full review payload, separate from the bounded description. */
+  appAction?: CoworkAppAction;
   options: string[];
   /** Permission requests can enable one existing per-agent capability. */
   permission?: 'shell' | 'writes' | 'config' | 'host';
@@ -452,6 +490,7 @@ export interface CoworkData {
   artifacts: CoworkArtifact[];
   todos: CoworkTodo[];
   requests: CoworkRequest[];
+  appPermissions?: CoworkAppPermission[];
   workLog: CoworkWorkEntry[];
   /** Agent-authored sidebar widgets, scoped to their conversation. */
   widgets: CoworkWidget[];
@@ -598,6 +637,7 @@ export class CoworkStore {
         artifacts: Array.isArray(parsed.artifacts) ? parsed.artifacts : [],
         todos: Array.isArray(parsed.todos) ? parsed.todos : [],
         requests: Array.isArray(parsed.requests) ? parsed.requests : [],
+        appPermissions: Array.isArray(parsed.appPermissions) ? parsed.appPermissions.filter(permission => permission && typeof permission.id === 'string' && typeof permission.agentId === 'string' && Boolean(sanitizeAppAction({ ...permission, args: {} }))) : [],
         workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
         widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
         budgets: sanitizeBudgets(parsed.budgets),
@@ -768,6 +808,7 @@ export class CoworkStore {
     data.inbox = data.inbox.filter((message) => message.fromAgentId !== id && message.toAgentId !== id && conversationIds.has(message.conversationId));
     data.todos = data.todos.filter((todo) => todo.agentId !== id && conversationIds.has(todo.conversationId));
     data.requests = data.requests.filter((request) => request.agentId !== id && conversationIds.has(request.conversationId));
+    data.appPermissions = data.appPermissions?.filter(permission => permission.agentId !== id);
     data.workLog = data.workLog.filter((entry) => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
@@ -1634,7 +1675,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; appAction?: CoworkAppAction; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1644,6 +1685,8 @@ export class CoworkStore {
     if (input.kind === 'permission' && !input.permission) throw new Error('Permission type is required');
     const credential = input.kind === 'credential' ? sanitizeCredentialMeta(input.credential) : undefined;
     if (input.kind === 'credential' && !credential) throw new Error('Credential requests need a provider and a base URL (or an existing connection to re-authorize)');
+    const appAction = input.appAction === undefined ? undefined : sanitizeAppAction(input.appAction);
+    if (input.appAction !== undefined && (input.kind !== 'recommendation' || !appAction)) throw new Error('Invalid app action review');
     const request: CoworkRequest = {
       id: `cr-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
       conversationId: input.conversationId,
@@ -1651,6 +1694,7 @@ export class CoworkStore {
       kind: input.kind,
       title: title.slice(0, 180),
       detail: detail.slice(0, 2_000),
+      appAction,
       options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))].slice(0, 6),
       permission: input.permission,
       credential,
@@ -1661,6 +1705,44 @@ export class CoworkStore {
     data.requests.push(request);
     this.save();
     return request;
+  }
+
+  appPermissions(): CoworkAppPermission[] {
+    return [...(this.load().appPermissions ?? [])];
+  }
+
+  appActionAllowed(agentId: string, action: Omit<CoworkAppAction, 'args'>): boolean {
+    return this.appPermissions().some(permission => permission.agentId === agentId && permission.service === action.service && permission.accountId === action.accountId && permission.tool === action.tool);
+  }
+
+  /** Only the authenticated user's Always allow card action calls this. */
+  allowAppActionForRequest(requestId: string): CoworkAppPermission {
+    const request = this.getRequest(requestId);
+    const action = request && coworkRequestAppAction(request);
+    if (!request || request.status !== 'open' || !action || !this.getAgent(request.agentId)) throw new Error('A complete open app review is required');
+    const data = this.load();
+    const permissions = data.appPermissions ??= [];
+    const existing = permissions.find(permission => permission.agentId === request.agentId && permission.service === action.service && permission.accountId === action.accountId && permission.tool === action.tool);
+    if (existing) return existing;
+    const permission: CoworkAppPermission = { id: `cap-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`, agentId: request.agentId, service: action.service, accountId: action.accountId, tool: action.tool, createdAt: new Date().toISOString() };
+    permissions.push(permission);
+    this.save();
+    return permission;
+  }
+
+  revokeAppPermission(id: string): boolean {
+    const data = this.load();
+    const before = data.appPermissions?.length ?? 0;
+    data.appPermissions = data.appPermissions?.filter(permission => permission.id !== id);
+    if (before === (data.appPermissions?.length ?? 0)) return false;
+    this.save();
+    return true;
+  }
+
+  revokeAppAccountPermissions(accountId: string): void {
+    const data = this.load();
+    data.appPermissions = data.appPermissions?.filter(permission => permission.accountId !== accountId);
+    this.save();
   }
 
   resolveRequest(id: string, status: Exclude<CoworkRequest['status'], 'open'>, response?: string): CoworkRequest | undefined {

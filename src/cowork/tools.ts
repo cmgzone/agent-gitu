@@ -883,6 +883,9 @@ async function connectedAppTool(apps: ComposioConnections | undefined, params: R
     if (!accounts.some(account => account.id === accountId)) return { ok: false, output: 'Choose an active accountId for this service from connected_apps list.' };
     const detail = JSON.stringify({ service, accountId, tool, args });
     if (detail.length > 16000) return { ok: false, output: 'This action is too large for review. Split it into smaller actions.' };
+    if (scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
+      return { ok: true, output: JSON.stringify(await apps.execute(service, tool, args as Record<string, unknown>, accountId)).slice(0, 16000) };
+    }
     const signature = createHash('sha256').update(scope.conversationId + ':' + scope.agent.id + ':' + detail).digest('hex');
     let pending = appApprovals.get(apps);
     if (!pending) { pending = new Map(); appApprovals.set(apps, pending); }
@@ -898,7 +901,7 @@ async function connectedAppTool(apps: ComposioConnections | undefined, params: R
     const existing = [...pending].find(([id, value]) => value.signature === signature && scope.store.getRequest(id)?.status === 'open');
     if (existing) return { ok: true, output: `Waiting for review ${existing[0]}. Stop and wait for the user.` };
     if (pending.size >= 100) return { ok: false, output: 'Too many actions are waiting for review.' };
-    const card = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'recommendation', title: `Run ${tool}`, detail: `Review this ${service} action:\n${detail}\n\nAccept to allow this exact action once. The approval expires in 15 minutes.` });
+    const card = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'recommendation', title: `Run ${tool}`, detail: `Review this ${service} action:\n${detail}\n\nAccept to allow this exact action once. The approval expires in 15 minutes.`, appAction: { service, accountId, tool, args: args as Record<string, unknown> } });
     pending.set(card.id, { signature, expires: Date.now() + 15 * 60 * 1000 });
     return { ok: true, output: `Review ${card.id} posted. Stop and wait for the user. If accepted, repeat the exact action with approvalId: ${card.id}.` };
   } catch { return { ok: false, output: 'The connected service could not complete this request. Check its status in Cowork → Connections.' }; }

@@ -5,7 +5,7 @@ import { authPage } from '../src/server/ui-auth.js';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 
 function fixture() {
-  const content = { innerHTML: '', querySelectorAll: () => [] };
+  const content = { innerHTML: '', querySelectorAll: () => [], insertAdjacentHTML(_position: string, html: string) { this.innerHTML += html; } };
   const providerButton = { disabled: false };
   const elements = {
     cwChat: { innerHTML: '' },
@@ -13,11 +13,12 @@ function fixture() {
     cwServicesBack: { onclick: undefined as undefined | (() => void) },
     cwServicesRefresh: { onclick: undefined as undefined | (() => void) },
     cwServicesSearch: { onsubmit: undefined },
+    cwServicesAgent: { innerHTML: '', value: 'writer', onchange: undefined },
     cwProviderForm: { onsubmit: undefined as undefined | ((event: { preventDefault: () => void }) => Promise<void>), querySelector: () => providerButton },
     cwProviderKey: { value: 'fixture-provider-key' },
     cwProviderError: { hidden: true, textContent: '' },
   };
-  const cw = { connectionsOpen: false, connectionRevision: 0, active: null };
+  const cw = { connectionsOpen: false, connectionRevision: 0, active: null, selectedAgentId: 'writer', connectionsAgentId: 'writer' };
   const api = vi.fn();
   const context = createContext({
     cwEnsure: () => cw,

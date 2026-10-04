@@ -61,12 +61,13 @@ describe('cwBody markdown tables', () => {
     expect(u.context.cwBody('| just | one |\n| row | here |', [])).not.toContain('<table');
   });
 
-  it('embeds YouTube and Vimeo links as inline players in cowork bubbles', () => {
+  it('groups YouTube and Vimeo links into click-to-load preview cards', () => {
     const u = fixture();
     const html = u.context.cwBody('Watch https://www.youtube.com/watch?v=dQw4w9WgXcQ', []);
     expect(html).toContain('class="cw-embed"');
-    expect(html).toContain('src="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"');
-    expect(html).toContain('allowfullscreen');
+    expect(html).toContain('data-cwrichload="https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ"');
+    expect(html).not.toContain('<iframe');
+    expect(html).toContain('class="cw-rich-grid"');
     expect(html).toContain('<a href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"');
     expect(u.context.cwBody('https://youtu.be/dQw4w9WgXcQ', [])).toContain('youtube-nocookie.com/embed/dQw4w9WgXcQ');
     expect(u.context.cwBody('https://vimeo.com/123456789', [])).toContain('player.vimeo.com/video/123456789');
@@ -173,6 +174,8 @@ describe('Cowork message actions', () => {
       querySelectorAll: (selector: string) => selector === '[data-cwanswer]' ? [rendered ? after : before] : [],
     };
     u.context.$ = (id: string) => id === 'cwMsgs' ? wrap : null;
+    // This fixture models answer inputs; media DOM reconciliation has its own test.
+    u.context.cwReplaceTranscript = (target: typeof wrap, html: string) => { target.innerHTML = html; };
     u.context.document.activeElement = before;
     u.context.cwRenderMsgs();
     expect(after.value).toBe('My answer draft');

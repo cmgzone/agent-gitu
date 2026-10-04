@@ -49,12 +49,13 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(html).toContain('Paused');
     expect(html).not.toContain('Failed');
   });
-  it('shows the homepage blob for Agent Gitu in chat replies', () => {
+  it('keeps the report header readable without an avatar or chat card', () => {
     const { context } = proseRenderer();
     const html = context.reportReplyHtml({ status: 'complete', summary: 'Done.', filesChanged: [], changes: [], verification: [] }, null, '');
-    expect(html).toContain('home-blob-body');
-    expect(html).toContain('home-blob-tongue');
-    expect(html).not.toContain('cw-orb-eyes');
+    expect(html).toContain('aria-label="Agent Gitu report"');
+    expect(html).toContain('<b>Agent Gitu</b>');
+    expect(html).not.toContain('cw-bubble');
+    expect(html).not.toContain('home-blob');
   });
   it('renders telemetry as a collapsed Execution details card, not a meta line', () => {
     expect(UI_HTML).toContain("text.indexOf('telemetry ') === 0");
@@ -94,7 +95,7 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(parsed.lede).toBe(longResponse);
     const report = { summary: longResponse, status: 'complete', remainingRisks: [], followUps: [] };
     context.appendSummary('run', { report, goal: 'Improve the conversation', status: 'complete' });
-    const expected = context.cwBody(longResponse, []);
+    const expected = context.renderResponseText(longResponse);
     expect(emitted[0].innerHTML).toContain(expected);
     expect(context.reportSideCard(report)).toContain(expected);
   });
@@ -148,29 +149,34 @@ describe('UI — narration structuring & technical disclosures', () => {
     expect(UI_HTML).toContain('JSON_LEAK_RE.test(chunk)');
   });
 
-  it('renders the main report through the same bubble and rich text as Cowork', () => {
+  it('renders a flat report with formatted headings, emphasis and code', () => {
     const { context, emitted } = proseRenderer();
     const report = { summary: '### Ready\n\n**Done** with `npm test`.', status: 'complete', remainingRisks: [], followUps: [] };
-    const cowork = context.cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'home-blob', color: '#8f80ff' } }, 'Completed', context.cwBody(report.summary, []), '');
-    expect(context.reportReplyHtml(report, null, '').replace(/cwHomeBlob\d+/g, 'cwHomeBlob')).toBe(cowork.replace(/cwHomeBlob\d+/g, 'cwHomeBlob'));
+    expect(context.reportReplyHtml(report, null, '')).toContain('<h3>Ready</h3>');
+    expect(context.reportReplyHtml(report, null, '')).toContain('<strong>Done</strong>');
+    expect(context.reportReplyHtml(report, null, '')).toContain('<code>npm test</code>');
     context.appendSummary('run', { report, status: 'complete' });
-    expect(emitted[0].innerHTML).toContain('class="cw-bubble"');
+    expect(emitted[0].innerHTML).toContain('class="agent-report"');
+    expect(emitted[0].innerHTML).not.toContain('class="cw-bubble"');
     expect(emitted[0].innerHTML).toContain('popovertarget="report-menu-run"');
     expect(emitted[0].innerHTML).not.toContain('class="r-headline"');
     expect(emitted[0].innerHTML).not.toContain('class="r-status"');
   });
 
-  it('groups changed files in a compact report disclosure', () => {
+  it('keeps file paths in the detail view and exposes one report link', () => {
     const { context, emitted } = proseRenderer();
     context.reportFiles = () => ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts'];
     context.appendSummary('run', {
       report: { summary: 'Updated the project.', status: 'complete', remainingRisks: [], followUps: [] },
       goal: 'Update the project', status: 'complete',
     });
-    expect(emitted[0].innerHTML).toContain('class="report-files"');
-    expect(emitted[0].innerHTML).toContain('Changed files');
-    expect(emitted[0].innerHTML).toContain('<summary>Show all 5 files</summary>');
-    expect(emitted[0].innerHTML).toContain('Download src/e.ts');
+    expect(emitted[0].innerHTML).toContain('Files &amp; details · 5 changed');
+    expect(emitted[0].innerHTML).not.toContain('class="report-files"');
+    expect(emitted[0].innerHTML).not.toContain('src/e.ts');
+    const details=context.reportChangedFilesHtml('run',['src/a.ts','src/b.ts','src/c.ts','src/d.ts','src/e.ts']);
+    expect(details).toContain('Download src/e.ts');
+    expect(details).toContain('/api/runs/run/project-file?path=src%2Fe.ts');
+    expect(details.match(/class="report-file-row"/g)).toHaveLength(5);
   });
 
   it('distinguishes reported updates from verified changed-file paths', () => {
@@ -184,6 +190,8 @@ describe('UI — narration structuring & technical disclosures', () => {
       goal: 'Update the project', status: 'complete',
     });
     expect(emitted[0].innerHTML).toContain('Fifth update');
+    expect(emitted[0].innerHTML).toContain('<ul>');
+    expect(emitted[0].innerHTML).toContain('<li>Fifth update</li>');
     expect(emitted[0].innerHTML).not.toContain('No source code was modified');
   });
 

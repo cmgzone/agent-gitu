@@ -115,6 +115,7 @@ export const UI_THEME_JS = String.raw`
     document.documentElement.setAttribute('data-theme', choice === 'system' ? (themeMedia && themeMedia.matches ? 'dark' : 'light') : choice);
     document.querySelectorAll('[data-theme-toggle]').forEach(function (button) { button.title = themeToggleLabel(); button.setAttribute('aria-label', themeToggleLabel()); });
     document.querySelectorAll('[data-appearance-choice]').forEach(function (input) { input.checked = input.value === choice; });
+    if(typeof cwApplyCharacterTheme==='function')cwApplyCharacterTheme();
   }
   function setTheme(choice) { S.settings.theme = themeChoice(choice); applyTheme(); persist(); }
   function themeToggleHtml() {

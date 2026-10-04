@@ -660,10 +660,10 @@ describe('Cowork UI live updates', () => {
     u.context.cwPreviewFile('cf-zip');
     expect(u.modals.at(-1)!.innerHTML).toContain('sandbox="allow-downloads allow-popups allow-popups-to-escape-sandbox"');
     expect(u.modals.at(-1)!.innerHTML).toContain('/preview?theme=light&amp;embedded=1');
-    expect(u.context.cwFilesHtml(['cf-zip'])).toContain('data-cwpreview="cf-zip"');
+    expect(u.context.cwFilesHtml(['cf-zip'])).toContain('data-cwgallery="cf-zip"');
   });
 
-  it('renders media artifacts inline: image thumbnails and audio/video players', () => {
+  it('opens shared files through an animated thumbnail stack without inline players', () => {
     const u = ui();
     u.cw.artifacts = [
       { id: 'cf-img', name: 'shot.png', mime: 'image/png', size: 10 },
@@ -672,11 +672,12 @@ describe('Cowork UI live updates', () => {
       { id: 'cf-doc', name: 'report.pdf', mime: 'application/pdf', size: 10 },
     ];
     const html = u.context.cwFilesHtml(['cf-img', 'cf-aud', 'cf-vid', 'cf-doc']);
-    expect(html).toContain('<img class="cw-thumb"');
+    expect(html).toContain('cw-media-stack');
     expect(html).toContain('/api/cowork/artifacts/cf-img?inline=1');
-    expect(html).toContain('<audio class="cw-media" controls');
-    expect(html).toContain('<video class="cw-media" controls');
-    // PDFs stay on the Open/Preview path; only real media streams inline.
+    expect(html).not.toContain('<audio');
+    expect(html).not.toContain('<video');
+    expect(html).toContain('4 shared files');
+    expect(u.context.cwFilesHtml(['cf-img', 'cf-aud', 'cf-vid', 'cf-doc'])).not.toContain('is-new');
     expect(html).not.toContain('cf-doc?inline=1');
   });
 

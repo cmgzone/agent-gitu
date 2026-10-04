@@ -169,13 +169,14 @@ export class ComposioConnections {
     } while (cursor && items.length < 1000);
     return items;
   }
-  async connect(slug: string): Promise<{ url: string }> {
+  async connect(slug: string): Promise<{ url: string; accountId: string }> {
     if (!/^[a-z0-9_-]{1,100}$/.test(slug)) throw new Error('Invalid service.');
     const session = await this.userSession();
     const request = await session.authorize(slug);
     const url = new URL(request.redirectUrl ?? '');
     if (url.protocol !== 'https:' || !['connect.composio.dev', 'backend.composio.dev'].includes(url.hostname)) throw new Error('Composio returned an invalid connection link.');
-    return { url: url.href };
+    if (!request.id) throw new Error('Composio returned no connection identifier.');
+    return { url: url.href, accountId: request.id };
   }
   async disconnect(id: string): Promise<void> {
     if (!(await this.accounts()).some((account) => account.id === id)) throw new Error('Connection not found.');

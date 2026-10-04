@@ -196,7 +196,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'list_connections', doc: 'List saved API and SSH connections (metadata only, never credentials). params: {}', gate: undefined },
   { name: 'connection_read', doc: 'Read a saved API connection. params: {"connectionId":"exact saved id","operationId":"registered read id","query":{"page":2}}. query is optional; use only documented filters/pagination. For a missing read, consult official docs then supply operation:{id,label,capability,method:"GET",path,risk:"read"} and documentationUrl instead of operationId. New documented reads run with the saved credential. Results include a responseId for inspection. Never send credentials, headers, or an absolute URL.', gate: undefined },
   { name: 'inspect_connection_response', doc: 'Inspect the FULL redacted saved response without another network request. params: {"responseId":"id from a read","path":"/data/0","offset":0,"limit":20,"fields":["id","name"],"search":"literal text","mode":"data|keys"}. All except responseId are optional. path is a JSON Pointer (empty string = root). Search scans the entire selected collection before pagination. Follow nextOffset; inspect a record path or select fields for details. Compact previews are not complete inventories; follow documented API pagination when present.', gate: undefined },
-  { name: 'connected_apps', doc: 'Use services the user connected in Cowork → Connections. params: {"action":"list"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from list","approvalId":"optional"}. Choose accountId when multiple accounts exist. Every execution posts a review card. Stop and wait; after the user accepts, repeat the exact action with its approvalId. Never request provider keys or user IDs.', gate: undefined },
+  { name: 'connected_apps', doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Recommend posts an app icon and Connect button in chat; the user completes sign-in. Discover apps dynamically when your work needs one, follow the returned cursor for more services, avoid unrelated recommendations, and keep working on independent steps. Unassigned accounts cannot be used. Execution asks for one-use review unless the user saved Always allow for you, this tool and account. Never request provider keys or user IDs.', gate: undefined },
   { name: 'ssh_exec', doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.', gate: 'shell' },
   { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
@@ -868,19 +868,38 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
 
 const appApprovals = new WeakMap<ComposioConnections, Map<string, { signature: string; expires: number }>>();
 async function connectedAppTool(apps: ComposioConnections | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
-  if (!apps?.configured) return { ok: false, output: 'Set up your provider and choose services in Cowork → Connections.' };
+  if (!scope || scope.isSubAgent) return blocked('connected_apps');
+  if (!apps?.configured) return { ok: false, output: 'Set up the connection provider in Cowork → Connections. The user then connects apps specifically for you.' };
   try {
-    if (params['action'] === 'list') return { ok: true, output: JSON.stringify(await apps.accounts()) };
+    if (params['action'] === 'discover') {
+      const catalog = await apps.catalog(String(params['query'] ?? ''), params['cursor'] ? String(params['cursor']) : undefined);
+      return { ok: true, output: JSON.stringify({ services: catalog.services.map(({ slug, name, logo }) => ({ slug, name, logo })), cursor: catalog.cursor }) };
+    }
     const service = String(params['service'] ?? '');
-    if (params['action'] === 'tools') return { ok: true, output: JSON.stringify(await apps.tools(service)).slice(0, 24000) };
-    if (params['action'] !== 'execute') return { ok: false, output: 'action must be list, tools, or execute.' };
+    if (params['action'] === 'recommend') {
+      const reason = String(params['reason'] ?? '').trim();
+      if (!reason || !scope.conversationId) return { ok: false, output: 'Explain why this app helps your role or the current task.' };
+      const catalog = await apps.catalog(service);
+      const app = catalog.services.find(item => item.slug === service);
+      if (!app) return { ok: false, output: 'Discover the app first and use its exact service slug.' };
+      const card = scope.store.recommendAppConnection(scope.conversationId, scope.agent.id, { service, name: app.name, logo: app.logo, reason, resumeWork: true });
+      if (card.status === 'dismissed') return { ok: true, output: 'The user previously skipped this app recommendation. Respect that choice and continue independent work. If this task requires it, explain the missing connection; the user can connect it in your Apps & connections.' };
+      return { ok: true, output: `Connection recommendation ${card.id} shown in chat. Only the user can connect or assign this app for you. Continue independent work; do not claim it is connected until it appears in your list.` };
+    }
+    const assigned = (await apps.accounts()).filter(account => scope.store.appAccountAssigned(scope.agent.id, account.toolkit, account.id));
+    if (params['action'] === 'list') return { ok: true, output: JSON.stringify(assigned) };
+    if (params['action'] === 'tools') {
+      if (!assigned.some(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled)) return { ok: false, output: 'Recommend this app so the user can connect or assign it specifically for you.' };
+      return { ok: true, output: JSON.stringify(await apps.tools(service)).slice(0, 24000) };
+    }
+    if (params['action'] !== 'execute') return { ok: false, output: 'action must be list, discover, recommend, tools, or execute.' };
     if (!perms.allowWrites || !perms.allowConfig || !scope?.conversationId || scope.isSubAgent) return blocked('connected_apps execution');
     const tool = String(params['tool'] ?? '');
     const args = params['args'];
     if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return { ok: false, output: 'Provide the exact tool slug and an args object.' };
-    const accounts = (await apps.accounts()).filter(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled);
+    const accounts = assigned.filter(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled);
     const accountId = String(params['accountId'] ?? (accounts.length === 1 ? accounts[0]!.id : ''));
-    if (!accounts.some(account => account.id === accountId)) return { ok: false, output: 'Choose an active accountId for this service from connected_apps list.' };
+    if (!accounts.some(account => account.id === accountId)) return { ok: false, output: 'This account is not assigned to you or is inactive. Recommend the app, or choose an active accountId from your connected_apps list.' };
     const detail = JSON.stringify({ service, accountId, tool, args });
     if (detail.length > 16000) return { ok: false, output: 'This action is too large for review. Split it into smaller actions.' };
     if (scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
@@ -933,6 +952,7 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
         cloudConnectionId: agent.cloudConnectionId,
         skills: agent.skills,
       });
+      store.recommendRoleApps(created.id);
       if (scope.conversationId) {
         const conversation = store.getConversation(scope.conversationId);
         if (conversation) store.updateConversation(conversation.id, { memberIds: [...conversation.memberIds, created.id], chiefId: conversation.chiefId ?? agent.id });

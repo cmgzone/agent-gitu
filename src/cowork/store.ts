@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
+import { roleAppSuggestions, type AppSuggestion } from './app-recommendations.js';
 
 /**
  * Cowork mode: a small team of named agent profiles the user chats with
@@ -410,6 +411,13 @@ export interface CoworkAppPermission {
   createdAt: string;
 }
 
+export interface CoworkAppConnection {
+  agentId: string;
+  service: string;
+  accountId: string;
+  createdAt: string;
+}
+
 function sanitizeAppAction(value: unknown): CoworkAppAction | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const action = value as Partial<CoworkAppAction>;
@@ -439,6 +447,8 @@ export interface CoworkRequest {
   detail: string;
   /** Full review payload, separate from the bounded description. */
   appAction?: CoworkAppAction;
+  /** Optional app suggestion, not a blocking question or an execution grant. */
+  appConnection?: AppSuggestion;
   options: string[];
   /** Permission requests can enable one existing per-agent capability. */
   permission?: 'shell' | 'writes' | 'config' | 'host';
@@ -491,6 +501,7 @@ export interface CoworkData {
   todos: CoworkTodo[];
   requests: CoworkRequest[];
   appPermissions?: CoworkAppPermission[];
+  appConnections?: CoworkAppConnection[];
   workLog: CoworkWorkEntry[];
   /** Agent-authored sidebar widgets, scoped to their conversation. */
   widgets: CoworkWidget[];
@@ -638,6 +649,7 @@ export class CoworkStore {
         todos: Array.isArray(parsed.todos) ? parsed.todos : [],
         requests: Array.isArray(parsed.requests) ? parsed.requests : [],
         appPermissions: Array.isArray(parsed.appPermissions) ? parsed.appPermissions.filter(permission => permission && typeof permission.id === 'string' && typeof permission.agentId === 'string' && Boolean(sanitizeAppAction({ ...permission, args: {} }))) : [],
+        appConnections: Array.isArray(parsed.appConnections) ? parsed.appConnections.filter(connection => connection && typeof connection.agentId === 'string' && Boolean(sanitizeAppAction({ ...connection, tool: 'connection', args: {} }))) : [],
         workLog: Array.isArray(parsed.workLog) ? parsed.workLog : [],
         widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
         budgets: sanitizeBudgets(parsed.budgets),
@@ -809,6 +821,7 @@ export class CoworkStore {
     data.todos = data.todos.filter((todo) => todo.agentId !== id && conversationIds.has(todo.conversationId));
     data.requests = data.requests.filter((request) => request.agentId !== id && conversationIds.has(request.conversationId));
     data.appPermissions = data.appPermissions?.filter(permission => permission.agentId !== id);
+    data.appConnections = data.appConnections?.filter(connection => connection.agentId !== id);
     data.workLog = data.workLog.filter((entry) => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.contextCheckpoints = data.contextCheckpoints?.filter(entry => entry.agentId !== id && conversationIds.has(entry.conversationId));
     data.artifacts = data.artifacts.filter((artifact) => conversationIds.has(artifact.conversationId));
@@ -1675,7 +1688,7 @@ export class CoworkStore {
     return this.load().requests.find((request) => request.id === id);
   }
 
-  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; appAction?: CoworkAppAction; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
+  addRequest(input: { conversationId: string; agentId: string; kind: CoworkRequest['kind']; title: string; detail: string; appAction?: CoworkAppAction; appConnection?: AppSuggestion; options?: string[]; permission?: CoworkRequest['permission']; credential?: CoworkRequestCredential; desktopHandoff?: boolean }): CoworkRequest {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation?.memberIds.includes(input.agentId)) throw new Error('Requesting agent is not in this conversation');
@@ -1695,6 +1708,7 @@ export class CoworkStore {
       title: title.slice(0, 180),
       detail: detail.slice(0, 2_000),
       appAction,
+      appConnection: input.appConnection,
       options: [...new Set((input.options ?? []).map((option) => String(option).trim()).filter(Boolean))].slice(0, 6),
       permission: input.permission,
       credential,
@@ -1711,6 +1725,57 @@ export class CoworkStore {
     return [...(this.load().appPermissions ?? [])];
   }
 
+  appConnections(agentId: string): CoworkAppConnection[] {
+    return (this.load().appConnections ?? []).filter(connection => connection.agentId === agentId);
+  }
+
+  appAccountAssigned(agentId: string, service: string, accountId: string): boolean {
+    return this.appConnections(agentId).some(connection => connection.service === service && connection.accountId === accountId);
+  }
+
+  /** Called only after an authenticated user connects or assigns an owned account. */
+  assignAppAccount(agentId: string, service: string, accountId: string): void {
+    if (!this.getAgent(agentId) || !sanitizeAppAction({ service, accountId, tool: 'connection', args: {} })) throw new Error('Invalid teammate app connection.');
+    if (this.appAccountAssigned(agentId, service, accountId)) return;
+    (this.load().appConnections ??= []).push({ agentId, service, accountId, createdAt: new Date().toISOString() });
+    this.save();
+  }
+
+  unassignAppAccount(agentId: string, accountId: string): void {
+    const data = this.load();
+    data.appConnections = data.appConnections?.filter(connection => connection.agentId !== agentId || connection.accountId !== accountId);
+    data.appPermissions = data.appPermissions?.filter(permission => permission.agentId !== agentId || permission.accountId !== accountId);
+    this.save();
+  }
+
+  recommendAppConnection(conversationId: string, agentId: string, suggestion: AppSuggestion): CoworkRequest {
+    if (!/^[a-z0-9_-]{1,100}$/.test(suggestion.service) || !suggestion.name.trim() || !suggestion.reason.trim()) throw new Error('Choose an app and explain why it helps.');
+    const existing = this.requests(conversationId).find(request => request.agentId === agentId && request.appConnection?.service === suggestion.service);
+    if (existing) {
+      if (existing.status === 'open' && suggestion.resumeWork && existing.appConnection && !existing.appConnection.resumeWork) {
+        existing.appConnection.resumeWork = true;
+        this.save();
+      }
+      return existing;
+    }
+    let logo: string | undefined;
+    try { const url = new URL(suggestion.logo ?? ''); if (url.protocol === 'https:' && !url.username && !url.password) logo = url.href; } catch { /* use the built-in icon */ }
+    const appConnection = { service: suggestion.service, name: suggestion.name.slice(0, 80), reason: suggestion.reason.slice(0, 600), logo, resumeWork: suggestion.resumeWork === true };
+    return this.addRequest({ conversationId, agentId, kind: 'recommendation', title: `Connect ${appConnection.name}`, detail: appConnection.reason, appConnection });
+  }
+
+  recommendRoleApps(agentId: string): CoworkConversation | undefined {
+    const agent = this.getAgent(agentId);
+    if (!agent) return undefined;
+    const suggestions = roleAppSuggestions(agent.tagline || agent.systemPrompt);
+    if (!suggestions.length) return undefined;
+    const conversation = this.listConversations().find(conv => conv.kind === 'dm' && conv.memberIds[0] === agentId) ?? this.saveConversation({ kind: 'dm', memberIds: [agentId] });
+    for (const suggestion of suggestions) {
+      if (!this.appConnections(agentId).some(connection => connection.service === suggestion.service)) this.recommendAppConnection(conversation.id, agentId, suggestion);
+    }
+    return conversation;
+  }
+
   appActionAllowed(agentId: string, action: Omit<CoworkAppAction, 'args'>): boolean {
     return this.appPermissions().some(permission => permission.agentId === agentId && permission.service === action.service && permission.accountId === action.accountId && permission.tool === action.tool);
   }
@@ -1719,7 +1784,7 @@ export class CoworkStore {
   allowAppActionForRequest(requestId: string): CoworkAppPermission {
     const request = this.getRequest(requestId);
     const action = request && coworkRequestAppAction(request);
-    if (!request || request.status !== 'open' || !action || !this.getAgent(request.agentId)) throw new Error('A complete open app review is required');
+    if (!request || request.status !== 'open' || !action || !this.getAgent(request.agentId) || !this.appAccountAssigned(request.agentId, action.service, action.accountId)) throw new Error('A complete open review for an assigned app is required');
     const data = this.load();
     const permissions = data.appPermissions ??= [];
     const existing = permissions.find(permission => permission.agentId === request.agentId && permission.service === action.service && permission.accountId === action.accountId && permission.tool === action.tool);
@@ -1742,6 +1807,7 @@ export class CoworkStore {
   revokeAppAccountPermissions(accountId: string): void {
     const data = this.load();
     data.appPermissions = data.appPermissions?.filter(permission => permission.accountId !== accountId);
+    data.appConnections = data.appConnections?.filter(connection => connection.accountId !== accountId);
     this.save();
   }
 

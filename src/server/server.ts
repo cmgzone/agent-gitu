@@ -2205,6 +2205,7 @@ export class GituServer {
     const request = store.getRequest(requestId);
     if (!request || request.status !== 'open') return { ok: false, statusCode: 404, error: 'request not found or already answered' };
     const action = actionInput.toLowerCase();
+    if (request.appConnection && action !== 'dismiss') return { ok: false, statusCode: 400, error: 'Complete sign-in through the app Connect button first.' };
     // Responses are stored in the request record and echoed into chat: scrub
     // pasted credentials from every transport at this single choke point.
     const response = credentialChatInput(responseInput.trim()).safeText;
@@ -2245,7 +2246,7 @@ export class GituServer {
     store.appendMessage(request.conversationId, { role: 'system', via: 'web', text: `${request.kind === 'permission' ? 'Permission' : request.kind === 'question' ? 'Question' : 'Recommendation'} ${status}: ${answer}.` });
     this.publishCowork(request.conversationId);
     const instruction = `The user responded to your ${request.kind} "${request.title}": ${answer}. Continue from that decision and report what you do.`;
-    if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
+    if ((!request.appConnection || request.appConnection.resumeWork) && !this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
       store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
     }
     return { ok: true, statusCode: 200, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined, answer, status };
@@ -3222,7 +3223,8 @@ export class GituServer {
           };
           if (existing && changingComputer) await this.withCoworkAgent(existing.id, new AbortController().signal, save);
           else await save();
-          this.sendJson(res, 200, { ok: true, agent });
+          const conversation = store.recommendRoleApps(agent.id);
+          this.sendJson(res, 200, { ok: true, agent, conversation });
         } catch (err) {
           this.sendJson(res, 400, { error: (err as Error).message });
         }
@@ -3907,6 +3909,7 @@ export class GituServer {
         return true;
       }
       const action = String(body['action'] ?? '').toLowerCase();
+      if (request.appConnection && action !== 'dismiss') { this.sendJson(res, 400, { error: 'Complete sign-in through the app Connect button first.' }); return true; }
       // Stored request responses must never carry pasted credentials.
       const response = credentialChatInput(String(body['response'] ?? '').trim()).safeText;
       // A card standing for a delegated runtime gate is resolved by the runtime,
@@ -3970,7 +3973,7 @@ export class GituServer {
       const instruction = credentialConnection
         ? `The user saved the credential you requested ("${request.title}") as connection "${credentialConnection.label}" (id: ${credentialConnection.id}). It lives in the local connection store — ${credentialConnection.id.startsWith('ssh-') ? 'use ssh_exec with this connection id for authorized SSH commands' : 'use it through your connection tools'} and continue the task. Never print or quote the secret itself.`
         : `The user responded to your ${request.kind} "${request.title}": ${answer}. Continue from that decision and report what you do.`;
-      if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
+      if ((!request.appConnection || request.appConnection.resumeWork) && !this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) {
         store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
       }
       this.sendJson(res, 200, { ok: true, request: resolved, agent: agent ? store.getAgent(agent.id) : undefined, answer: credentialConnection ? answer : undefined });
@@ -4563,10 +4566,31 @@ export class GituServer {
       res.setHeader('Cache-Control', 'no-store');
       try {
         if (path === '/api/connected-apps' && method === 'GET') {
-          const appPermissions = this.cowork().appPermissions().map(permission => ({ ...permission, agentName: this.cowork().getAgent(permission.agentId)?.name ?? 'Teammate' }));
-          if (!this.connectedApps.configured) { this.sendJson(res, 200, { configured: false, ...this.connectedApps.setup, accounts: [], services: [], appPermissions }); return; }
-          const [catalog, accounts] = await Promise.all([this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined), this.connectedApps.accounts()]);
-          this.sendJson(res, 200, { configured: true, ...catalog, accounts, appPermissions }); return;
+          const store = this.cowork(), agentId = url.searchParams.get('agentId') ?? '';
+          if (agentId && !store.getAgent(agentId)) { this.sendJson(res, 404, { error: 'Teammate not found.' }); return; }
+          const appPermissions = store.appPermissions().filter(permission => !agentId || permission.agentId === agentId).map(permission => ({ ...permission, agentName: store.getAgent(permission.agentId)?.name ?? 'Teammate' }));
+          const agents = store.listAgents().map(agent => ({ id: agent.id, name: agent.name }));
+          if (!this.connectedApps.configured || !agentId) { this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], services: [], appPermissions }); return; }
+          const allAccounts = await this.connectedApps.accounts();
+          const accounts = allAccounts.filter(account => store.appAccountAssigned(agentId, account.toolkit, account.id));
+          const availableAccounts = allAccounts.filter(account => !store.appAccountAssigned(agentId, account.toolkit, account.id) && account.status === 'ACTIVE' && !account.disabled);
+          const requests = store.listConversations().flatMap(conversation => store.requests(conversation.id)).filter(request => request.agentId === agentId && request.appConnection);
+          for (const request of requests) {
+            if (request.status !== 'open' || !accounts.some(account => account.toolkit === request.appConnection!.service && account.status === 'ACTIVE' && !account.disabled)) continue;
+            store.resolveRequest(request.id, 'accepted', 'Connected');
+            this.publishCowork(request.conversationId);
+            if (request.appConnection?.resumeWork) {
+              const instruction = `${request.appConnection.name} is now connected specifically for you. Continue the user's pending task that needed this app; use connected_apps list to select your active account. If no pending task needs it, acknowledge the connection briefly.`;
+              if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
+            }
+          }
+          const catalog = url.searchParams.get('statusOnly') === 'true' ? { services: [] } : await this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined);
+          // Provider catalog status is global; derive each card from this teammate's assignments.
+          const services = catalog.services.map(service => {
+            const account = accounts.find(account => account.toolkit === service.slug && account.status === 'ACTIVE' && !account.disabled) ?? accounts.find(account => account.toolkit === service.slug);
+            return { ...service, status: account?.status, accountId: account?.id };
+          });
+          this.sendJson(res, 200, { configured: true, ...catalog, services, agents, agentId, accounts, availableAccounts, appPermissions, requests }); return;
         }
         const permissionMatch = path.match(/^\/api\/connected-apps\/permissions\/([\w-]+)$/);
         if (permissionMatch && method === 'DELETE') {
@@ -4581,12 +4605,29 @@ export class GituServer {
         }
         if (path === '/api/connected-apps/connect' && method === 'POST') {
           const body = await this.readBody(req, 4096);
-          this.sendJson(res, 200, await this.connectedApps.connect(String(body['service'] ?? ''))); return;
+          const store = this.cowork(), agentId = String(body['agentId'] ?? ''), service = String(body['service'] ?? '');
+          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
+          const request = body['requestId'] ? store.getRequest(String(body['requestId'])) : undefined;
+          if (body['requestId'] && (!request?.appConnection || request.agentId !== agentId || request.appConnection.service !== service || request.status === 'dismissed')) { this.sendJson(res, 400, { error: 'This app recommendation belongs to another teammate or service.' }); return; }
+          const link = await this.connectedApps.connect(service);
+          store.assignAppAccount(agentId, service, link.accountId);
+          this.sendJson(res, 200, link); return;
+        }
+        if (path === '/api/connected-apps/assign' && method === 'POST') {
+          const body = await this.readBody(req, 4096);
+          const store = this.cowork(), agentId = String(body['agentId'] ?? ''), accountId = String(body['accountId'] ?? '');
+          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
+          const account = (await this.connectedApps.accounts()).find(account => account.id === accountId && account.status === 'ACTIVE' && !account.disabled);
+          if (!account) { this.sendJson(res, 400, { error: 'Choose an active account belonging to you.' }); return; }
+          store.assignAppAccount(agentId, account.toolkit, account.id);
+          this.sendJson(res, 200, { ok: true }); return;
         }
         if (path === '/api/connected-apps/disconnect' && method === 'POST') {
           const body = await this.readBody(req, 4096);
-          await this.connectedApps.disconnect(String(body['accountId'] ?? ''));
-          this.cowork().revokeAppAccountPermissions(String(body['accountId'] ?? ''));
+          const store = this.cowork(), agentId = String(body['agentId'] ?? '');
+          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
+          // Removing one teammate's access must preserve another teammate's account.
+          store.unassignAppAccount(agentId, String(body['accountId'] ?? ''));
           this.sendJson(res, 200, { ok: true }); return;
         }
         this.sendJson(res, 404, { error: 'Connection route not found.' }); return;

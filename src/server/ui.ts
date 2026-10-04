@@ -1,6 +1,10 @@
-import { HOME_CSS, HOME_BLOB_HTML } from './ui-home.js';
+import { HOME_CSS, HOME_CHARACTER_HTML } from './ui-home.js';
 import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
+import { UI_BUTTON_CSS, UI_BUTTON_JS } from './ui-buttons.js';
+import { COWORK_GALLERY_CSS, COWORK_GALLERY_JS } from './ui-gallery.js';
+import { COWORK_PROFILE_CSS, COWORK_PROFILE_JS } from './ui-cowork-profile.js';
+import { REPORT_DETAILS_CSS, REPORT_DETAILS_JS } from './ui-report-details.js';
 import { ACTIVITY_CSS, ACTIVITY_MARK_HTML } from './ui-activity.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
@@ -923,6 +927,10 @@ ${HOME_CSS}
   ${CONNECTED_APPS_CSS}
   ${UI_THEME_CSS}
   ${ONBOARDING_CSS}
+  ${UI_BUTTON_CSS}
+  ${COWORK_GALLERY_CSS}
+  ${COWORK_PROFILE_CSS}
+  ${REPORT_DETAILS_CSS}
 </style>
 </head>
 <body>
@@ -950,7 +958,7 @@ ${ONBOARDING_HTML}
   <div class="vresize" id="sbResize"></div>
   <aside class="run-side" id="toolPanel" aria-label="Tool panel" hidden><div class="side-panel-head"><span id="toolPanelTitle">Task details</span><button type="button" class="close" id="toolPanelClose" aria-label="Close tool panel">&times;</button></div><div class="side-body" id="sideBody"></div></aside>
   <div class="main">
-    <button type="button" class="mobile-nav-btn" id="mobileNav" aria-label="Open navigation" aria-expanded="false"><span class="hamb">&#9776;</span><span>AGENT GITU</span></button>
+    <button type="button" class="mobile-nav-btn" id="mobileNav" aria-label="Open navigation" title="Navigation" aria-expanded="false"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <div class="topbar" id="topbar" style="display:none"></div>
     <div class="view" id="view"></div>
   </div>
@@ -1560,7 +1568,7 @@ ${ONBOARDING_HTML}
       '<span class="cta-body"><span class="cta-t">Cowork</span><span class="cta-d" id="homeCoworkDesc">Meet your team</span></span><span class="cta-arrow" aria-hidden="true">&#8599;</span></button>' +
       '</nav>' +
       '<header class="home-brand"><div class="home-brand-kicker" aria-hidden="true">&lt;/&gt; Ideas into action</div>' +
-      '<div class="home-brand-lockup">' + ${JSON.stringify(HOME_BLOB_HTML)} + '<h1><span>Agent</span><span><span class="home-brand-name">Gitu</span><i class="home-brand-spark" aria-hidden="true"></i></span></h1></div>' +
+      '<div class="home-brand-lockup">' + ${JSON.stringify(HOME_CHARACTER_HTML)} + '<h1><span>Agent</span><span><span class="home-brand-name">Gitu</span><i class="home-brand-spark" aria-hidden="true"></i></span></h1></div>' +
       '<p class="home-brand-copy">A little spark. A working idea. Let’s build it.</p></header>' +
       '<div class="home-particles" aria-hidden="true"></div>' +
       (keyless
@@ -1848,7 +1856,6 @@ ${ONBOARDING_HTML}
       (projectControl || '') + '<span class="model-control"><select id="model" hidden>' + modelOptionsHtml() + '</select><button type="button" class="pill control-pill model-pick" id="modelPick" title="Choose model" aria-haspopup="listbox" aria-expanded="false"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '><span class="mp-label" id="modelLabel">' + (S.modelsLoaded ? 'Choose model' : 'Loading models…') + '</span><span class="caret">&#9662;</span></button>' +
       '<div class="model-menu" id="modelMenu" hidden><input id="modelFilter" placeholder="Search models…" aria-label="Search models" autocomplete="off" spellcheck="false"><div class="model-list" id="modelList" role="listbox"></div><div class="model-count" id="modelCount"></div></div></span><span class="model-meta" id="modelMeta"></span>' +
       '<label class="pill control-pill" title="Reasoning effort"><span class="control-prefix">Effort</span><select id="effort" aria-label="Reasoning effort"></select><span class="caret">&#9662;</span></label>' +
-      '<button type="button" class="pill" id="attachBtn" title="Attach files or documents" aria-label="Attach files or documents">' + icon('file') + '</button>' +
       '<input type="file" id="attachInput" multiple hidden>';
   }
   function currentVision() {
@@ -2028,8 +2035,7 @@ ${ONBOARDING_HTML}
     };
     if (effort) effort.onchange = function () { S.sel.effort = effort.value; persist(); };
 
-    var attach = $('attachBtn'), input = $('attachInput');
-    if (attach) attach.onclick = function () { if (!attach.hasAttribute('disabled') && input) input.click(); };
+    var input = $('attachInput');
     if (input) input.onchange = function () { onAttachFiles(input.files); input.value = ''; };
     updateAttachState();
     updateModelMeta();
@@ -3667,7 +3673,10 @@ ${ONBOARDING_HTML}
       try {
         var fileMeta = JSON.parse(text.slice(5));
         if (fileMeta && fileMeta.replacesLongText) removeNarrationReplacedByFile(sess);
-        insert(sessionFileCard(fileMeta || {}));
+        recordRunFile(sess,fileMeta);
+        if(fileMeta&&fileMeta.kind==='user')insert(sessionFileCard(fileMeta));
+        else if(sess){var fileLink=sessionFilesLink(sess,runId);if(!fileLink.isConnected)insert(fileLink);}
+        renderRunFiles(runId);
         stickScroll(stream);
       } catch (e) {
         // Ignore malformed metadata rather than rendering unsafe raw JSON.
@@ -4927,15 +4936,15 @@ ${ONBOARDING_HTML}
     var checks = reportChecks(report);
     var currentChecks = checks.filter(function (check) { return check.authority !== 'historical'; });
     var files = reportFiles(report);
-    var body = cwBody(cwVisibleReply(reportMessageText(report)), []);
-    if (runId && files.length) body += reportChangedFilesHtml(runId, files);
+    var body = renderResponseText(cwVisibleReply(reportMessageText(report)));
+    if(runId)body+='<button type="button" class="agent-report-files" data-report-files="'+esc(runId)+'">'+icon('file')+'Files &amp; details'+(files.length?' · '+files.length+' changed':'')+'</button>';
     var evidence = verificationSection(checks) + browserHighlight(report.browserActivity) + qualityMetricsHtml(report.qualityMetrics);
     if (report.tokenTelemetry && devMode()) evidence += telemetryGridHtml(report.tokenTelemetry);
     if (evidence) body += '<details class="exec-details" style="margin-top:12px"><summary><b>Technical evidence</b><span class="chev">\u25B8</span></summary>' +
       reportStatusLine(displayStatus, currentChecks, currentChecks.filter(function (check) { return check.passed; }).length, files.length, (report.changes || []).length) + evidence + '</details>';
     var status = { complete: 'Completed', blocked: 'Blocked', aborted: 'Stopped', failed: 'Failed', paused: 'Paused' }[displayStatus] || displayStatus;
     if (report.phase && report.phase.kind === 'follow_up') status += ' · Follow-up';
-    return cwReplyHtml({ name: 'Agent Gitu', avatar: { shape: 'home-blob', color: '#8f80ff' } }, status, body, actions);
+    return '<article class="agent-report" aria-label="Agent Gitu report"><header class="agent-report-heading"><b>Agent Gitu</b><span class="agent-report-status" data-status="'+esc(displayStatus)+'">'+esc(status)+'</span>'+(actions||'')+'</header><div class="agent-report-body">'+body+'</div></article>';
   }
 
   function reportSideCard(report) {
@@ -4962,10 +4971,9 @@ ${ONBOARDING_HTML}
       return '<a class="report-file-row" href="' + esc(url) + '" download aria-label="Download ' + esc(path) + '">' +
         '<span class="report-file-path">' + esc(path) + '</span><span class="report-file-action">Download ↓</span></a>';
     }
-    var html = '<div class="report-files"><div class="report-files-head">' + icon('file') +
-      '<span>Changed files</span><span class="report-files-count">' + files.length + '</span></div>' + files.slice(0, 4).map(row).join('');
-    if (files.length > 4) html += '<details class="report-files-more"><summary>Show all ' + files.length + ' files</summary>' + files.slice(4).map(row).join('') + '</details>';
-    return html + '</div>';
+    var html = '<section class="report-files" aria-label="Changed files"><div class="report-files-head">' + icon('file') +
+      '<span>Changed files</span><span class="report-files-count">' + files.length + '</span></div>' + files.map(row).join('');
+    return html + '</section>';
   }
 
   function appendSummary(runId, session) {
@@ -4980,6 +4988,7 @@ ${ONBOARDING_HTML}
     var actions = '<div class="cw-message-actions"><button class="cw-message-more" type="button" popovertarget="' + esc(menuId) + '" aria-label="Report actions" title="Report actions">…</button>' +
       '<div class="cw-message-menu" id="' + esc(menuId) + '" popover="auto"><button data-sumcopy>Copy report</button></div></div>';
     div.innerHTML = reportReplyHtml(r, runId, actions);
+    var filesButton=div.querySelector('[data-report-files]');if(filesButton)filesButton.onclick=function(){openToolPanel('files');};
     setupCopyButton(div.querySelector('[data-sumcopy]'), function () { return reportText(r); });
     var more = div.querySelector('.cw-message-more');
     if (more) more.onclick = function () {
@@ -5001,6 +5010,7 @@ ${ONBOARDING_HTML}
   }
 
   function renderRunSide(runId) {
+    if(S.panelKind==='files'){renderRunFiles(runId);return;}
     var sess = S.sessions[runId];
     var body = $('sideBody');
     if (!body || !sess || S.panelKind !== 'state' || $('toolPanel').hidden) return;
@@ -5105,12 +5115,14 @@ ${ONBOARDING_HTML}
     stopBrowserPoll();
     S.panelKind = kind;
     panel.hidden = false;
-    $('toolPanelTitle').textContent = kind === 'browser' ? 'Browser' : kind === 'git' ? 'Git' : 'Task details';
+    $('toolPanelTitle').textContent = kind === 'browser' ? 'Browser' : kind === 'git' ? 'Git' : kind==='files'?'Files & details':'Task details';
     $('sideBody').innerHTML = '';
+    $('sideBody')._runFilesSignature=null;
     toggleMobileNav(false);
     renderSidebar();
     if (kind === 'browser') showBrowserPanel(S.active);
     else if (kind === 'git') renderGitPanel(S.active);
+    else if(kind==='files')renderRunFiles(S.active);
     else if (S.active !== 'home') renderRunSide(S.active);
   }
 
@@ -6432,7 +6444,11 @@ ${ONBOARDING_HTML}
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   ${COWORK_JS}
+  ${COWORK_GALLERY_JS}
+  ${COWORK_PROFILE_JS}
+  ${REPORT_DETAILS_JS}
   ${ONBOARDING_JS}
+  ${UI_BUTTON_JS}
   boot();
 })();
 </script>

@@ -1,4 +1,4 @@
-// Compact home navigation and a lightweight, decorative blob companion.
+// Compact home navigation with the same locally bundled Cowork companion.
 export const HOME_CSS = String.raw`
   .home > .home-cta { order: -1; width: min(540px, 100%); align-self: center; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
   .home-cta-btn { --cta-accent: var(--accent); display: flex; align-items: center; gap: 12px; min-width: 0; padding: 13px 15px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); color: var(--text); text-align: left; cursor: pointer; transition: background .18s ease, border-color .18s ease, transform .18s ease; }
@@ -11,7 +11,9 @@ export const HOME_CSS = String.raw`
   .home-cta-btn .cta-t { display: block; font-size: 13px; font-weight: 600; }
   .home-cta-btn .cta-d { display: block; font-size: 11px; color: var(--muted); margin-top: 3px; }
   .home-cta-btn .cta-arrow { font-size: 17px; color: var(--muted); }
-  .home-brand-lockup { display: flex; justify-content: center; align-items: center; gap: 18px; }
+  .home-brand-lockup { display: flex; flex-direction:column; justify-content: center; align-items: center; gap: 10px; }
+  .home-character { width:96px; height:96px; object-fit:contain; animation:homeCharacterFloat 5s ease-in-out infinite; }
+  @keyframes homeCharacterFloat { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-5px); } }
   .home .home-brand-lockup h1 { width: auto; }
   .home-blob { width: clamp(72px, 10vw, 108px); height: auto; flex: none; overflow: visible; }
   .home-blob-body { transform-origin: 60px 83px; animation: homeBlobBob 5s ease-in-out infinite; }
@@ -25,8 +27,9 @@ export const HOME_CSS = String.raw`
   @keyframes homeBlobTongue { 0%,15%,40%,100% { transform: scaleY(.05); } 22%,33% { transform: scaleY(1); } }
   @keyframes homeBlobShadow { 0%,100% { transform: scaleX(1); opacity: .18; } 45% { transform: scaleX(.8); opacity: .1; } }
   @media (max-width: 480px) { .home > .home-cta { gap: 8px; } .home-cta-btn { padding: 11px; gap: 8px; } .home-cta-btn .cta-arrow { display: none; } .home-cta-btn .cta-d { font-size: 10px; } .home-brand-lockup { gap: 8px; } .home .home-brand-lockup h1 { font-size: 36px; } }
-  @media (prefers-reduced-motion: reduce) { .home-blob * { animation: none !important; } .home-blob-tongue { transform: scaleY(.05); } }
+  @media (prefers-reduced-motion: reduce) { .home-character,.home-blob * { animation: none !important; } .home-blob-tongue { transform: scaleY(.05); } }
 `;
+export const HOME_CHARACTER_HTML = '<img class="home-character" src="/characters/purple.png?v=opendots1" width="96" height="96" alt="" aria-hidden="true" draggable="false">';
 
 export const HOME_BLOB_HTML = '<svg class="home-blob" viewBox="0 0 120 120" aria-hidden="true" focusable="false">' +
   '<defs><radialGradient id="homeBlobFill" cx="30%" cy="20%" r="85%"><stop stop-color="#cbbdff"/><stop offset=".5" stop-color="#9580ff"/><stop offset="1" stop-color="#6550cf"/></radialGradient></defs>' +

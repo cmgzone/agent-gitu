@@ -32,7 +32,7 @@ function fixture() {
   keys.value = 'fixture-key';
   const execute = vi.fn(async () => ({ data: { done: true } }));
   const toolkits = vi.fn(async () => ({ items: [{ slug: 'gmail', name: 'Gmail', connection: { connectedAccount: { status: 'ACTIVE', id: 'own' } } }], cursor: 'next' }));
-  const authorize = vi.fn(async () => ({ redirectUrl: 'https://connect.composio.dev/link' }));
+  const authorize = vi.fn(async () => ({ redirectUrl: 'https://connect.composio.dev/link', id: 'own' }));
   const create = vi.fn(async () => ({ sessionId: 'test-session', toolkits, authorize }));
   const list = vi.fn(async () => ({
     items: [{ id: 'own', toolkit: { slug: 'gmail' }, status: 'ACTIVE', isDisabled: false, data: { accessToken: 'never-expose-me' } }],
@@ -112,8 +112,8 @@ describe('Composio connections', () => {
   });
   it('permits only Composio HTTPS authorization links and revokes owned connections', async () => {
     const f = fixture();
-    expect(await f.apps.connect('gmail')).toEqual({ url: 'https://connect.composio.dev/link' });
-    f.authorize.mockResolvedValue({ redirectUrl: 'https://connect.composio.dev.evil.example/login' });
+    expect(await f.apps.connect('gmail')).toEqual({ url: 'https://connect.composio.dev/link', accountId: 'own' });
+    f.authorize.mockResolvedValue({ redirectUrl: 'https://connect.composio.dev.evil.example/login', id: 'own' });
     await expect(f.apps.connect('gmail')).rejects.toThrow('invalid connection link');
     await expect(f.apps.connect('../gmail')).rejects.toThrow('Invalid service');
     await expect(f.apps.disconnect('somebody-elses-account')).rejects.toThrow('Connection not found');
@@ -146,6 +146,7 @@ describe('Composio connections', () => {
     const f = fixture();
     const store = new CoworkStore();
     const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.', allowWrites: true, allowConfig: true });
+    store.assignAppAccount(agent.id, 'gmail', 'own');
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
     const scope = { store, agent, conversationId: conv.id } as CoworkToolScope;
     const ctx = { connectedApps: f.apps } as ToolContext;
@@ -179,6 +180,7 @@ describe('Composio connections', () => {
     const f = fixture();
     const store = new CoworkStore();
     const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.', allowWrites: true, allowConfig: true });
+    store.assignAppAccount(agent.id, 'gmail', 'own');
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
     const scope = { store, agent, conversationId: conv.id } as CoworkToolScope;
     const ctx = { connectedApps: f.apps } as ToolContext;
@@ -218,6 +220,7 @@ describe('Composio connections', () => {
     Object.assign(server, { connectedApps: f.apps });
     const store = (server as unknown as { cowork(): CoworkStore }).cowork();
     const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Write.' });
+    store.assignAppAccount(agent.id, 'gmail', 'own');
     const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
     const card = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Run GMAIL_SEND', detail: 'Review this gmail action:\n' + JSON.stringify({ service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', args: { to: 'first@example.com' } }) });
     const ordinary = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Try larger images', detail: 'A regular recommendation.' });

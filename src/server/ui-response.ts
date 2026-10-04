@@ -144,8 +144,15 @@ export const UI_RESPONSE_JS = String.raw`
           }
           body.push(lines[i++]);
         }
-        html += '<div class="response-code">' + (language ? '<div class="response-code-language">' + responseEscape(language) + '</div>' : '')
-          + '<pre><code>' + responseEscape(body.join('\n') + (closed && body.length ? '\n' : '')) + '</code></pre></div>';
+        var blockBody = body.join('\n') + (closed && body.length ? '\n' : '');
+        var fenceText = line + '\n' + blockBody + (closed ? fence[1] : '');
+        var rendered = null;
+        if (typeof outRenderBlocks === 'function') {
+          try { rendered = outRenderBlocks(fenceText); } catch (e) { rendered = null; }
+        }
+        if (rendered != null && rendered !== fenceText) html += rendered;
+        else html += '<div class="response-code">' + (language ? '<div class="response-code-language">' + responseEscape(language) + '</div>' : '')
+          + '<pre><code>' + responseEscape(blockBody) + '</code></pre></div>';
       } else if ((heading = /^ {0,3}(#{1,6})[ \t]+(.*)$/.exec(line))) {
         var level = heading[1].length;
         html += '<h' + level + '>' + responseInline(heading[2]) + '</h' + level + '>'; i++;

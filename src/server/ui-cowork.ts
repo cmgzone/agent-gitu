@@ -1934,6 +1934,14 @@ export const COWORK_JS = String.raw`
   // Tables are rebuilt from the raw (unescaped) source: each cell is escaped
   // individually, so no markup can smuggle through a pipe row.
   function cwTableHtml(block) {
+    // A markdown table goes through the shared viewer whenever ui-outputs.js is
+    // loaded, so the same pipe table renders identically on Coding and Cowork.
+    // COWORK_JS is also evaluated standalone in its tests, and a table with no
+    // body rows is rejected there, so the renderer below stays as the fallback.
+    if (typeof outTableHtml === 'function') {
+      var shared = outTableHtml(block);
+      if (shared) return shared;
+    }
     var rows = block.split('\n').map(function (line) { return line.trim(); }).filter(Boolean);
     if (rows.length < 2) return null;
     var isDivider = function (line) { return /^\|?[\s:|-]+\|?$/.test(line) && line.indexOf('-') >= 0; };

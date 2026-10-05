@@ -100,6 +100,24 @@ describe('shared output viewers: Coding and Cowork parity', () => {
     expect(html).not.toContain('response-code');
   });
 
+  it('renders a markdown table through the shared viewer on both surfaces', () => {
+    const TABLE = ['| Skill | Output |', '| --- | --- |', '| Research | sources |'].join('\n');
+    const coding = baseContext();
+    new Script(OUTPUT_JS + '\n' + UI_RESPONSE_JS).runInContext(coding);
+    const codingHtml = (coding.renderResponseText as AnyFn)(TABLE) as string;
+
+    const cowork = coworkBody(OUTPUT_JS + '\n' + COWORK_JS);
+    const coworkHtml = (cowork.cwBody as AnyFn)(TABLE, []) as string;
+
+    expect(codingHtml).toContain('out-tbl');
+    expect(coworkHtml).toContain('out-tbl');
+    // Sortable headers come from the shared viewer, so neither surface keeps
+    // its own private table renderer.
+    expect(codingHtml).toContain('out-sort');
+    expect(coworkHtml).toContain('out-sort');
+    expect(coworkHtml).not.toContain('cw-table');
+  });
+
   it('still renders an ordinary code fence when the shared module is absent', () => {
     const ctx = baseContext();
     new Script(UI_RESPONSE_JS).runInContext(ctx);

@@ -167,6 +167,24 @@ export const UI_RESPONSE_JS = String.raw`
           item = i < lines.length ? responseListItem(lines[i]) : null;
         } while (item && /^\d/.test(item[2]) === ordered);
         html += '</' + listTag + '>';
+      } else if (/^[ \t]*\|/.test(line)) {
+        // A markdown table is handed to the shared viewer, so one skill's table
+        // looks the same here as it does in Cowork. Rows are read off the raw
+        // text and escaped cell by cell inside the shared renderer, so no
+        // markup can smuggle through a pipe row. Anything the shared viewer
+        // will not parse stays ordinary prose below.
+        var rows = [line];
+        while (i + 1 < lines.length && /^[ \t]*\|/.test(lines[i + 1])) rows.push(lines[++i]);
+        var table = typeof outTableHtml === 'function' ? outTableHtml(rows.join('\n')) : null;
+        if (table) {
+          i++;
+          html += table;
+        } else {
+          var tablePara = rows; i++;
+          while (i < lines.length && !responseBlockStart(lines[i])) tablePara.push(lines[i++]);
+          var tableText = tablePara.join('\n');
+          html += '<p>' + responseInline(tableText) + '</p>' + responseEmbeds(tableText);
+        }
       } else {
         var paragraph = [line]; i++;
         while (i < lines.length && !responseBlockStart(lines[i])) paragraph.push(lines[i++]);

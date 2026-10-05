@@ -78,7 +78,7 @@ import {
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { applyOutputHygiene } from './output-style.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
-import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, isObservationTool } from './agent-workflow.js';
+import { agentCompletionReady, agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, FINALIZATION_ACTION_BUDGET, FINALIZATION_ERROR_CODE, finalizationRejection, isFinalizationAction, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction, isDurableVisualReferenceMessage } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -1235,7 +1235,13 @@ export class Gitu {
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
       const verificationAttempts = new VerificationAttempts();
-      const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
+      // Runtime-owned completion transition. Termination is a control-plane
+  // decision, not a model decision: once the evidence gate is open AND the
+  // contracted work is fully resolved, the runtime enters a bounded
+  // finalization state and refuses ordinary execution until the model reports.
+  let finalization: { active: boolean; remaining: number } = { active: false, remaining: FINALIZATION_ACTION_BUDGET };
+
+  const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
         // Timestamps and evidence IDs are excluded: repeating the same check
         // must not reset recovery, but a repair or changed outcome must.
         const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint, e.outputExcerpt]]));
@@ -2080,6 +2086,27 @@ export class Gitu {
               observe('Plan requested for this turn: inspect with read-only tools, propose set_plan, and wait for approval before execution.');
               continue;
             }
+          }
+          // While finalizing, the contract is already satisfied. Only cleanup,
+          // stopping temporary processes, read-only inspection and the final report
+          // are accepted, and the number of such actions is bounded so the runtime
+          // cannot be walked into a second verification loop.
+          if (finalization.active) {
+            if (finalization.remaining <= 0) {
+              // The bounded finalization window is over and the model never
+              // delivered its final report. End the run as blocked instead of
+              // unlocking ordinary execution (which would reopen verification).
+              const blocker = `${FINALIZATION_ERROR_CODE}: finalization did not converge within its bounded action budget (${FINALIZATION_ACTION_BUDGET} actions); the final report was never delivered.`;
+              ledger.addBlocker(blocker);
+              exitReason = 'blocked';
+              observe(blocker);
+              break mainLoop;
+            }
+            if (!isFinalizationAction(action)) {
+              observe(finalizationRejection());
+              continue;
+            }
+            finalization.remaining -= 1;
           }
           if (agentWorkflow && !temporaryPlanPending && ['tool_call', 'parallel', 'delegate', 'capability_action'].includes(action.type) && ledger.data.status !== 'executing') {
             ledger.setStatus('executing');
@@ -3062,6 +3089,26 @@ export class Gitu {
               }
               const conversation = agentWorkflow && ledger.data.actions.slice(actionsAtStart).every(a => a.observationOnly ?? isObservationTool(a.tool)) && currentFp === agentBaselineFingerprint;
               const chatOnly = agentWorkflow ? conversation && gate.open : Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
+              // Runtime-owned completion transition. Termination is a control-plane
+              // decision: it requires the evidence gate to be open AND every piece
+              // of contracted work to be resolved. The model does not get to decide
+              // that "enough is enough" by asserting it. A pure conversation is
+              // exempt: read-only investigation with no workspace change still
+              // answers the user without pretending contracted work is unfinished.
+              if (agentWorkflow && !finalization.active && !chatOnly) {
+                const contractedWork = agentCompletionReady(verificationPhaseData);
+                if (gate.open && contractedWork.ready) {
+                  finalization = { active: true, remaining: FINALIZATION_ACTION_BUDGET };
+                  observe(`${FINALIZATION_ERROR_CODE}: all frozen acceptance criteria have passed and no planned work remains open. Only cleanup, stopping temporary processes, read-only repository/diff inspection and the final report are permitted now. You cannot add more verification.`);
+                } else if (gate.open && !contractedWork.ready) {
+                  // Green evidence is not sufficient on its own: unresolved
+                  // contracted work is a hard veto, not a notice. The run stays
+                  // alive so the model can finish; three identical attempts
+                  // escalate to a blocked task instead of a completed one.
+                  rejectCompletion('contract', contractedWork.reason, currentFp);
+                  break;
+                }
+              }
               if (completionDisposition(gate.open || chatOnly) === 'working') {
                 rejectCompletion('evidence', `${gate.satisfiedCount}/${gate.totalCount} criteria backed; ${gate.missing.join('; ')}`, currentFp);
                 break;

@@ -3118,7 +3118,7 @@ export const COWORK_JS = String.raw`
     });
   }
 
-  if (typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', function () { if (!document.hidden) cwShowDesktopHandoffs(); });
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', function () { if (!document.hidden) cwShowDesktopHandoffs(); });
 
 
   function cwStartStream(convId) {

@@ -74,6 +74,8 @@ it('preserves identity through HTTP send replay, edits, retries, references and 
   } finally {
     await server.stop();
     if (oldHome === undefined) delete process.env['AGENT_GITU_HOME']; else process.env['AGENT_GITU_HOME'] = oldHome;
-    rmSync(home, { recursive: true, force: true });
+    // Windows can hold a directory handle briefly after the server stops; retry
+    // the cleanup instead of failing an otherwise green test on a race.
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }, 25000);

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as effortPlanner from '../src/agent/effort-planner.js';
-import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, isObservationTool } from '../src/agent/agent-workflow.js';
+import { agentCompletionReady, agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, FINALIZATION_ACTION_BUDGET, finalizationRejection, isFinalizationAction, isObservationTool } from '../src/agent/agent-workflow.js';
 import type { BrowserBridge } from '../src/browser/browser.js';
 import { planEffort } from '../src/agent/effort-planner.js';
 import { Gitu } from '../src/agent/gitu.js';
@@ -182,6 +182,120 @@ describe('unified Agent workflow', () => {
     data.evidence[0]!.stale = true;
     expect(agentVerificationGate(data, 'before', 'after').open).toBe(false);
   });
+
+  type LedgerData = Parameters<typeof agentCompletionReady>[0];
+
+  /** A ledger whose evidence is green: the pinned criterion command passed fresh. */
+  function greenLedger(overrides: Record<string, unknown> = {}): LedgerData {
+    return {
+      acceptanceCriteria: [{ id: 'ac-1', text: 'Shared renderer implemented', verification: 'npm test', satisfied: true }],
+      plan: [{ id: 'step-1', description: 'implement the shared renderer', status: 'done', subtasks: [] }],
+      blockers: [],
+      actions: [{ tool: 'write_file', status: 'success' }],
+      evidence: [{ kind: 'command', command: 'npm test', passed: true, stale: false, workspaceFingerprint: 'after' }],
+      ...overrides,
+    } as unknown as LedgerData;
+  }
+
+  /** Proves the fixture really is "green evidence" before asserting non-termination. */
+  function gateIsOpen(data: LedgerData): boolean {
+    return agentVerificationGate(data, 'before', 'after', new Set(['npm test'])).open;
+  }
+
+  it('does not terminate on green evidence while a plan step is unfinished', () => {
+    const data = greenLedger({
+      plan: [
+        { id: 'step-1', description: 'implement the shared renderer', status: 'done', subtasks: [] },
+        { id: 'step-2', description: 'build one more visual verification harness', status: 'in_progress', subtasks: [] },
+      ],
+    });
+    expect(gateIsOpen(data)).toBe(true);
+    expect(agentCompletionReady(data).ready).toBe(false);
+    expect(agentCompletionReady(data).reason).toContain('step-2');
+  });
+
+  it('does not terminate on green evidence while a todo is unresolved', () => {
+    const data = greenLedger({
+      plan: [{ id: 'step-1', description: 'implement', status: 'done', subtasks: [{ text: 'delete the temporary harness', done: false }] }],
+    });
+    expect(gateIsOpen(data)).toBe(true);
+    expect(agentCompletionReady(data).ready).toBe(false);
+    expect(agentCompletionReady(data).reason).toContain('temporary harness');
+  });
+
+  it('does not terminate on green evidence while a blocker is unresolved', () => {
+    const data = greenLedger({ blockers: ['integration test cannot run: PostgreSQL unavailable'] });
+    expect(gateIsOpen(data)).toBe(true);
+    expect(agentCompletionReady(data).ready).toBe(false);
+    expect(agentCompletionReady(data).reason).toContain('PostgreSQL');
+  });
+
+  it('treats every non-terminal plan status as unresolved work, never as done', () => {
+    for (const status of ['failed', 'blocked', 'pending', 'in_progress'] as const) {
+      const data = greenLedger({ plan: [{ id: 'step-1', description: 'implement', status, subtasks: [] }] });
+      expect(agentCompletionReady(data).ready).toBe(false);
+    }
+  });
+
+  it('reports ready only when criteria, plan, todos and blockers are all resolved', () => {
+    const data = greenLedger();
+    expect(gateIsOpen(data)).toBe(true);
+    expect(agentCompletionReady(data).ready).toBe(true);
+  });
+
+  it('permits only cleanup, process shutdown, inspection and the final report while finalizing', () => {
+    expect(isFinalizationAction({ type: 'complete' })).toBe(true);
+    expect(isFinalizationAction({ type: 'tool_call', tool: 'read_file' })).toBe(true);
+    expect(isFinalizationAction({ type: 'tool_call', tool: 'run_command', params: { action: 'stop' } })).toBe(true);
+    expect(isFinalizationAction({ type: 'tool_call', tool: 'run_command', params: { action: 'run', command: 'git status' } })).toBe(true);
+    // No new work, and above all no NEW verification once the contract is met.
+    expect(isFinalizationAction({ type: 'tool_call', tool: 'write_file' })).toBe(false);
+    expect(isFinalizationAction({ type: 'tool_call', tool: 'run_command', params: { action: 'run', command: 'npm test' } })).toBe(false);
+    expect(isFinalizationAction({ type: 'delegate' })).toBe(false);
+    expect(isFinalizationAction({ type: 'set_criteria' })).toBe(false);
+  });
+
+  it('bounds finalization so it cannot become another verification loop', () => {
+    expect(FINALIZATION_ACTION_BUDGET).toBeGreaterThan(0);
+    expect(FINALIZATION_ACTION_BUDGET).toBeLessThanOrEqual(10);
+    expect(finalizationRejection()).toContain('TASK_COMPLETE');
+  });
+
+  it('does not terminate on green evidence while contracted work is unresolved', async () => {
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([
+        action({ type: 'set_plan', steps: [
+          { description: 'Correct the README wording', verification: 'Read the corrected file', area: 'docs' },
+          { description: 'Confirm the corrected wording', verification: 'Read the corrected file again', area: 'docs' },
+        ] }),
+        read, edit, verify, done, done, done,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(result.report.status, JSON.stringify(result.ledger.data.blockers)).toBe('blocked');
+    expect(result.ledger.data.blockers.join(' ')).toContain('plan step');
+  }, 30000);
+
+  it('ends a finalization that never converges as blocked instead of unlocking it', async () => {
+    const dir = project();
+    writeFileSync(path.join(dir, 'index.html'), '<h1>Helo world</h1>\n');
+    writeFileSync(path.join(dir, 'check.cjs'), "require('node:assert/strict').equal(require('node:fs').readFileSync('index.html', 'utf8'), '<h1>Hello world</h1>\\n');\n");
+    const look = action({ type: 'tool_call', tool: 'read_file', params: { path: 'README.md' }, reason: 'Inspect the wording', expected: 'Current wording' });
+    const effort = effortPlanner.planEffort('Correct the greeting in index.html', { mode: 'agent' });
+    const spy = vi.spyOn(effortPlanner, 'planEffort').mockReturnValue({ ...effort, maxTurns: 60 });
+    try {
+      const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+        llm: new ScriptedMockLlm([
+          read, edit,
+          action({ type: 'tool_call', tool: 'write_file', params: { path: 'index.html', content: '<h1>Hello world</h1>\n' }, reason: 'Correct the greeting', expected: 'Correct greeting' }),
+          verify, done,
+          look, look, look, look, look, look, look, look, look,
+        ]),
+      }).run('Correct the greeting in index.html');
+      expect(result.report.status, JSON.stringify(result.ledger.data.blockers)).toBe('blocked');
+      expect(result.ledger.data.blockers.join(' ')).toContain('finalization');
+    } finally { spy.mockRestore(); }
+  }, 60000);
+
   it('requires fresh passing evidence for every formal criterion command', () => {
     const data = {
       actions: [{ tool: 'write_file', status: 'success' }],

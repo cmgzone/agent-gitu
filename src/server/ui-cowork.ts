@@ -113,6 +113,12 @@ export const COWORK_CSS = String.raw`
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .cw-composer-wrap { flex-shrink: 0; }
+  .cw-jump-latest { position:absolute; z-index:3; left:50%; bottom:90px; transform:translateX(-50%); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border2); border-radius:50%; color:var(--text); background:color-mix(in srgb,var(--bg) 85%,transparent); backdrop-filter:blur(12px); box-shadow:var(--shadow-float); }
+  .cw-jump-latest[hidden] { display:none; }
+  .cw-jump-latest svg { transform:rotate(180deg); width:18px; height:18px; }
+  .cw-jump-latest:hover { color:var(--accent); background:var(--hover); }
+  .cw-jump-latest:active { transform:translateX(-50%) scale(.92); }
+  .cw-jump-latest:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
   .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; background: transparent; border: 0; box-shadow: none; pointer-events: none; }
   .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; max-width: calc(100% - 150px); background: transparent; }
   .cw-chat-avatar .cw-persona-status { max-width: 100%; box-sizing: border-box; padding: 3px 10px; font-size: 11px; line-height: 16px; color: var(--text);
@@ -708,6 +714,67 @@ export const COWORK_JS = String.raw`
     if (cw.threadId === undefined) cw.threadId = null;
     return cw;
   }
+  function cwChatKey() { var cw = cwEnsure(); return JSON.stringify([cw.active, cw.threadId || null]); }
+  // Keep a small in-memory window of visited chats. The stream still refreshes
+  // their state; this only avoids an empty transcript while the network responds.
+  function cwRememberChat() {
+    var cw = cwEnsure();
+    if (!cw.active) return;
+    var views = cw.chatViews || (cw.chatViews = new Map()), view = {};
+    ['msgs', 'lastSeq', 'lastChange', 'workHistory', 'artifacts', 'todos', 'requests', 'subAgents', 'threads', 'folders', 'widgets'].forEach(function (key) {
+      view[key] = Array.isArray(cw[key]) ? cw[key].slice() : cw[key];
+    });
+    views.delete(cwChatKey()); views.set(cwChatKey(), view);
+    if (views.size > 12) views.delete(views.keys().next().value);
+  }
+  function cwRestoreChat() {
+    var cw = cwEnsure(), view = cw.chatViews && cw.chatViews.get(cwChatKey());
+    cw.subAgents = { nodes: [] };
+    if (view) Object.keys(view).forEach(function (key) { if (view[key] !== undefined) cw[key] = Array.isArray(view[key]) ? view[key].slice() : view[key]; });
+    cwLocalMessages().forEach(function (message) {
+      if (!cw.removedMessages[cw.active + '/' + message.id] && !cw.msgs.some(function (existing) { return existing.id === message.id; })) cw.msgs.push(message);
+    });
+  }
+  function cwScrollNodeKey(node) {
+    return node.getAttribute('data-cwscroll-key') || node.getAttribute('data-cwworkhistory') || node.getAttribute('data-cwrequest-row') || node.getAttribute('data-cwcheckpoint') || node.getAttribute('data-cwsubagents') || node.getAttribute('data-cwmediagroup');
+  }
+  function cwCaptureScroll(wrap) {
+    if (wrap.clientHeight === 0) return wrap._cwScrollState || { top: wrap.scrollTop, follow: true, key: null, offset: 0 };
+    var state = { top: wrap.scrollTop, follow: wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120, key: null, offset: 0 };
+    if (wrap.getBoundingClientRect) {
+      var top = wrap.getBoundingClientRect().top;
+      Array.from(wrap.children).some(function (node) {
+        var key = cwScrollNodeKey(node), rect = node.getBoundingClientRect();
+        if (!key || rect.bottom <= top + 112) return false;
+        state.key = key; state.offset = rect.top - top; return true;
+      });
+    }
+    return state;
+  }
+  function cwRestoreScroll(wrap, state) {
+    if (!wrap || !state) return;
+    wrap._cwScrollState = state;
+    if (wrap.clientHeight === 0) { cwUpdateJumpLatest(); return; }
+    var anchor = state.key && Array.from(wrap.children).find(function (node) { return cwScrollNodeKey(node) === state.key; });
+    wrap.scrollTop = state.follow ? wrap.scrollHeight : anchor ? wrap.scrollTop + anchor.getBoundingClientRect().top - wrap.getBoundingClientRect().top - state.offset : state.top;
+    cwUpdateJumpLatest();
+  }
+  function cwUpdateJumpLatest() {
+    var wrap = $('cwMsgs'), button = $('cwJumpLatest');
+    if (!wrap || !button) return;
+    var scroll = cwCaptureScroll(wrap);
+    wrap._cwScrollState = scroll;
+    button.hidden = scroll.follow;
+    var composer = wrap.parentElement && wrap.parentElement.querySelector('.cw-composer-wrap');
+    if (composer) button.style.bottom = (composer.offsetHeight + 12) + 'px';
+  }
+  function cwJumpLatest() {
+    var wrap = $('cwMsgs');
+    if (!wrap) return;
+    wrap._cwScrollState = { top: wrap.scrollHeight, follow: true, key: null, offset: 0 };
+    wrap.scrollTop = wrap.scrollHeight;
+    cwUpdateJumpLatest();
+  }
   function cwDraftKey() {
     var cw = cwEnsure();
     return cw.active ? 'hermes.cowork.draft.' + encodeURIComponent(cw.active) + '.' + encodeURIComponent(cw.threadId || 'main') : '';
@@ -878,6 +945,11 @@ export const COWORK_JS = String.raw`
           .catch(function (e) { toast(e.message, true); });
       };
     }
+    // Paint the known teammate immediately when returning from the workspace.
+    // The roster refresh must not leave the newly mounted chat blank.
+    cwRenderRail();
+    if (cwActiveConv()) cwOpenConv(cw.active, cw.threadId);
+    else cwRenderChat();
     cwLoad(true);
   }
 
@@ -885,6 +957,7 @@ export const COWORK_JS = String.raw`
     cwEnsure().connectionsOpen = false;
     cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     cwSaveDraft();
+    cwRememberChat();
     cwStopPoll();
     document.body.classList.remove('cowork');
     document.body.classList.remove('cw-resizing');
@@ -897,7 +970,7 @@ export const COWORK_JS = String.raw`
     var root = $('cw'), panel = $('cwInfoPanel');
     if (!root || !panel) return;
     var messages = $('cwMsgs');
-    var nearBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+    var scroll = messages && cwCaptureScroll(messages);
     var cw = cwEnsure(), narrow = window.innerWidth <= 1180;
     if(!cwActiveConv())cw.railCollapsed=false;
     cw.panelWidth = window.innerWidth;
@@ -919,7 +992,7 @@ export const COWORK_JS = String.raw`
     if (back) { back.hidden=window.innerWidth>720&&!cw.railCollapsed;back.setAttribute('aria-expanded',String(window.innerWidth<=720?railOpen:!cw.railCollapsed)); }
     var closeInfo = $('cwCloseInfo');
     if (closeInfo) { var closeLabel = window.innerWidth <= 720 ? 'Back to chat' : 'Close panel'; closeInfo.setAttribute('aria-label', closeLabel); closeInfo.title = closeLabel; }
-    if (nearBottom) messages.scrollTop = messages.scrollHeight;
+    cwRestoreScroll(messages, scroll);
   }
 
   function cwClosePanels() {
@@ -1004,19 +1077,21 @@ export const COWORK_JS = String.raw`
 
   function cwLoad(openFirst) {
     var cw = cwEnsure();
-    api('/api/cowork/agents').then(function (d) {
+    var revision = cw.loadRevision = (cw.loadRevision || 0) + 1;
+    return Promise.all([api('/api/cowork/agents'), api('/api/cowork/conversations')]).then(function (results) {
+      if (S.active !== 'cowork' || cw.loadRevision !== revision) return;
+      var d = results[0];
       cw.agents = d.agents || [];
       cw.skills = d.availableSkills || [];
       cw.memoryCounts = d.memoryCounts || {};
       cw.computers = d.computers || [];
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
-      return api('/api/cowork/conversations');
-    }).then(function (d) {
-      cw.convs = d.conversations || [];
+      cw.convs = results[1].conversations || [];
       cwRenderRail();
       if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
+      else { cwRenderMembers(); cwRenderTyping(); cwRenderInfo(); }
     }).catch(function (e) { toast(e.message, true); });
   }
 
@@ -1141,6 +1216,7 @@ export const COWORK_JS = String.raw`
     cw.connectionsOpen = false;
     cw.connectionRevision = (cw.connectionRevision || 0) + 1;
     cwSaveDraft();
+    cwRememberChat();
     cwStopPoll();
     cw.active = id;
     var conversation = cw.convs.find(function (item) { return item.id === id; });
@@ -1168,6 +1244,7 @@ export const COWORK_JS = String.raw`
     cw.requests = [];
     cw.pendingFiles = [];
     cw.rosterRevision = -1;
+    cwRestoreChat();
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.remove('rail-open');
     cwRenderRail();
@@ -1182,6 +1259,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     if (cw.threadId === (threadId || null)) return;
     cwSaveDraft();
+    cwRememberChat();
     cwStopPoll();
     cw.threadId = threadId || null;
     cw.msgs = cwLocalMessages();
@@ -1198,6 +1276,7 @@ export const COWORK_JS = String.raw`
     cw.todos = [];
     cw.requests = [];
     cw.pendingFiles = [];
+    cwRestoreChat();
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.remove('rail-open');
     cwRenderRail();
@@ -1243,6 +1322,10 @@ export const COWORK_JS = String.raw`
     if (cw.connectionsOpen) return;
     var chat = $('cwChat');
     if (!chat) return;
+    var previous = $('cwMsgs');
+    var sameChat = chat.getAttribute('data-cwchat-key') === cwChatKey();
+    var scroll = sameChat && previous ? cwCaptureScroll(previous) : null;
+    chat.setAttribute('data-cwchat-key', cwChatKey());
     cwDisposeSubagentOrbs();
     var conv = cwActiveConv();
     document.title = conv ? conv.title + ' — Cowork' : 'Cowork — Agent Gitu';
@@ -1282,6 +1365,7 @@ export const COWORK_JS = String.raw`
         '<button class="cw-panel-toggle" id="cwInfoBtn" aria-label="Chat panel" title="Chat panel" aria-controls="cwInfoPanel" aria-expanded="false">' + cwIcon('panel') + '</button>' +
       '</div>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
+      '<button type="button" class="cw-jump-latest" id="cwJumpLatest" aria-label="Jump to latest messages" title="Jump to latest" aria-controls="cwMsgs" hidden>' + cwIcon('send') + '</button>' +
       '<div class="cw-composer-wrap">' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
@@ -1301,6 +1385,7 @@ export const COWORK_JS = String.raw`
         '</div></div>' +
       '</div>';
     $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
+    $('cwJumpLatest').onclick = function () { cwJumpLatest(); };
     $('cwInfoBtn').onclick = function () {
       if (window.innerWidth <= 1180) cw.infoNarrowOpen = !cw.infoNarrowOpen;
       else cw.infoOpen = !cw.infoOpen;
@@ -1315,7 +1400,8 @@ export const COWORK_JS = String.raw`
     cwRestoreDraft(input);
     input.addEventListener('paste', cwPasteImages);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); cwSend(); } });
-    input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); });
+    input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); cwUpdateJumpLatest(); });
+    $('cwMsgs').addEventListener('toggle', function () { cwUpdateJumpLatest(); }, true);
     $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };
     $('cwSend').onclick = cwSend;
     $('cwStop').onclick = cwStopRun;
@@ -1350,6 +1436,8 @@ export const COWORK_JS = String.raw`
     cwRenderReferences();
     cwRenderInfo();
     cwRenderTyping();
+    if (scroll) cwRestoreScroll($('cwMsgs'), scroll);
+    else cwJumpLatest();
   }
 
   // Updating the roster must preserve the user's draft and cursor.
@@ -1662,7 +1750,7 @@ export const COWORK_JS = String.raw`
     var el = $('cwWork');
     if (!el) return;
     var messages = $('cwMsgs');
-    var nearBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+    var scroll = messages && cwCaptureScroll(messages);
     var todos = (cw.todos || []).filter(function (todo) { return todo.status !== 'cancelled'; });
     var active = todos.filter(function (todo) { return todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'blocked'; });
     var todoHtml = todos.length ? '<details class="cw-todos"' + ((cw.todoOpen === undefined ? active.length > 0 : cw.todoOpen) ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
@@ -1672,7 +1760,7 @@ export const COWORK_JS = String.raw`
     el.innerHTML = todoHtml;
     var checklist = el.querySelector('.cw-todos');
     if (checklist) checklist.ontoggle = function () { cw.todoOpen = checklist.open; };
-    if (nearBottom) messages.scrollTop = messages.scrollHeight;
+    cwRestoreScroll(messages, scroll);
   }
 
   function cwBindRequests(el) {
@@ -2258,7 +2346,7 @@ export const COWORK_JS = String.raw`
       }
       var checkpoint = entry.message && /^(.+?) is continuing automatically after checkpoint (\d+)\.$/.exec(String(entry.message.text || ''));
       if (!checkpoint || entry.message.role !== 'system') {
-        html.push(entry.message ? cwBubbleHtml(entry.message) : entry.html);
+        html.push(entry.message ? cwBubbleHtml(entry.message).replace(/^<([a-z]+)(?=[ >])/, '<$1 data-cwscroll-key="' + esc(entry.message.id || 'seq:' + entry.message.seq) + '"') : entry.html);
         i++;
         continue;
       }
@@ -2282,7 +2370,7 @@ export const COWORK_JS = String.raw`
     var wrap = $('cwMsgs');
     if (!wrap) return;
     var cw = cwEnsure();
-    var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
+    var scroll = cwCaptureScroll(wrap);
     // Incoming messages and request updates must preserve an in-progress answer.
     var drafts = {}, focused = null;
     // Keep the live form node across polls. Recreating it would erase a typed
@@ -2342,9 +2430,10 @@ export const COWORK_JS = String.raw`
     }; });
     wrap.onscroll = function () {
       wrap.querySelectorAll('.cw-message-menu:popover-open').forEach(function (menu) { menu.hidePopover(); });
+      cwUpdateJumpLatest();
     };
-    cwRenderProgress();
-    if (nearBottom && !focused) wrap.scrollTop = wrap.scrollHeight;
+    if (focused) scroll.follow = false;
+    cwRenderProgress(scroll);
   }
 
   function cwReplaceTranscript(wrap,html) {
@@ -2392,19 +2481,19 @@ export const COWORK_JS = String.raw`
     return phase === 'reasoning' || phase === 'responding' || phase === 'working' ? phase : 'thinking';
   }
 
-  function cwRenderProgress() {
+  function cwRenderProgress(scroll) {
     var cw = cwEnsure();
     var wrap = $('cwMsgs');
     var live = $('cwLive');
     if (!wrap || !live) return;
+    scroll = scroll || cwCaptureScroll(wrap);
     cwSyncSubagentOrbs();
-    var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
     var ps = cw.busy ? ((cw.progresses && cw.progresses.length) ? cw.progresses : (cw.progress ? [cw.progress] : [])) : [];
     var workerIds = new Set();
     cwSubagentGroups().forEach(function (group) { group.nodes.forEach(function (node) { workerIds.add(node.id); }); });
     ps = ps.filter(function (progress) { return !workerIds.has(progress.agentId); });
     live.hidden = ps.length === 0;
-    if (!ps.length) { live.innerHTML = ''; live._progressKey = null; return; }
+    if (!ps.length) { live.innerHTML = ''; live._progressKey = null; cwRestoreScroll(wrap, scroll); return; }
     // Keep the avatar nodes alive across deltas so their animation never restarts.
     var key = JSON.stringify(ps.map(function (p) { var a = cwAgentById(p.agentId); return [p.agentId, p.agentName, a && a.avatar]; }));
     if (live._progressKey !== key) {
@@ -2442,7 +2531,7 @@ export const COWORK_JS = String.raw`
       if (texts[i].textContent !== text) texts[i].textContent = text;
       texts[i].hidden = !text;
     });
-    if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
+    cwRestoreScroll(wrap, scroll);
   }
 
   // Telegram + Discord gateways for an agent's DM, shown inside the

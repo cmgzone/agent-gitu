@@ -62,12 +62,15 @@ describe('uiVisualGate', () => {
     expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'new-source' }).verified).toBe(false);
   });
 
-  it('requires another look after a direct edit even if a bounded fingerprint happens to match', () => {
+  it('reuses a complete content-bound look after an identical rewrite but rejects real changes', () => {
     const data = ledger({ filesChanged: ['large.html'], actions: [
       action({ tool: 'browse', paramsSummary: 'browse screenshot', verifiedWorkspaceFingerprint: 'same-source' }),
       action({ tool: 'apply_edit', paramsSummary: 'edit large.html' }),
     ] });
-    expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'same-source' }).verified).toBe(false);
+    expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'same-source' }).verified).toBe(true);
+    expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'changed-source' }).verified).toBe(false);
+    expect(uiVisualGate(data, { browserAvailable: true, workspaceFingerprint: 'partial-source' }).verified).toBe(false);
+    expect(uiVisualGate(data, { browserAvailable: true }).verified).toBe(false);
   });
 
   it('keeps conservative command freshness when the workspace scan is incomplete', () => {

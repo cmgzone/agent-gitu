@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -23,16 +23,25 @@ export interface GitInfo {
 const FINGERPRINT_MAX_FILES = 4000;
 const FINGERPRINT_MAX_FILE_BYTES = 256 * 1024;
 
+/** Content identity, with bounded memory even for images and other large files. */
+async function contentSignature(full: string): Promise<string> {
+  const hash = createHash('sha256');
+  if ((await stat(full)).size <= FINGERPRINT_MAX_FILE_BYTES) {
+    hash.update(await readFile(full));
+  } else {
+    for await (const chunk of createReadStream(full)) hash.update(chunk);
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
 export async function getWorkspaceFingerprint(root: string): Promise<string> {
   if (!isGitRepo(root)) {
-    // Non-git projects still deserve staleness detection: hash path+mtime+size
-    // of project files so evidence recorded before an edit goes stale here
-    // too. A constant placeholder would disable the check entirely.
+    // Non-git projects use content identity too: timestamps and identical
+    // rewrites must not invalidate valid verification.
     return nonGitFingerprint(root);
   }
   try {
-    // Hash tracked+untracked project files (not just dirty ones), using file
-    // metadata for oversized files and marking file-budget limits explicitly.
+    // Hash tracked+untracked project contents, marking file-budget limits explicitly.
     // Hashing only dirty files collapsed the fingerprint to a constant
     // whenever a checkpoint commit flipped the tree clean, falsely marking
     // valid evidence stale — while clean-tree stamps stayed fresh forever.
@@ -40,7 +49,7 @@ export async function getWorkspaceFingerprint(root: string): Promise<string> {
     // untouched, so this fingerprint survives them by construction yet still
     // reacts to any real edit, addition, or deletion.
     const listing = await gitExec(root, ['ls-files', '-co', '--exclude-standard', '-z']);
-    const paths = listing.split('\0').filter(Boolean);
+    const paths = [...new Set(listing.split('\0').filter(Boolean))].sort();
     const fileSignatures: string[] = [];
     let budget = FINGERPRINT_MAX_FILES;
     let partial = false;
@@ -59,15 +68,10 @@ export async function getWorkspaceFingerprint(root: string): Promise<string> {
       if (budget-- <= 0) { partial = true; break; }
       const full = path.join(root, p);
       try {
-        const st = await stat(full);
-        if (st.size > FINGERPRINT_MAX_FILE_BYTES) {
-          fileSignatures.push(`${normPath}:oversized:${st.size}:${st.mtimeMs}:${st.ctimeMs}`);
-          continue;
-        }
-        const content = await readFile(full);
-        fileSignatures.push(`${normPath}:${createHash('sha256').update(content).digest('hex').slice(0, 16)}`);
-      } catch {
-        fileSignatures.push(`${normPath}:deleted`);
+        fileSignatures.push(`${normPath}:${await contentSignature(full)}`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') fileSignatures.push(`${normPath}:deleted`);
+        else { partial = true; fileSignatures.push(`${normPath}:unreadable`); }
       }
     }
     const payload = fileSignatures.sort().join('|');
@@ -100,16 +104,14 @@ const NON_GIT_SKIP = new Set(['.git', '.hermes', 'node_modules', 'coverage', '.c
 const NON_GIT_MAX_FILES = 5000;
 
 /**
- * Fallback fingerprint for non-git workspaces: path + mtimeMs + size of every
- * project file (bounded walk). Deterministic while the tree is untouched and
- * changes the moment any file is written — same contract as the git-based
- * fingerprint, just content-blind.
+ * Fallback fingerprint for non-git workspaces: sorted paths and content hashes.
+ * The bounded walk explicitly marks incomplete coverage.
  */
 async function nonGitFingerprint(root: string): Promise<string> {
   const signatures: string[] = [];
   let count = 0;
   let partial = false;
-  const walk = (dir: string, depth: number): void => {
+  const walk = async (dir: string, depth: number): Promise<void> => {
     if (depth > 12 || count >= NON_GIT_MAX_FILES) { partial = true; return; }
     let entries: string[];
     try {
@@ -130,20 +132,21 @@ async function nonGitFingerprint(root: string): Promise<string> {
         continue;
       }
       if (st.isDirectory()) {
-        walk(full, depth + 1);
+        await walk(full, depth + 1);
       } else {
         count += 1;
         const rel = path.relative(root, full).replace(/\\/g, '/');
-        signatures.push(`${rel}:${st.mtimeMs}:${st.size}`);
+        try { signatures.push(`${rel}:${await contentSignature(full)}`); }
+        catch { partial = true; signatures.push(`${rel}:unreadable`); }
       }
     }
   };
   try {
-    walk(root, 0);
+    await walk(root, 0);
   } catch {
     return 'unknown-fp';
   }
-  const fingerprint = createHash('sha256').update(`nogit-v1|${signatures.join('|')}`).digest('hex').slice(0, 16);
+  const fingerprint = createHash('sha256').update(`nogit-v2|${signatures.sort().join('|')}`).digest('hex').slice(0, 16);
   return partial ? `partial-${fingerprint}` : fingerprint;
 }
 

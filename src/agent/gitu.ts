@@ -1143,7 +1143,6 @@ export class Gitu {
       // token counts, not chars/4). Emergency compaction reads this to shed
       // history BEFORE the next request when the working window is nearly full.
       let lastRequestInputTokens: number | undefined;
-      let loopBlocks = 0;
       interface ConnectionCallRecord {
         consecutiveCalls: number;
         consecutiveFailures: number;
@@ -1224,7 +1223,8 @@ export class Gitu {
         // Visual-verification turns are real progress on UI work: screenshot /
         // click-through inspection produces no new commands or diffs, but a run
         // that is actively LOOKING at what it built must not be killed mid-QA.
-        browses: ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success').length,
+        browses: new Set(ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success')
+          .map(a => `${a.paramsHash}:${a.verifiedWorkspaceFingerprint ?? a.observation ?? ''}`)).size,
         // Distinct successful actions = genuinely new work (a repeated identical
         // call does not grow the set). Diagnosis/reading turns used to register
         // ZERO progress and stalled runs that were actively making new attempts.
@@ -1235,16 +1235,26 @@ export class Gitu {
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
       const verificationAttempts = new VerificationAttempts();
+      let verificationRecoveryExhausted = false;
+      const deferredBlocks = new Map<string, number>();
       const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
         // Timestamps and evidence IDs are excluded: repeating the same check
         // must not reset recovery, but a repair or changed outcome must.
-        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint, e.outputExcerpt]]));
-        const signature = JSON.stringify([fingerprint, reason, [...latestChecks]]);
-        if (verificationAttempts.reject(gate, signature) >= 3) {
-          const blocker = `Verification could not be completed after two correction opportunities on the same unchanged result: ${reason}`;
-          ledger.addBlocker(blocker);
+        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint]]));
+        const signature = JSON.stringify([fingerprint, [...latestChecks].sort(([a], [b]) => String(a).localeCompare(String(b)))]);
+        const attempts = verificationAttempts.reject(gate, signature);
+        if (attempts >= 3 && gate === 'visual-verification' && !this.config.browser?.available()) {
+          ledger.addBlocker(`Final UI verification requires a browser, but this host has no browser available: ${reason}`);
           exitReason = 'blocked';
-          observe(blocker);
+          observe(reason);
+        } else if (attempts >= 6) {
+          const stalled = `The agent repeatedly requested completion without resolving ${gate}, even after an alternative recovery prompt: ${reason}. Work and evidence are preserved for continuation.`;
+          ledger.addBlocker(stalled);
+          exitReason = 'stalled';
+          verificationRecoveryExhausted = true;
+          observe(stalled);
+        } else if (attempts >= 3) {
+          observe(`TRY AN ALTERNATIVE for ${gate}: ${reason}. Diagnose the failing method and use a different valid check, fix the environment, or repair the actual failure. Reuse unchanged passing evidence; do not restart the task. A repeated completion claim is not a recovery attempt. Use request_block with the concrete prerequisite only if authorized alternatives are unavailable.`);
         } else {
           observe(`COMPLETION REJECTED by ${gate} gate — ${reason}. Continue with a concrete repair or verification; request_block if a dependency prevents progress.`);
         }
@@ -1964,7 +1974,22 @@ export class Gitu {
             this.emit(`effort  ${turns}/${budgetCap} turns used — about ${budgetCap - turns} left; wrap up verified work if you can`);
           }
 
-          const action = await ask(effortNote);
+          let completionNote = '';
+          if (agentWorkflow && !conversationControl) {
+            const phase = activePhaseData();
+            if (phase.evidence.some(e => e.passed) && !phase.plan.some(s => !['done', 'cancelled'].includes(s.status)) && !phase.blockers.length) {
+              const fp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              const criteria = evidence.gate(phase, fp);
+              const commands = new Set(phase.acceptanceCriteria.map(c => c.verification).filter((c): c is string => Boolean(c)).map(c => c.trim().replace(/\s+/g, ' ').toLowerCase()));
+              const verified = agentVerificationGate(phase, agentBaselineFingerprint, fp, commands);
+              const visual = uiVisualGate(phase, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false, workspaceFingerprint: fp });
+              if (fp !== 'unknown-fp' && !fp.startsWith('partial-') && phase.evidence.some(e => e.passed && !e.stale && e.workspaceFingerprint === fp) &&
+                (criteria.totalCount === 0 || criteria.open) && verified.open && visual.verified) {
+                completionNote = 'COMPLETION CHECKPOINT: recorded requirements and current verification are satisfied. If the requested implementation and delivery are complete, perform only necessary cleanup, then call complete with the final report and terminate. Do not invent additional proof, criteria, or work. Continue only for a concrete remaining user requirement, new change, failure, or unresolved risk; name that reason. Existing completion gates still apply.';
+              }
+            }
+          }
+          const action = await ask([effortNote, completionNote].filter(Boolean).join('\n\n'));
 
           // Input may arrive while the model is thinking. Its response was
           // produced under old instructions and must never reach dispatch.
@@ -2344,23 +2369,15 @@ export class Gitu {
               const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
 
               if (outcome.blockedByLoop) {
-                loopBlocks += 1;
                 memory.add({
                   type: 'failure',
                   claim: `Repeated failure on ${outcome.record.paramsSummary}: ${action.reason}`,
                   scope: guard.lock.name,
                   confidence: 0.8,
                 });
-                if (loopBlocks >= 3) {
-                  ledger.addBlocker('Three loop-prevention blocks occurred; task escalated.');
-                  exitReason = 'blocked';
-                  observe(outcome.result.output);
-                  break;
-                }
-                observe(outcome.result.output);
+                observe(`${outcome.result.output}\nThis method is exhausted, not the whole task. Inspect the cause and try a different authorized method; do not repeat this unchanged call or evade a permission denial.`);
                 break;
               }
-              if (outcome.result.ok) loopBlocks = 0;
               if (outcome.deniedByPolicy) {
                 observe(outcome.result.output);
                 break;
@@ -3667,6 +3684,13 @@ export class Gitu {
                 observe(`Recovery exhausted before block:\n${blocked}`);
                 break;
               }
+              const blockKey = action.reason.trim().toLowerCase();
+              const previousBlockAt = deferredBlocks.get(blockKey);
+              if (previousBlockAt === undefined || !ledger.data.actions.slice(previousBlockAt).some(a => a.status === 'error' || a.status === 'success')) {
+                if (previousBlockAt === undefined) deferredBlocks.set(blockKey, ledger.data.actions.length);
+                observe(`BLOCK DEFERRED: ${action.reason}. No concrete external prerequisite was identified. Try a reasonable authorized alternative or inspect the failure before stopping. A failed command, missing optional tool, stale proof, or unavailable specialist is not by itself a task blocker. If alternatives cannot work, identify the specific missing prerequisite and what was tried. Do not bypass permissions or repeat a write with an unknown outcome.`);
+                break;
+              }
               ledger.addBlocker(action.reason);
               exitReason = 'blocked';
               observe(`Block recorded: ${action.reason}`);
@@ -3854,6 +3878,7 @@ export class Gitu {
                         ledger: ledger.data,
                         criterionId: mainCriterion.id,
                         currentFingerprint: currentFp,
+                        getCurrentFingerprint: () => getWorkspaceFingerprint(guard.activeWritableRoot),
                         runOracle: reverifyRunner,
                         workdir: guard.activeWritableRoot,
                       });
@@ -3915,11 +3940,13 @@ export class Gitu {
             exitReason = 'stalled';
             completionInput = undefined;
             conversationCompleted = false;
+            verificationRecoveryExhausted = false;
+            deferredBlocks.clear();
             ledger.data.blockers = [];
             ledger.save();
           }
 
-          if (exitReason === 'complete' || exitReason === 'blocked') break;
+          if (exitReason === 'complete' || exitReason === 'blocked' || verificationRecoveryExhausted) break;
         }
       } catch (err) {
         if (!this.aborted) throw err;

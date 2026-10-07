@@ -28,6 +28,49 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('offers a completion checkpoint after verification and withdraws it after a real edit', async () => {
+    const checkpoint = (messages: LlmMessage[]) => String(messages.at(-1)?.content).includes('COMPLETION CHECKPOINT');
+    let ready = false;
+    let staleReady = true;
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, edit, verify,
+        (_call, messages) => { ready = Boolean(checkpoint(messages)); return action({ type: 'tool_call', tool: 'write_file', params: { path: 'notes.txt', content: 'Requested delivery notes' }, reason: 'Finish the requested notes', expected: 'Saved notes' })(0, messages); },
+        (_call, messages) => { staleReady = Boolean(checkpoint(messages)); return verify(0, messages); },
+        done, reviewer,
+      ]),
+    }).run('Correct the typo and add notes.txt describing the delivery');
+    expect(ready).toBe(true);
+    expect(staleReady).toBe(false);
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.actions.filter(a => a.tool === 'run_command')).toHaveLength(2);
+  }, 30000);
+
+  it('tries a different verification path after repeated completion rejection', async () => {
+    let recovery = false;
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, edit, done, done, done,
+        (_call, messages) => { recovery = messages.some(m => String(m.content).includes('TRY AN ALTERNATIVE')); return verify(0, messages); },
+        done, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(recovery).toBe(true);
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.blockers).toEqual([]);
+  }, 30000);
+
+  it('defers an unsupported blocker and lets the agent repair with its own tools', async () => {
+    let recovery = false;
+    const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([read, action({ type: 'request_block', reason: 'The preferred editing method failed' }),
+        (_call, messages) => { recovery = messages.some(m => String(m.content).includes('BLOCK DEFERRED')); return edit(0, messages); },
+        verify, done, reviewer,
+      ]),
+    }).run('Correct the typo in README.md');
+    expect(recovery).toBe(true);
+    expect(result.report.status).toBe('complete');
+    expect(result.ledger.data.blockers).toEqual([]);
+  }, 30000);
+
   it('classifies only safe inspection commands as observation, without treating checks or writes as conversation', () => {
     for (const command of ['git status --short', 'git diff --stat', 'git log -3 --oneline', 'pwd', 'node --version', 'Get-Content README.md | Select-Object -First 10']) {
       expect(isObservationTool('run_command', { command }), command).toBe(true);
@@ -163,12 +206,13 @@ describe('unified Agent workflow', () => {
     expect(result.report.risks ?? []).not.toContain('Final UI state was never verified with a screenshot');
   }, 30000);
 
-  it('stops repeated evidence rejection without claiming unverified work completed', async () => {
+  it('bounds repeated completion claims after recovery without falsely reporting a task dependency', async () => {
     const result = await new Gitu({ cwd: project(), mode: 'agent', autoLearn: false,
-      llm: new ScriptedMockLlm([read, edit, done, done, done]),
+      llm: new ScriptedMockLlm([read, edit, done, done, done, done, done, done]),
     }).run('Correct the typo in README.md');
-    expect(result.report.status).toBe('blocked');
-    expect(result.ledger.data.blockers.join(' ')).toContain('two correction opportunities');
+    expect(result.report.status).toBe('failed');
+    expect(result.ledger.data.status).toBe('failed');
+    expect(result.ledger.data.blockers.join(' ')).toContain('alternative recovery prompt');
   }, 30000);
 
   it('accepts current document/browser verification without inventing a shell test', () => {

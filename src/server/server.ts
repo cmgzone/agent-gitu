@@ -1899,6 +1899,8 @@ export class GituServer {
 
   /** Liveness line from a delegated run, surfaced in the conversation's progress. */
   private publishDelegatedProgress(conversationId: string, agentId: string, text: string): void {
+    // Orb metadata belongs to the execution trace, not the parent's public prose.
+    if (text.startsWith('subagent-state ')) return;
     const run = this.coworkRuns.get(conversationId);
     if (!run) return;
     const progress: CoworkProgress = { agentId, agentName: this.cowork().getAgent(agentId)?.name ?? agentId, text };

@@ -12,6 +12,7 @@ import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
+import { OUTPUT_CSS, OUTPUT_JS } from './ui-outputs.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
 import { UI_THEME_CSS, UI_THEME_BOOTSTRAP, UI_THEME_JS } from './ui-theme.js';
 import { ONBOARDING_CSS, ONBOARDING_HTML, ONBOARDING_JS } from './ui-onboarding.js';
@@ -944,6 +945,7 @@ ${HOME_CSS}
     #mascotWrap { display: none !important; }
   }
   ${COWORK_CSS}
+  ${OUTPUT_CSS}
   ${CONNECTED_APPS_CSS}
   ${UI_THEME_CSS}
   ${ONBOARDING_CSS}
@@ -6468,6 +6470,7 @@ ${ONBOARDING_HTML}
   ${COWORK_GALLERY_JS}
   ${COWORK_PROFILE_JS}
   ${REPORT_DETAILS_JS}
+  ${OUTPUT_JS}
   ${ONBOARDING_JS}
   ${UI_BUTTON_JS}
   boot();

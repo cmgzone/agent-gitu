@@ -1,4 +1,4 @@
-import type { TaskLedgerData } from '../types.js';
+import type { StepStatus, TaskLedgerData } from '../types.js';
 import { isManufacturedEvidenceCommand, isTrivialEvidenceCommand } from '../evidence/evidence.js';
 import type { AskUserQuestion } from './recovery-synthesizer.js';
 import { classifyCommand } from '../policy/policy.js';
@@ -64,7 +64,68 @@ export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint:
   return { open: false, reason: 'Verify the changed result: a focused check for code, a fresh browser screenshot/evidence for web work, or the document/schedule tool’s verified result. Checks from before the latest edit do not count.' };
 }
 
-/** Choosing routine checks is the agent's job, not a user-facing decision. */
+/** Terminal plan states. 'failed' and 'blocked' are deliberately NOT terminal:
+ *  they are unresolved contracted work that must not be silently dropped. */
+const RESOLVED_STEP_STATUSES: ReadonlySet<StepStatus> = new Set<StepStatus>(['done', 'cancelled'] as StepStatus[]);
+
+/** Deterministic, runtime-owned completion readiness.
+ *
+ *  This is deliberately separate from agentVerificationGate. The gate answers
+ *  "is the most recent check fresh and passing?"; this answers "is there any
+ *  contracted work still open?". Termination requires BOTH, so green evidence
+ *  can never terminate a task that still has open plan steps, open todos, or an
+ *  unresolved blocker.
+ */
+export function agentCompletionReady(data: TaskLedgerData): { ready: boolean; reason: string } {
+  const unsatisfied = data.acceptanceCriteria.filter((criterion) => !criterion.satisfied);
+  if (unsatisfied.length > 0) {
+    return { ready: false, reason: `${unsatisfied.length} acceptance criterion/criteria not satisfied: ${unsatisfied.map((c) => c.text).join('; ')}` };
+  }
+  const openSteps = data.plan.filter((step) => !RESOLVED_STEP_STATUSES.has(step.status));
+  if (openSteps.length > 0) {
+    return { ready: false, reason: `${openSteps.length} plan step(s) unresolved: ${openSteps.map((s) => `${s.id} (${s.status})`).join(', ')}` };
+  }
+  const openTodos = data.plan.filter(step => step.status !== 'cancelled').flatMap((step) => (step.subtasks ?? []).filter((todo) => !todo.done).map((todo) => todo.text));
+  if (openTodos.length > 0) {
+    return { ready: false, reason: `${openTodos.length} unresolved todo(s): ${openTodos.join('; ')}` };
+  }
+  if (data.blockers.length > 0) {
+    return { ready: false, reason: `${data.blockers.length} unresolved blocker(s): ${data.blockers.join('; ')}` };
+  }
+  return { ready: true, reason: 'Acceptance contract satisfied, plan resolved, no open todos or blockers.' };
+}
+
+/** Deterministic code prefix for refusals issued by the finalization state. */
+export const FINALIZATION_ERROR_CODE = 'TASK_COMPLETE';
+
+/** Bounded on purpose: finalization must not become a new verification loop. */
+export const FINALIZATION_ACTION_BUDGET = 8;
+
+/** The minimum surface still accepted once the runtime owns completion:
+ *  cleanup, stopping temporary processes, repository/diff inspection, the
+ *  final report, and the terminal stop itself. */
+export function isFinalizationAction(action: { type: string; tool?: string; params?: Record<string, unknown> }): boolean {
+  if (action.type === 'complete') return true;
+  if (action.type !== 'tool_call' || !action.tool) return false;
+  if (['read_file', 'list_files', 'search_files'].includes(action.tool)) return true;
+  if (action.tool === 'run_command') {
+    const verb = String(action.params?.['action'] ?? 'run');
+    // Stopping a temporary process this run started is cleanup, not new work.
+    if (verb === 'stop') return true;
+    const command = action.params?.['command'];
+    return verb === 'status' || (verb === 'run' && typeof command === 'string' && isInspectionCommand(command));
+  }
+  return false;
+}
+
+/** Deterministic, identical text for every non-finalization action refused
+ *  while finalizing, so the model cannot re-enter ordinary execution. */
+export function finalizationRejection(): string {
+  return `${FINALIZATION_ERROR_CODE}: the runtime owns completion for this task; only finalization actions are accepted. `
+    + 'Stop any temporary processes you started, inspect the repository or diff if the report needs it, then emit complete with the final report. '
+    + 'Extra execution, evidence collection and verification are refused, and this state is bounded. A required completion gate failure or new user direction reopens the affected work.';
+}
+
 export function asksOnlyForVerificationChoice(questions: readonly AskUserQuestion[]): boolean {
   if (questions.length === 0) return false;
   return questions.every(({ question, header, options }) => {

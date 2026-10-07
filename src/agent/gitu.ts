@@ -78,7 +78,7 @@ import {
 import { buildStateMessage, buildSystemPrompt, renderFullPlanMessage } from './prompt.js';
 import { applyOutputHygiene } from './output-style.js';
 import { buildTaskStrategySection, classifyTaskKind, determineInvestigationDepth } from './task-strategy.js';
-import { agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, isObservationTool } from './agent-workflow.js';
+import { agentCompletionReady, agentVerificationGate, agentWorkflowPrompt, asksOnlyForVerificationChoice, FINALIZATION_ACTION_BUDGET, FINALIZATION_ERROR_CODE, finalizationRejection, isFinalizationAction, isObservationTool } from './agent-workflow.js';
 import { applyFollowUpToLedger, classifyFollowUp, conversationIntent, persistVisualAssets, evaluateInstructionGate } from './follow-up.js';
 import { rehydrateVisualReferences, markUnavailableVisualReferences, restoreVisualReferencesAfterCompaction, isDurableVisualReferenceMessage } from './visual-assets.js';
 import { analyzeChangeImpact } from './impact.js';
@@ -1237,7 +1237,13 @@ export class Gitu {
       const verificationAttempts = new VerificationAttempts();
       let verificationRecoveryExhausted = false;
       const deferredBlocks = new Map<string, number>();
+      // Freeze ordinary execution only after current proof and contracted work
+      // are ready. Required gate failures and new user input reopen recovery.
+      let finalization = { active: false, remaining: FINALIZATION_ACTION_BUDGET };
+      let finalizationRecoveryFingerprint: string | undefined;
+      let finalizationSuspended = false;
       const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
+        finalization.active = false;
         // Timestamps and evidence IDs are excluded: repeating the same check
         // must not reset recovery, but a repair or changed outcome must.
         const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint]]));
@@ -1817,6 +1823,13 @@ export class Gitu {
 
       const admitQueuedMessages = (): boolean => {
         const hadMessages = this.inbox.length > 0 || this.taggedFolderNotices.length > 0;
+        if (hadMessages) {
+          finalization = { active: false, remaining: FINALIZATION_ACTION_BUDGET };
+          finalizationRecoveryFingerprint = undefined;
+          // Old criteria cannot freeze newly requested work before the model
+          // has incorporated that request into its contract.
+          finalizationSuspended = true;
+        }
         while (this.taggedFolderNotices.length > 0) observe(`REFERENCE FOLDER UPDATE: ${this.taggedFolderNotices.shift()}`);
         while (this.inbox.length > 0) {
           const queued = this.inbox.shift()!;
@@ -1977,7 +1990,7 @@ export class Gitu {
           let completionNote = '';
           if (agentWorkflow && !conversationControl) {
             const phase = activePhaseData();
-            if (phase.evidence.some(e => e.passed) && !phase.plan.some(s => !['done', 'cancelled'].includes(s.status)) && !phase.blockers.length) {
+            if (phase.evidence.some(e => e.passed) && agentCompletionReady(phase).ready) {
               const fp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               const criteria = evidence.gate(phase, fp);
               const commands = new Set(phase.acceptanceCriteria.map(c => c.verification).filter((c): c is string => Boolean(c)).map(c => c.trim().replace(/\s+/g, ' ').toLowerCase()));
@@ -1986,10 +1999,20 @@ export class Gitu {
               if (fp !== 'unknown-fp' && !fp.startsWith('partial-') && phase.evidence.some(e => e.passed && !e.stale && e.workspaceFingerprint === fp) &&
                 (criteria.totalCount === 0 || criteria.open) && verified.open && visual.verified) {
                 completionNote = 'COMPLETION CHECKPOINT: recorded requirements and current verification are satisfied. If the requested implementation and delivery are complete, perform only necessary cleanup, then call complete with the final report and terminate. Do not invent additional proof, criteria, or work. Continue only for a concrete remaining user requirement, new change, failure, or unresolved risk; name that reason. Existing completion gates still apply.';
+                // Formal criteria provide a complete contract the runtime can
+                // close. Quick work keeps the lighter checkpoint and judgment.
+                if (criteria.totalCount > 0 && !finalizationSuspended && fp !== finalizationRecoveryFingerprint && !unresolvedQualityReview && !finalization.active) {
+                  finalization = { active: true, remaining: FINALIZATION_ACTION_BUDGET };
+                  completionNote += `\n${finalizationRejection()}`;
+                }
+              } else {
+                finalization.active = false;
               }
+            } else {
+              finalization.active = false;
             }
           }
-          const action = await ask([effortNote, completionNote].filter(Boolean).join('\n\n'));
+          let action = await ask([effortNote, completionNote].filter(Boolean).join('\n\n'));
 
           // Input may arrive while the model is thinking. Its response was
           // produced under old instructions and must never reach dispatch.
@@ -2103,6 +2126,24 @@ export class Gitu {
               : ['set_criteria', 'add_criteria', 'set_design', 'set_plan', 'append_plan', 'show_plan', 'set_hypothesis', 'record_decision', 'ask_user'].includes(action.type);
             if (!discovery) {
               observe('Plan requested for this turn: inspect with read-only tools, propose set_plan, and wait for approval before execution.');
+              continue;
+            }
+          }
+          // While finalizing, the contract is already satisfied. Only cleanup,
+          // stopping temporary processes, read-only inspection and the final report
+          // are accepted, and the number of such actions is bounded so the runtime
+          // cannot be walked into a second verification loop.
+          if (finalization.active) {
+            if (finalization.remaining <= 0 && action.type !== 'complete') {
+              // Build a factual report from the satisfied contract instead of
+              // inventing a task blocker because the model kept asking for proof.
+              // This still runs EVERY completion/visual/review gate below.
+              action = { type: 'complete', summary: `Completed the verified requirements:\n\n${activePhaseData().acceptanceCriteria.map(c => `- ${c.text}`).join('\n')}\n\nRequired checks passed for the current workspace. Changed files and verification details are available in the task details.` };
+              this.emit(`${FINALIZATION_ERROR_CODE}: closing budget reached — generating the final report from verified task records`);
+            }
+            finalization.remaining -= 1;
+            if (!isFinalizationAction(action)) {
+              observe(finalizationRejection());
               continue;
             }
           }
@@ -3053,6 +3094,9 @@ export class Gitu {
               break;
             }
             case 'complete': {
+              // The final report still passes every required gate below. If a
+              // gate needs a repair, ordinary recovery must remain available.
+              finalization.active = false;
               if (conversationControl) {
                 completionInput = { summary: applyOutputHygiene(action.summary), risks: action.risks ?? [], followUps: action.followUps ?? [] };
                 if (preservePausedWork) this.emit(`say ${applyOutputHygiene(action.summary)}`);
@@ -3061,6 +3105,7 @@ export class Gitu {
                 break;
               }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              finalizationRecoveryFingerprint = currentFp;
               const gate = evidence.gate(ledger.data, currentFp);
               const verificationPhaseData = activePhaseData();
               const criterionCommands = verificationPhaseData.acceptanceCriteria.length
@@ -3079,6 +3124,23 @@ export class Gitu {
               }
               const conversation = agentWorkflow && ledger.data.actions.slice(actionsAtStart).every(a => a.observationOnly ?? isObservationTool(a.tool)) && currentFp === agentBaselineFingerprint;
               const chatOnly = agentWorkflow ? conversation && gate.open : Boolean(action.chat) && ledger.data.actions.length === actionsAtStart;
+              // Runtime-owned completion transition. Termination is a control-plane
+              // decision: it requires the evidence gate to be open AND every piece
+              // of contracted work to be resolved. The model does not get to decide
+              // that "enough is enough" by asserting it. A pure conversation is
+              // exempt: read-only investigation with no workspace change still
+              // answers the user without pretending contracted work is unfinished.
+              if (agentWorkflow && !finalization.active && !chatOnly) {
+                const contractedWork = agentCompletionReady(verificationPhaseData);
+                if (gate.open && !contractedWork.ready) {
+                  // Green evidence is not sufficient on its own: unresolved
+                  // contracted work is a hard veto, not a notice. The run stays
+                  // alive so the model can finish or revise obsolete scope.
+                  rejectCompletion('contract', contractedWork.reason, currentFp);
+                  break;
+                }
+                if (contractedWork.ready) verificationAttempts.resolve('contract');
+              }
               if (completionDisposition(gate.open || chatOnly) === 'working') {
                 rejectCompletion('evidence', `${gate.satisfiedCount}/${gate.totalCount} criteria backed; ${gate.missing.join('; ')}`, currentFp);
                 break;

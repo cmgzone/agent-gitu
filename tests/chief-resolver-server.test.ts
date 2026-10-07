@@ -60,6 +60,9 @@ async function harness(policy?: ChiefAuthorityPolicy, script: string[] = workerS
     cwd: path.join(home, 'Workspace'),
     port: 0,
     llm: new ScriptedMockLlm(script.map((text) => () => text)),
+    // The scripted replies are plain text; completion-state enforcement would
+    // ask the script for a classification it cannot give.
+    coworkCompletionProtocol: 'legacy',
     ...(policy ? { chiefAuthority: policy, chiefContext: () => CONTEXT } : {}),
   });
   servers.push(server);
@@ -70,8 +73,8 @@ async function harness(policy?: ChiefAuthorityPolicy, script: string[] = workerS
   };
   const worker = (await call('/api/cowork/agents', 'POST', { name: 'Worker', systemPrompt: 'Implement.' })).agent as { id: string };
   const chief = (await call('/api/cowork/agents', 'POST', { name: 'Chief', systemPrompt: 'Coordinate.', chiefOfStaff: true })).agent as { id: string };
-  // A DM assigns the turn to its FIRST member, so the worker leads while the
-  // chief is still a member that is eligible to resolve.
+  // A multi-member DM is triaged by its chief, so the message targets the
+  // worker explicitly while the chief stays a member eligible to resolve.
   const conv = (await call('/api/cowork/conversations', 'POST', { kind: 'dm', memberIds: [worker.id, chief.id], chiefId: chief.id })).conversation as { id: string };
   const route = `/api/cowork/conversations/${conv.id}/messages`;
   if (policy) {
@@ -128,7 +131,7 @@ function policyFor(): ChiefAuthorityPolicy {
 describe('Chief-of-Staff automatic resolution over HTTP', () => {
   it('answers a delegated question through the existing request path and audits the decision', async () => {
     const h = await harness(policyFor());
-    await h.send('Start the work.');
+    await h.send('@Worker Start the work.');
     const answered = await h.settled('answered');
     // The SAME request object is resolved in place — not a second request.
     expect(answered.response).toBe('All tests');
@@ -140,7 +143,7 @@ describe('Chief-of-Staff automatic resolution over HTTP', () => {
 
   it('leaves every request open when no authority is delegated (the default)', async () => {
     const h = await harness();
-    await h.send('Start the work.');
+    await h.send('@Worker Start the work.');
     await h.settled('open');
     await h.finish();
     expect(await h.systemText()).not.toContain('Chief of Staff resolved');
@@ -152,7 +155,7 @@ describe('Chief-of-Staff automatic resolution over HTTP', () => {
     // undelegated authority: the Chief must leave it with the user.
     const h = await harness(policyFor(), permissionScript());
     const before = (await h.agents()).find((agent) => agent.id === h.workerId)!;
-    await h.send('Continue.');
+    await h.send('@Worker Continue.');
     await h.finish();
     expect((await h.permission())?.status).toBe('open');
     expect(await h.systemText()).not.toContain('Chief of Staff resolved');
@@ -166,7 +169,7 @@ describe('Chief-of-Staff automatic resolution over HTTP', () => {
     // Enabled authority that delegates NOTHING: the request must stay open.
     policy.answers = [];
     const h = await harness(policy);
-    await h.send('Start the work.');
+    await h.send('@Worker Start the work.');
     await h.settled('open');
     await h.finish();
     expect((await h.question())?.status).toBe('open');

@@ -16,6 +16,8 @@ it('starts the actual mobile CLI on the requested network interface with authent
   await new Promise<void>((resolve) => reservation.close(() => resolve()));
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-mobile-cli-'));
   const key = 'isolated-mobile-cli-key-for-testing-only';
+  const password = 'isolated mobile cli passphrase';
+  const profile = { name: 'Mobile CLI Tester', email: 'mobile-cli@example.com' };
   const loader = createRequire(import.meta.url).resolve('tsx');
   const child = spawn(
     process.execPath,
@@ -59,10 +61,26 @@ it('starts the actual mobile CLI on the requested network interface with authent
     });
     // 127.0.0.2 cannot reach a listener accidentally bound only to 127.0.0.1.
     const address = `http://127.0.0.2:${port}/api/mobile/status`;
-    const response = await fetch(address, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) });
+    // The access key alone never unlocks a locked app: the app password is the
+    // first-owner credential, and the native client pairs the key with its app
+    // session (apps/mobile/src/gitu/client.ts).
+    const locked = await fetch(address, { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(5000) });
+    expect(locked.status).toBe(401);
+    expect((await locked.json()).code).toBe('APP_LOCKED');
+    expect((await fetch(address, { signal: AbortSignal.timeout(5000) })).status).toBe(401);
+    // First-owner setup happens on the machine itself, over the local interface.
+    const local = `http://127.0.0.1:${port}`;
+    const json = { 'content-type': 'application/json' };
+    const register = await fetch(`${local}/api/auth/register`, { method: 'POST', headers: json, body: JSON.stringify({ ...profile, password }) });
+    expect(register.status).toBe(201);
+    const login = await fetch(`${local}/api/auth/login`, { method: 'POST', headers: json, body: JSON.stringify({ email: profile.email, password }) });
+    expect(login.status).toBe(200);
+    const session = login.headers.get('set-cookie')!.split(';')[0]!;
+    // The phone then reaches the server on the interface it was asked to bind,
+    // authenticated with its access key and app session.
+    const response = await fetch(address, { headers: { Authorization: `Bearer ${key}`, Cookie: session }, signal: AbortSignal.timeout(5000) });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ app: 'Agent Gitu', mobileProtocol: 1, mobileFeatures: ['native-workspace'] });
-    expect((await fetch(address, { signal: AbortSignal.timeout(5000) })).status).toBe(401);
   } finally {
     if (child.exitCode === null) {
       const stopped = once(child, 'exit');

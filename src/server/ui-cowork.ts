@@ -1934,6 +1934,14 @@ export const COWORK_JS = String.raw`
   // Tables are rebuilt from the raw (unescaped) source: each cell is escaped
   // individually, so no markup can smuggle through a pipe row.
   function cwTableHtml(block) {
+    // A markdown table goes through the shared viewer whenever ui-outputs.js is
+    // loaded, so the same pipe table renders identically on Coding and Cowork.
+    // COWORK_JS is also evaluated standalone in its tests, and a table with no
+    // body rows is rejected there, so the renderer below stays as the fallback.
+    if (typeof outTableHtml === 'function') {
+      var shared = outTableHtml(block);
+      if (shared) return shared;
+    }
     var rows = block.split('\n').map(function (line) { return line.trim(); }).filter(Boolean);
     if (rows.length < 2) return null;
     var isDivider = function (line) { return /^\|?[\s:|-]+\|?$/.test(line) && line.indexOf('-') >= 0; };
@@ -2050,7 +2058,23 @@ export const COWORK_JS = String.raw`
     // Pull pipe tables out of the raw text before escaping; anything left
     // behind is still escaped and line-broken below.
     var tables = [];
-    var stripped = cwProseLayout(text).replace(/(^|\n)(\|[^\n]*\|\n\|[\s:|-]*\|(?:\n\|[^\n]*\|)+)/g, function (all, lead, block) {
+    // Structured skill output (a \x60\x60\x60output chart fence) is rendered by the
+    // shared viewers in ui-outputs.js, so one skill produces the same chart,
+    // table or preview on both surfaces. Each block is rendered on its own and
+    // replaced by a placeholder, because everything below assumes plain text
+    // that still has to be escaped. COWORK_JS is also evaluated standalone by
+    // the tests, where the shared helper is absent, so the guard keeps the
+    // fence as ordinary code in that case.
+    var outs = [];
+    var laid = cwProseLayout(text).replace(/(^|\n)\x60{3,}[ \t]*output[ \t]+(\S+)[^\n]*\n([\s\S]*?)\n\x60{3,}/g, function (all, lead, kind, payload) {
+      if (typeof outRenderBlocks !== 'function') return all;
+      var fence = '\x60\x60\x60output ' + kind + '\n' + payload + '\n\x60\x60\x60';
+      var html = outRenderBlocks(fence);
+      if (!html || html === fence) return all;
+      outs.push(html);
+      return lead + '\x00OUT' + (outs.length - 1) + '\x00';
+    });
+    var stripped = laid.replace(/(^|\n)(\|[^\n]*\|\n\|[\s:|-]*\|(?:\n\|[^\n]*\|)+)/g, function (all, lead, block) {
       var html = cwTableHtml(block.replace(/^\n/, ''));
       if (!html) return all;
       tables.push(html);
@@ -2086,6 +2110,7 @@ export const COWORK_JS = String.raw`
     out = out.replace(/\x00H([1-6])\x00([^\n]*)/g, function (all, level, label) {
       return '</span><div class="cw-h cw-h' + level + '">' + label + '</div><span>';
     });
+    out = out.replace(/\x00OUT(\d+)\x00/g, function (all, i) { return '</span>' + outs[Number(i)] + '<span>'; });
     out = out.replace(/\x00TABLE(\d+)\x00/g, function (all, i) { return '</span>' + tables[Number(i)] + '<span>'; });
     out = out.replace(/\x00RICH(\d+)\x00/g, function (all,i) { return richAnchors[Number(i)]; });
     out = out.replace(/\n/g, '<br>');
@@ -3093,7 +3118,7 @@ export const COWORK_JS = String.raw`
     });
   }
 
-  if (typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', function () { if (!document.hidden) cwShowDesktopHandoffs(); });
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', function () { if (!document.hidden) cwShowDesktopHandoffs(); });
 
 
   function cwStartStream(convId) {

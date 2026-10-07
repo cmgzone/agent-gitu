@@ -77,7 +77,7 @@ describe('animated teammate characters and web activity', () => {
     expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 76px; height: 76px; }');
     expect(COWORK_JS).toContain('cwAva(a, 112)');
     expect(COWORK_JS).toContain('cwAva(m, 40)');
-    expect(COWORK_CSS).toContain('svg:not(.home-blob)');
+    expect(COWORK_CSS).toContain('.cw-plush > svg.cw-blink-overlay');
   });
 
   it('renders plush images immediately even when WebGL is unavailable', () => {

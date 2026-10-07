@@ -1,62 +1,10 @@
 import { createContext, Script } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { SUBAGENT_JS } from '../src/server/ui-subagents.js';
+import { CHARACTER_JS } from '../src/server/ui-characters.js';
 import { UI_HTML } from '../src/server/ui.js';
 
-/** Small DOM adapter for exercising the shipped callbacks, not a second renderer. */
-class Element {
-  children: Element[] = [];
-  parent?: Element;
-  dataset: Record<string, string> = {};
-  attributes: Record<string, string> = {};
-  style = { setProperty: () => {} };
-  className = '';
-  text = '';
-  hidden = false;
-  open = false;
-  attached = false;
-  offsetWidth = 300;
-  listeners: Record<string, () => void> = {};
-  onclick?: () => void;
-  onfocus?: () => void;
-  constructor(readonly tag = 'div') {}
-  get isConnected(): boolean { return this.attached || Boolean(this.parent?.isConnected); }
-  get textContent(): string { return this.text + this.children.map(child => child.textContent).join(''); }
-  set textContent(value: string) { this.text = value; this.children = []; }
-  set innerHTML(html: string) {
-    this.children = []; this.text = '';
-    const stack: Element[] = [this];
-    for (const token of html.match(/<[^>]+>|[^<]+/g) || []) {
-      if (token.startsWith('</')) { stack.pop(); continue; }
-      if (!token.startsWith('<')) { stack.at(-1)!.text += token; continue; }
-      const tag = /^<(\w+)/.exec(token)?.[1];
-      if (!tag) continue;
-      const child = new Element(tag);
-      for (const match of token.matchAll(/([\w-]+)="([^"]*)"/g)) child.setAttribute(match[1], match[2]);
-      stack.at(-1)!.appendChild(child);
-      if (!['img', 'br', 'input'].includes(tag)) stack.push(child);
-    }
-  }
-  setAttribute(name: string, value: string) { this.attributes[name] = value; if (name === 'class') this.className = value; }
-  getAttribute(name: string) { return this.attributes[name]; }
-  appendChild(child: Element) { child.parent = this; this.children.push(child); }
-  matches(selector: string) {
-    return selector.startsWith('.') ? this.className.split(' ').includes(selector.slice(1)) : selector.startsWith('[') ? selector.slice(1, -1) in this.attributes : this.tag === selector;
-  }
-  querySelectorAll(selector: string): Element[] {
-    const [ancestor, ...rest] = selector.split(' ');
-    if (rest.length) return this.querySelectorAll(ancestor).flatMap(node => node.querySelectorAll(rest.join(' ')));
-    return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
-  }
-  querySelector(selector: string) { return this.querySelectorAll(selector)[0] || null; }
-  contains(child: Element): boolean { return this === child || this.children.some(node => node.contains(child)); }
-  getBoundingClientRect() { return { left: 24, top: 24, bottom: 70, width: 300, height: 250 }; }
-  addEventListener(name: string, fn: () => void) { this.listeners[name] = fn; }
-  remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
-  showModal() { this.open = true; }
-  close() { this.open = false; this.listeners.close?.(); }
-  focus() { this.onfocus?.(); }
-}
+import { Element } from './helpers/subagent-dom.js';
 
 function renderer() {
   const body = new Element(); body.attached = true;
@@ -75,7 +23,7 @@ function renderer() {
     const end = UI_HTML.indexOf('\n' + match[1] + '}', match.index);
     return UI_HTML.slice(match.index, end + match[1].length + 2);
   };
-  new Script(SUBAGENT_JS + ['specialistPresence', 'applySubagentState'].map(source).join('\n')).runInContext(context);
+  new Script(CHARACTER_JS + SUBAGENT_JS + ['specialistPresence', 'applySubagentState'].map(source).join('\n')).runInContext(context);
   const apply = context.applySubagentState as (run: string, insert: (node: Element) => void, event: string) => void;
   return { body, session, timers, send: (data: Record<string, unknown>) => apply('run', node => body.appendChild(node), 'subagent-state ' + JSON.stringify(data)) };
 }

@@ -12,6 +12,7 @@ import { buildSubAgentEvidenceReport } from './subagents.js';
 import type { SubAgentInstance } from './store.js';
 import { extractLastJsonObject, findXmlCallStart, compactDialectMarkers, requestLlmTurn, LlmError } from '../llm/llm.js';
 import { compactHistory } from '../agent/compaction.js';
+import { estimateTokens, messageTextChars } from '../agent/telemetry.js';
 import { formatLineCounts } from '../tools/diff.js';
 import { parseReplyAction } from '../agent/action-parser.js';
 import type { CoworkDelegation } from './delegation.js';
@@ -432,11 +433,12 @@ function currentMembers(conversation: CoworkConversation, deps: CoworkRunnerDeps
  * Every durable agent is depth 1 in v1 (chief included), so a spawned worker
  * lands at depth 2 and cannot re-spawn.
  */
-function subAgentBridgeFor(agent: CoworkAgent, conversationId: string, missionId: string | undefined, deps: CoworkRunnerDeps): CoworkSubAgentBridge | undefined {
+function subAgentBridgeFor(agent: CoworkAgent, conversationId: string, missionId: string | undefined, deps: CoworkRunnerDeps, threadId?: string): CoworkSubAgentBridge | undefined {
   if (!deps.subAgents || !deps.store) return undefined;
   const account = deps.budgetFor?.({ conversationId, ...(missionId ? { missionId } : {}), agentId: agent.id });
   const scope: SubAgentToolScope = {
     conversationId,
+    ...(threadId ? { threadId } : {}),
     ...(missionId ? { missionId } : {}),
     parentAgentId: agent.id,
     rootAgentId: agent.id,
@@ -542,7 +544,7 @@ async function agentTurn(input: {
   let ctx: ToolContext | undefined;
   const taggedFolders = (deps.store?.getConversation(conversation.id)?.folders ?? conversation.folders ?? []).map((folder) => folder.path);
   const scope: CoworkToolScope | undefined =
-    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser, subAgents: subAgentBridgeFor(agent, conversation.id, undefined, deps) } : undefined;
+    deps.store && deps.memory ? { store: deps.store, agent, memory: deps.memory, recall: deps.recall, conversationId: conversation.id, threadId, computerFor: deps.computerFor, delegation: deps.delegation, signal: deps.signal, taggedFolders, artifactIds, acquireHostBrowser: deps.acquireHostBrowser, subAgents: subAgentBridgeFor(agent, conversation.id, undefined, deps, threadId) } : undefined;
   if (scope) scope.activateThread = thread => {
     deps.onThreadActivated?.(thread);
     messages.push({ role: 'user', content: `TOPIC ROUTING UPDATE: Continue this task in "${thread.title}"${thread.topic ? ` — ${thread.topic}` : ''}. The team will work in this shared topic automatically. Keep the original request and completed results; do not repeat work.` });
@@ -1311,7 +1313,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
     let budgetStopped = false;
     const llm = resilientLlm(
       deps.subAgentLlm ? deps.subAgentLlm(parentAgent, account, () => { budgetStopped = true; }) : deps.resolveLlm(parentAgent),
-      { label: `sub-agent ${instance.role}` },
+      { label: `sub-agent ${instance.role}`, onRetry: () => deps.subAgents?.recordActivity(instance.id, 'waiting', 'Waiting to retry the model request…') },
     );
     const perms: CoworkToolPerms = { allowShell: permissions.allowShell, allowWrites: permissions.allowWrites, allowConfig: permissions.allowConfig, chief: false, browser: permissions.browser && Boolean(deps.browser) };
     const taggedFolders = (deps.store?.getConversation(instance.conversationId)?.folders ?? []).map((folder) => folder.path);
@@ -1324,6 +1326,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
             memory: deps.memory,
             recall: deps.recall,
             conversationId: instance.conversationId,
+            ...(instance.threadId ? { threadId: instance.threadId } : {}),
             ...(instance.missionId ? { missionId: instance.missionId } : {}),
             computerFor: deps.computerFor,
             signal,
@@ -1357,6 +1360,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
         // Unpriced children still pay: one turn per model call.
         if (!metered && !account.charge({ turns: 1 })) { budgetStopped = true; break; }
         turns += 1;
+        deps.subAgents?.recordActivity(instance.id, 'reasoning', `Planning the next step (round ${round + 1})…`, estimateTokens(messages.reduce((chars, message) => chars + messageTextChars(message), 0)));
         deps.onProgress?.({ agentId: instance.id, agentName: instance.role, text: `sub-agent working (round ${round + 1})`, phase: 'thinking' });
         reply = await llm.complete(messages, { temperature: 0.4, effort: childAgent.effort, signal });
         signal.throwIfAborted();
@@ -1366,7 +1370,9 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
         for (const call of calls) {
           signal.throwIfAborted();
           ctx ??= deps.toolContext(parentAgent);
+          deps.subAgents?.recordActivity(instance.id, 'tool', `Using ${call.tool.replace(/_/g, ' ')}…`);
           const result = await executeCoworkTool(ctx, call.tool, call.params, perms, scope);
+          deps.subAgents?.recordActivity(instance.id, 'working', `${call.tool.replace(/_/g, ' ')} ${result.ok ? 'completed' : 'reported a problem'}.`);
           trail.push({ tool: call.tool, params: call.params, result });
           recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
           messages.push(toolResultMessage(call.tool, result, false));
@@ -1377,6 +1383,7 @@ export function createSubAgentChildRunner(deps: CoworkRunnerDeps): SubAgentChild
       scope?.releaseHostBrowser?.();
     }
     const summary = stripToolMarkers(reply).trim() || '(the sub-agent produced no report)';
+    deps.subAgents?.recordActivity(instance.id, 'working', 'Returning the report for verification…');
     const noted = budgetStopped ? `${summary}\n\n[stopped early: the budget ran out]` : summary;
     return { summary: noted.slice(0, 4_000), usage: { turns }, evidence: buildSubAgentEvidenceReport(instance, summary, trail) };
   };

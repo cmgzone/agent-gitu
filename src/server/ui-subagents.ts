@@ -1,6 +1,7 @@
 /** Compact, keyed specialist presence. Only the outer ring moves. */
 export const SUBAGENT_CSS = String.raw`
   .subagent-presence { margin: 14px 0 20px 22px; width: fit-content; max-width: calc(100% - 22px); background: none; border: 0; }
+  .cw-msgs > .subagent-presence { margin: 12px 0 22px 18px; }
   .subagent-caption { color: var(--muted); font-size: 11px; margin-bottom: 9px; display: flex; gap: 8px; align-items: center; }
   .subagent-count { color: var(--faint); }
   .subagent-grid { display: grid; grid-template-columns: repeat(3, 46px); gap: 10px 13px; width: fit-content; }
@@ -51,7 +52,7 @@ export const SUBAGENT_CSS = String.raw`
   @keyframes subagent-success { 0% { opacity: 1; transform: rotate(-90deg); } 80% { opacity: 1; } 100% { opacity: 0; transform: rotate(270deg); } }
   @keyframes subagent-failed { 0%, 100% { opacity: .9; } 45% { opacity: .25; box-shadow: inset 0 0 0 2px var(--ring-color), 0 0 9px #ce6e6e35; } }
   @keyframes subagent-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-  @media (max-width: 560px) { .subagent-presence { margin-left: 0; max-width: 100%; } }
+  @media (max-width: 560px) { .subagent-presence, .cw-msgs > .subagent-presence { margin-left: 0; max-width: 100%; } }
   @media (prefers-reduced-motion: reduce) { .subagent-ring, .subagent-ring::after, .subagent-peek { animation: none !important; } .subagent-orb[data-phase="working"] .subagent-ring, .subagent-orb[data-phase="tool"] .subagent-ring { box-shadow: inset 0 0 0 1.5px var(--ring-color); } }
 `;
 
@@ -178,7 +179,9 @@ export const SUBAGENT_JS = String.raw`
         var button = document.createElement('button'); button.type = 'button'; button.className = 'subagent-orb';
         button.dataset.jobId = data.id; button.setAttribute('aria-expanded', 'false'); button.setAttribute('aria-haspopup', 'dialog');
         var seed = Array.from(data.id).reduce(function (sum, c) { return sum + c.charCodeAt(0); }, 0);
-        button.innerHTML = '<span class="subagent-ring" aria-hidden="true"></span><img class="subagent-face" src="/characters/' + ['blue', 'purple', 'orange', 'mint'][seed % 4] + '.png?v=opendots1" alt="" draggable="false">';
+        var color = ['blue', 'purple', 'orange', 'mint'][seed % 4];
+        var face = typeof plushCharacterHtml === 'function' ? plushCharacterHtml(color, data.id, '', 'subagent-face') : '<img class="subagent-face" src="/characters/' + color + '.png?v=opendots1" alt="" draggable="false">';
+        button.innerHTML = '<span class="subagent-ring" aria-hidden="true"></span>' + face;
         button.querySelector('.subagent-ring').style.setProperty('--ring-offset', -(seed % 7) + 's');
         button.querySelector('.subagent-ring').style.setProperty('--working-speed', (6 + seed % 30 / 10) + 's');
         button.onpointerenter = function () { if (!pinned && !dialog) showPeek(data.id, false); };

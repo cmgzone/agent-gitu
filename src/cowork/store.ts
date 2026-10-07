@@ -300,6 +300,8 @@ export interface SubAgentEvidenceReport {
 export interface SubAgentInstance {
   id: string;
   conversationId: string;
+  /** Host-bound chat thread; absent for the main conversation. */
+  threadId?: string;
   /** The mission this worker belongs to, when it is mission work. */
   missionId?: string;
   /** Whoever spawned it: a durable agent id, or a parent instance id. */
@@ -332,7 +334,17 @@ export interface SubAgentInstance {
   /** The evidence report the gate validated, persisted for the audit trail. */
   evidence?: SubAgentEvidenceReport;
   createdAt: string;
+  startedAt?: string;
+  /** Public runtime milestones, never provider reasoning or tool parameters. */
+  activity?: SubAgentActivity;
   finishedAt?: string;
+}
+
+export interface SubAgentActivity {
+  phase: 'working' | 'reasoning' | 'tool' | 'waiting';
+  current: string;
+  contextTokens?: number;
+  entries: { seq: number; at: string; text: string }[];
 }
 
 /** An agent's own reminder: wake me up at <dueAt> to do <note>. */
@@ -1348,6 +1360,7 @@ export class CoworkStore {
    */
   createSubAgent(input: {
     conversationId: string;
+    threadId?: string;
     missionId?: string;
     parentAgentId: string;
     rootAgentId: string;
@@ -1374,6 +1387,7 @@ export class CoworkStore {
     const instance: SubAgentInstance = {
       id: `csa-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5)}`,
       conversationId: input.conversationId,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(input.missionId !== undefined ? { missionId: input.missionId } : {}),
       parentAgentId: input.parentAgentId,
       rootAgentId: input.rootAgentId,

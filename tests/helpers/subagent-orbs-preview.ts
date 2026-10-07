@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { UI_HTML } from '../../src/server/ui.js';
 import { SUBAGENT_JS } from '../../src/server/ui-subagents.js';
+import { CHARACTER_JS } from '../../src/server/ui-characters.js';
 import { CHARACTERS_DIR, FONTS_DIR } from '../../src/server/static-assets.js';
 
 function source(name: string) {
@@ -26,6 +27,7 @@ const html = `<!doctype html><html lang="en" data-theme="light"><head><meta name
   var S={sessions:{run:{nodes:{},replaying:false}}};
   function esc(value){return String(value == null ? '' : value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function icon(name){return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="'+(name==='x'?'M6 6l12 12M18 6L6 18':'m9 5 7 7-7 7')+'"/></svg>';}
+  ${CHARACTER_JS}
   ${SUBAGENT_JS}
   ${adapters}
   var start=new Date(Date.now()-42000).toISOString();

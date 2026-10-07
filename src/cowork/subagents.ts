@@ -77,6 +77,7 @@ export interface SubAgentSpawnRequest {
 export interface SubAgentSpawnScope {
   store: CoworkStore;
   conversationId: string;
+  threadId?: string;
   /** The mission this spawn belongs to, when the turn is mission work. */
   missionId?: string;
   /** The parent as the host knows it: a durable agent id or an instance id. */
@@ -252,11 +253,11 @@ export class CoworkSubAgents {
    * roots and anything they spawn (a deeper tree, should `MAX_COWORK_DEPTH`
    * ever rise) nests beneath them.
    */
-  tree(scope: { conversationId: string; missionId?: string }): SubAgentTree {
+  tree(scope: { conversationId: string; missionId?: string; threadId?: string | null }): SubAgentTree {
     const instances = this.store.subAgents({
       conversationId: scope.conversationId,
       ...(scope.missionId ? { missionId: scope.missionId } : {}),
-    });
+    }).filter((instance) => !('threadId' in scope) || (instance.threadId ?? null) === scope.threadId);
     const ids = new Set(instances.map((instance) => instance.id));
     const nodes = new Map<string, SubAgentTreeNode>(
       instances.map((instance) => {
@@ -269,6 +270,7 @@ export class CoworkSubAgents {
             id: instance.id,
             parentAgentId: instance.parentAgentId,
             rootAgentId: instance.rootAgentId,
+            ...(instance.threadId ? { threadId: instance.threadId } : {}),
             ...(instance.missionId ? { missionId: instance.missionId } : {}),
             depth: instance.depth,
             role: instance.role,
@@ -280,6 +282,8 @@ export class CoworkSubAgents {
             ...(verdict ? { evidence: { passed: verdict.passedRecords, total: verdict.totalRecords, accepted: verdict.accepted } } : {}),
             ...(instance.resultSummary ? { resultSummary: instance.resultSummary } : {}),
             createdAt: instance.createdAt,
+            ...(instance.startedAt ? { startedAt: instance.startedAt } : {}),
+            ...(instance.activity ? { activity: instance.activity } : {}),
             ...(instance.finishedAt ? { finishedAt: instance.finishedAt } : {}),
             children: [],
           },
@@ -368,6 +372,7 @@ export class CoworkSubAgents {
 
     const instance = this.store.createSubAgent({
       conversationId: scope.conversationId,
+      ...(scope.threadId ? { threadId: scope.threadId } : {}),
       ...(scope.missionId !== undefined ? { missionId: scope.missionId } : {}),
       parentAgentId: scope.parentAgentId,
       rootAgentId: scope.rootAgentId,
@@ -392,6 +397,21 @@ export class CoworkSubAgents {
   /** starting/blocked → running, when the host begins the child's turn. */
   markRunning(id: string): SubAgentInstance | undefined {
     return this.transition(id, 'running');
+  }
+
+  /** Host-produced public activity survives polling, replay and completion. */
+  recordActivity(id: string, phase: NonNullable<SubAgentInstance['activity']>['phase'], current: string, contextTokens?: number): void {
+    const instance = this.store.getSubAgent(id);
+    if (!instance || instance.status !== 'running') return;
+    const text = current.slice(0, 500);
+    const previous = instance.activity;
+    const entries = previous?.entries ?? [];
+    const seq = (entries.at(-1)?.seq ?? 0) + 1;
+    this.store.updateSubAgent(id, {
+      activity: { phase, current: text, contextTokens: contextTokens ?? previous?.contextTokens,
+        entries: [...entries, { seq, at: new Date().toISOString(), text }].slice(-256) },
+    });
+    this.notify(instance.conversationId);
   }
 
   /** running → blocked, with the reason the parent (and the UI) will read. */
@@ -467,6 +487,7 @@ export class CoworkSubAgents {
     const instance = this.store.getSubAgent(id);
     if (!instance || !ACTIVE_STATUSES.has(instance.status)) return undefined;
     const patch: Partial<SubAgentInstance> = { status, ...extra };
+    if (status === 'running' && !instance.startedAt) patch.startedAt = new Date().toISOString();
     if (!ACTIVE_STATUSES.has(status)) {
       const account = this.accounts.get(id);
       if (account) {
@@ -539,6 +560,7 @@ export interface CoworkSubAgentBridge {
  */
 export interface SubAgentToolScope {
   conversationId: string;
+  threadId?: string;
   missionId?: string;
   parentAgentId: string;
   rootAgentId: string;
@@ -560,6 +582,7 @@ export interface SubAgentToolScope {
  */
 export interface SubAgentTreeNode {
   id: string;
+  threadId?: string;
   /** Who spawned it: a durable agent id, or a parent instance id. */
   parentAgentId: string;
   rootAgentId: string;
@@ -576,6 +599,8 @@ export interface SubAgentTreeNode {
   evidence?: { passed: number; total: number; accepted: boolean };
   resultSummary?: string;
   createdAt: string;
+  startedAt?: string;
+  activity?: SubAgentInstance['activity'];
   finishedAt?: string;
   children: SubAgentTreeNode[];
 }
@@ -723,8 +748,12 @@ export class CoworkSubAgentRunner {
   }
 
   /** The execution tree the Cowork UI renders (live spend, gate state, nesting). */
-  tree(scope: { conversationId: string; missionId?: string }): SubAgentTree {
+  tree(scope: { conversationId: string; missionId?: string; threadId?: string | null }): SubAgentTree {
     return this.manager.tree(scope);
+  }
+
+  recordActivity(id: string, phase: NonNullable<SubAgentInstance['activity']>['phase'], current: string, contextTokens?: number): void {
+    this.manager.recordActivity(id, phase, current, contextTokens);
   }
 
   /** Bind host-derived identity to a child runner, producing the tool bridge. */
@@ -737,6 +766,7 @@ export class CoworkSubAgentRunner {
       {
         store: this.manager.store,
         conversationId: scope.conversationId,
+        ...(scope.threadId ? { threadId: scope.threadId } : {}),
         ...(scope.missionId !== undefined ? { missionId: scope.missionId } : {}),
         parentAgentId: scope.parentAgentId,
         rootAgentId: scope.rootAgentId,

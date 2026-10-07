@@ -310,6 +310,34 @@ describe('isolated child turn', () => {
 });
 
 describe('execution tree', () => {
+  it('persists real public activity and context estimates in the host-bound thread', async () => {
+    const { dir, store, runner, manager, scope, conversation } = setup('orb-telemetry');
+    const seen: string[] = [];
+    const observed = new CoworkSubAgents(store, () => {
+      const node = store.subAgents()[0];
+      if (node?.activity) seen.push(node.activity.phase);
+    });
+    const liveRunner = new CoworkSubAgentRunner(observed);
+    const llm = mockLlm([toolCall('list_files', { path: '.' }), 'The files have been reviewed.']);
+    const deps = runnerDeps(dir, store, llm, { subAgents: liveRunner });
+    const result = await liveRunner.run(scope({ missionId: undefined, threadId: 'launch' }), createSubAgentChildRunner(deps), { role: 'Reviewer', objective: 'Review the project files' });
+    expect(result.ok).toBe(true);
+    const node = store.subAgents()[0]!;
+    expect(node.startedAt).toBeTruthy(); expect(node.finishedAt).toBeTruthy();
+    expect(node.activity?.contextTokens).toBeGreaterThan(0);
+    expect(seen).toContain('reasoning'); expect(seen).toContain('tool');
+    expect(node.activity?.entries.map(entry => entry.seq)).toEqual([1, 2, 3, 4, 5]);
+    expect(manager.tree({ conversationId: conversation.id, threadId: null }).nodes).toEqual([]);
+    expect(runner.tree({ conversationId: conversation.id, threadId: 'launch' }).nodes[0]).toMatchObject({ id: node.id, status: 'completed', threadId: 'launch', activity: node.activity });
+    expect(store.workHistory(conversation.id, null)).toEqual([]);
+    expect(store.workHistory(conversation.id, 'launch')).toHaveLength(1);
+    expect(store.messages(conversation.id)).toEqual([]);
+    // Late progress cannot turn a settled, evidence-gated worker active again.
+    liveRunner.recordActivity(node.id, 'tool', 'Late callback');
+    expect(store.subAgents()[0]!.activity?.entries).toHaveLength(5);
+    expect(new CoworkStore(path.join(dir, 'cowork.json')).getSubAgent(node.id)?.activity).toEqual(node.activity);
+  });
+
   it('nests by parent, reports LIVE spend while the account is open, and rolls totals up', async () => {
     const { store, marketing, chief, mission, manager, runner, scope } = setup('tree-live');
     // One running child (its account is open) and one completed child.

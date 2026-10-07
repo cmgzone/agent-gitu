@@ -731,6 +731,7 @@ export const COWORK_JS = String.raw`
   function cwStopPoll() {
     var cw = S.cw;
     if (!cw) return;
+    cwDisposeSubagentOrbs();
     if (cw.closeDesktop) cw.closeDesktop();
     cw.generation = (cw.generation || 0) + 1;
     if (cw.timer) { clearInterval(cw.timer); cw.timer = null; }
@@ -740,16 +741,16 @@ export const COWORK_JS = String.raw`
   }
 
   // Bundled transparent images share a browser cache across every surface.
-  function cwAvaImg(avatar) {
+  function cwAvaImg(avatar, identity) {
     var shape = cwAvatarShape(avatar && avatar.shape, avatar && avatar.color);
     var filter=cwCharacterFilter(avatar,shape);
-    return '<img src="/characters/' + shape.slice(4) + '.png?v=opendots1" alt="" width="512" height="512" draggable="false"'+(filter?' style="filter:'+filter+'"':'')+'>';
+    return plushCharacterHtml(shape.slice(4), identity || '', filter);
   }
   function cwAva(agent, size) {
     var style = size ? ' style="width:' + size + 'px;height:' + size + 'px;border-radius:' + Math.round(size * 0.32) + 'px"' : '';
     var cw = cwEnsure();
     var busy = agent && cw.busy && ((cw.progresses || []).some(function (p) { return p.agentId === agent.id; }) || cw.working === agent.name);
-    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }) + '</span>';
+    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }, agent && agent.id) + '</span>';
   }
   function cwAgentById(id) { var cw = cwEnsure(); for (var i = 0; i < cw.agents.length; i++) if (cw.agents[i].id === id) return cw.agents[i]; return null; }
   function cwCharacterActivity(agentId) {
@@ -1242,6 +1243,7 @@ export const COWORK_JS = String.raw`
     if (cw.connectionsOpen) return;
     var chat = $('cwChat');
     if (!chat) return;
+    cwDisposeSubagentOrbs();
     var conv = cwActiveConv();
     document.title = conv ? conv.title + ' — Cowork' : 'Cowork — Agent Gitu';
     cwApplyCharacterTheme();
@@ -2142,6 +2144,86 @@ export const COWORK_JS = String.raw`
     return '<section class="cw-checkpoint-report" aria-label="Progress update"><header><strong>Progress update</strong><span>' + esc(message.agentName || (cwAgentById(message.agentId) || {}).name || '') + '</span><time datetime="' + esc(message.ts) + '">' + esc(cwTime(message.ts)) + '</time></header><p>' + esc(checkpoint.accomplished) + '</p>' + (checkpoint.issues ? '<p class="cw-checkpoint-issues"><strong>Needs attention:</strong> ' + esc(checkpoint.issues) + '</p>' : '') + '<p class="cw-checkpoint-next"><strong>Next:</strong> ' + esc(checkpoint.next) + '</p></section>';
   }
 
+  function cwSubagentGroups() {
+    var cw = cwEnsure(), groups = Object.create(null);
+    function visit(nodes) {
+      (nodes || []).forEach(function (node) {
+        if ((node.threadId || null) === (cw.threadId || null)) {
+          var parent = node.rootAgentId || node.parentAgentId;
+          var time = Date.parse(node.createdAt) || 0, anchor = null;
+          (cw.msgs || []).forEach(function (message) {
+            var at = Date.parse(message.ts) || 0;
+            if (at <= time && (message.role === 'user' || message.agentId === parent) && (!anchor || at >= Date.parse(anchor.ts))) anchor = message;
+          });
+          var key = JSON.stringify([cw.active, cw.threadId || null, parent, node.missionId || '', anchor && anchor.id || 'start']);
+          if (!groups[key]) groups[key] = { key: key, parent: parent, time: anchor ? (Date.parse(anchor.ts) || 0) + .1 : time, nodes: [] };
+          groups[key].nodes.push(node);
+        }
+        visit(node.children);
+      });
+    }
+    visit(cw.subAgents && cw.subAgents.nodes);
+    return Object.keys(groups).map(function (key) { return groups[key]; });
+  }
+
+  function cwSubagentLayoutKey() {
+    return JSON.stringify(cwSubagentGroups().map(function (group) { return [group.key, group.nodes.map(function (node) { return node.id; })]; }));
+  }
+
+  function cwDisposeSubagentOrbs() {
+    var cw = S.cw;
+    if (!cw) return;
+    Object.keys(cw.subagentPresences || {}).forEach(function (key) { cw.subagentPresences[key].view.dispose(); });
+    cw.subagentPresences = Object.create(null);
+  }
+
+  function cwSubagentPhase(node) {
+    // Completion is the host's evidence-gated lifecycle, never a tool result.
+    var terminal = { completed: 'complete', failed: 'failed', blocked: 'blocked', terminated: 'cancelled', orphaned: 'failed', starting: 'waiting' };
+    return Object.prototype.hasOwnProperty.call(terminal, node.status) ? terminal[node.status] : node.activity && node.activity.phase || 'working';
+  }
+
+  function cwSyncSubagentOrbs() {
+    var cw = cwEnsure(), wrap = $('cwMsgs');
+    if (!wrap || typeof createSubagentOrbs !== 'function') return;
+    var views = cw.subagentPresences || (cw.subagentPresences = Object.create(null));
+    var hosts = new Map();
+    Array.from(wrap.children).forEach(function (host) { var key = host.getAttribute('data-cwsubagents'); if (key) hosts.set(key, host); });
+    var retained = new Set();
+    cwSubagentGroups().forEach(function (group) {
+      var host = hosts.get(group.key);
+      if (!host) return;
+      retained.add(group.key);
+      var presence = views[group.key];
+      if (presence && presence.host !== host) { presence.view.dispose(); presence = null; }
+      if (!presence) {
+        presence = views[group.key] = { host: host, view: createSubagentOrbs(host) };
+        var parent = cwAgentById(group.parent);
+        host.querySelector('.subagent-caption span').textContent = (parent ? parent.name + ' · ' : '') + 'Subagents';
+      }
+      group.nodes.forEach(function (node) {
+        var job = presence.view.jobs[node.id], phase = cwSubagentPhase(node);
+        var restored = job ? job.button.dataset.restored === 'true' : phase === 'complete' || phase === 'failed';
+        var terminalText = { complete: 'Report verified and returned to the parent.', failed: 'Worker failed; review the parent report.', cancelled: 'Worker stopped.', blocked: 'Worker needs attention.' };
+        var data = { id: node.id, name: node.role, task: node.objective, phase: phase,
+          current: terminalText[phase] || node.activity && node.activity.current || (phase === 'waiting' ? 'Waiting to start…' : 'Working on the assignment…'),
+          startedAt: node.startedAt || node.createdAt, finishedAt: node.finishedAt,
+          contextTokens: node.activity && node.activity.contextTokens };
+        job = presence.view.upsert(data, restored);
+        (node.activity && node.activity.entries || []).forEach(function (entry) {
+          if (entry.seq <= (job.cwActivitySeq || 0)) return;
+          presence.view.upsert({ id: node.id, name: node.role, activity: entry.text, at: entry.at }, restored);
+          job.cwActivitySeq = entry.seq;
+        });
+        if (terminalText[phase] && job.cwTerminalPhase !== phase) {
+          presence.view.upsert({ id: node.id, name: node.role, activity: terminalText[phase], at: node.finishedAt }, restored);
+          job.cwTerminalPhase = phase;
+        }
+      });
+    });
+    Object.keys(views).forEach(function (key) { if (!retained.has(key)) { views[key].view.dispose(); delete views[key]; } });
+  }
+
   function cwTranscriptHtml() {
     var cw = cwEnsure();
     var entries = cw.msgs.map(function (message) { return { time: Date.parse(message.ts) || 0, message: message }; });
@@ -2150,6 +2232,9 @@ export const COWORK_JS = String.raw`
     });
     (cw.workHistory || []).forEach(function (activity) {
       entries.push({ time: Date.parse(activity.ts) || 0, activity: activity });
+    });
+    cwSubagentGroups().forEach(function (group) {
+      entries.push({ time: group.time, html: '<section data-cwsubagents="' + esc(group.key) + '" aria-label="Subagent activity"></section>' });
     });
     entries.sort(function (a, b) { return a.time - b.time; });
     var html = [];
@@ -2264,10 +2349,10 @@ export const COWORK_JS = String.raw`
 
   function cwReplaceTranscript(wrap,html) {
     var holder=document.createElement('div');holder.innerHTML=html;
-    var media=new Map(),next=Array.from(holder.children);
-    Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwmediagroup');if(id)media.set(id,node);});
+    var media=new Map(),workers=new Map(),next=Array.from(holder.children);
+    Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwmediagroup');if(id)media.set(id,node);var key=node.getAttribute('data-cwsubagents');if(key)workers.set(key,node);});
     var keep=new Set();
-    next=next.map(function(node){var id=node.getAttribute('data-cwmediagroup'),old=id&&media.get(id);if(old&&old.getAttribute('data-media-signature')===node.getAttribute('data-media-signature')){keep.add(old);return old;}return node;});
+    next=next.map(function(node){var key=node.getAttribute('data-cwsubagents'),worker=key&&workers.get(key);if(worker){keep.add(worker);return worker;}var id=node.getAttribute('data-cwmediagroup'),old=id&&media.get(id);if(old&&old.getAttribute('data-media-signature')===node.getAttribute('data-media-signature')){keep.add(old);return old;}return node;});
     // Leave live players connected. Inserting surrounding messages does not
     // reload their iframe or reset playback when an agent posts an update.
     Array.from(wrap.children).forEach(function(node){if(!keep.has(node))node.remove();});
@@ -2312,8 +2397,12 @@ export const COWORK_JS = String.raw`
     var wrap = $('cwMsgs');
     var live = $('cwLive');
     if (!wrap || !live) return;
+    cwSyncSubagentOrbs();
     var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
     var ps = cw.busy ? ((cw.progresses && cw.progresses.length) ? cw.progresses : (cw.progress ? [cw.progress] : [])) : [];
+    var workerIds = new Set();
+    cwSubagentGroups().forEach(function (group) { group.nodes.forEach(function (node) { workerIds.add(node.id); }); });
+    ps = ps.filter(function (progress) { return !workerIds.has(progress.agentId); });
     live.hidden = ps.length === 0;
     if (!ps.length) { live.innerHTML = ''; live._progressKey = null; return; }
     // Keep the avatar nodes alive across deltas so their animation never restarts.
@@ -3172,7 +3261,9 @@ export const COWORK_JS = String.raw`
     var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
     cw.missions = d.missions || [];
     var subAgentsChanged = JSON.stringify(cw.subAgents || null) !== JSON.stringify(d.subAgents || null);
+    var previousWorkerLayout = cwSubagentLayoutKey();
     cw.subAgents = d.subAgents || null;
+    var workerLayoutChanged = previousWorkerLayout !== cwSubagentLayoutKey();
     var artifactsChanged = JSON.stringify(cw.artifacts || []) !== JSON.stringify(d.artifacts || []);
     var requestsChanged = JSON.stringify(cw.requests || []) !== JSON.stringify(d.requests || []);
     var workChanged = JSON.stringify(cw.todos || []) !== JSON.stringify(d.todos || []);
@@ -3196,7 +3287,7 @@ export const COWORK_JS = String.raw`
     if (rosterChanged || widgetsChanged || threadsChanged) cwRenderRail();
     if (rosterChanged || threadsChanged) cwRenderMembers();
     if (cw.galleryOpen && typeof cwRenderGallery === 'function') cwRenderGallery();
-    else if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged) cwRenderMsgs(); else cwRenderProgress();
+    else if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged || workerLayoutChanged) cwRenderMsgs(); else cwRenderProgress();
     if (workChanged || rosterChanged) cwRenderWork();
     if (foldersChanged) cwRenderFolders();
     cwRenderTyping();

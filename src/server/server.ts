@@ -1343,8 +1343,8 @@ export class GituServer {
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
       missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
-      // The sub-agent execution tree, live: the UI renders it under missions.
-      subAgents: this.subAgents().tree({ conversationId }),
+      // Workers belong to the same thread as their host-bound parent turn.
+      subAgents: this.subAgents().tree({ conversationId, threadId }),
       artifacts: store.artifacts(conversationId),
       todos: store.todos(conversationId),
       requests: store.requests(conversationId),

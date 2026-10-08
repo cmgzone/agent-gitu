@@ -86,6 +86,8 @@ export interface CoworkMessage {
   referencedMessageIds?: string[];
   /** Agents explicitly addressed by this message (@mention). */
   mentionedAgentIds?: string[];
+  /** User-selected delivery path, shared by text and voice. */
+  delivery?: 'queue' | 'steer' | 'question';
   /** Per-conversation change sequence: appends and every mutation bump it, so
    *  a live client can update rows in place instead of refetching them. */
   changeSeq: number;

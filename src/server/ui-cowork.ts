@@ -305,6 +305,15 @@ export const COWORK_CSS = String.raw`
   .cw-attach { width: 32px; height: 32px; flex: none; border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; }
   .cw-attach:hover { color: var(--text); border-color: var(--accent); }
   .cw-pending { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+  .cw-delivery { display:flex; align-items:center; gap:6px; padding:0 10px 8px; flex-wrap:wrap; }
+  .cw-delivery[hidden] { display:none; }
+  .cw-delivery button { display:inline-flex; gap:5px; align-items:center; padding:5px 8px; border:0; border-radius:8px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; transition:background .15s,transform .12s; }
+  .cw-delivery button[aria-pressed="true"] { color:var(--accent); background:var(--accent-dim,var(--selected)); }
+  .cw-delivery button:hover { background:var(--hover); }
+  .cw-delivery button:active { transform:scale(.95); }
+  .cw-delivery button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .cw-delivery svg { width:14px; height:14px; }
+  .cw-delivery-note { color:var(--muted); font-size:11px; margin-left:auto; }
   .cw-pending span { display: inline-flex; align-items: center; gap: 5px; max-width: 260px; border: 1px solid var(--border2); background: var(--card); border-radius: 8px; padding: 4px 8px; font-size: 11.5px; color: var(--muted); }
   .cw-pending button { border: 0; background: transparent; color: var(--muted); padding: 0; line-height: 1; }
   .cw-pending img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
@@ -625,6 +634,7 @@ export const COWORK_JS = String.raw`
     ,download: CW_SVG_OPEN + '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg>'
     ,map: CW_SVG_OPEN + '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>'
     ,external: CW_SVG_OPEN + '<path d="M14 3h7v7m0-7-11 11M10 3H3v18h18v-7"/></svg>'
+    ,phone: CW_SVG_OPEN + '<path d="M22 17v3a2 2 0 0 1-2.2 2A20 20 0 0 1 3 5.2 2 2 0 0 1 5 3h3l2 6-2 2a16 16 0 0 0 5 5l2-2 7 3z"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
@@ -1367,6 +1377,7 @@ export const COWORK_JS = String.raw`
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<button type="button" class="cw-jump-latest" id="cwJumpLatest" aria-label="Jump to latest messages" title="Jump to latest" aria-controls="cwMsgs" hidden>' + cwIcon('send') + '</button>' +
       '<div class="cw-composer-wrap">' +
+        '<div class="cw-delivery" id="cwDelivery" aria-label="Message delivery" hidden><button type="button" data-cwdelivery="steer" aria-pressed="true" title="Guide the current task at its next safe step">' + cwIcon('bolt') + 'Steer</button><button type="button" data-cwdelivery="queue" aria-pressed="false" title="Start this request after the current task finishes">' + cwIcon('clock') + 'Queue</button><button type="button" data-cwdelivery="question" aria-pressed="false" title="Ask a question while work continues">' + cwIcon('chat') + 'Ask</button><span class="cw-delivery-note" id="cwDeliveryNote"></span></div>' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
         '<div class="cw-pending" id="cwPending"></div>' +
@@ -1375,6 +1386,7 @@ export const COWORK_JS = String.raw`
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwPlus" title="Files, mission, folder or schedule" aria-label="Add files, mission, folder or schedule" popovertarget="cwPlusMenu">' + cwIcon('plus') + '</button>' +
         '<textarea id="cwInput" rows="1" placeholder="' + (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
+        '<button type="button" class="voice-phone" id="cwVoiceCall" aria-label="Call this teammate" title="Talk live" aria-pressed="false">' + cwIcon('phone') + '</button>' +
         '<button class="cw-stop-secondary" id="cwStop" title="Stop the team" aria-label="Stop the team" hidden>' + cwIcon('stop') + '</button>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button>' +
         '<div class="cw-message-menu cw-plus-menu" id="cwPlusMenu" popover="auto" aria-label="Add to this chat">' +
@@ -1386,6 +1398,9 @@ export const COWORK_JS = String.raw`
       '</div>';
     $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
     $('cwJumpLatest').onclick = function () { cwJumpLatest(); };
+    $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};
+    if(typeof voiceUpdateButtons==='function')voiceUpdateButtons();
+    $('cwDelivery').querySelectorAll('[data-cwdelivery]').forEach(function(button){button.onclick=function(){cw.delivery=button.getAttribute('data-cwdelivery');cwUpdateSend();};});
     $('cwInfoBtn').onclick = function () {
       if (window.innerWidth <= 1180) cw.infoNarrowOpen = !cw.infoNarrowOpen;
       else cw.infoOpen = !cw.infoOpen;
@@ -3417,12 +3432,18 @@ export const COWORK_JS = String.raw`
     var hasMessage = Boolean(input.value.trim() || (cw.pendingFiles || []).length);
     var stopMode = cw.busy && !hasMessage;
     var queueMode = cw.busy && hasMessage;
+    var delivery = cw.delivery || 'steer', deliveryWrap = $('cwDelivery');
+    if (deliveryWrap) {
+      deliveryWrap.hidden = !cw.busy;
+      deliveryWrap.querySelectorAll('[data-cwdelivery]').forEach(function(button){button.setAttribute('aria-pressed',String(button.getAttribute('data-cwdelivery')===delivery));});
+      $('cwDeliveryNote').textContent = cw.queued ? cw.queued + ' queued' : 'Work continues';
+    }
     send.disabled = (!cw.busy && !hasMessage) || (cw.pendingFiles || []).some(function (file) { return file.loading; });
     send.classList.toggle('stop', stopMode);
-    send.classList.toggle('queue', queueMode);
+    send.classList.toggle('queue', queueMode && delivery === 'queue');
     send.innerHTML = stopMode ? cwIcon('stop') : cwIcon('send');
-    send.title = stopMode ? 'Stop the team' : queueMode ? 'Queue this message while the team works' : 'Send (Enter)';
-    send.setAttribute('aria-label', stopMode ? 'Stop the team' : queueMode ? 'Queue message' : 'Send message');
+    send.title = stopMode ? 'Stop the team' : queueMode ? delivery === 'queue' ? 'Queue this message' : delivery === 'question' ? 'Ask while the team works' : 'Steer the current task' : 'Send (Enter)';
+    send.setAttribute('aria-label', stopMode ? 'Stop the team' : queueMode ? delivery === 'queue' ? 'Queue message' : delivery === 'question' ? 'Ask question' : 'Steer task' : 'Send message');
     send.onclick = stopMode ? cwStopRun : cwSend;
     if (stop) stop.hidden = !queueMode;
   }
@@ -3487,7 +3508,7 @@ export const COWORK_JS = String.raw`
     if (!text && !files.length) return;
     if (!cw.active) { toast('Open a chat first', true); return; }
     var id = crypto.randomUUID();
-    var payload = { id: id, text: text, files: files, threadId: cw.threadId || null, referencedMessageIds: cw.referencedMessageIds.slice() };
+    var payload = { id: id, text: text, files: files, threadId: cw.threadId || null, referencedMessageIds: cw.referencedMessageIds.slice(), delivery: cw.delivery || 'steer' };
     var entry = { conversationId: cw.active, payload: payload, message: {
       id: id, text: text, role: 'user', via: 'web', ts: new Date().toISOString(),
       status: 'sending', revision: 0, attempt: 0, localOnly: true,

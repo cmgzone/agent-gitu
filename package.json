@@ -48,6 +48,10 @@
       "desktop/**/*",
       "dist/**/*",
       "assets/**/*",
+      "voice-worker/agent.mjs",
+      "voice-worker/package.json",
+      "voice-worker/package-lock.json",
+      "voice-worker/Dockerfile",
       "apps/mobile/dist/web/**/*",
       "node_modules/**/*",
       "package.json"
@@ -114,6 +118,8 @@
     "docx": "^9.7.1",
     "exceljs": "^4.4.0",
     "fflate": "^0.8.3",
+    "livekit-client": "^2.22.3",
+    "livekit-server-sdk": "^2.19.1",
     "marked": "^18.0.14",
     "pdf-lib": "^1.17.1",
     "pptxgenjs": "^4.0.1",
@@ -121,6 +127,7 @@
     "ssh2": "^1.17.0",
     "three": "^0.185.1",
     "typescript": "^5.6.0",
+    "undici": "^7.30.0",
     "ws": "^8.22.0"
   }
 }

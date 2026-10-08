@@ -13,6 +13,7 @@ import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
+import { VOICE_CSS, VOICE_JS } from './ui-voice.js';
 import { OUTPUT_CSS, OUTPUT_JS } from './ui-outputs.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
 import { UI_THEME_CSS, UI_THEME_BOOTSTRAP, UI_THEME_JS } from './ui-theme.js';
@@ -923,6 +924,7 @@ ${HOME_CSS}
     #mascotWrap { display: none !important; }
   }
   ${COWORK_CSS}
+  ${VOICE_CSS}
   ${OUTPUT_CSS}
   ${CONNECTED_APPS_CSS}
   ${UI_THEME_CSS}
@@ -1851,7 +1853,7 @@ ${ONBOARDING_HTML}
     if (plus) plus.title = enabled ? 'More actions · Plan mode selected' : 'More actions · Agent mode selected';
   }
   function controlsHtml() {
-    return '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
+    return voicePhoneButton('mainVoiceCall') + '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
       '<div class="home-plus-menu" id="homePlusMenu" hidden role="menu" aria-label="More actions">' +
         '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
         '<button type="button" id="menuPlan" data-hp="plan" role="menuitemradio" aria-checked="false"><span class="ico">' + icon('layers') + '</span>Plan mode<span class="check">✓</span></button>' +
@@ -2027,6 +2029,7 @@ ${ONBOARDING_HTML}
     return body;
   }
   function bindControls() {
+    bindGituVoice();
     var model = $('model'), effort = $('effort');
     updatePlanControl();
     if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
@@ -3544,6 +3547,14 @@ ${ONBOARDING_HTML}
       if (seen.has(ev.i)) return;
       seen.add(ev.i);
       if (seen.size > 2000) seen.delete(seen.values().next().value);
+    }
+    if (text.indexOf('live-chat ') === 0) {
+      if (!sess || !sess.nodes) return;
+      try {
+        var exchange=JSON.parse(text.slice(10)),row=document.createElement('div');row.className='live-chat-exchange';
+        row.innerHTML='<small>'+esc(exchange.role==='user'?'You · Live conversation':'Agent Gitu · Live conversation')+'</small>'+md(String(exchange.content||''));
+        insertTimelineNode(sess,row,ev.t);stickScroll(stream);return;
+      } catch { return; }
     }
     if (text === 'activity preparing-project' || text === 'activity indexing-project') {
       setWorking(text === 'activity indexing-project' ? 'Indexing project…' : 'Preparing project…');
@@ -6369,6 +6380,7 @@ ${ONBOARDING_HTML}
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   ${COWORK_JS}
+  ${VOICE_JS}
   ${COWORK_GALLERY_JS}
   ${COWORK_PROFILE_JS}
   ${REPORT_DETAILS_JS}

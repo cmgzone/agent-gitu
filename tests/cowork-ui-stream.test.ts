@@ -379,7 +379,7 @@ describe('Cowork UI live updates', () => {
     expect(u.input.value).toContain('[credential removed');
   });
 
-  it('offers queue and stop separately when a reply is in progress', () => {
+  it('offers steer, queue, questions and stop separately while working', () => {
     const u = ui();
     const classes = new Set<string>();
     const send = {
@@ -393,9 +393,17 @@ describe('Cowork UI live updates', () => {
 
     u.cw.busy = true;
     u.context.cwRenderComposerAction();
+    expect(send.title).toContain('Steer');
+    expect(classes.has('queue')).toBe(false);
+    u.cw.delivery = 'queue';
+    u.context.cwRenderComposerAction();
     expect(send.title).toContain('Queue');
     expect(classes.has('queue')).toBe(true);
     expect(stop.hidden).toBe(false);
+    u.cw.delivery = 'question';
+    u.context.cwRenderComposerAction();
+    expect(send.title).toContain('Ask');
+    expect(classes.has('queue')).toBe(false);
 
     u.input.value = '';
     u.context.cwRenderComposerAction();

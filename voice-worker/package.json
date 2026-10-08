@@ -1,0 +1,8 @@
+{
+  "name": "gitu-voice-worker",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.22.3" },
+  "scripts": { "dev": "node agent.mjs dev", "start": "node agent.mjs start", "check": "node --check agent.mjs" },
+  "dependencies": { "@livekit/agents": "1.9.1" }
+}

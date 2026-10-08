@@ -4572,10 +4572,12 @@ export class GituServer {
       const run = this.coworkRuns.get(conversation.id), sameTopic = (run?.threadId ?? null) === (target.threadId ?? null);
       const publicProgress = sameTopic ? Object.values(run?.progresses ?? {}).map(progress => `${progress.agentName}: ${progress.text || 'Working'}`).join('\n') : '';
       const workers = store.subAgents({ conversationId: conversation.id }).filter(worker => worker.threadId === target.threadId && worker.parentAgentId === agent.id);
+      const computer = this.coworkComputer(agent.id).status();
+      const capabilities = `Computer: ${agent.useHostComputer ? 'user workspace' : agent.cloudConnectionId ? 'cloud desktop' : 'private desktop'}, ${computer.state}. Browser, files and shell are available through the normal task runner; shell ${agent.allowShell ? 'enabled' : 'disabled'}, file writes ${agent.allowWrites ? 'enabled' : 'disabled'}. ${computer.control === 'user' ? 'The user currently controls the desktop; wait for their handoff before operating it.' : 'The agent can use its computer subject to the existing permissions.'} A stopped desktop can be started for a requested task. Human sign-in or account verification stays with the user.`;
       return {
         name: agent.name,
         instructions: `You are ${agent.name}, ${agent.tagline || 'the user’s AI teammate'}. This is the voice channel of your existing conversation.\n${agent.systemPrompt}\n${this.coworkUserContext() ?? ''}\n${this.coworkMemoryFor(agent)}\nThe voice routing instruction determines the response format; task execution and tool permissions are handled by your normal task runner.`,
-        state: (publicProgress || (run?.busy && sameTopic ? 'Work is continuing.' : 'No active task in this topic.')) + '\nWorkers: ' + workers.map(worker => `${worker.role}: ${worker.status}`).join(', '),
+        state: (publicProgress || (run?.busy && sameTopic ? 'Work is continuing.' : 'No active task in this topic.')) + '\nWorkers: ' + workers.map(worker => `${worker.role}: ${worker.status}`).join(', ') + '\n' + capabilities,
         busy: Boolean(run?.busy && sameTopic),
         history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-12).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
       };
@@ -4604,7 +4606,7 @@ export class GituServer {
     text = safe.safeText;
     const target = call.target;
     const llm = target.kind === 'cowork' ? this.coworkLlm(this.cowork().getAgent(target.agentId!)!) : this.config.llm ?? resolveLlm({ provider: this.sessions.get(target.runId ?? '')?.provider ?? target.provider, model: this.sessions.get(target.runId ?? '')?.model ?? target.model, workingDirectory: this.config.cwd }).client;
-    const decision = isNonMutatingStatusQuestion(text) ? { kind: 'question' as const, reply: context.state } : await decideVoiceTurn(llm, context, text, AbortSignal.timeout(25_000));
+    const decision = await decideVoiceTurn(llm, context, text, AbortSignal.timeout(25_000));
     if (decision.kind === 'question') {
       const answer = credentialChatInput(decision.reply).safeText;
       if (target.kind === 'cowork') {

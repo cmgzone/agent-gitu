@@ -21,7 +21,7 @@ class ExistingGituStream extends llm.LLMStream {
     const text = item?.textContent || '';
     const response = await this.model.room.localParticipant.performRpc({
       destinationIdentity: this.model.participantIdentity, method: 'gitu.voice.reply',
-      payload: JSON.stringify({ callId: this.model.callId, id, text }), responseTimeout: 40,
+      payload: JSON.stringify({ callId: this.model.callId, id, text }), responseTimeout: 40_000,
     });
     if (this.abortController.signal.aborted) return;
     const result = JSON.parse(response);
@@ -38,7 +38,7 @@ export default defineAgent({
     await ctx.waitForParticipant(metadata.participantIdentity);
     const report = status => ctx.room.localParticipant.performRpc({
       destinationIdentity: metadata.participantIdentity, method: 'gitu.voice.status',
-      payload: JSON.stringify({ callId: metadata.callId, ...status }), responseTimeout: 5,
+      payload: JSON.stringify({ callId: metadata.callId, ...status }), responseTimeout: 5_000,
     }).catch(() => undefined);
     const session = new voice.AgentSession({
       stt: new inference.STT({ model: process.env.GITU_VOICE_STT_MODEL || 'assemblyai/universal-3-6-pro', language: 'en' }),

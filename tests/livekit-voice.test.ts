@@ -34,25 +34,25 @@ describe('LiveKit voice bridge', () => {
     await calls.end(result.callId); expect(calls.get(result.callId)).toBeUndefined();
   });
 
-  it('repairs malformed routing output without asking the user to repeat clear speech', async () => {
+  it('answers naturally without injecting routing format instructions into conversation', async () => {
     let seen: LlmMessage[] = [];
-    let attempt = 0;
-    const llm: LlmClient = { name: 'test', complete: async messages => { seen = messages; return ++attempt === 1 ? 'not json' : '{"kind":"question","reply":"The page is being tested."}'; } };
-    expect((await decideVoiceTurn(llm, { name: 'Atlas', instructions: 'Your role is software engineering.', state: 'Testing the page.', history: [{ role: 'user', content: 'Make a blue page' }], busy: true }, 'How is it going?')).kind).toBe('question');
+    const llm: LlmClient = { name: 'test', complete: async messages => { seen = messages; return 'The page is being tested.'; } };
+    expect((await decideVoiceTurn(llm, { name: 'Atlas', instructions: 'Your role is software engineering.', state: 'Testing the page.', history: [{ role: 'user', content: 'Make a blue page' }], busy: true }, 'How is it going?')).reply).toBe('The page is being tested.');
     expect(JSON.stringify(seen)).toContain('Atlas'); expect(JSON.stringify(seen)).toContain('Make a blue page');
     expect(JSON.stringify(seen)).toContain('Testing the page');
-    expect(attempt).toBe(2);
+    expect(JSON.stringify(seen)).not.toContain('Return JSON only');
   });
-  it('routes a clear spoken work request using native tool output', async () => {
+  it('routes a clear spoken work request immediately without a conversational model claiming it lacks tools', async () => {
     const llm: LlmClient = { name: 'test', complete: vi.fn(), completeTurn: vi.fn().mockResolvedValue({ kind: 'tool_calls', calls: [{ id: 'route', name: 'voice_turn', arguments: { kind: 'task', reply: 'Open Facebook.' } }], metadata: {} }) };
     const decision = await decideVoiceTurn(llm, { name: 'Atlas', instructions: 'Software engineer', state: 'Idle', history: [], busy: false }, 'Take me to Facebook using my computer.');
     expect(decision.kind).toBe('task');
     expect(llm.complete).not.toHaveBeenCalled();
+    expect(llm.completeTurn).not.toHaveBeenCalled();
   });
-  it('surfaces invalid output after one repair instead of silently dropping a task', async () => {
+  it('surfaces invalid ambiguous routing instead of silently dropping a request', async () => {
     const complete = vi.fn().mockResolvedValue('invalid');
-    await expect(decideVoiceTurn({ name: 'test', complete }, { name: 'Atlas', instructions: '', state: '', history: [], busy: false }, 'Open Facebook')).rejects.toThrow('not dispatched');
-    expect(complete).toHaveBeenCalledTimes(2);
+    await expect(decideVoiceTurn({ name: 'test', complete }, { name: 'Atlas', instructions: '', state: '', history: [], busy: false }, 'Would a launch plan be possible?')).rejects.toThrow('No work was dispatched');
+    expect(complete).toHaveBeenCalledOnce();
   });
 
   it('routes voice into the selected existing teammate, deduplicates turns, and leaves work running when the call ends', async () => {
@@ -66,7 +66,8 @@ describe('LiveKit voice bridge', () => {
     const held = new Promise<string>(resolve => { release = resolve; });
     let started = false;
     const llm: LlmClient = { name: 'test', complete: async messages => {
-      if (messages.some(message => typeof message.content === 'string' && message.content.includes('Return JSON only:'))) return JSON.stringify({ kind: 'question', reply: 'I’m Atlas, and your page is still in progress.' });
+      if (messages.some(message => typeof message.content === 'string' && message.content.includes('Return JSON only:'))) return JSON.stringify({ kind: 'question' });
+      if (messages.some(message => typeof message.content === 'string' && message.content.includes('LIVE CONVERSATION:'))) return 'I’m Atlas, and your page is still in progress.';
       if (!started) { started = true; return held; } return 'Done.';
     } };
     const server = new GituServer({ cwd: home, port: 0, passwordRequired: false, llm, coworkCompletionProtocol: 'legacy' });
@@ -93,6 +94,11 @@ describe('LiveKit voice bridge', () => {
       expect(view.messages.filter((message: CoworkMessage) => message.text === payload.text)).toHaveLength(1);
       expect(view.messages.find((message: CoworkMessage) => message.text === payload.text).status).toBe('sent');
       expect(view.messages.find((message: CoworkMessage) => message.delivery === 'question' && message.role === 'agent').agentId).toBe(agent.id);
+      const task = { id: 'utterance-2', text: 'Take me to Facebook using my computer.' };
+      const dispatched = await request(voiceRoute + '/reply', 'POST', task);
+      expect(dispatched.data.text).toContain('queued');
+      expect((await request(voiceRoute + '/reply', 'POST', task)).data).toEqual(dispatched.data);
+      expect((await request(route)).data.messages.filter((message: CoworkMessage) => message.text === task.text)).toHaveLength(1);
       await request(voiceRoute, 'DELETE');
       expect((await request(route)).data.busy).toBe(true);
       expect((await request(voiceRoute + '/reply', 'POST', payload)).status).toBe(404);

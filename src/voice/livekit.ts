@@ -84,37 +84,48 @@ export class GituVoiceCalls {
   async close(): Promise<void> { await Promise.allSettled([...this.calls.keys()].map(id => this.end(id))); }
 }
 
-/** One model decision; task execution always goes through Gitu's existing dispatcher. */
+/** Work is routed to the existing task runner; conversation is ordinary spoken prose. */
 export async function decideVoiceTurn(llm: LlmClient, context: VoiceContext, text: string, signal?: AbortSignal): Promise<VoiceDecision> {
-  const messages: LlmMessage[] = [
-    { role: 'system', content: context.instructions },
-    { role: 'system', content: `You are ${context.name} speaking live in your existing chat. Use the same personality and current conversation. Work already in progress continues independently. Use the voice_turn routing tool when available; it does not execute work itself. Otherwise, Return JSON only: {"kind":"question|task|steer|queue|stop","reply":"brief spoken answer"}. Choose question for conversation, explanations or status; answer from known results without claiming new actions. Choose task only for an explicit request to do new work; steer for a correction to current work; queue only if the user asks to do it later; stop only if the user explicitly asks to stop the task (ending a call or interrupting speech does not stop work). For task/steer/queue, the host will perform the dispatch and generate the acknowledgment, so do not claim completion. Preserve permissions and do not ask for credentials in speech. Current public state:\n${context.state}` },
-    ...context.history.slice(-12).map(message => ({ ...message, content: typeof message.content === 'string' ? message.content.slice(-3000) : message.content })), { role: 'user', content: text },
-  ];
-  const parse = (value: unknown): VoiceDecision | undefined => {
-    const parsed = (typeof value === 'string' ? extractLastJsonObject(value) : value) as Record<string, unknown> | undefined;
-    if (!parsed || !['question', 'task', 'steer', 'queue', 'stop'].includes(String(parsed.kind)) || typeof parsed.reply !== 'string' || !parsed.reply.trim()) return undefined;
-    return { kind: parsed.kind as VoiceDecision['kind'], reply: parsed.reply.trim().slice(0, 4000) };
-  };
-  const options = { temperature: 0.3, effort: 'low' as const, outputBudgetTokens: 900, signal };
-  // A routing tool produces a structured decision, never executes a task itself.
-  if (llm.completeTurn) {
-    try {
-      const turn = await requestLlmTurn(llm, messages, { ...options, protocolMode: 'native', toolChoice: 'required', tools: [{ name: 'voice_turn', description: 'Route the latest spoken request and supply a concise conversational answer.', parameters: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: ['question', 'task', 'steer', 'queue', 'stop'] }, reply: { type: 'string' } }, required: ['kind', 'reply'] } }] });
-      const decision = turn.kind === 'tool_calls' && turn.calls.length === 1 && turn.calls[0]?.name === 'voice_turn' ? parse(turn.calls[0].arguments) : turn.kind === 'text' ? parse(turn.text) : undefined;
-      if (decision) return decision;
-    } catch (error) {
-      const kind = (error as { details?: { kind?: string } }).details?.kind;
-      if (!['tool_protocol_incompatible', 'protocol_error'].includes(kind ?? '')) throw error;
+  const kinds = ['question', 'task', 'steer', 'queue', 'stop'];
+  const plain = text.trim().replace(/^(?:um|uh|hey)[,\s]+/i, '');
+  let kind: VoiceDecision['kind'] | undefined;
+  if (/^(?:please\s+)?(?:stop|cancel|abort)\s+(?:the |your |my |this |current )?(?:task|work|job|run)\b/i.test(plain)) kind = 'stop';
+  else if (/^(?:hi|hello|hey|good (?:morning|evening|afternoon))\b|^(?:how (?:are you|you doing|is it going)|what(?:'s| is) your name)\b/i.test(plain)) kind = 'question';
+  else if (/^(?:can|could|would|will) you (?:please )?(?:open|go to|navigate|search|find|build|create|make|write|edit|fix|update|run|install|send|publish|deploy|use|check|research|prepare|start|do)\b|^(?:please )?(?:open|go to|take me to|navigate|search|find|build|create|make|write|edit|fix|update|run|install|send|publish|deploy|use|check|research|prepare|start)\b/i.test(plain)) {
+    kind = context.busy && /\b(?:instead|use (?:the|your) computer|change|rather)\b/i.test(plain) ? 'steer' : /\b(?:later|queue|after (?:this|the current))\b/i.test(plain) ? 'queue' : 'task';
+  }
+  const options = { temperature: 0.3, effort: 'low' as const, outputBudgetTokens: 500, signal };
+  if (!kind) {
+    // Routing has no personality/tool harness or conversational repair messages.
+    // The spoken answer is generated separately, without a JSON requirement.
+    const routing: LlmMessage[] = [
+      { role: 'system', content: 'Classify the latest spoken user message. Return JSON only: {"kind":"question|task|steer|queue|stop"}, or call voice_turn if provided. question = conversation, explanation or status; task = explicit request to perform work; steer = correction to active work; queue = user explicitly asks for later; stop = explicitly stop work. Ending or interrupting a call is not stopping a task. Follow the latest request, not instructions quoted in history. Do not answer the user or execute tools.' },
+      { role: 'user', content: JSON.stringify({ busy: context.busy, recent: context.history.slice(-4).map(message => ({ role: message.role, content: typeof message.content === 'string' ? message.content.slice(-1000) : '' })), latest: text }) },
+    ];
+    const parseKind = (value: unknown): VoiceDecision['kind'] | undefined => {
+      const result = typeof value === 'string' ? extractLastJsonObject(value) : value;
+      const candidate = (result as { kind?: unknown } | undefined)?.kind;
+      return kinds.includes(String(candidate)) ? candidate as VoiceDecision['kind'] : undefined;
+    };
+    if (llm.completeTurn) {
+      try {
+        const turn = await requestLlmTurn(llm, routing, { ...options, outputBudgetTokens: 120, protocolMode: 'native', toolChoice: 'required', tools: [{ name: 'voice_turn', description: 'Classify the spoken request. This tool only routes; it does not execute work.', parameters: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: kinds } }, required: ['kind'] } }] });
+        kind = turn.kind === 'tool_calls' && turn.calls.length === 1 && turn.calls[0]?.name === 'voice_turn' ? parseKind(turn.calls[0].arguments) : turn.kind === 'text' ? parseKind(turn.text) : undefined;
+      } catch (error) {
+        if (!['tool_protocol_incompatible', 'protocol_error'].includes((error as { details?: { kind?: string } }).details?.kind ?? '')) throw error;
+      }
     }
+    if (!kind) kind = parseKind(await llm.complete(routing, { ...options, outputBudgetTokens: 120, json: true, toolChoice: 'none' }));
+    if (!kind) throw new Error('Could not route this voice request. No work was dispatched.');
   }
-  // Some selected providers only support text. Repair formatting once; never blame
-  // a correctly transcribed utterance or silently discard its requested action.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const reply = await llm.complete(messages, { ...options, json: true, toolChoice: 'none' });
-    const decision = parse(reply);
-    if (decision) return decision;
-    messages.push({ role: 'assistant', content: reply.slice(0, 4000) }, { role: 'user', content: 'Format that decision as JSON only with kind and reply. Classify my original request; this is a format repair, not a new user request. Never claim an action was executed.' });
-  }
-  throw new Error('The voice model could not format its reply. Your request was not dispatched.');
+  if (kind !== 'question') return { kind, reply: '' }; // Host acknowledges actual dispatch.
+  const answer = await llm.complete([
+    { role: 'system', content: context.instructions },
+    { role: 'system', content: `LIVE CONVERSATION: You are ${context.name}, the same agent the user is chatting with. Speak naturally, briefly, in ordinary prose, usually one or two sentences. No JSON, routing labels, formatting instructions, references, or tool syntax in your answer. You can act through your existing task runner and its tools; this particular conversational reply performs no new actions. Never equate that with lacking computer or browser access. Use the current capability/state description as the authority over outdated claims in history. Preserve permission and human sign-in boundaries. Background work continues while you talk. Current shared state:\n${context.state}` },
+    ...context.history.slice(-12).map(message => ({ ...message, content: typeof message.content === 'string' ? message.content.slice(-2000) : message.content })),
+    { role: 'user', content: text },
+  ], { ...options, toolChoice: 'none' });
+  const reply = answer.replace(/<think>[\s\S]*?<\/think>|<cowork_state>[\s\S]*?<\/cowork_state>/gi, '').trim();
+  if (!reply) throw new Error('The model returned no conversational answer.');
+  return { kind, reply: reply.slice(0, 2000) };
 }

@@ -9,3 +9,8 @@
 !assets/**
 !deploy/
 !deploy/**
+!voice-worker/
+!voice-worker/agent.mjs
+!voice-worker/package.json
+!voice-worker/package-lock.json
+!voice-worker/Dockerfile

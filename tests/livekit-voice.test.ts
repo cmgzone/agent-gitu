@@ -34,12 +34,25 @@ describe('LiveKit voice bridge', () => {
     await calls.end(result.callId); expect(calls.get(result.callId)).toBeUndefined();
   });
 
-  it('fails safely on malformed routing output and sends actual identity and state', async () => {
+  it('repairs malformed routing output without asking the user to repeat clear speech', async () => {
     let seen: LlmMessage[] = [];
-    const llm: LlmClient = { name: 'test', complete: async messages => { seen = messages; return 'not json'; } };
+    let attempt = 0;
+    const llm: LlmClient = { name: 'test', complete: async messages => { seen = messages; return ++attempt === 1 ? 'not json' : '{"kind":"question","reply":"The page is being tested."}'; } };
     expect((await decideVoiceTurn(llm, { name: 'Atlas', instructions: 'Your role is software engineering.', state: 'Testing the page.', history: [{ role: 'user', content: 'Make a blue page' }], busy: true }, 'How is it going?')).kind).toBe('question');
     expect(JSON.stringify(seen)).toContain('Atlas'); expect(JSON.stringify(seen)).toContain('Make a blue page');
     expect(JSON.stringify(seen)).toContain('Testing the page');
+    expect(attempt).toBe(2);
+  });
+  it('routes a clear spoken work request using native tool output', async () => {
+    const llm: LlmClient = { name: 'test', complete: vi.fn(), completeTurn: vi.fn().mockResolvedValue({ kind: 'tool_calls', calls: [{ id: 'route', name: 'voice_turn', arguments: { kind: 'task', reply: 'Open Facebook.' } }], metadata: {} }) };
+    const decision = await decideVoiceTurn(llm, { name: 'Atlas', instructions: 'Software engineer', state: 'Idle', history: [], busy: false }, 'Take me to Facebook using my computer.');
+    expect(decision.kind).toBe('task');
+    expect(llm.complete).not.toHaveBeenCalled();
+  });
+  it('surfaces invalid output after one repair instead of silently dropping a task', async () => {
+    const complete = vi.fn().mockResolvedValue('invalid');
+    await expect(decideVoiceTurn({ name: 'test', complete }, { name: 'Atlas', instructions: '', state: '', history: [], busy: false }, 'Open Facebook')).rejects.toThrow('not dispatched');
+    expect(complete).toHaveBeenCalledTimes(2);
   });
 
   it('routes voice into the selected existing teammate, deduplicates turns, and leaves work running when the call ends', async () => {
@@ -78,6 +91,7 @@ describe('LiveKit voice bridge', () => {
       const view = (await request(route)).data;
       expect(view.busy).toBe(true);
       expect(view.messages.filter((message: CoworkMessage) => message.text === payload.text)).toHaveLength(1);
+      expect(view.messages.find((message: CoworkMessage) => message.text === payload.text).status).toBe('sent');
       expect(view.messages.find((message: CoworkMessage) => message.delivery === 'question' && message.role === 'agent').agentId).toBe(agent.id);
       await request(voiceRoute, 'DELETE');
       expect((await request(route)).data.busy).toBe(true);

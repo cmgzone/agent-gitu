@@ -27,6 +27,15 @@ function cloud(protoNames = false) {
 }
 
 describe('Automatic LiveKit Cloud voice setup', () => {
+  it('updates an existing worker discovered on another host instead of reusing unknown code', async () => {
+    const c = cloud();
+    await new LiveKitCloudWorker(c.fetcher).ensure(config);
+    rmSync(path.join(home, 'Settings', 'livekit-voice-worker.json'));
+    await new LiveKitCloudWorker(c.fetcher).ensure(config);
+    expect(c.requests.filter(request => request.url.endsWith('/CreateAgent'))).toHaveLength(1);
+    expect(c.requests.filter(request => request.url.endsWith('/DeployAgent'))).toHaveLength(1);
+    expect(c.requests.filter(request => request.url.includes('/build?'))).toHaveLength(2);
+  });
   it('reports an HTTP rejection without logging the saved key or secret', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {

@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { AccessToken, AgentDispatchClient, RoomServiceClient } from 'livekit-server-sdk';
 import { loadStoredKeys, setStoredKey } from '../llm/keys.js';
 import type { LlmClient, LlmMessage } from '../llm/llm.js';
-import { extractLastJsonObject } from '../llm/llm.js';
+import { extractLastJsonObject, requestLlmTurn } from '../llm/llm.js';
 
 export interface VoiceTarget {
   kind: 'main' | 'cowork'; runId?: string; conversationId?: string; threadId?: string;
@@ -86,13 +86,35 @@ export class GituVoiceCalls {
 
 /** One model decision; task execution always goes through Gitu's existing dispatcher. */
 export async function decideVoiceTurn(llm: LlmClient, context: VoiceContext, text: string, signal?: AbortSignal): Promise<VoiceDecision> {
-  const reply = await llm.complete([
+  const messages: LlmMessage[] = [
     { role: 'system', content: context.instructions },
-    { role: 'system', content: `You are ${context.name} speaking live in your existing chat. Use the same personality and current conversation. Work already in progress continues independently. No direct tool calls on this voice path. Return JSON only: {"kind":"question|task|steer|queue|stop","reply":"brief spoken answer"}. Choose question for conversation, explanations or status; answer from known results without claiming new actions. Choose task only for an explicit request to do new work; steer for a correction to current work; queue only if the user asks to do it later; stop only if the user explicitly asks to stop the task (ending a call or interrupting speech does not stop work). For task/steer/queue, the host will perform the dispatch and generate the acknowledgment, so do not claim completion. Preserve permissions and do not ask for credentials in speech. Current public state:\n${context.state}` },
-    ...context.history.slice(-24), { role: 'user', content: text },
-  ], { json: true, temperature: 0.3, effort: 'low', outputBudgetTokens: 900, toolChoice: 'none', signal });
-  const parsed = extractLastJsonObject(reply) as Record<string, unknown> | undefined;
-  const kind = parsed?.kind;
-  if (!['question', 'task', 'steer', 'queue', 'stop'].includes(String(kind)) || typeof parsed?.reply !== 'string') return { kind: 'question', reply: 'Could you say that again? I want to make sure I understood.' };
-  return { kind: kind as VoiceDecision['kind'], reply: parsed.reply.slice(0, 4000) };
+    { role: 'system', content: `You are ${context.name} speaking live in your existing chat. Use the same personality and current conversation. Work already in progress continues independently. Use the voice_turn routing tool when available; it does not execute work itself. Otherwise, Return JSON only: {"kind":"question|task|steer|queue|stop","reply":"brief spoken answer"}. Choose question for conversation, explanations or status; answer from known results without claiming new actions. Choose task only for an explicit request to do new work; steer for a correction to current work; queue only if the user asks to do it later; stop only if the user explicitly asks to stop the task (ending a call or interrupting speech does not stop work). For task/steer/queue, the host will perform the dispatch and generate the acknowledgment, so do not claim completion. Preserve permissions and do not ask for credentials in speech. Current public state:\n${context.state}` },
+    ...context.history.slice(-12).map(message => ({ ...message, content: typeof message.content === 'string' ? message.content.slice(-3000) : message.content })), { role: 'user', content: text },
+  ];
+  const parse = (value: unknown): VoiceDecision | undefined => {
+    const parsed = (typeof value === 'string' ? extractLastJsonObject(value) : value) as Record<string, unknown> | undefined;
+    if (!parsed || !['question', 'task', 'steer', 'queue', 'stop'].includes(String(parsed.kind)) || typeof parsed.reply !== 'string' || !parsed.reply.trim()) return undefined;
+    return { kind: parsed.kind as VoiceDecision['kind'], reply: parsed.reply.trim().slice(0, 4000) };
+  };
+  const options = { temperature: 0.3, effort: 'low' as const, outputBudgetTokens: 900, signal };
+  // A routing tool produces a structured decision, never executes a task itself.
+  if (llm.completeTurn) {
+    try {
+      const turn = await requestLlmTurn(llm, messages, { ...options, protocolMode: 'native', toolChoice: 'required', tools: [{ name: 'voice_turn', description: 'Route the latest spoken request and supply a concise conversational answer.', parameters: { type: 'object', additionalProperties: false, properties: { kind: { type: 'string', enum: ['question', 'task', 'steer', 'queue', 'stop'] }, reply: { type: 'string' } }, required: ['kind', 'reply'] } }] });
+      const decision = turn.kind === 'tool_calls' && turn.calls.length === 1 && turn.calls[0]?.name === 'voice_turn' ? parse(turn.calls[0].arguments) : turn.kind === 'text' ? parse(turn.text) : undefined;
+      if (decision) return decision;
+    } catch (error) {
+      const kind = (error as { details?: { kind?: string } }).details?.kind;
+      if (!['tool_protocol_incompatible', 'protocol_error'].includes(kind ?? '')) throw error;
+    }
+  }
+  // Some selected providers only support text. Repair formatting once; never blame
+  // a correctly transcribed utterance or silently discard its requested action.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const reply = await llm.complete(messages, { ...options, json: true, toolChoice: 'none' });
+    const decision = parse(reply);
+    if (decision) return decision;
+    messages.push({ role: 'assistant', content: reply.slice(0, 4000) }, { role: 'user', content: 'Format that decision as JSON only with kind and reply. Classify my original request; this is a format repair, not a new user request. Never claim an action was executed.' });
+  }
+  throw new Error('The voice model could not format its reply. Your request was not dispatched.');
 }

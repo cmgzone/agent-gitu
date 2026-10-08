@@ -34,6 +34,22 @@ function voiceUi(agentPresent = true) {
 }
 
 describe('Live call lifecycle', () => {
+  it('returns speech even if refreshing the conversation throws', async () => {
+    const u = voiceUi();
+    u.context.cwPoll.mockImplementation(() => { throw new Error('render failed'); });
+    await u.context.startGituVoice({ kind: 'cowork', conversationId: 'atlas' });
+    expect(JSON.parse(await u.methods['gitu.voice.reply']!({ callerIdentity: 'agent', payload: JSON.stringify({ callId: 'call-1', id: 'turn-2', text: 'Hello' }) })).text).toBe('I am still working.');
+  });
+  it('shows authenticated speech failures and records generated audio', async () => {
+    const u = voiceUi();
+    await u.context.startGituVoice({ kind: 'cowork', conversationId: 'atlas' });
+    const report = (callerIdentity: string, status: object) => u.methods['gitu.voice.status']!({ callerIdentity, payload: JSON.stringify({ callId: 'call-1', ...status }) });
+    await expect(report('stranger', { stage: 'tts', error: true })).rejects.toThrow('not authorized');
+    await report('agent', { stage: 'tts', error: true, code: 'HTTP_402' });
+    expect(u.elements.voicePhase.textContent).toContain('Speech generation failed (HTTP_402)');
+    await report('agent', { stage: 'audio' });
+    expect(u.elements.gituVoiceBar.dataset.audioGenerated).toBe('true');
+  });
   it('returns the existing agent reply to the speech worker and surfaces failures without going silent', async () => {
     const u = voiceUi();
     await u.context.startGituVoice({ kind: 'cowork', conversationId: 'atlas' });

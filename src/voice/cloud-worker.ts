@@ -130,10 +130,16 @@ export class LiveKitCloudWorker {
     const agents = list.agents ?? [];
     const matching = record ? agents.find(agent => agent.agentId === record!.agentId) : agents.find(agent => agent.agentName === config.agentName || agent.agentDeployments?.some(item => item.agentName === config.agentName));
     const running = (agent: CloudAgent) => agent.agentDeployments?.some(item => /running|ready/i.test(item.status ?? ''));
-    if (matching && (!record || record.hash === source.hash) && running(matching)) {
+    if (matching && record?.hash === source.hash && running(matching)) {
       this.state = { phase: 'ready', message: 'Voice is ready.', agentId: matching.agentId }; return;
     }
     if (record && !matching) record = undefined;
+    // A worker discovered from another Gitu host may run an older bridge. Adopt
+    // its ID and deploy the shipped source once before recording a matching hash.
+    if (!record && matching) {
+      record = { url: config.url, name: config.agentName, agentId: matching.agentId };
+      writeJson(file, record);
+    }
     const secret = { name: 'GITU_VOICE_AGENT_NAME', value: Buffer.from(config.agentName).toString('base64'), kind: 'AGENT_SECRET_KIND_ENVIRONMENT' };
     let upload: Upload;
     if (record) upload = await rpc<Upload>('DeployAgent', { agentId: record.agentId, secrets: [secret] });

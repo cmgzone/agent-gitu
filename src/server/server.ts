@@ -45,7 +45,7 @@ import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
-import { runConversationTurn, runMissionSession, answerCoworkQuestion, coworkIdentityPrompt, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, answerCoworkQuestion, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { GituVoiceCalls, liveKitConfiguration, decideVoiceTurn, type VoiceCall, type VoiceTarget, type VoiceContext } from '../voice/livekit.js';
 import { LiveKitCloudWorker } from '../voice/cloud-worker.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
@@ -4574,10 +4574,10 @@ export class GituServer {
       const workers = store.subAgents({ conversationId: conversation.id }).filter(worker => worker.threadId === target.threadId && worker.parentAgentId === agent.id);
       return {
         name: agent.name,
-        instructions: coworkIdentityPrompt(agent, conversation, members) + '\n' + (this.coworkUserContext() ?? '') + '\n' + this.coworkMemoryFor(agent),
+        instructions: `You are ${agent.name}, ${agent.tagline || 'the user’s AI teammate'}. This is the voice channel of your existing conversation.\n${agent.systemPrompt}\n${this.coworkUserContext() ?? ''}\n${this.coworkMemoryFor(agent)}\nThe voice routing instruction determines the response format; task execution and tool permissions are handled by your normal task runner.`,
         state: (publicProgress || (run?.busy && sameTopic ? 'Work is continuing.' : 'No active task in this topic.')) + '\nWorkers: ' + workers.map(worker => `${worker.role}: ${worker.status}`).join(', '),
         busy: Boolean(run?.busy && sameTopic),
-        history: store.messages(conversation.id, 0, target.threadId ?? null).slice(-24).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
+        history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-12).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
       };
     }
     const session = target.runId ? this.sessions.get(target.runId) : undefined;
@@ -4609,7 +4609,7 @@ export class GituServer {
       const answer = credentialChatInput(decision.reply).safeText;
       if (target.kind === 'cowork') {
         const store = this.cowork();
-        const user = store.appendMessage(target.conversationId!, { role: 'user', text, via: 'web', threadId: target.threadId, delivery: 'question' });
+        const user = store.appendMessage(target.conversationId!, { role: 'user', text, via: 'web', threadId: target.threadId, delivery: 'question', status: 'sent' });
         store.appendMessage(target.conversationId!, { role: 'agent', agentId: target.agentId, agentName: context.name, text: answer, via: 'web', threadId: target.threadId, delivery: 'question', referencedMessageIds: [user.id] });
         this.publishCowork(target.conversationId!);
       } else if (target.runId) {
@@ -4698,8 +4698,8 @@ export class GituServer {
       }
       this.sendJson(res, 404, { error: 'Voice route not found.' });
     } catch (error) {
-      const failure = error as { name?: string; code?: string; kind?: string; cause?: { code?: string }; stack?: string };
-      const rawCode = typeof failure.cause?.code === 'string' ? failure.cause.code : typeof failure.code === 'string' ? failure.code : failure.kind ?? failure.name ?? 'UNKNOWN';
+      const failure = error as { name?: string; code?: string; details?: { kind?: string }; cause?: { code?: string }; stack?: string };
+      const rawCode = typeof failure.cause?.code === 'string' ? failure.cause.code : typeof failure.code === 'string' ? failure.code : failure.details?.kind ?? failure.name ?? 'UNKNOWN';
       const code = /^[a-zA-Z0-9_]{1,64}$/.test(rawCode) ? rawCode : 'UNKNOWN';
       // Log stack locations, never a provider message that may include credentials.
       console.error('[voice] Request failed:', path.replace(/\/calls\/[^/]+/, '/calls/[call]'), code, failure.stack?.split('\n').slice(1, 4).join('\n') ?? '');

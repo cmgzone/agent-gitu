@@ -109,9 +109,20 @@ export const VOICE_JS = String.raw`
         var reply;
         try{reply=await api('/api/voice/calls/'+call.callId+'/reply',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:payload.id,text:payload.text})});voiceState.replyError=null;}
         catch(e){var message=e.message;try{message=JSON.parse(message).error||message;}catch(_){}voiceState.replyError=message;voiceSetPhase(message);return JSON.stringify({text:'I’m having trouble getting my reply. Please check the message shown in the call controls and try again.'});}
-        if(reply.runId&&S.active==='home'){openRun(reply.runId);renderSidebar();}
-        if(target.kind==='cowork'&&S.cw&&S.cw.active===target.conversationId)cwPoll();
+        // Rendering is best effort. A UI refresh must never reject a successful
+        // speech RPC after the backend has already accepted the user's request.
+        try{if(reply.runId&&S.active==='home'){Promise.resolve(openRun(reply.runId)).catch(function(){});renderSidebar();}
+        if(target.kind==='cowork'&&S.cw&&S.cw.active===target.conversationId)Promise.resolve(cwPoll()).catch(function(){});}catch(_){}
         return JSON.stringify(reply);
+      });
+      room.registerRpcMethod('gitu.voice.status',async function(invocation){
+        var participant=room.remoteParticipants.get(invocation.callerIdentity);
+        if(voiceState.callId!==call.callId||!participant||!participant.isAgent)throw new Error('This voice worker is not authorized.');
+        var status=JSON.parse(invocation.payload);if(status.callId!==call.callId)throw new Error('Wrong call.');
+        var stages={tts:'Speech generation',llm:'Agent reply',stt:'Speech recognition'};
+        if(status.error&&stages[status.stage]){var code=/^[A-Za-z0-9_]{1,48}$/.test(status.code||'')?status.code:'unavailable';voiceState.replyError=stages[status.stage]+' failed ('+code+'). Check LiveKit or retry the call.';voiceSetPhase(voiceState.replyError);}
+        if(status.stage==='audio'){var bar=$('gituVoiceBar');if(bar)bar.dataset.audioGenerated='true';}
+        return '{}';
       });
       room.on(sdk.RoomEvent.TrackSubscribed,function(track){if(track.kind==='audio'){var audio=track.attach();audio.dataset.gituVoiceAudio=call.callId;document.body.appendChild(audio);}});
       room.on(sdk.RoomEvent.TrackUnsubscribed,function(track){track.detach().forEach(function(element){element.remove();});});

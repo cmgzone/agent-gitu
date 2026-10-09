@@ -57,7 +57,7 @@ describe('desktop shell window policy', () => {
     let theme = 'light';
     const root = { getAttribute: () => theme };
     new Script(preload).runInContext(createContext({
-      require: () => ({ ipcRenderer: { send } }),
+      require: () => ({ contextBridge: { exposeInMainWorld: vi.fn() }, ipcRenderer: { send } }),
       window: { addEventListener: (_name: string, callback: () => void) => { ready = callback; } },
       document: { documentElement: root },
       MutationObserver: class {
@@ -84,7 +84,7 @@ function startupFixture() {
   const app = Object.assign(new EventEmitter(), { requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), quit: vi.fn() });
   class FakeWindow extends EventEmitter {
     webContents = Object.assign(new EventEmitter(), {
-      ipc: new EventEmitter(), mainFrame: {}, send: vi.fn(), invalidate: vi.fn(),
+      ipc: Object.assign(new EventEmitter(), { handle: vi.fn() }), mainFrame: {}, send: vi.fn(), invalidate: vi.fn(),
       executeJavaScript: vi.fn(async () => 'app'), setWindowOpenHandler: vi.fn(), reload: vi.fn(),
     });
     show = vi.fn(); maximize = vi.fn(); focus = vi.fn();
@@ -97,7 +97,7 @@ function startupFixture() {
   }
   const require = createRequire(import.meta.url);
   const context = createContext({
-    require: (id: string) => id === 'electron' ? { app, BrowserWindow: FakeWindow, shell: {}, nativeTheme: { shouldUseDarkColors: false } } : id === 'node:fs' ? { appendFileSync: vi.fn() } : require(id),
+    require: (id: string) => id === 'electron' ? { app, BrowserWindow: FakeWindow, shell: {}, nativeTheme: { shouldUseDarkColors: false } } : id === 'node:fs' ? { appendFileSync: vi.fn() } : id === './app-sign-in.cjs' ? require('../desktop/app-sign-in.cjs') : require(id),
     __dirname: path.resolve('desktop'), process: { env: {}, on: vi.fn() }, console,
     setTimeout: vi.fn(), clearTimeout: vi.fn(), URL,
   });

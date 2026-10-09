@@ -630,6 +630,7 @@ function createMainWindow() {
   let revealed = false;
   const appUrl = `http://127.0.0.1:${boundPort}`;
   const themedWindow = mainWindow;
+  require('./app-sign-in.cjs').registerAppSignIn(themedWindow.webContents, appUrl, (url) => shell.openExternal(url));
   themedWindow.webContents.ipc.on('gitu:theme', (event, theme) => {
     if (themedWindow.isDestroyed() || event.senderFrame !== themedWindow.webContents.mainFrame) return;
     if (theme !== 'light' && theme !== 'dark') return;

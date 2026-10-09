@@ -532,6 +532,7 @@ export interface CoworkData {
   /** Spend envelopes, so ceilings survive a restart with their spend. */
   budgets?: CoworkBudgetData;
   contextCheckpoints?: CoworkContextCheckpoint[];
+  appReviewState?: Record<string, { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] }>;
 }
 
 export interface CoworkWorkEntry {
@@ -678,6 +679,7 @@ export class CoworkStore {
         widgets: Array.isArray(parsed.widgets) ? parsed.widgets.map(sanitizeWidget).filter((widget): widget is CoworkWidget => Boolean(widget)) : [],
         budgets: sanitizeBudgets(parsed.budgets),
         contextCheckpoints: Array.isArray(parsed.contextCheckpoints) ? parsed.contextCheckpoints.filter(entry => entry && typeof entry.conversationId === 'string' && typeof entry.agentId === 'string' && Number.isSafeInteger(entry.throughSeq) && entry.throughSeq > 0 && typeof entry.summary === 'string').map(entry => ({ ...entry, summary: entry.summary.slice(0, 8_000) })) : [],
+        appReviewState: parsed.appReviewState && typeof parsed.appReviewState === 'object' && !Array.isArray(parsed.appReviewState) ? parsed.appReviewState : {},
       };
       // Repair older documents: conversations gain well-formed folders/threads.
       for (const conversation of this.data.conversations) {
@@ -1431,6 +1433,20 @@ export class CoworkStore {
   }
 
   // Follow-ups: an agent's own scheduled wake-ups.
+
+  appReviewState(agentId: string): { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] } {
+    const state = this.load().appReviewState?.[agentId];
+    return {
+      checkedAt: typeof state?.checkedAt === 'string' && Number.isFinite(Date.parse(state.checkedAt)) ? state.checkedAt : '',
+      findings: Array.isArray(state?.findings) ? state.findings.filter(item => item && typeof item.key === 'string' && typeof item.fingerprint === 'string' && typeof item.widgetId === 'string').slice(-100) : [],
+    };
+  }
+
+  saveAppReviewState(agentId: string, state: { checkedAt: string; findings: { key: string; fingerprint: string; widgetId: string }[] }): void {
+    if (!this.getAgent(agentId)) return;
+    (this.load().appReviewState ??= {})[agentId] = { checkedAt: state.checkedAt, findings: state.findings.slice(-100) };
+    this.save();
+  }
 
   addFollowUp(input: { conversationId: string; agentId: string; note: string; dueAt: string }): CoworkFollowUp {
     const data = this.load();

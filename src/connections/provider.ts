@@ -37,6 +37,7 @@ export interface ConnectedAppTool {
 }
 
 export interface ConnectedAppsProvider {
+  readonly accountStatusIncomplete?: boolean;
   readonly configured: boolean;
   readonly setup: { canConfigure: boolean; keyStorage: string };
   catalog(search: string, cursor?: string): Promise<{ services: ConnectedAppService[]; cursor?: string }>;
@@ -53,6 +54,7 @@ export const MAIL_SERVICE_CARD: ConnectedAppService = {
 };
 
 export class ConnectionsHub implements ConnectedAppsProvider {
+  accountStatusIncomplete = false;
   constructor(
     private readonly composio: ComposioConnections,
     private readonly mail: MailConnections,
@@ -85,12 +87,14 @@ export class ConnectionsHub implements ConnectedAppsProvider {
   }
 
   async accounts(): Promise<ConnectedAppAccount[]> {
+    this.accountStatusIncomplete = false;
     const mail = await this.mail.accounts();
     const accounts: ConnectedAppAccount[] = mail.map((account: MailAccount) => ({ ...account, label: account.label, address: account.address }));
     if (this.composio.configured) {
       try {
         accounts.push(...(await this.composio.accounts()));
       } catch {
+        this.accountStatusIncomplete = true;
         // Keep the mailbox list; a Composio failure is reported by its own UI.
       }
     }

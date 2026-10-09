@@ -224,12 +224,12 @@ describe('mail connections', () => {
     expect(discover).not.toHaveBeenCalled();
     expect(imapOptions[2]).toMatchObject({ host: 'imap.gmail.com', port: 993 });
 
-    // One lookup per domain, however often the form asks.
+    // connect() already cached this domain; the form needs no extra lookup.
     discover.mockClear();
     await expect(mail.detect({ address: 'nope' })).rejects.toThrow('Enter a valid email address.');
     expect((await mail.detect({ address: 'ada@mailcow.example' })).found).toBe(true);
     expect((await mail.detect({ address: 'other@mailcow.example' })).found).toBe(true);
-    expect(discover).toHaveBeenCalledTimes(1);
+    expect(discover).not.toHaveBeenCalled();
   });
 
   it('removes a mailbox and keeps a warning when only sending fails', async () => {
@@ -297,6 +297,7 @@ describe('mail API routes', () => {
 
       const listed = await connections();
       expect(listed.mail.accounts.map((account: { id: string }) => account.id)).toEqual([first.id]);
+      expect(listed.accounts.map((account: { id: string }) => account.id)).toContain(first.id);
       expect(listed.mail.available).toEqual([]);
       expect(listed.mail.providers.map((provider: { id: string }) => provider.id)).toContain('gmail');
       expect((await connections()).mail.keyStorage).toBe('server-encrypted');

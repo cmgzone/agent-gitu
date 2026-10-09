@@ -94,8 +94,7 @@ describe('cowork proactive learning', () => {
     const script = [
       `Checking ${listFilesCall}`,
       'Done — deployed.',
-      // the wake turn's plain answer, then the review reflection's create_skill
-      'Reviewed.',
+      // The silent review needs only its reflection call.
       createSkillReply('proactive-from-review'),
     ];
     const { server, calls } = newServerWithCounter(script);
@@ -108,12 +107,13 @@ describe('cowork proactive learning', () => {
       // Exactly two calls (tool round + answer): proactive mode ran NO reflection.
       expect(calls()).toBe(2);
       expect(await waitForSkill('proactive-from-review', 800)).toBe(false);
-      // The scheduled review wakes the agent, and THAT turn reflects.
-      const fired = (server as any).coworkLearnReviewTick() as string | undefined;
-      expect(fired).toContain('review wake');
+      // The scheduled review learns without a wake message or chat reply.
+      const before = (server as any).cowork().messages(convId).length;
+      const fired = await (server as any).coworkLearnReviewTick() as string | undefined;
+      expect(fired).toContain('learning review finished');
       expect(await waitForSkill('proactive-from-review')).toBe(true);
-      // Wake turn + its reflection both ran.
-      expect(calls()).toBeGreaterThanOrEqual(4);
+      expect((server as any).cowork().messages(convId)).toHaveLength(before);
+      expect(calls()).toBe(3);
     } finally {
       await server.stop();
       updateWorkspaceSettings({ coworkLearning: undefined });
@@ -193,7 +193,7 @@ describe('cowork proactive learning', () => {
     try {
       // Activity from earlier tests in this file is treated as already reviewed.
       (server as any).coworkLastReviewAt = Date.now() + 60_000;
-      expect((server as any).coworkLearnReviewTick()).toBe('no recent activity to review');
+      expect(await (server as any).coworkLearnReviewTick()).toBe('no recent activity to review');
     } finally {
       await server.stop();
       updateWorkspaceSettings({ coworkLearning: undefined });

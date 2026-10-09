@@ -1,11 +1,23 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LiveKitCloudWorker, voiceWorkerSource } from '../src/voice/cloud-worker.js';
+import { LiveKitCloudWorker, voiceWorkerRoot, voiceWorkerSource } from '../src/voice/cloud-worker.js';
 
 const config = { url: 'wss://test-project.livekit.cloud', apiKey: 'test-key', apiSecret: 'test-secret-for-deployment-tests', agentName: 'gitu-voice' };
+it('resolves all four worker files from the installed Electron resources', () => {
+  const resources = mkdtempSync(path.join(tmpdir(), 'gitu-worker-resources-')), worker = path.join(resources, 'voice-worker');
+  try {
+    mkdirSync(worker);
+    for (const name of ['Dockerfile', 'package.json', 'package-lock.json', 'agent.mjs']) copyFileSync(path.resolve('voice-worker', name), path.join(worker, name));
+    expect(voiceWorkerRoot(resources)).toBe(worker);
+    const archive = gunzipSync(voiceWorkerSource(voiceWorkerRoot(resources)).archive).toString();
+    expect(archive).toContain('package-lock.json'); expect(archive).toContain('agent.mjs');
+    const configuration = JSON.parse(readFileSync('package.json', 'utf8')).build;
+    expect(configuration.extraResources).toContainEqual(expect.objectContaining({ from: 'voice-worker', to: 'voice-worker', filter: expect.arrayContaining(['package-lock.json']) }));
+  } finally { rmSync(resources, { recursive: true, force: true }); }
+});
 let home: string, oldHome: string | undefined;
 beforeEach(() => { home = mkdtempSync(path.join(tmpdir(), 'gitu-cloud-worker-')); oldHome = process.env.AGENT_GITU_HOME; process.env.AGENT_GITU_HOME = home; });
 afterEach(() => { if (oldHome === undefined) delete process.env.AGENT_GITU_HOME; else process.env.AGENT_GITU_HOME = oldHome; rmSync(home, { recursive: true, force: true }); });

@@ -1025,7 +1025,7 @@ export const COWORK_JS = String.raw`
     return (cw.learn && cw.learn.mode) || 'reactive';
   }
   function cwLearnLabel(mode) {
-    return mode === 'proactive' ? 'scheduled' : mode === 'off' ? 'off' : 'each task';
+    return mode === 'proactive' ? 'proactive' : mode === 'off' ? 'off' : 'each task';
   }
   function cwLearnLoad() {
     var cw = cwEnsure();
@@ -1049,6 +1049,7 @@ export const COWORK_JS = String.raw`
       jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_consolidate'; })[0], 'Memory consolidation') +
       jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_review'; })[0], 'Learning review') +
       jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_distill'; })[0], 'Transcript distillation') +
+      jobTip(jobs.filter(function (j) { return j.id === 'cowork_learn_apps'; })[0], 'Connected app heartbeat (each teammate at most every 6h)') +
       '\nClick to change';
     el.setAttribute('title', tip);
     el.innerHTML = '<span class="cw-learn-dot"></span><span>' + esc('learn: ' + cwLearnLabel(mode)) + '</span>';
@@ -1798,6 +1799,7 @@ export const COWORK_JS = String.raw`
   function cwBindRequests(el) {
     var cw = cwEnsure();
     if (typeof cwBindAppConnections === 'function') cwBindAppConnections(el);
+    if (typeof cwShowAppConnectionPrompt === 'function') cwShowAppConnectionPrompt();
     el.querySelectorAll('[data-cwhandoff]').forEach(function (button) {
       button.onclick = function () { cwOpenDesktop(button.getAttribute('data-cwhandoff')); };
     });

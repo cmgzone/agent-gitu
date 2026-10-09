@@ -23,9 +23,52 @@ export const CONNECTED_APPS_CSS = String.raw`
 .cw-mail-note{font-size:12px;margin:4px 0 0!important;color:var(--muted)}
 .cw-mail-check{display:flex!important;align-items:center;gap:8px;font-size:12px;margin:8px 0!important}.cw-mail-check input{width:auto}
 .cw-mail-advanced{margin-top:16px;border:1px solid var(--border);border-radius:9px;padding:8px 12px}.cw-mail-advanced summary{cursor:pointer;font-size:12px;color:var(--muted)}.cw-mail-advanced[open] summary{color:var(--text);margin-bottom:6px}
+.cw-app-heartbeat{display:flex;align-items:center;gap:16px;padding:0 0 24px;max-width:720px}.cw-app-heartbeat .btn{flex:none}.cw-app-heartbeat small{color:var(--muted);line-height:1.6;font-size:12px}.cw-app-heartbeat [aria-pressed="true"]{color:var(--accent)}@media(max-width:480px){.cw-app-heartbeat{align-items:flex-start;flex-direction:column;gap:8px}}
 `;
 
 export const CONNECTED_APPS_JS = String.raw`
+  function cwPrepareAppSignIn() {
+    var desktop=typeof window!=='undefined'&&window.gituDesktop,tab=null;
+    if(!desktop&&typeof window!=='undefined')try{tab=window.open('about:blank','_blank');if(tab)tab.opener=null;}catch(e){}
+    return {
+      cancel:function(){if(tab)try{tab.close();}catch(e){}},
+      open:async function(value){
+        var url=new URL(value);if(url.protocol!=='https:'||url.username||url.password||['connect.composio.dev','backend.composio.dev'].indexOf(url.hostname)<0)throw new Error('Invalid sign-in link');
+        if(desktop&&typeof desktop.openAppSignIn==='function')return await desktop.openAppSignIn(url.href);
+        if(tab&&!tab.closed){tab.location.replace(url.href);return true;}
+        return false;
+      }
+    };
+  }
+  function cwAppSignInError(error,agentId) {
+    var message='Could not start sign-in. Open Connections to check this app’s setup and retry.';
+    try{var data=JSON.parse(error.message);if(data.code==='COMPOSIO_SETUP_REQUIRED'){cwOpenConnections(agentId);message=data.error;}else if(data.code==='APP_SIGN_IN_FAILED')message=data.error;}catch(e){}
+    toast(message,true);
+  }
+  function cwAppHeartbeatButton() {
+    var button=$('cwServicesHeartbeat');if(!button)return;
+    var enabled=cwEnsure().learn&&cwEnsure().learn.mode==='proactive';
+    button.setAttribute('aria-pressed',String(!!enabled));button.textContent='Proactive updates: '+(enabled?'On':'Off');
+  }
+  function cwShowAppConnectionPrompt() {
+    var cw=cwEnsure();
+    if(cw.connectionsOpen||cw.profileOpen||cw.appPromptActive||typeof document.querySelector!=='function'||document.querySelector('.modal'))return;
+    var seen=cw.appPromptSeen||(cw.appPromptSeen={});
+    var request=(cw.requests||[]).find(function(item){return item.appConnection&&item.status==='open'&&!seen[item.id]&&Date.now()-Date.parse(item.createdAt)<120000;});
+    if(!request)return;
+    seen[request.id]=true;cw.appPromptActive=true;
+    var modal=document.createElement('div');modal.className='modal cw-modal cw-connection-prompt';
+    modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-label','Connect '+request.appConnection.name);
+    modal.innerHTML='<div class="box"><div class="bar"><strong>Connect '+esc(request.appConnection.name)+'</strong><span style="flex:1"></span><button class="btn ghost" data-prompt-close aria-label="Close connection suggestion">'+cwIcon('close')+'</button></div><div class="cw-body">'+cwServiceIcon(request.appConnection)+'<p>'+esc(request.appConnection.reason)+'</p><div class="cw-app-controls"><button class="btn dark" data-cwconnectrequest="'+esc(request.id)+'">Connect</button><button class="btn ghost" data-prompt-close>Not now</button></div></div></div>';
+    document.body.appendChild(modal);
+    var closeDialog=cwBindDialog(modal,'[data-cwconnectrequest]');
+    function close(){cw.appPromptActive=false;closeDialog();}
+    modal.querySelectorAll('[data-prompt-close]').forEach(function(button){button.onclick=close;});
+    var keydown=modal.onkeydown;modal.onkeydown=function(event){if(event.key==='Escape')cw.appPromptActive=false;keydown(event);};
+    cwBindAppConnections(modal);
+    var connect=modal.querySelector('[data-cwconnectrequest]'),connectAction=connect.onclick;
+    connect.onclick=function(){close();return connectAction();};
+  }
   async function cwLockApp() {
     try { await api('/api/auth/logout', {method:'POST'}); } finally { location.replace('/auth'); }
   }
@@ -36,6 +79,10 @@ export const CONNECTED_APPS_JS = String.raw`
     cw.servicesTab='available';cw.servicesSearch='';cw.servicesData=null;
     cwSyncPanels(); document.title='Connections — Cowork';
     $('cwChat').innerHTML = cwPageNavHtml('connections',cwAgentById(cw.connectionsAgentId))+'<main class="cw-services"><div class="cw-services-head"><div><h1>Connections</h1><p>Connect apps to help your teammates work across your tools.</p></div><div class="cw-services-actions"><form class="cw-services-search" id="cwServicesSearch" role="search">'+cwIcon('search')+'<input id="cwServicesQuery" type="search" aria-label="Search apps" placeholder="Search apps" maxlength="100"></form><button class="btn ghost" id="cwServicesRefresh" aria-label="Refresh connections" title="Refresh connections"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-2L20 8M4 16l2.4 3A7 7 0 0 0 17.9 17"/></svg></button><button class="btn ghost" id="cwServicesBack" aria-label="Back to chat" title="Back to chat">'+cwIcon('back')+'</button></div></div><div class="cw-services-controls"><div class="cw-services-tabs" role="tablist" aria-label="Connection views"><button class="btn ghost" id="cwServicesAvailable" role="tab" aria-selected="true" aria-controls="cwServicesContent" tabindex="0">Available</button><button class="btn ghost" id="cwServicesConnected" role="tab" aria-selected="false" aria-controls="cwServicesContent" tabindex="-1">Connected<span id="cwServicesCount" class="cw-services-count" aria-hidden="true"></span></button></div><label class="cw-services-agent">For teammate <select id="cwServicesAgent" aria-label="Connection teammate"></select></label></div><div id="cwServicesContent" class="cw-services-content" role="tabpanel" aria-labelledby="cwServicesAvailable"><p role="status">Loading apps…</p></div></main>';
+    var serviceControls=typeof document.querySelector==='function'&&document.querySelector('.cw-services-controls');
+    if(serviceControls)serviceControls.insertAdjacentHTML('afterend','<div class="cw-app-heartbeat"><button class="btn ghost" id="cwServicesHeartbeat" aria-pressed="false">Proactive updates: Off</button><small>Checks read tools you’ve allowed while Gitu is open. Useful updates appear in a widget and chat; unchanged results stay quiet.</small></div>');
+    var heartbeat=$('cwServicesHeartbeat');
+    if(heartbeat){cwAppHeartbeatButton();heartbeat.onclick=async function(){heartbeat.disabled=true;try{var mode=cwEnsure().learn&&cwEnsure().learn.mode==='proactive'?'reactive':'proactive';var result=await api('/api/cowork/learning',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:mode})});cwEnsure().learn=Object.assign({},cwEnsure().learn||{},result);cwAppHeartbeatButton();if(typeof cwLearnRender==='function')cwLearnRender();}catch(e){toast('Could not update proactive checks. Try again.',true);}finally{heartbeat.disabled=false;}};}
     cwBindTopNav();$('cwInfoBtn').onclick=function(){cwOpenProfile(cw.connectionsAgentId);};
     $('cwServicesBack').onclick = function(){if(cw.connectionsFromProfile){cwOpenProfile(cw.connectionsAgentId,'connections');return;}cw.connectionsOpen=false;cw.connectionRevision++;cwRenderChat();if(cw.active){cwStartStream(cw.active);cwPoll();cw.timer=setInterval(cwPoll,2000);}};
     $('cwServicesRefresh').onclick=function(){cwLoadServices(cw.servicesSearch||'',false);};
@@ -71,13 +118,14 @@ export const CONNECTED_APPS_JS = String.raw`
       if(!request||!request.appConnection||button.disabled)return;button.disabled=true;
       // A mailbox has no sign-in page: the Connect button opens the mailbox form instead.
       if(request.appConnection.service==='mail'){cwEnsure().mailFormOpen=true;cwOpenConnections(request.agentId);return;}
+      var signIn=cwPrepareAppSignIn();
       try{
         var result=await api('/api/connected-apps/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:request.agentId,service:request.appConnection.service,requestId:request.id})});
-        var url=new URL(result.url);if(url.protocol!=='https:'||['connect.composio.dev','backend.composio.dev'].indexOf(url.hostname)<0)throw new Error('Invalid link');
+        var opened=await signIn.open(result.url),url=new URL(result.url);
         (cw.appAuthLinks||(cw.appAuthLinks={}))[request.id]=url.href;
         cw.appConnectionsChecked=0;cwRenderMsgs();cwPollAppConnections();
-        toast('Continue sign-in. This card updates automatically when connected.');
-      }catch(e){toast('Could not start sign-in. Check Connections and try again.',true);button.disabled=false;}
+        toast(opened?'Finish sign-in in your browser. This card updates automatically.':'Use Continue sign-in to open your browser.');
+      }catch(e){signIn.cancel();cwAppSignInError(e,request.agentId);button.disabled=false;}
     };});
   }
   function cwPollAppConnections() {
@@ -160,7 +208,7 @@ export const CONNECTED_APPS_JS = String.raw`
     var moreButton=$('cwServicesMore');if(moreButton)moreButton.onclick=function(){moreButton.disabled=true;cwLoadServices(cw.servicesSearch||'',true);};
   }
   function cwBindServiceActions(content,agentId){
-    content.querySelectorAll('[data-cwconnect]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;try{var result=await api('/api/connected-apps/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,service:button.getAttribute('data-cwconnect')})});var url=new URL(result.url);if(url.protocol!=='https:'||['connect.composio.dev','backend.composio.dev'].indexOf(url.hostname)<0)throw new Error('Invalid link');var link=document.createElement('a');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';link.className='btn ghost cw-service-action';link.setAttribute('aria-label','Continue sign-in');link.title='Continue sign-in';link.innerHTML=cwIcon('external');button.replaceWith(link);toast('Finish signing in, then refresh Connections.');}catch(e){toast('Could not start sign-in. Try again.',true);}finally{button.disabled=false;}};});
+    content.querySelectorAll('[data-cwconnect]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;var signIn=cwPrepareAppSignIn();try{var result=await api('/api/connected-apps/connect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,service:button.getAttribute('data-cwconnect')})});var opened=await signIn.open(result.url),url=new URL(result.url);var link=document.createElement('a');link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';link.className='btn ghost cw-service-action';link.setAttribute('aria-label','Continue sign-in');link.title='Continue sign-in';link.innerHTML=cwIcon('external');button.replaceWith(link);toast(opened?'Finish sign-in in your browser, then refresh Connections.':'Use Continue sign-in to open your browser.');}catch(e){signIn.cancel();cwAppSignInError(e,agentId);}finally{button.disabled=false;}};});
     content.querySelectorAll('[data-cwassignapp]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;try{await api('/api/connected-apps/assign',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,accountId:button.getAttribute('data-cwassignapp')})});cwLoadServices(cwEnsure().servicesSearch||'',false);}catch(e){toast('Could not assign this account. Try again.',true);button.disabled=false;}};});
     content.querySelectorAll('[data-cwdisconnect]').forEach(function(button){button.onclick=async function(){if(button.disabled)return;button.disabled=true;try{await api('/api/connected-apps/disconnect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({agentId:agentId,accountId:button.getAttribute('data-cwdisconnect')})});cwLoadServices(cwEnsure().servicesSearch||'',false);}catch(e){toast('Could not remove this teammate’s access. Try again.',true);button.disabled=false;}};});
   }

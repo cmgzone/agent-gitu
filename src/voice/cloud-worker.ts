@@ -1,5 +1,5 @@
 import { createHash, createHmac } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -33,7 +33,13 @@ function cloudResponse<T>(method: string, data: Record<string, unknown>): T {
 }
 
 /** Upload only the bundled bridge, never user projects, keys, or conversation history. */
-export function voiceWorkerSource(root = fileURLToPath(new URL('../../voice-worker/', import.meta.url))): { archive: Buffer; hash: string } {
+export function voiceWorkerRoot(resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath): string {
+  const source = fileURLToPath(new URL('../../voice-worker/', import.meta.url));
+  const bundled = resourcesPath && path.join(resourcesPath, 'voice-worker');
+  return bundled && WORKER_FILES.every(name => existsSync(path.join(bundled, name))) ? bundled : source;
+}
+
+export function voiceWorkerSource(root = voiceWorkerRoot()): { archive: Buffer; hash: string } {
   const parts: Buffer[] = [], hash = createHash('sha256');
   for (const name of WORKER_FILES) {
     const body = readFileSync(path.join(root, name)), header = Buffer.alloc(512);

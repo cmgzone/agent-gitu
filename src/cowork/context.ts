@@ -6,6 +6,18 @@ const RECENT_MESSAGES = 40;
 const RECENT_CHARS = 24_000;
 const SUMMARY_INPUT_CHARS = 24_000;
 const SUMMARY_CHARS = 8_000;
+const backgroundPreparations = new WeakMap<CoworkStore, Map<string, Promise<void>>>();
+
+/** Keep maintenance behind the visible response and deduplicate overlapping turns. */
+export function prepareCoworkContextInBackground(input: Parameters<typeof prepareCoworkContext>[0]): void {
+  if (!input.store) return;
+  let pending = backgroundPreparations.get(input.store);
+  if (!pending) { pending = new Map(); backgroundPreparations.set(input.store, pending); }
+  const key = input.conversationId + '/' + input.agentId + '/' + (input.threadId ?? '');
+  if (pending.has(key)) return;
+  const task = prepareCoworkContext({ ...input, onProgress: undefined }).catch(() => {}).finally(() => pending!.delete(key));
+  pending.set(key, task);
+}
 
 function bounded(text: string, limit: number): string {
   if (text.length <= limit) return text;

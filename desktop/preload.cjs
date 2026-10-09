@@ -1,7 +1,10 @@
-const { ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 
-// Observe only the app's resolved appearance; no privileged API is exposed to
-// page scripts or document previews. The main process validates the sender.
+contextBridge.exposeInMainWorld('gituDesktop', {
+  openAppSignIn: (url) => ipcRenderer.invoke('gitu:open-app-sign-in', url),
+});
+
+// The main process validates the sender for both appearance and sign-in.
 window.addEventListener('DOMContentLoaded', () => {
   let previous;
   const syncTheme = () => {

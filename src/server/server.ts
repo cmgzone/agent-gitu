@@ -33,6 +33,8 @@ import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
 import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion } from '../agent/follow-up.js';
 import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
+import { appAwareness, connectionQuestion, connectionReply } from '../cowork/app-awareness.js';
+import { APP_REVIEW_INTERVAL_MS, reviewConnectedApps } from '../cowork/proactive-apps.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -48,7 +50,7 @@ import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import type { AgentPersonality, AgentRole } from '../cowork/profile-config.js';
-import { runConversationTurn, runMissionSession, answerCoworkQuestion, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, answerCoworkQuestion, reviewCoworkLearning, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { GituVoiceCalls, liveKitConfiguration, decideVoiceTurn, type VoiceCall, type VoiceTarget, type VoiceContext } from '../voice/livekit.js';
 import { LiveKitCloudWorker } from '../voice/cloud-worker.js';
 import { buildSystemPrompt } from '../agent/prompt.js';
@@ -2037,11 +2039,13 @@ export class GituServer {
     // Compaction flush: LLM distillation of un-distilled transcripts into
     // candidate memories. Opt-in with the review (it spends model calls).
     const distillJob = ensureJob('cowork_learn_distill', reviewEvery, 'Distill old cowork transcripts into durable candidate memories', reviewEnabled);
+    const appsJob = ensureJob('cowork_learn_apps', '15m', 'Review permitted connected apps and surface useful updates as widgets', reviewEnabled);
     if (this.coworkLearningScheduler) this.coworkLearningScheduler.stop();
     this.coworkLearningScheduler = new CronScheduler(store, async (job) => {
       if (job.id === sweepJob.id) return this.coworkLearnConsolidateTick();
       if (job.id === reviewJob.id) return this.coworkLearnReviewTick();
       if (job.id === distillJob.id) return this.coworkLearnDistillTick();
+      if (job.id === appsJob.id) return this.coworkAppReviewTick();
       return undefined;
     });
     this.coworkLearningScheduler.start(30_000);
@@ -2162,11 +2166,27 @@ export class GituServer {
    *  one allowed to reflect while ordinary turns stay silent in proactive mode. */
   private readonly coworkReviewTriggers = new Set<string>();
 
-  /** Opt-in reflection review: pick the most recently active DM agent and wake
-   *  it with a review instruction so the per-turn reflection (coworkAutoLearn)
-   *  can save a skill or record a pattern from recent work. Skips when there is
-   *  no activity newer than the last review, and when the conversation is busy. */
-  private coworkLearnReviewTick(): string | undefined {
+  /** Review permitted apps only when a proactive heartbeat is due. */
+  private async coworkAppReviewTick(): Promise<string> {
+    if (this.coworkLearningMode() !== 'proactive') return 'proactive app reviews disabled';
+    const store = this.cowork(), now = Date.now();
+    const candidates = store.listAgents().filter(agent => agent.allowConfig && agent.allowWrites && store.appConnections(agent.id).length
+      && now - (Date.parse(store.appReviewState(agent.id).checkedAt) || 0) >= APP_REVIEW_INTERVAL_MS)
+      .sort((a, b) => (Date.parse(store.appReviewState(a.id).checkedAt) || 0) - (Date.parse(store.appReviewState(b.id).checkedAt) || 0));
+    for (const agent of candidates) {
+      const conversation = store.listConversations().find(conv => conv.kind === 'dm' && conv.memberIds.includes(agent.id) && !this.coworkRuns.get(conv.id)?.busy && store.messages(conv.id).some(message => message.role === 'user' && now - Date.parse(message.ts) < 14 * 86400_000));
+      if (!conversation) continue;
+      const count = await reviewConnectedApps({ store, agent, conversation, apps: this.appHub, llm: this.coworkLlm(agent), now,
+        userContext: this.coworkUserContext() + '\n' + this.coworkMemoryFor(agent) + '\nRecent user preferences and requests:\n' + store.messages(conversation.id).filter(message => message.role === 'user').slice(-12).map(message => message.text).join('\n').slice(-6000),
+        signal: AbortSignal.timeout(90_000), enabled: () => this.coworkLearningMode() === 'proactive',
+        isBusy: () => Boolean(this.coworkRuns.get(conversation.id)?.busy), publish: () => this.publishCowork(conversation.id),
+      });
+      return `${count} useful app updates from ${agent.name}`;
+    }
+    return 'no app review is due';
+  }
+
+  private async coworkLearnReviewTick(): Promise<string | undefined> {
     const store = this.cowork();
     const since = this.coworkLastReviewAt ?? 0;
     let best: { conv: CoworkConversation; agentId: string; ts: number } | undefined;
@@ -2182,16 +2202,15 @@ export class GituServer {
     }
     if (!best) return 'no recent activity to review';
     const agent = store.getAgent(best.agentId);
-    if (!agent) return undefined;
-    const fired = this.dispatchAgentWake(
-      best.conv.id,
-      best.agentId,
-      `Proactive learning review. Look back at your recent work in this chat and decide whether anything durable is worth keeping — save a reusable skill (create_skill) or record a success pattern (agent_memory record_pattern). If nothing is reusable, reply briefly that there is nothing to learn. Do not start new work; this is a reflection only.`,
-      'schedule',
-      { learningReview: true },
-    );
-    if (fired) this.coworkLastReviewAt = Date.now();
-    return fired ? `review wake for ${agent.name}` : 'conversation busy — review deferred';
+    if (!agent || !agent.allowConfig) return undefined;
+    if (this.coworkRuns.get(best.conv.id)?.busy) return 'conversation busy — review deferred';
+    this.coworkLastReviewAt = Date.now();
+    await reviewCoworkLearning(agent, best.conv, store.messages(best.conv.id).slice(-40), {
+      agents: [agent], resolveLlm: current => this.coworkLlm(current), toolContext: current => this.coworkToolContext(current),
+      store, memory: this.coworkMemory(), userContext: this.coworkUserContext(), memoryFor: current => this.coworkMemoryFor(current),
+      signal: AbortSignal.timeout(90_000),
+    });
+    return `learning review finished for ${agent.name}`;
   }
 
   private async stopCoworkLifecycle(): Promise<void> {
@@ -2566,7 +2585,8 @@ export class GituServer {
     if (!trimmed) return { ok: false, error: 'text is required' };
     const prior = meta?.id ? store.getMessage(conversationId, meta.id) : undefined;
     if (prior) return { ok: true, message: prior };
-    const delivery = meta?.delivery === 'queue' ? 'queue' : meta?.delivery === 'question' || (this.coworkRuns.get(conversationId)?.busy && isNonMutatingStatusQuestion(trimmed)) ? 'question' : meta?.delivery ?? 'queue';
+    const connectionStatus = !meta?.widgetRequest && !artifactIds?.length && connectionQuestion(trimmed, store.messages(conversationId, 0, threadId ?? null));
+    const delivery = meta?.delivery === 'queue' ? 'queue' : meta?.delivery === 'question' || connectionStatus || (this.coworkRuns.get(conversationId)?.busy && isNonMutatingStatusQuestion(trimmed)) ? 'question' : meta?.delivery ?? 'queue';
     const trigger = store.appendMessage(conversationId, {
       id: meta?.id,
       role: 'user',
@@ -2612,11 +2632,14 @@ export class GituServer {
         const run = this.coworkRuns.get(conversation.id);
         const current = (run?.threadId ?? null) === (trigger.threadId ?? null) ? Object.values(run?.progresses ?? {}).map(progress => `${progress.agentName}: ${progress.text || (progress.tool ? 'Using ' + progress.tool : 'Working')}`).join('\n') : '';
         const state = current || (run?.busy ? 'The team is working on its current request.' : 'There is no active team turn in this topic.');
-        const text = isNonMutatingStatusQuestion(trigger.text) ? state : await answerCoworkQuestion({
+        const history = store.messages(conversation.id, 0, trigger.threadId ?? null).filter(message => message.seq < trigger.seq);
+        const awareness = await appAwareness(this.appHub, store, agent.id);
+        const connectionAnswer = await connectionReply({ text: trigger.text, history, apps: this.appHub, store, agentId: agent.id, conversationId: conversation.id, awareness });
+        const text = connectionAnswer ?? (isNonMutatingStatusQuestion(trigger.text) ? state : await answerCoworkQuestion({
           agent, conversation, members, question: trigger.text, state,
-          history: store.messages(conversation.id, 0, trigger.threadId ?? null).filter(message => message.seq < trigger.seq),
+          history,
           llm: this.coworkLlm(agent), userContext: this.coworkUserContext(), memory: this.coworkMemoryFor(agent), signal: AbortSignal.timeout(30_000),
-        });
+        }));
         if (!store.getConversation(conversation.id) || !store.getMessage(conversation.id, trigger.id)) return;
         store.appendMessage(conversation.id, { role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', threadId: trigger.threadId, delivery: 'question', referencedMessageIds: [trigger.id] });
         store.setMessageStatus(conversation.id, trigger.id, 'sent');
@@ -2828,6 +2851,7 @@ export class GituServer {
             return messages;
           },
           agents: store.listAgents(),
+          connectedApps: this.appHub,
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
           computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
@@ -4919,8 +4943,8 @@ export class GituServer {
             providers: MAIL_PROVIDERS,
             keyStorage: this.mailConnections.setup.keyStorage,
           };
-          if (!this.connectedApps.configured || !agentId) { this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], services: [], appPermissions, mail }); return; }
-          const allAccounts = await this.connectedApps.accounts();
+          if (!agentId) { this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], services: [], appPermissions, mail }); return; }
+          const allAccounts = await this.appHub.accounts();
           const accounts = allAccounts.filter(account => store.appAccountAssigned(agentId, account.toolkit, account.id));
           const availableAccounts = allAccounts.filter(account => !store.appAccountAssigned(agentId, account.toolkit, account.id) && account.status === 'ACTIVE' && !account.disabled);
           const connectedToolkits = new Set([...accounts.filter(account => account.status === 'ACTIVE' && !account.disabled).map(account => account.toolkit), ...mail.accounts.map(account => account.toolkit)]);
@@ -4934,7 +4958,7 @@ export class GituServer {
               if (!this.dispatchAgentWake(request.conversationId, request.agentId, instruction)) store.addFollowUp({ conversationId: request.conversationId, agentId: request.agentId, note: instruction, dueAt: new Date().toISOString() });
             }
           }
-          const catalog = url.searchParams.get('statusOnly') === 'true' ? { services: [] } : await this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined);
+          const catalog = url.searchParams.get('statusOnly') === 'true' || !this.connectedApps.configured ? { services: [] } : await this.connectedApps.catalog(url.searchParams.get('search') ?? '', url.searchParams.get('cursor') ?? undefined);
           // Provider catalog status is global; derive each card from this teammate's assignments.
           const services = catalog.services.map(service => {
             const account = accounts.find(account => account.toolkit === service.slug && account.status === 'ACTIVE' && !account.disabled) ?? accounts.find(account => account.toolkit === service.slug);
@@ -4993,7 +5017,17 @@ export class GituServer {
           if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
           const request = body['requestId'] ? store.getRequest(String(body['requestId'])) : undefined;
           if (body['requestId'] && (!request?.appConnection || request.agentId !== agentId || request.appConnection.service !== service || request.status === 'dismissed')) { this.sendJson(res, 400, { error: 'This app recommendation belongs to another teammate or service.' }); return; }
-          const link = await this.connectedApps.connect(service);
+          if (!this.connectedApps.configured) { this.sendJson(res, 400, { code: 'COMPOSIO_SETUP_REQUIRED', error: 'Set up Composio in Connections, then click Connect for this app.' }); return; }
+          let link: { url: string; accountId: string };
+          try { link = await this.connectedApps.connect(service); }
+          catch (error) {
+            // Never expose SDK errors: they may contain credentials or request data.
+            const status = error && typeof error === 'object' ? Number((error as { status?: unknown }).status) : 0;
+            const detail = status === 401 || status === 403
+              ? 'Composio denied sign-in. Check that your Composio key allows session management and tool execution, then retry in Connections.'
+              : 'Composio could not create a sign-in link for this app. Check its authentication setup in Composio and retry from Connections.';
+            this.sendJson(res, 502, { code: 'APP_SIGN_IN_FAILED', error: detail }); return;
+          }
           store.assignAppAccount(agentId, service, link.accountId);
           this.sendJson(res, 200, link); return;
         }

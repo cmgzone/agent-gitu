@@ -62,6 +62,35 @@ function fixture() {
 }
 
 describe('account and Connections UI', () => {
+  it('opens recommended app sign-in on the first click and keeps a retry link', async () => {
+    const f = fixture(), openAppSignIn = vi.fn(async () => true);
+    f.context.window = { gituDesktop: { openAppSignIn } };
+    f.context.cwRenderMsgs = vi.fn(); f.context.cwPollAppConnections = vi.fn();
+    f.cw.requests.push({ id: 'connect-request', agentId: 'writer', appConnection: { service: 'tavily', name: 'Tavily' } });
+    const button = { disabled: false, getAttribute: () => 'connect-request', onclick: undefined as undefined | (() => Promise<void>) };
+    const root = { querySelectorAll: (selector: string) => selector === '[data-cwconnectrequest]' ? [button] : [] };
+    f.api.mockResolvedValue({ url: 'https://connect.composio.dev/link', accountId: 'own' });
+    f.context.cwBindAppConnections(root);
+    await button.onclick!();
+    expect(openAppSignIn).toHaveBeenCalledWith('https://connect.composio.dev/link');
+    expect(f.context.cwRenderMsgs).toHaveBeenCalledOnce();
+    expect(f.context.cwPollAppConnections).toHaveBeenCalledOnce();
+    expect(f.context.cwAppConnectionHtml(f.cw.requests[0])).toContain('Continue sign-in');
+    expect(f.context.toast).toHaveBeenCalledWith('Finish sign-in in your browser. This card updates automatically.');
+  });
+  it('reserves a web popup before the async request and closes it on failure', async () => {
+    const f = fixture(), tab = { opener: {}, closed: false, close: vi.fn(), location: { replace: vi.fn() } };
+    f.context.window = { open: vi.fn(() => tab) };
+    const signIn = f.context.cwPrepareAppSignIn();
+    expect(f.context.window.open).toHaveBeenCalledWith('about:blank', '_blank');
+    expect(tab.opener).toBe(null);
+    expect(await signIn.open('https://connect.composio.dev/link')).toBe(true);
+    expect(tab.location.replace).toHaveBeenCalledWith('https://connect.composio.dev/link');
+    await expect(signIn.open('https://evil.example')).rejects.toThrow('Invalid sign-in link');
+    signIn.cancel(); expect(tab.close).toHaveBeenCalledOnce();
+    f.context.cwAppSignInError(new Error(JSON.stringify({ code: 'APP_SIGN_IN_FAILED', error: 'Check this app’s authentication setup in Composio.' })), 'writer');
+    expect(f.context.toast).toHaveBeenCalledWith('Check this app’s authentication setup in Composio.', true);
+  });
   it('supports encrypted key setup on a hosted server without Windows instructions', async () => {
     const f = fixture();
     f.cw.connectionsOpen = true;

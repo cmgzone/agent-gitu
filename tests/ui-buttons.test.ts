@@ -32,4 +32,12 @@ describe('Button icon decoration', () => {
     expect(cancel.insertAdjacentHTML).toHaveBeenCalledWith('afterbegin', expect.stringContaining('data-icon="x"'));
     expect(explicit.insertAdjacentHTML).not.toHaveBeenCalled();
   });
+
+  it('keeps the widget focus backdrop visually empty', () => {
+    const f = controls(), backdrop = f.button('');
+    backdrop.matches = (...selectors: string[]) => selectors[0]?.split(',').includes('.cw-widget-backdrop') ?? false;
+    backdrop.getAttribute = () => 'Close widgets';
+    f.context.decorateActionButton(backdrop);
+    expect(backdrop.insertAdjacentHTML).not.toHaveBeenCalled();
+  });
 });

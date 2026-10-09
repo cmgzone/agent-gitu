@@ -1143,7 +1143,6 @@ export class Gitu {
       // token counts, not chars/4). Emergency compaction reads this to shed
       // history BEFORE the next request when the working window is nearly full.
       let lastRequestInputTokens: number | undefined;
-      let loopBlocks = 0;
       interface ConnectionCallRecord {
         consecutiveCalls: number;
         consecutiveFailures: number;
@@ -1224,7 +1223,8 @@ export class Gitu {
         // Visual-verification turns are real progress on UI work: screenshot /
         // click-through inspection produces no new commands or diffs, but a run
         // that is actively LOOKING at what it built must not be killed mid-QA.
-        browses: ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success').length,
+        browses: new Set(ledger.data.actions.filter((a) => a.tool === 'browse' && a.status === 'success')
+          .map(a => `${a.paramsHash}:${a.verifiedWorkspaceFingerprint ?? a.observation ?? ''}`)).size,
         // Distinct successful actions = genuinely new work (a repeated identical
         // call does not grow the set). Diagnosis/reading turns used to register
         // ZERO progress and stalled runs that were actively making new attempts.
@@ -1235,22 +1235,32 @@ export class Gitu {
       let budgetWarned = false;
       let delegateSlotsUsed = 0;
       const verificationAttempts = new VerificationAttempts();
-      // Runtime-owned completion transition. Termination is a control-plane
-  // decision, not a model decision: once the evidence gate is open AND the
-  // contracted work is fully resolved, the runtime enters a bounded
-  // finalization state and refuses ordinary execution until the model reports.
-  let finalization: { active: boolean; remaining: number } = { active: false, remaining: FINALIZATION_ACTION_BUDGET };
-
-  const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
+      let verificationRecoveryExhausted = false;
+      const deferredBlocks = new Map<string, number>();
+      // Freeze ordinary execution only after current proof and contracted work
+      // are ready. Required gate failures and new user input reopen recovery.
+      let finalization = { active: false, remaining: FINALIZATION_ACTION_BUDGET };
+      let finalizationRecoveryFingerprint: string | undefined;
+      let finalizationSuspended = false;
+      const rejectCompletion = (gate: string, reason: string, fingerprint: string): void => {
+        finalization.active = false;
         // Timestamps and evidence IDs are excluded: repeating the same check
         // must not reset recovery, but a repair or changed outcome must.
-        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint, e.outputExcerpt]]));
-        const signature = JSON.stringify([fingerprint, reason, [...latestChecks]]);
-        if (verificationAttempts.reject(gate, signature) >= 3) {
-          const blocker = `Verification could not be completed after two correction opportunities on the same unchanged result: ${reason}`;
-          ledger.addBlocker(blocker);
+        const latestChecks = new Map(ledger.data.evidence.map(e => [e.command ?? e.label, [e.passed, e.stale, e.workspaceFingerprint]]));
+        const signature = JSON.stringify([fingerprint, [...latestChecks].sort(([a], [b]) => String(a).localeCompare(String(b)))]);
+        const attempts = verificationAttempts.reject(gate, signature);
+        if (attempts >= 3 && gate === 'visual-verification' && !this.config.browser?.available()) {
+          ledger.addBlocker(`Final UI verification requires a browser, but this host has no browser available: ${reason}`);
           exitReason = 'blocked';
-          observe(blocker);
+          observe(reason);
+        } else if (attempts >= 6) {
+          const stalled = `The agent repeatedly requested completion without resolving ${gate}, even after an alternative recovery prompt: ${reason}. Work and evidence are preserved for continuation.`;
+          ledger.addBlocker(stalled);
+          exitReason = 'stalled';
+          verificationRecoveryExhausted = true;
+          observe(stalled);
+        } else if (attempts >= 3) {
+          observe(`TRY AN ALTERNATIVE for ${gate}: ${reason}. Diagnose the failing method and use a different valid check, fix the environment, or repair the actual failure. Reuse unchanged passing evidence; do not restart the task. A repeated completion claim is not a recovery attempt. Use request_block with the concrete prerequisite only if authorized alternatives are unavailable.`);
         } else {
           observe(`COMPLETION REJECTED by ${gate} gate — ${reason}. Continue with a concrete repair or verification; request_block if a dependency prevents progress.`);
         }
@@ -1813,6 +1823,13 @@ export class Gitu {
 
       const admitQueuedMessages = (): boolean => {
         const hadMessages = this.inbox.length > 0 || this.taggedFolderNotices.length > 0;
+        if (hadMessages) {
+          finalization = { active: false, remaining: FINALIZATION_ACTION_BUDGET };
+          finalizationRecoveryFingerprint = undefined;
+          // Old criteria cannot freeze newly requested work before the model
+          // has incorporated that request into its contract.
+          finalizationSuspended = true;
+        }
         while (this.taggedFolderNotices.length > 0) observe(`REFERENCE FOLDER UPDATE: ${this.taggedFolderNotices.shift()}`);
         while (this.inbox.length > 0) {
           const queued = this.inbox.shift()!;
@@ -1970,7 +1987,32 @@ export class Gitu {
             this.emit(`effort  ${turns}/${budgetCap} turns used — about ${budgetCap - turns} left; wrap up verified work if you can`);
           }
 
-          const action = await ask(effortNote);
+          let completionNote = '';
+          if (agentWorkflow && !conversationControl) {
+            const phase = activePhaseData();
+            if (phase.evidence.some(e => e.passed) && agentCompletionReady(phase).ready) {
+              const fp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              const criteria = evidence.gate(phase, fp);
+              const commands = new Set(phase.acceptanceCriteria.map(c => c.verification).filter((c): c is string => Boolean(c)).map(c => c.trim().replace(/\s+/g, ' ').toLowerCase()));
+              const verified = agentVerificationGate(phase, agentBaselineFingerprint, fp, commands);
+              const visual = uiVisualGate(phase, { browserAvailable: Boolean(this.config.browser?.available()), visionAvailable: this.config.supportsImages ?? false, workspaceFingerprint: fp });
+              if (fp !== 'unknown-fp' && !fp.startsWith('partial-') && phase.evidence.some(e => e.passed && !e.stale && e.workspaceFingerprint === fp) &&
+                (criteria.totalCount === 0 || criteria.open) && verified.open && visual.verified) {
+                completionNote = 'COMPLETION CHECKPOINT: recorded requirements and current verification are satisfied. If the requested implementation and delivery are complete, perform only necessary cleanup, then call complete with the final report and terminate. Do not invent additional proof, criteria, or work. Continue only for a concrete remaining user requirement, new change, failure, or unresolved risk; name that reason. Existing completion gates still apply.';
+                // Formal criteria provide a complete contract the runtime can
+                // close. Quick work keeps the lighter checkpoint and judgment.
+                if (criteria.totalCount > 0 && !finalizationSuspended && fp !== finalizationRecoveryFingerprint && !unresolvedQualityReview && !finalization.active) {
+                  finalization = { active: true, remaining: FINALIZATION_ACTION_BUDGET };
+                  completionNote += `\n${finalizationRejection()}`;
+                }
+              } else {
+                finalization.active = false;
+              }
+            } else {
+              finalization.active = false;
+            }
+          }
+          let action = await ask([effortNote, completionNote].filter(Boolean).join('\n\n'));
 
           // Input may arrive while the model is thinking. Its response was
           // produced under old instructions and must never reach dispatch.
@@ -2092,21 +2134,18 @@ export class Gitu {
           // are accepted, and the number of such actions is bounded so the runtime
           // cannot be walked into a second verification loop.
           if (finalization.active) {
-            if (finalization.remaining <= 0) {
-              // The bounded finalization window is over and the model never
-              // delivered its final report. End the run as blocked instead of
-              // unlocking ordinary execution (which would reopen verification).
-              const blocker = `${FINALIZATION_ERROR_CODE}: finalization did not converge within its bounded action budget (${FINALIZATION_ACTION_BUDGET} actions); the final report was never delivered.`;
-              ledger.addBlocker(blocker);
-              exitReason = 'blocked';
-              observe(blocker);
-              break mainLoop;
+            if (finalization.remaining <= 0 && action.type !== 'complete') {
+              // Build a factual report from the satisfied contract instead of
+              // inventing a task blocker because the model kept asking for proof.
+              // This still runs EVERY completion/visual/review gate below.
+              action = { type: 'complete', summary: `Completed the verified requirements:\n\n${activePhaseData().acceptanceCriteria.map(c => `- ${c.text}`).join('\n')}\n\nRequired checks passed for the current workspace. Changed files and verification details are available in the task details.` };
+              this.emit(`${FINALIZATION_ERROR_CODE}: closing budget reached — generating the final report from verified task records`);
             }
+            finalization.remaining -= 1;
             if (!isFinalizationAction(action)) {
               observe(finalizationRejection());
               continue;
             }
-            finalization.remaining -= 1;
           }
           if (agentWorkflow && !temporaryPlanPending && ['tool_call', 'parallel', 'delegate', 'capability_action'].includes(action.type) && ledger.data.status !== 'executing') {
             ledger.setStatus('executing');
@@ -2371,23 +2410,15 @@ export class Gitu {
               const malformedVerdict = malformedKind ? malformed.note(malformedKind) : (malformed.reset(), undefined);
 
               if (outcome.blockedByLoop) {
-                loopBlocks += 1;
                 memory.add({
                   type: 'failure',
                   claim: `Repeated failure on ${outcome.record.paramsSummary}: ${action.reason}`,
                   scope: guard.lock.name,
                   confidence: 0.8,
                 });
-                if (loopBlocks >= 3) {
-                  ledger.addBlocker('Three loop-prevention blocks occurred; task escalated.');
-                  exitReason = 'blocked';
-                  observe(outcome.result.output);
-                  break;
-                }
-                observe(outcome.result.output);
+                observe(`${outcome.result.output}\nThis method is exhausted, not the whole task. Inspect the cause and try a different authorized method; do not repeat this unchanged call or evade a permission denial.`);
                 break;
               }
-              if (outcome.result.ok) loopBlocks = 0;
               if (outcome.deniedByPolicy) {
                 observe(outcome.result.output);
                 break;
@@ -3063,6 +3094,9 @@ export class Gitu {
               break;
             }
             case 'complete': {
+              // The final report still passes every required gate below. If a
+              // gate needs a repair, ordinary recovery must remain available.
+              finalization.active = false;
               if (conversationControl) {
                 completionInput = { summary: applyOutputHygiene(action.summary), risks: action.risks ?? [], followUps: action.followUps ?? [] };
                 if (preservePausedWork) this.emit(`say ${applyOutputHygiene(action.summary)}`);
@@ -3071,6 +3105,7 @@ export class Gitu {
                 break;
               }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
+              finalizationRecoveryFingerprint = currentFp;
               const gate = evidence.gate(ledger.data, currentFp);
               const verificationPhaseData = activePhaseData();
               const criterionCommands = verificationPhaseData.acceptanceCriteria.length
@@ -3097,17 +3132,14 @@ export class Gitu {
               // answers the user without pretending contracted work is unfinished.
               if (agentWorkflow && !finalization.active && !chatOnly) {
                 const contractedWork = agentCompletionReady(verificationPhaseData);
-                if (gate.open && contractedWork.ready) {
-                  finalization = { active: true, remaining: FINALIZATION_ACTION_BUDGET };
-                  observe(`${FINALIZATION_ERROR_CODE}: all frozen acceptance criteria have passed and no planned work remains open. Only cleanup, stopping temporary processes, read-only repository/diff inspection and the final report are permitted now. You cannot add more verification.`);
-                } else if (gate.open && !contractedWork.ready) {
+                if (gate.open && !contractedWork.ready) {
                   // Green evidence is not sufficient on its own: unresolved
                   // contracted work is a hard veto, not a notice. The run stays
-                  // alive so the model can finish; three identical attempts
-                  // escalate to a blocked task instead of a completed one.
+                  // alive so the model can finish or revise obsolete scope.
                   rejectCompletion('contract', contractedWork.reason, currentFp);
                   break;
                 }
+                if (contractedWork.ready) verificationAttempts.resolve('contract');
               }
               if (completionDisposition(gate.open || chatOnly) === 'working') {
                 rejectCompletion('evidence', `${gate.satisfiedCount}/${gate.totalCount} criteria backed; ${gate.missing.join('; ')}`, currentFp);
@@ -3714,6 +3746,13 @@ export class Gitu {
                 observe(`Recovery exhausted before block:\n${blocked}`);
                 break;
               }
+              const blockKey = action.reason.trim().toLowerCase();
+              const previousBlockAt = deferredBlocks.get(blockKey);
+              if (previousBlockAt === undefined || !ledger.data.actions.slice(previousBlockAt).some(a => a.status === 'error' || a.status === 'success')) {
+                if (previousBlockAt === undefined) deferredBlocks.set(blockKey, ledger.data.actions.length);
+                observe(`BLOCK DEFERRED: ${action.reason}. No concrete external prerequisite was identified. Try a reasonable authorized alternative or inspect the failure before stopping. A failed command, missing optional tool, stale proof, or unavailable specialist is not by itself a task blocker. If alternatives cannot work, identify the specific missing prerequisite and what was tried. Do not bypass permissions or repeat a write with an unknown outcome.`);
+                break;
+              }
               ledger.addBlocker(action.reason);
               exitReason = 'blocked';
               observe(`Block recorded: ${action.reason}`);
@@ -3901,6 +3940,7 @@ export class Gitu {
                         ledger: ledger.data,
                         criterionId: mainCriterion.id,
                         currentFingerprint: currentFp,
+                        getCurrentFingerprint: () => getWorkspaceFingerprint(guard.activeWritableRoot),
                         runOracle: reverifyRunner,
                         workdir: guard.activeWritableRoot,
                       });
@@ -3962,11 +4002,13 @@ export class Gitu {
             exitReason = 'stalled';
             completionInput = undefined;
             conversationCompleted = false;
+            verificationRecoveryExhausted = false;
+            deferredBlocks.clear();
             ledger.data.blockers = [];
             ledger.save();
           }
 
-          if (exitReason === 'complete' || exitReason === 'blocked') break;
+          if (exitReason === 'complete' || exitReason === 'blocked' || verificationRecoveryExhausted) break;
         }
       } catch (err) {
         if (!this.aborted) throw err;

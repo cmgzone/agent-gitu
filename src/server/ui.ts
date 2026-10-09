@@ -11,10 +11,12 @@ import { COWORK_DASHBOARD_CSS, COWORK_DASHBOARD_JS } from './ui-cowork-dashboard
 import { REPORT_DETAILS_CSS, REPORT_DETAILS_JS } from './ui-report-details.js';
 import { ACTIVITY_CSS, ACTIVITY_MARK_HTML } from './ui-activity.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
+import { SUBAGENT_CSS, SUBAGENT_JS } from './ui-subagents.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
+import { VOICE_CSS, VOICE_JS } from './ui-voice.js';
 import { OUTPUT_CSS, OUTPUT_JS } from './ui-outputs.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
 import { UI_THEME_CSS, UI_THEME_BOOTSTRAP, UI_THEME_JS } from './ui-theme.js';
@@ -346,34 +348,11 @@ ${HOME_CSS}
   .tl-meta .tl-body { color: var(--muted); font-size: 12px; padding: 1px 0; }
   .tl-meta b { color: var(--muted); font-weight: 600; }
   .tl-meta.subagent-note b { color: var(--run); }
-  /* ── Delegated specialist: nested under its parent entry ────────────────
-     Not a second card — an indent with its own left border rule; agent name,
-     turn count and usage tag inline in one row, narration lines below. */
-  .tl-sub-row .tl-body { min-width: 0; }
-  .tl-sub-head { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; cursor: pointer; border-radius: 7px; padding: 2px 4px; margin: -2px -4px; }
-  .tl-sub-head:hover { background: var(--hover); }
-  .tl-sub-head:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-  /* Tap-to-peek specialist cards: chevron rotates when open, collapsed shows
-     a one-line preview of the latest activity. */
-  .spec-chev { display: inline-flex; align-items: center; color: var(--faint); flex: none; transition: transform .14s ease; }
-  .spec-chev svg { width: 11px; height: 11px; }
-  .tl-sub-row.open .spec-chev { transform: rotate(90deg); color: var(--text); }
-  .spec-preview { font-family: var(--mono); font-size: 10.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 1px 2px 3px 15px; min-height: 14px; }
-  .tl-sub-row.open .spec-preview { display: none; }
-  .spec-name { font-weight: 600; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
-  .spec-turns { font-family: var(--mono); font-size: 10.5px; color: var(--muted); font-feature-settings: 'tnum' 1; font-variant-numeric: tabular-nums; flex: none; white-space: nowrap; }
-  .spec-tag { font-family: var(--mono); font-size: 9px; letter-spacing: .7px; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border2); border-radius: 999px; padding: 1px 7px; flex: none; }
-  .tl-sub-status { margin-left: auto; font-family: var(--mono); font-size: 10px; letter-spacing: .5px; color: var(--muted); flex: none; white-space: nowrap; }
-  .st.st-run, .tl-sub-status.st-run { color: var(--run); }
-  .st.st-ok, .tl-sub-status.st-ok { color: var(--ok); }
-  .st.st-err, .tl-sub-status.st-err { color: var(--err); }
-  .st.st-warn, .tl-sub-status.st-warn { color: var(--evidence); }
-  .st.st-idle, .tl-sub-status.st-idle { color: var(--faint); }
-  .tl-sub-task { padding: 3px 0 1px; font-size: 11.5px; line-height: 1.55; color: var(--muted); font-style: italic; white-space: pre-wrap; word-break: break-word; }
-  /* The sub-agent's own left border rule, indented under the parent entry */
-  .tl-sub-rail { margin: 4px 0 0 3px; border-left: 1px solid var(--line); padding-left: 13px; }
-  .spec-logline { font-size: 11.5px; line-height: 1.55; color: var(--muted); padding: 2px 0; white-space: pre-wrap; word-break: break-word; animation: outFade .18s ease-out; }
-  .spec-logline:last-child { color: var(--text); opacity: .85; }
+  .st.st-run { color: var(--run); }
+  .st.st-ok { color: var(--ok); }
+  .st.st-err { color: var(--err); }
+  .st.st-warn { color: var(--evidence); }
+  .st.st-idle { color: var(--faint); }
   /* ── Intake metadata: quiet silver line, collapses the resume burst ────── */
   .intake-line { margin: 2px 0; font-size: 11.5px; color: var(--faint); cursor: pointer; user-select: none; -webkit-user-select: none; }
   .intake-line:hover { color: var(--muted); }
@@ -948,6 +927,7 @@ ${HOME_CSS}
     #mascotWrap { display: none !important; }
   }
   ${COWORK_CSS}
+  ${VOICE_CSS}
   ${OUTPUT_CSS}
   ${CONNECTED_APPS_CSS}
   ${UI_THEME_CSS}
@@ -960,6 +940,7 @@ ${HOME_CSS}
   ${COWORK_DASHBOARD_CSS}
   ${CHAT_SURFACE_CSS}
   ${WORKSPACE_SEARCH_CSS}
+  ${SUBAGENT_CSS}
 </style>
 </head>
 <body>
@@ -1574,7 +1555,13 @@ ${ONBOARDING_HTML}
     }
   }
 
-  function stopStreams() { flushLiveText(); if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } cwStopPoll(); }
+  function stopStreams() {
+    flushLiveText(); if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } cwStopPoll();
+    Object.keys(S.sessions || {}).forEach(function (id) {
+      var presence = S.sessions[id].nodes && S.sessions[id].nodes.subagentPresence;
+      if (presence) presence.view.dispose();
+    });
+  }
 
   function openHome() {
     var transition=captureChatTransition();if(S.active==='home')transition=null;
@@ -1866,7 +1853,7 @@ ${ONBOARDING_HTML}
     if (plus) plus.title = enabled ? 'More actions · Plan mode selected' : 'More actions · Agent mode selected';
   }
   function controlsHtml() {
-    return '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
+    return voicePhoneButton('mainVoiceCall') + '<button type="button" class="pill control-pill" id="homePlusBtn" title="More actions" aria-label="More actions" aria-haspopup="menu" aria-expanded="false">' + icon('plus') + '</button>' +
       '<div class="home-plus-menu" id="homePlusMenu" hidden role="menu" aria-label="More actions">' +
         '<button type="button" id="menuAgent" data-hp="agent" role="menuitemradio" aria-checked="true"><span class="ico">' + icon('bolt') + '</span>Agent mode<span class="check">✓</span></button>' +
         '<button type="button" id="menuPlan" data-hp="plan" role="menuitemradio" aria-checked="false"><span class="ico">' + icon('layers') + '</span>Plan mode<span class="check">✓</span></button>' +
@@ -2042,6 +2029,7 @@ ${ONBOARDING_HTML}
     return body;
   }
   function bindControls() {
+    bindGituVoice();
     var model = $('model'), effort = $('effort');
     updatePlanControl();
     if (model) { if (S.sel.model) model.value = S.sel.model; if (!model.value && model.options.length) model.value = model.options[0].value; S.sel.model = model.value; }
@@ -2961,143 +2949,55 @@ ${ONBOARDING_HTML}
     stat.setAttribute('aria-label', added + ' lines added, ' + removed + ' lines removed');
   }
 
-  // ── Delegated specialists ───────────────────────────────────────────────
-  // One living timeline group per delegated job (keyed by job id): an inline
-  // header row (agent name · turn count · specialist tag · status) with the
-  // sub-agent's narration lines nested below under their own border rule.
-  var SPEC_LOG_CAP = 40;
-  var SPEC_LIFECYCLE = /^subagent (\S+) \[(queued|running|completed|failed|cancelled)\] (sub-[^\s]+) — ?([\s\S]*)$/;
-  var SPEC_STATUS = {
-    queued: ['st st-idle', '&#8943; queued'],
-    working: ['st st-run', '&#8943; working'],
-    done: ['st st-ok', '&#10003; done'],
-    failed: ['st st-err', '&#10005; failed'],
-    cancelled: ['st st-warn', '&#10005; cancelled']
-  };
-
-  function specSetStatus(st, label) {
-    var m = SPEC_STATUS[label] || ['st st-idle', esc(label)];
-    st.statusEl.className = 'tl-sub-status ' + m[0];
-    st.statusEl.innerHTML = m[1];
-    if (st.dotEl) {
-      st.dotEl.className = 'tl-dot ' + (label === 'done' ? 'dot-ok' : (label === 'failed' || label === 'cancelled') ? 'dot-bad' : label === 'working' ? 'dot-run' : 'dot-note');
-      if (label !== 'working') st.dotEl.style.animation = 'none';
-    }
-  }
-  function specPushActivity(st, line) {
-    st.activity.push(line);
-    if (st.activity.length > SPEC_LOG_CAP) st.activity.splice(0, st.activity.length - SPEC_LOG_CAP);
-    // Collapsed cards stay cheap: only the one-line preview updates.
-    if (st.open) renderSpecLog(st);
-    updateSpecPreview(st);
-  }
-  function updateSpecPreview(st) {
-    if (!st.prevEl) return;
-    var last = st.activity.length ? st.activity[st.activity.length - 1] : '';
-    st.prevEl.textContent = last || st.task || '';
-  }
-  // Tap-to-peek: header toggles the activity log; collapsed shows just the
-  // latest line so you can see what the specialist is doing right now.
-  function applySpecCollapse(st) {
-    if (!st.log) return;
-    // The raw per-specialist activity rail (protocol lines, job internals)
-    // is Developer-only. Normal users see the card plus its one-line preview.
-    st.log.hidden = !st.open || !devMode();
-    st.el.classList.toggle('open', Boolean(st.open && devMode()));
-    var head = st.headEl;
-    if (head) {
-      head.setAttribute('aria-expanded', st.open && devMode() ? 'true' : 'false');
-      head.title = st.open && devMode() ? 'click to collapse' : 'click to expand activity';
-    }
-    if (st.open) renderSpecLog(st);
-    updateSpecPreview(st);
-  }
-  function renderSpecLog(st) {
-    st.log.innerHTML = '';
-    st.activity.slice(-SPEC_LOG_CAP).forEach(function (line) {
-      var d = document.createElement('div');
-      d.className = 'spec-logline';
-      d.textContent = line;
-      st.log.appendChild(d);
-    });
-    st.log.scrollTop = st.log.scrollHeight;
-  }
-  function upsertSpecialistCard(runId, insert, name, status, jobId, detail) {
+  // Specialists share one quiet presence grid beneath the parent narration.
+  var SPEC_LIFECYCLE = /^subagent (\S+) \[(queued|running|completed|failed|cancelled|blocked|paused)\] (sub-[^\s]+) — ?([\s\S]*)$/;
+  function specialistPresence(runId, insert) {
     var sess = S.sessions[runId];
-    if (!sess) return;
-    sess.nodes.specs = sess.nodes.specs || {};
-    var st = sess.nodes.specs[jobId];
-    if (!st) {
-      var group = document.createElement('div');
-      group.className = 'tl-row tl-sub-row';
-      group.innerHTML =
-        '<span class="tl-dot dot-run"></span>' +
-        '<div class="tl-body">' +
-          '<div class="tl-sub-head" role="button" tabindex="0" aria-expanded="false" title="click to expand activity">' +
-            '<span class="spec-chev">' + icon('chevRight') + '</span>' +
-            '<span class="spec-name">' + esc(name) + '</span>' +
-            '<span class="spec-turns"></span>' +
-            '<span class="spec-tag">specialist</span>' +
-            '<span class="tl-sub-status st st-idle">&#8943; queued</span>' +
-          '</div>' +
-          '<div class="tl-sub-task" hidden></div>' +
-          '<div class="spec-preview"></div>' +
-          '<div class="tl-sub-rail" hidden></div>' +
-        '</div>';
-      st = sess.nodes.specs[jobId] = {
-        el: group,
-        name: name,
-        task: '',
-        activity: [],
-        open: false,
-        dotEl: group.querySelector('.tl-dot'),
-        statusEl: group.querySelector('.tl-sub-status'),
-        turnsEl: group.querySelector('.spec-turns'),
-        taskEl: group.querySelector('.tl-sub-task'),
-        prevEl: group.querySelector('.spec-preview'),
-        headEl: group.querySelector('.tl-sub-head'),
-        log: group.querySelector('.tl-sub-rail')
-      };
-      var toggle = function () { st.open = !st.open; applySpecCollapse(st); };
-      st.headEl.onclick = toggle;
-      st.headEl.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
-      insert(group);
-      applySpecCollapse(st);
+    if (!sess) return null;
+    var presence = sess.nodes.subagentPresence;
+    if (!presence || !presence.host.isConnected) {
+      if (presence) presence.view.dispose();
+      var host = document.createElement('div');
+      presence = sess.nodes.subagentPresence = { host: host, view: createSubagentOrbs(host) };
+      sess.nodes.specs = presence.view.jobs;
+      insert(host);
     }
-    if (status === 'queued') {
-      st.task = detail;
-      st.taskEl.hidden = false;
-      st.taskEl.textContent = detail;
-      specSetStatus(st, 'queued');
-    } else if (status === 'running') {
-      specSetStatus(st, 'working');
-      var tm = /turn (\d+)\/(\d+)/.exec(detail);
-      st.turnsEl.textContent = tm ? 'turn ' + tm[1] + '/' + tm[2] : '';
-    } else {
-      specSetStatus(st, status === 'completed' ? 'done' : status);
-      st.turnsEl.textContent = '';
-      if (detail) specPushActivity(st, detail);
-      // A failed specialist is exactly when you WANT the log open.
-      if (status === 'failed' || status === 'cancelled') { st.open = true; applySpecCollapse(st); }
-    }
-    var stream = $('stream');
-    if (stream) stickScroll(stream);
+    return presence.view;
   }
-  function attachSpecialistActivity(runId, text) {
+  function upsertSpecialistCard(runId, insert, name, status, jobId, detail, at) {
+    var view = specialistPresence(runId, insert);
+    if (!view) return;
+    var job = view.jobs[jobId];
+    if (job && job.structured) return;
+    var data = { id: jobId, name: name, status: status };
+    if (status === 'queued') data.task = detail;
+    else if (status === 'running') { data.current = detail; if (!job || !job.startedAt) data.startedAt = at; }
+    else { data.current = detail; data.finishedAt = at; }
+    data.at = at; data.activity = detail;
+    view.upsert(data, Boolean(S.sessions[runId].replaying));
+  }
+  function applySubagentState(runId, insert, text) {
+    try {
+      var data = JSON.parse(text.slice('subagent-state '.length));
+      if (!data || typeof data.id !== 'string' || typeof data.name !== 'string') return;
+      var view = specialistPresence(runId, insert);
+      if (!view) return;
+      var job = view.upsert(data, Boolean(S.sessions[runId].replaying));
+      if (job) job.structured = true;
+    } catch (e) { /* Malformed telemetry never becomes raw chat text. */ }
+  }
+  function attachSpecialistActivity(runId, text, at) {
     var sess = S.sessions[runId];
-    if (!sess || !sess.nodes.specs) return false;
-    var rest = text.slice('subagent '.length);
-    var name = rest.split(/[\s:]/)[0];
-    if (!name) return false;
-    var pick = null;
-    Object.keys(sess.nodes.specs).forEach(function (id) {
-      if (sess.nodes.specs[id].name === name) pick = sess.nodes.specs[id]; // insertion order → last job wins
-    });
+    if (!sess || !sess.nodes.specs || !sess.nodes.subagentPresence) return false;
+    var rest = text.slice('subagent '.length), name = rest.split(/[ :]/)[0], pick;
+    Object.keys(sess.nodes.specs).forEach(function (id) { if (sess.nodes.specs[id].name === name) pick = sess.nodes.specs[id]; });
     if (!pick) return false;
-    specPushActivity(pick, rest.slice(name.length).replace(/^[:—\-\s]+/, ''));
+    // Executor events already have a job-correlated structured companion.
+    if (pick.structured && rest.slice(name.length).indexOf(':') === 0) return true;
+    var line = rest.slice(name.length).replace(/^[:—\-\s]+/, '');
+    sess.nodes.subagentPresence.view.upsert({ id: pick.id, name: pick.name, activity: line, at: at });
     return true;
   }
-
   // ── Intake metadata line ────────────────────────────────────────────────
   // The resume burst (project/ledger/branch/risk/effort/context/…) collapses
   // into one quiet silver text line. Metadata = quiet; agent output = normal;
@@ -3657,6 +3557,14 @@ ${ONBOARDING_HTML}
       seen.add(ev.i);
       if (seen.size > 2000) seen.delete(seen.values().next().value);
     }
+    if (text.indexOf('live-chat ') === 0) {
+      if (!sess || !sess.nodes) return;
+      try {
+        var exchange=JSON.parse(text.slice(10)),row=document.createElement('div');row.className='live-chat-exchange';
+        row.innerHTML='<small>'+esc(exchange.role==='user'?'You · Live conversation':'Agent Gitu · Live conversation')+'</small>'+md(String(exchange.content||''));
+        insertTimelineNode(sess,row,ev.t);stickScroll(stream);return;
+      } catch { return; }
+    }
     if (text === 'activity preparing-project' || text === 'activity indexing-project') {
       setWorking(text === 'activity indexing-project' ? 'Indexing project…' : 'Preparing project…');
       return;
@@ -3699,6 +3607,11 @@ ${ONBOARDING_HTML}
 
     function insert(el) {
       insertTimelineNode(sess, el, ev && ev.t);
+    }
+
+    if (text.indexOf('subagent-state ') === 0) {
+      applySubagentState(runId, insert, text);
+      return;
     }
 
     if (text.indexOf('file ') === 0) {
@@ -4166,12 +4079,12 @@ ${ONBOARDING_HTML}
     // Specialist lifecycle + activity → one living card per job (never a pile of lines).
     var mSpec = SPEC_LIFECYCLE.exec(text);
     if (mSpec) {
-      upsertSpecialistCard(runId, insert, mSpec[1], mSpec[2], mSpec[3], mSpec[4]);
+      upsertSpecialistCard(runId, insert, mSpec[1], mSpec[2], mSpec[3], mSpec[4], ev.t);
       var wt3 = workingTextFor(text);
       if (wt3) setWorking(wt3);
       return;
     }
-    if (text.indexOf('subagent ') === 0 && attachSpecialistActivity(runId, text)) {
+    if (text.indexOf('subagent ') === 0 && attachSpecialistActivity(runId, text, ev.t)) {
       return;
     }
     var meta = document.createElement('div');
@@ -6478,11 +6391,13 @@ ${ONBOARDING_HTML}
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   ${COWORK_JS}
+  ${VOICE_JS}
   ${COWORK_GALLERY_JS}
   ${COWORK_PROFILE_JS}
   ${COWORK_DASHBOARD_JS}
   ${HOME_WORKSPACE_JS}
   ${REPORT_DETAILS_JS}
+  ${SUBAGENT_JS}
   ${OUTPUT_JS}
   ${ONBOARDING_JS}
   ${UI_BUTTON_JS}

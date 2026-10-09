@@ -137,6 +137,31 @@ describe('semantic evidence relevance (scenario C: unrelated passing command rej
 });
 
 describe('parent re-verification (scenarios A, B, K)', () => {
+  it('restores manual proof when the original workspace contents return', async () => {
+    const crit = criterion({ id: 'ac-1', text: 'UI looks polished', evidenceIds: ['ev-manual'], satisfied: true });
+    const manual = evidence({ id: 'ev-manual', kind: 'manual', command: undefined, workspaceFingerprint: 'original' });
+    const ledger = leafLedger([crit], [manual]);
+    expect((await parentReverifyCriterion({ ledger, criterionId: crit.id, currentFingerprint: 'changed' })).verified).toBe(false);
+    expect(crit.satisfied).toBe(false);
+    expect((await parentReverifyCriterion({ ledger, criterionId: crit.id, currentFingerprint: 'original' })).verified).toBe(true);
+    expect(manual.stale).toBe(false);
+    expect(crit.satisfied).toBe(true);
+  });
+
+  it('records the workspace after the parent oracle generates files', async () => {
+    const crit = criterion({ id: 'ac-1', text: 'auth works', verification: 'npm test -- auth' });
+    const ledger = leafLedger([crit]);
+    let fingerprint = 'before';
+    const result = await parentReverifyCriterion({ ledger, criterionId: crit.id, currentFingerprint: fingerprint,
+      runOracle: async () => { fingerprint = 'after'; return { passed: true, output: 'PASS', exitCode: 0 }; },
+      getCurrentFingerprint: async () => fingerprint,
+    });
+    expect(result.verified).toBe(true);
+    expect(result.fingerprint).toBe('after');
+    expect(ledger.evidence.at(-1)?.workspaceFingerprint).toBe('after');
+    expect(new EvidenceEngine().gate(ledger as never, 'after').open).toBe(true);
+  });
+
   it.each([true, false])('preserves the actual result with a success-only suffix (passed=%s)', async (passed) => {
     const command = 'npm test -- auth && exit 0';
     const crit = criterion({ id: 'ac-1', text: 'auth works', verification: command, evidenceType: 'test_success' });

@@ -64,6 +64,7 @@ export interface CoworkToolPerms {
 
 /** Runtime context the cowork-specific tools need beyond the shared ToolContext. */
 export interface CoworkToolScope {
+  creationKind?: import('./live-messages.js').AgentCreationKind;
   store: CoworkStore;
   agent: CoworkAgent;
   memory: CoworkMemory;
@@ -219,7 +220,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   {
     name: 'team_manage',
     doc:
-      'As chief of staff: hire teammates, remove them, create a group chat, or start a shared topic without asking the user to switch. New hires join this conversation with distinct characters. create_thread moves the current team turn to that topic and wakes its teammates to work on the brief; all replies stay there. params: {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"} | {"action":"create_group","title":"Launch room","members":["Scout","Writer"],"chief":"Scout"} | {"action":"create_thread","title":"Launch copy","topic":"Only landing page copy"}.',
+      'As chief of staff: list the actual persistent teammate roster, hire teammates, remove them, create a group chat, or start a shared topic without asking the user to switch. New hires join this conversation with distinct characters. Temporary task workers use spawn_sub_agent instead. create_thread moves the current team turn to that topic and wakes its teammates to work on the brief; all replies stay there. params: {"action":"list"} | {"action":"create","name":"Scout","tagline":"Research assistant","instructions":"..."} | {"action":"delete","name":"Scout"} | {"action":"create_group","title":"Launch room","members":["Scout","Writer"],"chief":"Scout"} | {"action":"create_thread","title":"Launch copy","topic":"Only landing page copy"}.',
     gate: 'chief',
   },
 ];
@@ -377,6 +378,8 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
     // Sub-agent spawning is likewise its own execution path, and like
     // delegation its identity comes from the host-bound bridge, never params.
     if (tool === 'spawn_sub_agent') {
+      if (scope?.creationKind === 'teammate') return { ok: false, output: 'The user requested persistent character teammates. Use team_manage action:create; temporary sub-agents cannot fulfill that request.' };
+      if (scope?.creationKind === 'clarify') return { ok: false, output: 'Clarify whether the user wants persistent character teammates or temporary task workers with ask_user before creating either type.' };
       if (scope?.isSubAgent) return { ok: false, output: 'spawn_sub_agent is unavailable to a sub-agent at this depth. Do the work directly and report back to your parent agent.' };
       if (!scope?.subAgents) return { ok: false, output: 'Sub-agent spawning is unavailable in this session.' };
       return await scope.subAgents.run(params);
@@ -933,7 +936,10 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
   if (!agent.chiefOfStaff) return blocked('team_manage');
   const action = String(params['action'] ?? '');
   try {
+    if (action === 'list') return { ok: true, output: JSON.stringify(store.listAgents().map(teammate => ({ id: teammate.id, name: teammate.name, role: teammate.tagline, character: teammate.avatar, chief: teammate.chiefOfStaff }))) };
     if (action === 'create') {
+      if (scope.creationKind === 'worker') return { ok: false, output: 'The user requested temporary sub-agents. Use spawn_sub_agent; do not create permanent teammate characters for this request.' };
+      if (scope.creationKind === 'clarify') return { ok: false, output: 'Clarify whether the user wants persistent character teammates or temporary task workers with ask_user before creating either type.' };
       const name = String(params['name'] ?? '').trim();
       const tagline = typeof params['tagline'] === 'string' ? params['tagline'].trim() : '';
       const instructions = String(params['instructions'] ?? '').trim();
@@ -1014,7 +1020,7 @@ function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<str
         output: `Shared topic "${thread.title}" is active (${thread.id}). Continue the task here. Every participating teammate's work and replies belong to this topic; the team starts automatically without a user switch.`,
       };
     }
-    return { ok: false, output: 'team_manage action must be "create", "delete", "create_group", or "create_thread".' };
+    return { ok: false, output: 'team_manage action must be "list", "create", "delete", "create_group", or "create_thread".' };
   } catch (err) {
     return { ok: false, output: `team_manage failed: ${(err as Error).message}` };
   }

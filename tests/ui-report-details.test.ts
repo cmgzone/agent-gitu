@@ -26,7 +26,9 @@ describe('Main agent files and report details',()=>{
   it('offers attachments only through the plus menu and uses the bundled home character',()=>{
     expect(UI_HTML).toContain('data-hp="attach" role="menuitem"');expect(UI_HTML).toContain('data-cwplus="attach"');
     expect(UI_HTML).not.toContain('id="attachBtn"');expect(UI_HTML).not.toContain('id="cwAttach"');
-    expect(HOME_CHARACTER_HTML).toContain('class="home-character" src="/characters/blue.png');
+    expect(HOME_CHARACTER_HTML).toContain('cw-plush home-character');
+    expect(HOME_CHARACTER_HTML).toContain('src="/characters/blue.png');
+    expect(HOME_CHARACTER_HTML).toContain('cw-blink-lid');
     expect(UI_HTML).toContain(JSON.stringify(HOME_CHARACTER_HTML));
     expect(UI_HTML).toContain('.home-brand-lockup { display: flex; flex-direction:column;');
   });

@@ -1,3 +1,4 @@
+import { plushCharacterHtml } from './ui-characters.js';
 // Compact home navigation with the same locally bundled Cowork companion.
 export const HOME_CSS = String.raw`
   body:has(.home-sky) .sb,body:has(.home-sky) .topbar,body:has(.home-sky) .vresize,body:has(.home-sky) .side-fab,body:has(.home-sky) #mascotWrap { display:none!important; }
@@ -59,6 +60,7 @@ export const HOME_CSS = String.raw`
   .home-cta-btn .cta-arrow { font-size: 17px; color: var(--muted); }
   .home-brand-lockup { display: flex; flex-direction:column; justify-content: center; align-items: center; gap: 10px; }
   .home-character { width:96px; height:96px; object-fit:contain; animation:homeCharacterFloat 5s ease-in-out infinite; }
+  .cw-plush.home-character { width:96px; height:96px; animation:homeCharacterFloat 5s ease-in-out infinite; }
   @keyframes homeCharacterFloat { 0%,100% { transform:translateY(0); } 50% { transform:translateY(-5px); } }
   .home .home-brand-lockup h1 { width: auto; }
   .home-composer-wrap { width:min(760px,100%); min-width:0; }
@@ -141,7 +143,7 @@ export const HOME_WORKSPACE_JS = String.raw`
     }catch(e){/* Profile access can retry when opened; it does not block projects. */}
   }
 `;
-export const HOME_CHARACTER_HTML = '<img class="home-character" src="/characters/blue.png?v=opendots1" width="96" height="96" alt="" aria-hidden="true" draggable="false">';
+export const HOME_CHARACTER_HTML = plushCharacterHtml('blue', 'home', '', 'home-character');
 
 export const HOME_BLOB_HTML = '<svg class="home-blob" viewBox="0 0 120 120" aria-hidden="true" focusable="false">' +
   '<defs><radialGradient id="homeBlobFill" cx="30%" cy="20%" r="85%"><stop stop-color="#cbbdff"/><stop offset=".5" stop-color="#9580ff"/><stop offset="1" stop-color="#6550cf"/></radialGradient></defs>' +

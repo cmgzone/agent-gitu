@@ -519,7 +519,10 @@ async function main(): Promise<void> {
               },
               agentRole: (name) => agentStore.get(name)?.role,
               agentEffort: (name) => agentStore.get(name)?.effort,
-              onEvent: (e) => console.error(presenter.event(e)),
+              onEvent: (e) => {
+                // The web UI consumes this metadata alongside the readable lifecycle.
+                if (!e.startsWith('subagent-state ')) console.error(presenter.event(e));
+              },
             })
           : undefined;
 

@@ -48,9 +48,12 @@ function repair(round: number): Reply[] {
 }
 
 describe('final quality review after repairs', () => {
-  it.each(['medium', 'high'] as const)('reviews the last allowed %s repair and completes when it passes', async (effort) => {
+  it.each([
+    ['fast', 'medium'], ['fast', 'high'], ['agent', 'medium'], ['agent', 'high'],
+  ] as const)('reviews the last allowed %s/%s repair and completes when it passes', async (mode, effort) => {
     const { dir, responses } = setup(`pass-${effort}`);
-    const repairs = effort === 'high' ? 2 : 1;
+    // Agent mode sizes verification by task risk, independently of model effort.
+    const repairs = mode === 'fast' && effort === 'high' ? 2 : 1;
     let reviews = 0;
     for (let round = 1; round <= repairs; round += 1) {
       responses.push(() => { reviews += 1; return `VERDICT: REVISE\nFEEDBACK: Adjust timeout handling, round ${round}.`; });
@@ -58,7 +61,7 @@ describe('final quality review after repairs', () => {
     }
     responses.push(() => { reviews += 1; return 'VERDICT: PASS'; });
     const { ledger, report } = await new Hermes({
-      cwd: dir, llm: new ScriptedMockLlm(responses), mode: 'fast', effort, requirePlanReview: false, autoLearn: false,
+      cwd: dir, llm: new ScriptedMockLlm(responses), mode, effort, requirePlanReview: false, autoLearn: false,
     }).run('Update session timeout handling');
 
     expect(report.status).toBe('complete');

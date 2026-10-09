@@ -48,6 +48,10 @@
       "desktop/**/*",
       "dist/**/*",
       "assets/**/*",
+      "voice-worker/agent.mjs",
+      "voice-worker/package.json",
+      "voice-worker/package-lock.json",
+      "voice-worker/Dockerfile",
       "apps/mobile/dist/web/**/*",
       "node_modules/**/*",
       "package.json"
@@ -117,6 +121,8 @@
     "exceljs": "^4.4.0",
     "fflate": "^0.8.3",
     "imapflow": "^2.2.5",
+    "livekit-client": "^2.22.3",
+    "livekit-server-sdk": "^2.19.1",
     "mailparser": "^3.9.36",
     "marked": "^18.0.14",
     "nodemailer": "^7.0.13",
@@ -126,6 +132,7 @@
     "ssh2": "^1.17.0",
     "three": "^0.185.1",
     "typescript": "^5.6.0",
+    "undici": "^7.30.0",
     "ws": "^8.22.0"
   }
 }

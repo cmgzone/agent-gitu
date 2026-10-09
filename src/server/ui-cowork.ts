@@ -120,6 +120,12 @@ export const COWORK_CSS = String.raw`
   .cw-empty-note { font-size: 11.5px; color: var(--muted); padding: 8px 6px 4px; line-height: 1.5; }
   .cw-chat { position: relative; flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .cw-composer-wrap { flex-shrink: 0; }
+  .cw-jump-latest { position:absolute; z-index:3; left:50%; bottom:90px; transform:translateX(-50%); display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; padding:0; border:1px solid var(--border2); border-radius:50%; color:var(--text); background:color-mix(in srgb,var(--bg) 85%,transparent); backdrop-filter:blur(12px); box-shadow:var(--shadow-float); }
+  .cw-jump-latest[hidden] { display:none; }
+  .cw-jump-latest svg { transform:rotate(180deg); width:18px; height:18px; }
+  .cw-jump-latest:hover { color:var(--accent); background:var(--hover); }
+  .cw-jump-latest:active { transform:translateX(-50%) scale(.92); }
+  .cw-jump-latest:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
   .cw-chat-head { position: absolute; inset: 0 0 auto; z-index: 2; height: 0; background: transparent; border: 0; box-shadow: none; pointer-events: none; }
   .cw-chat-avatar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: inline-flex; flex-direction: column; gap: 4px; align-items: center; justify-content: center; max-width: calc(100% - 150px); background: transparent; }
   .cw-chat-avatar .cw-persona-status { max-width: 100%; box-sizing: border-box; padding: 3px 10px; font-size: 11px; line-height: 16px; color: var(--text);
@@ -306,6 +312,15 @@ export const COWORK_CSS = String.raw`
   .cw-attach { width: 32px; height: 32px; flex: none; border: 1px solid var(--border2); background: transparent; color: var(--muted); border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; }
   .cw-attach:hover { color: var(--text); border-color: var(--accent); }
   .cw-pending { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+  .cw-delivery { display:flex; align-items:center; gap:6px; padding:0 10px 8px; flex-wrap:wrap; }
+  .cw-delivery[hidden] { display:none; }
+  .cw-delivery button { display:inline-flex; gap:5px; align-items:center; padding:5px 8px; border:0; border-radius:8px; background:transparent; color:var(--muted); font:inherit; font-size:12px; cursor:pointer; transition:background .15s,transform .12s; }
+  .cw-delivery button[aria-pressed="true"] { color:var(--accent); background:var(--accent-dim,var(--selected)); }
+  .cw-delivery button:hover { background:var(--hover); }
+  .cw-delivery button:active { transform:scale(.95); }
+  .cw-delivery button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .cw-delivery svg { width:14px; height:14px; }
+  .cw-delivery-note { color:var(--muted); font-size:11px; margin-left:auto; }
   .cw-pending span { display: inline-flex; align-items: center; gap: 5px; max-width: 260px; border: 1px solid var(--border2); background: var(--card); border-radius: 8px; padding: 4px 8px; font-size: 11.5px; color: var(--muted); }
   .cw-pending button { border: 0; background: transparent; color: var(--muted); padding: 0; line-height: 1; }
   .cw-pending img { width: 36px; height: 36px; object-fit: cover; border-radius: 4px; }
@@ -643,6 +658,7 @@ export const COWORK_JS = String.raw`
     ,download: CW_SVG_OPEN + '<path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg>'
     ,map: CW_SVG_OPEN + '<path d="M20 10c0 6-8 12-8 12S4 16 4 10a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>'
     ,external: CW_SVG_OPEN + '<path d="M14 3h7v7m0-7-11 11M10 3H3v18h18v-7"/></svg>'
+    ,phone: CW_SVG_OPEN + '<path d="M22 17v3a2 2 0 0 1-2.2 2A20 20 0 0 1 3 5.2 2 2 0 0 1 5 3h3l2 6-2 2a16 16 0 0 0 5 5l2-2 7 3z"/></svg>'
   };
   function cwIcon(name) { return CW_ICONS[name] || ''; }
 
@@ -732,6 +748,62 @@ export const COWORK_JS = String.raw`
     if (cw.threadId === undefined) cw.threadId = null;
     return cw;
   }
+  function cwChatKey() { var cw = cwEnsure(); return JSON.stringify([cw.active, cw.threadId || null]); }
+  // Keep a small in-memory window of visited chats. The stream still refreshes
+  // their state; this only avoids an empty transcript while the network responds.
+  function cwRememberChat() {
+    var cw = cwEnsure();
+    if (!cw.active) return;
+    var views = cw.chatViews || (cw.chatViews = new Map()), view = {};
+    ['msgs', 'lastSeq', 'lastChange', 'workHistory', 'artifacts', 'todos', 'requests', 'subAgents', 'threads', 'folders', 'widgets'].forEach(function (key) {
+      view[key] = Array.isArray(cw[key]) ? cw[key].slice() : cw[key];
+    });
+    views.delete(cwChatKey()); views.set(cwChatKey(), view);
+    if (views.size > 12) views.delete(views.keys().next().value);
+  }
+  function cwRestoreChat() {
+    var cw = cwEnsure(), view = cw.chatViews && cw.chatViews.get(cwChatKey());
+    cw.subAgents = { nodes: [] };
+    if (view) Object.keys(view).forEach(function (key) { if (view[key] !== undefined) cw[key] = Array.isArray(view[key]) ? view[key].slice() : view[key]; });
+    cwLocalMessages().forEach(function (message) {
+      if (!cw.removedMessages[cw.active + '/' + message.id] && !cw.msgs.some(function (existing) { return existing.id === message.id; })) cw.msgs.push(message);
+    });
+  }
+  function cwScrollNodeKey(node) {
+    return node.getAttribute('data-cwscroll-key') || node.getAttribute('data-cwworkhistory') || node.getAttribute('data-cwrequest-row') || node.getAttribute('data-cwcheckpoint') || node.getAttribute('data-cwsubagents') || node.getAttribute('data-cwmediagroup');
+  }
+  function cwCaptureScroll(wrap) {
+    if (wrap.clientHeight === 0) return wrap._cwScrollState || { top: wrap.scrollTop, follow: true, key: null, offset: 0 };
+    var state = { top: wrap.scrollTop, follow: wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120, key: null, offset: 0 };
+    if (wrap.getBoundingClientRect) {
+      var top = wrap.getBoundingClientRect().top;
+      Array.from(wrap.children).some(function (node) {
+        var key = cwScrollNodeKey(node), rect = node.getBoundingClientRect();
+        if (!key || rect.bottom <= top + 112) return false;
+        state.key = key; state.offset = rect.top - top; return true;
+      });
+    }
+    return state;
+  }
+  function cwRestoreScroll(wrap, state) {
+    if (!wrap || !state) return;
+    wrap._cwScrollState = state;
+    if (wrap.clientHeight === 0) { cwUpdateJumpLatest(); return; }
+    var anchor = state.key && Array.from(wrap.children).find(function (node) { return cwScrollNodeKey(node) === state.key; });
+    wrap.scrollTop = state.follow ? wrap.scrollHeight : anchor ? wrap.scrollTop + anchor.getBoundingClientRect().top - wrap.getBoundingClientRect().top - state.offset : state.top;
+    cwUpdateJumpLatest();
+  }
+  function cwUpdateJumpLatest() {
+    var wrap = $('cwMsgs');
+    if (wrap) wrap._cwScrollState = cwCaptureScroll(wrap);
+  }
+  function cwJumpLatest() {
+    var wrap = $('cwMsgs');
+    if (!wrap) return;
+    wrap._cwScrollState = { top: wrap.scrollHeight, follow: true, key: null, offset: 0 };
+    wrap.scrollTop = wrap.scrollHeight;
+    cwUpdateJumpLatest();
+  }
   function cwDraftKey() {
     var cw = cwEnsure();
     return cw.active ? 'hermes.cowork.draft.' + encodeURIComponent(cw.active) + '.' + encodeURIComponent(cw.threadId || 'main') : '';
@@ -758,6 +830,7 @@ export const COWORK_JS = String.raw`
   function cwStopPoll() {
     var cw = S.cw;
     if (!cw) return;
+    cwDisposeSubagentOrbs();
     if (cw.closeDesktop) cw.closeDesktop();
     cw.generation = (cw.generation || 0) + 1;
     if (cw.timer) { clearInterval(cw.timer); cw.timer = null; }
@@ -767,16 +840,16 @@ export const COWORK_JS = String.raw`
   }
 
   // Bundled transparent images share a browser cache across every surface.
-  function cwAvaImg(avatar) {
+  function cwAvaImg(avatar, identity) {
     var shape = cwAvatarShape(avatar && avatar.shape, avatar && avatar.color);
     var filter=cwCharacterFilter(avatar,shape);
-    return '<img src="/characters/' + shape.slice(4) + '.png?v=opendots1" alt="" width="512" height="512" draggable="false"'+(filter?' style="filter:'+filter+'"':'')+'>';
+    return plushCharacterHtml(shape.slice(4), identity || '', filter);
   }
   function cwAva(agent, size) {
     var style = size ? ' style="width:' + size + 'px;height:' + size + 'px;border-radius:' + Math.round(size * 0.32) + 'px"' : '';
     var cw = cwEnsure();
     var busy = agent && cw.busy && ((cw.progresses || []).some(function (p) { return p.agentId === agent.id; }) || cw.working === agent.name);
-    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }) + '</span>';
+    return '<span class="cw-ava' + (busy ? ' working' : '') + '" data-cw-avatar="' + esc(agent && agent.id || '') + '"' + style + '>' + cwAvaImg((agent && agent.avatar) || { color: '#8f80ff', shape: 'orb' }, agent && agent.id) + '</span>';
   }
   function cwAgentById(id) { var cw = cwEnsure(); for (var i = 0; i < cw.agents.length; i++) if (cw.agents[i].id === id) return cw.agents[i]; return null; }
   function cwCharacterActivity(agentId) {
@@ -856,6 +929,11 @@ export const COWORK_JS = String.raw`
     $('cwPanelBackdrop').onclick = cwClosePanels;
     cwBindPanelControls();
     cwLearnLoad();
+    // Paint the known teammate immediately when returning from the workspace.
+    // The roster refresh must not leave the newly mounted chat blank.
+    cwRenderRail();
+    if (cwActiveConv()) cwOpenConv(cw.active, cw.threadId);
+    else cwRenderChat();
     cwLoad(true);
   }
 
@@ -865,6 +943,7 @@ export const COWORK_JS = String.raw`
     cwEnsure().connectionsOpen = false;
     cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     cwSaveDraft();
+    cwRememberChat();
     cwStopPoll();
     document.body.classList.remove('cowork');
     document.body.classList.remove('cw-resizing');
@@ -877,7 +956,7 @@ export const COWORK_JS = String.raw`
     var root = $('cw'), panel = $('cwInfoPanel');
     if (!root) return;
     var messages = $('cwMsgs');
-    var nearBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+    var scroll = messages && cwCaptureScroll(messages);
     var cw = cwEnsure();
     cw.infoOpen = false; cw.infoNarrowOpen = false;
     if(!cwActiveConv())cw.railCollapsed=false;
@@ -906,7 +985,7 @@ export const COWORK_JS = String.raw`
     if (back) { back.hidden=rail?window.innerWidth>720&&!cw.railCollapsed:false;back.setAttribute('aria-expanded',String(rail&&(window.innerWidth<=720?railOpen:!cw.railCollapsed))); }
     var closeInfo = $('cwCloseInfo');
     if (closeInfo) { var closeLabel = window.innerWidth <= 720 ? 'Back to chat' : 'Close panel'; closeInfo.setAttribute('aria-label', closeLabel); closeInfo.title = closeLabel; }
-    if (nearBottom) messages.scrollTop = messages.scrollHeight;
+    cwRestoreScroll(messages, scroll);
     cwRenderComputerActivity();
   }
 
@@ -992,19 +1071,21 @@ export const COWORK_JS = String.raw`
 
   function cwLoad(openFirst) {
     var cw = cwEnsure();
-    api('/api/cowork/agents').then(function (d) {
+    var revision = cw.loadRevision = (cw.loadRevision || 0) + 1;
+    return Promise.all([api('/api/cowork/agents'), api('/api/cowork/conversations')]).then(function (results) {
+      if (S.active !== 'cowork' || cw.loadRevision !== revision) return;
+      var d = results[0];
       cw.agents = d.agents || [];
       cw.skills = d.availableSkills || [];
       cw.memoryCounts = d.memoryCounts || {};
       cw.computers = d.computers || [];
       cw.cloudServers = d.cloudServers || [];
       cw.profile = d.profile || {};
-      return api('/api/cowork/conversations');
-    }).then(function (d) {
-      cw.convs = d.conversations || [];
+      cw.convs = results[1].conversations || [];
       cwRenderRail();
-      if (openFirst && cw.convs.length > 0) cwOpenConv(cwActiveConv() ? cw.active : cw.convs[cw.convs.length - 1].id);
+      if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
+      else { cwRenderMembers(); cwRenderTyping(); cwRenderInfo(); }
       if(cw.homeAction){var action=cw.homeAction;cw.homeAction=null;if(action.kind==='new')cwAgentModal(null);else if(action.kind==='profile')cwOpenProfile(action.agentId);else if(action.kind==='connections')cwOpenConnections(action.agentId);else if(action.agentId)cwOpenDm(action.agentId);}
     }).catch(function (e) { toast(e.message, true); });
   }
@@ -1134,6 +1215,7 @@ export const COWORK_JS = String.raw`
     cw.connectionsOpen = false;
     cw.connectionRevision = (cw.connectionRevision || 0) + 1;
     cwSaveDraft();
+    cwRememberChat();
     cwStopPoll();
     cw.active = id;
     var conversation = cw.convs.find(function (item) { return item.id === id; });
@@ -1162,6 +1244,7 @@ export const COWORK_JS = String.raw`
     cw.requests = [];
     cw.pendingFiles = [];
     cw.rosterRevision = -1;
+    cwRestoreChat();
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.remove('rail-open');
     cwRenderRail();
@@ -1177,6 +1260,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     if (cw.threadId === (threadId || null)) return;
     cwSaveDraft();
+    cwRememberChat();
     cwStopPoll();
     cw.threadId = threadId || null;
     cw.msgs = cwLocalMessages();
@@ -1194,6 +1278,7 @@ export const COWORK_JS = String.raw`
     cw.todos = [];
     cw.requests = [];
     cw.pendingFiles = [];
+    cwRestoreChat();
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.remove('rail-open');
     cwRenderRail();
@@ -1244,6 +1329,11 @@ export const COWORK_JS = String.raw`
     if (cw.connectionsOpen || cw.profileOpen) return;
     var chat = $('cwChat');
     if (!chat) return;
+    var previous = $('cwMsgs');
+    var sameChat = chat.getAttribute('data-cwchat-key') === cwChatKey();
+    var scroll = sameChat && previous ? cwCaptureScroll(previous) : null;
+    chat.setAttribute('data-cwchat-key', cwChatKey());
+    cwDisposeSubagentOrbs();
     var conv = cwActiveConv();
     document.title = conv ? conv.title + ' — Cowork' : 'Cowork — Agent Gitu';
     cwApplyCharacterTheme();
@@ -1291,6 +1381,7 @@ export const COWORK_JS = String.raw`
       '<div class="cw-msgs" id="cwMsgs"></div>' +
       '<div class="cw-composer-wrap" id="cwComposerWrap">' +
         '<div class="cw-clean-activity" id="cwCleanActivity" hidden><span class="cw-clean-status" id="cwCleanStatus" role="status" aria-live="polite" aria-atomic="true"><span id="cwCleanLabel"></span></span><button type="button" id="cwCleanDetails" aria-label="View work details" hidden></button></div>' +
+        '<div class="cw-delivery" id="cwDelivery" aria-label="Message delivery" hidden><button type="button" data-cwdelivery="steer" aria-pressed="true" title="Guide the current task at its next safe step">' + cwIcon('bolt') + 'Steer</button><button type="button" data-cwdelivery="queue" aria-pressed="false" title="Start this request after the current task finishes">' + cwIcon('clock') + 'Queue</button><button type="button" data-cwdelivery="question" aria-pressed="false" title="Ask a question while work continues">' + cwIcon('chat') + 'Ask</button><span class="cw-delivery-note" id="cwDeliveryNote"></span></div>' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
         '<div class="cw-pending" id="cwPending"></div>' +
@@ -1300,6 +1391,7 @@ export const COWORK_JS = String.raw`
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwPlus" title="Files, mission, folder or schedule" aria-label="Add files, mission, folder or schedule" popovertarget="cwPlusMenu">' + cwIcon('plus') + '</button>' +
         '<textarea id="cwInput" rows="1" placeholder="' + (conv.memberIds.length > 1 ? 'Message the whole team — @Name to target someone' : 'Message ' + esc(conv.title)) + (activeThread ? ' — ' + esc(activeThread.title) : '') + '"></textarea>' +
+        '<button type="button" class="voice-phone" id="cwVoiceCall" aria-label="Call this teammate" title="Talk live" aria-pressed="false">' + cwIcon('phone') + '</button>' +
         '<button class="cw-stop-secondary" id="cwStop" title="Stop the team" aria-label="Stop the team" hidden>' + cwIcon('stop') + '</button>' +
         '<button class="cw-send" id="cwSend" title="Send (Enter)" aria-label="Send message">' + cwIcon('send') + '</button>' +
         '<div class="cw-message-menu cw-plus-menu" id="cwPlusMenu" popover="auto" aria-label="Add to this chat">' +
@@ -1312,6 +1404,9 @@ export const COWORK_JS = String.raw`
     $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
     $('cwInfoBtn').onclick = function () { cwOpenProfile(); };
     cwBindTopNav();
+    $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};
+    if(typeof voiceUpdateButtons==='function')voiceUpdateButtons();
+    $('cwDelivery').querySelectorAll('[data-cwdelivery]').forEach(function(button){button.onclick=function(){cw.delivery=button.getAttribute('data-cwdelivery');cwUpdateSend();};});
     cwSyncPanels();
     cwRenderWidgets();
     var back = $('cwBack');
@@ -1321,7 +1416,8 @@ export const COWORK_JS = String.raw`
     cwRenderWidgetIntent();
     input.addEventListener('paste', cwPasteImages);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); cwSend(); } });
-    input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); });
+    input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); cwUpdateJumpLatest(); });
+    $('cwMsgs').addEventListener('toggle', function () { cwUpdateJumpLatest(); }, true);
     $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };
     $('cwSend').onclick = cwSend;
     $('cwStop').onclick = cwStopRun;
@@ -1357,6 +1453,8 @@ export const COWORK_JS = String.raw`
     cwRenderInfo();
     cwRenderTyping();
     cwBindFloatingComposer();
+    if (scroll) cwRestoreScroll($('cwMsgs'), scroll);
+    else cwJumpLatest();
   }
 
   // Updating the roster must preserve the user's draft and cursor.
@@ -1684,7 +1782,7 @@ export const COWORK_JS = String.raw`
     var el = $('cwWork');
     if (!el) return;
     var messages = $('cwMsgs');
-    var nearBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
+    var scroll = messages && cwCaptureScroll(messages);
     var todos = (cw.todos || []).filter(function (todo) { return todo.status !== 'cancelled'; });
     var active = todos.filter(function (todo) { return todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'blocked'; });
     var todoHtml = todos.length ? '<details class="cw-todos"' + (!!cw.todoOpen ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
@@ -1694,7 +1792,7 @@ export const COWORK_JS = String.raw`
     el.innerHTML = todoHtml;
     var checklist = el.querySelector('.cw-todos');
     if (checklist) checklist.ontoggle = function () { cw.todoOpen = checklist.open; };
-    if (nearBottom) messages.scrollTop = messages.scrollHeight;
+    cwRestoreScroll(messages, scroll);
   }
 
   function cwBindRequests(el) {
@@ -2240,6 +2338,86 @@ export const COWORK_JS = String.raw`
     return '<section class="cw-checkpoint-report" aria-label="Progress update"><header><strong>Progress update</strong><span>' + esc(message.agentName || (cwAgentById(message.agentId) || {}).name || '') + '</span><time datetime="' + esc(message.ts) + '">' + esc(cwTime(message.ts)) + '</time></header><p>' + esc(checkpoint.accomplished) + '</p>' + (checkpoint.issues ? '<p class="cw-checkpoint-issues"><strong>Needs attention:</strong> ' + esc(checkpoint.issues) + '</p>' : '') + '<p class="cw-checkpoint-next"><strong>Next:</strong> ' + esc(checkpoint.next) + '</p></section>';
   }
 
+  function cwSubagentGroups() {
+    var cw = cwEnsure(), groups = Object.create(null);
+    function visit(nodes) {
+      (nodes || []).forEach(function (node) {
+        if ((node.threadId || null) === (cw.threadId || null)) {
+          var parent = node.rootAgentId || node.parentAgentId;
+          var time = Date.parse(node.createdAt) || 0, anchor = null;
+          (cw.msgs || []).forEach(function (message) {
+            var at = Date.parse(message.ts) || 0;
+            if (at <= time && (message.role === 'user' || message.agentId === parent) && (!anchor || at >= Date.parse(anchor.ts))) anchor = message;
+          });
+          var key = JSON.stringify([cw.active, cw.threadId || null, parent, node.missionId || '', anchor && anchor.id || 'start']);
+          if (!groups[key]) groups[key] = { key: key, parent: parent, time: anchor ? (Date.parse(anchor.ts) || 0) + .1 : time, nodes: [] };
+          groups[key].nodes.push(node);
+        }
+        visit(node.children);
+      });
+    }
+    visit(cw.subAgents && cw.subAgents.nodes);
+    return Object.keys(groups).map(function (key) { return groups[key]; });
+  }
+
+  function cwSubagentLayoutKey() {
+    return JSON.stringify(cwSubagentGroups().map(function (group) { return [group.key, group.nodes.map(function (node) { return node.id; })]; }));
+  }
+
+  function cwDisposeSubagentOrbs() {
+    var cw = S.cw;
+    if (!cw) return;
+    Object.keys(cw.subagentPresences || {}).forEach(function (key) { cw.subagentPresences[key].view.dispose(); });
+    cw.subagentPresences = Object.create(null);
+  }
+
+  function cwSubagentPhase(node) {
+    // Completion is the host's evidence-gated lifecycle, never a tool result.
+    var terminal = { completed: 'complete', failed: 'failed', blocked: 'blocked', terminated: 'cancelled', orphaned: 'failed', starting: 'waiting' };
+    return Object.prototype.hasOwnProperty.call(terminal, node.status) ? terminal[node.status] : node.activity && node.activity.phase || 'working';
+  }
+
+  function cwSyncSubagentOrbs() {
+    var cw = cwEnsure(), wrap = $('cwMsgs');
+    if (!wrap || typeof createSubagentOrbs !== 'function') return;
+    var views = cw.subagentPresences || (cw.subagentPresences = Object.create(null));
+    var hosts = new Map();
+    Array.from(wrap.children).forEach(function (host) { var key = host.getAttribute('data-cwsubagents'); if (key) hosts.set(key, host); });
+    var retained = new Set();
+    cwSubagentGroups().forEach(function (group) {
+      var host = hosts.get(group.key);
+      if (!host) return;
+      retained.add(group.key);
+      var presence = views[group.key];
+      if (presence && presence.host !== host) { presence.view.dispose(); presence = null; }
+      if (!presence) {
+        presence = views[group.key] = { host: host, view: createSubagentOrbs(host) };
+        var parent = cwAgentById(group.parent);
+        host.querySelector('.subagent-caption span').textContent = (parent ? parent.name + ' · ' : '') + 'Subagents';
+      }
+      group.nodes.forEach(function (node) {
+        var job = presence.view.jobs[node.id], phase = cwSubagentPhase(node);
+        var restored = job ? job.button.dataset.restored === 'true' : phase === 'complete' || phase === 'failed';
+        var terminalText = { complete: 'Report verified and returned to the parent.', failed: 'Worker failed; review the parent report.', cancelled: 'Worker stopped.', blocked: 'Worker needs attention.' };
+        var data = { id: node.id, name: node.role, task: node.objective, phase: phase,
+          current: terminalText[phase] || node.activity && node.activity.current || (phase === 'waiting' ? 'Waiting to start…' : 'Working on the assignment…'),
+          startedAt: node.startedAt || node.createdAt, finishedAt: node.finishedAt,
+          contextTokens: node.activity && node.activity.contextTokens };
+        job = presence.view.upsert(data, restored);
+        (node.activity && node.activity.entries || []).forEach(function (entry) {
+          if (entry.seq <= (job.cwActivitySeq || 0)) return;
+          presence.view.upsert({ id: node.id, name: node.role, activity: entry.text, at: entry.at }, restored);
+          job.cwActivitySeq = entry.seq;
+        });
+        if (terminalText[phase] && job.cwTerminalPhase !== phase) {
+          presence.view.upsert({ id: node.id, name: node.role, activity: terminalText[phase], at: node.finishedAt }, restored);
+          job.cwTerminalPhase = phase;
+        }
+      });
+    });
+    Object.keys(views).forEach(function (key) { if (!retained.has(key)) { views[key].view.dispose(); delete views[key]; } });
+  }
+
   function cwTranscriptHtml() {
     var cw = cwEnsure();
     var entries = cw.msgs.map(function (message) { return { time: Date.parse(message.ts) || 0, message: message }; });
@@ -2248,6 +2426,9 @@ export const COWORK_JS = String.raw`
     });
     (cw.workHistory || []).forEach(function (activity) {
       entries.push({ time: Date.parse(activity.ts) || 0, activity: activity });
+    });
+    cwSubagentGroups().forEach(function (group) {
+      entries.push({ time: group.time, html: '<section data-cwsubagents="' + esc(group.key) + '" aria-label="Subagent activity"></section>' });
     });
     entries.sort(function (a, b) { return a.time - b.time; });
     var html = [];
@@ -2271,7 +2452,7 @@ export const COWORK_JS = String.raw`
       }
       var checkpoint = entry.message && /^(.+?) is continuing automatically after checkpoint (\d+)\.$/.exec(String(entry.message.text || ''));
       if (!checkpoint || entry.message.role !== 'system') {
-        html.push(entry.message ? cwBubbleHtml(entry.message) : entry.html);
+        html.push(entry.message ? cwBubbleHtml(entry.message).replace(/^<([a-z]+)(?=[ >])/, '<$1 data-cwscroll-key="' + esc(entry.message.id || 'seq:' + entry.message.seq) + '"') : entry.html);
         i++;
         continue;
       }
@@ -2295,7 +2476,7 @@ export const COWORK_JS = String.raw`
     var wrap = $('cwMsgs');
     if (!wrap) return;
     var cw = cwEnsure();
-    var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
+    var scroll = cwCaptureScroll(wrap);
     // Incoming messages and request updates must preserve an in-progress answer.
     var drafts = {}, focused = null;
     // Keep the live form node across polls. Recreating it would erase a typed
@@ -2356,18 +2537,21 @@ export const COWORK_JS = String.raw`
     }; });
     wrap.onscroll = function () {
       wrap.querySelectorAll('.cw-message-menu:popover-open').forEach(function (menu) { menu.hidePopover(); });
+      cwUpdateJumpLatest();
     };
-    cwRenderProgress();
-    if (nearBottom && !focused) wrap.scrollTop = wrap.scrollHeight;
+    if (focused) scroll.follow = false;
+    cwRenderProgress(scroll);
   }
 
   function cwReplaceTranscript(wrap,html) {
     var holder=document.createElement('div');holder.innerHTML=html;
-    var media=new Map(),messages=new Map(),next=Array.from(holder.children);
-    Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwmediagroup');if(id)media.set(id,node);});
+    var media=new Map(),messages=new Map(),workers=new Map(),next=Array.from(holder.children);
+    Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwmediagroup');if(id)media.set(id,node);var key=node.getAttribute('data-cwsubagents');if(key)workers.set(key,node);});
     Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwentrance');if(id)messages.set(id,node);});
     var keep=new Set();
     next=next.map(function(node){
+      var workerKey=node.getAttribute('data-cwsubagents'),worker=workerKey&&workers.get(workerKey);
+      if(worker){keep.add(worker);return worker;}
       var id=node.getAttribute('data-cwmediagroup'),old=id&&media.get(id);
       if(old&&old.getAttribute('data-media-signature')===node.getAttribute('data-media-signature')){keep.add(old);return old;}
       var messageId=node.getAttribute('data-cwentrance'),previous=messageId&&messages.get(messageId),signature=node.outerHTML;
@@ -2420,17 +2604,21 @@ export const COWORK_JS = String.raw`
     return phase === 'reasoning' || phase === 'responding' || phase === 'working' ? phase : 'thinking';
   }
 
-  function cwRenderProgress() {
+  function cwRenderProgress(scroll) {
     cwRenderComputerActivity();
     cwRenderCleanActivity();
     var cw = cwEnsure();
     var wrap = $('cwMsgs');
     var live = $('cwLive');
     if (!wrap || !live) return;
-    var nearBottom = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 120;
+    scroll = scroll || cwCaptureScroll(wrap);
+    cwSyncSubagentOrbs();
     var ps = cw.busy ? ((cw.progresses && cw.progresses.length) ? cw.progresses : (cw.progress ? [cw.progress] : [])) : [];
+    var workerIds = new Set();
+    cwSubagentGroups().forEach(function (group) { group.nodes.forEach(function (node) { workerIds.add(node.id); }); });
+    ps = ps.filter(function (progress) { return !workerIds.has(progress.agentId); });
     live.hidden = ps.length === 0;
-    if (!ps.length) { live.innerHTML = ''; live._progressKey = null; return; }
+    if (!ps.length) { live.innerHTML = ''; live._progressKey = null; cwRestoreScroll(wrap, scroll); return; }
     // Keep the avatar nodes alive across deltas so their animation never restarts.
     var key = JSON.stringify(ps.map(function (p) { var a = cwAgentById(p.agentId); return [p.agentId, p.agentName, a && a.avatar]; }));
     if (live._progressKey !== key) {
@@ -2470,7 +2658,7 @@ export const COWORK_JS = String.raw`
       var row = texts[i].closest && texts[i].closest('.cw-live-row');
       if (row) { var arriving=row.hidden&&text; row.hidden=!text; if(arriving)chatBubbleEntrance(row); }
     });
-    if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
+    cwRestoreScroll(wrap, scroll);
   }
 
   // Telegram + Discord gateways for an agent's DM, shown inside the
@@ -3262,7 +3450,9 @@ export const COWORK_JS = String.raw`
     var missionsChanged = JSON.stringify(cw.missions || []) !== JSON.stringify(d.missions || []);
     cw.missions = d.missions || [];
     var subAgentsChanged = JSON.stringify(cw.subAgents || null) !== JSON.stringify(d.subAgents || null);
+    var previousWorkerLayout = cwSubagentLayoutKey();
     cw.subAgents = d.subAgents || null;
+    var workerLayoutChanged = previousWorkerLayout !== cwSubagentLayoutKey();
     var artifactsChanged = JSON.stringify(cw.artifacts || []) !== JSON.stringify(d.artifacts || []);
     var requestsChanged = JSON.stringify(cw.requests || []) !== JSON.stringify(d.requests || []);
     var workChanged = JSON.stringify(cw.todos || []) !== JSON.stringify(d.todos || []);
@@ -3286,7 +3476,7 @@ export const COWORK_JS = String.raw`
     if (rosterChanged || widgetsChanged || threadsChanged) cwRenderRail();
     if (rosterChanged || threadsChanged) cwRenderMembers();
     if (cw.galleryOpen && typeof cwRenderGallery === 'function') cwRenderGallery();
-    else if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged) cwRenderMsgs(); else cwRenderProgress();
+    else if (added || rosterChanged || artifactsChanged || requestsChanged || historyChanged || workerLayoutChanged) cwRenderMsgs(); else cwRenderProgress();
     if (workChanged || rosterChanged) cwRenderWork();
     if (foldersChanged) cwRenderFolders();
     cwRenderTyping();
@@ -3328,12 +3518,18 @@ export const COWORK_JS = String.raw`
     var hasMessage = Boolean(input.value.trim() || (cw.pendingFiles || []).length);
     var stopMode = cw.busy && !hasMessage;
     var queueMode = cw.busy && hasMessage;
+    var delivery = cw.delivery || 'steer', deliveryWrap = $('cwDelivery');
+    if (deliveryWrap) {
+      deliveryWrap.hidden = !cw.busy;
+      deliveryWrap.querySelectorAll('[data-cwdelivery]').forEach(function(button){button.setAttribute('aria-pressed',String(button.getAttribute('data-cwdelivery')===delivery));});
+      $('cwDeliveryNote').textContent = cw.queued ? cw.queued + ' queued' : 'Work continues';
+    }
     send.disabled = (!cw.busy && !hasMessage) || (cw.pendingFiles || []).some(function (file) { return file.loading; });
     send.classList.toggle('stop', stopMode);
-    send.classList.toggle('queue', queueMode);
+    send.classList.toggle('queue', queueMode && delivery === 'queue');
     send.innerHTML = stopMode ? cwIcon('stop') : cwIcon('send');
-    send.title = stopMode ? 'Stop the team' : queueMode ? 'Queue this message while the team works' : 'Send (Enter)';
-    send.setAttribute('aria-label', stopMode ? 'Stop the team' : queueMode ? 'Queue message' : 'Send message');
+    send.title = stopMode ? 'Stop the team' : queueMode ? delivery === 'queue' ? 'Queue this message' : delivery === 'question' ? 'Ask while the team works' : 'Steer the current task' : 'Send (Enter)';
+    send.setAttribute('aria-label', stopMode ? 'Stop the team' : queueMode ? delivery === 'queue' ? 'Queue message' : delivery === 'question' ? 'Ask question' : 'Steer task' : 'Send message');
     send.onclick = stopMode ? cwStopRun : cwSend;
     if (stop) stop.hidden = !queueMode;
   }
@@ -3399,7 +3595,7 @@ export const COWORK_JS = String.raw`
     if (!text && !files.length) return;
     if (!cw.active) { toast('Open a chat first', true); return; }
     var id = crypto.randomUUID();
-    var payload = { id: id, text: text, files: files, threadId: cw.threadId || null, referencedMessageIds: cw.referencedMessageIds.slice() };
+    var payload = { id: id, text: text, files: files, threadId: cw.threadId || null, referencedMessageIds: cw.referencedMessageIds.slice(), delivery: cw.delivery || 'steer' };
     if (cw.widgetRequest) payload.widgetRequest = cw.widgetRequest;
     if (cw.widgetRequest && cw.widgetRequest.mode === 'create') cw.widgetCreationPending = cw.active;
     var entry = { conversationId: cw.active, payload: payload, message: {

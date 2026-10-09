@@ -13,16 +13,12 @@ function shippedLifecycle(): RegExp {
   return new RegExp(m![1]!);
 }
 
-describe('UI — specialist cards', () => {
-  it('ships the nested timeline group styles and appendEvent hooks', () => {
-    // Specialists render as a nested timeline group with its own left border
-    // rule (not a bordered card): inline header row + narration rail below.
-    expect(UI_HTML).toContain('.tl-sub-row');
-    expect(UI_HTML).toContain('.tl-sub-rail');
-    expect(UI_HTML).toContain('.tl-sub-head');
-    expect(UI_HTML).toContain('.spec-tag');
-    expect(UI_HTML).toContain('upsertSpecialistCard(runId, insert, mSpec[1], mSpec[2], mSpec[3], mSpec[4])');
-    expect(UI_HTML).toContain('attachSpecialistActivity(runId, text)');
+describe('UI — specialist presence', () => {
+  it('connects live metadata and legacy history to the compact orb renderer', () => {
+    expect(UI_HTML).toContain('createSubagentOrbs(host)');
+    expect(UI_HTML).toContain('applySubagentState(runId, insert, text)');
+    expect(UI_HTML).toContain('upsertSpecialistCard(runId, insert, mSpec[1], mSpec[2], mSpec[3], mSpec[4], ev.t)');
+    expect(UI_HTML).toContain('attachSpecialistActivity(runId, text, ev.t)');
     // The old pile-of-lines fallback stays only as a last-resort branch.
     expect(UI_HTML).toContain("tag === 'subagent'");
   });
@@ -30,7 +26,7 @@ describe('UI — specialist cards', () => {
   it('never reuses the global .working indicator class on specialist groups', () => {
     // Regression: `.working` is the global thinking-indicator class
     // (display:flex row). Adding it to a group flattens it into a row.
-    expect(UI_HTML).toContain("specSetStatus(st, 'working')");
+    expect(UI_HTML).toContain("button.className = 'subagent-orb'");
     expect(UI_HTML).not.toContain("st.el.classList.add('working')");
     expect(UI_HTML).not.toContain("card.classList.add('working')");
     expect(UI_HTML).not.toContain("group.classList.add('working')");

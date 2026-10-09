@@ -85,6 +85,8 @@ export async function parentReverifyCriterion(opts: {
   ledger: ReverifyLedgerView;
   criterionId: string;
   currentFingerprint?: string;
+  /** Read again after the oracle, which may itself generate files. */
+  getCurrentFingerprint?: () => Promise<string>;
   runOracle?: OracleRunner;
   workdir?: string;
   environment?: string;
@@ -107,8 +109,8 @@ export async function parentReverifyCriterion(opts: {
   for (const id of criterion.evidenceIds) {
     const ev = ledger.evidence.find((e) => e.id === id);
     if (!ev) continue;
-    if (currentFingerprint && ev.workspaceFingerprint && ev.workspaceFingerprint !== currentFingerprint) {
-      ev.stale = true;
+    if (currentFingerprint && ev.workspaceFingerprint) ev.stale = ev.workspaceFingerprint !== currentFingerprint;
+    if (ev.stale) {
       if (!staleEvidenceIds.includes(id)) staleEvidenceIds.push(id);
     }
   }
@@ -140,6 +142,7 @@ export async function parentReverifyCriterion(opts: {
       verified = grades.some((g) => g.strength === 'STRONG' || g.strength === 'WEAK');
       for (const g of grades) diagnostics.push(...g.diagnostics);
     }
+    criterion.satisfied = verified;
     return {
       criterionId,
       mode: 'NOT_RUNNABLE',
@@ -193,10 +196,11 @@ export async function parentReverifyCriterion(opts: {
   }
 
   // 4. Generate FRESH evidence bound to the live workspace identity.
+  const verifiedFingerprint = opts.getCurrentFingerprint ? await opts.getCurrentFingerprint() : currentFingerprint;
   const createdAt = nowIso();
   const outputExcerpt = excerpt(run.output);
   const evidenceFingerprint = sha256(
-    `${criterion.verification}|${run.exitCode ?? ''}|${run.passed}|${currentFingerprint ?? ''}|${createdAt}|${outputExcerpt.slice(0, 200)}`,
+    `${criterion.verification}|${run.exitCode ?? ''}|${run.passed}|${verifiedFingerprint ?? ''}|${createdAt}|${outputExcerpt.slice(0, 200)}`,
   );
   const fresh: Evidence = {
     id: shortId('ev'),
@@ -207,7 +211,7 @@ export async function parentReverifyCriterion(opts: {
     passed: run.passed,
     outputExcerpt,
     createdAt,
-    workspaceFingerprint: currentFingerprint,
+    workspaceFingerprint: verifiedFingerprint,
     stale: false,
     fingerprint: evidenceFingerprint,
   };
@@ -224,7 +228,7 @@ export async function parentReverifyCriterion(opts: {
       freshEvidenceId: fresh.id,
       staleEvidenceIds,
       diagnostics: quality.diagnostics,
-      fingerprint: currentFingerprint,
+      fingerprint: verifiedFingerprint,
       reason: `Re-executed "${criterion.verification}" and it FAILED — specialist self-report not confirmed.`,
     };
   }
@@ -240,13 +244,13 @@ export async function parentReverifyCriterion(opts: {
       freshEvidenceId: fresh.id,
       staleEvidenceIds,
       diagnostics: quality.diagnostics,
-      fingerprint: currentFingerprint,
+      fingerprint: verifiedFingerprint,
       reason: `Oracle passed but is too weak to prove the criterion: ${quality.diagnostics.map((d) => d.detail).join(' ')}`,
     };
   }
 
   // 6. Link fresh evidence through the existing engine gate.
-  const link = engine.link(ledger as never, criterionId, fresh.id, currentFingerprint);
+  const link = engine.link(ledger as never, criterionId, fresh.id, verifiedFingerprint);
   return {
     criterionId,
     mode: 'EXECUTED_PASS',
@@ -254,7 +258,7 @@ export async function parentReverifyCriterion(opts: {
     freshEvidenceId: fresh.id,
     staleEvidenceIds,
     diagnostics: quality.diagnostics,
-    fingerprint: currentFingerprint,
+    fingerprint: verifiedFingerprint,
     reason: link.ok
       ? `Re-executed "${criterion.verification}": passed with fresh evidence ${fresh.id}.`
       : `Re-executed oracle passed but evidence link rejected: ${link.reason}`,

@@ -27,6 +27,7 @@ import {
   type SpecialistStopReason,
 } from './specialist-checkpoints.js';
 import { SkillStore, type SkillIdentity } from '../skills/skills.js';
+import { estimateTokens, messageTextChars } from './telemetry.js';
 import type { AcceptanceCriterion, CriterionSpec, MemoryType, SpecialistHandoff } from '../types.js';
 
 export interface SubAgentSpec {
@@ -93,6 +94,10 @@ export interface SubAgentJob {
   finishedAt?: string;
   turn?: number;
   summary?: string;
+  phase?: 'working' | 'reasoning' | 'tool' | 'waiting' | 'blocked' | 'complete' | 'failed' | 'cancelled';
+  current?: string;
+  /** Character-based estimate of the latest request's text context. */
+  contextTokens?: number;
 }
 
 export interface SubAgentRunnerDeps {
@@ -340,6 +345,18 @@ export class SubAgentRunner {
 
   constructor(private readonly deps: SubAgentRunnerDeps) {}
 
+  /** Identity-bearing metadata avoids attributing concurrent same-name lanes
+   * to each other. It contains public activity, never model reasoning. */
+  private publishJob(job: InternalSubAgentJob, phase: NonNullable<SubAgentJob['phase']>, current: string, activity?: string): void {
+    job.phase = phase;
+    job.current = current;
+    emitSafe(this.deps.onEvent, 'subagent-state ' + JSON.stringify({
+      id: job.id, name: job.agent, task: job.task, status: job.status, phase,
+      current, startedAt: job.startedAt, finishedAt: job.finishedAt,
+      contextTokens: job.contextTokens, turn: job.turn, at: new Date().toISOString(), activity,
+    }));
+  }
+
   /**
    * Specialist system prompt with SCOPED memory (review Phase 11): the
    * specialist sees mission/project/global memory and its OWN agent memories
@@ -450,6 +467,7 @@ export class SubAgentRunner {
         recommendation: 'Resume or re-delegate this specialist task when ready.',
       });
       emitSafe(this.deps.onEvent, `subagent ${job.agent} [cancelled] ${job.id} — ${job.summary}`);
+      this.publishJob(job, 'cancelled', job.summary, job.summary);
     }
     for (const job of this.jobs.values()) {
       if (job.status !== 'running' || job.abortController.signal.aborted) continue;
@@ -695,6 +713,7 @@ export class SubAgentRunner {
     this.jobs.set(job.id, job);
     this.queue.push(job);
     (this.deps.onEvent ?? (() => {}))(`subagent ${job.agent} [queued] ${job.id} — ${job.task.slice(0, 100)}${job.executionAttempt && job.executionAttempt > 1 ? ` (resume attempt ${job.executionAttempt}, logical ${logicalJobId})` : ''}`);
+    this.publishJob(job, 'waiting', 'Waiting for an execution slot', 'Queued');
     return job;
   }
 
@@ -705,6 +724,7 @@ export class SubAgentRunner {
       job.status = 'running';
       job.startedAt = new Date().toISOString();
       (this.deps.onEvent ?? (() => {}))(`subagent ${job.agent} [running] ${job.id} — started`);
+      this.publishJob(job, 'working', 'Preparing the assignment', 'Started');
       void this.executeOne(job)
         .catch(
           (err): SubAgentResult => ({
@@ -733,6 +753,7 @@ export class SubAgentRunner {
           const prune = setTimeout(() => this.jobs.delete(job.id), JOB_RETENTION_MS);
           prune.unref?.();
           (this.deps.onEvent ?? (() => {}))(`subagent ${job.agent} [${job.status}] ${job.id} — ${result.summary.slice(0, 160)}`);
+          this.publishJob(job, result.status === 'BLOCKED' ? 'blocked' : job.status === 'completed' ? 'complete' : job.status === 'cancelled' ? 'cancelled' : 'failed', result.summary, result.summary);
         })
         .finally(() => {
           this.running = Math.max(0, this.running - 1);
@@ -753,8 +774,10 @@ export class SubAgentRunner {
     const role = this.deps.agentRole(name) ?? 'general-purpose engineer';
     const llm = resilientLlm(this.deps.resolveLlm(name), {
       label: `specialist ${name}`,
-      onRetry: ({ attempt, maxRetries, delayMs, error }) =>
-        emit(`subagent ${name} — LLM ${error.message.slice(0, 100)} — retry ${attempt}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`),
+      onRetry: ({ attempt, maxRetries, delayMs, error }) => {
+        emit(`subagent ${name} — LLM ${error.message.slice(0, 100)} — retry ${attempt}/${maxRetries} in ${(delayMs / 1000).toFixed(1)}s`);
+        this.publishJob(job, 'waiting', `Waiting to retry the model (${attempt}/${maxRetries})`);
+      },
     });
 
     const repoRoot = ProjectGuard.detect(this.deps.cwd).lock.repoRoot;
@@ -1039,7 +1062,10 @@ export class SubAgentRunner {
           maxSameSuccessfulRead: 3,
           maxInvestigationReadsPerFailureEpisode: DEFAULT_LOOP_POLICY.maxInvestigationReadsPerFailureEpisode,
         }),
-        (e) => emit(`subagent ${name}: ${e}`),
+        (e) => {
+          emit(`subagent ${name}: ${e}`);
+          this.publishJob(job, job.phase ?? 'working', job.current ?? 'Executing a tool', e);
+        },
         specialistSkills,
         undefined,
         undefined,
@@ -1233,6 +1259,8 @@ export class SubAgentRunner {
         turnsUsed = turn + 1;
         job.turn = turnsUsed;
         emit(`subagent ${name} [running] ${job.id} — turn ${turnsUsed}/${turnBudget}`);
+        job.contextTokens = estimateTokens(messages.reduce((chars, message) => chars + messageTextChars(message), 0));
+        this.publishJob(job, 'reasoning', `Considering the next step · turn ${turnsUsed}`, `Model turn ${turnsUsed}`);
         const reply = await completeSpecialistTurn(
           llm,
           messages,
@@ -1337,12 +1365,14 @@ export class SubAgentRunner {
         }
         if (type === 'tool_call' && typeof action['tool'] === 'string') {
           const toolName = String(action['tool']);
+          this.publishJob(job, 'tool', String(action['reason'] || `Using ${toolName}`));
           const outcome = await executor.execute({
             tool: toolName,
             params: (action['params'] ?? {}) as Record<string, unknown>,
             reason: String(action['reason'] ?? ''),
             expected: String(action['expected'] ?? ''),
           });
+          this.publishJob(job, 'working', outcome.result.ok ? `Finished ${toolName}` : `${toolName} needs attention`);
 
           if (outcome.result.ok) {
             consecutiveNoProgress = 0;

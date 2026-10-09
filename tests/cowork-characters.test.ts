@@ -79,7 +79,7 @@ describe('animated teammate characters and web activity', () => {
     expect(COWORK_CSS).toContain('.cw-chat-head .cw-ava { width: 76px; height: 76px; }');
     expect(COWORK_JS).toContain('cwAva(a, 112)');
     expect(COWORK_JS).toContain('cwAva(m, 40)');
-    expect(COWORK_CSS).toContain('svg:not(.home-blob)');
+    expect(COWORK_CSS).toContain('.cw-plush > svg.cw-blink-overlay');
   });
 
   it('renders plush images immediately even when WebGL is unavailable', () => {
@@ -315,7 +315,11 @@ describe('animated teammate characters and web activity', () => {
     input.value = 'A follow-up message';
     u.context.cwRenderTyping();
     expect(status.textContent).toBe('AI team · Working… · 2 queued');
-    expect(button.title).toBe('Queue this message while the team works');
+    expect(button.title).toBe('Steer the current task');
+    u.context.S.cw.delivery='queue';u.context.cwRenderTyping();
+    expect(button.title).toBe('Queue this message');
+    u.context.S.cw.delivery='question';u.context.cwRenderTyping();
+    expect(button.title).toBe('Ask while the team works');
     u.cw.busy = false;
     u.context.S.cw.queued = 0;
     input.value = '';

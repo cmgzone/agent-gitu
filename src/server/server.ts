@@ -14,6 +14,7 @@ import { COMPANION_DIR, companionAsset } from './mobile-companion.js';
 import os from 'node:os';
 import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import nodePath from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { Gitu } from '../agent/gitu.js';
 import { providerRecoveryDelay } from '../agent/task-recovery.js';
@@ -30,7 +31,8 @@ import { workspacePath } from '../coding/workspace.js';
 import { CoworkDelegation, type DelegationScope, type DelegationSessionInput } from '../cowork/delegation.js';
 import { CoworkSubAgents, CoworkSubAgentRunner } from '../cowork/subagents.js';
 import type { CodingEvent } from '../coding/events.js';
-import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
+import { classifyFollowUp, conversationIntent, isNonMutatingStatusQuestion } from '../agent/follow-up.js';
+import { CoworkLiveMailbox, type CoworkDelivery } from '../cowork/live-messages.js';
 import { LspManager } from '../lsp/manager.js';
 import { CodeIndex } from '../context/code-index.js';
 import { SubAgentRunner } from '../agent/subagent.js';
@@ -46,7 +48,11 @@ import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
 import type { AgentPersonality, AgentRole } from '../cowork/profile-config.js';
-import { runConversationTurn, runMissionSession, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
+import { runConversationTurn, runMissionSession, answerCoworkQuestion, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
+import { GituVoiceCalls, liveKitConfiguration, decideVoiceTurn, type VoiceCall, type VoiceTarget, type VoiceContext } from '../voice/livekit.js';
+import { LiveKitCloudWorker } from '../voice/cloud-worker.js';
+import { buildSystemPrompt } from '../agent/prompt.js';
+import { MemoryStore } from '../memory/memory-store.js';
 import { CoworkComputer, hostedComputerExec } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
@@ -442,7 +448,10 @@ export class GituServer {
   /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
   private coworkStore?: CoworkStore;
   private coworkMemoryStore?: CoworkMemory;
-  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; threadId?: string; abort: AbortController; queue: CoworkMessage[]; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
+  private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; threadId?: string; abort: AbortController; queue: CoworkMessage[]; live?: CoworkLiveMailbox; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
+  private readonly coworkQuestions = new Map<string, Promise<void>>();
+  private readonly voiceCalls = new GituVoiceCalls();
+  private readonly voiceWorker = new LiveKitCloudWorker();
   private readonly coworkPollers = new Map<string, TelegramPoller>();
   /** One Discord gateway per conversation (keyed by conversation id). */
   private readonly coworkDiscords = new Map<string, DiscordGateway>();
@@ -1057,6 +1066,8 @@ export class GituServer {
   }
 
   async stop(): Promise<void> {
+    await this.voiceWorker.close();
+    await this.voiceCalls.close();
     this.appAuth.close();
     for (const socket of this.desktopSockets?.clients ?? []) socket.terminate();
     this.desktopSockets?.close();
@@ -1354,8 +1365,8 @@ export class GituServer {
       queued: run?.queue.length ?? 0,
       telegramError: run?.telegramError ?? null,
       missions: [...activeMissions, ...recentMissions].map((mission) => this.coworkMissionView(mission)),
-      // The sub-agent execution tree, live: the UI renders it under missions.
-      subAgents: this.subAgents().tree({ conversationId }),
+      // Workers belong to the same thread as their host-bound parent turn.
+      subAgents: this.subAgents().tree({ conversationId, threadId }),
       artifacts: store.artifacts(conversationId),
       todos: store.todos(conversationId),
       requests: store.requests(conversationId),
@@ -1910,6 +1921,8 @@ export class GituServer {
 
   /** Liveness line from a delegated run, surfaced in the conversation's progress. */
   private publishDelegatedProgress(conversationId: string, agentId: string, text: string): void {
+    // Orb metadata belongs to the execution trace, not the parent's public prose.
+    if (text.startsWith('subagent-state ')) return;
     const run = this.coworkRuns.get(conversationId);
     if (!run) return;
     const progress: CoworkProgress = { agentId, agentName: this.cowork().getAgent(agentId)?.name ?? agentId, text };
@@ -2543,8 +2556,8 @@ export class GituServer {
     from?: string,
     artifactIds?: string[],
     threadId?: string,
-    meta?: { id?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[]; widgetRequest?: CoworkMessage['widgetRequest'] },
-  ): { ok: boolean; queued?: boolean; error?: string; message?: CoworkMessage } {
+    meta?: { id?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[]; widgetRequest?: CoworkMessage['widgetRequest']; delivery?: CoworkDelivery },
+  ): { ok: boolean; queued?: boolean; steered?: boolean; answering?: boolean; error?: string; message?: CoworkMessage } {
     const store = this.cowork();
     const conv = store.getConversation(conversationId);
     if (!conv) return { ok: false, error: 'conversation not found' };
@@ -2553,6 +2566,7 @@ export class GituServer {
     if (!trimmed) return { ok: false, error: 'text is required' };
     const prior = meta?.id ? store.getMessage(conversationId, meta.id) : undefined;
     if (prior) return { ok: true, message: prior };
+    const delivery = meta?.delivery === 'queue' ? 'queue' : meta?.delivery === 'question' || (this.coworkRuns.get(conversationId)?.busy && isNonMutatingStatusQuestion(trimmed)) ? 'question' : meta?.delivery ?? 'queue';
     const trigger = store.appendMessage(conversationId, {
       id: meta?.id,
       role: 'user',
@@ -2565,11 +2579,56 @@ export class GituServer {
       mentionedAgentIds: meta?.mentionedAgentIds ?? this.coworkMentions(conv, trimmed),
       referencedMessageIds: meta?.referencedMessageIds,
       widgetRequest: meta?.widgetRequest,
+      delivery,
     });
+    if (delivery === 'question') {
+      void this.answerCoworkLiveQuestion(conv, trigger);
+      this.publishCowork(conversationId);
+      return { ok: true, answering: true, message: trigger };
+    }
+    const active = this.coworkRuns.get(conversationId);
+    if (delivery === 'steer' && active?.busy && !active.abort.signal.aborted && (active.threadId ?? null) === (threadId ?? null) && !active.missionId) {
+      active.live ??= new CoworkLiveMailbox();
+      if (!active.live.add(trigger)) { store.setMessageStatus(conversationId, trigger.id, 'failed'); return { ok: false, error: 'Too many pending steering messages.', message: trigger }; }
+      this.publishCowork(conversationId);
+      return { ok: true, steered: true, message: trigger };
+    }
     return { ...this.beginCoworkTurn(conversationId, trigger), message: trigger };
   }
 
   /** @mentions resolved against this conversation's members (structure, not text). */
+  private async answerCoworkLiveQuestion(conversation: CoworkConversation, trigger: CoworkMessage): Promise<void> {
+    const store = this.cowork();
+    const members = conversation.memberIds.map(id => store.getAgent(id)).filter((agent): agent is CoworkAgent => Boolean(agent));
+    const agent = members.find(member => trigger.mentionedAgentIds?.includes(member.id)) ?? members.find(member => member.id === conversation.chiefId) ?? members[0];
+    if (!agent) { store.setMessageStatus(conversation.id, trigger.id, 'failed'); return; }
+    const key = conversation.id + '/' + trigger.id;
+    if (this.coworkQuestions.has(key)) return;
+    if ([...this.coworkQuestions.keys()].filter(id => id.startsWith(conversation.id + '/')).length >= 4) {
+      store.setMessageStatus(conversation.id, trigger.id, 'failed'); this.publishCowork(conversation.id); return;
+    }
+    const answer = async () => {
+      try {
+        const run = this.coworkRuns.get(conversation.id);
+        const current = (run?.threadId ?? null) === (trigger.threadId ?? null) ? Object.values(run?.progresses ?? {}).map(progress => `${progress.agentName}: ${progress.text || (progress.tool ? 'Using ' + progress.tool : 'Working')}`).join('\n') : '';
+        const state = current || (run?.busy ? 'The team is working on its current request.' : 'There is no active team turn in this topic.');
+        const text = isNonMutatingStatusQuestion(trigger.text) ? state : await answerCoworkQuestion({
+          agent, conversation, members, question: trigger.text, state,
+          history: store.messages(conversation.id, 0, trigger.threadId ?? null).filter(message => message.seq < trigger.seq),
+          llm: this.coworkLlm(agent), userContext: this.coworkUserContext(), memory: this.coworkMemoryFor(agent), signal: AbortSignal.timeout(30_000),
+        });
+        if (!store.getConversation(conversation.id) || !store.getMessage(conversation.id, trigger.id)) return;
+        store.appendMessage(conversation.id, { role: 'agent', agentId: agent.id, agentName: agent.name, text, via: 'web', threadId: trigger.threadId, delivery: 'question', referencedMessageIds: [trigger.id] });
+        store.setMessageStatus(conversation.id, trigger.id, 'sent');
+      } catch {
+        if (store.getMessage(conversation.id, trigger.id)) store.setMessageStatus(conversation.id, trigger.id, 'failed');
+      } finally { this.coworkQuestions.delete(key); this.publishCowork(conversation.id); }
+    };
+    const promise = Promise.resolve().then(answer);
+    this.coworkQuestions.set(key, promise);
+    await promise;
+  }
+
   private coworkMentions(conversation: CoworkConversation, text: string): string[] {
     const store = this.cowork();
     const members = conversation.memberIds
@@ -2672,7 +2731,7 @@ export class GituServer {
   /** Delete one logical message — including any pending queue slot. */
   private deleteCoworkMessage(conversationId: string, messageId: string): boolean {
     const run = this.coworkRuns.get(conversationId);
-    if (run) run.queue = run.queue.filter((message) => message.id !== messageId);
+    if (run) { run.queue = run.queue.filter((message) => message.id !== messageId); run.live?.remove(messageId); }
     const removed = this.cowork().deleteMessage(conversationId, messageId);
     if (removed) this.publishCowork(conversationId);
     return removed;
@@ -2712,6 +2771,7 @@ export class GituServer {
       if (!conv) break;
       const threadId = trigger.threadId;
       run.threadId = threadId;
+      run.live ??= new CoworkLiveMailbox();
       // Queued future user messages must not steer the current trigger, and
       // other threads never bleed into this one.
       const history = store.messages(conversationId, 0, threadId ?? null).filter((m) => m.role !== 'user' || m.seq <= trigger.seq);
@@ -2761,6 +2821,12 @@ export class GituServer {
         media: this.coworkTriggerMedia(trigger.artifactIds),
         deps: {
           forceAgentId: run.forceAgentId,
+          takeSteering: (agentId, activeThreadId) => {
+            const messages = run.live?.take(agentId, activeThreadId) ?? [];
+            for (const message of messages) store.setMessageStatus(conversationId, message.id, 'sent');
+            if (messages.length) this.publishCowork(conversationId);
+            return messages;
+          },
           agents: store.listAgents(),
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
@@ -2832,6 +2898,8 @@ export class GituServer {
         if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, 'failed');
         throw err;
       } finally {
+        for (const message of run.live?.undelivered() ?? []) if (!run.queue.some(queued => queued.id === message.id)) run.queue.push(message);
+        run.live = undefined;
         typing?.stop();
         run.working = undefined;
         run.progress = undefined;
@@ -3854,6 +3922,7 @@ export class GituServer {
           referencedMessageIds: Array.isArray(body['referencedMessageIds']) ? body['referencedMessageIds'].map(String) : undefined,
           mentionedAgentIds: Array.isArray(body['mentionedAgentIds']) ? body['mentionedAgentIds'].map(String) : undefined,
           widgetRequest,
+          delivery: body['delivery'] === 'steer' || body['delivery'] === 'question' || body['delivery'] === 'queue' ? body['delivery'] : undefined,
         });
         this.sendJson(res, result.ok ? 202 : 409, { ...result, queued: result.queued ?? false });
         return true;
@@ -4613,6 +4682,154 @@ export class GituServer {
     return recent;
   }
 
+  private voiceContext(target: VoiceTarget): VoiceContext {
+    if (target.kind === 'cowork') {
+      const store = this.cowork(), conversation = store.getConversation(target.conversationId ?? '');
+      if (!conversation || (target.threadId && !store.getThread(conversation.id, target.threadId))) throw new Error('The call’s conversation or topic is unavailable.');
+      const members = conversation.memberIds.map(id => store.getAgent(id)).filter((agent): agent is CoworkAgent => Boolean(agent));
+      const agent = members.find(member => member.id === target.agentId) ?? (!target.agentId ? members.find(member => member.id === conversation.chiefId) ?? members[0] : undefined);
+      if (!agent) throw new Error('This teammate is not in the selected chat.');
+      target.agentId = agent.id;
+      const run = this.coworkRuns.get(conversation.id), sameTopic = (run?.threadId ?? null) === (target.threadId ?? null);
+      const publicProgress = sameTopic ? Object.values(run?.progresses ?? {}).map(progress => `${progress.agentName}: ${progress.text || 'Working'}`).join('\n') : '';
+      const workers = store.subAgents({ conversationId: conversation.id }).filter(worker => worker.threadId === target.threadId && worker.parentAgentId === agent.id);
+      const computer = this.coworkComputer(agent.id).status();
+      const capabilities = `Computer: ${agent.useHostComputer ? 'user workspace' : agent.cloudConnectionId ? 'cloud desktop' : 'private desktop'}, ${computer.state}. Browser, files and shell are available through the normal task runner; shell ${agent.allowShell ? 'enabled' : 'disabled'}, file writes ${agent.allowWrites ? 'enabled' : 'disabled'}. ${computer.control === 'user' ? 'The user currently controls the desktop; wait for their handoff before operating it.' : 'The agent can use its computer subject to the existing permissions.'} A stopped desktop can be started for a requested task. Human sign-in or account verification stays with the user.`;
+      return {
+        name: agent.name,
+        instructions: `You are ${agent.name}, ${agent.tagline || 'the user’s AI teammate'}. This is the voice channel of your existing conversation.\n${agent.systemPrompt}\n${this.coworkUserContext() ?? ''}\n${this.coworkMemoryFor(agent)}\nThe voice routing instruction determines the response format; task execution and tool permissions are handled by your normal task runner.`,
+        state: (publicProgress || (run?.busy && sameTopic ? 'Work is continuing.' : 'No active task in this topic.')) + '\nWorkers: ' + workers.map(worker => `${worker.role}: ${worker.status}`).join(', ') + '\n' + capabilities,
+        busy: Boolean(run?.busy && sameTopic),
+        history: store.messages(conversation.id, 0, target.threadId ?? null).filter(message => message.role !== 'system').slice(-12).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: (message.agentName ? message.agentName + ': ' : '') + message.text })),
+      };
+    }
+    const session = target.runId ? this.sessions.get(target.runId) : undefined;
+    if (target.runId && !session) throw new Error('The call’s task is unavailable.');
+    const root = session?.worktreePath ?? session?.projectPath ?? target.projectPath ?? this.config.cwd;
+    const guard = ProjectGuard.detect(root);
+    return {
+      name: 'Agent Gitu', instructions: buildSystemPrompt(guard, MemoryStore.forProject(guard.lock.repoRoot), { memoryQuery: session?.goal, agentWorkflow: true }),
+      state: session ? `Task: ${session.goal}\nStatus: ${session.status}\n` + session.events.filter(event => /^(?:say |activity (?:tool|working)|done )/.test(event.text)).slice(-6).map(event => event.text).join('\n') : 'No task has started yet.',
+      busy: session?.status === 'running',
+      history: (session?.events ?? []).filter(event => /^(?:user-msg |live-chat |say )/.test(event.text)).slice(-24).map(event => {
+        if (event.text.startsWith('live-chat ')) { try { return JSON.parse(event.text.slice(10)) as { role: 'user' | 'assistant'; content: string }; } catch { /* skip malformed legacy entries */ } }
+        return { role: event.text.startsWith('say ') ? 'assistant' as const : 'user' as const, content: event.text.replace(/^(?:user-msg |say )/, '') };
+      }),
+    };
+  }
+
+  private async voiceTurn(call: VoiceCall, text: string, req: http.IncomingMessage): Promise<Record<string, unknown>> {
+    const context = this.voiceContext(call.target);
+    context.history.push(...call.history);
+    if (!text) return { text: `Hi, I’m ${context.name}. ${context.busy ? 'I’m still working. What would you like to discuss?' : 'What would you like me to do?'}` };
+    const safe = credentialChatInput(text);
+    if (safe.detected) return { text: 'Please enter credentials in the secure Connections form.' };
+    text = safe.safeText;
+    const target = call.target;
+    const llm = target.kind === 'cowork' ? this.coworkLlm(this.cowork().getAgent(target.agentId!)!) : this.config.llm ?? resolveLlm({ provider: this.sessions.get(target.runId ?? '')?.provider ?? target.provider, model: this.sessions.get(target.runId ?? '')?.model ?? target.model, workingDirectory: this.config.cwd }).client;
+    const decision = await decideVoiceTurn(llm, context, text, AbortSignal.timeout(25_000));
+    if (decision.kind === 'question') {
+      const answer = credentialChatInput(decision.reply).safeText;
+      if (target.kind === 'cowork') {
+        const store = this.cowork();
+        const user = store.appendMessage(target.conversationId!, { role: 'user', text, via: 'web', threadId: target.threadId, delivery: 'question', status: 'sent' });
+        store.appendMessage(target.conversationId!, { role: 'agent', agentId: target.agentId, agentName: context.name, text: answer, via: 'web', threadId: target.threadId, delivery: 'question', referencedMessageIds: [user.id] });
+        this.publishCowork(target.conversationId!);
+      } else if (target.runId) {
+        const session = this.sessions.get(target.runId)!;
+        this.pushEvent(session, 'live-chat ' + JSON.stringify({ role: 'user', content: text }));
+        this.pushEvent(session, 'live-chat ' + JSON.stringify({ role: 'assistant', content: answer }));
+      } else {
+        call.history.push({ role: 'user', content: text }, { role: 'assistant', content: answer });
+        call.history = call.history.slice(-24);
+      }
+      return { text: answer };
+    }
+    if (target.kind === 'cowork') {
+      if (decision.kind === 'stop') {
+        const run = this.coworkRuns.get(target.conversationId!);
+        if (run) { run.queue.length = 0; run.abort.abort(); }
+        this.publishCowork(target.conversationId!);
+        return { text: run ? 'I’m stopping the current task.' : 'There is no active task to stop.' };
+      }
+      const result = this.dispatchCoworkMessage(target.conversationId!, text, 'web', undefined, undefined, target.threadId, { id: 'voice-' + crypto.randomUUID(), mentionedAgentIds: [target.agentId!], delivery: decision.kind === 'queue' || decision.kind === 'task' && context.busy ? 'queue' : 'steer' });
+      if (!result.ok) throw new Error(result.error);
+      return { text: result.queued ? 'I’ve queued that request. The current work continues.' : result.steered ? 'I’ll apply that to the current task at the next safe step.' : 'I’m starting that now. You can follow the results in this chat.' };
+    }
+    // Reuse the normal authenticated task APIs, including their permission and gate checks.
+    const address = this.server?.address() as AddressInfo | undefined;
+    if (!address) throw new Error('Gitu is stopping.');
+    const route = decision.kind === 'stop' ? target.runId ? `/api/runs/${target.runId}/stop` : undefined : target.runId ? `/api/runs/${target.runId}/message` : '/api/runs';
+    if (!route) return { text: 'There is no task to stop.' };
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    for (const name of ['host', 'origin', 'cookie', 'authorization', 'x-forwarded-proto']) if (typeof req.headers[name] === 'string') headers[name] = req.headers[name]!;
+    const response = await fetch(`http://127.0.0.1:${address.port}` + route, { method: 'POST', headers, body: JSON.stringify(target.runId ? { text, delivery: decision.kind === 'queue' || decision.kind === 'task' && context.busy ? 'queue' : 'steer' } : { goal: text, provider: target.provider, model: target.model, projectPath: target.projectPath, mode: 'agent', autoApprove: false }), signal: AbortSignal.timeout(30_000) });
+    const result = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : 'The task could not be started.');
+    if (typeof result.runId === 'string') {
+      target.runId = result.runId;
+      const session = this.sessions.get(target.runId);
+      if (session) for (const message of call.history) this.pushEvent(session, 'live-chat ' + JSON.stringify(message));
+      call.history = [];
+    }
+    return { text: decision.kind === 'stop' ? 'I’m stopping the task.' : result.queued ? 'That is queued for when the current task finishes.' : result.steered ? 'I’ll apply that at the next safe step.' : 'I’m starting that now. You can follow the results in chat.', runId: target.runId };
+  }
+
+  private async handleVoiceApi(req: http.IncomingMessage, res: http.ServerResponse, path: string, method: string): Promise<void> {
+    try {
+      if (path === '/api/voice/config') {
+        if (method === 'GET') { this.sendJson(res, 200, { ...this.voiceCalls.status(), worker: this.voiceWorker.status() }); return; }
+        if (method === 'PUT') {
+          if (!AppAuth.local(req) && !this.appAuth.secure(req)) { this.sendJson(res, 403, { error: 'Save LiveKit credentials locally or over HTTPS.' }); return; }
+          await this.voiceWorker.close();
+          await this.voiceCalls.configure(await this.readBody(req, 10_000));
+          void this.voiceWorker.ensure(liveKitConfiguration()!).catch(() => undefined);
+          this.sendJson(res, 202, { ...this.voiceCalls.status(), worker: this.voiceWorker.status() }); return;
+        }
+      }
+      if (path === '/api/voice/prepare' && method === 'POST') {
+        const config = liveKitConfiguration();
+        if (!config) { this.sendJson(res, 400, { error: 'Connect your LiveKit project first.' }); return; }
+        void this.voiceWorker.ensure(config).catch(() => undefined);
+        this.sendJson(res, 202, this.voiceWorker.status()); return;
+      }
+      if (path === '/api/voice/worker' && method === 'GET') { this.sendJson(res, 200, this.voiceWorker.status()); return; }
+      if (path === '/api/voice/calls' && method === 'POST') {
+        const body = await this.readBody(req, 4096);
+        const target: VoiceTarget = { kind: body.kind === 'cowork' ? 'cowork' : 'main' };
+        for (const key of ['runId', 'conversationId', 'threadId', 'agentId', 'provider', 'model', 'projectPath'] as const) if (typeof body[key] === 'string' && body[key]) target[key] = body[key];
+        const context = this.voiceContext(target);
+        const config = liveKitConfiguration();
+        if (config) await this.voiceWorker.ensure(config);
+        this.sendJson(res, 201, await this.voiceCalls.start(target, context.name)); return;
+      }
+      const match = path.match(/^\/api\/voice\/calls\/([\w-]+)(?:\/(reply|end))?$/);
+      if (match) {
+        const call = this.voiceCalls.get(match[1]!);
+        if (!call) { this.sendJson(res, 404, { error: 'The call ended. Start another call to continue speaking.' }); return; }
+        if (method === 'DELETE' && !match[2] || method === 'POST' && match[2] === 'end') { await this.voiceCalls.end(call.id); this.sendJson(res, 200, { ok: true }); return; }
+        if (method === 'POST' && match[2]) {
+          const body = await this.readBody(req, 8192), text = String(body.text ?? '').trim().slice(0, 4000), id = String(body.id ?? '');
+          if (!/^[\w-]{1,80}$/.test(id)) { this.sendJson(res, 400, { error: 'A voice turn ID is required.' }); return; }
+          let reply = call.responses.get(id);
+          if (!reply) {
+            if (call.responses.size >= 128) { this.sendJson(res, 429, { error: 'Start a fresh call to continue.' }); return; }
+            reply = this.voiceTurn(call, text, req); call.responses.set(id, reply);
+          }
+          this.sendJson(res, 200, await reply); return;
+        }
+      }
+      this.sendJson(res, 404, { error: 'Voice route not found.' });
+    } catch (error) {
+      const failure = error as { name?: string; code?: string; details?: { kind?: string }; cause?: { code?: string }; stack?: string };
+      const rawCode = typeof failure.cause?.code === 'string' ? failure.cause.code : typeof failure.code === 'string' ? failure.code : failure.details?.kind ?? failure.name ?? 'UNKNOWN';
+      const code = /^[a-zA-Z0-9_]{1,64}$/.test(rawCode) ? rawCode : 'UNKNOWN';
+      // Log stack locations, never a provider message that may include credentials.
+      console.error('[voice] Request failed:', path.replace(/\/calls\/[^/]+/, '/calls/[call]'), code, failure.stack?.split('\n').slice(1, 4).join('\n') ?? '');
+      this.sendJson(res, 502, { error: 'Could not complete the voice reply (' + code + '). Check the agent’s model connection and retry.' });
+    }
+  }
+
   private async route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const path = url.pathname;
@@ -4817,6 +5034,15 @@ export class GituServer {
         this.sendJson(res, 403, { error: 'cross-origin request rejected' });
         return;
       }
+    }
+
+    if (path.startsWith('/api/voice/')) { await this.handleVoiceApi(req, res, path, method); return; }
+
+    if (method === 'GET' && path === '/vendor/livekit-client.js') {
+      const file = nodePath.join(nodePath.dirname(fileURLToPath(import.meta.url)), '../../node_modules/livekit-client/dist/livekit-client.umd.js');
+      if (!existsSync(file)) { this.sendJson(res, 503, { error: 'LiveKit client is not installed.' }); return; }
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff' });
+      this.pipeFile(res, file); return;
     }
 
     if (method === 'GET' && path === '/api/mobile/status') {

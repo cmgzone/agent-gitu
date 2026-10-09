@@ -16,6 +16,7 @@ COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
 COPY assets ./assets
+COPY voice-worker/agent.mjs voice-worker/package.json voice-worker/package-lock.json voice-worker/Dockerfile ./voice-worker/
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/start.sh /usr/local/bin/start-gitu
 COPY deploy/verify-hosted-runtime.mjs ./deploy/verify-hosted-runtime.mjs

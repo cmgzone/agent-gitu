@@ -12,7 +12,9 @@ import { createInterface } from 'node:readline';
  * its tool protocol, permissions and audit trail replace the runtime's — so a
  * subscription turn must run with the user's Codex configuration disabled
  * while authentication still comes from their Codex home. This transport
- * therefore always passes `--ignore-user-config`.
+ * therefore always passes `--ignore-user-config`. The subscription client also
+ * disables default app/plugin features and supplies an empty working directory;
+ * skipping config.toml alone does not remove those runtime tool surfaces.
  *
  * Event shapes mirror the SDK's `Thread.runStreamed` so callers keep one
  * contract regardless of the transport underneath.
@@ -103,7 +105,7 @@ export class CodexExecThread {
     // metadata attributes these non-interactive turns consistently.
     env['CODEX_INTERNAL_ORIGINATOR_OVERRIDE'] ??= 'codex_sdk_ts';
 
-    const child = spawn(this.config.executable, args, { env, signal, windowsHide: true }) as ChildProcessWithoutNullStreams;
+    const child = spawn(this.config.executable, args, { cwd: this.config.workingDirectory, env, signal, windowsHide: true }) as ChildProcessWithoutNullStreams;
     // The prompt rides stdin, exactly as the SDK delivers it.
     child.stdin.write(prompt);
     child.stdin.end();

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const transport = vi.hoisted(() => ({ replies: [] as string[], prompts: [] as string[] }));
+const transport = vi.hoisted(() => ({ replies: [] as string[], prompts: [] as string[], messages: [] as { id: string; text: string }[] }));
 vi.mock('../src/llm/codex-exec.js', () => ({
   CodexExecThread: class {
     runStreamed(input: string | { type: string; text?: string }[]) {
@@ -9,6 +9,7 @@ vi.mock('../src/llm/codex-exec.js', () => ({
       return { events: (async function* () {
         yield { type: 'item.updated', item: { id: 'reason-1', type: 'reasoning', text: 'Reviewing ' } };
         yield { type: 'item.completed', item: { id: 'reason-1', type: 'reasoning', text: 'Reviewing the request.' } };
+        for (const message of transport.messages) yield { type: 'item.updated', item: { type: 'agent_message', ...message } };
         yield { type: 'item.completed', item: { id: 'reason-1', type: 'reasoning', text: 'Reviewing the request.' } };
         yield { type: 'item.completed', item: { type: 'agent_message', text: reply } };
         yield { type: 'turn.completed', usage: { input_tokens: 20, output_tokens: 10 } };
@@ -25,6 +26,7 @@ afterEach(() => {
   else process.env['GITU_CODEX_PATH'] = originalPath;
   transport.replies = [];
   transport.prompts = [];
+  transport.messages = [];
 });
 
 describe('ChatGPT subscription unfinished replies', () => {
@@ -66,5 +68,34 @@ describe('ChatGPT subscription unfinished replies', () => {
     const client = new CodexSubscriptionClient({ model: 'gpt-5.6-luna', workingDirectory: process.cwd() });
     await expect(client.complete([{ role: 'user', content: 'Check the mailbox.' }])).rejects.toThrow('stopped after a progress update');
     expect(transport.prompts).toHaveLength(2);
+  });
+
+  it('replaces commentary with the final message in the same turn', async () => {
+    process.env['GITU_CODEX_PATH'] = process.execPath;
+    transport.messages = [
+      { id: 'commentary', text: 'Checking mail now.' },
+      { id: 'final', text: 'There are ' },
+    ];
+    transport.replies = ['There are no unread messages.'];
+    const client = new CodexSubscriptionClient({ model: 'gpt-5.6-luna', workingDirectory: process.cwd() });
+    let visible = '';
+    const reset = vi.fn(() => { visible = ''; });
+    const reply = await client.completeStream([{ role: 'user', content: 'Check mail.' }], { onStreamReset: reset }, delta => { visible += delta; });
+    expect(reply).toBe('There are no unread messages.');
+    expect(visible).toBe(reply);
+    expect(reset).toHaveBeenCalledOnce();
+    expect(transport.prompts).toHaveLength(1);
+  });
+
+  it('reconciles a rewritten message snapshot instead of leaving partial text', async () => {
+    process.env['GITU_CODEX_PATH'] = process.execPath;
+    transport.messages = [{ id: 'final', text: 'Result: 2 messages.' }];
+    transport.replies = ['Result: 3 messages.'];
+    const client = new CodexSubscriptionClient({ model: 'gpt-5.6-luna', workingDirectory: process.cwd() });
+    let visible = '';
+    const reset = vi.fn(() => { visible = ''; });
+    const reply = await client.completeStream([{ role: 'user', content: 'Check mail.' }], { onStreamReset: reset }, delta => { visible += delta; });
+    expect(visible).toBe(reply);
+    expect(reset).toHaveBeenCalledOnce();
   });
 });

@@ -14,9 +14,9 @@ import { classifyLlmHttpError, isRetryableNetworkError, LlmError, type LlmClient
  * exposes the models actually included in the active ChatGPT plan.  No web
  * cookies or ChatGPT tokens are read by Agent Gitu.
  *
- * Model turns run through `codex exec` with `--ignore-user-config` so the
- * user's own Codex tools (MCP servers, plugins, shell) can never be reached
- * from an application turn; the app dispatcher is the only execution surface.
+ * Model turns skip user/project configuration and disable Codex's app,
+ * plugin and execution features. The app dispatcher owns tool execution;
+ * Codex still owns authentication in the user's existing Codex home.
  */
 
 const moduleRequire = createRequire(import.meta.url);
@@ -457,7 +457,7 @@ export class CodexSubscriptionClient implements LlmClient {
   private previousResponse: string | undefined;
   private activeEffort: string | undefined;
   private activeInstructions: string | undefined;
-  private instructionsDirectory: string | undefined;
+  private runtimeDirectory: string | undefined;
   /** Learned from the runtime when a saved effort level is unsupported. */
   private effortClamp: string | undefined;
 
@@ -503,13 +503,16 @@ export class CodexSubscriptionClient implements LlmClient {
       this.thread = undefined;
     }
     if (send.length === 0) send = [{ role: 'user', content: 'Continue with the next required response.' }];
+    // Keep the reasoning runtime out of the user's project: project config,
+    // AGENTS.md and skills must not expose a second set of instructions/tools.
+    // Recreate this empty directory for continuations; no auth files are copied.
+    this.runtimeDirectory ??= await mkdtemp(join(tmpdir(), 'gitu-reasoning-'));
+    await mkdir(this.runtimeDirectory, { recursive: true });
     // SDK config is passed on the CLI. Large tool catalogs/checkpoints exceed
     // Windows' command-line limit; use the runtime's supported instruction file.
     let instructionsFile: string | undefined;
     if (instructions.length > 12_000) {
-      this.instructionsDirectory ??= await mkdtemp(join(tmpdir(), 'gitu-instructions-'));
-      await mkdir(this.instructionsDirectory, { recursive: true });
-      instructionsFile = join(this.instructionsDirectory, 'instructions.md');
+      instructionsFile = join(this.runtimeDirectory, 'instructions.md');
       await writeFile(instructionsFile, instructions, { mode: 0o600 });
     }
     if (!this.thread) {
@@ -518,18 +521,25 @@ export class CodexSubscriptionClient implements LlmClient {
       this.thread = new CodexExecThread({
         executable: this.executable,
         config: [
-          // Read-only sandboxing still permits command execution. Remove both
-          // runtime shell surfaces so commands go through the application's
-          // dispatcher, permissions and audit trail instead. These overrides
-          // apply to this client only, including resumed and fallback turns.
-          'features.shell_tool=false',
-          'features.unified_exec=false',
+          // Skipping config.toml does not disable the runtime's default apps
+          // or installed plugins. Their MCP tools caused turns to abort even
+          // with both shells disabled. Disable every execution surface for
+          // this reasoning client, including resumed and fallback turns.
+          ...[
+            'shell_tool', 'unified_exec', 'apps', 'plugins', 'remote_plugin',
+            'browser_use', 'browser_use_external', 'computer_use', 'in_app_browser',
+            'image_generation', 'multi_agent', 'view_image', 'skill_search',
+            'skill_mcp_dependency_install', 'tool_suggest', 'code_mode_host',
+            'workspace_dependencies', 'sleep_tool', 'hooks',
+          ].map(feature => `features.${feature}=false`),
+          'features.skip_host_skill_discovery=true',
+          'project_doc_max_bytes=0',
           instructionsFile
             ? `model_instructions_file=${JSON.stringify(instructionsFile)}`
             : `developer_instructions=${JSON.stringify(instructions)}`,
         ],
         model: this.config.model,
-        workingDirectory: this.config.workingDirectory,
+        workingDirectory: this.runtimeDirectory,
         networkAccessEnabled: false,
         webSearchMode: 'disabled',
         approvalPolicy: 'never',
@@ -542,6 +552,7 @@ export class CodexSubscriptionClient implements LlmClient {
     const prepared = await codexInput(send);
     let finalResponse = '';
     let emitted = '';
+    let messageId: string | undefined;
     let usage: LlmUsage | undefined;
     let reasoning = '';
     const reasoningItems = new Map<string, string>();
@@ -568,8 +579,17 @@ export class CodexSubscriptionClient implements LlmClient {
             );
           }
           if (itemType === 'agent_message' && typeof item['text'] === 'string') {
+            const id = typeof item['id'] === 'string' ? item['id'] : undefined;
             finalResponse = item['text'];
             if (finalResponse) opts.onActivity?.({ type: 'content' });
+            // A turn can contain separate commentary and final message items.
+            // Replace the displayed snapshot when the item changes or rewrites
+            // earlier text; otherwise the final answer never reaches the UI.
+            if (onDelta && emitted && ((id && messageId && id !== messageId) || !finalResponse.startsWith(emitted))) {
+              opts.onStreamReset?.();
+              emitted = '';
+            }
+            messageId = id;
             if (onDelta && finalResponse.startsWith(emitted)) {
               const delta = finalResponse.slice(emitted.length);
               if (delta) onDelta(delta);
@@ -607,7 +627,7 @@ export class CodexSubscriptionClient implements LlmClient {
       const bundled = allowBundledRuntimeRetry && isRuntimeSpawnFailure(err) ? bundledCodexExecutable() : undefined;
       if (bundled && bundled !== this.executable) {
         this.executable = bundled;
-        return this.run(messages, opts, onDelta, false, emptyRetryAllowed, allowEffortRepair, interimRetryAllowed);
+        return await this.run(messages, opts, onDelta, false, emptyRetryAllowed, allowEffortRepair, interimRetryAllowed);
       }
       if (isRuntimeSpawnFailure(err)) {
         throw new LlmError('ChatGPT subscription runtime could not start. Restart Agent Gitu. If it persists, repair or reinstall Agent Gitu (or update Codex); choosing another model will not fix this runtime error.');
@@ -628,7 +648,7 @@ export class CodexSubscriptionClient implements LlmClient {
             this.thread = undefined;
             this.previousMessages = undefined;
             this.previousResponse = undefined;
-            return this.run(messages, opts, onDelta, allowBundledRuntimeRetry, emptyRetryAllowed, false, interimRetryAllowed);
+            return await this.run(messages, opts, onDelta, allowBundledRuntimeRetry, emptyRetryAllowed, false, interimRetryAllowed);
           }
         }
       }
@@ -641,7 +661,7 @@ export class CodexSubscriptionClient implements LlmClient {
       throw subscriptionError(err, opts.signal);
     } finally {
       await prepared.cleanup();
-      if (instructionsFile) await rm(dirname(instructionsFile), { recursive: true, force: true });
+      await rm(this.runtimeDirectory, { recursive: true, force: true });
     }
     if (!finalResponse.trim()) {
       // Codex occasionally ends a turn with reasoning only and no visible

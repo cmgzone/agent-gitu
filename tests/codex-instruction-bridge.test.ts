@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LlmMessage } from '../src/llm/llm.js';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
-const sdk = vi.hoisted(() => ({ configurations: [] as any[], threads: [] as any[], failure: false, instructionContents: '', emptyFirst: false, emptyAlways: false, runtimeTool: '' as string, runtimeToolPhase: 'item.completed', runtimeShellEnabled: false, toolCompleted: false, unsupportedEffort: false }));
+const sdk = vi.hoisted(() => ({ configurations: [] as any[], threads: [] as any[], failure: false, instructionContents: '', emptyFirst: false, emptyAlways: false, runtimeTool: '' as string, runtimeToolPhase: 'item.completed', runtimeShellEnabled: false, runtimeMcpEnabled: false, workingDirectories: [] as string[][], toolCompleted: false, unsupportedEffort: false }));
 
 /** Reads a TOML-serialized override (`name="value"`) from the transport config. */
 function configValue(config: any, name: string): string | undefined {
@@ -21,6 +21,7 @@ vi.mock('../src/llm/codex-exec.js', () => ({
     options: unknown;
     runStreamed = vi.fn(async (input: unknown) => ({ events: (async function* () {
       const config = sdk.configurations.at(-1);
+      sdk.workingDirectories.push(readdirSync(config.workingDirectory));
       const file = configValue(config, 'model_instructions_file');
       if (file) sdk.instructionContents = readFileSync(file, 'utf8');
       if (sdk.failure) { yield { type: 'turn.failed', error: { message: 'Provider failed' } }; return; }
@@ -33,7 +34,8 @@ vi.mock('../src/llm/codex-exec.js', () => ({
         return;
       }
       const shellsDisabled = (config?.config ?? []).includes('features.shell_tool=false') && (config?.config ?? []).includes('features.unified_exec=false');
-      const runtimeTool = sdk.runtimeTool || (sdk.runtimeShellEnabled && !shellsDisabled ? 'command_execution' : '');
+      const mcpDisabled = (config?.config ?? []).includes('features.apps=false') && (config?.config ?? []).includes('features.plugins=false') && (config?.config ?? []).includes('features.remote_plugin=false');
+      const runtimeTool = sdk.runtimeTool || (sdk.runtimeShellEnabled && !shellsDisabled ? 'command_execution' : '') || (sdk.runtimeMcpEnabled && !mcpDisabled ? 'mcp_tool_call' : '');
       if (runtimeTool) {
         yield { type: sdk.runtimeToolPhase, item: { type: runtimeTool, command: 'echo test' } };
         sdk.toolCompleted = true;
@@ -57,7 +59,7 @@ vi.mock('../src/llm/codex-exec.js', () => ({
 }));
 import { CodexSubscriptionClient } from '../src/llm/codex-subscription.js';
 
-afterEach(() => { vi.unstubAllEnvs(); sdk.configurations.length = 0; sdk.threads.length = 0; sdk.failure = false; sdk.emptyFirst = false; sdk.emptyAlways = false; sdk.runtimeTool = ''; sdk.runtimeToolPhase = 'item.completed'; sdk.runtimeShellEnabled = false; sdk.toolCompleted = false; sdk.unsupportedEffort = false; });
+afterEach(() => { vi.unstubAllEnvs(); sdk.configurations.length = 0; sdk.threads.length = 0; sdk.failure = false; sdk.emptyFirst = false; sdk.emptyAlways = false; sdk.runtimeTool = ''; sdk.runtimeToolPhase = 'item.completed'; sdk.runtimeShellEnabled = false; sdk.runtimeMcpEnabled = false; sdk.workingDirectories.length = 0; sdk.toolCompleted = false; sdk.unsupportedEffort = false; });
 function client(model = 'test-model') {
   vi.stubEnv('GITU_CODEX_PATH', process.execPath);
   return new CodexSubscriptionClient({ model, workingDirectory: process.cwd() });
@@ -98,7 +100,7 @@ describe('ChatGPT subscription instruction transport', () => {
     const messages: LlmMessage[] = [{ role: 'system', content: instruction }, { role: 'user', content: 'Work' }];
     const response = await c.complete(messages);
     const config = sdk.configurations.at(-1);
-    expect(JSON.stringify(config).length).toBeLessThan(1000);
+    expect(JSON.stringify(config).length).toBeLessThan(2000);
     expect(sdk.instructionContents).toContain(instruction);
     expect(existsSync(configValue(config, 'model_instructions_file')!)).toBe(false);
     await c.complete([...messages, { role: 'assistant', content: response }, { role: 'user', content: 'TOOL RESULT list_files: report.md' }]);
@@ -214,5 +216,28 @@ describe('ChatGPT subscription instruction transport', () => {
     expect(config.config).toContain('features.shell_tool=false');
     expect(config.config).toContain('features.unified_exec=false');
     expect(config.config.some((entry: string) => entry.startsWith('developer_instructions='))).toBe(true);
+  });
+
+  it.each([false, true])('keeps default app/plugin MCP tools out of fresh and resumed turns (large instructions: %s)', async large => {
+    sdk.runtimeMcpEnabled = true;
+    const c = client();
+    const messages: LlmMessage[] = [
+      { role: 'system', content: large ? 'APP TOOL PROTOCOL '.repeat(1000) : 'APP TOOL PROTOCOL' },
+      { role: 'user', content: 'Check my email using Gitu tools.' },
+    ];
+    const response = await c.complete(messages);
+    expect(response).toContain('<tool>');
+    await expect(c.complete([...messages, { role: 'assistant', content: response }, { role: 'user', content: 'TOOL RESULT: no unread mail' }])).resolves.toContain('<tool>');
+    expect(sdk.threads).toHaveLength(1);
+    expect(sdk.toolCompleted).toBe(false);
+    const config = sdk.configurations[0];
+    expect(config.workingDirectory).not.toBe(process.cwd());
+    expect(sdk.workingDirectories).toEqual(large ? [['instructions.md'], ['instructions.md']] : [[], []]);
+    expect(existsSync(config.workingDirectory)).toBe(false);
+    expect(config.config).toEqual(expect.arrayContaining([
+      'features.apps=false', 'features.plugins=false', 'features.remote_plugin=false',
+      'features.browser_use=false', 'features.computer_use=false',
+      'features.skip_host_skill_discovery=true', 'project_doc_max_bytes=0',
+    ]));
   });
 });

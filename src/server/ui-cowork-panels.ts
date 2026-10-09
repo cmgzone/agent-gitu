@@ -43,7 +43,7 @@ export const COWORK_PANELS_JS = String.raw`
   function cwPanelPreferences() {
     var saved={};try{saved=JSON.parse(localStorage.getItem('hermes.cowork.panels')||'{}')||{};}catch(e){}
     function width(value,fallback,min,max){return typeof value==='number'&&Number.isFinite(value)?Math.max(min,Math.min(max,Math.round(value))):fallback;}
-    return {railWidth:width(saved.railWidth,264,208,400),infoWidth:width(saved.infoWidth,320,260,460),railCollapsed:saved.railCollapsed===true,infoOpen:saved.infoOpen!==false};
+    return {railWidth:width(saved.railWidth,264,208,400),railCollapsed:saved.railCollapsed===true,infoOpen:false};
   }
   function cwSavePanelPreferences() {
     var cw=cwEnsure();try{localStorage.setItem('hermes.cowork.panels',JSON.stringify({railWidth:cw.railWidth,infoWidth:cw.infoWidth,railCollapsed:!!cw.railCollapsed,infoOpen:!!cw.infoOpen}));}catch(e){}
@@ -59,9 +59,10 @@ export const COWORK_PANELS_JS = String.raw`
   function cwBindPanelControls() {
     var root=$('cw'),cw=cwEnsure();if(!root)return;
     if(!cw.panelPreferencesLoaded){Object.assign(cw,cwPanelPreferences());cw.panelPreferencesLoaded=true;}
-    $('cwCollapseRail').onclick=function(){cw.railCollapsed=true;cwSavePanelPreferences();cwSyncPanels();var back=$('cwBack');if(back)back.focus();};
-    ['rail','info'].forEach(function(side){
+    var collapse=$('cwCollapseRail');if(collapse)collapse.onclick=function(){cw.railCollapsed=true;cwSavePanelPreferences();cwSyncPanels();var back=$('cwBack');if(back)back.focus();};
+    ['rail'].forEach(function(side){
       var handle=$(side==='rail'?'cwRailResize':'cwInfoResize'),key=side==='rail'?'railWidth':'infoWidth',min=side==='rail'?208:260,max=side==='rail'?400:460,start=null;
+      if(!handle)return;
       function resize(value){cw[key]=Math.max(min,Math.min(max,Math.round(value)));cwApplyPanelWidths();cw[key]=Number(handle.getAttribute('aria-valuenow'));}
       function finish(){if(!start)return;start=null;handle.classList.remove('is-resizing');document.body.classList.remove('cw-resizing');cwSavePanelPreferences();}
       handle.onpointerdown=function(event){if(event.button!==0||window.innerWidth<=720)return;event.preventDefault();start={x:event.clientX,width:Number(handle.getAttribute('aria-valuenow'))};handle.setPointerCapture(event.pointerId);handle.classList.add('is-resizing');document.body.classList.add('cw-resizing');handle.focus();};

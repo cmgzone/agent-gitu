@@ -47,7 +47,8 @@ export const COWORK_GALLERY_CSS = String.raw`
   .cw-media-stack-copy > span { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); }
   .cw-media-stack-copy svg { width:13px; height:13px; transform:rotate(180deg); }
   @keyframes cw-stack-arrive { from { opacity:0; transform:translateY(12px) rotate(0deg) scale(.9); } to { opacity:1; transform:translateY(0) rotate(var(--stack-angle,-8deg)) scale(1); } }
-  .cw-gallery-toggle { position:absolute; right:55px; top:12px; width:32px; height:32px; display:grid; place-items:center; color:var(--muted); }
+  .cw .cw-chat-head .cw-gallery-toggle { position:absolute; right:12px; top:12px; width:38px; height:38px; padding:0; display:grid; place-items:center; border:1px solid #ffffff45; border-radius:50%; background:color-mix(in srgb,var(--card) 48%,transparent); color:var(--text); }
+  @media(max-width:720px) { .cw .cw-chat-head .cw-gallery-toggle { right:12px; top:70px; width:40px; height:40px; } }
   .cw-rich-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:16px; margin:12px 0 2px; white-space:normal; }
   .cw-chat-media-grid { width:min(92%,680px); grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); margin:0 0 6px; }
   .cw-chat-media-grid:has(> :only-child) { width:min(100%,320px); }
@@ -132,15 +133,40 @@ export const COWORK_GALLERY_JS = String.raw`
     grid.querySelectorAll('[data-cwmediapreview]').forEach(function(button){button.onclick=function(){var file=cwArtifact(button.getAttribute('data-cwmediapreview'));if(!file)return;if(/^image\//i.test(file.mime||''))cwGalleryLightbox(file.id);else cwPreviewFile(file.id);};});
     cwBindRichCards(grid);
   }
-  function cwGalleryLightbox(id) {
-    var images=cwGalleryItems().filter(function(item){return item.kind==='images';}),index=images.findIndex(function(item){return item.file.id===id;});if(index<0)return;
-    var dialog=document.createElement('dialog');dialog.className='cw-media-lightbox';dialog.setAttribute('aria-label','Image preview');
-    dialog.innerHTML='<header><strong></strong><a class="btn ghost" download aria-label="Download image" title="Download">'+cwIcon('download')+'</a><button aria-label="Close image preview" title="Close" autofocus>'+cwIcon('close')+'</button></header><div class="cw-lightbox-stage"><img alt=""></div><footer><button class="btn ghost" data-image-prev aria-label="Previous image">'+cwIcon('back')+'</button><span role="status"></span><button class="btn ghost" data-image-next aria-label="Next image">'+cwIcon('back')+'</button></footer>';
+  function cwGalleryLightbox(id,origin,linkedImages) {
+    var images=linkedImages?linkedImages.map(function(file){return {file:file};}):cwGalleryItems().filter(function(item){return item.kind==='images';}),index=images.findIndex(function(item){return item.file.id===id;});if(index<0)return;
+    var dialog=document.createElement('dialog');dialog.className='cw-media-lightbox';dialog.id='cwPhotoPreview';dialog.setAttribute('aria-label','Image preview');
+    dialog.innerHTML='<header><strong></strong><a class="btn ghost" download aria-label="Download image" title="Download">'+cwIcon('download')+'<span>Download</span></a><button aria-label="Close image preview" title="Close" autofocus>'+cwIcon('close')+'</button></header><div class="cw-lightbox-stage"><img alt=""></div><footer><button class="btn ghost" data-image-prev aria-label="Previous image">'+cwIcon('back')+'</button><span role="status"></span><button class="btn ghost" data-image-next aria-label="Next image">'+cwIcon('back')+'</button></footer>';
     dialog.querySelector('[data-image-next] svg').style.transform='rotate(180deg)';
-    function show(){var file=images[index].file;dialog.querySelector('header strong').textContent=file.name;var image=dialog.querySelector('img');image.src='/api/cowork/artifacts/'+encodeURIComponent(file.id)+'?inline=1';image.alt=file.name;dialog.querySelector('a').href='/api/cowork/artifacts/'+encodeURIComponent(file.id);dialog.querySelector('footer span').textContent=(index+1)+' / '+images.length;dialog.querySelector('[data-image-prev]').disabled=index===0;dialog.querySelector('[data-image-next]').disabled=index===images.length-1;}
-    function move(direction){index=Math.max(0,Math.min(images.length-1,index+direction));show();}
-    dialog.querySelector('header button').onclick=function(){dialog.close();};dialog.querySelector('[data-image-prev]').onclick=function(){move(-1);};dialog.querySelector('[data-image-next]').onclick=function(){move(1);};
-    dialog.onkeydown=function(event){if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}if(event.key==='ArrowRight'){event.preventDefault();move(1);}};dialog.addEventListener('close',function(){dialog.remove();},{once:true});
-    document.body.appendChild(dialog);show();dialog.showModal();
+    function show(){var file=images[index].file;dialog.querySelector('header strong').textContent=file.name;var image=dialog.querySelector('img');image.src=file.url||'/api/cowork/artifacts/'+encodeURIComponent(file.id)+'?inline=1';image.alt=file.name;dialog.querySelector('a').href=file.url||'/api/cowork/artifacts/'+encodeURIComponent(file.id);dialog.querySelector('footer span').textContent=(index+1)+' / '+images.length;dialog.querySelector('[data-image-prev]').disabled=index===0;dialog.querySelector('[data-image-next]').disabled=index===images.length-1;}
+    var image=dialog.querySelector('img'),closing=false,flight=null;
+    var reduced=typeof window.matchMedia==='function'&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var source=origin&&origin.isConnected?origin.getBoundingClientRect():null;
+    function animateFlight(from,reverse){
+      if(reduced||!image.animate)return null;
+      if(flight)flight.cancel();
+      var transform=typeof cwPhotoFlightTransform==='function'?cwPhotoFlightTransform(from,image.getBoundingClientRect(),0):null;
+      var small=transform?{transform:transform,borderRadius:'18px',opacity:1}:{transform:'scale(.96)',opacity:0};
+      var large={transform:'translate(0px,0px) rotate(0deg) scale(1,1)',borderRadius:'26px',opacity:1};
+      flight=image.animate(reverse?[large,small]:[small,large],{duration:reverse?320:460,easing:reverse?'cubic-bezier(.4,0,.2,1)':'cubic-bezier(.22,1,.36,1)',fill:'both'});return flight;
+    }
+    function move(direction){
+      if(closing)return;var next=Math.max(0,Math.min(images.length-1,index+direction));if(next===index)return;
+      if(flight)flight.cancel();index=next;show();
+      if(!reduced&&image.animate)flight=image.animate([{opacity:0,transform:'translateX('+(direction*28)+'px) scale(.97)'},{opacity:1,transform:'translateX(0) scale(1)'}],{duration:360,easing:'cubic-bezier(.22,1,.36,1)'});
+    }
+    function close(){
+      if(closing)return;closing=true;dialog.classList.add('is-closing');
+      var target=Array.from(document.querySelectorAll('[data-cwphoto]')).find(function(card){return card.getAttribute('data-cwphoto')===images[index].file.id;});
+      var rect=target&&target.isConnected?target.getBoundingClientRect():null;
+      if(rect&&(rect.bottom<0||rect.top>window.innerHeight))rect=null;
+      var animation=animateFlight(rect,true);function finish(){dialog.close();if(target&&target.isConnected)target.focus({preventScroll:true});else if(origin&&origin.isConnected)origin.focus({preventScroll:true});}
+      if(animation)animation.finished.then(finish,finish);else finish();
+    }
+    dialog.querySelector('header button').onclick=close;dialog.querySelector('[data-image-prev]').onclick=function(){move(-1);};dialog.querySelector('[data-image-next]').onclick=function(){move(1);};
+    dialog.addEventListener('cancel',function(event){event.preventDefault();close();});
+    dialog.onclick=function(event){if(event.target===dialog||event.target===dialog.querySelector('.cw-lightbox-stage'))close();};
+    dialog.onkeydown=function(event){if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}if(event.key==='ArrowRight'){event.preventDefault();move(1);}};dialog.addEventListener('close',function(){if(flight)flight.cancel();dialog.remove();},{once:true});
+    document.body.appendChild(dialog);show();dialog.showModal();animateFlight(source,false);
   }
 `;

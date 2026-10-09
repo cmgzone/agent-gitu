@@ -13,7 +13,7 @@ import { normalizeUrl, type BrowserBridge } from '../browser/browser.js';
 import { collectBrowserEvidence, collectViewportEvidence, formatBrowserEvidence, formatResponsiveEvidence, resolveViewports } from '../browser/evidence.js';
 import { ConnectionRegistry, normalizeConnectionDocumentationUrl, type ConnectionOperation } from '../connections/connections.js';
 import { connectionResponses, type ConnectionResponseQuery } from '../connections/response-data.js';
-import type { ComposioConnections } from '../connections/composio.js';
+import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-timeout.js';
 import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
 
@@ -31,7 +31,7 @@ export interface ToolContext {
   skillContext?: SkillSelectionContext;
   mcp?: McpManager;
   connections?: ConnectionRegistry;
-  connectedApps?: ComposioConnections;
+  connectedApps?: ConnectedAppsProvider;
   browser?: BrowserBridge;
   lsp?: LspManager;
   delegate?: DelegateFn;

@@ -18,7 +18,11 @@ export function roleAppSuggestions(role: string): AppSuggestion[] {
     add('instagram', 'Instagram', 'Work with your Instagram content and audience.');
   }
   if (/\b(engineer|developer|coding|github|programmer)\b/i.test(role)) add('github', 'GitHub', 'Work with repository issues, pull requests, and code reviews.');
-  if (/\b(personal assistant|executive assistant|chief of staff|email|mailbox|sales|outreach)\b/i.test(role)) add('gmail', 'Gmail', 'Help with the email and follow-ups assigned to this teammate.');
+  if (/\b(personal assistant|executive assistant|chief of staff|email|mailbox|sales|outreach)\b/i.test(role)) {
+    // Any mailbox works without a third-party provider, so it is suggested first.
+    add('mail', 'Mailbox', 'Read and send from an email account you connect over IMAP/SMTP.');
+    add('gmail', 'Gmail', 'Help with the email and follow-ups assigned to this teammate.');
+  }
   if (/\b(personal assistant|executive assistant|schedule|calendar)\b/i.test(role)) add('googlecalendar', 'Google Calendar', 'Plan meetings and manage the calendar you connect.');
   if (/\b(research|writer|writing|content|blog|documents)\b/i.test(role)) add('googledrive', 'Google Drive', 'Find and work with your documents and research files.');
   if (/\b(team coordinator|chief of staff|slack)\b/i.test(role)) add('slack', 'Slack', 'Coordinate the channels and conversations assigned to this teammate.');

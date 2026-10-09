@@ -10,6 +10,7 @@ function fixture() {
   const providerButton = { disabled: false };
   const elements = {
     cwChat: { innerHTML: '' },
+    cwInfoBtn: control(),
     cwServicesContent: content,
     cwServicesBack: { onclick: undefined as undefined | (() => void) },
     cwServicesRefresh: { onclick: undefined as undefined | (() => void) },
@@ -23,7 +24,12 @@ function fixture() {
     cwProviderKey: { value: 'fixture-provider-key' },
     cwProviderError: { hidden: true, textContent: '' },
   };
-  const cw = { connectionsOpen: false, connectionRevision: 0, active: null, selectedAgentId: 'writer', connectionsAgentId: 'writer', servicesTab: 'available', servicesSearch: '', services: [] as { slug: string; name: string }[] };
+  const cw = {
+    connectionsOpen: false, connectionRevision: 0, active: null, selectedAgentId: 'writer', connectionsAgentId: 'writer', servicesTab: 'available', servicesSearch: '', services: [] as { slug: string; name: string }[],
+    requests: [] as { id: string; agentId: string; appConnection?: { service: string; name: string; reason?: string } }[],
+    mail: undefined as { accounts: { id: string; label: string; address: string }[]; available: { id: string; label: string; address: string }[]; providers: { id: string; name: string; imap: { host: string; port: number; secure: boolean }; smtp: { host: string; port: number; secure: boolean }; note: string }[] } | undefined,
+    mailFormOpen: false,
+  };
   const api = vi.fn();
   const context = createContext({
     cwEnsure: () => cw,
@@ -33,6 +39,10 @@ function fixture() {
     cwStopPoll: vi.fn(),
     cwClosePanels: vi.fn(),
     cwSyncPanels: vi.fn(),
+    cwPageNavHtml: () => '<nav aria-label="Agent navigation">Home | Chat | Profile</nav>',
+    cwBindTopNav: vi.fn(),
+    cwAgentById: vi.fn(),
+    cwOpenProfile: vi.fn(),
     cwRenderChat: vi.fn(),
     cwStartStream: vi.fn(),
     cwPoll: vi.fn(),
@@ -106,6 +116,70 @@ describe('account and Connections UI', () => {
     f.elements.cwServicesBack.onclick!();
     expect(f.cw.connectionsOpen).toBe(false);
     expect(f.context.cwRenderChat).toHaveBeenCalledOnce();
+  });
+  it('offers an Email section that connects any mailbox and opens it from a mail suggestion', async () => {
+    const f = fixture();
+    const mailPayload = {
+      accounts: [{ id: 'mail-1', label: 'Support', address: 'help@example.com' }],
+      available: [{ id: 'mail-2', label: 'Sales', address: 'sales@example.com' }],
+      providers: [{ id: 'gmail', name: 'Gmail', imap: { host: 'imap.gmail.com', port: 993, secure: true }, smtp: { host: 'smtp.gmail.com', port: 465, secure: true }, note: 'App password required.' }],
+    };
+    f.cw.mail = mailPayload;
+    const html = f.context.cwMailSectionHtml('writer');
+    expect(html).toContain('>Email<');
+    expect(html).toContain('help@example.com');
+    expect(html).toContain('data-cwmaildisconnect="mail-1"');
+    expect(html).toContain('data-cwmailassign="mail-2"');
+    expect(html).toContain('id="cwMailAddress"');
+    expect(html).toContain('<option value="gmail">Gmail</option>');
+    expect(f.context.cwMailSectionHtml('')).toBe('');
+    // Picking a provider fills the documented servers, and submit posts them for this teammate.
+    const elements: Record<string, Record<string, unknown>> = {};
+    const field = (id: string) => (elements[id] = { id, value: '', checked: false, hidden: false, textContent: '', focus: vi.fn() });
+    ['cwMailForm', 'cwMailAdd', 'cwMailError', 'cwMailNote', 'cwMailProvider', 'cwMailAddress', 'cwMailPassword', 'cwMailLabel', 'cwMailUsername', 'cwMailImapHost', 'cwMailImapPort', 'cwMailImapSecure', 'cwMailSmtpHost', 'cwMailSmtpPort', 'cwMailSmtpSecure', 'cwMailSelfSigned'].forEach(field);
+    elements['cwMailForm']!.querySelector = () => ({ disabled: false });
+    mailPayload.providers[0]!.note = 'App password required.';
+    elements['cwMailProvider']!.value = 'gmail';
+    const root = { querySelector: (selector: string) => elements[selector.slice(1)] ?? null, querySelectorAll: () => [] };
+    f.context.cwBindMail(root, 'writer');
+    expect(elements['cwMailImapHost']!.value).toBe('imap.gmail.com');
+    expect(elements['cwMailImapPort']!.value).toBe(993);
+    expect(elements['cwMailImapSecure']!.checked).toBe(true);
+    expect(elements['cwMailSmtpHost']!.value).toBe('smtp.gmail.com');
+    expect(elements['cwMailNote']!.textContent).toBe('App password required.');
+    elements['cwMailAddress']!.value = 'help@example.com';
+    elements['cwMailPassword']!.value = 'app-password';
+    f.api.mockResolvedValueOnce({ account: { id: 'mail-3' } });
+    await (elements['cwMailForm']!.onsubmit as (event: { preventDefault: () => void }) => Promise<void>)({ preventDefault: vi.fn() });
+    const mailCall = f.api.mock.calls.find((call) => String(call[0]) === '/api/connected-apps/mail');
+    expect(mailCall).toBeDefined();
+    expect(JSON.parse(String((mailCall![1] as { body: string }).body))).toMatchObject({ agentId: 'writer', provider: 'gmail', address: 'help@example.com', imapHost: 'imap.gmail.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true });
+    expect(elements['cwMailPassword']!.value).toBe('');
+    // Typing an address from a known provider selects it and fills both servers.
+    f.cw.mail = mailPayload; // a refresh clears it, exactly like the live page
+    f.cw.mail.providers.push({ id: 'fastmail', name: 'Fastmail', domains: ['fastmail.com'], imap: { host: 'imap.fastmail.com', port: 993, secure: true }, smtp: { host: 'smtp.fastmail.com', port: 465, secure: true }, note: 'App password.' });
+    elements['cwMailProvider']!.value = 'custom';
+    elements['cwMailImapHost']!.value = '';
+    elements['cwMailSmtpHost']!.value = '';
+    elements['cwMailAddress']!.value = 'person@fastmail.com';
+    (elements['cwMailAddress']!.oninput as () => void)();
+    expect(elements['cwMailProvider']!.value).toBe('fastmail');
+    expect(elements['cwMailImapHost']!.value).toBe('imap.fastmail.com');
+    expect(elements['cwMailSmtpHost']!.value).toBe('smtp.fastmail.com');
+    expect(elements['cwMailNote']!.textContent).toBe('App password.');
+    // An unknown domain leaves the manual path exactly as the user set it.
+    elements['cwMailAddress']!.value = 'person@unknown.example';
+    (elements['cwMailAddress']!.oninput as () => void)();
+    expect(elements['cwMailProvider']!.value).toBe('fastmail');
+    // A mailbox has no sign-in page, so its card opens the mailbox form instead of Composio.
+    f.api.mockClear();
+    f.cw.requests = [{ id: 'req-mail', agentId: 'writer', appConnection: { service: 'mail', name: 'Mailbox', reason: 'Handle the inbox.' } }];
+    const button = { disabled: false, getAttribute: () => 'req-mail', onclick: undefined as undefined | (() => Promise<void>) };
+    f.context.cwBindAppConnections({ querySelectorAll: (selector: string) => (selector === '[data-cwconnectrequest]' ? [button] : []) });
+    await button.onclick!();
+    expect(f.cw.connectionsOpen).toBe(true);
+    expect(f.cw.mailFormOpen).toBe(true);
+    expect(f.api.mock.calls.some((call) => String(call[0]).includes('/api/connected-apps/connect'))).toBe(false);
   });
   it('shows real role suggestions once, filters the catalog, and switches views without a network call', async () => {
     const f = fixture();

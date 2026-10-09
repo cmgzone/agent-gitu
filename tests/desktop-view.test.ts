@@ -45,6 +45,14 @@ function viewer(search = '') {
 }
 
 describe('live desktop update pipeline', () => {
+  it('keeps an inline preview read-only without taking focus or sending modifier keys', () => {
+    const v=viewer('?preview=1');v.connections[0]!.events.connect!();
+    const client=v.connections[0]! as Client & {viewOnly:boolean};
+    expect(client.viewOnly).toBe(true);expect(client.focus).not.toHaveBeenCalled();
+    v.pageEvents.message!({origin:'https://gitu.example',source:v.parent,data:{type:'gitu-desktop-control',action:'focus'}});
+    expect(client.focus).not.toHaveBeenCalled();expect(client.sendKey).not.toHaveBeenCalled();
+    v.pageEvents.pagehide!();expect(client.disconnect).toHaveBeenCalledOnce();
+  });
   it('uses the native RFB update loop without extra requests outside diagnostic experiments', () => {
     for (const search of ['', '?pipeline=1', '?pipeline=0']) {
       const v = viewer(search); v.connections[0]!.events.connect!();

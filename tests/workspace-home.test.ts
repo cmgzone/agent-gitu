@@ -1,11 +1,11 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
-import { createProject, ensureHermesHome, isDriveRoot, projectsDir } from '../src/workspace/home.js';
+import { createProject, ensureHermesHome, isDriveRoot, listProjects, projectsDir } from '../src/workspace/home.js';
 
 let homeDir: string;
 
@@ -47,6 +47,13 @@ describe('Hermes home', () => {
     expect(isDriveRoot('C:\\')).toBe(true);
     expect(isDriveRoot(path.join(homeDir, 'Projects'))).toBe(false);
   });
+
+  it('lists real project folders even before their first session, excluding files and hidden folders', () => {
+    const second = createProject('second'), first = createProject('first');
+    mkdirSync(path.join(projectsDir(), '.metadata'));
+    writeFileSync(path.join(projectsDir(), 'notes.txt'), 'Not a project');
+    expect(listProjects()).toEqual([first, second]);
+  });
 });
 
 describe('home API', () => {
@@ -65,6 +72,8 @@ describe('home API', () => {
       }).then((r) => r.json());
       expect(created.path).toBe(path.join(homeDir, 'Projects', 'demo-app'));
       expect(existsSync(path.join(created.path, 'package.json'))).toBe(true);
+      const listed = await fetch(`${base}/api/projects`).then((r) => r.json());
+      expect(listed.projects).toEqual([created]);
 
       const bad = await fetch(`${base}/api/home/workspace`, {
         method: 'POST',
@@ -81,6 +90,9 @@ describe('home API', () => {
       }).then((r) => r.json());
       expect(moved.projectsPath).toBe(custom);
       expect(existsSync(custom)).toBe(true);
+      const customProject = createProject('new location');
+      const customList = await fetch(`${base}/api/projects`).then((r) => r.json());
+      expect(customList.projects).toEqual([customProject]);
     } finally {
       await server.stop();
     }

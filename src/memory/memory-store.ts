@@ -141,9 +141,10 @@ export class MemoryStore {
     projectId?: string;
     /** Tier 1 pin: promotes this memory into the protected/active tier. */
     pinned?: boolean;
-  }): { entry: MemoryEntry; created: boolean } {
+  }, options: { explicitRevision?: boolean } = {}): { entry: MemoryEntry; created: boolean } {
     return this.atomic(() => {
       this.refresh();
+      if (options.explicitRevision && (input.sourceType !== 'user_statement' || input.status !== 'verified')) throw new Error('Memory revisions require an explicit user correction.');
       const claim = input.claim.trim().replace(/\s+/g, ' ');
       // Visibility-aware dedupe identity (review fix #2): a specialist's
       // PRIVATE memory and their PUBLISHED mission finding are different
@@ -151,7 +152,7 @@ export class MemoryStore {
       // shareable entry, not collapse into the private one.
       const visibility: MemoryVisibility = input.visibility ?? 'project';
       const key = dedupeKey(input.type, input.scope, claim, input);
-      const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e) === key);
+      const existing = this.entries.find((e) => dedupeKey(e.type, e.scope, e.claim, e) === key && (!options.explicitRevision || (e.status !== 'archived' && e.status !== 'superseded')));
       if (existing) {
         existing.confidence = Math.min(1, Math.max(existing.confidence, input.confidence ?? 0.7) + 0.05);
         existing.reobservations = (existing.reobservations ?? 0) + 1;
@@ -527,6 +528,19 @@ export class MemoryStore {
   }
 
   /** Archive (never destroy) — the terminal rest for decayed memories. */
+  reassignAgent(previousName: string, nextName: string): number {
+    if (!previousName || !nextName || previousName === nextName) return 0;
+    return this.atomic(() => {
+      this.refresh();
+      const owned = this.entries.filter(entry => entry.agentId === previousName);
+      for (const entry of owned) { entry.agentId = nextName; entry.updatedAt = nowIso(); }
+      this.flush();
+      for (const entry of owned) this.logAudit({ event: 'owner_updated', memoryId: entry.id, agentId: nextName, reason: 'Agent profile renamed' });
+      return owned.length;
+    });
+  }
+
+  /** Archive (never destroy) ? the terminal rest for decayed memories. */
   archive(id: string): boolean {
     return this.atomic(() => {
       this.refresh();

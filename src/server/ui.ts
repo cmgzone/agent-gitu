@@ -1,10 +1,13 @@
-import { HOME_CSS, HOME_CHARACTER_HTML } from './ui-home.js';
+import { HOME_CSS, HOME_CHARACTER_HTML, HOME_WORKSPACE_JS } from './ui-home.js';
 import { UI_MODEL_CATALOG_JS } from './ui-model-catalog.js';
 import { UI_MOTION_JS } from './ui-motion.js';
+import { CHAT_SURFACE_CSS, CHAT_SURFACE_JS } from './ui-chat-surface.js';
 import { UI_BUTTON_CSS, UI_BUTTON_JS } from './ui-buttons.js';
 import { UI_SEARCH_CSS } from './ui-search.js';
+import { WORKSPACE_SEARCH_CSS, WORKSPACE_SEARCH_JS } from './ui-workspace-search.js';
 import { COWORK_GALLERY_CSS, COWORK_GALLERY_JS } from './ui-gallery.js';
 import { COWORK_PROFILE_CSS, COWORK_PROFILE_JS } from './ui-cowork-profile.js';
+import { COWORK_DASHBOARD_CSS, COWORK_DASHBOARD_JS } from './ui-cowork-dashboard.js';
 import { REPORT_DETAILS_CSS, REPORT_DETAILS_JS } from './ui-report-details.js';
 import { ACTIVITY_CSS, ACTIVITY_MARK_HTML } from './ui-activity.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
@@ -954,12 +957,15 @@ ${HOME_CSS}
   ${COWORK_GALLERY_CSS}
   ${COWORK_PROFILE_CSS}
   ${REPORT_DETAILS_CSS}
+  ${COWORK_DASHBOARD_CSS}
+  ${CHAT_SURFACE_CSS}
+  ${WORKSPACE_SEARCH_CSS}
 </style>
 </head>
 <body>
 ${ONBOARDING_HTML}
 <div class="shell">
-  <aside class="sb">
+  <aside class="sb" id="sidebar" aria-label="Workspace navigation">
     <div class="head">
       <span class="name"><img class="brand-mark" src="/brand/agent-gitu-mark.svg" alt=""><span>AGENT GITU</span></span>
       <span class="spacer"></span>
@@ -1004,6 +1010,8 @@ ${ONBOARDING_HTML}
   window.addEventListener('error', function (e) { window.__bootErrors.push(String(e && e.message) + ' @ ' + String(e && e.filename) + ':' + String(e && e.lineno)); });
   window.addEventListener('unhandledrejection', function (e) { window.__bootErrors.push('unhandled: ' + String(e && e.reason)); });
   ${UI_MOTION_JS}
+  ${CHAT_SURFACE_JS}
+  ${WORKSPACE_SEARCH_JS}
   ${UI_APPROACH_JS}
   ${UI_RESPONSE_JS}
   ${UI_CONNECTIONS_JS}
@@ -1569,6 +1577,8 @@ ${ONBOARDING_HTML}
   function stopStreams() { flushLiveText(); if (S.es) { S.es.close(); S.es = null; } if (S.poll) { clearInterval(S.poll); S.poll = null; } cwStopPoll(); }
 
   function openHome() {
+    var transition=captureChatTransition();if(S.active==='home')transition=null;
+    document.body.classList.remove('cowork');
     S.active = 'home';
     S.supersedeNext = null;
     toggleMobileNav(false);
@@ -1581,19 +1591,11 @@ ${ONBOARDING_HTML}
     var name = effectiveProjectName();
     var keyless = S.modelsLoaded && !hasAnyProviderKey();
     $('view').innerHTML =
-      '<div class="home">' +
-      '<nav class="home-cta" aria-label="Workspace modes">' +
-      '<button type="button" class="home-cta-btn" id="homeCodingBtn" aria-label="Coding" aria-describedby="homeCodingDesc">' +
-      '<span class="cta-ico" aria-hidden="true">' + icon('terminal') + '</span>' +
-      '<span class="cta-body"><span class="cta-t">Coding</span><span class="cta-d" id="homeCodingDesc">Build something</span></span><span class="cta-arrow" aria-hidden="true">&#8599;</span></button>' +
-      '<button type="button" class="home-cta-btn team" id="coworkCta" aria-label="Cowork" aria-describedby="homeCoworkDesc">' +
-      '<span class="cta-ico" aria-hidden="true">' + icon('users') + '</span>' +
-      '<span class="cta-body"><span class="cta-t">Cowork</span><span class="cta-d" id="homeCoworkDesc">Meet your team</span></span><span class="cta-arrow" aria-hidden="true">&#8599;</span></button>' +
-      '</nav>' +
+      '<div class="home home-sky">' + cwPageNavHtml('home',cwProfileAgent()) +
+      '<button class="home-settings-trigger" id="homeSettings" aria-label="Open settings" title="Settings">'+icon('gear')+'</button>' +
       '<header class="home-brand">' +
       '<div class="home-brand-lockup">' + ${JSON.stringify(HOME_CHARACTER_HTML)} + '<h1><span>Agent</span><span><span class="home-brand-name">Gitu</span><i class="home-brand-spark" aria-hidden="true"></i></span></h1></div>' +
       '<p class="home-brand-copy">A little spark. A working idea. Let’s build it.</p></header>' +
-      '<div class="home-particles" aria-hidden="true"></div>' +
       (keyless
         ? '<button class="setup-card" id="keylessCta" style="cursor:pointer;width:100%;text-align:left;display:block;margin:0 auto 8px;max-width:760px">' +
           '<h3 style="margin:0 0 4px">Connect a model provider</h3>' +
@@ -1603,21 +1605,19 @@ ${ONBOARDING_HTML}
       '<div class="composer"><textarea id="goal" rows="1" placeholder="Ask Agent Gitu to complete a task…"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div>' +
       '<div class="composer-bar">' + controlsHtml() + '<button class="send" id="send" title="Start task" aria-label="Start task"' + (S.modelsLoaded && hasAnyProviderKey() ? '' : ' disabled') + '>&#8593;</button></div></div></div>' +
-      '</div>';
+      '<section class="home-projects" aria-labelledby="homeProjectsTitle"><div class="home-project-heading"><h2 id="homeProjectsTitle">Projects</h2><div class="home-project-actions"><button class="btn" id="homeNewProject">'+cwIcon('plus')+'New project</button></div></div><div id="homeProjectCards"><p role="status">Loading projects…</p></div></section></div>';
+    $('cwHomeBtn').onclick=function(){$('goal').focus();};$('cwCurrentChat').onclick=function(){cwEnterWorkspace('chat',cwEnsure().selectedAgentId);};$('cwInfoBtn').onclick=function(){var agent=cwProfileAgent()||cwEnsure().agents[0];cwEnterWorkspace(agent?'profile':'new',agent&&agent.id);};$('homeNewProject').onclick=newProject;$('homeSettings').onclick=function(){openSettings('overview');};$('cwPageSearch').onclick=function(){wsOpen('main');};homeLoadProjects();homeLoadProfile();
     var ta = $('goal');
     ta.value = S.draft;
     ta.addEventListener('input', function () { S.draft = ta.value; persist(); ta.style.height = 'auto'; ta.style.height = Math.min(180, ta.scrollHeight) + 'px'; });
     ta.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); startRun(); } });
-    var codingBtn = $('homeCodingBtn');
-    if (codingBtn) codingBtn.onclick = function () { ta.focus(); };
     bindControls();
     bindPaste('goal');
     $('send').onclick = startRun;
     $('homeProj').onclick = openFolderBrowser;
     var kcta = $('keylessCta');
     if (kcta) kcta.onclick = function () { openSettings('providers'); };
-    var ccta = $('coworkCta');
-    if (ccta) ccta.onclick = function () { openCowork(); };
+    playChatTransition(transition);
   }
 
   function isFreeModelId(id) {
@@ -2160,6 +2160,8 @@ ${ONBOARDING_HTML}
   }
 
   function openRun(runId, opts) {
+    var transition=captureChatTransition();if(S.active===runId)transition=null;
+    document.body.classList.remove('cowork');
     S.active = runId;
     S.supersedeNext = null;
     toggleMobileNav(false);
@@ -2177,12 +2179,15 @@ ${ONBOARDING_HTML}
     renderSidebar();
     renderTopbar();
     $('view').innerHTML =
-      '<div class="run"><div class="run-main">' +
+      '<div class="run run-chat"><div class="run-main">' + cwPageNavHtml('chat',cwProfileAgent()) +
+      '<button type="button" class="chat-shell-button" id="mainChatHistory" aria-label="Search sessions and tools" title="Search">'+cwIcon('search')+'</button>' +
+      '<button type="button" class="chat-shell-button" id="mainChatDetails" aria-label="Open task details" title="Task details">'+cwIcon('panel')+'</button>' +
       '<div class="progress" id="progress" style="display:none"><span class="plabel" id="progText"></span><div class="pbar"><span id="progFill"></span></div><span class="plabel" id="progMeta"></span></div>' +
       '<details class="approach-panel" id="approachPanel"><summary title="Show the agent’s approach and verification updates"><span class="approach-title">Approach</span><span class="approach-count" id="approachCount"></span><span class="approach-latest" id="approachLatest"></span><span class="approach-status" id="approachStatus"></span></summary><ol class="approach-log" id="approachLog" aria-label="Approach updates" tabindex="0"></ol><p class="approach-note" id="approachEmpty">A brief explanation of the next action appears as the agent works.</p><p class="approach-note" id="approachHistory" hidden></p><p class="approach-note">Progress summaries · hypotheses remain unverified until checked.</p></details>' +
       '<div class="stream" id="stream" role="region" aria-label="Agent activity" tabindex="0"></div>' +
       '<button type="button" class="jump-latest" id="jumpLatest" hidden>↓ Jump to latest</button>' +
       '<div class="bottom-composer"><details class="composer-todos" id="composerTodos" aria-label="Current task checklist" hidden></details><div class="composer-topline"><button type="button" class="composer-workspace" id="runProject" aria-label="Project '+esc(effectiveProjectName())+'" title="Choose project">'+icon('folder')+'<span>'+esc(effectiveProjectName())+'</span></button>' +
+      '<button type="button" class="main-work-details" id="mainWorkDetails" aria-expanded="false" aria-controls="approachPanel">Work details</button>' +
       '<button type="button" class="context-trigger unknown" id="contextToggle" title="Session context and token usage" aria-label="Session context and token usage" aria-expanded="false" aria-controls="contextCard"><svg viewBox="0 0 24 24" aria-hidden="true"><circle class="context-ring-track" cx="12" cy="12" r="9"/><circle class="context-ring-progress" cx="12" cy="12" r="9" pathLength="100"/><circle class="context-ring-core" cx="12" cy="12" r="2"/></svg></button></div>' +
       '<div class="composer"><textarea id="follow" rows="1" placeholder="Message Agent Gitu…" title="Enter sends to this session while working, or continues it when done"></textarea>' +
       '<div class="thumbs" id="thumbs" hidden></div><div class="run-folder-tags" id="runFolderTags" aria-label="Tagged reference folders" hidden></div>' +
@@ -2255,6 +2260,8 @@ ${ONBOARDING_HTML}
     connect(runId);
     pollRun(runId);
     S.poll = setInterval(function () { pollRun(runId); }, 1500);
+    bindMainChatShell();
+    playChatTransition(transition);
   }
 
   function connect(runId) {
@@ -2532,6 +2539,7 @@ ${ONBOARDING_HTML}
     var state = S.sessions[S.active];
     if (state && state.replaying) el.classList.add('replayed');
     if (w) stream.insertBefore(el, w); else stream.appendChild(el);
+    if ((!state||!state.replaying)&&el.matches('.usermsg,.abubble,.agent-report,.tl-note-row')) chatBubbleEntrance(el);
     trimTimeline(stream);
     stickScroll(stream);
   }
@@ -3606,6 +3614,7 @@ ${ONBOARDING_HTML}
     }
     var working = $('working');
     if (working) stream.insertBefore(el, working); else stream.appendChild(el);
+    if ((!sess||!sess.replaying)&&el.matches('.usermsg,.abubble,.agent-report,.tl-note-row')) chatBubbleEntrance(el);
     trimTimeline(stream);
     stickScroll(stream);
   }
@@ -3823,7 +3832,8 @@ ${ONBOARDING_HTML}
       if (settlePendingUserMessage(runId, userText, null, true)) return;
       retireAbubble(sess); closeThought(runId); appendLive(stream, userBubble(userText, runId)); stickScroll(stream, true); return;
     }
-    if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0 || text.indexOf('continue ') === 0) {
+    if (text.indexOf('continue ') === 0) return;
+    if (text.indexOf('queued ') === 0 || text.indexOf('stopped ') === 0) {
       var qm = document.createElement('div');
       qm.className = 'tl-row tl-meta';
       var qtag = text.split(' ')[0];
@@ -5155,6 +5165,7 @@ ${ONBOARDING_HTML}
     if (!shell) return;
     shell.classList.toggle('mobile-nav-open', Boolean(open));
     if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    var history=$('mainChatHistory');if(history)history.setAttribute('aria-expanded',open?'true':'false');
   }
 
   function applyWidths() {
@@ -5466,13 +5477,20 @@ ${ONBOARDING_HTML}
   }
 
   function openSettings(section) {
-    S.setSection = section || 'general';
+    S.setSection = section || 'overview';
     closeToolPanel();
+    var shell=document.querySelector('.shell');if($('settings').hidden){S.settingsFocus=document.activeElement;S.settingsShellInert=shell.inert;}
+    shell.inert=true;
     $('settings').hidden = false;
     renderSettings();
+    var focus=$('settingsDirectoryQuery')||$('setnav').querySelector('[aria-current="page"]');if(focus)focus.focus({preventScroll:true});
+    $('settings').onkeydown=function(event){if(event.key!=='Tab')return;var controls=Array.from(this.querySelectorAll('button:not(:disabled),input:not([type=hidden]):not(:disabled),textarea:not(:disabled),select:not(:disabled)')).filter(function(node){return node.getClientRects().length;});var first=controls[0],last=controls[controls.length-1];if(!first)return;if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}};
   }
   function closeSettings() {
+    if($('settings').hidden)return;
     $('settings').hidden = true;
+    document.querySelector('.shell').inert=!!S.settingsShellInert;
+    var focus=S.settingsFocus&&S.settingsFocus.isConnected?S.settingsFocus:$('homeSettings')||$('mainChatHistory')||$('cwBack')||$('cwPageSearch');if(focus)focus.focus({preventScroll:true});
   }
 
   function refreshModels() {
@@ -5482,31 +5500,22 @@ ${ONBOARDING_HTML}
   }
 
   function renderSettings() {
-    var items = [
-      ['general', 'gear', 'General'],
-      ['cowork', 'users', 'Cowork'],
-      ['providers', 'layers', 'Providers'],
-      ['connections', 'plug', 'Connections'],
-      ['permissions', 'shield', 'Permissions'],
-      ['workspace', 'folder', 'Workspace'],
-      ['project', 'search', 'Project'],
-      ['agents', 'plug', 'Specialist agents'],
-      ['skills', 'bolt', 'Skills'],
-      ['mcp', 'plug', 'MCP servers'],
-      ['cron', 'clock', 'Scheduled / heartbeat'],
-      ['developer', 'gear', 'Developer']
-    ];
+    var items = WORKSPACE_SETTINGS;
+    var settings=$('settings');settings.classList.toggle('settings-directory',S.setSection==='overview');
+    var close=$('settingsClose');if(!close){settings.insertAdjacentHTML('afterbegin','<button class="settings-close" id="settingsClose" aria-label="Close settings">'+icon('x')+'</button><button class="settings-top-back" id="settingsDirectoryBack">'+icon('back')+'<span>All settings</span></button>');close=$('settingsClose');}
+    close.onclick=closeSettings;$('settingsDirectoryBack').hidden=S.setSection==='overview';$('settingsDirectoryBack').onclick=function(){openSettings('overview');};
     $('setnav').innerHTML =
-      '<button class="back" id="setBack">' + icon('back') + ' Back to app</button>' +
+      '<button class="back" id="setBack">' + icon('search') + ' Search</button>' +
       '<div class="sect">Settings</div>' +
       items.map(function (it) {
-        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '"><span class="ico">' + icon(it[1]) + '</span>' + it[2] + '</button>';
+        return '<button class="item ' + (S.setSection === it[0] ? 'active' : '') + '" data-sec="' + it[0] + '" aria-current="'+(S.setSection===it[0]?'page':'false')+'"><span class="ico">' + icon(it[1]) + '</span>' + it[2] + '</button>';
       }).join('');
-    $('setBack').onclick = closeSettings;
+    $('setBack').onclick = function(){wsOpen();};
     $('setnav').querySelectorAll('[data-sec]').forEach(function (el) {
       el.onclick = function () { S.setSection = el.getAttribute('data-sec'); renderSettings(); };
     });
     var b = $('setbody');
+    if(S.setSection==='overview'){wsSettingsDirectory();return;}
     // Async sections seed an instant loading row instead of a blank flash.
     if (S.setSection !== 'general' && S.setSection !== 'workspace') {
       b.innerHTML = '<h1>' + esc(S.setSection === 'mcp' ? 'MCP servers' : S.setSection === 'skills' ? 'Skills' : S.setSection === 'agents' ? 'Specialist agents' : S.setSection === 'cron' ? 'Scheduled / heartbeat' : S.setSection === 'connections' ? 'Connections' : S.setSection) + '</h1><p class="meta" style="color:var(--muted);font-size:12.5px">loading…</p>';
@@ -5559,7 +5568,7 @@ ${ONBOARDING_HTML}
         '<textarea id="cwSetAbout" rows="4" placeholder="About you — role, company, current focus…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
         '<textarea id="cwSetPrefs" rows="3" placeholder="Working preferences — tone, hours, tools to prefer or avoid…" style="background:var(--card2);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13px;resize:vertical"></textarea>' +
         '<div><button class="btn dark" id="cwSetProfileSave">Save</button></div></div></div>' +
-        '<div class="setcard" style="margin-bottom:12px"><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">When on, teammates cannot save or improve skills directly — their changes are staged here for your review first. Applies to the whole team.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"' + '></div>' +
+        '<div class="setcard" style="margin-bottom:12px"><div class="setrow"><div class="grow"><div class="t">Learning mode</div><div class="d">Choose how your team learns from its conversations.</div></div><select id="cwLearningMode" aria-label="Cowork learning mode"><option value="off">Off</option><option value="reactive">When asked</option><option value="proactive">Proactive</option></select></div><div class="setrow"><div class="grow"><div class="t">Require approval for skill changes</div><div class="d">When on, teammates cannot save or improve skills directly — their changes are staged here for your review first. Applies to the whole team.</div></div><input type="checkbox" id="cwSkillApproval" style="width:18px;height:18px;flex:none"' + '></div>' +
         '<div id="cwPendingBody"></div></div>';
       api('/api/cowork/profile').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwSetName')) return;
@@ -5578,7 +5587,9 @@ ${ONBOARDING_HTML}
       api('/api/cowork/learning').then(function (d) {
         if (S.setSection !== 'cowork' || !$('cwSkillApproval')) return;
         $('cwSkillApproval').checked = d.skillApproval === true;
+        if($('cwLearningMode'))$('cwLearningMode').value=d.mode||'reactive';
       }).catch(function () {});
+      $('cwLearningMode').onchange=function(){var control=this,mode=control.value;control.disabled=true;api('/api/cowork/learning',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:mode})}).then(function(saved){cwEnsure().learn=saved;toast('Learning mode updated');}).catch(function(error){if(control.isConnected)control.value=cwLearnMode();toast(error.message,true);}).finally(function(){if(control.isConnected)control.disabled=false;});};
       $('cwSkillApproval').onchange = function () {
         api('/api/cowork/learning', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ skillApproval: $('cwSkillApproval').checked }) })
           .then(function () { toast($('cwSkillApproval').checked ? 'Skill changes now need your approval' : 'Skill changes apply directly'); renderSettings(); })
@@ -6415,7 +6426,7 @@ ${ONBOARDING_HTML}
       if (S.active === 'home') openHome();
     }).catch(function () { S.modelsLoaded = true; if (S.active === 'home') openHome(); });
     api('/api/files').then(function (data) { S.files = data.files || []; }).catch(function () {});
-    $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('general'); };
+    $('gearBtn').onclick = function () { toggleMobileNav(false); openSettings('overview'); };
     $('gearBtn').innerHTML = icon('gear');
     $('sbCowork').onclick = function () { toggleMobileNav(false); openCowork(); };
     $('sbCollapse').onclick = function () { S.settings.leftCollapsed = !S.settings.leftCollapsed; persist(); applyLayout(); };
@@ -6469,6 +6480,8 @@ ${ONBOARDING_HTML}
   ${COWORK_JS}
   ${COWORK_GALLERY_JS}
   ${COWORK_PROFILE_JS}
+  ${COWORK_DASHBOARD_JS}
+  ${HOME_WORKSPACE_JS}
   ${REPORT_DETAILS_JS}
   ${OUTPUT_JS}
   ${ONBOARDING_JS}

@@ -2,10 +2,11 @@
 export const UI_THEME_CSS = String.raw`
   :root {
     color-scheme: dark;
+    --cw-chat-surface:var(--bg);
     --bg: #111111; --card: #1b1b1b; --card2: #161616; --sidebar: #161616;
     --border: #2c2c2c; --border2: #414141; --line: #303030;
     --text: #e8e8e8; --muted: #a3a3a3; --faint: #898989;
-    --accent: #8f80ff; --on-accent: #171717; --dark: #8f80ff;
+    --accent: #8abaff; --on-accent: #11253c; --dark: #8abaff;
     --hover: #262626; --selected: #2b2b2b; --selection: #454545;
     --ok: #9bb7a3; --err: #dba59e; --run: #5ba8ff; --evidence: #c6b78f;
     --ok-dim: #202b24; --err-dim: #322421; --run-dim: #25282c; --amber-bg: #2b281f;
@@ -16,10 +17,11 @@ export const UI_THEME_CSS = String.raw`
   }
   :root[data-theme="light"] {
     color-scheme: light;
+    --cw-chat-surface:radial-gradient(ellipse at 18% 70%,#cee9f8 0%,transparent 48%),radial-gradient(ellipse at 75% 15%,#b0cdea 0%,transparent 50%),linear-gradient(145deg,#86add1,#b5d2e8 58%,#adb8c4);
     --bg: #fafaf9; --card: #ffffff; --card2: #f3f3f1; --sidebar: #f2f2f0;
     --border: #dededb; --border2: #c7c7c2; --line: #d8d8d4;
     --text: #242422; --muted: #62625e; --faint: #6c6c67;
-    --accent: #6755c8; --on-accent: #ffffff; --dark: #6755c8;
+    --accent: #2165bd; --on-accent: #ffffff; --dark: #2165bd;
     --hover: #eaeae7; --selected: #e5e5e1; --selection: #d9d9d4;
     --ok: #3c654a; --err: #9c4239; --run: #285eaa; --evidence: #77602c;
     --ok-dim: #eef3ee; --err-dim: #fbefec; --run-dim: #edf0f3; --amber-bg: #f6f2e8;

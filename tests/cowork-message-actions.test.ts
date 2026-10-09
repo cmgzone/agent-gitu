@@ -36,6 +36,17 @@ function message(patch = {}) {
 }
 
 describe('cwBody markdown tables', () => {
+  it('sends widget creation intent with the user description, then clears the composer mode', async () => {
+    const u=fixture();u.input.value='Build a live weather widget';
+    u.context.cwNewWidgetModal();
+    expect(u.cw.widgetRequest.mode).toBe('create');
+    expect(u.input.value).toBe('Build a live weather widget');
+    await u.context.cwSend();
+    const payload=JSON.parse(u.api.mock.calls[0]![1].body);
+    expect(payload.widgetRequest.mode).toBe('create');
+    expect(payload.text).toBe('Build a live weather widget');
+    expect(u.cw.widgetRequest).toBeNull();
+  });
   it('renders a pipe table as a real table, not raw ---|---', () => {
     const u = fixture();
     const html = u.context.cwBody('Before\n\n| Category | Status |\n|----------|--------|\n| Polish   | Done   |\n\nAfter', []);
@@ -251,7 +262,7 @@ describe('Cowork message actions', () => {
     expect(JSON.parse(provideCall[1].body)).toEqual({ action: 'provide', connectionId: 'github' });
   });
 
-  it('keeps narrow panels closed until requested and restores the chat when dismissed', () => {
+  it('keeps the retired profile panel closed while preserving the mobile chat drawer', () => {
     const u = fixture();
     const classes = new Set<string>();
     const rail = { inert: false };
@@ -269,7 +280,7 @@ describe('Cowork message actions', () => {
     u.cw.infoOpen = true;
     u.context.window.innerWidth = 1280;
     u.context.cwSyncPanels();
-    expect(panel.style.display).toBe('block');
+    expect(panel.style.display).toBe('none');
     expect(chat.inert).toBe(false);
     u.context.window.innerWidth = 900;
     u.context.cwSyncPanels();
@@ -277,7 +288,7 @@ describe('Cowork message actions', () => {
     expect(backdrop.hidden).toBe(true);
     u.cw.infoNarrowOpen = true;
     u.context.cwSyncPanels();
-    expect(panel.style.display).toBe('block');
+    expect(panel.style.display).toBe('none');
     expect(chat.inert).toBe(false);
     expect(rail.inert).toBe(false);
     expect(backdrop.hidden).toBe(true);
@@ -343,20 +354,20 @@ describe('Cowork message actions', () => {
     u.cw.progresses = [{ agentId: 'chief', agentName: 'Chief', tool: 'run_command', detail: 'private command' }];
     new Script(COWORK_JS).runInContext(u.context);
     u.context.cwAva = () => '';
+    u.context.cwRenderComputerActivity = vi.fn();
     u.context.cwRenderProgress();
     // The label stays neutral and the icon marks the activity — the command
     // text itself never reaches the live row.
     expect(label.textContent).toBe('Working…');
     expect(icon.innerHTML).toContain('title="Running a command"');
     expect(icon.innerHTML).not.toContain('private command');
-    // A neutral public category fills the row until the agent sends its own
-    // prose; the raw command never reaches the live row.
-    expect(text.textContent).toBe('Running a check in the workspace…');
+    // Tool status belongs in the compact activity line; chat only shows prose.
+    expect(text.textContent).toBe('');
     expect(text.textContent).not.toContain('private command');
     expect(live.innerHTML).not.toContain('cw-progress-tool');
     u.cw.progresses[0]!.text = 'Here is the summary.';
     u.context.cwRenderProgress();
-    expect(text.textContent).toBe('Running a check in the workspace…\nHere is the summary.');
+    expect(text.textContent).toBe('Here is the summary.');
   });
 
   it('renders Copy/Reference/Delete for outputs, edits only users, Retry only failures', () => {

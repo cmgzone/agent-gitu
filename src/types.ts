@@ -183,7 +183,7 @@ export interface MemoryRetrievalContext {
 /** Structured audit event (review Phase 14) — bounded in-memory ring. */
 export interface MemoryAuditEvent {
   at: string;
-  event: 'created' | 'verified' | 'rejected' | 'promoted' | 'consolidated' | 'superseded' | 'archived' | 'retrieved' | 'flagged';
+  event: 'created' | 'verified' | 'rejected' | 'promoted' | 'consolidated' | 'superseded' | 'archived' | 'retrieved' | 'flagged' | 'owner_updated';
   memoryId?: string;
   agentId?: string;
   missionId?: string;

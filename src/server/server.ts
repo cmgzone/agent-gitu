@@ -8,6 +8,8 @@ import { AppAuth } from './app-auth.js';
 import { authPage } from './ui-auth.js';
 import { modelIcon } from './model-icons.js';
 import { ComposioConnections } from '../connections/composio.js';
+import { MAIL_PROVIDERS, MailConnections } from '../connections/mail.js';
+import { ConnectionsHub, MAIL_SERVICE_SLUG } from '../connections/provider.js';
 import { COMPANION_DIR, companionAsset } from './mobile-companion.js';
 import os from 'node:os';
 import { appendFileSync, copyFileSync, cpSync, createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -43,12 +45,14 @@ import type { LlmClient, LlmMessage, LlmUsage } from '../llm/llm.js';
 import { LlmError, UsageTrackingClient, extractLastJsonObject } from '../llm/llm.js';
 import { CoworkStore, MAX_ARTIFACT_BYTES, type CoworkBudgetData, type CoworkConversation, type CoworkMessage, type CoworkAgent, type CoworkWidgetKind, type CoworkMission, type CoworkRequest } from '../cowork/store.js';
 import { CoworkMemory } from '../cowork/memory.js';
+import type { AgentPersonality, AgentRole } from '../cowork/profile-config.js';
 import { runConversationTurn, runMissionSession, mentionNames, renderReferencedMessages, type CoworkProgress, type CoworkTriggerMedia } from '../cowork/runner.js';
 import { CoworkComputer, hostedComputerExec } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
 import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
+import { fetchWidgetSource, widgetAppDocument, WIDGET_APP_CSP, widgetState } from '../cowork/widget-app.js';
 import { readOnboarding, saveOnboarding } from './onboarding.js';
 import { evaluateChiefAuthority, type ChiefAuthorityPolicy, type ChiefResolverContext } from '../cowork/chief-resolver.js';
 import type { ToolContext } from '../tools/tools.js';
@@ -71,7 +75,7 @@ import { UniversalCapabilityRegistry } from '../connections/runtime/universal-re
 import type { ModelContextAttachment } from '../context/model-context.js';
 import type { CompletionReport, RiskTier } from '../types.js';
 import { nowIso, sha256, shortId } from '../util.js';
-import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
+import { createProject, ensureGituHome, gituHomeRoot, isDriveRoot, listProjects, loadWorkspaceSettings, projectsDir, sanitizeCustomProviders, updateWorkspaceSettings } from '../workspace/home.js';
 import { UI_HTML } from './ui.js';
 import { credentialChatInput } from './credential-chat.js';
 import { coworkActivityView } from './cowork-activity.js';
@@ -270,6 +274,8 @@ export interface GituServerConfig {
   /** Explicit opt-out for trusted embedded servers and isolated test fixtures. */
   passwordRequired?: boolean;
   connectedApps?: ComposioConnections;
+  /** Any-mailbox IMAP/SMTP connections; injectable for isolated test fixtures. */
+  mailConnections?: MailConnections;
   llm?: LlmClient;
   approvalTimeoutMs?: number;
   /** Initial provider recovery delay; grows to five minutes, respecting Retry-After. */
@@ -418,6 +424,9 @@ export class GituServer {
   private desktopSockets?: WebSocketServer;
   private readonly desktopAgents = new Map<WebSocket, string>();
   private readonly connectedApps: ComposioConnections;
+  private readonly mailConnections: MailConnections;
+  /** The single surface the cowork tool and assignment routes use. */
+  private readonly appHub: ConnectionsHub;
   private server?: http.Server;
   private readonly sessions = new Map<string, RunSession>();
   private readonly modelRecoveryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -655,6 +664,8 @@ export class GituServer {
     this.mobileAccess = new MobileAccess(config.accessKey ?? process.env['AGENT_GITU_ACCESS_KEY']);
     this.appAuth = new AppAuth(nodePath.join(ensureGituHome().settings, 'app-password.json'), config.passwordRequired !== false, process.env['AGENT_GITU_TRUST_LOCAL_PROXY'] === '1', process.env['AGENT_GITU_REGISTRATION_TOKEN']);
     this.connectedApps = config.connectedApps ?? new ComposioConnections(() => this.appAuth.userId);
+    this.mailConnections = config.mailConnections ?? new MailConnections();
+    this.appHub = new ConnectionsHub(this.connectedApps, this.mailConnections);
     if (config.host && !['127.0.0.1', 'localhost', '::1'].includes(config.host) && !this.mobileAccess.enabled) {
       throw new Error('Remote listening requires AGENT_GITU_ACCESS_KEY (at least 32 characters).');
     }
@@ -1921,7 +1932,7 @@ export class GituServer {
         skills: SkillStore.forProject(ensureGituHome().workspace),
         mcp: McpManager.forProject(workspace),
         connections: this.connections,
-        connectedApps: this.connectedApps,
+        connectedApps: this.appHub,
         browser: this.browserImpl(),
       };
       this.coworkTools.set(agent.id, context);
@@ -2532,7 +2543,7 @@ export class GituServer {
     from?: string,
     artifactIds?: string[],
     threadId?: string,
-    meta?: { id?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[] },
+    meta?: { id?: string; referencedMessageIds?: string[]; mentionedAgentIds?: string[]; widgetRequest?: CoworkMessage['widgetRequest'] },
   ): { ok: boolean; queued?: boolean; error?: string; message?: CoworkMessage } {
     const store = this.cowork();
     const conv = store.getConversation(conversationId);
@@ -2553,6 +2564,7 @@ export class GituServer {
       // A mention mirrors the structure the router already honours in the text.
       mentionedAgentIds: meta?.mentionedAgentIds ?? this.coworkMentions(conv, trimmed),
       referencedMessageIds: meta?.referencedMessageIds,
+      widgetRequest: meta?.widgetRequest,
     });
     return { ...this.beginCoworkTurn(conversationId, trigger), message: trigger };
   }
@@ -3194,6 +3206,9 @@ export class GituServer {
         const body = await this.readBody(req);
         try {
           const existing = typeof body['id'] === 'string' ? store.getAgent(body['id']) : undefined;
+          if (body['id'] && !existing) { this.sendJson(res, 404, { error: 'Agent not found.' }); return true; }
+          const changingName = existing && typeof body['name'] === 'string' && body['name'].trim() !== existing.name;
+          if (changingName && this.coworkComputerBusy(existing.id)) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish before renaming it.' }); return true; }
           const useHostComputer = body['useHostComputer'] === undefined ? existing?.useHostComputer ?? true : body['useHostComputer'] === true;
           const cloudConnectionId = useHostComputer ? undefined : typeof body['cloudConnectionId'] === 'string' ? body['cloudConnectionId'].trim() || undefined : existing?.cloudConnectionId;
           if (cloudConnectionId && !this.cloudServers().some((server) => server.id === cloudConnectionId && server.hasCredential)) throw new Error('Choose a saved cloud server with a working credential.');
@@ -3203,26 +3218,34 @@ export class GituServer {
           const save = async () => {
             agent = store.saveAgent({
               id: typeof body['id'] === 'string' && body['id'] ? body['id'] : undefined,
-              name: String(body['name'] ?? ''),
+              name: String(body['name'] ?? existing?.name ?? ''),
               avatar: body['avatar'] && typeof body['avatar'] === 'object' ? (body['avatar'] as Record<string, unknown>) : undefined,
               tagline: typeof body['tagline'] === 'string' ? body['tagline'] : undefined,
-              systemPrompt: String(body['systemPrompt'] ?? ''),
+              description: typeof body['description'] === 'string' ? body['description'] : undefined,
+              roles: Array.isArray(body['roles']) ? body['roles'] as AgentRole[] : undefined,
+              primaryRoleId: typeof body['primaryRoleId'] === 'string' ? body['primaryRoleId'] : undefined,
+              personality: body['personality'] && typeof body['personality'] === 'object' ? body['personality'] as AgentPersonality : undefined,
+              systemPrompt: String(body['systemPrompt'] ?? existing?.systemPrompt ?? ''),
               provider: typeof body['provider'] === 'string' ? body['provider'] : undefined,
               model: typeof body['model'] === 'string' ? body['model'] : undefined,
               effort: body['effort'] === 'low' || body['effort'] === 'medium' || body['effort'] === 'high' || body['effort'] === 'max' ? body['effort'] : undefined,
-              skills: Array.isArray(body['skills']) ? body['skills'].map(String) : [],
-              allowShell: body['allowShell'] === true,
-              allowWrites: body['allowWrites'] === true,
-              allowConfig: body['allowConfig'] === true,
+              skills: Array.isArray(body['skills']) ? body['skills'].map(String) : existing?.skills ?? [],
+              allowShell: body['allowShell'] === undefined ? existing?.allowShell : body['allowShell'] === true,
+              allowWrites: body['allowWrites'] === undefined ? existing?.allowWrites : body['allowWrites'] === true,
+              allowConfig: body['allowConfig'] === undefined ? existing?.allowConfig : body['allowConfig'] === true,
               useHostComputer,
               cloudConnectionId: cloudConnectionId ?? '',
-              chiefOfStaff: body['chiefOfStaff'] === true,
+              chiefOfStaff: body['chiefOfStaff'] === undefined ? existing?.chiefOfStaff : body['chiefOfStaff'] === true,
             });
+            if (existing && changingName) await this.coworkMemory().renameAgent(existing.name, agent.name);
             if (changingComputer) await this.resetCoworkComputer(agent.id);
-            this.coworkTools.get(agent.id)?.mcp?.killAll();
-            this.coworkTools.delete(agent.id);
+            // Profile preferences apply on the next turn and leave an active tool session intact.
+            if (['allowShell', 'allowWrites', 'allowConfig', 'useHostComputer', 'cloudConnectionId', 'provider', 'model'].some(key => body[key] !== undefined)) {
+              this.coworkTools.get(agent.id)?.mcp?.killAll();
+              this.coworkTools.delete(agent.id);
+            }
           };
-          if (existing && changingComputer) await this.withCoworkAgent(existing.id, new AbortController().signal, save);
+          if (existing && (changingComputer || changingName)) await this.withCoworkAgent(existing.id, new AbortController().signal, save);
           else await save();
           const conversation = store.recommendRoleApps(agent.id);
           this.sendJson(res, 200, { ok: true, agent, conversation });
@@ -3328,7 +3351,7 @@ export class GituServer {
       }
     }
 
-    const memoryMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/memory$/);
+    const memoryMatch = path.match(/^\/api\/cowork\/agents\/([\w-]+)\/memory(?:\/([\w-]+))?$/);
     if (memoryMatch) {
       const target = store.getAgent(memoryMatch[1]!);
       if (!target) {
@@ -3336,10 +3359,33 @@ export class GituServer {
         return true;
       }
       if (method === 'GET') {
-        this.sendJson(res, 200, { count: this.coworkMemory().count(target) });
+        const safe = <T>(value: T): T => JSON.parse(JSON.stringify(value, (_key, item: unknown) => typeof item === 'string' ? credentialChatInput(item).safeText : item)) as T;
+        if (memoryMatch[2]) {
+          const details = this.coworkMemory().details(target, memoryMatch[2]);
+          this.sendJson(res, details ? 200 : 404, details ? safe(details) : { error: 'Memory not found.' });
+        } else {
+          const query = new URL(req.url ?? '/', 'http://localhost').searchParams.get('q') ?? '';
+          this.sendJson(res, 200, safe({ count: this.coworkMemory().count(target), entries: this.coworkMemory().entries(target, query) }));
+        }
+        return true;
+      }
+      if (method === 'PATCH' && memoryMatch[2]) {
+        const body = await this.readBody(req);
+        const details = this.coworkMemory().details(target, memoryMatch[2]);
+        if (!details) { this.sendJson(res, 404, { error: 'Memory not found.' }); return true; }
+        try {
+          const expectedUpdatedAt = typeof body['expectedUpdatedAt'] === 'string' ? body['expectedUpdatedAt'] : undefined;
+          const entry = await this.coworkMemory().correct(target, memoryMatch[2], String(body['claim'] ?? ''), expectedUpdatedAt);
+          this.sendJson(res, 200, { ok: true, id: entry.id });
+        } catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); }
         return true;
       }
       if (method === 'DELETE') {
+        if (memoryMatch[2]) {
+          const removed = await this.coworkMemory().archive(target, memoryMatch[2]);
+          this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'Memory not found.' });
+          return true;
+        }
         const cleared = this.coworkMemory().clear(target);
         this.sendJson(res, 200, { ok: true, cleared });
         return true;
@@ -3570,6 +3616,45 @@ export class GituServer {
       return true;
     }
 
+    const widgetRuntime = path.match(/^\/api\/cowork\/widgets\/([\w-]+)\/(app|runtime)$/);
+    if (widgetRuntime) {
+      const widget = store.getWidget(widgetRuntime[1]!);
+      if (!widget || widget.archivedAt || widget.kind !== 'app') { this.sendJson(res, 404, { error: 'Widget app not found' }); return true; }
+      if (widgetRuntime[2] === 'app' && method === 'GET') {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': WIDGET_APP_CSP, 'x-content-type-options': 'nosniff' });
+        res.end(widgetAppDocument(widget)); return true;
+      }
+      if (widgetRuntime[2] === 'runtime' && method === 'POST') {
+        try {
+          const body = await this.readBody(req, 150_000);
+          const op = body['op'];
+          if (op === 'state') { this.sendJson(res, 200, { state: widget.data['state'] ?? {}, revision: widget.stateRevision ?? 0 }); return true; }
+          if (op === 'saveState') {
+            const updated = store.updateWidgetState(widget.id, body['state'], typeof body['revision'] === 'number' ? body['revision'] : undefined);
+            this.publishCowork(widget.conversationId);
+            this.sendJson(res, 200, { state: updated.data['state'], revision: updated.stateRevision }); return true;
+          }
+          if (op === 'fetch') {
+            const sources = widget.data['sources'] as { name: string; url: string }[];
+            const source = sources.find(item => item.name === body['name']);
+            if (!source) throw new Error('Unknown widget data source');
+            const url = new URL(source.url);
+            if (body['params'] && typeof body['params'] === 'object') {
+              const params = Object.entries(body['params'] as Record<string, unknown>);
+              if (params.length > 32) throw new Error('Too many data source parameters');
+              for (const [key,value] of params) {
+                if (!/^[\w.-]{1,80}$/.test(key) || !['string','number','boolean'].includes(typeof value) || String(value).length > 2000) throw new Error('Invalid data source parameter');
+                url.searchParams.set(key,String(value));
+              }
+            }
+            this.sendJson(res, 200, { data: await fetchWidgetSource(url.href) }); return true;
+          }
+          throw new Error('Unsupported widget operation');
+        } catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); return true; }
+      }
+      this.sendJson(res, 405, { error: 'Method not allowed' }); return true;
+    }
+
     const widgetsMatch = path.match(/^\/api\/cowork\/conversations\/([\w-]+)\/widgets$/);
     if (widgetsMatch) {
       const convId = widgetsMatch[1]!;
@@ -3583,10 +3668,12 @@ export class GituServer {
         try {
           const widget = store.saveWidget({
             conversationId: convId,
+            createNew: true,
             title: String(body['title'] ?? ''),
             icon: typeof body['icon'] === 'string' ? body['icon'] : undefined,
             kind: (body['kind'] ?? 'text') as CoworkWidgetKind,
             data: body['data'],
+            shared: body['shared'] === true,
           });
           this.publishCowork(convId);
           this.sendJson(res, 200, { ok: true, widget });
@@ -3603,6 +3690,24 @@ export class GituServer {
       const widgetId = widgetMatch[1]!;
       const existing = store.getWidget(widgetId);
       if (!existing) { this.sendJson(res, 404, { error: 'widget not found' }); return true; }
+      if (method === 'PATCH') {
+        try {
+          const body = await this.readBody(req);
+          const op = body['op'];
+          let widget = existing;
+          if (op === 'restore') widget = store.archiveWidget(widgetId, true);
+          else if (op === 'toggle' && existing.kind === 'list') {
+            const items = existing.data['items'] as { text: string; done: boolean }[];
+            const index = Number(body['index']);
+            if (!Number.isInteger(index) || !items[index]) throw new Error('Checklist item not found');
+            widget = store.saveWidget({ id: widgetId, conversationId: existing.conversationId, title: existing.title, kind: existing.kind, data: { items: items.map((item, i) => i === index ? { ...item, done: body['done'] === true } : item) } });
+          } else if (op === 'layout') {
+            widget = store.saveWidget({ id: widgetId, conversationId: existing.conversationId, title: existing.title, kind: existing.kind, data: existing.data, shared: typeof body['shared'] === 'boolean' ? body['shared'] : undefined, order: typeof body['order'] === 'number' ? body['order'] : undefined });
+          } else throw new Error('Unsupported widget change');
+          this.publishCowork(existing.conversationId); this.sendJson(res, 200, { widget });
+        } catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); }
+        return true;
+      }
       if (method === 'POST') {
         const body = await this.readBody(req);
         try {
@@ -3613,6 +3718,8 @@ export class GituServer {
             icon: typeof body['icon'] === 'string' ? body['icon'] : existing.icon,
             kind: (body['kind'] ?? existing.kind) as CoworkWidgetKind,
             data: body['data'] ?? existing.data,
+            shared: typeof body['shared'] === 'boolean' ? body['shared'] : undefined,
+            order: typeof body['order'] === 'number' ? body['order'] : undefined,
           });
           this.publishCowork(existing.conversationId);
           this.sendJson(res, 200, { ok: true, widget });
@@ -3622,7 +3729,8 @@ export class GituServer {
         return true;
       }
       if (method === 'DELETE') {
-        const removed = store.deleteWidget(widgetId);
+        store.archiveWidget(widgetId);
+        const removed = true;
         if (removed) this.publishCowork(existing.conversationId);
         this.sendJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: 'widget not found' });
         return true;
@@ -3729,10 +3837,23 @@ export class GituServer {
         // only ever arrive via the secure connection form (POST /api/connections).
         const text = credentialChatInput(String(body['text'] ?? '').trim()).safeText || (attached.length ? `Attached ${attached.join(', ')}` : '');
         const threadId = typeof body['threadId'] === 'string' && body['threadId'] ? body['threadId'] : undefined;
+        let widgetRequest: CoworkMessage['widgetRequest'];
+        if (body['widgetRequest'] && typeof body['widgetRequest'] === 'object') {
+          const request = body['widgetRequest'] as Record<string, unknown>;
+          const mode = request['mode'];
+          if (!['create', 'edit', 'action'].includes(String(mode))) { this.sendJson(res, 400, { error: 'Invalid widget request' }); return true; }
+          const widget = mode !== 'create' && typeof request['widgetId'] === 'string' ? store.getWidget(request['widgetId']) : undefined;
+          if (mode !== 'create' && (!widget || widget.archivedAt || (widget.conversationId !== convId && !widget.shared))) { this.sendJson(res, 400, { error: 'Widget not available in this chat' }); return true; }
+          const action = typeof request['action'] === 'string' ? request['action'] : undefined;
+          if (mode === 'action' && !(widget?.data['actions'] as { name: string }[] | undefined)?.some(item => item.name === action)) { this.sendJson(res, 400, { error: 'Widget action not found' }); return true; }
+          try { widgetRequest = { mode: mode as 'create' | 'edit' | 'action', widgetId: widget?.id, action, input: request['input'] ? widgetState(request['input']) : undefined }; }
+          catch (error) { this.sendJson(res, 400, { error: (error as Error).message }); return true; }
+        }
         const result = this.dispatchCoworkMessage(convId, text, 'web', undefined, artifactIds.length ? artifactIds : undefined, threadId, {
           id: typeof id === 'string' ? id : undefined,
           referencedMessageIds: Array.isArray(body['referencedMessageIds']) ? body['referencedMessageIds'].map(String) : undefined,
           mentionedAgentIds: Array.isArray(body['mentionedAgentIds']) ? body['mentionedAgentIds'].map(String) : undefined,
+          widgetRequest,
         });
         this.sendJson(res, result.ok ? 202 : 409, { ...result, queued: result.queued ?? false });
         return true;
@@ -4571,13 +4692,24 @@ export class GituServer {
           if (agentId && !store.getAgent(agentId)) { this.sendJson(res, 404, { error: 'Teammate not found.' }); return; }
           const appPermissions = store.appPermissions().filter(permission => !agentId || permission.agentId === agentId).map(permission => ({ ...permission, agentName: store.getAgent(permission.agentId)?.name ?? 'Teammate' }));
           const agents = store.listAgents().map(agent => ({ id: agent.id, name: agent.name }));
-          if (!this.connectedApps.configured || !agentId) { this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], services: [], appPermissions }); return; }
+          // Mailboxes are provider-neutral, so they are reported separately: the
+          // page can connect any mailbox before an OAuth provider key exists.
+          const mailboxes = await this.mailConnections.accounts();
+          const mailboxAssigned = (accountId: string) => Boolean(agentId) && store.appAccountAssigned(agentId, MAIL_SERVICE_SLUG, accountId);
+          const mail = {
+            accounts: mailboxes.filter(account => mailboxAssigned(account.id)),
+            available: mailboxes.filter(account => !mailboxAssigned(account.id)),
+            providers: MAIL_PROVIDERS,
+            keyStorage: this.mailConnections.setup.keyStorage,
+          };
+          if (!this.connectedApps.configured || !agentId) { this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], services: [], appPermissions, mail }); return; }
           const allAccounts = await this.connectedApps.accounts();
           const accounts = allAccounts.filter(account => store.appAccountAssigned(agentId, account.toolkit, account.id));
           const availableAccounts = allAccounts.filter(account => !store.appAccountAssigned(agentId, account.toolkit, account.id) && account.status === 'ACTIVE' && !account.disabled);
+          const connectedToolkits = new Set([...accounts.filter(account => account.status === 'ACTIVE' && !account.disabled).map(account => account.toolkit), ...mail.accounts.map(account => account.toolkit)]);
           const requests = store.listConversations().flatMap(conversation => store.requests(conversation.id)).filter(request => request.agentId === agentId && request.appConnection);
           for (const request of requests) {
-            if (request.status !== 'open' || !accounts.some(account => account.toolkit === request.appConnection!.service && account.status === 'ACTIVE' && !account.disabled)) continue;
+            if (request.status !== 'open' || !connectedToolkits.has(request.appConnection!.service)) continue;
             store.resolveRequest(request.id, 'accepted', 'Connected');
             this.publishCowork(request.conversationId);
             if (request.appConnection?.resumeWork) {
@@ -4591,7 +4723,7 @@ export class GituServer {
             const account = accounts.find(account => account.toolkit === service.slug && account.status === 'ACTIVE' && !account.disabled) ?? accounts.find(account => account.toolkit === service.slug);
             return { ...service, status: account?.status, accountId: account?.id };
           });
-          this.sendJson(res, 200, { configured: true, ...catalog, services, agents, agentId, accounts, availableAccounts, appPermissions, requests }); return;
+          this.sendJson(res, 200, { configured: true, ...catalog, services, agents, agentId, accounts, availableAccounts, appPermissions, requests, mail }); return;
         }
         const permissionMatch = path.match(/^\/api\/connected-apps\/permissions\/([\w-]+)$/);
         if (permissionMatch && method === 'DELETE') {
@@ -4603,6 +4735,40 @@ export class GituServer {
           const body = await this.readBody(req, 8192);
           await this.connectedApps.configure(String(body['apiKey'] ?? ''));
           this.sendJson(res, 200, { ok: true }); return;
+        }
+        if (path === '/api/connected-apps/mail/detect' && method === 'GET') {
+          // The browser cannot resolve SRV records or read another host's
+          // autoconfig document, so server discovery for self-hosted mail hosts
+          // (Mailcow and friends) runs here. It only suggests endpoints: nothing
+          // is authenticated or stored, and no credential is ever involved.
+          try {
+            const address = url.searchParams.get('address') ?? '';
+            this.sendJson(res, 200, { address, ...(await this.mailConnections.detect({ address })) }); return;
+          } catch (error) {
+            this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Enter a valid email address.' }); return;
+          }
+        }
+        if (path === '/api/connected-apps/mail' && method === 'POST') {
+          if (!AppAuth.local(req) && (!this.appAuth.secure(req) || !this.appAuth.authenticated(req))) { this.sendJson(res, 403, { error: 'Mailbox setup requires an authenticated HTTPS session.' }); return; }
+          const body = await this.readBody(req, 16384);
+          const store = this.cowork(), agentId = String(body['agentId'] ?? '');
+          if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this mailbox.' }); return; }
+          try {
+            const result = await this.mailConnections.connect(body);
+            store.assignAppAccount(agentId, MAIL_SERVICE_SLUG, result.account.id);
+            this.sendJson(res, 200, result); return;
+          } catch (error) {
+            // These messages are written for the user and never include the password.
+            this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not connect this mailbox.' }); return;
+          }
+        }
+        if (path === '/api/connected-apps/mail/remove' && method === 'POST') {
+          const body = await this.readBody(req, 4096);
+          const accountId = String(body['accountId'] ?? '');
+          const store = this.cowork();
+          store.revokeAppAccountPermissions(accountId);
+          try { await this.mailConnections.remove(accountId); this.sendJson(res, 200, { ok: true }); return; }
+          catch (error) { this.sendJson(res, 400, { error: error instanceof Error ? error.message : 'Could not remove this mailbox.' }); return; }
         }
         if (path === '/api/connected-apps/connect' && method === 'POST') {
           const body = await this.readBody(req, 4096);
@@ -4618,7 +4784,7 @@ export class GituServer {
           const body = await this.readBody(req, 4096);
           const store = this.cowork(), agentId = String(body['agentId'] ?? ''), accountId = String(body['accountId'] ?? '');
           if (!store.getAgent(agentId)) { this.sendJson(res, 400, { error: 'Choose a teammate for this connection.' }); return; }
-          const account = (await this.connectedApps.accounts()).find(account => account.id === accountId && account.status === 'ACTIVE' && !account.disabled);
+          const account = (await this.appHub.accounts()).find(account => account.id === accountId && account.status === 'ACTIVE' && !account.disabled);
           if (!account) { this.sendJson(res, 400, { error: 'Choose an active account belonging to you.' }); return; }
           store.assignAppAccount(agentId, account.toolkit, account.id);
           this.sendJson(res, 200, { ok: true }); return;
@@ -5048,6 +5214,15 @@ export class GituServer {
         this.sendJson(res, 200, { ok: true, fallbackModels: settings.fallbackModels ?? [] });
         return;
       }
+    }
+
+    if (method === 'GET' && path === '/api/projects') {
+      try {
+        this.sendJson(res, 200, { projects: listProjects() });
+      } catch {
+        this.sendJson(res, 503, { error: 'Could not load projects. Check the workspace folder location.' });
+      }
+      return;
     }
 
     if (method === 'POST' && path === '/api/projects') {

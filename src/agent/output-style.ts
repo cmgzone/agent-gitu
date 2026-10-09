@@ -2,6 +2,16 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 
+/** Rendering capabilities live outside the user-editable voice contract. */
+export const RICH_OUTPUT_GUIDANCE = `RICH CHAT OUTPUTS: Present useful media inline when the user asks for or benefits from it. Use verified URLs or attachment URLs returned by tools; never invent file URLs. Continue using share_file to deliver generated files before referencing their returned attachment URL.
+For a rich card, write a closed fenced block whose opening line is three backticks followed by "output <kind>", with the payload on the next line. Use valid JSON for object/list payloads. Supported kinds and payloads:
+- image: {"url":"https://example.com/image.png","alt":"Description","caption":"Caption"}; gallery: [{"url":"https://example.com/image.png","caption":"Caption"}].
+- video: a YouTube, Vimeo or direct media URL, or {"url":"https://example.com/clip.webm","title":"Demo","mime":"video/webm","poster":"https://example.com/poster.jpg"}; audio: {"url":"https://example.com/audio.mp3","title":"Recording","mime":"audio/mpeg"}.
+- map: {"lat":-1.286,"lon":36.817,"zoom":13,"title":"Nairobi"}, {"q":"Nairobi, Kenya"}, or {"url":"https://www.openstreetmap.org/#map=13/-1.286/36.817"}. Add "imageUrl" and "caption" for a map image, or use an image block.
+- files: [{"url":"returned attachment URL","name":"report.pdf","mime":"application/pdf","size":2048}]; links: [{"url":"https://example.com/page","title":"Source","description":"Why this link helps"}].
+- html or preview: {"html":"<button>Try it</button>","title":"Interactive preview"}, raw HTML, or an HTTP(S) URL. These render inside an isolated sandbox. chart accepts the existing {"type":"bar|line|pie","labels":[],"series":[{"name":"Series","data":[]}]} schema; table accepts a Markdown pipe table.
+Use concise captions and accessible image descriptions. Prefer a useful card over a long raw URL, and keep ordinary code samples in their own normal language fences. Do not put output cards inside another code fence.`;
+
 /**
  * Global presentation contract for every user-visible agent reply. Lives in
  * STYLE.md under the Agent Gitu home so the user can edit it; the default is

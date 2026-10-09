@@ -111,6 +111,7 @@ describe('setup wizard flow', () => {
     expect(u.elements.setupWizard.hidden).toBe(false);
     expect(u.context.S.settings.onboardingComplete).toBeUndefined();
     expect(u.context.setupState.busy).toBe(false);
+    expect(u.elements.setupMessage.setAttribute).toHaveBeenCalledWith('role', 'alert');
     await u.context.finishSetup();
     expect(u.context.cwExit).toHaveBeenCalledOnce();
   });
@@ -124,5 +125,20 @@ describe('setup wizard flow', () => {
     expect(u.context.openCowork).toHaveBeenCalledOnce();
     expect(u.elements.setupWizard.hidden).toBe(true);
     expect(u.elements.startupCover.hidden).toBe(true);
+  });
+
+  it('shows a retry after a loading failure and clears the error state when retrying', async () => {
+    const u = wizard();
+    u.api.mockRejectedValueOnce(new Error('offline'));
+    await u.context.initializeOnboarding();
+    expect(u.elements.startupCover.className).toBe('gitu-opening is-error');
+    expect(u.elements.startupReload.hidden).toBe(false);
+    expect(u.elements.startupReload.focus).toHaveBeenCalledOnce();
+    u.api.mockResolvedValueOnce({ completed: true, theme: 'light', mode: 'coding', model: '' });
+    await u.elements.startupReload.onclick();
+    expect(u.elements.startupCover.className).toBe('gitu-opening');
+    expect(u.elements.startupReload.hidden).toBe(true);
+    expect(u.elements.startupCover.hidden).toBe(true);
+    expect(u.shell.inert).toBe(false);
   });
 });

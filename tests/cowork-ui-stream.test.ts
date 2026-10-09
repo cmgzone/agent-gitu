@@ -98,11 +98,14 @@ describe('Cowork UI live updates', () => {
     expect(u.api).toHaveBeenCalledTimes(3);
   });
 
-  it('opens a desktop once for a handoff and lets the user close it without reopening or resuming the agent', async () => {
+  it('keeps a handoff inline and expands only when requested, without reopening or resuming on close', async () => {
     const u = desktopUi();
     u.api.mockResolvedValue({ computer: { state: 'running', control: 'user' } });
     const request = { id: 'human-step', conversationId: 'group', agentId: 'chief', desktopHandoff: true, status: 'open' };
     u.context.cwApplySnapshot({ requests: [request] });
+    expect(u.context.document.createElement).not.toHaveBeenCalled();
+    expect(u.context.cwComputerActivities()[0].handoff).toBe(true);
+    u.context.cwOpenDesktop('chief');
     await vi.waitFor(() => expect(u.screen.hidden).toBe(false));
     expect(u.cw.desktopSession.agentId).toBe('chief');
     expect(u.context.cwRequestHtml(request)).toContain('data-cwhandoff="chief"');
@@ -114,12 +117,14 @@ describe('Cowork UI live updates', () => {
     expect(u.api).toHaveBeenCalledOnce();
   });
 
-  it('only opens active-chat handoffs and never replaces a desktop the user already has open', () => {
+  it('ignores other-chat and resolved handoffs without replacing an expanded desktop', () => {
     const u = ui();
     const open = u.context.cwOpenDesktop = vi.fn();
     const request = { id: 'human-step', conversationId: 'other', agentId: 'chief', desktopHandoff: true, status: 'open' };
     u.context.cwApplySnapshot({ requests: [request] });
+    expect(u.context.cwComputerActivities()).toHaveLength(0);
     u.context.cwApplySnapshot({ requests: [{ ...request, conversationId: 'group', status: 'answered' }] });
+    expect(u.context.cwComputerActivities()).toHaveLength(0);
     expect(open).not.toHaveBeenCalled();
     u.cw.desktopSession = { agentId: 'another-agent' };
     u.context.cwApplySnapshot({ requests: [{ ...request, conversationId: 'group' }] });
@@ -152,7 +157,7 @@ describe('Cowork UI live updates', () => {
     await vi.waitFor(() => expect(screen.hidden).toBe(false));
     expect(screen.src).toBe('/api/cowork/agents/chief/computer/view');
     expect(u.api).toHaveBeenCalledOnce();
-    const message = u.context.window.addEventListener.mock.calls.find(([event]: [string]) => event === 'message')[1];
+    const message = u.context.window.addEventListener.mock.calls.findLast(([event]: [string]) => event === 'message')[1];
     message({ origin: 'https://evil.example', source: screen.contentWindow, data: { type: 'gitu-desktop', state: 'Live · Shared desktop' } });
     expect(controls['[data-status]'].textContent).toBe('Connecting to live desktop…');
     message({ origin: 'https://gitu.example', source: {}, data: { type: 'gitu-desktop', state: 'Live · Shared desktop' } });
@@ -239,7 +244,7 @@ describe('Cowork UI live updates', () => {
     expect(u.context.cwActivityLabel({ tool: 'read_file', toolOk: true })).toBe('Completed');
   });
 
-  it('opens the teammate panel beside a usable chat and switches views on mobile', () => {
+  it('ignores legacy profile-sidebar preferences and keeps chat usable on desktop and mobile', () => {
     const u = ui();
     const classes = new Set<string>();
     const rail = { inert: false };
@@ -259,26 +264,28 @@ describe('Cowork UI live updates', () => {
     expect(chat.inert).toBe(false);
     u.cw.infoNarrowOpen = true;
     u.context.cwSyncPanels();
-    expect(panel.style.display).toBe('block');
+    expect(panel.style.display).toBe('none');
     expect(classes.has('overlay-open')).toBe(false);
-    expect(classes.has('info-open')).toBe(true);
+    expect(classes.has('info-open')).toBe(false);
     expect(chat.inert).toBe(false);
     expect(rail.inert).toBe(false);
     expect((u.elements.cwPanelBackdrop as { hidden: boolean }).hidden).toBe(true);
     u.context.window.innerWidth = 600;
     u.context.cwSyncPanels();
-    expect(classes.has('info-open')).toBe(true);
+    expect(classes.has('info-open')).toBe(false);
     expect(classes.has('overlay-open')).toBe(false);
-    expect(chat.inert).toBe(true);
+    expect(chat.inert).toBe(false);
     u.context.window.innerWidth = 1181;
     u.context.cwSyncPanels();
-    expect(panel.style.display).toBe('block');
+    expect(panel.style.display).toBe('none');
     expect(classes.has('overlay-open')).toBe(false);
     expect(chat.inert).toBe(false);
   });
 
-  it('shows the active tool alongside the public update and the current todo at a checkpoint', () => {
+  it('keeps only the public reply in chat while tool activity stays in the compact status', () => {
     const u = ui();
+    // The contextual computer card has a separate DOM fixture and lifecycle tests.
+    u.context.cwRenderComputerActivity = vi.fn();
     const text = { textContent: '', hidden: false };
     const reasoning = { textContent: '', hidden: true, scrollHeight: 0, scrollTop: 0, clientHeight: 0 };
     const label = { textContent: '' };
@@ -296,19 +303,20 @@ describe('Cowork UI live updates', () => {
     u.cw.busy = true;
     u.cw.progresses = [{ agentId: 'chief', agentName: 'Chief', tool: 'run_command', text: 'Verifying the client integration.' }];
     u.renderProgress();
-    expect(text.textContent).toBe('Running a check in the workspace…\nVerifying the client integration.');
+    expect(text.textContent).toBe('Verifying the client integration.');
     expect(toggle).toHaveBeenLastCalledWith('has-tool', true);
     u.cw.progresses[0].tool = '';
     u.cw.progresses[0].text = 'Continuing automatically (checkpoint 11)…';
     u.cw.todos = [{ agentId: 'chief', status: 'in_progress', text: 'Verifying client integration' }];
     u.renderProgress();
-    expect(text.textContent).toBe('Verifying client integration');
+    expect(text.textContent).toBe('');
+    expect(text.hidden).toBe(true);
     expect(toggle).toHaveBeenLastCalledWith('has-tool', false);
     u.cw.progresses[0].reasoning = 'Reviewing the connection evidence.';
     u.cw.progresses[0].phase = 'reasoning';
     u.renderProgress();
-    expect(reasoning.textContent).toBe('Reviewing the connection evidence.');
-    expect(reasoning.hidden).toBe(false);
+    expect(reasoning.textContent).toBe('');
+    expect(reasoning.hidden).toBe(true);
     u.cw.progresses[0].reasoning = '';
     u.renderProgress();
     expect(reasoning.hidden).toBe(true);
@@ -663,7 +671,7 @@ describe('Cowork UI live updates', () => {
     expect(u.context.cwFilesHtml(['cf-zip'])).toContain('data-cwgallery="cf-zip"');
   });
 
-  it('opens shared files through an animated thumbnail stack without inline players', () => {
+  it('shows image cards inline and keeps other files in the gallery stack', () => {
     const u = ui();
     u.cw.artifacts = [
       { id: 'cf-img', name: 'shot.png', mime: 'image/png', size: 10 },
@@ -676,7 +684,9 @@ describe('Cowork UI live updates', () => {
     expect(html).toContain('/api/cowork/artifacts/cf-img?inline=1');
     expect(html).not.toContain('<audio');
     expect(html).not.toContain('<video');
-    expect(html).toContain('4 shared files');
+    expect(html).toContain('3 shared files');
+    expect(html).toContain('cw-photo-strip');
+    expect(html).toContain('data-cwphoto="cf-img"');
     expect(u.context.cwFilesHtml(['cf-img', 'cf-aud', 'cf-vid', 'cf-doc'])).not.toContain('is-new');
     expect(html).not.toContain('cf-doc?inline=1');
   });

@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -332,6 +332,15 @@ export function createProject(name: string): { path: string; name: string } {
     `${JSON.stringify({ name: slug, version: '0.1.0', private: true, scripts: { test: 'node --version' } }, null, 2)}\n`,
   );
   return { path: dir, name: path.basename(dir) };
+}
+
+/** Managed projects include newly created folders that have no sessions yet. */
+export function listProjects(): { path: string; name: string }[] {
+  const base = projectsDir();
+  return readdirSync(base, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => ({ path: path.join(base, entry.name), name: entry.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** @deprecated Use GituHome. Kept for extensions compiled against Hermes. */

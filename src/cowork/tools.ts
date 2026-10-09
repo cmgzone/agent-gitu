@@ -1,4 +1,5 @@
 import { createProject, loadWorkspaceSettings } from '../workspace/home.js';
+import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ToolResult } from '../types.js';
@@ -27,7 +28,7 @@ import {
   validateToolParams,
 } from '../tools/tools.js';
 import type { CoworkAgent, CoworkAvatar, CoworkStore, CoworkThread, CoworkWidgetKind } from './store.js';
-import { MAX_ARTIFACT_BYTES } from './store.js';
+import { COWORK_WIDGET_KINDS, MAX_ARTIFACT_BYTES } from './store.js';
 import type { CoworkDelegation } from './delegation.js';
 import type { CoworkMemory } from './memory.js';
 import type { CoworkRecall } from './recall.js';
@@ -41,7 +42,7 @@ import { DOCUMENT_TOOL_DOC, toolCreateDocument } from '../tools/productivity.js'
 import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connections.js';
 import { ConnectionRegistry } from '../connections/connections.js';
 import { createHash } from 'node:crypto';
-import type { ComposioConnections } from '../connections/composio.js';
+import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { coworkToolSchema } from './tool-schemas.js';
 
 /**
@@ -196,7 +197,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'list_connections', doc: 'List saved API and SSH connections (metadata only, never credentials). params: {}', gate: undefined },
   { name: 'connection_read', doc: 'Read a saved API connection. params: {"connectionId":"exact saved id","operationId":"registered read id","query":{"page":2}}. query is optional; use only documented filters/pagination. For a missing read, consult official docs then supply operation:{id,label,capability,method:"GET",path,risk:"read"} and documentationUrl instead of operationId. New documented reads run with the saved credential. Results include a responseId for inspection. Never send credentials, headers, or an absolute URL.', gate: undefined },
   { name: 'inspect_connection_response', doc: 'Inspect the FULL redacted saved response without another network request. params: {"responseId":"id from a read","path":"/data/0","offset":0,"limit":20,"fields":["id","name"],"search":"literal text","mode":"data|keys"}. All except responseId are optional. path is a JSON Pointer (empty string = root). Search scans the entire selected collection before pagination. Follow nextOffset; inspect a record path or select fields for details. Compact previews are not complete inventories; follow documented API pagination when present.', gate: undefined },
-  { name: 'connected_apps', doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Recommend posts an app icon and Connect button in chat; the user completes sign-in. Discover apps dynamically when your work needs one, follow the returned cursor for more services, avoid unrelated recommendations, and keep working on independent steps. Unassigned accounts cannot be used. Execution asks for one-use review unless the user saved Always allow for you, this tool and account. Never request provider keys or user IDs.', gate: undefined },
+  { name: 'connected_apps', doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Recommend posts an app icon and Connect button in chat; the user completes sign-in. Discover apps dynamically when your work needs one, follow the returned cursor for more services, avoid unrelated recommendations, and keep working on independent steps. Unassigned accounts cannot be used. Execution asks for one-use review unless the user saved Always allow for you, this tool and account. Never request provider keys or user IDs. The "mail" service connects any mailbox over IMAP/SMTP: recommend it for email work and the user completes a short server form instead of a sign-in.', gate: undefined },
   { name: 'ssh_exec', doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.', gate: 'shell' },
   { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
@@ -207,8 +208,8 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'folder_manage', doc: 'Tag folders this conversation works in (the user can also tag folders). Tagged folders are listed in your prompt and host-mode file/shell tools may work inside them. params: {"action":"list"} | {"action":"add","path":"C:\\\\Projects\\\\site","label":"site"} | {"action":"remove","id":"cfd-..."}', gate: undefined },
   {
     name: 'widget_manage',
-    doc:
-      'Pin or refresh a small live dashboard card in the cowork sidebar so the user sees your progress at a glance. kinds: stats {"items":[{"label":"Tests","value":"12/12"}]}, list {"items":[{"text":"Draft","done":true}]}, progress {"label":"Build","value":40}, links {"items":[{"label":"Preview","url":"https://..."}]}, text {"text":"..."}. params: {"action":"create","title":"Deploy status","kind":"progress","icon":"bolt","data":{...}} | {"action":"update","id":"cw-...","data":{...}} | {"action":"delete","id":"cw-..."} | {"action":"list"}',
+    doc: WIDGET_APP_TOOL_GUIDE +
+      'Create or refresh a persisted compact card in the cowork widget panel (notification tray on mobile). Use real results, recommendations, schedules or dashboard data; never invent ongoing work. kinds: stats {"items":[{"label":"Tests","value":"12/12"}]}, list {"items":[{"text":"Draft","done":true}]}, progress {"label":"Build","value":40}, links {"items":[{"label":"Preview","url":"https://..."}]}, text {"text":"..."}, rich {"text":"Recommendation or context","stats":[{"label":"Metric","value":"..."}],"schedule":[{"label":"Review","when":"2026-10-10 09:00 EAT","note":"..."}],"items":[{"type":"image|video|audio|file|link|map","url":"https://... or /api/cowork/artifacts/<existing-id>?inline=1","title":"...","caption":"...","mime":"...","size":123,"poster":"https://..."}]}. Rich payload fields are optional. Map items also accept {"type":"map","lat":-4.0435,"lon":39.6682,"zoom":13,"title":"Mombasa"} or lng instead of lon, a map URL, q for a place search, and imageUrl for a map image. Map coordinates require latitude from -85 to 85 and longitude from -180 to 180; zoom is clamped to 1–19. Use share_file to present local files before referencing their artifact URL. A schedule card only displays schedule data; schedule_manage creates a recurring task. params: {"action":"create","title":"Launch status","kind":"rich","icon":"bolt","data":{...}} | {"action":"update","id":"cw-...","data":{...}} | {"action":"delete","id":"cw-..."} | {"action":"list"}. Updates retain omitted title/kind/data and the original author. You may update/delete your own cards; a chief may manage team cards.',
     gate: undefined,
   },
   { name: 'ask_user', doc: 'Post a real question card and wait for the answer. params: {"question":"Which region?","detail":"Why this is needed","options":["EU","US"]}. Never use this for API keys, tokens or logins — use request_credential so the secret goes into the secure connection store, not chat.', gate: undefined },
@@ -866,8 +867,8 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
   return { shape, color };
 }
 
-const appApprovals = new WeakMap<ComposioConnections, Map<string, { signature: string; expires: number }>>();
-async function connectedAppTool(apps: ComposioConnections | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
+const appApprovals = new WeakMap<ConnectedAppsProvider, Map<string, { signature: string; expires: number }>>();
+async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   if (!scope || scope.isSubAgent) return blocked('connected_apps');
   if (!apps?.configured) return { ok: false, output: 'Set up the connection provider in Cowork → Connections. The user then connects apps specifically for you.' };
   try {
@@ -1071,12 +1072,17 @@ function coworkWidgetManage(scope: CoworkToolScope | undefined, params: Record<s
   const action = String(params['action'] ?? 'list').toLowerCase();
   try {
     const widgets = store.widgets(scope.conversationId);
+    if (action === 'get') {
+      const requested = String(params['id'] ?? params['title'] ?? '').toLowerCase();
+      const widget = widgets.find(item => item.id.toLowerCase() === requested || item.title.toLowerCase() === requested);
+      return widget ? { ok: true, output: JSON.stringify(widget) } : { ok: false, output: 'Widget not found in this conversation.' };
+    }
     if (action === 'list') {
       return {
         ok: true,
         output: widgets.length
-          ? widgets.map((widget) => `${widget.id} [${widget.kind}] ${widget.title}`).join('\n')
-          : 'No widgets in this conversation yet. Create one to show the user live progress in the sidebar.',
+          ? widgets.map((widget) => `${widget.id} [${widget.kind}] ${widget.title} (author: ${widget.createdByAgentId ?? 'user'})`).join('\n')
+          : 'No widgets in this conversation yet. Create one when you have useful results, recommendations, schedules or dashboard data to show.',
       };
     }
     if (action === 'delete') {
@@ -1087,20 +1093,29 @@ function coworkWidgetManage(scope: CoworkToolScope | undefined, params: Record<s
       return removed ? { ok: true, output: `Deleted widget "${match.title}".` } : { ok: false, output: `Could not delete "${match.title}" (it belongs to another teammate).` };
     }
     if (action !== 'create' && action !== 'update') return { ok: false, output: 'widget_manage action must be list, create, update, or delete.' };
-    const title = String(params['title'] ?? '').trim();
+    const requested = String(params['id'] ?? params['title'] ?? '').trim().toLowerCase();
+    const existing = action === 'update' && requested ? widgets.find((widget) => widget.id.toLowerCase() === requested || widget.title.toLowerCase() === requested) : undefined;
+    if (action === 'update' && !existing) return { ok: false, output: 'No widget with that id or title in this conversation.' };
+    if (typeof params['id'] === 'string' && !widgets.some((widget) => widget.id === params['id'])) return { ok: false, output: 'No widget with that id in this conversation.' };
+    const title = String(params['title'] ?? existing?.title ?? '').trim();
     if (!title && action === 'create') return { ok: false, output: 'widget_manage create requires a "title".' };
-    const kind = String(params['kind'] ?? 'text').toLowerCase() as CoworkWidgetKind;
-    const payload = params['data'] && typeof params['data'] === 'object' ? params['data'] : typeof params['text'] === 'string' ? { text: params['text'] } : {};
+    const kind = String(params['kind'] ?? existing?.kind ?? 'text').toLowerCase() as CoworkWidgetKind;
+    if (!COWORK_WIDGET_KINDS.includes(kind)) return { ok: false, output: `Unsupported widget kind. Use ${COWORK_WIDGET_KINDS.join(', ')}.` };
+    const payload = params['data'] && typeof params['data'] === 'object' ? params['data'] : typeof params['text'] === 'string' ? { text: params['text'] } : existing?.data ?? {};
     const widget = store.saveWidget({
-      id: typeof params['id'] === 'string' ? params['id'] : undefined,
+      id: existing?.id,
+      createNew: action === 'create',
       conversationId: scope.conversationId,
-      title: title || (typeof params['id'] === 'string' ? store.getWidget(params['id'])?.title ?? '' : ''),
+      title,
       icon: typeof params['icon'] === 'string' ? params['icon'] : undefined,
       kind,
       data: payload,
+      shared: typeof params['shared'] === 'boolean' ? params['shared'] : undefined,
+      order: typeof params['order'] === 'number' ? params['order'] : undefined,
       createdByAgentId: agent.id,
+      allowOtherAuthors: agent.chiefOfStaff,
     });
-    return { ok: true, output: `Widget "${widget.title}" (${widget.id}, ${widget.kind}) is pinned in the cowork sidebar. Update it with widget_manage update and id ${widget.id} as work progresses.` };
+    return { ok: true, output: `Widget "${widget.title}" (${widget.id}, ${widget.kind}) is saved in the cowork widget panel and mobile notification tray. Refresh it with widget_manage update and id ${widget.id} when its real data changes.` };
   } catch (err) {
     return { ok: false, output: `widget_manage failed: ${(err as Error).message}` };
   }

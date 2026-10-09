@@ -31,6 +31,8 @@ function ui() {
   const cw = { busy: true, agents: [{ id: 'jelly', name: 'Jelly', avatar: { shape: 'jelly', color: '#8f80ff' } }], progresses: [{ agentId: 'jelly', agentName: 'Jelly', text: 'First', tool: 'browse', webUrl: 'https://example.com' }] as CoworkProgress[] };
   const context = createContext({ window: { addEventListener() {} }, document: { addEventListener() {}, querySelectorAll: () => [] }, S: { cw }, esc, URL, $: (id: string) => id === 'cwLive' ? live : id === 'cwMsgs' ? { scrollHeight: 100, scrollTop: 0, clientHeight: 100 } : null });
   new Script(COWORK_JS).runInContext(context);
+  // Computer cards have their own conversation/DOM fixture; this fixture tests live avatars.
+  context.cwRenderComputerActivity = () => {};
   return { context, cw, live, text, label, tool, replacements: () => replacements };
 }
 
@@ -228,7 +230,7 @@ describe('animated teammate characters and web activity', () => {
     u.cw.progresses[0]!.text = 'Second chunk';
     u.context.cwRenderProgress();
     expect(u.replacements()).toBe(1);
-    expect(u.text.textContent).toBe('Checking the web for the requested information…\nSecond chunk');
+    expect(u.text.textContent).toBe('Second chunk');
     u.cw.busy = false;
     u.context.cwRenderProgress();
     expect(u.live.hidden).toBe(true);
@@ -237,12 +239,12 @@ describe('animated teammate characters and web activity', () => {
 
   it('keeps commands and file paths out of live messages, marking them with icons instead', () => {
     const u = ui();
-    // A safe description appears until the agent sends its own prose.
+    // Chat stays empty until the agent sends its own public prose.
     u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: '', tool: 'run_command', detail: '$ npm test' }];
     u.context.cwRenderProgress();
     expect(u.label.textContent).toBe('Working…');
-    expect(u.text.textContent).toBe('Running a check in the workspace…');
-    expect(u.text.hidden).toBe(false);
+    expect(u.text.textContent).toBe('');
+    expect(u.text.hidden).toBe(true);
     // The icon marks the activity; the command itself never reaches the row.
     expect(u.tool.innerHTML).toContain('title="Running a command"');
     expect(u.tool.innerHTML).not.toContain('npm test');
@@ -252,7 +254,7 @@ describe('animated teammate characters and web activity', () => {
     // Public prose accompanies the activity; raw tool details remain hidden.
     u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: 'Checking the suite', tool: 'run_command', toolOk: true, detail: '$ npm test' }];
     u.context.cwRenderProgress();
-    expect(u.text.textContent).toBe('Running a check in the workspace…\nChecking the suite');
+    expect(u.text.textContent).toBe('Checking the suite');
     expect(u.label.textContent).toBe('Completed');
     expect(u.tool.innerHTML).not.toContain('npm test');
 
@@ -260,8 +262,8 @@ describe('animated teammate characters and web activity', () => {
     u.cw.progresses = [{ agentId: 'jelly', agentName: 'Jelly', text: '', tool: 'read_file', detail: 'read src/app.ts' }];
     u.context.cwRenderProgress();
     expect(u.label.textContent).toBe('Working…');
-    expect(u.text.textContent).toBe('Checking the relevant files…');
-    expect(u.text.hidden).toBe(false);
+    expect(u.text.textContent).toBe('');
+    expect(u.text.hidden).toBe(true);
     expect(u.tool.innerHTML).toContain('title="Reading a file"');
     expect(u.tool.innerHTML).not.toContain('src/app.ts');
     expect(u.tool.innerHTML).not.toContain('read_file');

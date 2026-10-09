@@ -28,6 +28,7 @@ import RFB from '/api/desktop-assets/core/rfb.js';
 let rfb, activeSocket, timer, frames, monitorTimer, closed=false;
 const message=document.getElementById('message'),screen=document.getElementById('screen');
 const options=new URLSearchParams(location.search),diagnostic=options.has('diagnostic');
+const preview=options.get('preview')==='1';
 // Leave update scheduling to noVNC. A timed stream of extra requests can
 // keep legacy servers processing input instead of drawing the next frame.
 const pipeline=diagnostic&&options.get('pipeline')==='1';
@@ -44,7 +45,7 @@ if(diagnostic){
 function status(state){parent.postMessage({type:'gitu-desktop',state},location.origin);}
 function stopFrames(){clearInterval(frames);frames=undefined;}
 addEventListener('message',event=>{
-  if(event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control'||event.data.action!=='focus'||closed)return;
+  if(preview||event.origin!==location.origin||event.source!==parent||event.data?.type!=='gitu-desktop-control'||event.data.action!=='focus'||closed)return;
   // A modifier held by the previous controller must not affect the next user's typing.
   for(const [keysym,code] of [[0xffe1,'ShiftLeft'],[0xffe2,'ShiftRight'],[0xffe3,'ControlLeft'],[0xffe4,'ControlRight'],[0xffe9,'AltLeft'],[0xffea,'AltRight'],[0xffeb,'MetaLeft'],[0xffec,'MetaRight']])rfb?.sendKey(keysym,code,false);
   rfb?.focus({preventScroll:true});
@@ -59,10 +60,10 @@ function connect(){
     socket.send=data=>{const packet=ArrayBuffer.isView(data)?new Uint8Array(data.buffer,data.byteOffset,data.byteLength):new Uint8Array(data);if(packet[0]===4)keyPackets++;if(packet[0]===5){pointerPackets++;if(packet[1])buttonPackets++;}send(data);};
   }
   rfb=new RFB(screen,socket,{shared:true});
-  rfb.scaleViewport=true; rfb.resizeSession=false; rfb.viewOnly=false;
+  rfb.scaleViewport=true; rfb.resizeSession=false; rfb.viewOnly=preview;
   rfb.qualityLevel=6; rfb.compressionLevel=2;
   rfb.addEventListener('connect',()=>{
-    message.hidden=true;status('Live · Shared desktop');rfb.focus();
+    message.hidden=true;status('Live · Shared desktop');if(!preview)rfb.focus();
     // LibVNCServer has no ContinuousUpdates extension. Keep incremental
     // requests ready so every redraw does not wait another network round trip.
     // These ten-byte requests send pixels only when the desktop changes.

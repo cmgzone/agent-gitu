@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { sanitizeWidgetApp, widgetState } from './widget-app.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { roleAppSuggestions, type AppSuggestion } from './app-recommendations.js';
+import { sanitizeAgentProfile, type AgentProfileSettings } from './profile-config.js';
 
 /**
  * Cowork mode: a small team of named agent profiles the user chats with
@@ -18,7 +20,7 @@ export interface CoworkAvatar {
   shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-blue' | 'dot-mint' | 'dot-orange' | 'dot-purple';
 }
 
-export interface CoworkAgent {
+export interface CoworkAgent extends AgentProfileSettings {
   id: string;
   name: string;
   /** Saved character and accent color. */
@@ -62,6 +64,8 @@ export interface CoworkMessage {
   agentName?: string;
   text: string;
   via: 'web' | 'telegram' | 'discord' | 'schedule' | 'agent';
+  /** Explicit composer mode; never inferred from widget or webpage content. */
+  widgetRequest?: { mode: 'create' | 'edit' | 'action'; widgetId?: string; action?: string; input?: Record<string, unknown> };
   /** Telegram author name / schedule label, for display. */
   from?: string;
   /** Tool calls the agent made while composing this message. */
@@ -159,8 +163,10 @@ export interface CoworkThread {
   createdAt: string;
 }
 
-/** A small agent-authored dashboard card pinned in the cowork sidebar. */
-export type CoworkWidgetKind = 'stats' | 'list' | 'progress' | 'links' | 'text';
+/** A persisted agent-authored card in the cowork panel and mobile widget tray. */
+export type CoworkWidgetKind = 'stats' | 'list' | 'progress' | 'links' | 'text' | 'rich' | 'app';
+
+export const COWORK_WIDGET_KINDS: readonly CoworkWidgetKind[] = ['stats', 'list', 'progress', 'links', 'text', 'rich', 'app'];
 
 export interface CoworkWidget {
   id: string;
@@ -168,8 +174,12 @@ export interface CoworkWidget {
   title: string;
   icon?: string;
   kind: CoworkWidgetKind;
-  /** Widget payload, strictly sanitized per kind (no raw HTML). */
+  /** App HTML runs only in an opaque-origin sandbox, never in the host DOM. */
   data: Record<string, unknown>;
+  shared?: boolean;
+  order?: number;
+  archivedAt?: string;
+  stateRevision?: number;
   createdByAgentId?: string;
   createdAt: string;
   updatedAt: string;
@@ -758,11 +768,12 @@ export class CoworkStore {
     const agent: CoworkAgent = {
       id: existing?.id ?? `ca-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
       name,
+      ...sanitizeAgentProfile(input, existing),
       avatar: sanitizeAvatar(input.avatar, existing?.avatar),
       tagline: (input.tagline ?? existing?.tagline ?? '').trim().slice(0, 120),
       systemPrompt: input.systemPrompt.trim().slice(0, 8_000),
-      provider: input.provider?.trim() || existing?.provider || undefined,
-      model: input.model?.trim() || existing?.model || undefined,
+      provider: input.provider === undefined ? existing?.provider : input.provider.trim() || undefined,
+      model: input.model === undefined ? existing?.model : input.model.trim() || undefined,
       effort: input.effort ?? existing?.effort,
       skills: sanitizeNames(['browser-workflow', ...(input.skills ?? existing?.skills ?? [])]),
       allowShell: input.allowShell ?? existing?.allowShell ?? false,
@@ -1534,17 +1545,22 @@ export class CoworkStore {
 
   artifactPath(id: string): string | undefined {
     const artifact = this.getArtifact(id);
-    if (!artifact || !/^[a-z0-9_.-]+$/i.test(artifact.storageName)) return undefined;
-    const candidate = path.join(this.artifactDir(artifact.conversationId), artifact.storageName);
+    // Generated names keep the user's readable filename, including spaces and Unicode.
+    // Reject path separators, Windows device/stream syntax and escapes, rather than
+    // rejecting ordinary names that addArtifact already safely stored.
+    if (!artifact || !/^[\w-]+$/.test(artifact.conversationId) || !artifact.storageName || /[\x00-\x1f<>:"/\\|?*]/.test(artifact.storageName)) return undefined;
+    const directory = path.resolve(this.artifactDir(artifact.conversationId));
+    const candidate = path.resolve(directory, artifact.storageName);
+    if (path.dirname(candidate) !== directory) return undefined;
     return existsSync(candidate) ? candidate : undefined;
   }
 
-  // Widgets: small dashboard cards the team pins to the cowork sidebar.
+  // Widgets: small persisted cards the team pins to the cowork panel.
 
   widgets(conversationId: string): CoworkWidget[] {
     return this.load().widgets
-      .filter((widget) => widget.conversationId === conversationId)
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .filter((widget) => !widget.archivedAt && (widget.conversationId === conversationId || widget.shared))
+      .sort((a, b) => (a.order ?? Date.parse(a.createdAt)) - (b.order ?? Date.parse(b.createdAt)) || a.createdAt.localeCompare(b.createdAt));
   }
 
   getWidget(id: string): CoworkWidget | undefined {
@@ -1552,23 +1568,32 @@ export class CoworkStore {
   }
 
   /** Create or update a widget. Updating matches by id or by case-insensitive title. */
-  saveWidget(input: { id?: string; conversationId: string; title: string; icon?: string; kind: CoworkWidgetKind; data: unknown; createdByAgentId?: string }): CoworkWidget {
+  saveWidget(input: { id?: string; createNew?: boolean; conversationId: string; title: string; icon?: string; kind: CoworkWidgetKind; data: unknown; shared?: boolean; order?: number; createdByAgentId?: string; allowOtherAuthors?: boolean }): CoworkWidget {
     const data = this.load();
     const conversation = data.conversations.find((candidate) => candidate.id === input.conversationId);
     if (!conversation) throw new Error('Widget conversation not found');
     if (input.createdByAgentId && !data.agents.some((agent) => agent.id === input.createdByAgentId)) throw new Error('Widget author not found');
+    if (input.createdByAgentId && !conversation.memberIds.includes(input.createdByAgentId)) throw new Error('Widget author is not in this conversation');
     const title = String(input.title ?? '').trim().slice(0, 120);
     if (!title) throw new Error('Widget title is required');
-    const kind: CoworkWidgetKind = ['stats', 'list', 'progress', 'links', 'text'].includes(input.kind) ? input.kind : 'text';
-    const sanitized = sanitizeWidgetData(kind, input.data);
-    const existing = data.widgets.find((widget) => widget.conversationId === input.conversationId && (widget.id === input.id || taskKey(widget.title) === taskKey(title)));
+    const kind: CoworkWidgetKind = COWORK_WIDGET_KINDS.includes(input.kind) ? input.kind : 'text';
+    const existing = data.widgets.find((widget) => widget.conversationId === input.conversationId && (input.id ? widget.id === input.id : !input.createNew && taskKey(widget.title) === taskKey(title)));
+    if (input.id && !existing) throw new Error('Widget not found in this conversation');
+    if (existing && input.createdByAgentId && existing.createdByAgentId !== input.createdByAgentId && !input.allowOtherAuthors) throw new Error('Widget belongs to another teammate');
+    const appInput = kind === 'app' && existing?.kind === 'app' ? { ...existing.data, ...(input.data as Record<string, unknown>) } : input.data;
+    const sanitized = sanitizeWidgetData(kind, appInput);
     const now = new Date().toISOString();
     if (existing) {
       existing.title = title;
       existing.icon = typeof input.icon === 'string' && /^[a-z][a-z0-9-]{0,23}$/.test(input.icon) ? input.icon : existing.icon;
       existing.kind = kind;
       existing.data = sanitized;
-      existing.createdByAgentId = input.createdByAgentId ?? existing.createdByAgentId;
+      if (input.shared !== undefined) existing.shared = input.shared;
+      if (Number.isFinite(input.order)) existing.order = input.order;
+      existing.archivedAt = undefined;
+      existing.stateRevision = (existing.stateRevision ?? 0) + 1;
+      // The author is durable provenance. A chief or the user may refresh a
+      // card, but that must not silently transfer its ownership.
       existing.updatedAt = now;
       this.save(true);
       return existing;
@@ -1580,6 +1605,9 @@ export class CoworkStore {
       icon: typeof input.icon === 'string' && /^[a-z][a-z0-9-]{0,23}$/.test(input.icon) ? input.icon : undefined,
       kind,
       data: sanitized,
+      shared: input.shared === true,
+      order: Number.isFinite(input.order) ? input.order : undefined,
+      stateRevision: 0,
       createdByAgentId: input.createdByAgentId,
       createdAt: now,
       updatedAt: now,
@@ -1597,6 +1625,25 @@ export class CoworkStore {
     if (data.widgets.length === before) return false;
     this.save(true);
     return true;
+  }
+
+  archiveWidget(id: string, restore = false): CoworkWidget {
+    const widget = this.getWidget(id);
+    if (!widget) throw new Error('Widget not found');
+    widget.archivedAt = restore ? undefined : new Date().toISOString();
+    this.save(true);
+    return widget;
+  }
+
+  updateWidgetState(id: string, patch: unknown, revision?: number): CoworkWidget {
+    const widget = this.getWidget(id);
+    if (!widget || widget.archivedAt || widget.kind !== 'app') throw new Error('Widget app not found');
+    if (revision !== undefined && revision !== (widget.stateRevision ?? 0)) throw new Error('Widget state changed; try again');
+    widget.data['state'] = widgetState({ ...(widget.data['state'] as Record<string, unknown>), ...widgetState(patch) });
+    widget.stateRevision = (widget.stateRevision ?? 0) + 1;
+    widget.updatedAt = new Date().toISOString();
+    this.save(true);
+    return widget;
   }
 
   // To-do list: one shared checklist per conversation, owned item-by-item.
@@ -1997,9 +2044,10 @@ function sanitizeThread(value: unknown): CoworkThread | undefined {
 
 /** Widget payloads are strict per kind: the UI renders them without HTML. */
 function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<string, unknown> {
+  if (kind === 'app') return sanitizeWidgetApp(value);
   const raw = (value ?? {}) as Record<string, unknown>;
   if (kind === 'stats') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 12);
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 100);
     return {
       items: items
         .map((item) => {
@@ -2010,7 +2058,7 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
     };
   }
   if (kind === 'list') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 20);
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 200);
     return {
       items: items
         .map((item) => {
@@ -2025,12 +2073,12 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
     return { label: cleanString(raw['label'], 120), value: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : 0 };
   }
   if (kind === 'links') {
-    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 10);
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 100);
     return {
       items: items
         .map((item) => {
           const row = (item ?? {}) as Record<string, unknown>;
-          const url = cleanString(row['url'], 500);
+          const url = sanitizeWidgetUrl(row['url']);
           const label = cleanString(row['label'], 80);
           if (!label || !/^https?:\/\//i.test(url)) return null;
           return { label, url };
@@ -2038,7 +2086,68 @@ function sanitizeWidgetData(kind: CoworkWidgetKind, value: unknown): Record<stri
         .filter((row): row is { label: string; url: string } => Boolean(row)),
     };
   }
-  return { text: cleanString(raw['text'], 2_000) };
+  if (kind === 'rich') {
+    const items = (Array.isArray(raw['items']) ? raw['items'] : []).slice(0, 100).map((item) => {
+      const row = (item ?? {}) as Record<string, unknown>;
+      const type = cleanString(row['type'], 16).toLowerCase();
+      if (!['image', 'video', 'audio', 'file', 'link', 'map'].includes(type)) return null;
+      const url = sanitizeWidgetUrl(row['url'] ?? row['src'] ?? row['href']);
+      if (type === 'map') {
+        const lat = sanitizeWidgetCoordinate(row['lat'], 85);
+        const lon = sanitizeWidgetCoordinate(row['lon'] ?? row['lng'], 180);
+        const q = cleanString(row['q'], 300);
+        const imageUrl = sanitizeWidgetUrl(row['imageUrl']);
+        const coordinates = lat !== undefined && lon !== undefined;
+        if (!url && !coordinates && !q && !imageUrl) return null;
+        const zoom = Number(row['zoom']);
+        return {
+          type, url,
+          title: cleanString(row['title'] ?? row['name'] ?? row['label'], 120),
+          caption: cleanString(row['caption'] ?? row['description'], 300),
+          ...(coordinates ? { lat, lon } : {}),
+          ...(Number.isFinite(zoom) && row['zoom'] !== null && row['zoom'] !== '' ? { zoom: Math.max(1, Math.min(19, Math.round(zoom))) } : {}),
+          ...(q ? { q } : {}),
+          ...(imageUrl ? { imageUrl } : {}),
+        };
+      }
+      if (!url) return null;
+      const size = Number(row['size']);
+      return {
+        type, url,
+        title: cleanString(row['title'] ?? row['name'] ?? row['label'], 120),
+        caption: cleanString(row['caption'] ?? row['description'], 300),
+        mime: cleanString(row['mime'], 80),
+        ...(type === 'video' && sanitizeWidgetUrl(row['poster']) ? { poster: sanitizeWidgetUrl(row['poster']) } : {}),
+        ...(Number.isSafeInteger(size) && size >= 0 ? { size } : {}),
+      };
+    }).filter((item) => item !== null);
+    const stats = (Array.isArray(raw['stats']) ? raw['stats'] : []).slice(0, 50).map((item) => {
+      const row = (item ?? {}) as Record<string, unknown>;
+      return { label: cleanString(row['label'], 60), value: cleanString(row['value'], 120) };
+    }).filter((row) => row.label);
+    const schedule = (Array.isArray(raw['schedule']) ? raw['schedule'] : []).slice(0, 100).map((item) => {
+      const row = (item ?? {}) as Record<string, unknown>;
+      return { label: cleanString(row['label'], 120), when: cleanString(row['when'], 120), note: cleanString(row['note'], 300), url: sanitizeWidgetUrl(row['url']) };
+    }).filter((row) => row.label);
+    return { text: cleanString(raw['text'], 64_000), items, stats, schedule };
+  }
+  return { text: cleanString(raw['text'], 64_000) };
+}
+
+function sanitizeWidgetCoordinate(value: unknown, limit: number): number | undefined {
+  if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return undefined;
+  const coordinate = Number(value);
+  return Number.isFinite(coordinate) && Math.abs(coordinate) <= limit ? coordinate : undefined;
+}
+
+/** Public HTTP media and existing artifact routes only; never executable URLs. */
+function sanitizeWidgetUrl(value: unknown): string {
+  const url = cleanString(value, 2_000);
+  if (/^\/api\/cowork\/artifacts\/[\w-]+(?:\/preview)?(?:\?[^#\s]*)?(?:#[^\s]*)?$/.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    return (parsed.protocol === 'https:' || parsed.protocol === 'http:') && !parsed.username && !parsed.password ? parsed.href : '';
+  } catch { return ''; }
 }
 
 function sanitizeWidget(value: unknown): CoworkWidget | undefined {
@@ -2046,7 +2155,7 @@ function sanitizeWidget(value: unknown): CoworkWidget | undefined {
   const conversationId = cleanString(raw['conversationId'], 80);
   const title = cleanString(raw['title'], 120);
   if (!conversationId || !title) return undefined;
-  const kind: CoworkWidgetKind = ['stats', 'list', 'progress', 'links', 'text'].includes(String(raw['kind'])) ? (raw['kind'] as CoworkWidgetKind) : 'text';
+  const kind: CoworkWidgetKind = COWORK_WIDGET_KINDS.includes(raw['kind'] as CoworkWidgetKind) ? (raw['kind'] as CoworkWidgetKind) : 'text';
   return {
     id: typeof raw['id'] === 'string' && /^[\w-]{3,80}$/.test(raw['id']) ? raw['id'] : randomId('cw'),
     conversationId,
@@ -2054,6 +2163,10 @@ function sanitizeWidget(value: unknown): CoworkWidget | undefined {
     icon: typeof raw['icon'] === 'string' && /^[a-z][a-z0-9-]{0,23}$/.test(raw['icon']) ? raw['icon'] : undefined,
     kind,
     data: sanitizeWidgetData(kind, raw['data']),
+    shared: raw['shared'] === true,
+    order: typeof raw['order'] === 'number' && Number.isFinite(raw['order']) ? raw['order'] : undefined,
+    archivedAt: typeof raw['archivedAt'] === 'string' ? raw['archivedAt'] : undefined,
+    stateRevision: typeof raw['stateRevision'] === 'number' ? raw['stateRevision'] : 0,
     createdByAgentId: cleanString(raw['createdByAgentId'], 80) || undefined,
     createdAt: typeof raw['createdAt'] === 'string' ? raw['createdAt'] : new Date().toISOString(),
     updatedAt: typeof raw['updatedAt'] === 'string' ? raw['updatedAt'] : new Date().toISOString(),

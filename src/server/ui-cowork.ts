@@ -2,6 +2,13 @@ import { CHARACTER_CSS, CHARACTER_JS } from './ui-characters.js';
 import { ACTIVITY_MARK_HTML, REASONING_STREAM_JS } from './ui-activity.js';
 import { COWORK_PANELS_CSS, COWORK_PANELS_JS } from './ui-cowork-panels.js';
 import { COWORK_COLORS_CSS, COWORK_COLORS_JS } from './ui-cowork-colors.js';
+import { COWORK_NOW_CSS, COWORK_NOW_JS } from './ui-cowork-now.js';
+import { COWORK_CLEAN_ACTIVITY_CSS, COWORK_CLEAN_ACTIVITY_JS } from './ui-cowork-activity.js';
+import { COWORK_IMAGES_CSS, COWORK_IMAGES_JS } from './ui-cowork-images.js';
+import { COWORK_COMPUTER_CSS, COWORK_COMPUTER_JS } from './ui-cowork-computer.js';
+import { COWORK_WIDGETS_CSS, COWORK_WIDGETS_JS } from './ui-cowork-widgets.js';
+import { WIDGET_APP_RUNTIME_JS } from './ui-widget-app-runtime.js';
+import { COWORK_DIALOGS_JS } from './ui-cowork-dialogs.js';
 
 /**
  * Cowork mode UI: a messaging-app style surface (agent roster, DMs, group
@@ -382,6 +389,10 @@ export const COWORK_CSS = String.raw`
   .cw-profile-close { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; }
   .cw-profile-close:hover { color: var(--text); background: var(--hover); }
   .cw-profile-close svg { width: 18px; height: 18px; }
+/* Above 720px the floating Chat and Profile controls close the side panel.
+   On smaller screens the panel covers the chat, so its own back control is used. */
+@media (min-width: 721px) { .cw-info .cw-info-bar { display: none; } }
+@media (max-width: 720px) { .cw-info-close { display: none !important; } }
   .cw-info h4 { margin: 0 0 12px; font-size: 10.5px; letter-spacing: .12em; color: var(--faint); font-weight: 700; }
   .cw-info .cw-card { background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; padding: 4px 0 20px; margin-bottom: 20px; }
   .cw-profile-hero { display: flex; align-items: center; gap: 14px; padding: 0 0 12px; }
@@ -547,6 +558,11 @@ export const COWORK_CSS = String.raw`
   ${CHARACTER_CSS}
   ${COWORK_PANELS_CSS}
   ${COWORK_COLORS_CSS}
+  ${COWORK_NOW_CSS}
+  ${COWORK_CLEAN_ACTIVITY_CSS}
+  ${COWORK_IMAGES_CSS}
+  ${COWORK_COMPUTER_CSS}
+  ${COWORK_WIDGETS_CSS}
 `;
 
 export const COWORK_JS = String.raw`
@@ -557,6 +573,13 @@ export const COWORK_JS = String.raw`
   var CW_DOT_COLORS = { 'dot-blue': '#5ba8ff', 'dot-mint': '#3fd68f', 'dot-orange': '#c9a86a', 'dot-purple': '#8f80ff' };
   var CW_SHAPES = ['dot-blue', 'dot-mint', 'dot-orange', 'dot-purple'];
   ${COWORK_COLORS_JS}
+  ${COWORK_NOW_JS}
+  ${COWORK_CLEAN_ACTIVITY_JS}
+  ${COWORK_IMAGES_JS}
+  ${COWORK_COMPUTER_JS}
+  ${COWORK_WIDGETS_JS}
+  ${WIDGET_APP_RUNTIME_JS}
+  ${COWORK_DIALOGS_JS}
   function cwAvatarShape(shape, color) {
     if (CW_SHAPES.indexOf(shape) >= 0) return shape;
     // Existing profiles keep their identity and settings; display the plush
@@ -582,6 +605,7 @@ export const COWORK_JS = String.raw`
   // ---- inline SVG icon set (stroke style matches the app's ICONS) ----
   var CW_SVG_OPEN = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">';
   var CW_ICONS = {
+    home: CW_SVG_OPEN + '<path d="m3 10 9-7 9 7v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 21v-8h6v8"/></svg>',
     users: CW_SVG_OPEN + '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>',
     plus: CW_SVG_OPEN + '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     chat: CW_SVG_OPEN + '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
@@ -719,12 +743,15 @@ export const COWORK_JS = String.raw`
       var safeText = credentialChatInput(input.value.slice(0, 20000)).safeText;
       if (safeText) localStorage.setItem(key, safeText);
       else localStorage.removeItem(key);
+      if (cwEnsure().widgetRequest) localStorage.setItem(key + '.widget', JSON.stringify(cwEnsure().widgetRequest));
+      else localStorage.removeItem(key + '.widget');
     } catch (e) {}
   }
   function cwRestoreDraft(input) {
     var key = cwDraftKey();
     if (!input || !key || typeof localStorage === 'undefined') return;
-    try { input.value = localStorage.getItem(key) || ''; } catch (e) {}
+    cwEnsure().widgetRequest = null;
+    try { input.value = localStorage.getItem(key) || ''; cwEnsure().widgetRequest = JSON.parse(localStorage.getItem(key + '.widget') || 'null'); } catch (e) {}
     input.style.height = 'auto';
     if (input.value) input.style.height = Math.min(160, input.scrollHeight) + 'px';
   }
@@ -782,6 +809,7 @@ export const COWORK_JS = String.raw`
       node.hidden = !label;
       node.setAttribute('data-active', String(activity !== 'Ready'));
     });
+    var profileAvatar=$('cwProfileAvatar');if(profileAvatar&&typeof cwProfileAgent==='function'){var profileAgent=cwProfileAgent();if(profileAgent)profileAvatar.setAttribute('data-active',String(cwCharacterActivity(profileAgent.id)!=='Ready'));}
     var header = $('cwCharacterStatus');
     if (header) {
       var conv = cwActiveConv(), activity = cwCharacterActivity(conv && conv.kind === 'dm' ? conv.memberIds[0] : null);
@@ -806,6 +834,8 @@ export const COWORK_JS = String.raw`
   function cwConvMembers(conv) { var out = []; for (var i = 0; i < conv.memberIds.length; i++) { var a = cwAgentById(conv.memberIds[i]); if (a) out.push(a); } return out; }
 
   function openCowork() {
+    cwEnsure().profileOpen = false;
+    cwEnsure().profileRevision = (cwEnsure().profileRevision || 0) + 1;
     cwEnsure().connectionsOpen = false;
     cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     S.active = 'cowork';
@@ -820,67 +850,18 @@ export const COWORK_JS = String.raw`
     $('view').innerHTML =
       '<div class="cw" id="cw">' +
         '<button class="cw-panel-backdrop" id="cwPanelBackdrop" aria-label="Close panel" hidden></button>' +
-        '<aside class="cw-rail">' +
-          '<button class="cw-info-toggle cw-panel-close" id="cwCloseRail">Close chats</button>' +
-          '<div class="cw-rail-head"><span class="cw-brand">' + cwIcon('users') + '<span>COWORK</span></span><button class="cw-learn" id="cwLearn" title="Cowork learning mode"></button><span class="spacer"></span>' +
-          '<button class="iconbtn" id="cwAddAgent" title="New teammate" aria-label="New teammate">' + cwIcon('plus') + '</button>' +
-          '<button class="iconbtn" id="cwAddGroup" title="New group chat" aria-label="New group chat">' + cwIcon('chat') + '</button>' +
-          '<button class="iconbtn cw-rail-collapse" id="cwCollapseRail" aria-label="Collapse chats sidebar" title="Collapse chats sidebar">' + cwIcon('panel') + '</button></div>' +
-          '<div class="cw-rail-search"><input type="search" id="cwSearch" placeholder="Search all chats…" title="Cross-session recall: every conversation, related phrasing included"></div>' +
-          '<div class="cw-rail-scroll" id="cwRail"></div>' +
-          '<div class="cw-connection-nav"><button class="iconbtn" id="cwConnections" aria-label="Connections" title="Connections">' + cwIcon('plug') + '</button><button class="iconbtn" id="cwLock" aria-label="Lock app" title="Lock app">' + cwIcon('lock') + '</button></div>' +
-          '<div class="cw-rail-foot"><button class="iconbtn" id="cwExit" aria-label="Back to workspace" title="Back to workspace">' + cwIcon('back') + '</button>' + themeToggleHtml() + '<button class="btn ghost" id="cwGear" title="Settings" aria-label="Settings">' + cwIcon('gear') + '</button></div>' +
-        '</aside>' +
-        '<div class="cw-splitter" id="cwRailResize" role="separator" tabindex="0" aria-label="Resize chats sidebar" aria-orientation="vertical" aria-controls="cwRail" aria-valuemin="208" aria-valuemax="400" aria-valuenow="264"></div>' +
+        cwWidgetsShellHtml() +
         '<section class="cw-chat" id="cwChat"></section>' +
-        '<div class="cw-splitter" id="cwInfoResize" role="separator" tabindex="0" aria-label="Resize profile sidebar" aria-orientation="vertical" aria-controls="cwInfoPanel" aria-valuemin="260" aria-valuemax="460" aria-valuenow="320" hidden></div>' +
-        '<aside class="cw-info" id="cwInfoPanel" aria-label="Chat details"><div class="cw-info-bar"><button class="cw-profile-close" id="cwCloseInfo" aria-label="Close panel" title="Close panel">' + cwIcon('close') + '</button></div><div id="cwInfo"></div></aside>' +
       '</div>';
-    // The app's gear icon is registered in ICONS; reuse its markup.
-    var gearBtn = $('cwGear');
-    if (gearBtn && typeof icon === 'function') gearBtn.innerHTML = icon('gear');
-    $('cwExit').onclick = cwExit;
-    $('cwConnections').onclick = function () { cwOpenConnections(); };
-    $('cwLock').onclick = function () { cwLockApp(); };
-    $('cwGear').onclick = function () { cwClosePanels(); openSettings('cowork'); };
     $('cwPanelBackdrop').onclick = cwClosePanels;
-    $('cwCloseRail').onclick = cwClosePanels;
     cwBindPanelControls();
-    $('cwCloseInfo').onclick = function () {
-      var cw = cwEnsure();
-      if (window.innerWidth <= 1180) cw.infoNarrowOpen = false;
-      else cw.infoOpen = false;
-      if(window.innerWidth>720){cw.infoOpen=false;cwSavePanelPreferences();}
-      cwSyncPanels();
-      var button = $('cwInfoBtn');
-      if (button) button.focus();
-    };
-    $('cwAddAgent').onclick = function () { cwAgentModal(null); };
-    $('cwAddGroup').onclick = function () { cwGroupModal(); };
-    var learnBtn = $('cwLearn');
-    if (learnBtn) learnBtn.onclick = cwLearnCycle;
     cwLearnLoad();
-    var searchBox = $('cwSearch');
-    if (searchBox) {
-      searchBox.onkeydown = function (event) {
-        if (event.key !== 'Enter') return;
-        var query = this.value.trim();
-        if (!query) { cwEnsure().searchQuery = ''; cwEnsure().searchHits = []; cwRenderRail(); return; }
-        api('/api/cowork/search?q=' + encodeURIComponent(query) + '&limit=20')
-          .then(function (d) {
-            var cw = cwEnsure();
-            cw.searchQuery = query;
-            cw.searchHits = d.hits || [];
-            cwRenderRail();
-            if (!(d.hits || []).length) toast('No past messages match that.');
-          })
-          .catch(function (e) { toast(e.message, true); });
-      };
-    }
     cwLoad(true);
   }
 
   function cwExit() {
+    cwEnsure().profileOpen = false;
+    cwEnsure().profileRevision = (cwEnsure().profileRevision || 0) + 1;
     cwEnsure().connectionsOpen = false;
     cwEnsure().connectionRevision = (cwEnsure().connectionRevision || 0) + 1;
     cwSaveDraft();
@@ -894,16 +875,20 @@ export const COWORK_JS = String.raw`
 
   function cwSyncPanels() {
     var root = $('cw'), panel = $('cwInfoPanel');
-    if (!root || !panel) return;
+    if (!root) return;
     var messages = $('cwMsgs');
     var nearBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
-    var cw = cwEnsure(), narrow = window.innerWidth <= 1180;
+    var cw = cwEnsure();
+    cw.infoOpen = false; cw.infoNarrowOpen = false;
     if(!cwActiveConv())cw.railCollapsed=false;
     cw.panelWidth = window.innerWidth;
     var railOpen = window.innerWidth <= 720 && root.classList.contains('rail-open');
-    var infoOpen = !cw.connectionsOpen && !cw.galleryOpen && !railOpen && !!cwActiveConv() && (narrow ? !!cw.infoNarrowOpen : cw.infoOpen);
+    var pageOpen = !!(cw.profileOpen || cw.connectionsOpen);
+    root.classList.toggle('page-open',pageOpen);
+    root.classList.toggle('profile-open',!!cw.profileOpen);
+    var infoOpen = false;
     var overlayOpen = railOpen;
-    panel.style.display = infoOpen ? 'block' : 'none';
+    if (panel) { panel.style.display = 'none'; panel.inert = true; }
     root.classList.toggle('overlay-open', overlayOpen);
     root.classList.toggle('info-open', !!infoOpen);
     root.classList.toggle('rail-collapsed', window.innerWidth > 720 && !!cw.railCollapsed);
@@ -911,14 +896,18 @@ export const COWORK_JS = String.raw`
     $('cwPanelBackdrop').hidden = !overlayOpen;
     $('cwChat').inert = overlayOpen || (window.innerWidth <= 720 && infoOpen);
     var rail = root.querySelector('.cw-rail');
-    rail.inert = window.innerWidth <= 720 ? !railOpen : !!cw.railCollapsed;
+    if(rail)rail.inert = window.innerWidth <= 720 ? !railOpen : !!cw.railCollapsed;
+    else {root.classList.remove('rail-open','rail-collapsed','overlay-open');$('cwPanelBackdrop').hidden=true;$('cwChat').inert=false;}
     var button = $('cwInfoBtn');
-    if (button) { button.hidden = infoOpen; button.setAttribute('aria-expanded', String(infoOpen)); }
+    if (button) { button.hidden = false; button.setAttribute('aria-expanded', String(infoOpen)); button.setAttribute('aria-pressed', String(!!cw.profileOpen)); }
+    var currentChat = $('cwCurrentChat');
+    if (currentChat) currentChat.setAttribute('aria-pressed', String(!pageOpen));
     var back = $('cwBack');
-    if (back) { back.hidden=window.innerWidth>720&&!cw.railCollapsed;back.setAttribute('aria-expanded',String(window.innerWidth<=720?railOpen:!cw.railCollapsed)); }
+    if (back) { back.hidden=rail?window.innerWidth>720&&!cw.railCollapsed:false;back.setAttribute('aria-expanded',String(rail&&(window.innerWidth<=720?railOpen:!cw.railCollapsed))); }
     var closeInfo = $('cwCloseInfo');
     if (closeInfo) { var closeLabel = window.innerWidth <= 720 ? 'Back to chat' : 'Close panel'; closeInfo.setAttribute('aria-label', closeLabel); closeInfo.title = closeLabel; }
     if (nearBottom) messages.scrollTop = messages.scrollHeight;
+    cwRenderComputerActivity();
   }
 
   function cwClosePanels() {
@@ -1014,17 +1003,20 @@ export const COWORK_JS = String.raw`
     }).then(function (d) {
       cw.convs = d.conversations || [];
       cwRenderRail();
-      if (openFirst && cw.convs.length > 0 && !cwActiveConv()) cwOpenConv(cw.convs[cw.convs.length - 1].id);
+      if (openFirst && cw.convs.length > 0) cwOpenConv(cwActiveConv() ? cw.active : cw.convs[cw.convs.length - 1].id);
       else if (!cw.active) cwRenderChat();
+      if(cw.homeAction){var action=cw.homeAction;cw.homeAction=null;if(action.kind==='new')cwAgentModal(null);else if(action.kind==='profile')cwOpenProfile(action.agentId);else if(action.kind==='connections')cwOpenConnections(action.agentId);else if(action.agentId)cwOpenDm(action.agentId);}
     }).catch(function (e) { toast(e.message, true); });
   }
 
   function cwRenderRail() {
+    cwRenderNow();
+    cwRenderWidgets();
     var cw = cwEnsure();
     var el = $('cwRail');
-    if (!el) return;
     var cwRoot = $('cw');
     if (cwRoot) cwRoot.classList.toggle('cw-empty', cw.agents.length === 0);
+    if (!el) return;
     // Active search: show cross-session recall results instead of the roster.
     if (cw.searchQuery) {
       var hits = cw.searchHits || [];
@@ -1129,7 +1121,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     cw.selectedAgentId = agentId;
     var existing = cw.convs.find(function (c) { return c.kind === 'dm' && c.memberIds[0] === agentId; });
-    if (existing) { if (existing.id !== cw.active || cw.connectionsOpen) cwOpenConv(existing.id); else cwRenderRail(); return; }
+    if (existing) { if (existing.id !== cw.active || cw.connectionsOpen || cw.profileOpen) cwOpenConv(existing.id); else cwRenderRail(); return; }
     api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
       .then(function (d) { cw.convs.push(d.conversation); cwRenderRail(); cwOpenConv(d.conversation.id); })
       .catch(function (e) { toast(e.message, true); });
@@ -1137,6 +1129,8 @@ export const COWORK_JS = String.raw`
 
   function cwOpenConv(id, threadId) {
     var cw = cwEnsure();
+    cw.profileOpen = false;
+    cw.profileRevision = (cw.profileRevision || 0) + 1;
     cw.connectionsOpen = false;
     cw.connectionRevision = (cw.connectionRevision || 0) + 1;
     cwSaveDraft();
@@ -1154,6 +1148,7 @@ export const COWORK_JS = String.raw`
     cw.widgets = [];
     cw.msgs = cwLocalMessages();
     cw.lastSeq = 0;
+    cw.transcriptLoaded = false;
     cw.lastChange = 0;
     cw.referencedMessageIds = [];
     cw.busy = false;
@@ -1174,6 +1169,7 @@ export const COWORK_JS = String.raw`
     cwStartStream(id);
     cwPoll();
     cw.timer = setInterval(cwPoll, 2000);
+    if(typeof cwFinishProfileTaskNavigation==='function')cwFinishProfileTaskNavigation();
   }
 
   /** Switch between the Main thread and a topic thread; restarts the stream. */
@@ -1185,6 +1181,7 @@ export const COWORK_JS = String.raw`
     cw.threadId = threadId || null;
     cw.msgs = cwLocalMessages();
     cw.lastSeq = 0;
+    cw.transcriptLoaded = false;
     cw.lastChange = 0;
     cw.referencedMessageIds = [];
     cw.busy = false;
@@ -1212,34 +1209,39 @@ export const COWORK_JS = String.raw`
     if (!conv) return;
     var modal = document.createElement('div');
     modal.className = 'modal cw-modal';
+    modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-labelledby','cwThreadTitle');
     modal.innerHTML =
-      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">New thread</span><span style="flex:1"></span><button class="btn ghost" id="cwThCancel">Cancel</button></div>' +
+      '<div class="box"><div class="bar"><span id="cwThreadTitle">New thread</span><span style="flex:1"></span><button class="btn ghost" id="cwThCancel">Cancel</button></div>' +
       '<div class="cw-body">' +
-        '<label>Thread title</label><input type="text" id="cwThTitle" maxlength="120" placeholder="Launch copy">' +
-        '<label>Topic / brief (optional)</label><textarea id="cwThTopic" rows="2" placeholder="Only landing-page copy; leave pricing alone"></textarea>' +
+        '<label for="cwThTitle">Thread title</label><input type="text" id="cwThTitle" maxlength="120" placeholder="Launch copy">' +
+        '<label for="cwThTopic">Topic / brief (optional)</label><textarea id="cwThTopic" rows="2" placeholder="Only landing-page copy; leave pricing alone"></textarea>' +
         '<div class="cw-note">Threads keep unrelated topics apart. This thread gets its own messages and its own reply from the team; the Main thread stays clean.</div>' +
       '</div>' +
       '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwThSave">Create thread</button></div></div>';
     document.body.appendChild(modal);
-    modal.querySelector('#cwThCancel').onclick = function () { modal.remove(); };
+    var closeDialog = cwBindDialog(modal, '#cwThTitle');
+    modal.querySelector('#cwThCancel').onclick = closeDialog;
     modal.querySelector('#cwThSave').onclick = function () {
-      var title = $('cwThTitle').value.trim();
+      var save = modal.querySelector('#cwThSave');
+      if (save.disabled) return;
+      var title = modal.querySelector('#cwThTitle').value.trim();
       if (!title) { toast('Give the thread a title', true); return; }
-      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/threads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title, topic: $('cwThTopic').value.trim() }) })
+      save.disabled = true;
+      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/threads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title, topic: modal.querySelector('#cwThTopic').value.trim() }) })
         .then(function (d) {
-          modal.remove();
+          closeDialog();
+          if (cw.active !== conv.id) return;
           cw.threads = (cw.threads || []).concat([d.thread]);
           cwSwitchThread(d.thread.id);
         })
-        .catch(function (e) { toast(e.message, true); });
+        .catch(function (e) { save.disabled = false; toast(e.message, true); });
     };
-    setTimeout(function () { var t = $('cwThTitle'); if (t) t.focus(); }, 0);
   }
 
   function cwRenderChat() {
     cwEnsure().galleryOpen = false;
     var cw = cwEnsure();
-    if (cw.connectionsOpen) return;
+    if (cw.connectionsOpen || cw.profileOpen) return;
     var chat = $('cwChat');
     if (!chat) return;
     var conv = cwActiveConv();
@@ -1247,6 +1249,7 @@ export const COWORK_JS = String.raw`
     cwApplyCharacterTheme();
     if (!conv) {
       chat.innerHTML =
+        '<button class="workspace-search-trigger" id="cwPageSearch" aria-label="Search agents and tools" title="Search">'+cwIcon('search')+'</button>'+cwPageNavHtml('chat',cwProfileAgent())+
         '<div class="cw-hero">' +
           '<span class="cw-hero-ico">' + cwIcon('users') + '</span>' +
           '<h1>Your team, in one place</h1>' +
@@ -1255,36 +1258,44 @@ export const COWORK_JS = String.raw`
           (cw.agents.length === 0 ? '<div class="cw-hero-back"><button class="btn ghost" id="cwHeroBack">Back to workspace</button></div>' : '') +
         '</div>';
       $('cwHeroAgent').onclick = function () { cwAgentModal(null); };
+      cwBindTopNav();
       $('cwHeroGroup').onclick = function () { cwGroupModal(); };
       var heroBack = $('cwHeroBack');
       if (heroBack) heroBack.onclick = cwExit;
-      $('cwInfo').innerHTML = '';
+      if ($('cwInfo')) $('cwInfo').innerHTML = '';
       cwSyncPanels();
+      cwBindFloatingComposer();
       return;
     }
     var members = cwConvMembers(conv);
     var activeThread = cw.threadId ? (cw.threads || []).filter(function (t) { return t.id === cw.threadId; })[0] : null;
-    var headAva = conv.kind === 'group'
-      ? '<span class="cw-ava" style="background:var(--selected);border:1px solid var(--border2);color:var(--muted)">' + cwIcon('users') + '</span>'
-      : (members[0] ? cwAva(members[0]) : '<span class="cw-ava"></span>');
+    var headAgent = conv.kind === 'group' ? members.find(function(member){return member.id===(cw.selectedAgentId||conv.chiefId);})||members[0] : members[0];
+    var headAva = headAgent ? cwAva(headAgent) : '<span class="cw-ava">'+cwAvaImg({shape:'dot-blue',color:'#5ba8ff'})+'</span>';
     chat.innerHTML =
       '<div class="cw-chat-head">' +
-        '<button class="cw-info-toggle cw-mobile-only" id="cwBack" aria-expanded="false" aria-label="Open chats" title="Chats" aria-controls="cwRail">' + cwIcon('chat') + '</button>' +
-        '<div class="cw-chat-avatar"><span id="cwChatAvatar" role="img" aria-label="' + esc((members[0] && members[0].name) || conv.title) + '">' + headAva + '</span><span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span><i class="cw-persona-tool" aria-hidden="true" hidden></i></span></div>' +
+        '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +
+        '<nav class="cw-top-nav" aria-label="Agent navigation">' +
+          '<button type="button" id="cwHomeBtn" aria-label="Home" title="Home">' + cwIcon('home') + '<span>Home</span></button>' +
+          '<button type="button" id="cwCurrentChat" aria-label="Current agent chat" title="Current agent chat" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Chat</span></button>' +
+          '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
+        '</nav>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
+        '<span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span><i class="cw-persona-tool" aria-hidden="true" hidden></i></span>' +
         '<span id="cwMemberNames">' + esc((activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ')) + '</span>' +
         '<span id="cwMissionBadge"' + ((cw.missions || []).some(function (m) { return m.conversationId === conv.id && m.status === 'running'; }) ? '' : ' hidden') + '>Mission running</span>' +
         (conv.telegram && conv.telegram.enabled ? '<span class="chip ok" title="Telegram gateway on">' + cwIcon('plane') + 'Telegram</span>' : '') +
         (conv.schedule && conv.schedule.enabled ? '<span class="chip" title="Scheduled messages on">' + cwIcon('clock') + esc(conv.schedule.every) + '</span>' : '') + '</div>' +
         '<button class="cw-gallery-toggle" id="cwMediaBtn" aria-label="Media and files" title="Media and files">' + cwIcon('image') + '</button>' +
-        '<button class="cw-panel-toggle" id="cwInfoBtn" aria-label="Chat panel" title="Chat panel" aria-controls="cwInfoPanel" aria-expanded="false">' + cwIcon('panel') + '</button>' +
+        '<button class="cw-computer-toggle" id="cwComputerBtn" aria-label="Computer activity" title="Computer activity" aria-controls="cwInlineComputer" hidden>' + cwIcon('monitor') + '</button>' +
       '</div>' +
       '<div class="cw-msgs" id="cwMsgs"></div>' +
-      '<div class="cw-composer-wrap">' +
+      '<div class="cw-composer-wrap" id="cwComposerWrap">' +
+        '<div class="cw-clean-activity" id="cwCleanActivity" hidden><span class="cw-clean-status" id="cwCleanStatus" role="status" aria-live="polite" aria-atomic="true"><span id="cwCleanLabel"></span></span><button type="button" id="cwCleanDetails" aria-label="View work details" hidden></button></div>' +
         '<div class="cw-work" id="cwWork"></div>' +
         '<div class="cw-composer-folders" id="cwComposerFolders" aria-label="Tagged folders" hidden></div>' +
         '<div class="cw-pending" id="cwPending"></div>' +
         '<div class="cw-pending cw-references" id="cwReferences" aria-label="Referenced messages"></div>' +
+        cwWidgetIntentHtml() +
         '<div class="cw-mentions" id="cwMentions"' + (conv.memberIds.length > 1 ? '' : ' hidden') + '></div>' +
         '<div class="cw-composer"><input type="file" id="cwFile" multiple hidden>' +
         '<button class="cw-attach" id="cwPlus" title="Files, mission, folder or schedule" aria-label="Add files, mission, folder or schedule" popovertarget="cwPlusMenu">' + cwIcon('plus') + '</button>' +
@@ -1299,18 +1310,15 @@ export const COWORK_JS = String.raw`
         '</div></div>' +
       '</div>';
     $('cwMediaBtn').onclick = function () { cwOpenGallery(); };
-    $('cwInfoBtn').onclick = function () {
-      if (window.innerWidth <= 1180) cw.infoNarrowOpen = !cw.infoNarrowOpen;
-      else cw.infoOpen = !cw.infoOpen;
-      if(window.innerWidth>720){if(window.innerWidth<=1180)cw.infoOpen=cw.infoNarrowOpen;cwSavePanelPreferences();}
-      cwSyncPanels();
-      if (cw.infoNarrowOpen && window.innerWidth <= 720) $('cwCloseInfo').focus();
-    };
+    $('cwInfoBtn').onclick = function () { cwOpenProfile(); };
+    cwBindTopNav();
     cwSyncPanels();
+    cwRenderWidgets();
     var back = $('cwBack');
-    if (back) back.onclick = function () { var el = $('cw');if(window.innerWidth>720){cw.railCollapsed=false;cwSavePanelPreferences();cwSyncPanels();$('cwCollapseRail').focus();}else{if(el)el.classList.toggle('rail-open');cw.infoNarrowOpen=false;cwSyncPanels();$('cwCloseRail').focus();} };
+    if (back) back.onclick = function () { wsOpen('cowork'); };
     var input = $('cwInput');
     cwRestoreDraft(input);
+    cwRenderWidgetIntent();
     input.addEventListener('paste', cwPasteImages);
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); cwSend(); } });
     input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); });
@@ -1348,6 +1356,7 @@ export const COWORK_JS = String.raw`
     cwRenderReferences();
     cwRenderInfo();
     cwRenderTyping();
+    cwBindFloatingComposer();
   }
 
   // Updating the roster must preserve the user's draft and cursor.
@@ -1356,9 +1365,13 @@ export const COWORK_JS = String.raw`
     var conv = cwActiveConv();
     if (!conv) return;
     var members = cwConvMembers(conv);
+    var navAvatar=$('cwChatAvatar'),navAgent=conv.kind==='group'?members.find(function(member){return member.id===(cw.selectedAgentId||conv.chiefId);})||members[0]:members[0];
+    if(navAvatar&&navAgent){var avatarKey=JSON.stringify([navAgent.id,navAgent.avatar,cw.busy,cw.working]);if(navAvatar._avatarKey!==avatarKey){navAvatar._avatarKey=avatarKey;navAvatar.innerHTML=cwAva(navAgent);}}
     var activeThread = cw.threadId ? (cw.threads || []).filter(function (thread) { return thread.id === cw.threadId; })[0] : null;
     var title = $('cwChatTitle');
     if (title) title.textContent = activeThread ? activeThread.title : conv.title;
+    var shellTitle = $('cwShellTitle');
+    if (shellTitle) shellTitle.textContent = activeThread ? activeThread.title : conv.title;
     var names = $('cwMemberNames');
     if (names) names.textContent = (activeThread ? conv.title + ' · ' : '') + members.map(function (m) { return '@' + m.name; }).join(' · ');
     var input = $('cwInput');
@@ -1404,17 +1417,27 @@ export const COWORK_JS = String.raw`
     return (value / 1048576).toFixed(1) + ' MB';
   }
 
-  // Shared files live on the gallery page; the transcript keeps a compact link.
-  function cwFilesHtml(ids, role) {
+  // Images appear directly in chat; other files keep a compact gallery link.
+  function cwFilesHtml(ids, role, skipImages) {
     var files = (ids || []).map(cwArtifact).filter(Boolean);
-    if (!files.length) return '';
+    var images=files.filter(function(file){return /^image\//i.test(file.mime||'');});
+    var photos=skipImages?'':cwPhotoCardsHtml(images,role);
+    files=files.filter(function(file){return !/^image\//i.test(file.mime||'');});
+    if (!files.length) return photos;
     var cw=cwEnsure(),seen=cw.mediaStackSeen||(cw.mediaStackSeen=new Set()),key=files.map(function(file){return file.id;}).join(':'),fresh=!seen.has(key);seen.add(key);
     var sheets=files.slice(0,3).map(function(file,index){var mime=file.mime||'',preview=/^image\//i.test(mime)?'<img src="/api/cowork/artifacts/'+encodeURIComponent(file.id)+'?inline=1" alt="" loading="lazy" decoding="async">':cwIcon(/^video\//i.test(mime)?'play':/^audio\//i.test(mime)?'play':'file');return '<span class="cw-stack-sheet" style="--stack-delay:'+index*55+'ms">'+preview+'</span>';}).join('');
-    return '<div class="cw-media-stack-row'+(role==='user'?' me':'')+'"><button class="cw-media-stack-trigger'+(fresh?' is-new':'')+'" data-cwgallery="' + esc(files[0].id) + '" aria-label="Open gallery: '+files.length+' shared '+(files.length===1?'file':'files')+'" title="' + esc(files.map(function(file){return file.name;}).join(', ')) + '"><span class="cw-media-stack" aria-hidden="true">'+sheets+'</span><span class="cw-media-stack-copy"><strong>'+(files.length===1?esc(files[0].name):files.length+' shared files')+'</strong><span>Open gallery '+cwIcon('back')+'</span></span></button></div>';
+    return photos + '<div class="cw-media-stack-row'+(role==='user'?' me':'')+'"><button class="cw-media-stack-trigger'+(fresh?' is-new':'')+'" data-cwgallery="' + esc(files[0].id) + '" aria-label="Open gallery: '+files.length+' shared '+(files.length===1?'file':'files')+'" title="' + esc(files.map(function(file){return file.name;}).join(', ')) + '"><span class="cw-media-stack" aria-hidden="true">'+sheets+'</span><span class="cw-media-stack-copy"><strong>'+(files.length===1?esc(files[0].name):files.length+' shared files')+'</strong><span>Open gallery '+cwIcon('back')+'</span></span></button></div>';
   }
 
   function cwBindFileCards(root) {
+    cwBindPhotoMotion(root);
     if (!root) return;
+    root.querySelectorAll('[data-cwphoto]').forEach(function (button) {
+      button.onclick = function () {
+        var linked=button.hasAttribute('data-cwphoto-url')?Array.from(button.parentElement.querySelectorAll('[data-cwphoto]')).map(function(card){return card.hasAttribute('data-cwphoto-url')?{id:card.getAttribute('data-cwphoto'),url:card.getAttribute('data-cwphoto-url'),name:card.querySelector('img').alt}:cwArtifact(card.getAttribute('data-cwphoto'));}).filter(Boolean):null;
+        cwGalleryLightbox(button.getAttribute('data-cwphoto'), button, linked);
+      };
+    });
     root.querySelectorAll('[data-cwpreview]').forEach(function (button) {
       button.onclick = function () { cwPreviewFile(button.getAttribute('data-cwpreview')); };
     });
@@ -1656,6 +1679,7 @@ export const COWORK_JS = String.raw`
   }
 
   function cwRenderWork() {
+    cwRenderNow();
     var cw = cwEnsure();
     var el = $('cwWork');
     if (!el) return;
@@ -1663,7 +1687,7 @@ export const COWORK_JS = String.raw`
     var nearBottom = messages && messages.scrollHeight - messages.scrollTop - messages.clientHeight < 120;
     var todos = (cw.todos || []).filter(function (todo) { return todo.status !== 'cancelled'; });
     var active = todos.filter(function (todo) { return todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'blocked'; });
-    var todoHtml = todos.length ? '<details class="cw-todos"' + ((cw.todoOpen === undefined ? active.length > 0 : cw.todoOpen) ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
+    var todoHtml = todos.length ? '<details class="cw-todos"' + (!!cw.todoOpen ? ' open' : '') + '><summary>' + active.length + ' active · ' + todos.length + ' total todo' + (todos.length === 1 ? '' : 's') + '</summary>' + todos.map(function (todo) {
       var owner = cwAgentById(todo.agentId);
       return '<div class="cw-todo ' + esc(todo.status) + '" title="' + esc(todo.note || '') + '"><span>' + (todo.status === 'done' ? '✓' : todo.status === 'blocked' ? '!' : '○') + '</span><b>' + esc(todo.text) + '</b><div class="cw-todo-meta"><span>' + esc(todo.status.replace('_', ' ')) + '</span><span class="cw-todo-owner">' + esc(owner ? '@' + owner.name : '') + '</span></div></div>';
     }).join('') + '</details>' : '';
@@ -1901,15 +1925,17 @@ export const COWORK_JS = String.raw`
       var via = '';
       if (m.via === 'telegram') via = ' · Telegram' + (m.from ? ' — ' + esc(m.from) : '');
       else if (m.via === 'schedule') via = ' · schedule';
-      return '<div class="cw-row me"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(m.text, members, false) + cwMessageActionsHtml(m) + '</div></div>' + cwChatMediaHtml(m.text, 'user', m.id) + cwFilesHtml(m.artifactIds, 'user');
+      var userImages=cwChatImageParts(m.text,m.artifactIds);
+      return '<div class="cw-row me" data-cwentrance="' + esc(m.id || '') + '"><div class="cw-bubble"><div class="cw-meta"><span class="nm">You</span><span class="tg">' + via + ' · ' + cwTime(m.ts) + '</span></div>' + cwBody(userImages.text, members, false) + cwMessageActionsHtml(m) + '</div></div>' + cwPhotoCardsHtml(userImages.images,'user') + cwChatMediaHtml(m.text, 'user', m.id) + cwFilesHtml(m.artifactIds, 'user', true);
     }
+    var reply=cwVisibleReply(m.text),replyImages=cwChatImageParts(reply,m.artifactIds);
     return cwReplyHtml(agent || { name: m.agentName || 'agent', avatar: { color: '#8f80ff', shape: 'cube' } }, cwTime(m.ts),
-      cwBody(cwVisibleReply(m.text), members, false), cwMessageActionsHtml(m)) + cwChatMediaHtml(cwVisibleReply(m.text), 'agent', m.id) + cwFilesHtml(m.artifactIds, 'agent');
+      cwBody(replyImages.text, members, false), cwMessageActionsHtml(m), m.id) + cwPhotoCardsHtml(replyImages.images,'agent') + cwChatMediaHtml(reply, 'agent', m.id) + cwFilesHtml(m.artifactIds, 'agent', true);
   }
 
   // Shared by Cowork replies and the main agent's completion report.
-  function cwReplyHtml(agent, meta, body, actions) {
-    return '<div class="cw-row">' + cwAva(agent) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(agent.name) + '</span><span class="tg">' + esc(meta) + '</span></div>' + body + (actions || '') + '</div></div>';
+  function cwReplyHtml(agent, meta, body, actions, messageId) {
+    return '<div class="cw-row"' + (messageId ? ' data-cwentrance="' + esc(messageId) + '"' : '') + '>' + cwAva(agent) + '<div class="cw-bubble"><div class="cw-meta"><span class="nm">' + esc(agent.name) + '</span><span class="tg">' + esc(meta) + '</span></div>' + body + (actions || '') + '</div></div>';
   }
 
   // Older stored replies can contain raw tool protocol text. Hide that display
@@ -2002,18 +2028,49 @@ export const COWORK_JS = String.raw`
     if(coords){var lat=coords[0],lon=coords[1],dx=.018,dy=.012;embed='https://www.openstreetmap.org/export/embed.html?bbox='+encodeURIComponent([Math.max(-180,lon-dx),lat-dy,Math.min(180,lon+dx),lat+dy].join(','))+'&layer=mapnik&marker='+encodeURIComponent(lat+','+lon);label=lat.toFixed(4)+', '+lon.toFixed(4);}
     return {kind:'map',url:url.href,key:'map:'+url.href,title:label,embed:embed,provider:osm?'OpenStreetMap':'Google Maps'};
   }
+  function cwMarkdownImages(text, replace) {
+    var source=String(text||''),pattern=/!\[([^\]\n]*)\]\(/g,result='',last=0,match;
+    while((match=pattern.exec(source))){
+      var start=pattern.lastIndex,index=start,depth=1,quote=false;
+      for(;index<source.length;index++){
+        var char=source[index];
+        if(char==='\n'||char==='\r')break;
+        if(char==='\\'){index++;continue;}
+        if(char==='"'&&(quote||/\s/.test(source[index-1]||''))){quote=!quote;continue;}
+        if(!quote){if(char==='(')depth++;else if(char===')'&&!--depth)break;}
+      }
+      if(depth)continue;
+      var destination=/^\s*(\S+?)(?:\s+"([^"\n]*)")?\s*$/.exec(source.slice(start,index));
+      if(!destination)continue;
+      var url=destination[1].replace(/\\([()])/g,'$1');
+      if(url[0]==='<'&&url[url.length-1]==='>')url=url.slice(1,-1);
+      result+=source.slice(last,match.index)+replace(source.slice(match.index,index+1),match[1],url,destination[2]);
+      last=index+1;pattern.lastIndex=last;
+    }
+    return result+source.slice(last);
+  }
   function cwRichLinks(text) {
-    var links=[],seen=new Set(),prose=String(text||'').replace(/\x60{3}[\s\S]*?(?:\x60{3}|$)|~{3}[\s\S]*?(?:~{3}|$)|\x60[^\x60\n]+\x60/g,'');
+    var links=[],seen=new Set(),imageSources=new Set(),prose=String(text||'').replace(/\x60{3}[\s\S]*?(?:\x60{3}|$)|~{3}[\s\S]*?(?:~{3}|$)|\x60[^\x60\n]+\x60/g,'');
+    prose=cwMarkdownImages(prose,function(_all,_alt,url){try{imageSources.add(new URL(url).href);}catch(e){}return '';});
     var labels={};prose.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,function(_all,label,url){labels[url]=label;return _all;});
     (prose.match(/https?:\/\/[^\s<>"\x60]+/g)||[]).forEach(function(raw){
       var destination=raw.replace(/[.,;!?\])}]+$/g,''),video=cwVideoEmbed(destination),item;
       if(video){var yt=video.indexOf('youtube-nocookie.com')>=0;item={kind:'video',url:destination,key:video,embed:video,title:labels[destination]||(yt?'Video on YouTube':'Video on Vimeo'),provider:yt?'YouTube':'Vimeo',thumbnail:yt?'https://i.ytimg.com/vi/'+video.split('/').pop()+'/hqdefault.jpg':''};}
       else item=cwMapLink(destination);
+      if(!item&&typeof outUrlKind==='function'){
+        var kind=outUrlKind({url:destination}),safe=typeof outSafeUrl==='function'?outSafeUrl(destination):'';
+        if(kind&&safe){var parsed=new URL(safe),name=parsed.pathname.split('/').pop()||parsed.hostname;try{name=decodeURIComponent(name);}catch(e){}item={kind:kind,url:safe,key:kind+':'+safe,title:labels[destination]||name,provider:parsed.hostname};}
+      }
+      if(item&&item.kind==='image'&&imageSources.has(item.url))return;
       if(!item||seen.has(item.key))return;seen.add(item.key);if(labels[destination])item.title=labels[destination];links.push(item);
     });return links;
   }
   function cwRichCardHtml(item,index) {
     var cw=cwEnsure(),seen=cw.richMediaSeen||(cw.richMediaSeen=new Set()),fresh=!seen.has(item.key);seen.add(item.key);
+    if(!item.embed&&item.kind!=='map'&&typeof outRenderBlock==='function'){
+      var shared=outRenderBlock(item.kind,item);
+      if(shared)return '<article class="cw-rich-card'+(fresh?' is-new':'')+'" data-rich-key="'+esc(item.key)+'" style="--media-delay:'+Math.min((index||0)*40,200)+'ms">'+shared+'</article>';
+    }
     var map=item.kind==='map',preview;
     if(map)preview='<span class="cw-map-pin">'+cwIcon('map')+'<span>'+(item.embed?'View interactive map':'Open location')+'</span></span>';
     else preview=(item.thumbnail?'<img src="'+esc(item.thumbnail)+'" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">':'')+'<span class="cw-rich-play">'+cwIcon('play')+'</span>';
@@ -2021,8 +2078,36 @@ export const COWORK_JS = String.raw`
     return '<article class="cw-rich-card'+(fresh?' is-new':'')+'" data-rich-key="'+esc(item.key)+'" style="--media-delay:'+Math.min((index||0)*40,200)+'ms"><div class="cw-embed"><div class="cw-rich-visual'+(map?' cw-map-cover':'')+'">'+control+'</div></div><div class="cw-rich-copy"><div><strong>'+esc(item.title)+'</strong><small>'+esc(item.provider)+'</small></div><a href="'+esc(item.url)+'" target="_blank" rel="noopener noreferrer" aria-label="Open '+esc(item.title)+' on '+esc(item.provider)+'">Open '+cwIcon('external')+'</a></div></article>';
   }
   function cwChatMediaHtml(text,role,messageId) {
-    var links=cwRichLinks(text),signature=JSON.stringify(links.map(function(link){return [link.key,link.title,link.url];}));
-    return links.length?'<div class="cw-rich-grid cw-chat-media-grid'+(role==='user'?' me':'')+'" data-cwmediagroup="'+esc(messageId||'')+'" data-media-signature="'+esc(signature)+'" aria-label="Videos and maps">'+links.map(cwRichCardHtml).join('')+'</div>':'';
+    var links=cwRichLinks(text).filter(function(link){return link.kind!=='image';}),signature=JSON.stringify(links.map(function(link){return [link.key,link.title,link.url];}));
+    return links.length?'<div class="cw-rich-grid cw-chat-media-grid'+(role==='user'?' me':'')+'" data-cwmediagroup="'+esc(messageId||'')+'" data-media-signature="'+esc(signature)+'" aria-label="Shared media and links">'+links.map(cwRichCardHtml).join('')+'</div>':'';
+  }
+  function cwChatImageParts(text,artifactIds) {
+    var images=[],seen=new Set();
+    function add(spec) {
+      if(typeof outSafeUrl!=='function')return false;
+      var url=outSafeUrl(typeof spec==='string'?spec:spec.url||spec.src||spec.href,'image');if(!url)return false;
+      var artifact=null,key=url;
+      try { var parsed=new URL(url,window.location.href),match=/^\/api\/cowork\/artifacts\/([^/]+)$/.exec(parsed.pathname);if(match&&parsed.origin===new URL(window.location.href).origin)artifact=cwArtifact(decodeURIComponent(match[1]));if(!artifact)key=parsed.href; } catch(e) {}
+      if(artifact)key=artifact.id;
+      if(!seen.has(key)){seen.add(key);images.push(artifact||{id:'url:'+key,url:url,name:spec.title||spec.alt||spec.caption||'Shared image',alt:spec.alt||spec.caption});}
+      return true;
+    }
+    var prose=String(text||'').split(/(\x60{3}[\s\S]*?(?:\x60{3}|$)|~{3}[\s\S]*?(?:~{3}|$)|\x60[^\x60\n]+\x60)/g).map(function(part,index){
+      if(index%2){
+        var output=/^\x60{3,}[ \t]*output[ \t]+(image|map-image|map_image|images|gallery)[^\n]*\n([\s\S]*?)\n\x60{3,}$/i.exec(part);
+        if(!output)return part;
+        var input;try{input=JSON.parse(output[2]);}catch(e){input=output[2].trim();}
+        var list=Array.isArray(input)?input:[input],valid=list.length&&typeof outSafeUrl==='function'&&list.every(function(item){return item&&outSafeUrl(typeof item==='string'?item:item.url||item.src||item.href,'image');});
+        if(!valid)return part;list.forEach(add);return '';
+      }
+      return cwMarkdownImages(part,function(all,alt,url,title){return add({url:url,alt:alt,title:title||alt})?'':all;});
+    }).join('');
+    cwRichLinks(text).filter(function(link){return link.kind==='image';}).forEach(add);
+    (artifactIds||[]).map(cwArtifact).filter(function(file){return file&&/^image\//i.test(file.mime||'');}).forEach(function(file){if(!seen.has(file.id)){seen.add(file.id);images.push(file);}});
+    return {text:prose,images:images};
+  }
+  function cwChatImageLinksHtml(text,role) {
+    return cwPhotoCardsHtml(cwChatImageParts(text).images,role);
   }
   function cwBindRichCards(root) {
     root.querySelectorAll('[data-cwrichload]').forEach(function(button){button.onclick=function(){
@@ -2074,6 +2159,15 @@ export const COWORK_JS = String.raw`
       outs.push(html);
       return lead + '\x00OUT' + (outs.length - 1) + '\x00';
     });
+    // Markdown images, including map snapshots, share the same image viewer as
+    // structured outputs. Code samples stay literal and never load their URLs.
+    laid = laid.split(/(\x60{3}[\s\S]*?(?:\x60{3}|$)|~{3}[\s\S]*?(?:~{3}|$)|\x60[^\x60\n]+\x60)/g).map(function(part,index){
+      if(index%2||typeof outRenderBlock!=='function')return part;
+      return cwMarkdownImages(part,function(all,alt,url,title){
+        var html=outRenderBlock('image',{url:url,alt:alt,title:title||alt});
+        if(!html)return all;outs.push(html);return '\x00OUT'+(outs.length-1)+'\x00';
+      });
+    }).join('');
     var stripped = laid.replace(/(^|\n)(\|[^\n]*\|\n\|[\s:|-]*\|(?:\n\|[^\n]*\|)+)/g, function (all, lead, block) {
       var html = cwTableHtml(block.replace(/^\n/, ''));
       if (!html) return all;
@@ -2088,9 +2182,14 @@ export const COWORK_JS = String.raw`
       var item=richLinks.find(function(link){return new URL(link.url).href===canonical;});if(!item)return '';
       richAnchors.push('<a href="'+esc(item.url)+'" target="_blank" rel="noopener noreferrer">'+esc(item.title)+'</a>');return '\x00RICH'+(richAnchors.length-1)+'\x00';
     }
-    var linked=stripped.split(/(\x60{3}[\s\S]*?(?:\x60{3}|$)|\x60[^\x60\n]+\x60)/g).map(function(part,index){if(index%2)return part;return part.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,function(all,_label,url){return richAnchor(url)||all;}).replace(/https?:\/\/[^\s<>"\x60]+/g,function(raw){var destination=raw.replace(/[.,;!?\])}]+$/g,'');var anchor=richAnchor(destination);return anchor?anchor+raw.slice(destination.length):raw;});}).join('');
+    var linked=stripped.split(/(\x60{3}[\s\S]*?(?:\x60{3}|$)|~{3}[\s\S]*?(?:~{3}|$)|\x60[^\x60\n]+\x60)/g).map(function(part,index){if(index%2)return part;return part.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,function(all,_label,url){return richAnchor(url)||all;}).replace(/https?:\/\/[^\s<>"\x60]+/g,function(raw){
+      var destination=raw.replace(/[.,;!?\])}]+$/g,''),anchor=richAnchor(destination),url;
+      if(!anchor){try{url=new URL(destination);}catch(e){return raw;}if(!/^https?:$/.test(url.protocol)||url.username||url.password)return raw;richAnchors.push('<a href="'+esc(url.href)+'" target="_blank" rel="noopener noreferrer">'+esc(destination)+'</a>');anchor='\x00RICH'+(richAnchors.length-1)+'\x00';}
+      return anchor+raw.slice(destination.length);
+    });}).join('');
     var out = esc(linked);
     out = out.replace(/\x60\x60\x60([\s\S]*?)\x60\x60\x60/g, function (all, code) { return '</span>' + cwCodeHtml(code) + '<span>'; });
+    out = out.replace(/~{3}([\s\S]*?)~{3}/g, function (all, code) { return '</span>' + cwCodeHtml(code) + '<span>'; });
     out = out.replace(/\x60([^\x60\n]+)\x60/g, function (all, code) { return '<code>' + code + '</code>'; });
     // Emphasis the bubble can render. Bold-italic runs are handled first so a
     // '***…***' reply never leaves a stray asterisk behind. Italic markers must
@@ -2100,7 +2199,6 @@ export const COWORK_JS = String.raw`
     out = out.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
     out = out.replace(/(^|[^*\w])\*(\S(?:[^*\n]*[^*\s])?)\*(?!\*)/g, '$1<i>$2</i>');
     out = out.replace(/(^|[^_\w])_(\S(?:[^_\n]*[^_\s])?)_(?![\w_])/g, '$1<i>$2</i>');
-    out = out.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
     (members || []).forEach(function (m) {
       var safe = String(m.name).replace(new RegExp('[^A-Za-z0-9_.\\-]', 'g'), '');
       if (!safe) return;
@@ -2116,7 +2214,7 @@ export const COWORK_JS = String.raw`
     out = out.replace(/\n/g, '<br>');
     // Removed rules leave blank lines behind; a bubble never starts or ends on one.
     out = out.replace(/^(?:[ \t]*<br>)+/, '').replace(/(?:<br>[ \t]*)+$/, '');
-    return '<span>' + out + '</span>' + (includeRich!==false&&richLinks.length ? '<div class="cw-rich-grid" aria-label="Videos and maps">' + richLinks.map(cwRichCardHtml).join('') + '</div>' : '');
+    return '<span>' + out + '</span>' + (includeRich!==false&&richLinks.length ? '<div class="cw-rich-grid" aria-label="Shared media and links">' + richLinks.map(cwRichCardHtml).join('') + '</div>' : '');
   }
 
   function cwToolActivityTitle(tool) {
@@ -2220,7 +2318,7 @@ export const COWORK_JS = String.raw`
       drafts[id] = input.value;
       if (input === document.activeElement) focused = { id: id, start: input.selectionStart, end: input.selectionEnd };
     });
-    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<div id="cwLive" hidden></div>');
+    cwReplaceTranscript(wrap, cwTranscriptHtml() + '<div class="cw-row cw-working-row" id="cwWorkingBubble" hidden><div class="cw-working-bubble" role="status" aria-live="polite" aria-atomic="true"><span class="cw-working-dot" aria-hidden="true"></span><span id="cwWorkingLabel"></span></div></div><div id="cwLive" hidden></div>');
     wrap.querySelectorAll('details[data-cwworkhistory]').forEach(function (details) {
       var saved = workHistoryState[details.getAttribute('data-cwworkhistory')];
       if (saved) { details.open = saved.open; details.querySelector('ol').scrollTop = saved.scroll; }
@@ -2237,6 +2335,7 @@ export const COWORK_JS = String.raw`
       if (drafts[id] !== undefined) input.value = drafts[id];
       if (focused && focused.id === id) { input.focus({ preventScroll: true }); input.setSelectionRange(focused.start, focused.end); }
     });
+    cwAnimateChatBubbles(wrap);
     cwBindFileCards(wrap);
     cwBindRequests(wrap);
     wrap.querySelectorAll('.cw-message-more').forEach(function (b) { b.onclick = function () {
@@ -2264,10 +2363,21 @@ export const COWORK_JS = String.raw`
 
   function cwReplaceTranscript(wrap,html) {
     var holder=document.createElement('div');holder.innerHTML=html;
-    var media=new Map(),next=Array.from(holder.children);
+    var media=new Map(),messages=new Map(),next=Array.from(holder.children);
     Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwmediagroup');if(id)media.set(id,node);});
+    Array.from(wrap.children).forEach(function(node){var id=node.getAttribute('data-cwentrance');if(id)messages.set(id,node);});
     var keep=new Set();
-    next=next.map(function(node){var id=node.getAttribute('data-cwmediagroup'),old=id&&media.get(id);if(old&&old.getAttribute('data-media-signature')===node.getAttribute('data-media-signature')){keep.add(old);return old;}return node;});
+    next=next.map(function(node){
+      var id=node.getAttribute('data-cwmediagroup'),old=id&&media.get(id);
+      if(old&&old.getAttribute('data-media-signature')===node.getAttribute('data-media-signature')){keep.add(old);return old;}
+      var messageId=node.getAttribute('data-cwentrance'),previous=messageId&&messages.get(messageId),signature=node.outerHTML;
+      if(previous){if(previous._cwTranscriptSignature!==signature){previous.innerHTML=node.innerHTML;previous.className=node.className;previous._cwTranscriptSignature=signature;}keep.add(previous);return previous;}
+      if(messageId)node._cwTranscriptSignature=signature;
+      if(node.id==='cwLive'||node.id==='cwWorkingBubble'){var live=Array.from(wrap.children).find(function(item){return item.id===node.id;});if(live){keep.add(live);return live;}}
+      return node;
+    });
+    var computer=Array.from(wrap.children).find(function(node){return node.id==='cwInlineComputer';});
+    if(computer){keep.add(computer);next.push(computer);}
     // Leave live players connected. Inserting surrounding messages does not
     // reload their iframe or reset playback when an agent posts an update.
     Array.from(wrap.children).forEach(function(node){if(!keep.has(node))node.remove();});
@@ -2293,9 +2403,12 @@ export const COWORK_JS = String.raw`
     if (tool === 'browse' || tool === 'web_fetch') return 'Checking the web for the requested information…';
     if (tool === 'read_file' || tool === 'list_files' || tool === 'search_files') return 'Checking the relevant files…';
     if (tool === 'write_file' || tool === 'apply_edit') return 'Updating the requested files…';
+    if (tool === 'create_document') return 'Preparing the requested document…';
+    if (tool === 'share_file' || tool === 'receive_file') return 'Preparing the file preview…';
+    if (tool === 'desktop_screenshot' || tool === 'desktop_input') return 'Working on the workspace desktop…';
     if (tool === 'ssh_exec') return 'Checking the connected server…';
     if (tool === 'run_command' || tool === 'computer_process') return 'Running a check in the workspace…';
-    if (tool === 'mcp_call') return 'Checking the connected service…';
+    if (tool === 'mcp_call' || tool === 'connected_apps' || tool === 'query_connection' || tool === 'inspect_connection_response') return 'Checking the connected service…';
     if (tool === 'search_history') return 'Checking earlier conversation context…';
     return tool ? 'Working on the next step…' : '';
   }
@@ -2308,6 +2421,8 @@ export const COWORK_JS = String.raw`
   }
 
   function cwRenderProgress() {
+    cwRenderComputerActivity();
+    cwRenderCleanActivity();
     var cw = cwEnsure();
     var wrap = $('cwMsgs');
     var live = $('cwLive');
@@ -2320,7 +2435,7 @@ export const COWORK_JS = String.raw`
     var key = JSON.stringify(ps.map(function (p) { var a = cwAgentById(p.agentId); return [p.agentId, p.agentName, a && a.avatar]; }));
     if (live._progressKey !== key) {
       live.innerHTML = ps.map(function (p) {
-        return '<div class="cw-row cw-live-row">' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble cw-live-bubble"><span class="cw-live-kicker">Current activity</span><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span class="cw-progress-activity activity-indicator"><span class="cw-phase-dot"></span>${ACTIVITY_MARK_HTML}<span class="cw-tool-ico"></span><span class="wtext"></span></span></div><div class="reasoning-stream" aria-label="Model reasoning" hidden></div><div class="cw-progress-text" style="white-space:pre-wrap"></div></div></div>';
+        return '<div class="cw-row cw-live-row" hidden>' + cwAva(cwAgentById(p.agentId)) + '<div class="cw-bubble cw-live-bubble"><span class="cw-live-kicker">Current activity</span><div class="cw-meta"><span class="nm">' + esc(p.agentName) + '</span><span class="cw-progress-activity activity-indicator"><span class="cw-phase-dot"></span>${ACTIVITY_MARK_HTML}<span class="cw-tool-ico"></span><span class="wtext"></span></span></div><div class="reasoning-stream" aria-label="Model reasoning" hidden></div><div class="cw-progress-text" style="white-space:pre-wrap"></div></div></div>';
       }).join('');
       live._progressKey = key;
     }
@@ -2334,7 +2449,7 @@ export const COWORK_JS = String.raw`
       // Phase drives the animated dot: thinking, reasoning, responding, working.
       var indicator = indicators[i];
       var phase = cwProgressPhase(p);
-      renderReasoningStream(reasoningStreams && reasoningStreams[i], p.reasoning);
+      renderReasoningStream(reasoningStreams && reasoningStreams[i], '');
       if (indicator && indicator._phase !== phase) {
         indicator._phase = phase;
         indicator.className = String(indicator.className || '').replace(/\s*phase-\w+/g, '') + ' phase-' + phase;
@@ -2348,10 +2463,12 @@ export const COWORK_JS = String.raw`
       if (labels[i].textContent !== label) labels[i].textContent = label;
       var streamed = cwVisibleReply(p.text);
       if (/^Continuing automatically \(checkpoint \d+\)/.test(streamed)) streamed = '';
-      var currentTodo = (cw.todos || []).filter(function (todo) { return todo.agentId === p.agentId && todo.status === 'in_progress'; })[0];
-      var text = p.tool ? cwToolProgressText(p) + (streamed ? '\n' + streamed : '') : (streamed || (currentTodo && currentTodo.text) || (p.reasoning ? '' : 'Working on the next step…'));
+      // Keep only public reply text in chat; tools belong in the activity line.
+      var text = streamed;
       if (texts[i].textContent !== text) texts[i].textContent = text;
       texts[i].hidden = !text;
+      var row = texts[i].closest && texts[i].closest('.cw-live-row');
+      if (row) { var arriving=row.hidden&&text; row.hidden=!text; if(arriving)chatBubbleEntrance(row); }
     });
     if (nearBottom) wrap.scrollTop = wrap.scrollHeight;
   }
@@ -2504,12 +2621,7 @@ export const COWORK_JS = String.raw`
   }
 
   function cwWidgetBodyHtml(w) {
-    var d = (w && w.data) || {};
-    if (w.kind === 'stats') return '<div class="cw-widget-body">' + ((d.items || []).map(function (item) { return '<div class="cw-widget-row"><span class="l">' + esc(item.label) + '</span><span class="v">' + esc(item.value) + '</span></div>'; }).join('') || '<div class="meta">No stats yet.</div>') + '</div>';
-    if (w.kind === 'list') return '<div class="cw-widget-body">' + ((d.items || []).map(function (item) { return '<div class="cw-widget-row' + (item.done ? ' done' : '') + '"><span class="l">' + esc(item.text) + '</span><span class="v">' + (item.done ? '✓' : '') + '</span></div>'; }).join('') || '<div class="meta">Empty list.</div>') + '</div>';
-    if (w.kind === 'progress') { var value = Math.max(0, Math.min(100, Number(d.value) || 0)); return '<div class="cw-widget-body"><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)"><span>' + esc(d.label || 'Progress') + '</span><span>' + value + '%</span></div><div class="cw-widget-bar"><i style="width:' + value + '%"></i></div></div>'; }
-    if (w.kind === 'links') return '<div class="cw-widget-body">' + ((d.items || []).map(function (item) { return '<div class="cw-widget-row"><a class="l" href="' + esc(item.url) + '" target="_blank" rel="noopener noreferrer">' + esc(item.label) + '</a></div>'; }).join('') || '<div class="meta">No links yet.</div>') + '</div>';
-    return '<div class="cw-widget-text">' + esc(d.text || '') + '</div>';
+    return cwWidgetCardBodyHtml(w);
   }
 
   function cwWidgetModal(id) {
@@ -2519,6 +2631,7 @@ export const COWORK_JS = String.raw`
     if (!widget) { toast('Widget not found', true); return; }
     var modal = document.createElement('div');
     modal.className = 'modal cw-modal';
+    modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');modal.setAttribute('aria-label',widget.title);
     modal.innerHTML =
       '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">' + esc(widget.title) + '</span><span style="flex:1"></span><button class="btn ghost" id="cwWgClose">Close</button></div>' +
       '<div class="cw-body">' + cwWidgetBodyHtml(widget) +
@@ -2526,12 +2639,13 @@ export const COWORK_JS = String.raw`
       '</div>' +
       '<div class="cw-foot"><button class="btn red" id="cwWgDel">Delete widget</button><span style="flex:1"></span><button class="btn ghost" id="cwWgDone">Done</button></div></div>';
     document.body.appendChild(modal);
-    modal.querySelector('#cwWgClose').onclick = function () { modal.remove(); };
-    modal.querySelector('#cwWgDone').onclick = function () { modal.remove(); };
+    var closeDialog = cwBindDialog(modal, '#cwWgClose');
+    modal.querySelector('#cwWgClose').onclick = closeDialog;
+    modal.querySelector('#cwWgDone').onclick = closeDialog;
     modal.querySelector('#cwWgDel').onclick = function () {
       if (!confirm('Delete widget "' + widget.title + '"?')) return;
       api('/api/cowork/widgets/' + encodeURIComponent(widget.id), { method: 'DELETE' })
-        .then(function () { modal.remove(); cw.widgets = (cw.widgets || []).filter(function (w) { return w.id !== widget.id; }); cwRenderRail(); toast('Widget deleted'); })
+        .then(function () { closeDialog(); cw.widgets = (cw.widgets || []).filter(function (w) { return w.id !== widget.id; }); cwRenderRail(); toast('Widget deleted'); })
         .catch(function (e) { toast(e.message, true); });
     };
   }
@@ -2546,28 +2660,7 @@ export const COWORK_JS = String.raw`
   }
 
   function cwNewWidgetModal(conv) {
-    var cw = cwEnsure();
-    var modal = document.createElement('div');
-    modal.className = 'modal cw-modal';
-    modal.innerHTML =
-      '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">New widget</span><span style="flex:1"></span><button class="btn ghost" id="cwWnCancel">Cancel</button></div>' +
-      '<div class="cw-body">' +
-        '<div class="cw-2col"><div><label>Title</label><input type="text" id="cwWnTitle" maxlength="120" placeholder="Launch status"></div>' +
-        '<div><label>Kind</label><select id="cwWnKind"><option value="text">Text</option><option value="stats">Stats — Label: value</option><option value="list">Checklist — x item = done</option><option value="progress">Progress — Label | percent</option><option value="links">Links — Label | https://...</option></select></div></div>' +
-        '<label>Content</label><textarea id="cwWnBody" rows="5" placeholder="What should this card show?"></textarea>' +
-        '<div class="cw-note">Widgets live in the cowork sidebar and refresh live when teammates call widget_manage.</div>' +
-      '</div>' +
-      '<div class="cw-foot"><span style="flex:1"></span><button class="btn dark" id="cwWnSave">Create widget</button></div></div>';
-    document.body.appendChild(modal);
-    modal.querySelector('#cwWnCancel').onclick = function () { modal.remove(); };
-    modal.querySelector('#cwWnSave').onclick = function () {
-      var title = $('cwWnTitle').value.trim();
-      if (!title) { toast('Give the widget a title', true); return; }
-      var kind = $('cwWnKind').value;
-      api('/api/cowork/conversations/' + encodeURIComponent(conv.id) + '/widgets', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: title, kind: kind, data: cwParseWidgetText(kind, $('cwWnBody').value) }) })
-        .then(function (d) { modal.remove(); cw.widgets = (cw.widgets || []).filter(function (w) { return w.id !== d.widget.id; }).concat([d.widget]); cwRenderRail(); toast('Widget added to the sidebar'); })
-        .catch(function (e) { toast(e.message, true); });
-    };
+    cwBeginWidgetRequest('create');
   }
 
   function cwFolderModal(conv) {
@@ -2784,7 +2877,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure();
     var conv = cwActiveConv();
     var el = $('cwInfo');
-    if (!el) return;
+    if (!el) { cwRenderComputerActivity(); return; }
     var profilePanel=$('cwInfoPanel'),profileScroll=profilePanel?profilePanel.scrollTop:0,focusedTool=document.activeElement&&typeof document.activeElement.getAttribute==='function'?document.activeElement.getAttribute('data-profile-tool'):null;
     if (!conv) { el.innerHTML = ''; return; }
     var members = cwConvMembers(conv);
@@ -2983,6 +3076,8 @@ export const COWORK_JS = String.raw`
       '<div class="cw-desktop-handoff" data-handoff hidden><b>Your turn</b><span data-handoff-reason></span></div>' +
       '<div class="cw-desktop-screen"><iframe data-desktop hidden title="' + esc(agent.name) + ' interactive Linux desktop" allow="clipboard-read; clipboard-write"></iframe><p class="cw-desktop-placeholder" data-placeholder>Connecting to this teammate’s desktop…</p></div>' +
       '<div class="cw-desktop-toolbar"><span class="cw-desktop-status" role="status" data-status>Checking computer…</span><span class="chip">Shared computer</span><button class="btn" data-browser title="Regular Google Chrome for manual sign-in">Browser</button><button class="btn" data-agent_browser title="Browser used by the agent’s automated tools">Agent browser</button><button class="btn" data-files>Files</button><button class="btn" data-terminal>Terminal</button><button class="btn" data-control>Take control</button><button class="btn" data-sleep title="Pause the desktop and preserve open windows">Sleep</button><button class="btn" data-lock title="Lock the app with your password">Lock</button><button class="btn" data-start>Start desktop</button><button class="btn ghost" data-stop>Stop</button></div></div>';
+    var chatTheme=$('cwChat');
+    if(chatTheme&&typeof getComputedStyle==='function'){var computed=getComputedStyle(chatTheme);['--accent','--selected','--cw-sidebar-tint'].forEach(function(property){modal.style.setProperty(property,computed.getPropertyValue(property));});}
     document.body.appendChild(modal);
     var screen = modal.querySelector('[data-desktop]'), placeholder = modal.querySelector('[data-placeholder]');
     var status = modal.querySelector('[data-status]'), start = modal.querySelector('[data-start]'), stop = modal.querySelector('[data-stop]');
@@ -2998,6 +3093,7 @@ export const COWORK_JS = String.raw`
       window.removeEventListener('message', desktopMessage);
       if (cw.closeDesktop === close) cw.closeDesktop = null;
       if (cw.desktopSession?.agentId === agentId) cw.desktopSession = null;
+      cwRenderComputerActivity();
     }
     function keydown(e) { if (e.key === 'Escape' && document.activeElement !== screen) { e.preventDefault(); close(); } }
     function desktopMessage(e) {
@@ -3060,6 +3156,7 @@ export const COWORK_JS = String.raw`
         if (!screen.getAttribute('src')) screen.src = endpoint + '/view';
         screen.hidden = false; placeholder.hidden = true;
       }
+      cwRenderComputerActivity();
     }
     async function refresh(action) {
       if (closed) return;
@@ -3083,6 +3180,7 @@ export const COWORK_JS = String.raw`
     }
     cw.closeDesktop = close;
     cw.desktopSession = { agentId: agentId, focus: focusDesktop };
+    cwRenderComputerActivity();
     modal.querySelector('[data-close]').onclick = close;
     start.onclick = function () { refresh(host ? 'use-private' : 'start'); };
     stop.onclick = function () { disconnect(); refresh('stop'); };
@@ -3105,17 +3203,8 @@ export const COWORK_JS = String.raw`
   }
 
   function cwShowDesktopHandoffs() {
-    var cw = cwEnsure();
-    if (S.active !== 'cowork' || !cw.active || document.hidden) return;
-    var seen = cw.desktopHandoffsSeen || (cw.desktopHandoffsSeen = Object.create(null));
-    (cw.requests || []).forEach(function (request) {
-      if (!request.desktopHandoff || request.status !== 'open' || request.conversationId !== cw.active || seen[request.id]) return;
-      var agent = cwAgentById(request.agentId);
-      if (!agent || agent.useHostComputer) return;
-      seen[request.id] = true;
-      // Keep an already open computer usable; other handoffs retain their Open button.
-      if (!cw.desktopSession || cw.desktopSession.agentId === request.agentId) cwOpenDesktop(request.agentId);
-    });
+    if (S.active !== 'cowork' || document.hidden) return;
+    cwRenderComputerActivity();
   }
 
   if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') document.addEventListener('visibilitychange', function () { if (!document.hidden) cwShowDesktopHandoffs(); });
@@ -3150,6 +3239,7 @@ export const COWORK_JS = String.raw`
       cwStopPoll(); cw.active = null; cw.msgs = []; cw.busy = false; cw.progress = null; cw.progresses = [];
       cwRenderRail(); cwRenderChat(); return;
     }
+    if(!cw.transcriptLoaded){cwPrimeChatBubbles((d.messages||[]).concat(d.messageUpdates||[]));cw.transcriptLoaded=true;}
     var added = false;
     // Ignore older change-feed payloads, but allow equal cursors (busy/progress
     // can change without a message mutation). Never move the cursor backwards.
@@ -3202,6 +3292,7 @@ export const COWORK_JS = String.raw`
     cwRenderTyping();
     if (missionsChanged || subAgentsChanged) { cwRenderMissionBadge(); cwRenderInfo(); }
     if (rosterChanged || foldersChanged || (wasBusy && !cw.busy)) cwRenderInfo();
+    cwRenderNow();
     cwShowDesktopHandoffs();
   }
 
@@ -3248,6 +3339,7 @@ export const COWORK_JS = String.raw`
   }
 
   function cwRenderTyping() {
+    cwRenderCleanActivity();
     var cw = cwEnsure();
     cwUpdateCharacterActivity();
     document.querySelectorAll('[data-cw-avatar]').forEach(function (node) {
@@ -3308,6 +3400,8 @@ export const COWORK_JS = String.raw`
     if (!cw.active) { toast('Open a chat first', true); return; }
     var id = crypto.randomUUID();
     var payload = { id: id, text: text, files: files, threadId: cw.threadId || null, referencedMessageIds: cw.referencedMessageIds.slice() };
+    if (cw.widgetRequest) payload.widgetRequest = cw.widgetRequest;
+    if (cw.widgetRequest && cw.widgetRequest.mode === 'create') cw.widgetCreationPending = cw.active;
     var entry = { conversationId: cw.active, payload: payload, message: {
       id: id, text: text, role: 'user', via: 'web', ts: new Date().toISOString(),
       status: 'sending', revision: 0, attempt: 0, localOnly: true,
@@ -3315,6 +3409,8 @@ export const COWORK_JS = String.raw`
     } };
     cw.outbox[id] = entry;
     cw.msgs.push(entry.message);
+    cw.widgetRequest = null;
+    cwRenderWidgetIntent();
     input.value = '';
     input.style.height = 'auto';
     cwSaveDraft();
@@ -3480,8 +3576,8 @@ export const COWORK_JS = String.raw`
       tagline: agent ? agent.tagline : '',
       systemPrompt: agent ? agent.systemPrompt : '',
       avatar: {
-        color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#8f80ff',
-        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-purple'
+        color: agent && agent.avatar && agent.avatar.color ? agent.avatar.color : '#5ba8ff',
+        shape: agent ? cwAvatarShape(agent.avatar && agent.avatar.shape, agent.avatar && agent.avatar.color) : 'dot-blue'
       },
       provider: agent ? (agent.provider || '') : (S.sel.model || '').split('::')[0],
       model: agent ? (agent.model || '') : (S.sel.model || '').split('::').slice(1).join('::'),
@@ -3496,13 +3592,13 @@ export const COWORK_JS = String.raw`
       chiefOfStaff: agent ? Boolean(agent.chiefOfStaff) : false
     };
     var modal = document.createElement('div');
-    modal.className = 'modal cw-modal';
+    modal.className = 'modal cw-modal cw-agent-editor';
     modal.innerHTML =
       '<div class="box"><div class="bar"><span style="font-weight:600;font-size:13px">' + (isEdit ? 'Edit teammate' : 'New teammate') + '</span><span style="flex:1"></span><button class="btn ghost" id="cwAmCancel">Cancel</button></div>' +
-      '<div class="cw-body">' +
+      '<div class="cw-body"><section class="cw-editor-section"><h2>Identity &amp; character</h2>' +
         '<div class="cw-2col"><div><label>Name — yours to choose</label><input type="text" id="cwAmName" value="' + esc(d.name) + '" maxlength="60" placeholder="e.g. Atlas, Vera, Rex…"></div>' +
         '<div><label>Role / tagline</label><input type="text" id="cwAmTag" value="' + esc(d.tagline) + '" maxlength="120" placeholder="Backend engineer"></div></div>' +
-        '<label>Character</label>' +
+        '<label for="cwAmDescription">Description</label><textarea id="cwAmDescription" maxlength="600" placeholder="What will this teammate help you with?">'+esc(agent&&agent.description||'')+'</textarea><label>Character</label>' +
         '<div class="cw-avrow">' +
           '<span class="cw-avprev" id="cwAmAvaWrap">' + cwAvaImg(d.avatar) + '</span>' +
           '<div class="cw-avopts">' +
@@ -3512,14 +3608,17 @@ export const COWORK_JS = String.raw`
             '<button type="button" class="cw-preview-work" id="cwAmWork" aria-pressed="false">Preview working animation</button>' +
           '</div>' +
         '</div>' +
+        '</section><section class="cw-editor-section"><h2>Personality &amp; working style</h2>' +
         (!isEdit ? '<label>Starting points — fill instructions only, then make it yours</label><div class="cw-templates">' + CW_TEMPLATES.map(function (t, i) { return '<button type="button" data-template="' + i + '">' + esc(t.label) + '</button>'; }).join('') + '</div>' : '') +
         '<label>Personality &amp; instructions (the system prompt)</label><textarea id="cwAmPrompt" placeholder="Who is this agent, how does it think and answer?">' + esc(d.systemPrompt) + '</textarea>' +
+        '</section><section class="cw-editor-section"><h2>Model &amp; capabilities</h2>' +
         '<div class="cw-2col"><div><label>Model provider</label><select id="cwAmProv"><option value="">Server default</option>' + (S.models || []).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === d.provider ? ' selected' : '') + '>' + esc(p.label || p.id) + '</option>'; }).join('') + '</select></div>' +
         '<div><label for="cwAmModel">Model</label><input type="text" id="cwAmModelSearch" placeholder="Search models…" aria-label="Search models for the selected provider" aria-controls="cwAmModel" autocomplete="off" spellcheck="false" style="margin-bottom:6px"><select id="cwAmModel" aria-describedby="cwAmModelCount"><option value="">Provider default</option></select><div id="cwAmModelCount" class="meta" role="status" aria-live="polite"></div></div></div>' +
         '<div class="cw-2col"><div><label>Effort</label><select id="cwAmEffort"><option value="">default</option><option value="low"' + (d.effort === 'low' ? ' selected' : '') + '>low</option><option value="medium"' + (d.effort === 'medium' ? ' selected' : '') + '>medium</option><option value="high"' + (d.effort === 'high' ? ' selected' : '') + '>high</option><option value="max"' + (d.effort === 'max' ? ' selected' : '') + '>max</option></select></div>' +
         '<div><label>Chief of staff</label><div class="cw-check" style="margin-top:8px"><input type="checkbox" id="cwAmChief"' + (d.chiefOfStaff ? ' checked' : '') + '> <span>Preselect as chief in new groups</span></div></div></div>' +
         '<label>Skills (loaded from the shared skill library)</label><div class="cw-skills" id="cwAmSkills">' +
           (cw.skills.length ? cw.skills.map(function (s) { return '<button data-skill="' + esc(s.name) + '"' + (d.skills.indexOf(s.name) >= 0 ? ' class="on"' : '') + '>' + esc(s.name) + '</button>'; }).join('') : '<span style="font-size:11.5px;color:var(--faint)">No skills defined yet — create them in Settings or by asking Gitu in a task.</span>') + '</div>' +
+        '</section><section class="cw-editor-section"><h2>Permissions &amp; computer</h2><p class="cw-note">Choose the access this teammate needs for its work.</p>' +
         '<div class="cw-perm">' +
           '<label><input type="checkbox" id="cwAmShell"' + (d.allowShell ? ' checked' : '') + '> Allow run_command</label>' +
           '<label><input type="checkbox" id="cwAmWrites"' + (d.allowWrites ? ' checked' : '') + '> Allow file writes</label>' +
@@ -3528,7 +3627,7 @@ export const COWORK_JS = String.raw`
         '<label for="cwAmComputer">Computer</label><select id="cwAmComputer"><option value="local"' + (d.computerMode === 'local' ? ' selected' : '') + '>My computer</option><option value="cloud"' + (d.computerMode === 'cloud' ? ' selected' : '') + '>Cloud computer</option><option value="private"' + (d.computerMode === 'private' ? ' selected' : '') + '>Private desktop on this computer</option></select>' +
         '<div id="cwAmCloud"' + (d.computerMode !== 'cloud' ? ' hidden' : '') + '><label for="cwAmCloudServer">Cloud server</label><select id="cwAmCloudServer"></select><button type="button" class="btn ghost" id="cwAmCloudAdd" style="margin-top:8px">Add cloud server</button></div>' +
         '<div class="cw-note" id="cwAmComputerNote"></div>' +
-        (dmGw ? dmGw.html : '') +
+        '</section>' + (dmGw ? '<section class="cw-editor-section"><h2>Chat gateways</h2>'+dmGw.html+'</section>' : '') +
       '</div>' +
       '<div class="cw-foot"><button class="btn ghost" id="cwAmDel"' + (isEdit ? '' : ' hidden') + '>Delete</button><span style="flex:1"></span><button class="btn dark" id="cwAmSave">' + (isEdit ? 'Save changes' : 'Create teammate') + '</button></div></div>';
     document.body.appendChild(modal);
@@ -3627,6 +3726,7 @@ export const COWORK_JS = String.raw`
         name: $('cwAmName').value,
         avatar: d.avatar,
         tagline: $('cwAmTag').value,
+        description: $('cwAmDescription').value,
         systemPrompt: $('cwAmPrompt').value,
         provider: provSel.value,
         model: modelSel.value,
@@ -3648,7 +3748,7 @@ export const COWORK_JS = String.raw`
           if (!found) cw2.agents.push(res.agent);
           if (res.conversation && !cw2.convs.some(function (c) { return c.id === res.conversation.id; })) cw2.convs.push(res.conversation);
           cwRenderRail();
-          if(isEdit){cwApplyCharacterTheme();cwRenderInfo();var active=cwActiveConv(),header=$('cwChatAvatar');if(header&&active&&active.kind==='dm'&&active.memberIds[0]===res.agent.id)header.innerHTML=cwAva(res.agent);}
+          if(isEdit){if(cw2.profileOpen)cwRenderProfilePage();cwApplyCharacterTheme();cwRenderInfo();var active=cwActiveConv(),header=$('cwChatAvatar');if(header&&active&&active.kind==='dm'&&active.memberIds[0]===res.agent.id)header.innerHTML=cwAva(res.agent);}
           toast(isEdit ? 'Teammate updated' : res.agent.name + ' joined the team');
           if (!isEdit) cwOpenDm(res.agent.id);
         })

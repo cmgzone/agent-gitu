@@ -62,7 +62,7 @@ export const UI_BUTTON_JS = String.raw`
     if (/send/.test(text)) return 'send';
     if (/new|add|create|install/.test(text)) return 'plus';
     if (/start|continue|open|launch|run/.test(text)) return 'play';
-    return 'chevRight';
+    return null;
   }
   function actionSvg(name) {
     var paths = {
@@ -89,6 +89,7 @@ export const UI_BUTTON_JS = String.raw`
     // A loading placeholder is not an accessible name for an icon control.
     if (/^[×«»↑↓+−⚙⋯…]$/.test(label)) return;
     var name = actionIconName(label);
+    if (!name) return;
     var glyph = actionSvg(name);
     if (!glyph) return;
     var iconOnly = button.matches('.iconbtn,.ubtn,.close,.send,.cw-stop-secondary') || /^[×«»↑↓+−⚙⋯…]$/.test(button.textContent.trim());

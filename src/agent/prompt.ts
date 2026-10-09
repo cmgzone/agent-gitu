@@ -7,7 +7,7 @@ import { renderDecisions } from './architecture.js';
 import { agentWorkflowPrompt } from './agent-workflow.js';
 import { DOCUMENT_TOOL_DOC } from '../tools/productivity.js';
 import { SCHEDULE_TOOL_DOC } from '../cron/tools.js';
-import { loadOutputStyle } from './output-style.js';
+import { loadOutputStyle, RICH_OUTPUT_GUIDANCE } from './output-style.js';
 
 // ── Plan & design rendering (token-disciplined) ──────────────────────────
 //
@@ -434,7 +434,7 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 
 /** Presentation contract appended to every orchestrator system prompt. */
 function outputStyleSection(): string {
-  return `\n\nOUTPUT STYLE (presentation contract for every user-visible reply — your summaries and chat replies are rendered as Markdown):\n${loadOutputStyle()}\n`;
+  return `\n\nOUTPUT STYLE (presentation contract for every user-visible reply — your summaries and chat replies are rendered as Markdown):\n${loadOutputStyle()}\n${RICH_OUTPUT_GUIDANCE}\n`;
 }
 
 export interface TaskStateScope {

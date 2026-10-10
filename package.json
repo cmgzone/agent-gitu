@@ -11,6 +11,8 @@
     "hermes": "dist/cli.js"
   },
   "scripts": {
+    "website:build": "node website/build.cjs",
+    "website:preview": "node website-serve.cjs",
     "start": "node dist/cli.js",
     "ui": "node dist/cli.js ui",
     "mobile:install": "npm --prefix apps/mobile install",

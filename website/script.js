@@ -1,144 +1,154 @@
-/* Agent Gitu site behaviour — shared by all pages. No dependencies. */
-(function () {
+/* Small enhancements. The pages and their content work without JavaScript. */
+(() => {
   'use strict';
-
-  var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-  /* ---------- mobile nav ---------- */
-  var toggle = document.querySelector('.nav-toggle');
-  var links = document.querySelector('.nav-links');
-
-  function closeNav() {
-    if (!links || !toggle) return;
-    links.classList.remove('is-open');
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const toggle = document.querySelector('.nav-toggle');
+  const nav = document.querySelector('.main-navigation');
+  function closeNav(returnFocus = false) {
+    if (!toggle || !nav) return;
     toggle.setAttribute('aria-expanded', 'false');
+    toggle.setAttribute('aria-label', 'Open navigation');
+    nav.classList.remove('is-open');
+    if (returnFocus) toggle.focus();
   }
+  toggle?.addEventListener('click', () => {
+    const open = toggle.getAttribute('aria-expanded') !== 'true';
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', open ? 'Close navigation' : 'Open navigation');
+    nav?.classList.toggle('is-open', open);
+  });
+  nav?.addEventListener('click', (event) => {
+    if (event.target.closest('a')) closeNav();
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.site-header')) closeNav();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && toggle?.getAttribute('aria-expanded') === 'true') closeNav(true);
+  });
 
-  if (toggle && links) {
-    toggle.addEventListener('click', function () {
-      var open = links.classList.toggle('is-open');
-      toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-    });
-    links.addEventListener('click', function (e) {
-      if (e.target.closest('a')) closeNav();
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') closeNav();
-    });
-    document.addEventListener('click', function (e) {
-      if (!e.target.closest('.nav')) closeNav();
-    });
-  }
-
-  /* ---------- scroll reveal ---------- */
-  var revealables = document.querySelectorAll('.reveal');
-  if (revealables.length) {
-    if (reduced || !('IntersectionObserver' in window)) {
-      Array.prototype.forEach.call(revealables, function (el) { el.classList.add('is-in'); });
-    } else {
-      var revealObs = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
+  if ('IntersectionObserver' in window && !reduced.matches) {
+    document.documentElement.classList.add('js-enabled');
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries)
           if (entry.isIntersecting) {
-            entry.target.classList.add('is-in');
-            revealObs.unobserve(entry.target);
+            entry.target.classList.add('is-visible');
+            observer.unobserve(entry.target);
           }
-        });
-      }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
-      Array.prototype.forEach.call(revealables, function (el) { revealObs.observe(el); });
+      },
+      { threshold: 0.07 },
+    );
+    document.querySelectorAll('[data-reveal]').forEach((element) => observer.observe(element));
+  }
+
+  const motionButton = document.createElement('button');
+  motionButton.type = 'button';
+  motionButton.className = 'motion-control';
+  document.querySelector('.footer-bottom')?.append(motionButton);
+  let paused = reduced.matches;
+  function syncMotion() {
+    document.body.dataset.motion = paused || reduced.matches ? 'paused' : 'playing';
+    motionButton.textContent = reduced.matches ? 'Reduced motion on' : paused ? 'Resume motion' : 'Pause motion';
+    motionButton.setAttribute('aria-pressed', String(paused || reduced.matches));
+    motionButton.disabled = reduced.matches;
+  }
+  motionButton.addEventListener('click', () => {
+    paused = !paused;
+    syncMotion();
+  });
+  reduced.addEventListener('change', () => {
+    paused = reduced.matches;
+    syncMotion();
+  });
+  syncMotion();
+  document.addEventListener('visibilitychange', () => document.body.classList.toggle('page-hidden', document.hidden));
+
+  const states = {
+    work: {
+      image: 'assets/gitu-cowork.jpg',
+      title: 'AGENT GITU / COWORK',
+      alt: 'Actual Agent Gitu Cowork chat with Mailbox, Gmail, and Google Calendar connection suggestions for Atlas',
+      caption: 'Real app screenshot · Connections assigned to Atlas.',
+    },
+    code: {
+      image: 'assets/gitu-coding.jpg',
+      title: 'AGENT GITU / CODING',
+      alt: 'Actual dark-theme Agent Gitu coding conversation with repository reads and expanded command activity',
+      caption: 'Real app screenshot · Repository reads and command results in the conversation.',
+    },
+    connections: {
+      image: 'assets/gitu-connections.jpg',
+      title: 'AGENT GITU / CONNECTIONS',
+      alt: 'Actual Agent Gitu Connections screen with teammate-scoped apps, connection states, and proactive update controls',
+      caption: 'Real app screenshot · Your apps, account status, and proactive update controls.',
+    },
+  };
+  const tabs = [...document.querySelectorAll('[data-demo-tab]')];
+  const panel = document.querySelector('#demo-panel');
+  let demoTimer;
+  function selectTab(tab, focus = false) {
+    const state = states[tab.dataset.demoTab];
+    if (!state || !panel) return;
+    tabs.forEach((item) => {
+      item.setAttribute('aria-selected', String(item === tab));
+      item.tabIndex = item === tab ? 0 : -1;
+    });
+    panel.setAttribute('aria-labelledby', tab.id);
+    for (const [selector, value] of Object.entries({ title: state.title, caption: state.caption })) {
+      const element = document.querySelector(`[data-demo-${selector}]`);
+      if (element) element.textContent = value;
     }
+    const screenshot = document.querySelector('[data-demo-image]');
+    if (screenshot) {
+      screenshot.src = state.image;
+      screenshot.alt = state.alt;
+    }
+    const full = document.querySelector('[data-demo-full]');
+    if (full) full.href = state.image;
+    clearTimeout(demoTimer);
+    panel.classList.remove('demo-changing');
+    if (!paused && !reduced.matches) {
+      void panel.offsetWidth;
+      panel.classList.add('demo-changing');
+      demoTimer = setTimeout(() => panel.classList.remove('demo-changing'), 450);
+    }
+    if (focus) tab.focus();
   }
-
-  /* ---------- docs scrollspy ---------- */
-  var spyTargets = document.querySelectorAll('[data-spy-section]');
-  if (spyTargets.length && 'IntersectionObserver' in window) {
-    var spyObs = new IntersectionObserver(function (entries) {
-      entries.forEach(function (entry) {
-        if (!entry.isIntersecting) return;
-        var id = entry.target.id;
-        Array.prototype.forEach.call(document.querySelectorAll('[data-spy-link]'), function (a) {
-          a.classList.toggle('is-active', a.getAttribute('href') === '#' + id);
-        });
-      });
-    }, { rootMargin: '-96px 0px -62% 0px', threshold: 0 });
-    Array.prototype.forEach.call(spyTargets, function (el) { spyObs.observe(el); });
-  }
-
-  /* ---------- copy to clipboard ---------- */
-  function legacyCopy(text, cb) {
-    var ta = document.createElement('textarea');
-    ta.value = text;
-    ta.setAttribute('readonly', '');
-    ta.style.position = 'absolute';
-    ta.style.left = '-9999px';
-    document.body.appendChild(ta);
-    ta.select();
-    try { document.execCommand('copy'); cb(); } catch (err) { /* clipboard unavailable */ }
-    document.body.removeChild(ta);
-  }
-
-  Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
-    btn.addEventListener('click', function () {
-      var text = btn.getAttribute('data-copy');
-      var original = btn.textContent;
-      var done = function () {
-        btn.textContent = 'Copied';
-        btn.classList.add('is-done');
-        window.setTimeout(function () {
-          btn.textContent = original;
-          btn.classList.remove('is-done');
-        }, 1800);
-      };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text, done); });
-      } else {
-        legacyCopy(text, done);
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => selectTab(tab));
+    tab.addEventListener('keydown', (event) => {
+      let next;
+      if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+      if (event.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') next = 0;
+      if (event.key === 'End') next = tabs.length - 1;
+      if (next !== undefined) {
+        event.preventDefault();
+        selectTab(tabs[next], true);
       }
     });
   });
-
-  /* ---------- pointer-follow glow on cards ---------- */
-  if (!reduced && window.matchMedia('(hover: hover)').matches) {
-    Array.prototype.forEach.call(document.querySelectorAll('.card'), function (card) {
-      card.addEventListener('mousemove', function (e) {
-        var r = card.getBoundingClientRect();
-        card.style.setProperty('--mx', (e.clientX - r.left) + 'px');
-        card.style.setProperty('--my', (e.clientY - r.top) + 'px');
-      });
-    });
-  }
-
-  /* ---------- home mockup: cycling tool trace ---------- */
-  var step = document.querySelector('[data-cycle]');
-  if (step && !reduced) {
-    var states = [
-      { tag: 'read', txt: 'src/task-ledger.ts \u2014 plan and criteria loaded' },
-      { tag: 'read', txt: 'src/project-guard.ts \u2014 repo root locked' },
-      { tag: 'run ', txt: 'npm run typecheck \u2192 0 errors' },
-      { tag: 'ok  ', txt: 'Evidence recorded \u00b7 criterion accepted' }
-    ];
-    var i = 0;
-    window.setInterval(function () {
-      i = (i + 1) % states.length;
-      var tagEl = step.querySelector('.tag');
-      var txtEl = step.querySelector('.txt');
-      if (!tagEl || !txtEl) return;
-      step.style.animation = 'none';
-      void step.offsetWidth;
-      step.style.animation = '';
-      tagEl.textContent = states[i].tag;
-      txtEl.textContent = states[i].txt;
-      step.classList.toggle('ok', states[i].tag.trim() === 'ok');
-    }, 2400);
-  }
-
-  /* ---------- subscribe form (front-end only) ---------- */
-  var form = document.querySelector('[data-subscribe]');
-  if (form) {
-    form.addEventListener('submit', function (e) {
-      e.preventDefault();
-      var note = form.querySelector('[data-subscribe-note]');
-      if (note) note.textContent = 'Thanks \u2014 you are on the list.';
-      form.reset();
-    });
-  }
+  document.querySelectorAll('[data-copy]').forEach((button) =>
+    button.addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+        await navigator.clipboard.writeText(button.dataset.copy);
+        button.textContent = 'Copied';
+      } catch {
+        const code = button.closest('.code-block')?.querySelector('code');
+        if (code) {
+          const range = document.createRange();
+          range.selectNodeContents(code);
+          const selection = window.getSelection();
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        button.textContent = 'Text selected';
+      }
+      setTimeout(() => {
+        button.textContent = 'Copy';
+      }, 1800);
+    }),
+  );
 })();

@@ -1,221 +1,45 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Agent Gitu — a little spark, a working idea</title>
-<meta name="description" content="Agent Gitu is a bounded autonomous engineering agent: a project-locked scope, a durable task ledger, and an evidence gate that refuses to call work done without proof." />
-<meta name="theme-color" content="#07090f" />
-<meta property="og:title" content="Agent Gitu — a little spark, a working idea" />
-<meta property="og:description" content="Bounded scope, durable memory, proof before done." />
-<meta property="og:type" content="website" />
-<meta property="og:image" content="assets/gitu-capybara.png" />
-<link rel="icon" href="assets/agent-gitu-icon.png" />
-<link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
-<link rel="preload" href="assets/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
-<link rel="stylesheet" href="styles.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Gitu — AI teammates for work, coding and research</title>
+<meta name="description" content="Meet Agent Gitu: an open-source AI workspace for coding, cowork teams, research and documents. Choose your models, connect your apps and stay in control.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#06080d">
+<link rel="canonical" href="https://pikpam.com/">
+<meta property="og:site_name" content="Agent Gitu">
+<meta property="og:title" content="Agent Gitu — AI teammates for work, coding and research">
+<meta property="og:description" content="Meet Agent Gitu: an open-source AI workspace for coding, cowork teams, research and documents. Choose your models, connect your apps and stay in control.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://pikpam.com/">
+<meta property="og:image" content="https://pikpam.com/assets/gitu-cowork.jpg">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta property="og:image:alt" content="Agent Gitu’s actual Windows app interface">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Agent Gitu — AI teammates for work, coding and research">
+<meta name="twitter:description" content="Meet Agent Gitu: an open-source AI workspace for coding, cowork teams, research and documents. Choose your models, connect your apps and stay in control.">
+<meta name="twitter:image" content="https://pikpam.com/assets/gitu-cowork.jpg">
+<link rel="icon" type="image/svg+xml" href="assets/agent-gitu-mark.svg">
+<link rel="apple-touch-icon" href="assets/agent-gitu-icon.png">
+<link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://pikpam.com/#organization","name":"Agent Gitu","url":"https://pikpam.com/","logo":"https://pikpam.com/assets/agent-gitu-icon.png","sameAs":["https://github.com/cmgzone/agent-gitu"]},{"@type":"WebPage","@id":"https://pikpam.com/#page","url":"https://pikpam.com/","name":"Agent Gitu — AI teammates for work, coding and research","headline":"Agent Gitu — AI teammates for work, coding and research","description":"Meet Agent Gitu: an open-source AI workspace for coding, cowork teams, research and documents. Choose your models, connect your apps and stay in control.","inLanguage":"en","publisher":{"@id":"https://pikpam.com/#organization"},"image":"https://pikpam.com/assets/gitu-cowork.jpg"},{"@type":"SoftwareApplication","name":"Agent Gitu","applicationCategory":"ProductivityApplication","operatingSystem":"Windows","url":"https://pikpam.com/","downloadUrl":"https://pikpam.com/download.html","license":"https://opensource.org/license/mit","softwareVersion":"0.3.12","description":"Meet Agent Gitu: an open-source AI workspace for coding, cowork teams, research and documents. Choose your models, connect your apps and stay in control."},{"@type":"FAQPage","mainEntity":[{"@type":"Question","name":"What can Agent Gitu do?","acceptedAnswer":{"@type":"Answer","text":"Gitu can work with code, research information, create documents, use connected apps, and coordinate agent teammates. Available actions depend on your chosen model, tools, computer, and permissions."}},{"@type":"Question","name":"Can I choose the AI model?","acceptedAnswer":{"@type":"Answer","text":"Yes. Agent profiles can use different supported providers and models. The source supports OpenAI, OpenRouter, DeepSeek, Gemini, compatible endpoints, and a ChatGPT subscription connection through the local Codex runtime."}},{"@type":"Question","name":"Does it keep working when I’m away?","acceptedAnswer":{"@type":"Answer","text":"Assigned tasks, schedules, and permitted proactive reviews can run while the hosting runtime stays available. In the Windows desktop setup, keep Agent Gitu open and the computer awake and online. A hosted server is a separate deployment."}},{"@type":"Question","name":"Will proactive updates fill my chat?","acceptedAnswer":{"@type":"Answer","text":"Existing findings refresh their widgets silently. A new actionable finding can create one chat notice. Unchanged evidence and dismissed widgets do not generate repeat notices."}},{"@type":"Question","name":"Is Agent Gitu free?","acceptedAnswer":{"@type":"Answer","text":"The software is open source under the MIT license. Model API usage, subscriptions, Composio, and cloud hosting can have their own costs. Connect the services and plans that suit your needs."}}]}]}</script>
+<script src="script.js" defer></script>
 </head>
-<body>
-<a class="skip-link" href="#main">Skip to content</a>
-
-<header class="nav">
-  <div class="nav-inner">
-    <a class="nav-brand" href="index.html">
-      <img src="assets/agent-gitu-mark.svg" alt="" />
-      <span>Agent Gitu</span>
-    </a>
-    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Toggle navigation"><span></span></button>
-    <nav class="nav-links" id="nav-links" aria-label="Main">
-      <a class="nav-link is-active" href="index.html" aria-current="page">Home</a>
-      <a class="nav-link" href="coding.html">Coding</a>
-      <a class="nav-link" href="cowork.html">Cowork</a>
-      <a class="nav-link" href="docs.html">Docs</a>
-      <a class="nav-link" href="blog.html">Blog</a>
-      <a class="nav-link" href="github.html">GitHub</a>
-      <a class="btn btn-primary btn-sm nav-cta" href="github.html">Download</a>
-    </nav>
-  </div>
-</header>
-
+<body data-page="index">
+<a class="skip-link" href="#main">Skip to content</a><header class="site-header"><div class="wrap nav-inner"><a class="brand" href="index.html" aria-label="Agent Gitu home"><img src="assets/agent-gitu-mark.svg" width="34" height="34" alt=""><span>Agent Gitu<span class="brand-dot">.</span></span></a><button class="nav-toggle" type="button" aria-controls="main-navigation" aria-expanded="false" aria-label="Open navigation"><span></span><span></span></button><nav id="main-navigation" class="main-navigation" aria-label="Main navigation"><a href="cowork.html">Cowork</a><a href="coding.html">Coding</a><a href="connections.html">Connections</a><a href="docs.html">Docs</a><a class="nav-github" href="https://github.com/cmgzone/agent-gitu" aria-label="Agent Gitu on GitHub"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-4 1-4-2-6-2m12 4v-4c0-1 .1-2-1-3 3-.3 6-1.5 6-5 0-1-.4-2-1-3 .3-1 .3-2-.2-3-2 0-3 1-4 1a12 12 0 0 0-6 0c-1 0-2-1-4-1-.5 1-.5 2-.2 3-.6 1-1 2-1 3 0 3.5 3 4.7 6 5-1 1-1 2-1 3v4"/></svg></a><a class="button button-nav" href="download.html">Get Gitu<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></nav></div></header>
 <main id="main">
-
-  <section class="hero">
-    <div class="aurora" aria-hidden="true"></div>
-    <div class="wrap">
-      <span class="eyebrow reveal">Desktop and CLI agent</span>
-      <h1 class="reveal" style="--i:1">A little spark.<br />A working idea.</h1>
-      <p class="lede reveal" style="--i:2">Agent Gitu plans, edits, runs and verifies real work inside one locked project &mdash; then refuses to call it finished until a command or a screenshot proves it.</p>
-      <div class="hero-actions reveal" style="--i:3">
-        <a class="btn btn-primary" href="github.html">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12A11.5 11.5 0 0 0 12 .5Z"/></svg>
-          Download for Windows
-        </a>
-        <a class="btn btn-ghost" href="docs.html">Read the docs</a>
-      </div>
-      <div class="hero-meta reveal" style="--i:4">
-        <span><i class="dot-live"></i> Local-first</span>
-        <span>TypeScript &middot; Electron &middot; Node</span>
-        <span>MIT licensed</span>
-      </div>
-    </div>
-
-    <div class="wrap">
-      <div class="mockup reveal" style="--i:5">
-        <div class="mockup-bar">
-          <i class="dot"></i><i class="dot"></i><i class="dot"></i>
-          <span class="mockup-title">agent-gitu &mdash; task details</span>
-        </div>
-        <div class="mockup-body">
-          <aside class="mockup-side">
-            <div class="mock-label">Workspace</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> New session</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg> New project</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg> Scheduled</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m12 3 2.2 5.3L20 9.7l-4 4 1 5.8-5-2.9-5 2.9 1-5.8-4-4 5.8-1.4Z"/></svg> Skills</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg> MCP servers</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/></svg> Workspace</div>
-            <div class="mock-item is-active"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg> Task details</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/></svg> Browser</div>
-            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="7" cy="6" r="2.5"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="12" r="2.5"/><path d="M7 8.5v7M9.4 7.2l5.2 3.6M9.4 16.8l5.2-3.6"/></svg> Git</div>
-          </aside>
-          <div class="mock-main">
-            <div class="mock-task">
-              <strong>Refactor auth middleware and add tests</strong>
-              <span class="badge badge-run">Running</span>
-            </div>
-            <div class="mock-transcript">
-              <div class="mock-row"><span class="tag">plan</span><span class="txt">4 steps, 3 acceptance criteria recorded in the ledger</span></div>
-              <div class="mock-row"><span class="tag">edit </span><span class="txt">src/server/app-auth.ts &mdash; 12 lines changed</span></div>
-              <div class="mock-row" data-cycle><span class="tag">read</span><span class="txt">src/task-ledger.ts &mdash; plan and criteria loaded</span></div>
-              <div class="mock-row warn"><span class="tag">note </span><span class="txt">scope locked to the repository root &mdash; no writes outside</span></div>
-              <div class="mock-row thinking"><span class="spin"></span><span class="txt">running the focused test&hellip;</span></div>
-              <div class="mock-row"><span class="tag"></span><span class="txt"><i class="caret"></i></span></div>
-            </div>
-            <div class="mock-progress"><i></i></div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <div class="strip">
-    <div class="marquee" aria-hidden="true">
-      <span class="marquee-item"><i></i>Project lock</span>
-      <span class="marquee-item"><i></i>Task ledger</span>
-      <span class="marquee-item"><i></i>Evidence gate</span>
-      <span class="marquee-item"><i></i>Cowork teammates</span>
-      <span class="marquee-item"><i></i>MCP servers</span>
-      <span class="marquee-item"><i></i>Durable memory</span>
-      <span class="marquee-item"><i></i>Project lock</span>
-      <span class="marquee-item"><i></i>Task ledger</span>
-      <span class="marquee-item"><i></i>Evidence gate</span>
-      <span class="marquee-item"><i></i>Cowork teammates</span>
-      <span class="marquee-item"><i></i>MCP servers</span>
-      <span class="marquee-item"><i></i>Durable memory</span>
-    </div>
-  </div>
-
-  <section>
-    <div class="wrap">
-      <div class="section-head">
-        <span class="eyebrow reveal">What it does</span>
-        <h2 class="reveal" style="--i:1">One agent, three ways to work</h2>
-        <p class="lede reveal" style="--i:2">Every surface shares one project lock and one evidence gate, so work done in the terminal is visible in the desktop app and in your teammates' threads.</p>
-      </div>
-      <div class="cards">
-        <article class="card reveal" style="--i:1">
-          <div class="card-icon"><svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4M15 8l4 4-4 4"/></svg></div>
-          <h3>Coding</h3>
-          <p>Investigate a real repo, make the edit, and prove it with the project's own test command.</p>
-          <ul class="card-list">
-            <li>Reads symbols before touching code</li>
-            <li>Small reversible changes, one at a time</li>
-            <li>Refuses success without a passing check</li>
-          </ul>
-          <a class="card-link" href="coding.html">Explore coding</a>
-        </article>
-        <article class="card reveal" style="--i:2">
-          <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M20 20v-1.5a3.5 3.5 0 0 0-2.6-3.4M15.5 4.2a3.5 3.5 0 0 1 0 6.6"/></svg></div>
-          <h3>Cowork</h3>
-          <p>Put named teammates on one goal and follow every thread they open while they work.</p>
-          <ul class="card-list">
-            <li>Teammates with distinct roles</li>
-            <li>Threaded updates, not a wall of logs</li>
-            <li>Shared connections to your tools</li>
-          </ul>
-          <a class="card-link" href="cowork.html">Explore cowork</a>
-        </article>
-        <article class="card reveal" style="--i:3">
-          <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11H5Z"/><path d="M14 4v5h5M8 13h8M8 17h5"/></svg></div>
-          <h3>Docs</h3>
-          <p>Install it, lock a project, wire a model provider, and let the ledger keep the rest.</p>
-          <ul class="card-list">
-            <li>CLI and desktop app, same engine</li>
-            <li>Provider-agnostic model config</li>
-            <li>Full command and config reference</li>
-          </ul>
-          <a class="card-link" href="docs.html">Read the docs</a>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <section class="cta">
-    <div class="wrap">
-      <span class="eyebrow reveal">Get started</span>
-      <h2 class="reveal" style="--i:1">Give it a repo and a goal</h2>
-      <p class="lede reveal" style="--i:2">Clone it, run <code>npm install</code>, and watch the ledger fill in before the first coffee lands.</p>
-      <div class="cta-actions reveal" style="--i:3">
-        <a class="btn btn-primary" href="github.html">View on GitHub</a>
-        <a class="btn btn-ghost" href="docs.html">Quickstart</a>
-      </div>
-    </div>
-  </section>
-</main>
-
-<footer class="footer">
-  <div class="wrap">
-    <div class="footer-grid">
-      <div class="footer-brand">
-        <a class="nav-brand" href="index.html"><img src="assets/agent-gitu-mark.svg" alt="" /><span>Agent Gitu</span></a>
-        <p>A bounded autonomous engineering agent that keeps its scope, its memory, and its receipts.</p>
-      </div>
-      <div>
-        <h4>Product</h4>
-        <ul>
-          <li><a href="coding.html">Coding</a></li>
-          <li><a href="cowork.html">Cowork</a></li>
-          <li><a href="docs.html">Documentation</a></li>
-        </ul>
-      </div>
-      <div>
-        <h4>Project</h4>
-        <ul>
-          <li><a href="github.html">GitHub</a></li>
-          <li><a href="blog.html">Blog</a></li>
-          <li><a href="docs.html#configuration">Configuration</a></li>
-        </ul>
-      </div>
-      <div>
-        <h4>Resources</h4>
-        <ul>
-          <li><a href="docs.html#quickstart">Quickstart</a></li>
-          <li><a href="docs.html#cli">CLI reference</a></li>
-          <li><a href="docs.html#faq">FAQ</a></li>
-        </ul>
-      </div>
-    </div>
-    <div class="footer-bot">
-      <span>&copy; 2026 Agent Gitu &middot; MIT licensed</span>
-      <div class="socials">
-        <a href="github.html" aria-label="GitHub"><svg viewBox="0 0 24 24"><path d="M9 19c-4 1.4-4-2.2-6-2.6m12 5v-3.6a3.1 3.1 0 0 0-.9-2.4c2.9-.3 6-1.4 6-6.4A5 5 0 0 0 18.8 5a4.7 4.7 0 0 0-.1-3.5s-1.1-.3-3.7 1.4a12.6 12.6 0 0 0-6.6 0C5.6 1.2 4.5 1.5 4.5 1.5A4.7 4.7 0 0 0 4.4 5 5 5 0 0 0 3 8.6c0 5 3 6.1 5.9 6.4a3.1 3.1 0 0 0-.9 2.4V21"/></svg></a>
-        <a href="blog.html" aria-label="Blog"><svg viewBox="0 0 24 24"><path d="M4 5h13a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2Z"/><path d="M8 9h7M8 13h7"/></svg></a>
-        <a href="docs.html" aria-label="Documentation"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11H5Z"/><path d="M14 4v5h5"/></svg></a>
-      </div>
-    </div>
-  </div>
-</footer>
-
-<script src="script.js"></script>
+<section class="hero wrap"><div class="hero-copy" data-reveal><p class="eyebrow"><span class="signal-dot"></span>A LITTLE SPARK. A WORKING IDEA.</p><h1>Big ideas.<br><span class="blue-text">Real work.</span></h1><p class="hero-description">An AI workspace that helps you code, create, and get things done. One teammate or a whole team. Your tools. Your direction.</p><div class="actions"><a class="button button-primary" href="download.html">Get Agent Gitu<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><a class="button button-secondary" href="#in-action">See it in action<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div><div class="hero-footnote"><span><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg> Open source</span><span><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg> Choose your model</span><span><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg> Built for Windows</span></div></div><div class="hero-app"><figure class="app-shot"><div class="shot-viewport"><img src="assets/gitu-cowork.jpg" width="1600" height="900" alt="Agent Gitu’s actual Windows interface with connected app suggestions" loading="eager" decoding="async"></div><figcaption><span>A real workspace. Ready for your direction.</span><a href="assets/gitu-cowork.jpg" target="_blank" rel="noopener">View full screenshot <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></figcaption></figure></div></section>
+<section class="demo-section wrap" id="in-action"><div class="demo-heading"><span class="mono">FROM A REQUEST TO A RESULT</span><a href="cowork.html">Meet your workspace <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></div><div class="real-product-demo" data-demo data-reveal><div role="tablist" aria-label="Choose a real app screenshot" class="demo-tabs screenshot-tabs"><button id="tab-work" type="button" role="tab" aria-selected="true" aria-controls="demo-panel" data-demo-tab="work">Cowork</button><button id="tab-code" type="button" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo-tab="code">Coding</button><button id="tab-connections" type="button" role="tab" aria-selected="false" aria-controls="demo-panel" tabindex="-1" data-demo-tab="connections">Connected apps</button></div><div id="demo-panel" role="tabpanel" aria-labelledby="tab-work" tabindex="0"><figure class="app-shot"><div class="shot-viewport"><img data-demo-image src="assets/gitu-cowork.jpg" width="1600" height="900" alt="Actual Agent Gitu Cowork chat with Mailbox, Gmail, and Google Calendar connection suggestions for Atlas" loading="eager" decoding="async"></div><figcaption><span data-demo-caption>Real app screenshot · Connections assigned to Atlas.</span><a data-demo-full href="assets/gitu-cowork.jpg" target="_blank" rel="noopener">View full screenshot <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></figcaption></figure></div></div></section>
+<section class="provider-strip wrap" aria-label="Supported provider examples"><p>Your intelligence, on your terms.</p><div><span>OpenAI</span><span>DeepSeek</span><span>OpenRouter</span><span>Gemini</span><span>ChatGPT</span><span class="mono">+ compatible APIs</span></div><p class="small">Connect a supported provider or subscription. Availability and usage limits vary.</p></section>
+<section class="wrap section-space"><div class="section-heading" data-reveal><p class="eyebrow"><span class="signal-dot"></span>ONE WORKSPACE. MORE POSSIBILITIES.</p><h2>A place for the work<br>you actually do.</h2><p>Start with a clear goal. Let Gitu work with the context, files, and tools you choose.</p></div><div class="feature-grid"><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3m2-15a3 3 0 0 1 0 6m1 3a5 5 0 0 1 3 5v1"/></svg></span><h3>A team when you need one.</h3><p>Give your teammates distinct roles, skills, models, and responsibilities. Bring their work together in one conversation.</p><a class="button button-text" href="cowork.html">Meet Cowork<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg></span><h3>From a bug to a better build.</h3><p>Explore your repository, make focused changes, and inspect the checks that support the result.</p><a class="button button-text" href="coding.html">Explore coding<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 14h8M8 17h5"/></svg></span><h3>Ideas into something useful.</h3><p>Research a question, prepare a brief, or create a document. Open the output, review it, and refine it together.</p><a class="button button-text" href="docs.html#first-task">Find your first task<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></article></div></section>
+<section class="wrap section-space editorial-split"><div data-reveal><p class="eyebrow"><span class="signal-dot"></span>CONTEXT MAKES THE DIFFERENCE</p><h2>Less repeating.<br><span class="blue-text">More understanding.</span></h2><p>Keep useful preferences, project context, and reusable skills close to the work. Gitu can use what you’ve shared to make the next task more informed.</p><ul class="check-list"><li><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span>Private memories scoped to your teammate.</span></li><li><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span>Connected accounts assigned to the right agent.</span></li><li><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span>Proactivity you can turn up—or turn off.</span></li></ul><a class="button button-text" href="connections.html">Connect your world<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></div><div class="context-visual" data-reveal><div class="context-row"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3 6 9 7 9-7"/></svg><span>Your connected apps</span><b>Assigned</b></div><div class="context-row"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg><span>Your preferences</span><b>Remembered</b></div><div class="context-row"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 14h8M8 17h5"/></svg><span>Your project context</span><b>In scope</b></div><div class="context-path" aria-hidden="true"></div><div class="context-result"><img src="assets/agent-gitu-mark.svg" width="44" height="44" alt=""><div>A useful next step.<small>Grounded in the context you provide.</small></div><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div></div></section>
+<section class="wrap section-space quiet-section"><div class="quiet-widget" data-reveal><div class="quiet-widget-head"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3 6 9 7 9-7"/></svg> Inbox snapshot <span class="live-badge">Quiet refresh</span></div><div class="quiet-widget-number">12 <span>unread emails</span></div><div class="quiet-chart" aria-hidden="true"><i style="--bar:24%;--delay:0ms"></i><i style="--bar:40%;--delay:60ms"></i><i style="--bar:32%;--delay:120ms"></i><i style="--bar:55%;--delay:180ms"></i><i style="--bar:43%;--delay:240ms"></i><i style="--bar:68%;--delay:300ms"></i><i style="--bar:55%;--delay:360ms"></i><i style="--bar:80%;--delay:420ms"></i><i style="--bar:65%;--delay:480ms"></i><i style="--bar:90%;--delay:540ms"></i><i style="--bar:72%;--delay:600ms"></i><i style="--bar:60%;--delay:660ms"></i><i style="--bar:40%;--delay:720ms"></i><i style="--bar:32%;--delay:780ms"></i></div><div class="quiet-widget-footer"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg> Same widget. Fresh information.</div><p class="tiny-note">Example data</p></div><div data-reveal><p class="eyebrow"><span class="signal-dot"></span>HELPFUL, WITHOUT THE NOISE</p><h2>Keep the update.<br>Skip the interruption.</h2><p>Permitted app reviews can spot useful changes when your agent is idle. Existing widgets update in place, so every refresh doesn’t become another chat message.</p><p class="small muted">Scheduled reviews require proactivity to be enabled and the runtime to stay available. “Follow my lead” keeps unsolicited app reviews off.</p><a class="button button-text" href="quiet-proactivity.html">How quiet proactivity works<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></div></section>
+<section class="wrap section-space"><div class="section-heading" data-reveal><p class="eyebrow"><span class="signal-dot"></span>YOU SET THE BOUNDARIES</p><h2>Capable by design.<br>Yours by choice.</h2><p>Choose the model, computer, connected accounts, and permissions for each teammate.</p></div><div class="principles"><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><h3>Permissions with a purpose.</h3><p>A suggestion gives you an option. It doesn’t grant permission to send, buy, delete, or change external data.</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a18 18 0 0 1 0 18 18 18 0 0 1 0-18"/></svg></span><h3>Your workspace, your setup.</h3><p>Work on your computer, use a private desktop, or connect a configured cloud computer. See where the work runs.</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></span><h3>See what supports the answer.</h3><p>Inspect tool results, task progress, and artifacts. Know what was checked and what still needs your input.</p></article></div><a class="button button-text" href="security.html">Understand data and control<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></section>
+<section class="wrap section-space faq-section"><div class="section-heading" data-reveal><p class="eyebrow"><span class="signal-dot"></span>GOOD QUESTIONS</p><h2>A few things to know.</h2></div><div class="faq-list"><details><summary>What can Agent Gitu do?<span aria-hidden="true">+</span></summary><p>Gitu can work with code, research information, create documents, use connected apps, and coordinate agent teammates. Available actions depend on your chosen model, tools, computer, and permissions.</p></details><details><summary>Can I choose the AI model?<span aria-hidden="true">+</span></summary><p>Yes. Agent profiles can use different supported providers and models. The source supports OpenAI, OpenRouter, DeepSeek, Gemini, compatible endpoints, and a ChatGPT subscription connection through the local Codex runtime.</p></details><details><summary>Does it keep working when I’m away?<span aria-hidden="true">+</span></summary><p>Assigned tasks, schedules, and permitted proactive reviews can run while the hosting runtime stays available. In the Windows desktop setup, keep Agent Gitu open and the computer awake and online. A hosted server is a separate deployment.</p></details><details><summary>Will proactive updates fill my chat?<span aria-hidden="true">+</span></summary><p>Existing findings refresh their widgets silently. A new actionable finding can create one chat notice. Unchanged evidence and dismissed widgets do not generate repeat notices.</p></details><details><summary>Is Agent Gitu free?<span aria-hidden="true">+</span></summary><p>The software is open source under the MIT license. Model API usage, subscriptions, Composio, and cloud hosting can have their own costs. Connect the services and plans that suit your needs.</p></details></div></section><section class="closing wrap" data-reveal><div class="closing-glow" aria-hidden="true"></div><p class="eyebrow"><span class="signal-dot"></span>START WITH ONE GOOD IDEA</p><h2>Your next project.<br><span class="blue-text">A little more possible.</span></h2><p>Give Gitu a goal. Keep your tools, your context, and your say.</p><div class="actions centered"><a class="button button-primary" href="download.html">Get Agent Gitu<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><a class="button button-secondary" href="https://github.com/cmgzone/agent-gitu">View on GitHub<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div><p class="small muted">Windows x64 · Open source · Bring your own model</p></section></main>
+<footer class="site-footer wrap"><div class="footer-top"><div><a class="brand" href="index.html"><img src="assets/agent-gitu-mark.svg" width="34" height="34" alt=""><span>Agent Gitu<span class="brand-dot">.</span></span></a><p>A little spark.<br>A working idea.</p></div><div class="footer-column"><h2>Workspace</h2><a href="cowork.html">Cowork</a><a href="coding.html">Coding</a><a href="connections.html">Connected apps</a><a href="download.html">Download</a></div><div class="footer-column"><h2>Explore</h2><a href="docs.html">Documentation</a><a href="blog.html">Product notes</a><a href="security.html">Data &amp; control</a><a href="https://github.com/cmgzone/agent-gitu/issues">GitHub Issues</a></div><div class="footer-column"><h2>Build with us</h2><a href="https://github.com/cmgzone/agent-gitu">Source code <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a><a href="https://github.com/cmgzone/agent-gitu/releases">Releases <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a><span class="footer-license">Open source · MIT</span></div></div><div class="footer-bottom"><span>© 2026 Agent Gitu</span><span>Model and connected-service costs may apply.</span><a href="#main">Back to top ↑</a></div></footer>
 </body>
 </html>

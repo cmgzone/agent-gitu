@@ -18,28 +18,40 @@ const types = {
   '.woff2': 'font/woff2',
   '.ico': 'image/x-icon',
   '.json': 'application/json; charset=utf-8',
+  '.xml': 'application/xml; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
 };
 
 const server = http.createServer((req, res) => {
-  let rel = decodeURIComponent((req.url || '/').split('?')[0]);
+  if (!['GET', 'HEAD'].includes(req.method)) {
+    res.writeHead(405, { allow: 'GET, HEAD' });
+    return res.end();
+  }
+  let rel;
+  try {
+    rel = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
+  } catch {
+    res.writeHead(400);
+    return res.end('Bad request');
+  }
   if (rel === '/' || rel === '') rel = '/index.html';
 
   const file = path.join(root, path.normalize(rel).replace(/^([/\\])+/, ''));
-  if (!file.startsWith(root)) {
+  if (!file.startsWith(root + path.sep) || rel.includes('\0')) {
     res.writeHead(403, { 'content-type': 'text/plain' });
     return res.end('forbidden');
   }
 
   fs.readFile(file, (err, buf) => {
     if (err) {
-      res.writeHead(404, { 'content-type': 'text/plain' });
-      return res.end('not found: ' + rel);
+      res.writeHead(404, { 'content-type': 'text/html; charset=utf-8' });
+      return res.end(req.method === 'HEAD' ? undefined : fs.readFileSync(path.join(root, '404.html')));
     }
     res.writeHead(200, {
       'content-type': types[path.extname(file).toLowerCase()] || 'application/octet-stream',
       'cache-control': 'no-store',
     });
-    res.end(buf);
+    res.end(req.method === 'HEAD' ? undefined : buf);
   });
 });
 

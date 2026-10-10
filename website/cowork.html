@@ -1,193 +1,37 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Cowork — Agent Gitu</title>
-<meta name="description" content="Cowork puts named agent teammates on one goal. Each teammate has a role, opens its own threads, and shares the same project lock and evidence gate as the rest of the team." />
-<meta name="theme-color" content="#07090f" />
-<link rel="icon" href="assets/agent-gitu-icon.png" />
-<link rel="stylesheet" href="styles.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI cowork teams with roles, memory and tools — Agent Gitu</title>
+<meta name="description" content="Build your AI cowork team in Agent Gitu. Give teammates separate roles, models, skills and permissions, then collaborate in direct messages or group chats.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="theme-color" content="#06080d">
+<link rel="canonical" href="https://pikpam.com/cowork.html">
+<meta property="og:site_name" content="Agent Gitu">
+<meta property="og:title" content="AI cowork teams with roles, memory and tools — Agent Gitu">
+<meta property="og:description" content="Build your AI cowork team in Agent Gitu. Give teammates separate roles, models, skills and permissions, then collaborate in direct messages or group chats.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://pikpam.com/cowork.html">
+<meta property="og:image" content="https://pikpam.com/assets/gitu-cowork.jpg">
+<meta property="og:image:width" content="1600">
+<meta property="og:image:height" content="900">
+<meta property="og:image:alt" content="Agent Gitu’s actual Windows app interface">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="AI cowork teams with roles, memory and tools — Agent Gitu">
+<meta name="twitter:description" content="Build your AI cowork team in Agent Gitu. Give teammates separate roles, models, skills and permissions, then collaborate in direct messages or group chats.">
+<meta name="twitter:image" content="https://pikpam.com/assets/gitu-cowork.jpg">
+<link rel="icon" type="image/svg+xml" href="assets/agent-gitu-mark.svg">
+<link rel="apple-touch-icon" href="assets/agent-gitu-icon.png">
+<link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"Organization","@id":"https://pikpam.com/#organization","name":"Agent Gitu","url":"https://pikpam.com/","logo":"https://pikpam.com/assets/agent-gitu-icon.png","sameAs":["https://github.com/cmgzone/agent-gitu"]},{"@type":"WebPage","@id":"https://pikpam.com/cowork.html#page","url":"https://pikpam.com/cowork.html","name":"AI cowork teams with roles, memory and tools — Agent Gitu","headline":"AI cowork teams with roles, memory and tools — Agent Gitu","description":"Build your AI cowork team in Agent Gitu. Give teammates separate roles, models, skills and permissions, then collaborate in direct messages or group chats.","inLanguage":"en","publisher":{"@id":"https://pikpam.com/#organization"},"image":"https://pikpam.com/assets/gitu-cowork.jpg"},{"@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://pikpam.com/"},{"@type":"ListItem","position":2,"name":"AI cowork teams with roles, memory and tools","item":"https://pikpam.com/cowork.html"}]}]}</script>
+<script src="script.js" defer></script>
 </head>
-<body>
-<a class="skip-link" href="#main">Skip to content</a>
-
-<header class="nav">
-  <div class="nav-inner">
-    <a class="nav-brand" href="index.html"><img src="assets/agent-gitu-mark.svg" alt="" /><span>Agent Gitu</span></a>
-    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Toggle navigation"><span></span></button>
-    <nav class="nav-links" id="nav-links" aria-label="Main">
-      <a class="nav-link" href="index.html">Home</a>
-      <a class="nav-link" href="coding.html">Coding</a>
-      <a class="nav-link is-active" href="cowork.html" aria-current="page">Cowork</a>
-      <a class="nav-link" href="docs.html">Docs</a>
-      <a class="nav-link" href="blog.html">Blog</a>
-      <a class="nav-link" href="github.html">GitHub</a>
-      <a class="btn btn-primary btn-sm nav-cta" href="github.html">Download</a>
-    </nav>
-  </div>
-</header>
-
-<main id="main">
-  <section class="hero" style="padding:88px 0 40px">
-    <div class="aurora" aria-hidden="true"></div>
-    <div class="wrap">
-      <span class="eyebrow reveal">Cowork</span>
-      <h1 class="reveal" style="--i:1">A team, not<br />a single thread.</h1>
-      <p class="lede reveal" style="--i:2">Give a goal to a few named teammates. Each one opens threads, reports what it found, and is held to the same evidence gate as everything else you run.</p>
-      <div class="hero-actions reveal" style="--i:3">
-        <a class="btn btn-primary" href="docs.html#cowork">Configure a team</a>
-        <a class="btn btn-ghost" href="coding.html">See solo coding</a>
-      </div>
-    </div>
-  </section>
-
-  <section style="padding-top:16px">
-    <div class="wrap">
-      <div class="section-head">
-        <span class="eyebrow reveal">The team</span>
-        <h2 class="reveal" style="--i:1">Four roles, one goal</h2>
-        <p class="reveal" style="--i:2">Each teammate has a distinct remit, so nobody duplicates work and nobody &ldquo;handles everything.&rdquo;</p>
-      </div>
-      <div class="mates">
-        <article class="mate reveal" style="--i:1;--accent:#7c5cff">
-          <div class="mate-av">G</div>
-          <h3>Gitu</h3>
-          <p>Orchestrator. Breaks the goal into steps, delegates them, and refuses to close the task while a criterion is unproven.</p>
-        </article>
-        <article class="mate reveal" style="--i:2;--accent:#3ddc97">
-          <div class="mate-av">R</div>
-          <h3>Rhea</h3>
-          <p>Researcher. Reads documentation and sources, then posts findings with citations instead of guessing.</p>
-        </article>
-        <article class="mate reveal" style="--i:3;--accent:#ffb347">
-          <div class="mate-av">K</div>
-          <h3>Kiro</h3>
-          <p>Builder. Makes the focused edits, keeps the diff small, and runs the project's own checks.</p>
-        </article>
-        <article class="mate reveal" style="--i:4;--accent:#ff6b81">
-          <div class="mate-av">V</div>
-          <h3>Vera</h3>
-          <p>Verifier. Attacks the result with edge cases and probes until the evidence actually holds.</p>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <section style="padding-top:0">
-    <div class="wrap">
-      <div class="split">
-        <nav class="rail" aria-label="On this page">
-          <a class="rail-link is-active" href="#threads" data-spy-link>Threads</a>
-          <a class="rail-link" href="#rooms" data-spy-link>Team rooms</a>
-          <a class="rail-link" href="#connections" data-spy-link>Connections</a>
-          <a class="rail-link" href="#boundaries" data-spy-link>Boundaries</a>
-        </nav>
-
-        <div>
-          <div class="doc-section" id="threads" data-spy-section>
-            <h2>Threads, not a wall of logs</h2>
-            <p>Every teammate reports into its own thread. You can follow one person, mute another, and read the history later without scrolling back through a transcript.</p>
-            <ul class="thread-list">
-              <li class="thread" style="--accent:#7c5cff">
-                <span class="thread-av">G</span>
-                <span class="thread-body"><strong>Split the migration into four steps</strong><span>Gitu &middot; plan &middot; ledger updated</span></span>
-                <span class="thread-time">2m</span>
-              </li>
-              <li class="thread" style="--accent:#3ddc97">
-                <span class="thread-av">R</span>
-                <span class="thread-body"><strong>Found the deprecation notice in the changelog</strong><span>Rhea &middot; research &middot; 3 sources cited</span></span>
-                <span class="thread-time">7m</span>
-              </li>
-              <li class="thread" style="--accent:#ffb347">
-                <span class="thread-av">K</span>
-                <span class="thread-body"><strong>Migration applied to 6 files, tests still red</strong><span>Kiro &middot; code &middot; evidence pending</span></span>
-                <span class="thread-time">11m</span>
-              </li>
-              <li class="thread" style="--accent:#ff6b81">
-                <span class="thread-av">V</span>
-                <span class="thread-body"><strong>Null session is unhandled &mdash; failing the criterion</strong><span>Vera &middot; review &middot; blocker raised</span></span>
-                <span class="thread-time">4m</span>
-              </li>
-            </ul>
-          </div>
-
-          <div class="doc-section" id="rooms" data-spy-section>
-            <h2>Rooms for the work that outlives a chat</h2>
-            <p>A room is a durable place for a recurring effort: a release checklist, a flaky-test watchlist, a migration being carried across weeks. Teammates keep working in the room whether or not you are watching.</p>
-            <p>Because the task ledger persists, a room that was interrupted mid-way resumes with its plan, its criteria, and its evidence still attached.</p>
-          </div>
-
-          <div class="doc-section" id="connections" data-spy-section>
-            <h2>Connections</h2>
-            <p>Teammates can reach the tools you have connected, but only through registered operations. Credentials stay in secure settings and are never printed into a thread.</p>
-            <div class="table-wrap">
-              <table>
-                <caption class="visually-hidden">Available connection categories</caption>
-                <thead><tr><th>Category</th><th>Example use</th><th>Approval</th></tr></thead>
-                <tbody>
-                  <tr><td>Issue trackers</td><td>Read a ticket, attach evidence</td><td>Reads auto-run, writes ask first</td></tr>
-                  <tr><td>MCP servers</td><td>Add tools to every teammate</td><td>Configured once, shared</td></tr>
-                  <tr><td>Repositories</td><td>Diff, branch, review</td><td>Never pushes unasked</td></tr>
-                  <tr><td>Messaging</td><td>Post a summary when done</td><td>Requires explicit approval</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="doc-section" id="boundaries" data-spy-section>
-            <h2>What the team will not do</h2>
-            <p>More teammates is not more authority. Every teammate inherits the same project lock, the same bounded plan, and the same evidence gate. A teammate cannot widen its own scope, and a teammate cannot mark a criterion green by asserting it is green.</p>
-            <div class="callout">
-              <div>
-                <strong>Parallel, not unbounded</strong>
-                <p>Teammates work concurrently on the same locked repo. You still get one reviewable diff set, and the gate still applies to all of it.</p>
-              </div>
-            </div>
-            <div class="hero-actions" style="justify-content:flex-start;margin-top:24px">
-              <a class="btn btn-primary" href="docs.html#cowork">Cowork setup</a>
-              <a class="btn btn-ghost" href="blog.html">Read the blog</a>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="cta">
-    <div class="wrap">
-      <span class="eyebrow reveal">Get started</span>
-      <h2 class="reveal" style="--i:1">Put a team on it</h2>
-      <p class="lede reveal" style="--i:2">Start solo, then add teammates when the goal outgrows one thread.</p>
-      <div class="cta-actions reveal" style="--i:3">
-        <a class="btn btn-primary" href="docs.html#cowork">Read the setup</a>
-      </div>
-    </div>
-  </section>
-</main>
-
-<footer class="footer">
-  <div class="wrap">
-    <div class="footer-grid">
-      <div class="footer-brand">
-        <a class="nav-brand" href="index.html"><img src="assets/agent-gitu-mark.svg" alt="" /><span>Agent Gitu</span></a>
-        <p>A bounded autonomous engineering agent that keeps its scope, its memory, and its receipts.</p>
-      </div>
-      <div><h4>Product</h4><ul><li><a href="coding.html">Coding</a></li><li><a href="cowork.html">Cowork</a></li><li><a href="docs.html">Documentation</a></li></ul></div>
-      <div><h4>Project</h4><ul><li><a href="github.html">GitHub</a></li><li><a href="blog.html">Blog</a></li><li><a href="docs.html#configuration">Configuration</a></li></ul></div>
-      <div><h4>Resources</h4><ul><li><a href="docs.html#quickstart">Quickstart</a></li><li><a href="docs.html#cli">CLI reference</a></li><li><a href="docs.html#faq">FAQ</a></li></ul></div>
-    </div>
-    <div class="footer-bot">
-      <span>&copy; 2026 Agent Gitu &middot; MIT licensed</span>
-      <div class="socials">
-        <a href="github.html" aria-label="GitHub"><svg viewBox="0 0 24 24"><path d="M9 19c-4 1.4-4-2.2-6-2.6m12 5v-3.6a3.1 3.1 0 0 0-.9-2.4c2.9-.3 6-1.4 6-6.4A5 5 0 0 0 18.8 5a4.7 4.7 0 0 0-.1-3.5s-1.1-.3-3.7 1.4a12.6 12.6 0 0 0-6.6 0C5.6 1.2 4.5 1.5 4.5 1.5A4.7 4.7 0 0 0 4.4 5 5 5 0 0 0 3 8.6c0 5 3 6.1 5.9 6.4a3.1 3.1 0 0 0-.9 2.4V21"/></svg></a>
-        <a href="blog.html" aria-label="Blog"><svg viewBox="0 0 24 24"><path d="M4 5h13a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2Z"/><path d="M8 9h7M8 13h7"/></svg></a>
-        <a href="docs.html" aria-label="Documentation"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11H5Z"/><path d="M14 4v5h5"/></svg></a>
-      </div>
-    </div>
-  </div>
-</footer>
-
-<script src="script.js"></script>
+<body data-page="cowork">
+<a class="skip-link" href="#main">Skip to content</a><header class="site-header"><div class="wrap nav-inner"><a class="brand" href="index.html" aria-label="Agent Gitu home"><img src="assets/agent-gitu-mark.svg" width="34" height="34" alt=""><span>Agent Gitu<span class="brand-dot">.</span></span></a><button class="nav-toggle" type="button" aria-controls="main-navigation" aria-expanded="false" aria-label="Open navigation"><span></span><span></span></button><nav id="main-navigation" class="main-navigation" aria-label="Main navigation"><a href="cowork.html" aria-current="page">Cowork</a><a href="coding.html">Coding</a><a href="connections.html">Connections</a><a href="docs.html">Docs</a><a class="nav-github" href="https://github.com/cmgzone/agent-gitu" aria-label="Agent Gitu on GitHub"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 19c-4 1-4-2-6-2m12 4v-4c0-1 .1-2-1-3 3-.3 6-1.5 6-5 0-1-.4-2-1-3 .3-1 .3-2-.2-3-2 0-3 1-4 1a12 12 0 0 0-6 0c-1 0-2-1-4-1-.5 1-.5 2-.2 3-.6 1-1 2-1 3 0 3.5 3 4.7 6 5-1 1-1 2-1 3v4"/></svg></a><a class="button button-nav" href="download.html">Get Gitu<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></nav></div></header>
+<main id="main"><section class="page-hero wrap split"><div data-reveal><p class="eyebrow"><span class="signal-dot"></span>MEET COWORK</p><h1>Your ideas.<br><span class="blue-text">A team to move them.</span></h1><p class="hero-description">Some days you need a second pair of eyes. Others, a researcher, an engineer, and a writer. Build the team around the work.</p><div class="actions"><a class="button button-primary" href="download.html">Get Agent Gitu<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><a class="button button-secondary" href="docs.html">Explore the docs<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div></div><div class="page-visual" data-reveal><figure class="app-shot"><div class="shot-viewport"><img src="assets/gitu-cowork.jpg" width="1600" height="900" alt="Actual Agent Gitu Cowork interface showing connected app suggestions scoped to Atlas" loading="eager" decoding="async"></div><figcaption><span>Your teammate. Its own connected accounts.</span><a href="assets/gitu-cowork.jpg" target="_blank" rel="noopener">View full screenshot <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></figcaption></figure></div></section><section class="wrap section-space"><div class="section-heading" data-reveal><p class="eyebrow"><span class="signal-dot"></span>MAKE THE TEAM YOUR OWN</p><h2>Different strengths.<br>A shared direction.</h2><p>These are examples, not fixed job titles. Name your agents and choose the responsibilities that fit your work.</p></div><div class="role-grid"><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg></span><h3>The coordinator</h3><p>Keeps the goal clear, brings teammate results together, and helps you decide what comes next.</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a18 18 0 0 1 0 18 18 18 0 0 1 0-18"/></svg></span><h3>The researcher</h3><p>Finds relevant information, checks sources, and turns a broad question into a useful brief.</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg></span><h3>The engineer</h3><p>Works with the repository, tools, and computer you permit. Makes focused changes and checks the result.</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 14h8M8 17h5"/></svg></span><h3>The writer</h3><p>Turns the shared context into documents, reports, and clear communication you can review.</p></article></div></section><section class="wrap section-space editorial-split"><div data-reveal><p class="eyebrow"><span class="signal-dot"></span>A CONVERSATION THAT MOVES WORK</p><h2>Talk to one.<br>Bring in the team.</h2><p>Use a direct message for focused work. Start a group when a project needs several perspectives. Mention a teammate to target a request, or let your configured coordinator bring the work together.</p><ul class="check-list"><li><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span>Separate profiles, models, and skills.</span></li><li><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span>Queued messages keep requests in order.</span></li><li><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg><span>Shared artifacts make results easy to inspect.</span></li></ul></div><div class="conversation-card" data-reveal><span class="mono">EXAMPLE PROJECT / WEEKLY BRIEF</span><p class="chat-bubble chat-user">Scout, research the options. Scribe, turn the findings into a short brief.</p><div class="handoff-row"><span class="avatar avatar-cyan">S</span><div><b>Scout</b><p>Sources checked. Findings ready for review.</p></div><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4 10-10"/></svg></div><div class="handoff-row"><span class="avatar avatar-light">S</span><div><b>Scribe</b><p>A concise brief, based on the shared findings.</p></div><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 14h8M8 17h5"/></svg></div><p class="small muted">Illustrative team workflow</p></div></section><section class="wrap section-space"><div class="section-heading" data-reveal><p class="eyebrow"><span class="signal-dot"></span>A LITTLE CONTEXT GOES A LONG WAY</p><h2>Teammates that fit<br>the way you work.</h2><p>Profiles shape the tone and responsibilities. Memory preserves useful preferences. Permissions determine what each agent can actually do.</p></div><div class="feature-grid"><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3Z"/></svg></span><h3>Personality and roles</h3><p>Set communication style and responsibilities. Choose “Follow my lead” or “Suggest useful next steps.”</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><h3>Schedules and follow-ups</h3><p>Ask for recurring work or a follow-up. Due tasks run while the hosting runtime remains available.</p></article><article class="feature-card" data-reveal><span class="feature-icon"><svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span><h3>Control at every handoff</h3><p>Assigned accounts and tool permissions remain scoped to the teammate. Blocking approvals pause dependent work.</p></article></div></section><section class="wrap section-space note-section"><h2>Start small. Get useful.</h2><p>Create one teammate. Give it one clear outcome. Connect only the tools that task needs. Add more roles as your work grows.</p><a class="button button-text" href="docs.html#cowork-setup">Set up your first teammate<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a></section><section class="closing wrap" data-reveal><div class="closing-glow" aria-hidden="true"></div><p class="eyebrow"><span class="signal-dot"></span>START WITH ONE GOOD IDEA</p><h2>Your next project.<br><span class="blue-text">A little more possible.</span></h2><p>Give Gitu a goal. Keep your tools, your context, and your say.</p><div class="actions centered"><a class="button button-primary" href="download.html">Get Agent Gitu<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a><a class="button button-secondary" href="https://github.com/cmgzone/agent-gitu">View on GitHub<svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div><p class="small muted">Windows x64 · Open source · Bring your own model</p></section></main>
+<footer class="site-footer wrap"><div class="footer-top"><div><a class="brand" href="index.html"><img src="assets/agent-gitu-mark.svg" width="34" height="34" alt=""><span>Agent Gitu<span class="brand-dot">.</span></span></a><p>A little spark.<br>A working idea.</p></div><div class="footer-column"><h2>Workspace</h2><a href="cowork.html">Cowork</a><a href="coding.html">Coding</a><a href="connections.html">Connected apps</a><a href="download.html">Download</a></div><div class="footer-column"><h2>Explore</h2><a href="docs.html">Documentation</a><a href="blog.html">Product notes</a><a href="security.html">Data &amp; control</a><a href="https://github.com/cmgzone/agent-gitu/issues">GitHub Issues</a></div><div class="footer-column"><h2>Build with us</h2><a href="https://github.com/cmgzone/agent-gitu">Source code <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a><a href="https://github.com/cmgzone/agent-gitu/releases">Releases <svg class="icon " width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M7 7h10v10"/></svg></a><span class="footer-license">Open source · MIT</span></div></div><div class="footer-bottom"><span>© 2026 Agent Gitu</span><span>Model and connected-service costs may apply.</span><a href="#main">Back to top ↑</a></div></footer>
 </body>
 </html>

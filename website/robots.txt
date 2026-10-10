@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /build.cjs
+Disallow: /site.config.json
+Sitemap: https://pikpam.com/sitemap.xml

@@ -44,13 +44,46 @@ describe('Connected-app heartbeat', () => {
     const f = fixture(); expect(await reviewConnectedApps(f)).toBe(1);
     const id = f.store.widgets(f.conversation.id)[0]!.id;
     vi.mocked(f.apps.execute).mockResolvedValue({ offer: 'Paper is now $8 until Friday.' });
-    expect(await reviewConnectedApps({ ...f, now: f.now + APP_REVIEW_INTERVAL_MS })).toBe(1);
+    f.complete.mockImplementation(async messages => String(messages[0]?.content).includes('"reads"') ? JSON.stringify({ reads: [{ service: 'shop', accountId: 'own', tool: 'SHOP_LIST_OFFERS', args: {} }] }) : JSON.stringify({ findings: [{ key: 'paper-offer', title: 'Updated paper offer', detail: 'Paper is now $8 until Friday.', sourceIds: [1] }] }));
+    const publish = vi.fn();
+    expect(await reviewConnectedApps({ ...f, now: f.now + APP_REVIEW_INTERVAL_MS, publish })).toBe(1);
     expect(f.store.widgets(f.conversation.id).map(widget => widget.id)).toEqual([id]);
-    expect(f.store.messages(f.conversation.id)).toHaveLength(2);
+    expect(f.store.widgets(f.conversation.id)[0]!.data.text).toContain('$8');
+    expect(f.store.messages(f.conversation.id)).toHaveLength(1);
+    expect(publish).toHaveBeenCalledOnce();
+    const store = new CoworkStore(f.file);
+    expect(await reviewConnectedApps({ ...f, store, now: f.now + 2 * APP_REVIEW_INTERVAL_MS })).toBe(0);
+    expect(store.messages(f.conversation.id)).toHaveLength(1);
     const other = fixture(); let enabled = true;
     vi.mocked(other.apps.execute).mockImplementation(async () => { enabled = false; return { offer: 'Useful offer' }; });
     expect(await reviewConnectedApps({ ...other, enabled: () => enabled })).toBe(0);
     expect(other.store.widgets(other.conversation.id)).toHaveLength(0);
+  });
+  it('ignores execution IDs and JSON property order but preserves changes to domain data', async () => {
+    const f = fixture();
+    vi.mocked(f.apps.execute).mockResolvedValue({ log_id: 'first', responseId: 'one', data: { id: 'offer-1', price: 10, date: '2026-10-09' } });
+    expect(await reviewConnectedApps(f)).toBe(1);
+    const id = f.store.widgets(f.conversation.id)[0]!.id;
+    const publish = vi.fn();
+    vi.mocked(f.apps.execute).mockResolvedValue({ data: { date: '2026-10-09', price: 10, id: 'offer-1' }, responseId: 'two', log_id: 'second' });
+    expect(await reviewConnectedApps({ ...f, now: f.now + APP_REVIEW_INTERVAL_MS, publish })).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+    vi.mocked(f.apps.execute).mockResolvedValue({ logId: 'third', data: { id: 'offer-2', price: 10, date: '2026-10-10' } });
+    expect(await reviewConnectedApps({ ...f, now: f.now + 2 * APP_REVIEW_INTERVAL_MS, publish })).toBe(1);
+    expect(f.store.widgets(f.conversation.id).map(widget => widget.id)).toEqual([id]);
+    expect(f.store.messages(f.conversation.id)).toHaveLength(1);
+  });
+  it('respects Follow my lead, including a preference changed during the review', async () => {
+    const f = fixture();
+    const personality = { traits: [], communicationStyle: '', proactivity: 'reactive' as const };
+    f.store.saveAgent({ ...f.agent, personality });
+    expect(await reviewConnectedApps(f)).toBe(0);
+    expect(f.apps.accounts).not.toHaveBeenCalled();
+    const other = fixture();
+    vi.mocked(other.apps.execute).mockImplementation(async () => { other.store.saveAgent({ ...other.agent, personality }); return { offer: 'Paper offer' }; });
+    expect(await reviewConnectedApps(other)).toBe(0);
+    expect(other.store.widgets(other.conversation.id)).toHaveLength(0);
+    expect(other.store.messages(other.conversation.id)).toHaveLength(0);
   });
   it('stops waiting for an unresponsive provider when cancelled', async () => {
     const f = fixture(), controller = new AbortController();

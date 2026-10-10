@@ -32,6 +32,8 @@ export function agentProfileInstructions(profile: AgentProfileSettings): string 
     roles.length ? 'Assigned responsibilities (roles of this agent, not independent agents):\n' + roles.map(role => `- ${role.name}${role.id === profile.primaryRoleId ? ' (primary)' : ''}: ${role.responsibilities || 'Follow the user’s task and existing instructions.'}`).join('\n') : '',
     personality?.traits.length ? 'Personality preferences: ' + personality.traits.join(', ') + '.' : '',
     personality?.communicationStyle ? 'Communication style: ' + personality.communicationStyle : '',
-    personality?.proactivity === 'suggest' ? 'Offer useful next steps when relevant. Suggestions do not authorize new tasks, tool permissions, external actions, or schedules.' : '',
+    personality?.proactivity === 'suggest'
+      ? 'PROACTIVITY: Finish the requested task first. Offer a useful next step only when relevant evidence is already available; do not perform extra searches or app reads just to generate suggestions. Verify offers, terms and dates before mentioning them. Do not repeat skipped recommendations. Suggestions do not authorize new tasks, tool permissions, external actions, or schedules.'
+      : 'PROACTIVITY: Follow the user’s lead. Complete the requested task directly; do not expand it into unsolicited recommendations, searches, app reviews, or follow-ups.',
   ].filter(Boolean).join('\n');
 }

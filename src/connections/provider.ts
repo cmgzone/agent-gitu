@@ -42,7 +42,7 @@ export interface ConnectedAppsProvider {
   readonly setup: { canConfigure: boolean; keyStorage: string };
   catalog(search: string, cursor?: string): Promise<{ services: ConnectedAppService[]; cursor?: string }>;
   accounts(): Promise<ConnectedAppAccount[]>;
-  tools(service: string): Promise<ConnectedAppTool[]>;
+  tools(service: string, query?: string, tool?: string): Promise<ConnectedAppTool[]>;
   execute(service: string, tool: string, args: Record<string, unknown>, accountId: string): Promise<unknown>;
 }
 
@@ -101,9 +101,12 @@ export class ConnectionsHub implements ConnectedAppsProvider {
     return accounts;
   }
 
-  async tools(service: string): Promise<ConnectedAppTool[]> {
-    if (service === MAIL_SERVICE_SLUG) return this.mail.tools();
-    return this.composio.tools(service);
+  async tools(service: string, query?: string, tool?: string): Promise<ConnectedAppTool[]> {
+    if (service === MAIL_SERVICE_SLUG) {
+      const tools = this.mail.tools();
+      return tools.filter(item => tool ? item.slug === tool : !query || `${item.slug} ${item.name} ${item.description ?? ''}`.toLowerCase().includes(query.toLowerCase()));
+    }
+    return this.composio.tools(service, query, tool);
   }
 
   async execute(service: string, tool: string, args: Record<string, unknown>, accountId: string): Promise<unknown> {

@@ -38,6 +38,69 @@ function withReview(client: LlmClient, review: (input: { candidate: string; chec
 }
 
 describe('Cowork continuity across providers and restarts', () => {
+  it('ends a repeated app read after unchanged evidence and preserves the complete tool schema', async () => {
+    const s = setup();
+    s.store.assignAppAccount(s.agent.id, 'gmail', 'own');
+    const description = 'x'.repeat(25_000);
+    const tools = vi.fn(async () => [{ slug: 'GMAIL_FETCH', name: 'Fetch', description, inputParameters: { required: ['query'] } }]);
+    const apps = { configured: true, setup: { canConfigure: false, keyStorage: 'test' }, accounts: async () => [{ id: 'own', toolkit: 'gmail', status: 'ACTIVE', disabled: false }], catalog: vi.fn(), tools, execute: vi.fn() };
+    s.ctx.connectedApps = apps;
+    let rounds = 0;
+    const complete = vi.fn(async (messages: LlmMessage[], options) => {
+      rounds++;
+      if (rounds > 1) expect(messages.some(message => String(message.content).includes(description))).toBe(true);
+      if (options?.toolChoice === 'none') return 'I retrieved the schema but could not obtain the requested count.\n<cowork_state>waiting</cowork_state>';
+      return '<tool>{"name":"connected_apps","params":{"action":"tools","service":"gmail","query":"unread count"}}</tool>';
+    });
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Count unread emails', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'repeating-test', complete }), toolContext: () => s.ctx, connectedApps: apps, memory: s.memory, store: s.store, autoLearn: false, requireCompletionState: true },
+      append: message => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(tools).toHaveBeenCalledTimes(3);
+    expect(complete).toHaveBeenCalledTimes(4);
+    expect(result.messages.at(-1)?.text).toContain('could not obtain');
+  });
+
+  it('allows the same read to continue when the returned evidence changes', async () => {
+    const s = setup();
+    let fetches = 0;
+    const apps = { configured: true, setup: { canConfigure: false, keyStorage: 'test' }, accounts: async () => [{ id: 'own', toolkit: 'gmail', status: 'ACTIVE', disabled: false }], catalog: vi.fn(), tools: vi.fn(async () => [{ slug: 'GMAIL_FETCH', name: `Result ${++fetches}` }]), execute: vi.fn() };
+    s.ctx.connectedApps = apps;
+    s.store.assignAppAccount(s.agent.id, 'gmail', 'own');
+    const complete = vi.fn(async () => fetches < 4 ? '<tool>{"name":"connected_apps","params":{"action":"tools","service":"gmail","query":"unread"}}</tool>' : 'The check finished.');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Check updates', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'progress-test', complete }), toolContext: () => s.ctx, connectedApps: apps, memory: s.memory, store: s.store, autoLearn: false },
+      append: message => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(fetches).toBe(4);
+    expect(result.messages.at(-1)?.text).toBe('The check finished.');
+  });
+
+  it('stops unchanged app reads despite changing execution log IDs and a model ignoring the stop', async () => {
+    const s = setup();
+    s.agent = s.store.saveAgent({ ...s.agent, allowConfig: true });
+    s.store.assignAppAccount(s.agent.id, 'gmail', 'own');
+    const request = s.store.addRequest({ conversationId: s.conversation.id, agentId: s.agent.id, kind: 'recommendation', title: 'Read count', detail: 'Allow the read for this test.', appAction: { service: 'gmail', accountId: 'own', tool: 'GMAIL_FETCH', args: {} } });
+    s.store.allowAppActionForRequest(request.id);
+    let reads = 0;
+    const apps = { configured: true, setup: { canConfigure: false, keyStorage: 'test' }, accounts: async () => [{ id: 'own', toolkit: 'gmail', status: 'ACTIVE', disabled: false }], catalog: vi.fn(), tools: vi.fn(), execute: vi.fn(async () => ({ data: { count: 12 }, log_id: `log-${++reads}` })) };
+    s.ctx.connectedApps = apps;
+    const complete = vi.fn(async () => '<tool>{"name":"connected_apps","params":{"action":"execute","service":"gmail","tool":"GMAIL_FETCH","args":{}}}</tool>');
+    const trigger = s.store.appendMessage(s.conversation.id, { role: 'user', text: 'Count unread emails', via: 'web' });
+    const result = await runConversationTurn({ conversation: s.conversation, trigger, history: [trigger],
+      deps: { agents: [s.agent], resolveLlm: () => ({ name: 'ignores-stop-test', complete }), toolContext: () => s.ctx, connectedApps: apps, memory: s.memory, store: s.store, autoLearn: false },
+      append: message => s.store.appendMessage(s.conversation.id, message),
+    });
+    expect(result.error).toBeUndefined();
+    expect(reads).toBe(3);
+    expect(complete).toHaveBeenCalledTimes(4);
+    expect(result.messages.at(-1)?.text).toContain('I stopped');
+  });
+
   it('keeps a public work update visible across a tool call and the next model turn', async () => {
     const s = setup();
     const prompt = buildCoworkMessages(s.agent, s.conversation, [s.agent], [], { agents: [s.agent], resolveLlm: vi.fn(), toolContext: () => s.ctx });

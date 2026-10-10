@@ -1,0 +1,92 @@
+﻿{
+  "id": "4ad444d2-06db-4b1b-9154-8a9a2f2eb4f6",
+  "projectId": "agent-gitu-site-editorial-light-v2-98a0",
+  "conversationId": "41a4ce84-87fc-4062-aedf-fb71f2870041",
+  "assistantMessageId": "e3342d99-b4e4-417e-8179-1f10e122590e",
+  "clientRequestId": "e5795f26-4667-44b9-a2d4-309576bbc9c3",
+  "agentId": "opencode",
+  "designSystemId": null,
+  "designSystemRequestedId": null,
+  "designSystemSelectionSource": "none",
+  "designSystemDigest": null,
+  "appliedPluginSnapshotId": null,
+  "pluginId": null,
+  "strategyRolloutDecision": {
+    "schemaVersion": 1,
+    "decisionClass": "not_applicable",
+    "requestedMode": "active",
+    "effectiveMode": "off",
+    "taskType": null,
+    "assignmentBucket": 1067,
+    "eligible": false,
+    "syntheticCanary": false,
+    "reasonCodes": [
+      "od_next_rollout_not_applicable"
+    ],
+    "primaryReasonCode": "od_next_rollout_not_applicable"
+  },
+  "status": "running",
+  "createdAt": 1791212105005,
+  "updatedAt": 1791212232440,
+  "terminalAt": null,
+  "cancelRequested": false,
+  "cancelOrigin": null,
+  "terminalTrigger": null,
+  "childPid": 15188,
+  "processGroupId": null,
+  "childExited": false,
+  "childExitObservedAt": null,
+  "exitCode": null,
+  "signal": null,
+  "error": null,
+  "errorCode": null,
+  "failureCategory": null,
+  "failureDetail": null,
+  "failureAction": null,
+  "retryable": null,
+  "resumable": false,
+  "endedWithUnfinishedWork": false,
+  "eventsLogPath": "C:\\Users\\Admin\\AppData\\Roaming\\Open Design\\namespaces\\release-stable-win\\data\\runs\\4ad444d2-06db-4b1b-9154-8a9a2f2eb4f6\\events.jsonl",
+  "workspace": {
+    "storage": {
+      "kind": "od-owned",
+      "baseDir": null
+    },
+    "provenance": null
+  },
+  "mediaExecution": {
+    "mode": "enabled"
+  },
+  "toolBundle": {
+    "mcpServers": []
+  },
+  "promptCache": {
+    "stablePromptHash": "16720d49dbec2ced4b8e11ee4a90d5195135609550f55b26c2bb6f3da1f1c10a",
+    "hit": false,
+    "missReason": "stable-prompt-changed",
+    "changedSections": [
+      "intent"
+    ]
+  },
+  "nativeSessionRecovery": {
+    "agentId": "opencode",
+    "state": "resumed",
+    "acquisition": "stream-captured",
+    "continuation": "native-resume-by-id",
+    "handle": {
+      "present": true,
+      "kind": "cli-thread-id",
+      "display": null,
+      "sha256": "51babd78b6b18439b8691530e1a956eca42f805c0b45b4430a261dcbb428eb49",
+      "redacted": true
+    },
+    "guardReason": null,
+    "fallbackReason": null,
+    "updatedAt": 1791212229758
+  },
+  "clientType": "external_mcp",
+  "manualResumeAttemptCount": 0,
+  "rechargeWaitDurationMs": 0,
+  "studioUrl": "http://127.0.0.1:51645/projects/agent-gitu-site-editorial-light-v2-98a0/conversations/41a4ce84-87fc-4062-aedf-fb71f2870041",
+  "hint": "Run still in flight. Tail eventsLogPath in your own shell (e.g. `tail -n 50 -f \"C:\\Users\\Admin\\AppData\\Roaming\\Open Design\\namespaces\\release-stable-win\\data\\runs\\4ad444d2-06db-4b1b-9154-8a9a2f2eb4f6\\events.jsonl\"`) to see live text_delta / tool_use events from the inner agent ΓÇö that is your in-flight progress signal. Keep polling get_run every 30ΓÇô60s; do not cancel because file mtimes look static, that is the agent thinking between writes. While the run is in flight, studioUrl can be used as an optional workspace progress link ΓÇö render it as `[Watch progress in OpenDesign studio](http://127.0.0.1:51645/projects/agent-gitu-site-editorial-light-v2-98a0/conversations/41a4ce84-87fc-4062-aedf-fb71f2870041)` if you choose to show it. This URL is valid for the current OpenDesign runtime; call get_run again after OpenDesign restarts."
+}

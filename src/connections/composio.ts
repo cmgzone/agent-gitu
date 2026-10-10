@@ -97,6 +97,7 @@ type Client = Pick<Composio, 'sessions' | 'connectedAccounts' | 'tools' | 'toolk
 export class ComposioConnections {
   private sdk?: Client;
   private session?: ReturnType<Client['sessions']['create']>;
+  private executionSessions = new Map<string, ReturnType<Client['sessions']['create']>>();
   constructor(
     private readonly owner: () => string,
     private readonly keys = new ComposioKeyStore(),
@@ -121,7 +122,8 @@ export class ComposioConnections {
       const owner = this.owner();
       const file = path.join(ensureGituHome().settings, 'composio-session.json');
       const saved = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { owner: string; sessionId: string }) : undefined;
-      this.session = (saved?.owner === owner && saved.sessionId ? this.client().sessions.use(saved.sessionId) : this.client().sessions.create(owner, { manageConnections: false }))
+      const request = { signal: AbortSignal.timeout(15_000) };
+      this.session = (saved?.owner === owner && saved.sessionId ? this.client().sessions.use(saved.sessionId, undefined, request) : this.client().sessions.create(owner, { manageConnections: false }, request))
         .then((session) => {
           writeFileSync(file, JSON.stringify({ owner, sessionId: session.sessionId }), { mode: 0o600 });
           return session;
@@ -141,6 +143,7 @@ export class ComposioConnections {
     this.keys.save(key.trim());
     this.sdk = sdk;
     this.session = undefined;
+    this.executionSessions.clear();
     const file = path.join(ensureGituHome().settings, 'composio-session.json');
     // A session belongs to the provider project; key changes create a fresh one.
     writeFileSync(file, JSON.stringify({ owner: '', sessionId: '' }), { mode: 0o600 });
@@ -163,7 +166,7 @@ export class ComposioConnections {
     const items: ConnectedApp[] = [];
     let cursor: string | undefined;
     do {
-      const result = await this.client().connectedAccounts.list({ userIds: [this.owner()], accountType: 'PRIVATE', limit: 100, cursor });
+      const result = await this.client().connectedAccounts.list({ userIds: [this.owner()], accountType: 'PRIVATE', limit: 100, cursor }, { signal: AbortSignal.timeout(15_000) });
       items.push(...result.items.map((account) => ({ id: account.id, toolkit: account.toolkit.slug, status: account.status, disabled: account.isDisabled })));
       cursor = result.nextCursor ?? undefined;
     } while (cursor && items.length < 1000);
@@ -181,11 +184,16 @@ export class ComposioConnections {
   async disconnect(id: string): Promise<void> {
     if (!(await this.accounts()).some((account) => account.id === id)) throw new Error('Connection not found.');
     await this.client().connectedAccounts.revoke(id);
+    this.executionSessions.clear();
   }
-  async tools(slug: string) {
+  async tools(slug: string, query?: string, tool?: string) {
     if (!(await this.accounts()).some((account) => account.toolkit === slug && account.status === 'ACTIVE' && !account.disabled))
       throw new Error('Connect this service in Cowork → Connections first.');
-    return (await this.client().tools.getRawComposioTools({ toolkits: [slug], limit: 100 })).map((tool) => ({
+    const tools = await this.client().tools.getRawComposioTools(
+      tool ? { tools: [tool] } : { toolkits: [slug], ...(query ? { search: query.slice(0, 200), limit: 5 } : { limit: 100 }) },
+      undefined, { signal: AbortSignal.timeout(15_000) },
+    );
+    return tools.filter(item => !tool || item.toolkit?.slug === slug).map((tool) => ({
       slug: tool.slug,
       name: tool.name,
       description: tool.description,
@@ -197,18 +205,26 @@ export class ComposioConnections {
     if (!account) throw new Error('This service is disconnected or needs to be reconnected.');
     // Bind the account and toolkit on the server. Model-supplied user IDs or
     // account IDs can never select another user's connection.
-    const matches = await this.client().tools.getRawComposioTools({ tools: [tool] });
-    if (!matches.some((item) => item.slug === tool && item.toolkit?.slug === slug)) throw new Error('That tool does not belong to the connected service.');
-    const session = await this.client().sessions.create(this.owner(), {
-      toolkits: [slug],
-      tools: { [slug]: [tool] },
-      connectedAccounts: { [slug]: account.id },
-      manageConnections: false,
-    });
+    const signal = AbortSignal.timeout(30_000);
+    const owner = this.owner();
+    const sessionKey = JSON.stringify([owner, slug, tool, account.id]);
+    let pendingSession = this.executionSessions.get(sessionKey);
+    if (!pendingSession) {
+      const matches = await this.client().tools.getRawComposioTools({ tools: [tool] }, undefined, { signal });
+      if (!matches.some((item) => item.slug === tool && item.toolkit?.slug === slug)) throw new Error('That tool does not belong to the connected service.');
+      pendingSession = this.client().sessions.create(owner, {
+        toolkits: [slug],
+        tools: { [slug]: [tool] },
+        connectedAccounts: { [slug]: account.id },
+        manageConnections: false,
+      }, { signal }).catch(error => { this.executionSessions.delete(sessionKey); throw error; });
+      this.executionSessions.set(sessionKey, pendingSession);
+    }
+    const session = await pendingSession;
     // Mutating service calls must never be retried automatically after an
     // ambiguous network failure. The SDK's typed transport exposes this option.
-    const result = await this.client().getClient().withOptions({ maxRetries: 0 }).toolRouter.session.execute(session.sessionId, { tool_slug: tool, arguments: args });
-    if (result.error) throw new Error('The connected service rejected this action.');
+    const result = await this.client().getClient().withOptions({ maxRetries: 0 }).toolRouter.session.execute(session.sessionId, { tool_slug: tool, arguments: args }, { signal });
+    if (result.error) throw new Error(`The connected service rejected this action: ${String(result.error).slice(0, 600)}`);
     return result;
   }
 }

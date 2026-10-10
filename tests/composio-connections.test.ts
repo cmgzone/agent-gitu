@@ -7,6 +7,7 @@ import { executeCoworkTool, type CoworkToolScope } from '../src/cowork/tools.js'
 import { CoworkStore } from '../src/cowork/store.js';
 import { GituServer } from '../src/server/server.js';
 import type { ToolContext } from '../src/tools/tools.js';
+import { connectionResponses } from '../src/connections/response-data.js';
 
 type Client = ReturnType<NonNullable<ConstructorParameters<typeof ComposioConnections>[2]>>;
 class MemoryKeys extends ComposioKeyStore {
@@ -30,7 +31,7 @@ function fixture() {
   process.env['AGENT_GITU_HOME'] = mkdtempSync(path.join(tmpdir(), 'gitu-composio-'));
   const keys = new MemoryKeys();
   keys.value = 'fixture-key';
-  const execute = vi.fn(async () => ({ data: { done: true } }));
+  const execute = vi.fn(async (): Promise<Record<string, unknown>> => ({ data: { done: true } }));
   const toolkits = vi.fn(async () => ({ items: [{ slug: 'gmail', name: 'Gmail', connection: { connectedAccount: { status: 'ACTIVE', id: 'own' } } }], cursor: 'next' }));
   const authorize = vi.fn(async () => ({ redirectUrl: 'https://connect.composio.dev/link', id: 'own' }));
   const create = vi.fn(async () => ({ sessionId: 'test-session', toolkits, authorize }));
@@ -105,9 +106,9 @@ describe('Composio connections', () => {
   it('lists only the owner’s private connections and strips credential data', async () => {
     const f = fixture();
     expect(await f.apps.accounts()).toEqual([{ id: 'own', toolkit: 'gmail', status: 'ACTIVE', disabled: false }]);
-    expect(f.list).toHaveBeenCalledWith({ userIds: ['owner-uuid'], accountType: 'PRIVATE', limit: 100, cursor: undefined });
+    expect(f.list).toHaveBeenCalledWith({ userIds: ['owner-uuid'], accountType: 'PRIVATE', limit: 100, cursor: undefined }, { signal: expect.any(AbortSignal) });
     expect(JSON.stringify(await f.apps.catalog('mail'))).not.toContain('fixture-key');
-    expect(f.create).toHaveBeenCalledWith('owner-uuid', { manageConnections: false });
+    expect(f.create).toHaveBeenCalledWith('owner-uuid', { manageConnections: false }, { signal: expect.any(AbortSignal) });
     expect(f.toolkits).toHaveBeenCalledWith({ search: 'mail', cursor: undefined, limit: 50 });
   });
   it('permits only Composio HTTPS authorization links and revokes owned connections', async () => {
@@ -134,12 +135,74 @@ describe('Composio connections', () => {
       tools: { gmail: ['GMAIL_SEND'] },
       connectedAccounts: { gmail: 'own' },
       manageConnections: false,
-    });
+    }, { signal: expect.any(AbortSignal) });
     expect(f.withOptions).toHaveBeenCalledWith({ maxRetries: 0 });
     expect(f.execute).toHaveBeenCalledOnce();
-    expect(f.execute).toHaveBeenCalledWith('test-session', { tool_slug: 'GMAIL_SEND', arguments: { to: 'person@example.com' } });
+    expect(f.execute).toHaveBeenCalledWith('test-session', { tool_slug: 'GMAIL_SEND', arguments: { to: 'person@example.com' } }, { signal: expect.any(AbortSignal) });
     f.execute.mockImplementationOnce(async () => ({ data: { done: false }, error: 'provider rejected the action' }));
     await expect(f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own')).rejects.toThrow('rejected this action');
+  });
+
+  it('reuses a validated session but still checks account status for each execution', async () => {
+    const f = fixture();
+    await f.apps.execute('gmail', 'GMAIL_SEND', { to: 'first@example.com' }, 'own');
+    await f.apps.execute('gmail', 'GMAIL_SEND', { to: 'second@example.com' }, 'own');
+    expect(f.create).toHaveBeenCalledOnce();
+    expect(f.raw).toHaveBeenCalledOnce();
+    expect(f.list).toHaveBeenCalledTimes(2);
+    f.list.mockResolvedValueOnce({ items: [], nextCursor: null });
+    await expect(f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own')).rejects.toThrow('disconnected');
+    expect(f.execute).toHaveBeenCalledTimes(2);
+    await f.apps.disconnect('own');
+    await f.apps.execute('gmail', 'GMAIL_SEND', {}, 'own');
+    expect(f.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('searches tools by capability and returns an intact large exact input schema', async () => {
+    const f = fixture();
+    f.raw.mockResolvedValue([{ slug: 'GMAIL_SEND', name: 'Send mail', description: 'x'.repeat(25_000), inputParameters: { required: ['to'] }, toolkit: { slug: 'gmail' } }]);
+    const store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Reader', systemPrompt: 'Read.' });
+    store.assignAppAccount(agent.id, 'gmail', 'own');
+    const scope = { store, agent } as CoworkToolScope;
+    const ctx = { connectedApps: f.apps } as ToolContext;
+    const perms = { allowWrites: false, allowConfig: false, allowShell: false, chief: false, browser: false };
+    const catalog = await executeCoworkTool(ctx, 'connected_apps', { action: 'tools', service: 'gmail' }, perms, scope);
+    expect(JSON.parse(catalog.output).tools[0].description).toHaveLength(160);
+    const schema = await executeCoworkTool(ctx, 'connected_apps', { action: 'tools', service: 'gmail', query: 'send mail' }, perms, scope);
+    expect(JSON.parse(schema.output)[0].inputParameters.required).toEqual(['to']);
+    expect(JSON.parse(schema.output)[0].description).toHaveLength(25_000);
+    expect(f.raw).toHaveBeenLastCalledWith({ toolkits: ['gmail'], search: 'send mail', limit: 5 }, undefined, { signal: expect.any(AbortSignal) });
+    await f.apps.tools('gmail', undefined, 'GMAIL_SEND');
+    expect(f.raw).toHaveBeenLastCalledWith({ tools: ['GMAIL_SEND'] }, undefined, { signal: expect.any(AbortSignal) });
+  });
+
+  it('keeps large app results inspectable, preserves pagination and reports the actual input error', async () => {
+    const f = fixture();
+    const store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Reader', systemPrompt: 'Read.', allowWrites: true, allowConfig: true });
+    store.assignAppAccount(agent.id, 'gmail', 'own');
+    const conv = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    const request = store.addRequest({ conversationId: conv.id, agentId: agent.id, kind: 'recommendation', title: 'Read', detail: 'Allow this action for the test.', appAction: { service: 'gmail', accountId: 'own', tool: 'GMAIL_SEND', args: {} } });
+    store.allowAppActionForRequest(request.id);
+    const scope = { store, agent, conversationId: conv.id } as CoworkToolScope;
+    const ctx = { connectedApps: f.apps } as ToolContext;
+    const perms = { allowWrites: true, allowConfig: true, allowShell: false, chief: false, browser: false };
+    const params = { action: 'execute', service: 'gmail', tool: 'GMAIL_SEND', args: {} };
+    f.execute.mockResolvedValueOnce({ data: { body: 'x'.repeat(20_000) + 'END-OF-MESSAGE', nextPageToken: 'next-page', accessToken: 'secret' } });
+    const result = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    expect(result.ok).toBe(true);
+    const { responseId } = JSON.parse(result.output);
+    expect(result.output.length).toBeLessThan(8_000);
+    expect(connectionResponses().inspect({ responseId, path: '/data/body', offset: 20_000 }).data).toBe('END-OF-MESSAGE');
+    expect(connectionResponses().inspect({ responseId, path: '/data/nextPageToken' }).data).toBe('next-page');
+    expect(connectionResponses().inspect({ responseId, path: '/data/accessToken' }).data).toBe('<redacted>');
+    f.execute.mockRejectedValueOnce(new Error('Invalid input: missing required query; authorization=secret'));
+    const failed = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    expect(failed.ok).toBe(false);
+    expect(failed.output).toContain('missing required query');
+    expect(failed.output).not.toContain('authorization=secret');
+    expect(failed.output).not.toContain('Check its status');
   });
 
   it('requires a human review and prevents altered arguments, wrong agents, and approval replay', async () => {

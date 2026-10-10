@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Coding — Agent Gitu</title>
+<meta name="description" content="Agent Gitu reads the code before it changes it: a locked project scope, a durable task ledger, focused edits, and an evidence gate that requires a passing check before calling work done." />
+<meta name="theme-color" content="#07090f" />
+<link rel="icon" href="assets/agent-gitu-icon.png" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html"><img src="assets/agent-gitu-mark.svg" alt="" /><span>Agent Gitu</span></a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Toggle navigation"><span></span></button>
+    <nav class="nav-links" id="nav-links" aria-label="Main">
+      <a class="nav-link" href="index.html">Home</a>
+      <a class="nav-link is-active" href="coding.html" aria-current="page">Coding</a>
+      <a class="nav-link" href="cowork.html">Cowork</a>
+      <a class="nav-link" href="docs.html">Docs</a>
+      <a class="nav-link" href="blog.html">Blog</a>
+      <a class="nav-link" href="github.html">GitHub</a>
+      <a class="btn btn-primary btn-sm nav-cta" href="github.html">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" style="padding:88px 0 40px">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="wrap">
+      <span class="eyebrow reveal">Coding</span>
+      <h1 class="reveal" style="--i:1">It reads before<br />it writes.</h1>
+      <p class="lede reveal" style="--i:2">Most agents guess at your codebase. Agent Gitu locks the repo root, indexes the symbols, writes a plan you can see, and touches one file at a time.</p>
+      <div class="hero-actions reveal" style="--i:3">
+        <a class="btn btn-primary" href="docs.html#quickstart">Start coding</a>
+        <a class="btn btn-ghost" href="docs.html">See the CLI</a>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top:20px">
+    <div class="wrap">
+      <div class="split">
+        <nav class="rail" aria-label="On this page">
+          <a class="rail-link is-active" href="#understand" data-spy-link>Understand</a>
+          <a class="rail-link" href="#ledger" data-spy-link>Task ledger</a>
+          <a class="rail-link" href="#change" data-spy-link>Make the change</a>
+          <a class="rail-link" href="#evidence" data-spy-link>Evidence gate</a>
+          <a class="rail-link" href="#git" data-spy-link>Git &amp; review</a>
+        </nav>
+
+        <div>
+          <div class="doc-section" id="understand" data-spy-section>
+            <h2>Understand the project first</h2>
+            <p>The project guard walks up from your working directory until it finds a repository marker, then treats that root as the entire writable world. Reads can wander outside it; writes cannot.</p>
+            <p>The code index turns the repo into something an agent can actually navigate: exported symbols, their call sites, and the files that reference them. That is why the first thing you see is a read, not an edit.</p>
+            <div class="callout">
+              <div>
+                <strong>Why this matters</strong>
+                <p>A wrong guess in an unbounded agent costs you a refactor. A wrong guess inside a locked scope costs you one reversible diff you can read before you commit.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="doc-section" id="ledger" data-spy-section>
+            <h2>A plan you can argue with</h2>
+            <p>Before the first edit, the task ledger records the steps it intends to take and the criteria it will be judged against. Both live in the task state, not in a chat window that scrolls away.</p>
+            <ul class="trace">
+              <li class="ok"><span class="tm">step 1</span><strong>Read the target</strong><span>Located the failing assertion in <code>src/server/app-auth.ts</code>.</span></li>
+              <li class="ok"><span class="tm">step 2</span><strong>Reproduce</strong><span>Ran the focused test and captured the failure output.</span></li>
+              <li><span class="tm">step 3</span><strong>Fix</strong><span>Smallest change that makes the test pass, nothing else.</span></li>
+              <li><span class="tm">step 4</span><strong>Verify</strong><span>Full suite plus typecheck, both green.</span></li>
+            </ul>
+          </div>
+
+          <div class="doc-section" id="change" data-spy-section>
+            <h2>One focused change at a time</h2>
+            <p>Edits are deliberately small. Here is the shape of a real change it produced, with the diff it was willing to stand behind:</p>
+            <div class="code-block">
+              <pre class="diff"><code><span class="ctx">  public authenticated(): boolean {</span>
+<span class="ctx">-   return Boolean(this.account());</span>
+<span class="add">+   if (this.requiresEmail() &amp;&amp; !this.account()?.email) return false;</span>
+<span class="add">+   return Boolean(this.account());</span>
+<span class="ctx">  }</span></code></pre>
+            </div>
+            <p>No drive-by refactors, no renamed variables &ldquo;while we were in there&rdquo;, no formatting sweep across untouched files. If a change is large, it gets split into several steps.</p>
+          </div>
+
+          <div class="doc-section" id="evidence" data-spy-section>
+            <h2>The evidence gate</h2>
+            <p>This is the part that changes how you can trust the agent. A criterion cannot be marked satisfied by the agent deciding it is satisfied. It needs a recorded verification result.</p>
+            <div class="table-wrap">
+              <table>
+                <caption class="visually-hidden">Evidence gate outcomes</caption>
+                <thead><tr><th>Situation</th><th>What happens</th></tr></thead>
+                <tbody>
+                  <tr><td>A command passes</td><td>Criterion is claimed with that command as proof</td></tr>
+                  <tr><td>A command fails</td><td>Task stays open; the agent must fix or report</td></tr>
+                  <tr><td>No check exists</td><td>Completion is refused and the gap is named</td></tr>
+                  <tr><td>UI change</td><td>A screenshot or DOM probe is the evidence</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="doc-section" id="git" data-spy-section>
+            <h2>Git and review</h2>
+            <p>The Git panel shows the branch, the diff, and the working tree for whatever project is locked. Nothing is committed for you, and no branch is pushed without you asking.</p>
+            <p>That makes review the default: the diff is the artifact, the evidence is attached to it, and the commit is your decision.</p>
+            <div class="hero-actions" style="justify-content:flex-start;margin-top:24px">
+              <a class="btn btn-primary" href="docs.html#cli">CLI reference</a>
+              <a class="btn btn-ghost" href="cowork.html">Team up on a goal</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta">
+    <div class="wrap">
+      <span class="eyebrow reveal">Next</span>
+      <h2 class="reveal" style="--i:1">Watch it refuse to cheat</h2>
+      <p class="lede reveal" style="--i:2">Point it at a failing test and see the ledger hold the line until something real passes.</p>
+      <div class="cta-actions reveal" style="--i:3">
+        <a class="btn btn-primary" href="docs.html#quickstart">Quickstart</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="nav-brand" href="index.html"><img src="assets/agent-gitu-mark.svg" alt="" /><span>Agent Gitu</span></a>
+        <p>A bounded autonomous engineering agent that keeps its scope, its memory, and its receipts.</p>
+      </div>
+      <div><h4>Product</h4><ul><li><a href="coding.html">Coding</a></li><li><a href="cowork.html">Cowork</a></li><li><a href="docs.html">Documentation</a></li></ul></div>
+      <div><h4>Project</h4><ul><li><a href="github.html">GitHub</a></li><li><a href="blog.html">Blog</a></li><li><a href="docs.html#configuration">Configuration</a></li></ul></div>
+      <div><h4>Resources</h4><ul><li><a href="docs.html#quickstart">Quickstart</a></li><li><a href="docs.html#cli">CLI reference</a></li><li><a href="docs.html#faq">FAQ</a></li></ul></div>
+    </div>
+    <div class="footer-bot">
+      <span>&copy; 2026 Agent Gitu &middot; MIT licensed</span>
+      <div class="socials">
+        <a href="github.html" aria-label="GitHub"><svg viewBox="0 0 24 24"><path d="M9 19c-4 1.4-4-2.2-6-2.6m12 5v-3.6a3.1 3.1 0 0 0-.9-2.4c2.9-.3 6-1.4 6-6.4A5 5 0 0 0 18.8 5a4.7 4.7 0 0 0-.1-3.5s-1.1-.3-3.7 1.4a12.6 12.6 0 0 0-6.6 0C5.6 1.2 4.5 1.5 4.5 1.5A4.7 4.7 0 0 0 4.4 5 5 5 0 0 0 3 8.6c0 5 3 6.1 5.9 6.4a3.1 3.1 0 0 0-.9 2.4V21"/></svg></a>
+        <a href="blog.html" aria-label="Blog"><svg viewBox="0 0 24 24"><path d="M4 5h13a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2Z"/><path d="M8 9h7M8 13h7"/></svg></a>
+        <a href="docs.html" aria-label="Documentation"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11H5Z"/><path d="M14 4v5h5"/></svg></a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

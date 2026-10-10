@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent Gitu — a little spark, a working idea</title>
+<meta name="description" content="Agent Gitu is a bounded autonomous engineering agent: a project-locked scope, a durable task ledger, and an evidence gate that refuses to call work done without proof." />
+<meta name="theme-color" content="#07090f" />
+<meta property="og:title" content="Agent Gitu — a little spark, a working idea" />
+<meta property="og:description" content="Bounded scope, durable memory, proof before done." />
+<meta property="og:type" content="website" />
+<meta property="og:image" content="assets/gitu-capybara.png" />
+<link rel="icon" href="assets/agent-gitu-icon.png" />
+<link rel="preload" href="assets/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="assets/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="index.html">
+      <img src="assets/agent-gitu-mark.svg" alt="" />
+      <span>Agent Gitu</span>
+    </a>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Toggle navigation"><span></span></button>
+    <nav class="nav-links" id="nav-links" aria-label="Main">
+      <a class="nav-link is-active" href="index.html" aria-current="page">Home</a>
+      <a class="nav-link" href="coding.html">Coding</a>
+      <a class="nav-link" href="cowork.html">Cowork</a>
+      <a class="nav-link" href="docs.html">Docs</a>
+      <a class="nav-link" href="blog.html">Blog</a>
+      <a class="nav-link" href="github.html">GitHub</a>
+      <a class="btn btn-primary btn-sm nav-cta" href="github.html">Download</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero">
+    <div class="aurora" aria-hidden="true"></div>
+    <div class="wrap">
+      <span class="eyebrow reveal">Desktop and CLI agent</span>
+      <h1 class="reveal" style="--i:1">A little spark.<br />A working idea.</h1>
+      <p class="lede reveal" style="--i:2">Agent Gitu plans, edits, runs and verifies real work inside one locked project &mdash; then refuses to call it finished until a command or a screenshot proves it.</p>
+      <div class="hero-actions reveal" style="--i:3">
+        <a class="btn btn-primary" href="github.html">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.79 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.18 1.84 1.18 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          Download for Windows
+        </a>
+        <a class="btn btn-ghost" href="docs.html">Read the docs</a>
+      </div>
+      <div class="hero-meta reveal" style="--i:4">
+        <span><i class="dot-live"></i> Local-first</span>
+        <span>TypeScript &middot; Electron &middot; Node</span>
+        <span>MIT licensed</span>
+      </div>
+    </div>
+
+    <div class="wrap">
+      <div class="mockup reveal" style="--i:5">
+        <div class="mockup-bar">
+          <i class="dot"></i><i class="dot"></i><i class="dot"></i>
+          <span class="mockup-title">agent-gitu &mdash; task details</span>
+        </div>
+        <div class="mockup-body">
+          <aside class="mockup-side">
+            <div class="mock-label">Workspace</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg> New session</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/></svg> New project</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg> Scheduled</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m12 3 2.2 5.3L20 9.7l-4 4 1 5.8-5-2.9-5 2.9 1-5.8-4-4 5.8-1.4Z"/></svg> Skills</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/></svg> MCP servers</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/></svg> Workspace</div>
+            <div class="mock-item is-active"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg> Task details</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="12" r="8"/></svg> Browser</div>
+            <div class="mock-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="7" cy="6" r="2.5"/><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="12" r="2.5"/><path d="M7 8.5v7M9.4 7.2l5.2 3.6M9.4 16.8l5.2-3.6"/></svg> Git</div>
+          </aside>
+          <div class="mock-main">
+            <div class="mock-task">
+              <strong>Refactor auth middleware and add tests</strong>
+              <span class="badge badge-run">Running</span>
+            </div>
+            <div class="mock-transcript">
+              <div class="mock-row"><span class="tag">plan</span><span class="txt">4 steps, 3 acceptance criteria recorded in the ledger</span></div>
+              <div class="mock-row"><span class="tag">edit </span><span class="txt">src/server/app-auth.ts &mdash; 12 lines changed</span></div>
+              <div class="mock-row" data-cycle><span class="tag">read</span><span class="txt">src/task-ledger.ts &mdash; plan and criteria loaded</span></div>
+              <div class="mock-row warn"><span class="tag">note </span><span class="txt">scope locked to the repository root &mdash; no writes outside</span></div>
+              <div class="mock-row thinking"><span class="spin"></span><span class="txt">running the focused test&hellip;</span></div>
+              <div class="mock-row"><span class="tag"></span><span class="txt"><i class="caret"></i></span></div>
+            </div>
+            <div class="mock-progress"><i></i></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="strip">
+    <div class="marquee" aria-hidden="true">
+      <span class="marquee-item"><i></i>Project lock</span>
+      <span class="marquee-item"><i></i>Task ledger</span>
+      <span class="marquee-item"><i></i>Evidence gate</span>
+      <span class="marquee-item"><i></i>Cowork teammates</span>
+      <span class="marquee-item"><i></i>MCP servers</span>
+      <span class="marquee-item"><i></i>Durable memory</span>
+      <span class="marquee-item"><i></i>Project lock</span>
+      <span class="marquee-item"><i></i>Task ledger</span>
+      <span class="marquee-item"><i></i>Evidence gate</span>
+      <span class="marquee-item"><i></i>Cowork teammates</span>
+      <span class="marquee-item"><i></i>MCP servers</span>
+      <span class="marquee-item"><i></i>Durable memory</span>
+    </div>
+  </div>
+
+  <section>
+    <div class="wrap">
+      <div class="section-head">
+        <span class="eyebrow reveal">What it does</span>
+        <h2 class="reveal" style="--i:1">One agent, three ways to work</h2>
+        <p class="lede reveal" style="--i:2">Every surface shares one project lock and one evidence gate, so work done in the terminal is visible in the desktop app and in your teammates' threads.</p>
+      </div>
+      <div class="cards">
+        <article class="card reveal" style="--i:1">
+          <div class="card-icon"><svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4M15 8l4 4-4 4"/></svg></div>
+          <h3>Coding</h3>
+          <p>Investigate a real repo, make the edit, and prove it with the project's own test command.</p>
+          <ul class="card-list">
+            <li>Reads symbols before touching code</li>
+            <li>Small reversible changes, one at a time</li>
+            <li>Refuses success without a passing check</li>
+          </ul>
+          <a class="card-link" href="coding.html">Explore coding</a>
+        </article>
+        <article class="card reveal" style="--i:2">
+          <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M16 20v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 18.5V20M10 11a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7M20 20v-1.5a3.5 3.5 0 0 0-2.6-3.4M15.5 4.2a3.5 3.5 0 0 1 0 6.6"/></svg></div>
+          <h3>Cowork</h3>
+          <p>Put named teammates on one goal and follow every thread they open while they work.</p>
+          <ul class="card-list">
+            <li>Teammates with distinct roles</li>
+            <li>Threaded updates, not a wall of logs</li>
+            <li>Shared connections to your tools</li>
+          </ul>
+          <a class="card-link" href="cowork.html">Explore cowork</a>
+        </article>
+        <article class="card reveal" style="--i:3">
+          <div class="card-icon"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11H5Z"/><path d="M14 4v5h5M8 13h8M8 17h5"/></svg></div>
+          <h3>Docs</h3>
+          <p>Install it, lock a project, wire a model provider, and let the ledger keep the rest.</p>
+          <ul class="card-list">
+            <li>CLI and desktop app, same engine</li>
+            <li>Provider-agnostic model config</li>
+            <li>Full command and config reference</li>
+          </ul>
+          <a class="card-link" href="docs.html">Read the docs</a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta">
+    <div class="wrap">
+      <span class="eyebrow reveal">Get started</span>
+      <h2 class="reveal" style="--i:1">Give it a repo and a goal</h2>
+      <p class="lede reveal" style="--i:2">Clone it, run <code>npm install</code>, and watch the ledger fill in before the first coffee lands.</p>
+      <div class="cta-actions reveal" style="--i:3">
+        <a class="btn btn-primary" href="github.html">View on GitHub</a>
+        <a class="btn btn-ghost" href="docs.html">Quickstart</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="nav-brand" href="index.html"><img src="assets/agent-gitu-mark.svg" alt="" /><span>Agent Gitu</span></a>
+        <p>A bounded autonomous engineering agent that keeps its scope, its memory, and its receipts.</p>
+      </div>
+      <div>
+        <h4>Product</h4>
+        <ul>
+          <li><a href="coding.html">Coding</a></li>
+          <li><a href="cowork.html">Cowork</a></li>
+          <li><a href="docs.html">Documentation</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Project</h4>
+        <ul>
+          <li><a href="github.html">GitHub</a></li>
+          <li><a href="blog.html">Blog</a></li>
+          <li><a href="docs.html#configuration">Configuration</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="docs.html#quickstart">Quickstart</a></li>
+          <li><a href="docs.html#cli">CLI reference</a></li>
+          <li><a href="docs.html#faq">FAQ</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bot">
+      <span>&copy; 2026 Agent Gitu &middot; MIT licensed</span>
+      <div class="socials">
+        <a href="github.html" aria-label="GitHub"><svg viewBox="0 0 24 24"><path d="M9 19c-4 1.4-4-2.2-6-2.6m12 5v-3.6a3.1 3.1 0 0 0-.9-2.4c2.9-.3 6-1.4 6-6.4A5 5 0 0 0 18.8 5a4.7 4.7 0 0 0-.1-3.5s-1.1-.3-3.7 1.4a12.6 12.6 0 0 0-6.6 0C5.6 1.2 4.5 1.5 4.5 1.5A4.7 4.7 0 0 0 4.4 5 5 5 0 0 0 3 8.6c0 5 3 6.1 5.9 6.4a3.1 3.1 0 0 0-.9 2.4V21"/></svg></a>
+        <a href="blog.html" aria-label="Blog"><svg viewBox="0 0 24 24"><path d="M4 5h13a2 2 0 0 1 2 2v12H6a2 2 0 0 1-2-2Z"/><path d="M8 9h7M8 13h7"/></svg></a>
+        <a href="docs.html" aria-label="Documentation"><svg viewBox="0 0 24 24"><path d="M5 4h9l5 5v11H5Z"/><path d="M14 4v5h5"/></svg></a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

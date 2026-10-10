@@ -1,0 +1,249 @@
+﻿{
+  "agents": [
+    {
+      "id": "amr",
+      "name": "AMR",
+      "models": [
+        {
+          "id": "deepseek-v4-flash",
+          "label": "deepseek-v4-flash",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "medium",
+            "capability": "standard"
+          },
+          "inputPriceUsdPerMillion": 0.14,
+          "outputPriceUsdPerMillion": 0.28
+        },
+        {
+          "id": "deepseek-v4-pro",
+          "label": "deepseek-v4-pro",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "high",
+            "capability": "advanced"
+          },
+          "inputPriceUsdPerMillion": 1.74,
+          "outputPriceUsdPerMillion": 3.84
+        },
+        {
+          "id": "claude-fable-5",
+          "label": "claude-fable-5",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "very_high",
+            "capability": "best_quality"
+          },
+          "inputPriceUsdPerMillion": 10,
+          "outputPriceUsdPerMillion": 50
+        },
+        {
+          "id": "claude-fable-5.1",
+          "label": "claude-fable-5.1",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "very_high",
+            "capability": "best_quality"
+          },
+          "inputPriceUsdPerMillion": 10,
+          "outputPriceUsdPerMillion": 50
+        },
+        {
+          "id": "claude-opus-4.8",
+          "label": "claude-opus-4.8",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "very_high",
+            "capability": "best_quality"
+          },
+          "inputPriceUsdPerMillion": 5,
+          "outputPriceUsdPerMillion": 25
+        },
+        {
+          "id": "claude-opus-5",
+          "label": "claude-opus-5",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "very_high",
+            "capability": "best_quality"
+          },
+          "inputPriceUsdPerMillion": 5,
+          "outputPriceUsdPerMillion": 25
+        },
+        {
+          "id": "claude-opus-5.5",
+          "label": "claude-opus-5.5",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "high",
+            "capability": "best_quality"
+          },
+          "inputPriceUsdPerMillion": 4,
+          "outputPriceUsdPerMillion": 20
+        },
+        {
+          "id": "claude-sonnet-5",
+          "label": "claude-sonnet-5",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "high",
+            "capability": "advanced"
+          },
+          "inputPriceUsdPerMillion": 2,
+          "outputPriceUsdPerMillion": 10
+        },
+        {
+          "id": "claude-sonnet-5.5",
+          "label": "claude-sonnet-5.5",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "high",
+            "capability": "advanced"
+          },
+          "inputPriceUsdPerMillion": 2,
+          "outputPriceUsdPerMillion": 10
+        },
+        {
+          "id": "deepseek-v4-flash-vision-exp",
+          "label": "deepseek-v4-flash-vision-exp",
+          "enabled": false,
+          "default": false,
+          "metadata": {
+            "cost": "medium",
+            "capability": "standard"
+          },
+          "inputPriceUsdPerMillion": 0.14,
+          "outputPriceUsdPerMillion": 0.28
+        }
+      ],
+      "modelsCount": 32
+    },
+    {
+      "id": "codex",
+      "name": "Codex CLI",
+      "models": [
+        {
+          "id": "default",
+          "label": "Default (CLI config)"
+        },
+        {
+          "id": "gpt-5.5",
+          "label": "gpt-5.5",
+          "additionalSpeedTiers": [
+            "fast"
+          ],
+          "serviceTierOptions": [
+            {
+              "id": "priority",
+              "label": "Fast"
+            }
+          ]
+        },
+        {
+          "id": "gpt-5.4",
+          "label": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini",
+          "label": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5.3-codex",
+          "label": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-5.1",
+          "label": "gpt-5.1"
+        },
+        {
+          "id": "gpt-5.1-codex-mini",
+          "label": "gpt-5.1-codex-mini"
+        },
+        {
+          "id": "gpt-5-codex",
+          "label": "gpt-5-codex"
+        },
+        {
+          "id": "gpt-5",
+          "label": "gpt-5"
+        },
+        {
+          "id": "o3",
+          "label": "o3"
+        }
+      ],
+      "modelsCount": 11
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode",
+      "models": [
+        {
+          "id": "default",
+          "label": "Default (CLI config)"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4-5",
+          "label": "anthropic/claude-sonnet-4-5"
+        },
+        {
+          "id": "openai/gpt-5.6-sol",
+          "label": "openai/gpt-5.6-sol"
+        },
+        {
+          "id": "openai/gpt-5.6-terra",
+          "label": "openai/gpt-5.6-terra"
+        },
+        {
+          "id": "openai/gpt-5.6-luna",
+          "label": "openai/gpt-5.6-luna"
+        },
+        {
+          "id": "openai/gpt-5",
+          "label": "openai/gpt-5"
+        },
+        {
+          "id": "google/gemini-2.5-pro",
+          "label": "google/gemini-2.5-pro"
+        }
+      ],
+      "modelsCount": 7
+    },
+    {
+      "id": "byok-opencode",
+      "name": "BYOK OpenCode",
+      "models": [
+        {
+          "id": "default",
+          "label": "Default (CLI config)"
+        }
+      ],
+      "modelsCount": 1
+    },
+    {
+      "id": "grok-build",
+      "name": "Grok Build",
+      "models": [
+        {
+          "id": "default",
+          "label": "Default (CLI config)"
+        },
+        {
+          "id": "grok-build",
+          "label": "grok-build"
+        }
+      ],
+      "modelsCount": 2,
+      "version": "grok 0.2.93 (f00f96316d)"
+    }
+  ]
+}

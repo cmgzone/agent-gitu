@@ -1,0 +1,5 @@
+﻿{
+    "project":  "agent-gitu-site-editorial-light-v2-98a0",
+    "prompt":  "Continue and finish the Agent Gitu multi-page marketing website in this project. Use the candidate images already generated under assets/img/ (desk, laptop, hacker and workspace shots) for the hero and section imagery. Build these pages: index.html, coding.html, cowork.html, docs.html, blog.html, github.html, all sharing one styles.css and script.js. Visual direction: clean light editorial layout, generous white space, dark ink typography, one warm accent, thin rules, tasteful scroll-reveal and subtle hover animation, inspired by deepseek.com/en/harness. No dark neon app-shell look.",
+    "resume":  true
+}

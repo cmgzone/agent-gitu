@@ -1,5 +1,6 @@
 import { createProject, loadWorkspaceSettings } from '../workspace/home.js';
 import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
+import { connectionResponses } from '../connections/response-data.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ToolResult } from '../types.js';
@@ -198,7 +199,7 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   { name: 'list_connections', doc: 'List saved API and SSH connections (metadata only, never credentials). params: {}', gate: undefined },
   { name: 'connection_read', doc: 'Read a saved API connection. params: {"connectionId":"exact saved id","operationId":"registered read id","query":{"page":2}}. query is optional; use only documented filters/pagination. For a missing read, consult official docs then supply operation:{id,label,capability,method:"GET",path,risk:"read"} and documentationUrl instead of operationId. New documented reads run with the saved credential. Results include a responseId for inspection. Never send credentials, headers, or an absolute URL.', gate: undefined },
   { name: 'inspect_connection_response', doc: 'Inspect the FULL redacted saved response without another network request. params: {"responseId":"id from a read","path":"/data/0","offset":0,"limit":20,"fields":["id","name"],"search":"literal text","mode":"data|keys"}. All except responseId are optional. path is a JSON Pointer (empty string = root). Search scans the entire selected collection before pagination. Follow nextOffset; inspect a record path or select fields for details. Compact previews are not complete inventories; follow documented API pagination when present.', gate: undefined },
-  { name: 'connected_apps', doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Recommend posts an app icon and Connect button in chat; the user completes sign-in. Discover apps dynamically when your work needs one, follow the returned cursor for more services, avoid unrelated recommendations, and keep working on independent steps. Unassigned accounts cannot be used. Execution asks for one-use review unless the user saved Always allow for you, this tool and account. Never request provider keys or user IDs. The "mail" service connects any mailbox over IMAP/SMTP: recommend it for email work and the user completes a short server form instead of a sign-in.', gate: undefined },
+  { name: 'connected_apps', doc: 'Use only accounts assigned to YOU. params: {"action":"list"} | {"action":"discover","query":"app or capability","cursor":"optional next-page cursor"} | {"action":"recommend","service":"gmail","reason":"why this app helps your role or current task"} | {"action":"tools","service":"gmail","query":"unread count"} | {"action":"tools","service":"gmail","tool":"EXACT_TOOL_SLUG"} | {"action":"execute","service":"gmail","tool":"EXACT_TOOL_SLUG","args":{},"accountId":"optional ID from YOUR list","approvalId":"optional"}. Search tools by the capability needed or retrieve one exact tool schema before execution. Without query or tool, tools returns a compact catalog. Large execution results are saved with responseId; use inspect_connection_response for their complete data instead of repeating the network call. Recommend posts a Connect card for user sign-in. Execution asks for one-use review unless Always allow is saved for you, this tool and account. Stop at a pending review. Never request provider keys or user IDs. The mail service connects any mailbox over IMAP/SMTP.', gate: undefined },
   { name: 'ssh_exec', doc: 'Run one authorized command through a saved SSH connection. Never include a password in params. params: {"connectionId":"ssh-...","command":"hostname"}. Respect the user\'s requested read-only scope; remote changes need explicit authorization.', gate: 'shell' },
   { name: 'update_connection', doc: 'Update a saved connection profile. params: {"connectionId":"...","label":"..."}', gate: 'config' },
   { name: 'create_project', doc: 'Create a new project folder in the user\'s Projects area. params: {"name":"landing-page"}', gate: 'config' },
@@ -871,6 +872,13 @@ function nextTeammateAvatar(roster: CoworkAgent[]): CoworkAvatar {
 }
 
 const appApprovals = new WeakMap<ConnectedAppsProvider, Map<string, { signature: string; expires: number }>>();
+function connectedAppOutput(value: unknown): string {
+  const output = JSON.stringify(value ?? null);
+  if (output.length <= 7_500) return output;
+  const responses = connectionResponses();
+  const responseId = responses.put(value);
+  return JSON.stringify(responses.inspect({ responseId }));
+}
 async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   if (!scope || scope.isSubAgent) return blocked('connected_apps');
   if (!apps?.configured) return { ok: false, output: 'Set up the connection provider in Cowork → Connections. The user then connects apps specifically for you.' };
@@ -894,7 +902,13 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     if (params['action'] === 'list') return { ok: true, output: JSON.stringify(assigned) };
     if (params['action'] === 'tools') {
       if (!assigned.some(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled)) return { ok: false, output: 'Recommend this app so the user can connect or assign it specifically for you.' };
-      return { ok: true, output: JSON.stringify(await apps.tools(service)).slice(0, 24000) };
+      const query = typeof params['query'] === 'string' ? params['query'].trim() : undefined;
+      const tool = typeof params['tool'] === 'string' ? params['tool'].trim() : undefined;
+      const tools = await apps.tools(service, query, tool);
+      return { ok: true, output: JSON.stringify(query || tool ? tools : {
+        tools: tools.map(({ slug, name, description }) => ({ slug, name, description: description?.slice(0, 160) })),
+        guidance: 'Use action:"tools" with query for the capability you need, or tool for an exact slug, to get complete input schemas. Then execute the selected tool.',
+      }) };
     }
     if (params['action'] !== 'execute') return { ok: false, output: 'action must be list, discover, recommend, tools, or execute.' };
     if (!perms.allowWrites || !perms.allowConfig || !scope?.conversationId || scope.isSubAgent) return blocked('connected_apps execution');
@@ -907,7 +921,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     const detail = JSON.stringify({ service, accountId, tool, args });
     if (detail.length > 16000) return { ok: false, output: 'This action is too large for review. Split it into smaller actions.' };
     if (scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
-      return { ok: true, output: JSON.stringify(await apps.execute(service, tool, args as Record<string, unknown>, accountId)).slice(0, 16000) };
+      return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
     }
     const signature = createHash('sha256').update(scope.conversationId + ':' + scope.agent.id + ':' + detail).digest('hex');
     let pending = appApprovals.get(apps);
@@ -919,7 +933,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     if (approved?.signature === signature && request?.status === 'accepted' && request.conversationId === scope.conversationId && request.agentId === scope.agent.id) {
       // Consume before awaiting the network: concurrent calls cannot replay it.
       pending.delete(approvalId);
-      return { ok: true, output: JSON.stringify(await apps.execute(service, tool, args as Record<string, unknown>, accountId)).slice(0, 16000) };
+      return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
     }
     const existing = [...pending].find(([id, value]) => value.signature === signature && scope.store.getRequest(id)?.status === 'open');
     if (existing) return { ok: true, output: `Waiting for review ${existing[0]}. Stop and wait for the user.` };
@@ -927,7 +941,13 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     const card = scope.store.addRequest({ conversationId: scope.conversationId, agentId: scope.agent.id, kind: 'recommendation', title: `Run ${tool}`, detail: `Review this ${service} action:\n${detail}\n\nAccept to allow this exact action once. The approval expires in 15 minutes.`, appAction: { service, accountId, tool, args: args as Record<string, unknown> } });
     pending.set(card.id, { signature, expires: Date.now() + 15 * 60 * 1000 });
     return { ok: true, output: `Review ${card.id} posted. Stop and wait for the user. If accepted, repeat the exact action with approvalId: ${card.id}.` };
-  } catch { return { ok: false, output: 'The connected service could not complete this request. Check its status in Cowork → Connections.' }; }
+  } catch (error) {
+    const detail = String(error instanceof Error ? error.message : error)
+      .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+      .replace(/((?:api[_-]?key|access[_-]?token|password|authorization)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, '$1[redacted]')
+      .slice(0, 800);
+    return { ok: false, output: `Connected app request failed: ${detail}. Correct invalid inputs using the exact tool schema. Reconnect only for an authentication or inactive-account error. Do not repeat the same failed request.` };
+  }
 }
 
 function coworkTeamManage(scope: CoworkToolScope | undefined, params: Record<string, unknown>): ToolResult {

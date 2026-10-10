@@ -23,7 +23,8 @@ export function redactConnectionData(value: unknown, secrets: readonly string[] 
       const secretVariable = typeof variableName === 'string' && SECRET_KEY.test(variableName);
       for (const [key, child] of Object.entries(item)) {
         const secretValue = secretVariable && /^(?:value|values|real_value|raw_value|default|content|data)$/i.test(key);
-        result[clean(key)] = SECRET_KEY.test(key) || secretValue ? '<redacted>' : walk(child);
+        const paginationToken = /^(?:(?:next|previous|prev)[_-]?)?page[_-]?token$|^continuation[_-]?token$/i.test(key);
+        result[clean(key)] = (SECRET_KEY.test(key) && !paginationToken) || secretValue ? '<redacted>' : walk(child);
       }
       return result;
     }

@@ -1,0 +1,13 @@
+﻿{
+  "runId": "4ad444d2-06db-4b1b-9154-8a9a2f2eb4f6",
+  "conversationId": "41a4ce84-87fc-4062-aedf-fb71f2870041",
+  "assistantMessageId": "e3342d99-b4e4-417e-8179-1f10e122590e",
+  "clientRequestId": "e5795f26-4667-44b9-a2d4-309576bbc9c3",
+  "reused": false,
+  "resumed": false,
+  "projectId": "agent-gitu-site-editorial-light-v2-98a0",
+  "requestId": "e5795f26-4667-44b9-a2d4-309576bbc9c3",
+  "studioUrl": "http://127.0.0.1:51645/projects/agent-gitu-site-editorial-light-v2-98a0/conversations/41a4ce84-87fc-4062-aedf-fb71f2870041",
+  "studioUrlLifetime": "current_daemon_session",
+  "hint": "Run started. OpenDesign generation normally takes 5ΓÇô30 minutes. Polls showing status:running with no new files / unchanged file mtimes is the inner agent thinking, NOT a hang ΓÇö DO NOT cancel_run out of impatience and DO NOT substitute write_file to produce the design yourself; OD's pipeline is what gives the result its design quality. Poll get_run(runId) every 30ΓÇô60 seconds; report \"still working\" to the user between polls and keep waiting. On terminal status, artifactRef is the durable identity; previewUrl and studioUrl are browser links for the current OpenDesign runtime and must be refreshed with get_run after OpenDesign restarts."
+}

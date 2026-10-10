@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Gitu mark</title>
+  <desc id="desc">A blue code-path G with a terminal prompt and green verification node.</desc>
+  <defs>
+    <linearGradient id="surface" x1="24" y1="20" x2="232" y2="236" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#142B62"/>
+      <stop offset="1" stop-color="#071127"/>
+    </linearGradient>
+    <linearGradient id="gitu-blue" x1="68" y1="72" x2="194" y2="190" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#19D8F4"/>
+      <stop offset=".48" stop-color="#159AF5"/>
+      <stop offset="1" stop-color="#315CFF"/>
+    </linearGradient>
+    <filter id="node-glow" x="-160%" y="-160%" width="420%" height="420%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#surface)"/>
+  <rect x="16" y="16" width="224" height="224" rx="44" fill="none" stroke="#3A78FF" stroke-opacity=".25" stroke-width="2"/>
+  <path d="M190 68H105L68 105v46l37 37h85v-35h-61" fill="none" stroke="url(#gitu-blue)" stroke-width="25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m101 111 27 18-27 18" fill="none" stroke="#F4FCFF" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="191" cy="153" r="10" fill="#46E68A" filter="url(#node-glow)"/>
+  <circle cx="191" cy="153" r="4" fill="#E9FFF3"/>
+</svg>

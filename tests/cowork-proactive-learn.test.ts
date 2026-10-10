@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GituServer } from '../src/server/server.js';
 import { CoworkMemory } from '../src/cowork/memory.js';
 import { MemoryStore } from '../src/memory/memory-store.js';
@@ -60,6 +60,39 @@ function jobs(): ReturnType<CronStore['jobs']> {
 }
 
 describe('cowork proactive learning', () => {
+  it('defers app reviews when the same agent is busy in another conversation or becomes busy during a read', async () => {
+    updateWorkspaceSettings({ coworkLearning: { mode: 'proactive' } });
+    const server = newServer([]), runtime = server as any;
+    try {
+      const store = runtime.cowork();
+      const agent = store.saveAgent({ name: 'busy-review-agent', systemPrompt: 'Help.', allowWrites: true, allowConfig: true });
+      const target = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+      const other = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+      store.appendMessage(target.id, { role: 'user', text: 'Track useful offers.' });
+      store.assignAppAccount(agent.id, 'shop', 'own');
+      const request = store.addRequest({ conversationId: target.id, agentId: agent.id, kind: 'recommendation', title: 'Read offers', detail: 'Read.', appAction: { service: 'shop', accountId: 'own', tool: 'SHOP_LIST_OFFERS', args: {} } });
+      store.allowAppActionForRequest(request.id);
+      const busy = { busy: true, abort: new AbortController(), queue: [] };
+      runtime.coworkRuns.set(other.id, busy);
+      const accounts = vi.fn(async () => [{ id: 'own', toolkit: 'shop', status: 'ACTIVE', disabled: false }]);
+      const execute = vi.fn(async () => { runtime.coworkRuns.set(other.id, busy); return { offer: 'Paper offer' }; });
+      runtime.appHub = { accounts, tools: async () => [{ slug: 'SHOP_LIST_OFFERS', inputParameters: { type: 'object' } }], execute };
+      const complete = vi.fn(async () => JSON.stringify({ reads: [{ service: 'shop', accountId: 'own', tool: 'SHOP_LIST_OFFERS', args: {} }] }));
+      vi.spyOn(runtime, 'coworkLlm').mockReturnValue({ complete });
+      expect(await runtime.coworkAppReviewTick()).toBe('no app review is due');
+      expect(accounts).not.toHaveBeenCalled();
+      runtime.coworkRuns.delete(other.id);
+      await runtime.coworkAppReviewTick();
+      expect(execute).toHaveBeenCalledOnce();
+      expect(complete).toHaveBeenCalledOnce();
+      expect(store.widgets(target.id)).toHaveLength(0);
+      expect(store.messages(target.id).filter((message: { role: string }) => message.role === 'agent')).toHaveLength(0);
+    } finally {
+      runtime.coworkRuns.clear();
+      await server.stop();
+      updateWorkspaceSettings({ coworkLearning: undefined });
+    }
+  });
   it('registers consolidate+review jobs with safe defaults (sweep on, review off)', async () => {
     updateWorkspaceSettings({ coworkLearning: undefined });
     const server = newServer([]);

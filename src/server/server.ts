@@ -2170,7 +2170,7 @@ export class GituServer {
   private async coworkAppReviewTick(): Promise<string> {
     if (this.coworkLearningMode() !== 'proactive') return 'proactive app reviews disabled';
     const store = this.cowork(), now = Date.now();
-    const candidates = store.listAgents().filter(agent => agent.allowConfig && agent.allowWrites && store.appConnections(agent.id).length
+    const candidates = store.listAgents().filter(agent => agent.allowConfig && agent.allowWrites && agent.personality?.proactivity !== 'reactive' && !this.coworkComputerBusy(agent.id) && store.appConnections(agent.id).length
       && now - (Date.parse(store.appReviewState(agent.id).checkedAt) || 0) >= APP_REVIEW_INTERVAL_MS)
       .sort((a, b) => (Date.parse(store.appReviewState(a.id).checkedAt) || 0) - (Date.parse(store.appReviewState(b.id).checkedAt) || 0));
     for (const agent of candidates) {
@@ -2179,7 +2179,7 @@ export class GituServer {
       const count = await reviewConnectedApps({ store, agent, conversation, apps: this.appHub, llm: this.coworkLlm(agent), now,
         userContext: this.coworkUserContext() + '\n' + this.coworkMemoryFor(agent) + '\nRecent user preferences and requests:\n' + store.messages(conversation.id).filter(message => message.role === 'user').slice(-12).map(message => message.text).join('\n').slice(-6000),
         signal: AbortSignal.timeout(90_000), enabled: () => this.coworkLearningMode() === 'proactive',
-        isBusy: () => Boolean(this.coworkRuns.get(conversation.id)?.busy), publish: () => this.publishCowork(conversation.id),
+        isBusy: () => this.coworkComputerBusy(agent.id), publish: () => this.publishCowork(conversation.id),
       });
       return `${count} useful app updates from ${agent.name}`;
     }

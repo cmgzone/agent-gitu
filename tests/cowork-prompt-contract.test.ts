@@ -28,6 +28,19 @@ function setup() {
 }
 
 describe('Cowork completion and autonomous decisions', () => {
+  it('honors the profile proactivity choice without encouraging extra reads for suggestions', () => {
+    const s = setup();
+    const personality = { traits: [], communicationStyle: '', proactivity: 'reactive' as const };
+    const reactive = { ...s.agent, personality };
+    const prompt = String(buildCoworkMessages(reactive, s.conversation, [reactive], [])[0]?.content);
+    expect(prompt).toContain('Follow the user’s lead');
+    expect(prompt).not.toContain('PROACTIVE ASSISTANCE');
+    expect(prompt).toContain('update it in place without a routine chat announcement');
+    const suggest = { ...s.agent, personality: { ...personality, proactivity: 'suggest' as const } };
+    const suggestPrompt = String(buildCoworkMessages(suggest, s.conversation, [suggest], [])[0]?.content);
+    expect(suggestPrompt).toContain('Finish the requested task first');
+    expect(suggestPrompt).toContain('do not perform extra searches or app reads just to generate suggestions');
+  });
   it('rejects a false delivered claim after a successful read, then accepts the actual file and attachment', async () => {
     const s = setup();
     const output = `contract-${sequence}.txt`;

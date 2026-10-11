@@ -31,4 +31,4 @@ Each of the nine content pages includes unique titles and descriptions, canonica
 
 `assets/gitu-signal.png` is original AI-generated editorial artwork; its optimized JPEG is used on the product note. App screenshots appear without borders or window frames, with CSS edge fades that blend into the page. Floating screenshots, quiet widget illustrations, and context flow use CSS motion, with reduced-motion preferences and a pause control. Illustrative widget counts are labeled as examples and never read an actual mailbox.
 
-Download buttons link directly to the v0.3.12 Setup and Portable assets on GitHub Releases. Product copy reflects the source implementation and documents the runtime requirements for background work.
+Until the installer release is published, the download page identifies v0.3.12 as pending and links to the available GitHub releases. After both installer assets are verified and the release is public, set `releasePublished` to `true` in `site.config.json` and rebuild to enable direct Setup and Portable download links. Product copy reflects the source implementation and documents the runtime requirements for background work.

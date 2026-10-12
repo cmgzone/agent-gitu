@@ -6,12 +6,14 @@ import { COMPANY_JS } from '../src/server/ui-companies.js';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 import { COMPANY_CONNECTIONS_JS } from '../src/server/ui-company-connections.js';
 import { COMPANY_WALLETS_JS } from '../src/server/ui-company-wallets.js';
+import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 import { FILE_UPLOAD_JS } from '../src/server/ui-files.js';
 import { CompanyStore } from '../src/company/store.js';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import type { CompanyAction } from '../src/company/store.js';
+import { MAIL_PROVIDERS } from '../src/connections/mail.js';
 // All requests are fulfilled with synthetic fixtures. This never connects to a user runtime.
 const store = new CompanyStore(mkdtempSync(path.join(os.tmpdir(), 'gitu-ui-fixture-'))),
   company = store.create({ name: 'Northstar Studio', purpose: 'Build helpful tools for small businesses', monthlyBudgetUsd: null, maxFileBytes: null }),
@@ -23,7 +25,7 @@ let fixture = {
   company: store.get(company.id),
   agents: [lead],
   missions: [],
-  requests: [],
+  requests: [] as Array<{ id: string; status: string; kind: string; title: string; detail: string; agentId: string; appConnection?: { service: string; name: string } }>,
   actions: [
     { id: 'stale-decision', companyId: company.id, agentId: lead.id, tool: 'Old campaign approval', digest: 'stale', version: 0, state: 'pending', parameters: {}, createdAt: '2026-10-11T10:00:00Z' },
     { id: 'completed-decision', companyId: company.id, agentId: lead.id, tool: 'Completed email approval', digest: 'done', version: 1, state: 'done', parameters: {}, createdAt: '2026-10-11T10:00:00Z' },
@@ -40,6 +42,10 @@ const chatMessages = [
   { id: 'preview-agent', role: 'agent', agentName: 'Ari', text: 'I’ll collect the research, verify the findings, and report the decisions that need your input.' },
 ];
 const sent: Array<{ text: string; delivery: string }> = [];
+let composioConfigured = false;
+let appAccounts: Array<{id:string;toolkit:string;status:string;disabled:boolean;label?:string;address?:string}>=[];
+let appAssignments:Record<string,string[]>={};
+const appPosts:Array<{path:string;body:Record<string,unknown>}>=[];
 let teamMissions: {id:string;agentId:string;goal:string;status:string;progress:string;blockers?:string}[]=[];
 let teamHelpers: {id:string;rootAgentId:string;role:string;objective:string;status:string}[]=[];
 let liveActivity: { agentId: string; agentName: string; phase: string; tool?: string }[] = [];
@@ -65,10 +71,12 @@ let uploads = [
 const uploadBytes = new Map<string, Buffer[]>([['upload-resume', [original.subarray(0, 3)]]]);
 let uploadCreations = 0;
 const browser = await chromium.launch({ headless: true, ...(process.env['GITU_UI_SMOKE_CHANNEL'] ? { channel: process.env['GITU_UI_SMOKE_CHANNEL'] } : {}) });
+let failurePage: import('playwright').Page | undefined;
 try {
   const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }),
     errors: string[] = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  failurePage = page;
+  page.on('pageerror', (e) => { errors.push(e.message); console.error('Page error:', e.message); });
   const style = UI_HTML.match(/<style>([\s\S]*?)<\/style>/)![1],
     html =
       '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>' +
@@ -76,6 +84,7 @@ try {
       '</style></head><body><script>var S={sel:{model:"preview::preview-model"}};function $(id){return document.getElementById(id);}function esc(v){return String(v).replace(/[&<>"\x27]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;","\\\"":"&quot;","\x27":"&#39;"}[c]||"&quot;";});}function toast(message){window.lastToast=message;}function shortDate(v){return new Date(v).toLocaleDateString();}function humanBytes(v){return (v/1048576).toFixed(1)+" MB";}function api(url,options){return fetch(url,options).then(async function(r){var value=await r.json();if(!r.ok)throw new Error(value.error);return value;});}function openSettings(){}' +
       FILE_UPLOAD_JS +
       COWORK_JS +
+      CONNECTED_APPS_JS +
       COMPANY_JS +
       COMPANY_CONNECTIONS_JS +
       COMPANY_WALLETS_JS +
@@ -93,6 +102,16 @@ try {
         fixture = { ...fixture, company: c, agents: [] };
         data = { company: c };
       } else data = { companies: store.companies().map((c) => ({ ...c, usage: fixture.totals, decisions: 0 })), usage: fixture.totals };
+    } else if(suffix.includes('/api/companies/')&&suffix.endsWith('/connected-apps')){
+      if(appAccounts.some(a=>a.toolkit==='mail'&&a.status==='ACTIVE'&&appAssignments[a.id]?.includes(lead.id)))fixture.requests.forEach(r=>{if(r.appConnection?.service==='mail')r.status='accepted';});
+      data={configured:composioConfigured,canConfigure:true,services:composioConfigured?[{slug:'gmail',name:'Gmail'}]:[],accounts:appAccounts,availableAccounts:[],agents:fixture.agents,assignments:appAssignments,mail:{providers:MAIL_PROVIDERS,accounts:[],available:[]}};
+    } else if(suffix.includes('/connected-apps/')&&method==='POST'){
+      const value=request.postDataJSON();appPosts.push({path:suffix,body:{...value,password:undefined,apiKey:undefined}});
+      if(suffix.endsWith('/configure'))composioConfigured=true;
+      else if(suffix.endsWith('/connect')){appAccounts.push({id:'app-gmail',toolkit:'gmail',status:'PENDING',disabled:false});appAssignments['app-gmail']=value.agentIds;data={url:'https://connect.composio.dev/fixture',accountId:'app-gmail'};}
+      else if(suffix.endsWith('/mail')){appAccounts.push({id:'app-mail',toolkit:'mail',status:'ACTIVE',disabled:false,label:'Support inbox',address:value.address});appAssignments['app-mail']=value.agentIds;data={account:appAccounts.at(-1)};}
+      else if(suffix.endsWith('/disconnect')){appAccounts=appAccounts.filter(a=>a.id!==value.accountId);delete appAssignments[value.accountId];}
+      else if(suffix.endsWith('/access'))appAssignments[value.accountId]=value.agentIds;
     } else if (suffix.endsWith('/policy')) data = { maxFileBytes: null };
     else if (suffix.endsWith('/lead')) {
       const body = request.postDataJSON();
@@ -281,6 +300,34 @@ try {
   if (sent.length !== 1 || sent[0].delivery !== 'question' || sent[0].text !== 'Does this answer change our goal?') throw new Error('Enter did not send the selected delivery mode.');
   await page.screenshot({ path: path.join(output, 'chat-desktop.png'), fullPage: true });
   await page.getByRole('tab', { name: 'Connections', exact: true }).click();
+  await page.getByLabel('Composio API key', {exact:true}).fill('fixture-key');
+  await page.getByRole('button',{name:'Set up Composio',exact:true}).click();
+  await page.getByRole('heading',{name:'Connect an app',exact:true}).waitFor();
+  await page.evaluate('window.cwPrepareAppSignIn=function(){return{open:async function(){return true;},cancel:function(){}};};');
+  await page.locator('[data-company-connect="gmail"]').click();
+  await page.locator('[data-company-account="app-gmail"]').getByText('Finish sign-in',{exact:true}).waitFor();
+  if(await page.locator('#cwServicesAgent').count())throw new Error('Company connections opened the Cowork teammate picker.');
+  if(!appPosts.find(p=>p.path.endsWith('/connect'))?.path.includes('/api/companies/'+fixture.company!.id+'/'))throw new Error('Company sign-in escaped its API scope.');
+  appAccounts.find(a=>a.id==='app-gmail')!.status='ACTIVE';
+  await page.locator('#companyAppsRefresh').click();
+  const connected=page.locator('[data-company-account="app-gmail"]');await connected.getByText('Connected',{exact:true}).waitFor();
+  await connected.locator('summary').click();await connected.getByLabel('Ari',{exact:true}).uncheck();await connected.getByRole('button',{name:'Save team access',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('[data-company-account="app-gmail"] summary')?.textContent?.includes('0 assigned'));
+  if(appAssignments['app-gmail'].length)throw new Error('Company account could not be retained without team access.');
+  fixture.requests=[{id:'request-mail',status:'open',kind:'recommendation',title:'Connect Mailbox',detail:'Connect the support mailbox.',agentId:lead.id,appConnection:{service:'mail',name:'Mailbox'}}];
+  await page.evaluate(async()=>{await (window as any).companyLoad();});
+  await page.getByRole('tab',{name:'Overview',exact:true}).click();await page.locator('[data-company-connect-request="request-mail"]').click();
+  await page.locator('#cwMailForm').waitFor({state:'visible'});
+  await page.getByLabel('Email address',{exact:true}).fill('support@gmail.com');
+  await page.getByLabel('Password or app password',{exact:true}).fill('fixture-password');
+  await page.getByLabel('Name this mailbox (optional)',{exact:true}).fill('Support inbox');
+  await page.getByRole('button',{name:'Connect mailbox',exact:true}).click();
+  await page.locator('[data-company-account="app-mail"]').waitFor();
+  if(appPosts.find(p=>p.path.endsWith('/mail'))?.body.agentId)throw new Error('Company mail setup used a Cowork agent-scoped endpoint.');
+  if(fixture.requests[0].status!=='accepted')throw new Error('An active company mailbox did not satisfy its agent recommendation.');
+  await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(output,'company-accounts-mobile.png'),fullPage:true});
+  if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw new Error('Company account controls overflow mobile.');
+  await page.setViewportSize({width:1440,height:1000});
   const local = page.locator('#companyStorageCards article').filter({ has: page.getByRole('heading', { name: 'Read only files', exact: true }) });
   await local.waitFor();
   if (await local.getByRole('button', { name: 'Reconnect', exact: true }).count()) throw new Error('Local storage showed OAuth reconnect.');
@@ -394,6 +441,12 @@ try {
   await page.screenshot({ path: path.join(output, 'setup-review-mobile.png'), fullPage: true });
   if (errors.length) throw new Error(errors.join('\n'));
   console.log('Synthetic company desktop/mobile flow passed. Screenshots: ' + output);
+} catch (error) {
+  if (failurePage) {
+    await failurePage.screenshot({ path: path.join(output, 'failure.png'), fullPage: true });
+    console.error(await failurePage.locator('body').innerText(), appPosts);
+  }
+  throw error;
 } finally {
   await browser.close();
   store.close();

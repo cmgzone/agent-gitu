@@ -1,4 +1,5 @@
 import { COMPANY_STORAGE_JS } from './ui-company-storage.js';
+import { COMPANY_APPS_JS } from './ui-company-apps.js';
 export const COMPANY_CONNECTIONS_JS = String.raw`
   function companyChatAttachments(){
     var id=Companies.id,text=$('companyChatText'),send=$('companySend'),picker=$('companyChatFiles'),pending=$('companyChatPending'),limit=$('companyChatFileLimit'),files=Companies.files=Companies.files||[];
@@ -18,4 +19,4 @@ export const COMPANY_CONNECTIONS_JS = String.raw`
     section.querySelector('#companyMcpAdd').onclick=function(){var form=section.querySelector('#companyMcpForm');form.innerHTML='<div class="company-form"><label>Name</label><input id="mcpName"><label>Remote URL</label><input id="mcpUrl" placeholder="https://example.com/mcp"><label>Bearer credential (optional)</label><input id="mcpToken" type="password" autocomplete="off"><label>Or local executable</label><input id="mcpCommand" placeholder="npx"><label>Arguments as a JSON array</label><input id="mcpArgs" value="[]"><label>Protected environment fields as JSON (optional)</label><input id="mcpEnvironment" type="password" autocomplete="off" value="{}"><button class="btn dark" id="mcpSave">Save</button></div>';$('mcpSave').onclick=async function(){try{await companyPost('/mcp',{name:$('mcpName').value,url:$('mcpUrl').value,token:$('mcpToken').value,command:$('mcpCommand').value,args:JSON.parse($('mcpArgs').value),environment:JSON.parse($('mcpEnvironment').value)});form.innerHTML='';await loadMcp();}catch(error){companyError(error);}};};
     await loadMcp();
   }
-` + COMPANY_STORAGE_JS;
+` + COMPANY_STORAGE_JS + COMPANY_APPS_JS;

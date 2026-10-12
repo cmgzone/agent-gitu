@@ -7,6 +7,8 @@ import { COWORK_JS } from '../src/server/ui-cowork.js';
 import { COMPANY_CONNECTIONS_JS } from '../src/server/ui-company-connections.js';
 import { COMPANY_WALLETS_JS } from '../src/server/ui-company-wallets.js';
 import { FILE_UPLOAD_JS } from '../src/server/ui-files.js';
+import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
+import { MAIL_PROVIDERS } from '../src/connections/mail.js';
 
 // A separate, inert demonstration of the implemented UI. It never calls the app runtime.
 const demo = String.raw`
@@ -24,6 +26,7 @@ var companies=[{id:'company-demo-northstar',name:'Northstar Studio',purpose:'Bui
 var demoMissions=[{id:'demo-mission',agentId:lead.id,goal:'Prepare a customer research summary',status:'running',progress:'Collected customer feedback; checking the findings.',turns:2,maxTurns:12}];
 var demoHelpers=[{id:'demo-helper',rootAgentId:lead.id,parentAgentId:lead.id,role:'Research assistant',objective:'Compare customer feedback and identify recurring needs',status:'running',activity:{phase:'working',current:'Checking the research notes'}}];
 var demoActivity=[{agentId:lead.id,agentName:lead.name,phase:'working',tool:'read_file'}];
+var demoMailProviders=${JSON.stringify(MAIL_PROVIDERS)};
 var messages=[{id:'demo-user',role:'user',text:'Prepare a customer research summary.'},{id:'demo-agent',role:'agent',agentName:'Ari',text:'I’ll collect the research, verify the findings, and report the decisions that need your input.'}];
 var demoMemories={'company-demo-northstar':[{id:'demo-memory',claim:'Use concise reports with evidence and clear decisions.',kind:'preference',updatedAt:'2026-10-11T10:00:00Z'}]};
 var demoReferences={'company-demo-northstar':[{id:'reference-demo',connectionId:'demo-drive',item:{id:'demo-report',name:'Research report.pdf',folder:false},connected:false,readable:false}]};
@@ -48,6 +51,7 @@ window.fetch=async function(input,options){
     else if(['/start','/resume','/pause','/archive','/restore'].includes(suffix)){c.state=suffix==='/archive'?'archived':suffix==='/start'||suffix==='/resume'?'running':'paused';data={company:c};}
     else if(suffix==='/chat'){if(method==='POST'){messages.push({id:crypto.randomUUID(),role:'user',text:body.text},{id:crypto.randomUUID(),role:'agent',agentName:lead.name,text:'This is a UI preview. Your message is shown here; no agent or external action runs.'});}data={messages:messages,artifacts:[],busy:false};}
     else if(suffix==='/storage')data={connections:[],transfers:[],references:demoReferences[c.id]||[]};
+    else if(suffix==='/connected-apps'&&method==='GET')data={configured:true,canConfigure:true,services:[{slug:'gmail',name:'Gmail'},{slug:'googledrive',name:'Google Drive'},{slug:'slack',name:'Slack'}],accounts:[],availableAccounts:[],agents:c.leadId?[lead]:[],assignments:{},mail:{providers:demoMailProviders,accounts:[],available:[]}};
     else if(suffix==='/storage/references/reference-demo'&&method==='DELETE'){demoReferences[c.id]=[];data={ok:true};}
     else if(suffix==='/mcp')data={servers:[],tools:[]};
     else if(suffix==='/wallets')data={wallets:[],transactions:[]};
@@ -62,7 +66,7 @@ window.fetch=async function(input,options){
 function api(url,options){return fetch(url,options).then(async r=>{var data=await r.json();if(!r.ok)throw new Error(data.error);return data;});}
 `;
 const styles = [...UI_HTML.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
-const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;top:0;left:0;right:0;z-index:1000;padding:10px 20px;background:var(--card2);border-bottom:1px solid var(--border);color:var(--muted);font-size:12px}.company-page,.company-page.company-chat-active{padding-top:66px}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nfunction cwExit(){openCompanies();toast('Open the installed app to use Code mode.');}function openCowork(){openCompanies();toast('Open the installed app to use Cowork mode.');}if(new URLSearchParams(location.search).get('preview')==='team'){companyShow();companyOpen(companies[0].id).then(function(){Companies.tab='Team';companyRender();});}else openCompanies();</script></body></html>`;
+const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;top:0;left:0;right:0;z-index:1000;padding:10px 20px;background:var(--card2);border-bottom:1px solid var(--border);color:var(--muted);font-size:12px}.company-page,.company-page.company-chat-active{padding-top:66px}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${CONNECTED_APPS_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nfunction cwExit(){openCompanies();toast('Open the installed app to use Code mode.');}function openCowork(){openCompanies();toast('Open the installed app to use Cowork mode.');}var previewTab=new URLSearchParams(location.search).get('preview');if(previewTab==='team'||previewTab==='connections'){companyShow();companyOpen(companies[0].id).then(function(){Companies.tab=previewTab==='team'?'Team':'Connections';companyRender();});}else openCompanies();</script></body></html>`;
 const output = path.resolve(process.env['GITU_UI_PREVIEW_OUTPUT'] ?? '.qa/company-preview.html');
 mkdirSync(path.dirname(output), { recursive: true });
 writeFileSync(output, html);

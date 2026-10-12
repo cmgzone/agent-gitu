@@ -3,6 +3,7 @@ import type { CompanyStore, Company } from './store.js';
 import type { CoworkStore, CoworkAgent } from '../cowork/store.js';
 import { saveWallet, type WalletGrant } from './wallets.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
+import { companyConnectedApps, type CompanyApps } from './connected-apps.js';
 
 function companyHelperWork(cowork: CoworkStore) {
   return cowork.subAgents().map(h => ({ id: h.id, rootAgentId: h.rootAgentId, parentAgentId: h.parentAgentId, role: h.role, objective: h.objective, status: h.status, statusReason: h.statusReason, resultSummary: h.resultSummary, activity: h.activity ? { phase: h.activity.phase, current: h.activity.phase === 'reasoning' ? 'Thinking' : h.activity.current } : undefined }));
@@ -21,6 +22,7 @@ export interface CompanyApiDeps {
   priced?: (agent: CoworkAgent) => Promise<boolean>;
   attachments?: (company: Company, files: unknown[]) => string[];
   activity?: () => { agentId: string; agentName: string; phase?: string; tool?: string; task?: string }[];
+  apps?: CompanyApps;
 }
 export async function companyApi(req: IncomingMessage, res: ServerResponse, path: string, method: string, d: CompanyApiDeps): Promise<boolean> {
   const { store, send } = d;
@@ -54,6 +56,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   const suffix = match[2] ?? '';
   return d.scoped(company, async () => {
     const cowork = d.cowork();
+    if (await companyConnectedApps(req, res, suffix, method, company!, d)) return true;
     if (suffix === '/status' && method === 'GET') {
       const activeJobs = store.jobs(company!.id).filter(j => (j.state === 'queued' || j.state === 'running') && (j.version === company!.directionVersion || j.payload['delivery'] === 'question'));
       send(res, 200, {

@@ -246,9 +246,9 @@ export const CONNECTED_APPS_JS = String.raw`
     try { var parsed = JSON.parse(String((error && error.message) || '')); if (parsed && typeof parsed.error === 'string') return parsed.error; } catch (e) {}
     return fallback;
   }
-  function cwMailSectionHtml(agentId) {
+  function cwMailSectionHtml(agentId, scope) {
     if (!agentId) return '';
-    var cw = cwEnsure(), mail = cw.mail || {}, providers = mail.providers || [];
+    var cw = scope ? scope.state : cwEnsure(), mail = cw.mail || {}, providers = mail.providers || [];
     var assigned = mail.accounts || [], available = mail.available || [];
     var action = function (attribute, value, label, icon) {
       return '<button class="btn ghost cw-service-action" type="button" ' + attribute + '="' + esc(value) + '" aria-label="' + esc(label) + '" title="' + esc(label) + '">' + cwIcon(icon) + '</button>';
@@ -278,7 +278,7 @@ export const CONNECTED_APPS_JS = String.raw`
       + '<label for="cwMailUsername">Username (only if it differs from the address)</label><input id="cwMailUsername" type="text" autocomplete="username" maxlength="254">'
       + '</details><button class="btn dark" type="submit">Connect mailbox</button><p id="cwMailError" role="alert" class="cw-services-error" hidden></p></form>';
     var saved = available.length ? '<h3 class="cw-mail-subhead">Saved mailboxes</h3><div class="cw-service-grid">' + available.map(function (account) { return row(account, false); }).join('') + '</div>' : '';
-    return '<section class="cw-service-section cw-mail-section" aria-label="Email"><h2>Email</h2><p>Connect any mailbox over IMAP/SMTP - hosted or self-hosted. Only the selected teammate can use it.</p>'
+    return '<section class="cw-service-section cw-mail-section" aria-label="Email"><h2>Email</h2><p>' + (scope ? 'Connect a company mailbox over IMAP/SMTP. Choose team access above; existing permission rules still apply.' : 'Connect any mailbox over IMAP/SMTP - hosted or self-hosted. Only the selected teammate can use it.') + '</p>'
       + (assigned.length ? '<div class="cw-service-grid">' + assigned.map(function (account) { return row(account, true); }).join('') + '</div>' : '') + saved
       + '<div class="cw-mail-actions"><button class="btn dark" type="button" id="cwMailAdd">' + (assigned.length || available.length ? 'Connect another mailbox' : 'Connect a mailbox') + '</button></div>' + form + '</section>';
   }
@@ -288,8 +288,9 @@ export const CONNECTED_APPS_JS = String.raw`
     content.insertAdjacentHTML('afterbegin', html);
     cwBindMail(content, agentId);
   }
-  function cwBindMail(root, agentId) {
-    var cw = cwEnsure();
+  function cwBindMail(root, agentId, scope) {
+    var cw = scope ? scope.state : cwEnsure(), request = scope ? scope.request : api;
+    function reload(){if(scope)scope.reload();else cwLoadServices(cw.servicesSearch || '', false);}
     var find = function (id) { return typeof root.querySelector === 'function' ? root.querySelector('#' + id) : null; };
     var form = find('cwMailForm');
     if (!form) return;
@@ -334,7 +335,7 @@ export const CONNECTED_APPS_JS = String.raw`
     var detectTimer = null, detectSeq = 0;
     var runDetect = function (address, seq) {
       if (seq !== detectSeq) return;
-      api('/api/connected-apps/mail/detect?address=' + encodeURIComponent(address)).then(function (result) {
+      request('/api/connected-apps/mail/detect?address=' + encodeURIComponent(address)).then(function (result) {
         if (seq !== detectSeq || !result || !result.domain) return;
         if (!result.found) {
           if (note) note.textContent = 'No published mail settings for ' + result.domain + '. Enter your servers below.';
@@ -390,10 +391,10 @@ export const CONNECTED_APPS_JS = String.raw`
       if (error) error.hidden = true;
       if (button) button.disabled = true;
       try {
-        var result = await api('/api/connected-apps/mail', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+        var result = await request('/api/connected-apps/mail', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
         if (password) password.value = '';
-        toast(result && result.warning ? result.warning : 'Mailbox connected. This teammate can read and send mail.');
-        cwLoadServices(cw.servicesSearch || '', false);
+        toast(result && result.warning ? result.warning : scope ? 'Mailbox connected to this company.' : 'Mailbox connected. This teammate can read and send mail.');
+        reload();
       } catch (e) {
         if (error) { error.textContent = cwMailErrorText(e, 'Could not connect this mailbox. Check the server settings and the password.'); error.hidden = false; }
         if (button) button.disabled = false;
@@ -405,9 +406,9 @@ export const CONNECTED_APPS_JS = String.raw`
           if (button.disabled) return;
           button.disabled = true;
           try {
-            await api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: agentId, accountId: button.getAttribute(attribute) }) });
+            await request(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agentId: agentId, accountId: button.getAttribute(attribute) }) });
             toast(done);
-            cwLoadServices(cw.servicesSearch || '', false);
+            reload();
           } catch (e) { toast(failure, true); button.disabled = false; }
         };
       });

@@ -138,13 +138,13 @@ export class CompanyStore {
     const row = this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
-  saveResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company', id: string, companyId: string, value: unknown): void {
+  saveResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account', id: string, companyId: string, value: unknown): void {
     if (!this.get(companyId)) throw new Error('Company not found.');
     const existing = this.db.prepare('SELECT company_id FROM records WHERE kind=? AND id=?').get(kind, id);
     if (existing && existing['company_id'] !== companyId) throw new Error('Resource belongs to another company.');
     this.put(kind, id, value, companyId);
   }
-  removeResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'file-reference', id: string, companyId: string): void {
+  removeResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'file-reference' | 'connected-account', id: string, companyId: string): void {
     this.db.prepare('DELETE FROM records WHERE kind=? AND id=? AND company_id=?').run(kind, id, companyId);
   }
   list<T>(kind: string, companyId?: string): T[] {

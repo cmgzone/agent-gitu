@@ -550,7 +550,7 @@ export class Executor {
           result = toolListFiles(ctx, req.params);
           break;
         case 'search_files':
-          result = toolSearchFiles(ctx, req.params);
+          result = await toolSearchFiles({ ...ctx, signal: this.signal?.() }, req.params);
           break;
         case 'web_fetch':
           result = await toolWebFetch(ctx, req.params);

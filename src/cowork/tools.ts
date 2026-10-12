@@ -556,7 +556,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
       case 'read_file':
         return toolReadFile(ctx, params);
       case 'search_files':
-        return toolSearchFiles(ctx, params);
+        return await toolSearchFiles({ ...ctx, signal: scope?.signal ?? ctx.signal }, params);
       case 'write_file':
         if (!perms.allowWrites) return blocked(tool);
         return toolWriteFile(ctx, params);

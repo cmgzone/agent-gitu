@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -66,7 +66,7 @@ describe('ProjectGuard', () => {
     expect(() => guard.assertInside(path.join(dir, 'node_modules', 'x'))).toThrow(ProjectGuardError);
   });
 
-  it('keeps a user-tagged folder read-only until its write permission is granted, then revokes it', () => {
+  it('keeps a user-tagged folder read-only until its write permission is granted, then revokes it', async () => {
     const dir = makeProject('guard-tagged-read', { name: 'guard-tagged-read' });
     const outside = mkdtempSync(path.join(TEMP_ROOT, 'tagged-reference-'));
     const note = path.join(outside, 'note.txt');
@@ -82,7 +82,7 @@ describe('ProjectGuard', () => {
     const context = { guard, cwd: dir };
     expect(toolReadFile(context, { path: note }).output).toContain('reference');
     expect(toolListFiles(context, { path: outside }).output).toContain('note.txt');
-    expect(toolSearchFiles(context, { path: outside, pattern: 'reference', mode: 'literal' }).output).toContain('note.txt');
+    expect((await toolSearchFiles(context, { path: outside, pattern: 'reference', mode: 'literal' })).output).toContain('note.txt');
     expect(() => guard.assertInside(note)).toThrow(ProjectGuardError);
     let writable: string[] = [];
     guard.setTaggedWriteFolders(() => writable);
@@ -106,5 +106,51 @@ describe('ProjectGuard', () => {
     guard.persist();
     const reloaded = ProjectGuard.load(path.resolve(dir));
     expect(reloaded?.lock.name).toBe('guard-persist');
+  });
+
+  it('checks current tagged grants asynchronously, including writes and immediate revocation', async () => {
+    const dir = makeProject('guard-async-tags', { name: 'guard-async-tags' });
+    const outside = mkdtempSync(path.join(TEMP_ROOT, 'async-reference-'));
+    const note = path.join(outside, 'note.txt'); writeFileSync(note, 'reference');
+    const guard = ProjectGuard.detect(dir); let folders = [outside];
+    await expect(guard.assertReadableAsync(note)).rejects.toThrow(ProjectGuardError);
+    guard.setTaggedReadFolders(() => folders);
+    await expect(guard.assertReadableAsync(note)).resolves.toBeUndefined();
+    const pending = guard.assertReadableAsync(note); folders = [];
+    await expect(pending).rejects.toThrow(ProjectGuardError);
+    guard.setTaggedWriteFolders(() => [outside]);
+    await expect(guard.assertReadableAsync(note)).resolves.toBeUndefined();
+    mkdirSync(path.join(outside, 'node_modules'));
+    const ignored = path.join(outside, 'node_modules', 'source.txt'); writeFileSync(ignored, 'private write grant');
+    await expect(guard.assertReadableAsync(ignored)).rejects.toThrow(ProjectGuardError);
+  });
+
+  it('keeps asynchronous workspace scans inside their boundary and away from private aliases', async () => {
+    const dir = mkdtempSync(path.join(TEMP_ROOT, 'async-boundary-'));
+    writeFileSync(path.join(dir, 'package.json'), '{"name":"async-boundary"}');
+    const outside = mkdtempSync(path.join(TEMP_ROOT, 'async-outside-'));
+    writeFileSync(path.join(outside, 'note.txt'), 'external');
+    symlinkSync(outside, path.join(dir, 'external-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+    const git = path.join(dir, '.git'); mkdirSync(git); writeFileSync(path.join(git, 'config'), 'private');
+    symlinkSync(git, path.join(dir, 'private-alias'), process.platform === 'win32' ? 'junction' : 'dir');
+    const guard = ProjectGuard.detect(dir);
+    await expect(guard.assertReadableAsync(path.join(dir, 'external-alias', 'note.txt'))).rejects.toThrow(ProjectGuardError);
+    await expect(guard.assertReadableAsync(path.join(dir, 'private-alias', 'config'))).rejects.toThrow(ProjectGuardError);
+    const scratch = path.join(dir, '.hermes', 'tmp', 'task'); mkdirSync(scratch, { recursive: true });
+    const diagnostic = path.join(scratch, 'report.txt'); writeFileSync(diagnostic, 'task');
+    await expect(guard.assertReadableAsync(diagnostic)).rejects.toThrow(ProjectGuardError);
+    guard.taskTmpRoot = scratch;
+    await expect(guard.assertReadableAsync(diagnostic)).resolves.toBeUndefined();
+  });
+
+  it('preserves approved diagnostic read scopes asynchronously', async () => {
+    const dir = makeProject('guard-async-diagnostic', { name: 'guard-async-diagnostic' });
+    const outside = mkdtempSync(path.join(TEMP_ROOT, 'async-diagnostic-'));
+    const note = path.join(outside, 'note.txt'); writeFileSync(note, 'reference');
+    const guard = ProjectGuard.detect(dir);
+    guard.grantDiagnosticRead(guard.diagnosticReadScope(note));
+    await expect(guard.assertReadableAsync(note)).resolves.toBeUndefined();
+    const sibling = path.join(outside, 'sibling.txt'); writeFileSync(sibling, 'other');
+    await expect(guard.assertReadableAsync(sibling)).rejects.toThrow(ProjectGuardError);
   });
 });

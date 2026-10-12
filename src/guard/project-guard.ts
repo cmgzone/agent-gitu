@@ -1,6 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { ProjectLock, WorkspaceAuthority } from '../types.js';
 import { nowIso, readJson, writeJson } from '../util.js';
@@ -291,6 +292,55 @@ export class ProjectGuard {
         const realRel = path.relative(realScope, real);
         if (realRel === '' || (realRel !== '..' && !realRel.startsWith(`..${path.sep}`) && !path.isAbsolute(realRel))) return;
       } catch { /* a removed or retargeted tag cannot expand access */ }
+    }
+    throw new ProjectGuardError(`Read access to ${abs} requires approval outside the locked project.`);
+  }
+
+  /** Read-only scans must not block the desktop event loop on filesystem checks. */
+  async assertReadableAsync(absPath: string): Promise<void> {
+    const abs = path.resolve(absPath);
+    const within = (root: string, candidate: string): boolean => {
+      const rel = path.relative(root, candidate);
+      return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    };
+    const real = await realpath(abs);
+    if (this.isInsideProject(abs)) {
+      const rootReal = await realpath(this.activeWritableRoot);
+      if (!within(rootReal, real)) throw new ProjectGuardError(`Path ${abs} resolves outside the locked project (symlink escape).`);
+      // Only the orchestrator's task scratch may read legacy private state.
+      const scratch = this.taskTmpRoot;
+      if (scratch && abs !== path.resolve(scratch) && within(path.resolve(scratch), abs) &&
+        within(await realpath(scratch), real) && this.taskTmpRoot === scratch) return;
+      this.assertPublicReadPath(abs);
+      this.assertPublicReadPath(real);
+      return;
+    }
+    this.assertPublicReadPath(abs);
+    this.assertPublicReadPath(real);
+    for (const [granted, scope] of this.diagnosticReads) {
+      if ((abs === granted || (scope.directory && within(granted, abs))) &&
+        (real === scope.real || (scope.directory && within(scope.real, real))) &&
+        this.diagnosticReads.get(granted) === scope) return;
+    }
+    for (const writeGrant of [false, true]) {
+      const getFolders = writeGrant ? this.taggedWriteFolders : this.taggedReadFolders;
+      for (const folder of getFolders?.() ?? []) {
+        const scope = path.resolve(folder);
+        if (!within(scope, abs)) continue;
+        try {
+          this.assertPublicReadPath(scope);
+          if (!(await stat(scope)).isDirectory() || await realpath(scope) !== scope) continue;
+          if (!within(scope, real)) continue;
+          if (writeGrant) {
+            const top = path.relative(scope, abs).split(path.sep)[0] ?? '';
+            const fold = (s: string): string => process.platform === 'win32' ? s.toLowerCase() : s;
+            if (top && this.lock.ignorePaths.some(ignored => fold(ignored) === fold(top))) continue;
+          }
+          // Re-read the owner's grants after asynchronous IO, including revocation.
+          const current = writeGrant ? this.taggedWriteFolders : this.taggedReadFolders;
+          if (current === getFolders && current?.().includes(folder)) return;
+        } catch { /* removed, retargeted and revoked tags cannot expand access */ }
+      }
     }
     throw new ProjectGuardError(`Read access to ${abs} requires approval outside the locked project.`);
   }

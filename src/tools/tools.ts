@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { SubAgentJob } from '../agent/subagent.js';
 import type { ProjectGuard } from '../guard/project-guard.js';
@@ -16,6 +17,7 @@ import { connectionResponses, type ConnectionResponseQuery } from '../connection
 import type { ConnectedAppsProvider } from '../connections/provider.js';
 import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-timeout.js';
 import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
+import { SearchMatcher } from './search-matcher.js';
 
 export interface ToolContext {
   /** Trusted owner grant, checked live before Company work uses the runtime host. */
@@ -1039,7 +1041,8 @@ function lineOf(lineStarts: number[], offset: number): number {
   return lo + 1;
 }
 
-export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+export async function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  if (ctx.signal?.aborted) return fail('search_files: cancelled before scanning.');
   const pattern = String(params['pattern'] ?? '');
   if (!pattern) return fail('search_files: missing "pattern"');
   const mode: 'literal' | 'regex' = params['mode'] === 'literal' ? 'literal' : 'regex';
@@ -1049,90 +1052,77 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
   }
   const rel = String(params['path'] ?? '.');
   const abs = ctx.guard.resolve(rel);
-  ctx.guard.assertReadable(abs);
+  await ctx.guard.assertReadableAsync(abs);
   const include = Array.isArray(params['include']) ? (params['include'] as unknown[]).map(String) : [];
   const exclude = Array.isArray(params['exclude']) ? (params['exclude'] as unknown[]).map(String) : [];
   const maxResults = Math.min(500, Math.max(1, Number(params['maxResults']) || MAX_SEARCH_MATCHES));
   const contextLines = Math.min(5, Math.max(0, Number(params['contextLines']) || 0));
   const maxFileSize = 256 * 1024;
 
-  // Build the matcher once. Literal mode uses indexOf (no escaping traps);
-  // regex mode compiles the user pattern with the requested flags.
-  let find: (content: string) => { start: number; end: number }[];
-  let crossLineCapable: boolean;
-  if (mode === 'literal') {
-    const needle = flags.includes('i') ? pattern.toLowerCase() : pattern;
-    if (!needle) return fail('search_files: pattern is empty after normalization');
-    crossLineCapable = needle.includes('\n');
-    find = (content) => {
-      const hay = flags.includes('i') ? content.toLowerCase() : content;
-      const out: { start: number; end: number }[] = [];
-      let at = hay.indexOf(needle);
-      while (at >= 0 && out.length < maxResults) {
-        out.push({ start: at, end: at + needle.length });
-        at = hay.indexOf(needle, at + Math.max(1, needle.length));
-      }
-      return out;
-    };
-  } else {
-    let re: RegExp;
-    try {
-      re = new RegExp(pattern, flags + 'g');
-    } catch (err) {
-      return fail(`search_files: invalid regex: ${(err as Error).message}`);
-    }
-    crossLineCapable = flags.includes('s') || flags.includes('m') || /\\s|\\n|\[\s\S|\[\^[^\]]*\s/.test(pattern);
-    find = (content) => {
-      const out: { start: number; end: number }[] = [];
-      re.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(content)) !== null && out.length < maxResults) {
-        out.push({ start: m.index, end: m.index + m[0].length });
-        if (m[0].length === 0) re.lastIndex += 1; // zero-width safety
-      }
-      return out;
-    };
-  }
+  // Validate before traversing, but run actual matching off the app thread.
+  try { if (mode === 'regex') new RegExp(pattern, flags + 'g'); }
+  catch (err) { return fail(`search_files: invalid regex: ${(err as Error).message}`); }
+  const crossLineCapable = mode === 'literal' ? pattern.includes('\n') :
+    flags.includes('s') || flags.includes('m') || /\\s|\\n|\[\s\S|\[\^[^\]]*\s/.test(pattern);
+  const matcher = new SearchMatcher(ctx.signal);
 
   const ignores = new Set(ctx.guard.lock.ignorePaths);
+  const visitedDirectories = new Set<string>();
   const lines: string[] = [];
   let filesHit = 0;
   let truncated = false;
+  let matches = 0;
+  let stopReason = '';
+  const stopped = (): boolean => {
+    if (ctx.signal?.aborted) throw new Error('search_files: cancelled.');
+    if (matches >= maxResults) { truncated = true; stopReason = 'result limit'; return true; }
+    return false;
+  };
 
-  const walk = (dir: string, depth: number): void => {
-    if (lines.length / Math.max(1, 1 + contextLines * 2) >= maxResults) return;
+  const walk = async (dir: string): Promise<void> => {
+    if (stopped()) return;
     let entries: string[];
     try {
-      entries = readdirSync(dir);
+      await ctx.guard.assertReadableAsync(dir);
+      const canonical = await realpath(dir);
+      if (visitedDirectories.has(canonical)) return;
+      visitedDirectories.add(canonical);
+      entries = await readdir(dir);
     } catch {
       return;
     }
     for (const name of entries) {
+      if (stopped()) return;
       const full = path.join(dir, name);
+      const relPath = ctx.guard.toRelative(full).replace(/\\/g, '/');
+      if (matchesAnyGlobs(relPath, exclude) || matchesAnyGlobs(relPath + '/', exclude)) continue;
       let st;
       try {
-        ctx.guard.assertReadable(full);
-        st = statSync(full);
+        await ctx.guard.assertReadableAsync(full);
+        st = await stat(full);
       } catch {
         continue;
       }
       if (st.isDirectory()) {
-        if (depth > 8 || ignores.has(name) || name.startsWith('.')) continue;
-        walk(full, depth + 1);
+        if (ignores.has(name) || name.startsWith('.')) continue;
+        await walk(full);
         continue;
       }
-      if (st.size >= maxFileSize) continue;
-      const relPath = ctx.guard.toRelative(full).replace(/\\/g, '/');
+      if (stopped()) return;
+      if (!st.isFile() || st.size >= maxFileSize) continue;
       if (include.length > 0 && !matchesAnyGlobs(relPath, include)) continue;
       if (exclude.length > 0 && matchesAnyGlobs(relPath, exclude)) continue;
       let content: string;
       try {
-        content = readFileSync(full, 'utf8');
+        await ctx.guard.assertReadableAsync(full);
+        content = await readFile(full, { encoding: 'utf8', signal: ctx.signal });
       } catch {
         continue;
       }
+      if (stopped()) return;
       if (content.includes('\0')) continue; // binary
-      const found = find(content);
+      const found = await matcher.match({ content, pattern, mode, flags, maxResults: maxResults - matches });
+      if (stopped()) return;
       if (found.length === 0) continue;
       filesHit += 1;
       // Line-start table once per matching file: whole-content search makes
@@ -1141,10 +1131,12 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
       for (let i = 0; i < content.length; i++) if (content[i] === '\n') lineStarts.push(i + 1);
       const fileLines = content.split('\n');
       for (const hit of found) {
-        if (lines.length / Math.max(1, 1 + contextLines * 2) >= maxResults) {
+        if (matches >= maxResults) {
           truncated = true;
+          stopReason = 'result limit';
           break;
         }
+        matches++;
         const lineNo = lineOf(lineStarts, hit.start);
         const spanLines = content.slice(hit.start, hit.end).split('\n').length;
         if (spanLines > 1) {
@@ -1163,11 +1155,14 @@ export function toolSearchFiles(ctx: ToolContext, params: Record<string, unknown
     }
   };
 
-  walk(abs, 0);
+  try { await walk(abs); stopped(); }
+  catch (error) { return fail((error as Error).message); }
+  finally { await matcher.close(); }
   const capability =
     `[search mode=${mode} flags=${flags || 'none'} multiline=${crossLineCapable} files=${filesHit} ` +
-    `matches=${lines.filter((l) => !l.startsWith('    ')).length} truncated=${truncated} languageAware=false]`;
-  return { ok: true, output: lines.length ? `${lines.join('\n')}\n${capability}` : `(no matches)\n${capability}` };
+    `matches=${matches} truncated=${truncated} languageAware=false]`;
+  const hint = truncated ? `\nSearch stopped at the ${stopReason}; results are partial. Narrow path/include/exclude and search again.` : '';
+  return { ok: true, output: (lines.length ? `${lines.join('\n')}\n${capability}` : `${truncated ? '(no matches in scanned files)' : '(no matches)'}\n${capability}`) + hint };
 }
 
 function lspUnavailable(output: string): ToolResult {

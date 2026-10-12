@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Executor } from '../src/executor/executor.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
@@ -303,7 +303,7 @@ describe('Executor enforcement pipeline order', () => {
   });
 });
 
-describe('toolSearchFiles — language-agnostic search engine', () => {
+describe('toolSearchFiles — language-agnostic search engine', async () => {
   function searchProject(): string {
     const dir = mkdtempSync(path.join(tmpdir(), 'hermes-search-'));
     writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'search-test' }));
@@ -322,26 +322,26 @@ describe('toolSearchFiles — language-agnostic search engine', () => {
     return toolSearchFiles({ guard } as unknown as Parameters<typeof toolSearchFiles>[0], params);
   };
 
-  it('literal mode matches plain text without regex escaping traps', () => {
+  it('literal mode matches plain text without regex escaping traps', async () => {
     const dir = searchProject();
-    const r = search(dir, { pattern: 'a.b', mode: 'literal', include: ['**/*.py'] });
+    const r = await search(dir, { pattern: 'a.b', mode: 'literal', include: ['**/*.py'] });
     expect(r.ok).toBe(true);
     expect(r.output).toContain('util.py');
     expect(r.output).toContain('return a.b');
     expect(r.output).toContain('mode=literal');
   });
 
-  it('default regex mode keeps the classic path:line: text behavior', () => {
+  it('default regex mode keeps the classic path:line: text behavior', async () => {
     const dir = searchProject();
-    const r = search(dir, { pattern: 'export const' });
+    const r = await search(dir, { pattern: 'export const' });
     expect(r.ok).toBe(true);
     expect(r.output).toContain('enum.ts:1: export const ActivityKind =');
     expect(r.output).toContain('matches=1');
   });
 
-  it('regex matches across lines in any language (multiline span)', () => {
+  it('regex matches across lines in any language (multiline span)', async () => {
     const dir = searchProject();
-    const r = search(dir, { pattern: 'ActivityKind[\\s\\S]{0,120}?document_created' });
+    const r = await search(dir, { pattern: 'ActivityKind[\\s\\S]{0,120}?document_created' });
     expect(r.ok).toBe(true);
     const matchLine = r.output.split('\n').find((l) => l.startsWith('enum.ts:'));
     expect(matchLine).toBeTruthy();
@@ -352,68 +352,131 @@ describe('toolSearchFiles — language-agnostic search engine', () => {
     expect(r.output).toContain('multiline=true');
   });
 
-  it('dotall flag (s) lets the dot cross lines', () => {
+  it('dotall flag (s) lets the dot cross lines', async () => {
     const dir = searchProject();
-    const noS = search(dir, { pattern: 'ActivityKind.{0,40}task_created' });
-    const withS = search(dir, { pattern: 'ActivityKind.{0,40}task_created', flags: 's' });
+    const noS = await search(dir, { pattern: 'ActivityKind.{0,40}task_created' });
+    const withS = await search(dir, { pattern: 'ActivityKind.{0,40}task_created', flags: 's' });
     expect(noS.output).toContain('(no matches)');
     expect(withS.output).toContain('task_created');
     expect(withS.output).toContain('multiline=true');
   });
 
-  it('rejects unsupported flags instead of silently ignoring them', () => {
+  it('rejects unsupported flags instead of silently ignoring them', async () => {
     const dir = searchProject();
-    const r = search(dir, { pattern: 'x', flags: 'igx' });
+    const r = await search(dir, { pattern: 'x', flags: 'igx' });
     expect(r.ok).toBe(false);
     expect(r.output).toContain('unsupported flags');
   });
 
-  it('include filters by glob, exclude removes subtrees', () => {
+  it('include filters by glob, exclude removes subtrees', async () => {
     const dir = searchProject();
-    const py = search(dir, { pattern: 'connect', include: ['**/*.py'] });
+    const py = await search(dir, { pattern: 'connect', include: ['**/*.py'] });
     expect(py.output).toContain('util.py');
     expect(py.output).toContain('vendor/gen.py'); // include is extension-only; vendor needs exclude
-    const notVendor = search(dir, { pattern: 'connect', exclude: ['vendor/**'] });
+    const notVendor = await search(dir, { pattern: 'connect', exclude: ['vendor/**'] });
     expect(notVendor.output).toContain('util.py');
     expect(notVendor.output).not.toContain('vendor');
-    const mdOnly = search(dir, { pattern: 'connect', include: ['*.md'] });
+    const mdOnly = await search(dir, { pattern: 'connect', include: ['*.md'] });
     expect(mdOnly.output).toContain('README.md');
     expect(mdOnly.output).not.toContain('.py');
   });
 
-  it('contextLines emits neighboring lines with their numbers', () => {
+  it('contextLines emits neighboring lines with their numbers', async () => {
     const dir = searchProject();
-    const r = search(dir, { pattern: 'task_created', contextLines: 1 });
+    const r = await search(dir, { pattern: 'task_created', contextLines: 1 });
     expect(r.ok).toBe(true);
     expect(r.output).toContain('project_created');
     expect(r.output).toContain('document_created');
     expect(r.output).toMatch(/    2: /);
   });
 
-  it('maxResults caps matches and reports truncated=true', () => {
+  it('maxResults caps matches and reports truncated=true', async () => {
     const dir = searchProject();
     const big = mkdirSync(path.join(dir, 'bulk'), { recursive: true });
     for (let i = 0; i < 10; i++) writeFileSync(path.join(big, `f${i}.txt`), 'needle here\n');
-    const r = search(dir, { pattern: 'needle', include: ['bulk/**'], maxResults: 3 });
+    const r = await search(dir, { pattern: 'needle', include: ['bulk/**'], maxResults: 3 });
     expect(r.ok).toBe(true);
     expect(r.output).toContain('matches=3');
     expect(r.output).toContain('truncated=true');
   });
 
-  it('reports capabilities on empty results so the caller knows what ran', () => {
+  it('reports capabilities on empty results so the caller knows what ran', async () => {
     const dir = searchProject();
-    const r = search(dir, { pattern: 'definitely-not-present-xyz' });
+    const r = await search(dir, { pattern: 'definitely-not-present-xyz' });
     expect(r.ok).toBe(true);
     expect(r.output).toContain('(no matches)');
     expect(r.output).toContain('languageAware=false');
     expect(r.output).toContain('matches=0');
   });
 
-  it('skips binary content instead of matching garbage', () => {
+  it('skips binary content instead of matching garbage', async () => {
     const dir = searchProject();
     // Contains the literal needle text but a NUL byte marks it binary.
     writeFileSync(path.join(dir, 'blob.bin'), Buffer.concat([Buffer.from('needle'), Buffer.from([0x00]), Buffer.from('needle')]));
-    const r = search(dir, { pattern: 'needle', include: ['**/*.bin'] });
+    const r = await search(dir, { pattern: 'needle', include: ['**/*.bin'] });
     expect(r.output).toContain('(no matches)');
+  });
+  it('services cancellation while a directory search is running', async () => {
+    const dir = searchProject(), guard = ProjectGuard.detect(dir), controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 0);
+    try {
+      const r = await toolSearchFiles({ guard, signal: controller.signal } as Parameters<typeof toolSearchFiles>[0], { pattern: 'absent' });
+      expect(r.ok).toBe(false);
+      expect(r.output).toContain('cancelled');
+    } finally { clearTimeout(timer); }
+  });
+  it('stops reading additional files as soon as the match limit is reached', async () => {
+    const dir = searchProject(), guard = ProjectGuard.detect(dir), checked: string[] = [];
+    writeFileSync(path.join(dir, 'a-match.txt'), 'needle');
+    for (let i = 0; i < 30; i++) writeFileSync(path.join(dir, `zz-other-${i}.txt`), 'needle');
+    const readable = guard.assertReadableAsync.bind(guard);
+    guard.assertReadableAsync = async file => { checked.push(file); await readable(file); };
+    const r = await toolSearchFiles({ guard } as Parameters<typeof toolSearchFiles>[0], { pattern: 'needle', maxResults: 1 });
+    expect(r.output).toContain('matches=1');
+    expect(r.output).toContain('results are partial');
+    expect(checked.some(file => path.basename(file).startsWith('zz-other-'))).toBe(false);
+  });
+  it('prunes excluded build trees before walking or checking their files', async () => {
+    const dir = searchProject(), guard = ProjectGuard.detect(dir), checked: string[] = [];
+    const build = path.join(dir, 'packed-app'); mkdirSync(build); writeFileSync(path.join(build, 'bundle.js'), 'needle');
+    const readable = guard.assertReadableAsync.bind(guard);
+    guard.assertReadableAsync = async file => { checked.push(file); await readable(file); };
+    const r = await toolSearchFiles({ guard } as Parameters<typeof toolSearchFiles>[0], { pattern: 'needle', exclude: ['packed-app/**'] });
+    expect(r.output).toContain('(no matches)');
+    expect(checked.some(file => file.includes('packed-app'))).toBe(false);
+  });
+  it('searches deeply nested source without a fixed elapsed-time cutoff', async () => {
+    const dir = searchProject(), guard = ProjectGuard.detect(dir);
+    const nested = path.join(dir, ...Array.from({ length: 14 }, (_, i) => `level-${i}`));
+    mkdirSync(nested, { recursive: true }); writeFileSync(path.join(nested, 'source.txt'), 'deep needle');
+    const clock = vi.spyOn(Date, 'now'); let elapsed = 0;
+    clock.mockImplementation(() => elapsed += 1000);
+    try {
+      const r = await toolSearchFiles({ guard } as Parameters<typeof toolSearchFiles>[0], { pattern: 'deep needle' });
+      expect(r.ok).toBe(true);
+      expect(r.output).toContain('source.txt');
+      expect(r.output).toContain('truncated=false');
+    } finally { clock.mockRestore(); }
+  });
+  it('does not recurse forever through an in-project directory link', async () => {
+    const dir = searchProject();
+    symlinkSync(dir, path.join(dir, 'vendor', 'loop'), process.platform === 'win32' ? 'junction' : 'dir');
+    const r = await search(dir, { pattern: 'definitely-not-present' });
+    expect(r.ok).toBe(true); expect(r.output).toContain('truncated=false');
+  });
+  it('keeps the app event loop and Stop responsive during a pathological regex', async () => {
+    const dir = searchProject(), guard = ProjectGuard.detect(dir), controller = new AbortController();
+    writeFileSync(path.join(dir, 'slow.txt'), 'a'.repeat(80) + '!');
+    let heartbeats = 0;
+    const pulse = setInterval(() => heartbeats++, 20);
+    const cancel = setTimeout(() => controller.abort(), 1000);
+    const start = performance.now();
+    try {
+      const r = await toolSearchFiles({ guard, signal: controller.signal } as Parameters<typeof toolSearchFiles>[0],
+        { pattern: '(a+)+$', include: ['slow.txt'] });
+      expect(r.ok).toBe(false); expect(r.output).toContain('cancelled');
+      expect(heartbeats).toBeGreaterThan(5);
+      expect(performance.now() - start).toBeLessThan(3000);
+    } finally { clearInterval(pulse); clearTimeout(cancel); }
   });
 });

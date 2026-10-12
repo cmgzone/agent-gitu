@@ -411,18 +411,22 @@ describe('Cowork UI live updates', () => {
     const stop = { hidden: true };
     u.elements.cwSend = send;
     u.elements.cwStop = stop;
+    const deliveries = ['queue', 'question'].map(mode => ({ getAttribute: () => mode, setAttribute: vi.fn(), onclick: undefined as undefined | (() => void) }));
+    u.elements.cwDelivery = { hidden: false, querySelectorAll: () => deliveries };
+    u.elements.cwDeliveryNote = { textContent: '' };
+    u.context.cw = u.cw;
+    const deliveryBinding = COWORK_JS.split('\n').find(line => line.includes("cw.delivery=button.getAttribute('data-cwdelivery')"))!;
+    new Script(deliveryBinding).runInContext(u.context);
 
     u.cw.busy = true;
     u.context.cwRenderComposerAction();
     expect(send.title).toContain('Steer');
     expect(classes.has('queue')).toBe(false);
-    u.cw.delivery = 'queue';
-    u.context.cwRenderComposerAction();
+    deliveries[0]!.onclick!();
     expect(send.title).toContain('Queue');
     expect(classes.has('queue')).toBe(true);
     expect(stop.hidden).toBe(false);
-    u.cw.delivery = 'question';
-    u.context.cwRenderComposerAction();
+    deliveries[1]!.onclick!();
     expect(send.title).toContain('Ask');
     expect(classes.has('queue')).toBe(false);
 

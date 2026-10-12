@@ -88,6 +88,24 @@ describe('HermesServer', () => {
     expect(session.events.at(-1)?.i).toBe(3);
   });
 
+  it('does not rescan long coding transcripts for each chunk or reuse a removed cursor', () => {
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: makeProject('long-event-stream'), port: 0, llm: new ScriptedMockLlm([]) });
+    let historyReads = 0;
+    const events = Array.from({ length: 50_000 }, (_, index) => ({
+      get i() { historyReads++; return index * 2; },
+      t: '2026-01-01T00:00:00.000Z', text: 'tdelta chunk',
+    }));
+    const session = { events, subscribers: new Set() };
+    const push = (text: string) => (server as unknown as { pushEvent: (target: typeof session, text: string, persist: boolean) => void }).pushEvent(session, text, false);
+    push('tdelta next');
+    const initialReads = historyReads;
+    expect(session.events.pop()?.i).toBe(99_999);
+    for (let index = 0; index < 1000; index++) push('tdelta more');
+    expect(historyReads).toBe(initialReads);
+    expect(session.events[50_000]?.i).toBe(100_000);
+    expect(session.events.at(-1)?.i).toBe(100_999);
+  });
+
   afterAll(async () => {
     for (const s of servers) await s.stop();
   });

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, nativeTheme,Tray,Menu,nativeImage } = require('electron');
+const { app, BrowserWindow, shell, nativeTheme,Tray,Menu,nativeImage,crashReporter } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -6,6 +6,14 @@ const { pathToFileURL } = require('node:url');
 
 const DESIRED_PORT = Number(process.env.HERMES_UI_PORT || 8321);
 const APP_ICON_PATH = path.join(__dirname, '..', 'assets', 'agent-gitu-icon.png');
+// Keep native crash dumps on this computer; never submit them to a service.
+if (crashReporter) {
+  try { crashReporter.start({ uploadToServer: false }); }
+  catch { /* Diagnostics must not prevent startup. */ }
+}
+app.on('child-process-gone', (_event, details) => {
+  log(`child-process-gone: type=${details.type} reason=${details.reason} exitCode=${details.exitCode}`);
+});
 
 let mainWindow = null;
 let server = null;
@@ -733,6 +741,7 @@ function createMainWindow() {
   const appShellProbe = `(function(){
     if (document.getElementById('gitu-fail')) return 'fail';
     if (document.getElementById('view') && document.getElementById('gearBtn')) return 'app';
+    if (document.querySelector('main.auth') && document.getElementById('authForm')) return 'auth';
     return 'other';
   })()`;
 
@@ -749,10 +758,10 @@ function createMainWindow() {
       .executeJavaScript(appShellProbe, true)
       .then((state) => {
         if (loaded || !mainWindow || mainWindow.isDestroyed()) return;
-        if (state === 'app') {
+        if (state === 'app' || state === 'auth') {
           loaded = true;
           clearTimeout(loadWatchdog);
-          log('mainWindow did-finish-load fired (app shell present)');
+          log('mainWindow did-finish-load fired (' + (state === 'auth' ? 'sign-in page' : 'app shell present') + ')');
           revealWindow();
         } else if (state === 'fail') {
           clearTimeout(loadWatchdog);
@@ -773,6 +782,8 @@ function createMainWindow() {
     scheduleRetry(`the load failed (${errorDescription || errorCode})`);
   });
 
+  mainWindow.on('unresponsive', () => log('mainWindow unresponsive'));
+  mainWindow.on('responsive', () => log('mainWindow responsive again'));
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     log(`mainWindow render-process-gone: ${details && details.reason} exitCode=${details && details.exitCode}`);
     if (!mainWindow || mainWindow.isDestroyed()) return;

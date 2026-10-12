@@ -10,6 +10,10 @@ An ordinary Cowork teammate with configuration and write permissions can use `co
 
 **Live activity** reports the actual worker phase/tool, current missions, queued tasks and next review. The Cowork card also refreshes from saved/runtime state. Status distinguishes working, waiting for approval/input, queued, between reviews, paused and draft; a saved running state is not a claim that a worker is always active. Live refresh preserves focused navigation and uses a small status response rather than repeatedly transferring usage history.
 
+Open **Team** to see each agent's **Current work**: assigned missions or requests, current tool, latest progress and blockers. Temporary helpers appear under their root teammate with the objectives assigned to them. Idle agents show no current assignment; completed missions and helper results remain in **Work** history. Team updates preserve desktop controls and keyboard focus, and status requests do not overlap.
+
+For app connections, open **Settings → Connections → Connect apps with Composio**, or select **Connect an account** in the company. Set up the Composio key once, choose a teammate, then connect the service in your browser. A native mailbox does not imply that Composio is configured. Return to company resource grants and select the connected account explicitly; connecting an account does not grant it to every company.
+
 Company Chat uses the shared chat layout and composer. **Follow up** preserves the latest work automatically. **Steer** changes the current direction; **Queue** assigns another request; **Ask** answers a question without replacing the goal. Drafts and delivery mode survive tab changes. Overview displays approvals, agent questions and actions requiring provider reconciliation.
 
 ## Runtime and permissions

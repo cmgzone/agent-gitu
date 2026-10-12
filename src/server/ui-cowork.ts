@@ -1413,7 +1413,7 @@ export const COWORK_JS = String.raw`
     cwBindTopNav();
     $('cwVoiceCall').onclick=function(){if(typeof startGituVoice==='function')startGituVoice({kind:'cowork',conversationId:cw.active,threadId:cw.threadId||undefined,agentId:cw.selectedAgentId||(conv.kind==='dm'?conv.memberIds[0]:conv.chiefId||conv.memberIds[0])});};
     if(typeof voiceUpdateButtons==='function')voiceUpdateButtons();
-    $('cwDelivery').querySelectorAll('[data-cwdelivery]').forEach(function(button){button.onclick=function(){cw.delivery=button.getAttribute('data-cwdelivery');cwUpdateSend();};});
+    $('cwDelivery').querySelectorAll('[data-cwdelivery]').forEach(function(button){button.onclick=function(){cw.delivery=button.getAttribute('data-cwdelivery');cwRenderComposerAction();};});
     cwSyncPanels();
     cwRenderWidgets();
     var back = $('cwBack');

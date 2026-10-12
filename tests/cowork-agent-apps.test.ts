@@ -129,6 +129,9 @@ describe('teammate app connections', () => {
       expect(confirmed.accounts).toEqual([f.accounts[0]]);
       expect(confirmed.requests[0]).toMatchObject({ id: card.id, status: 'accepted', response: 'Connected' });
       expect((await fetch(base + '/api/connected-apps').then(response => response.json())).accounts).toEqual([]);
+      const ownerAccounts = await fetch(base + '/api/connected-apps?available=true').then(response => response.json());
+      expect(ownerAccounts.availableAccounts).toEqual(f.accounts);
+      expect(ownerAccounts.accounts).toEqual([]);
       expect((await post('/api/connected-apps/disconnect', { agentId: agent.id, accountId: 'gmail-own' })).status).toBe(200);
       expect(store.appAccountAssigned(f.other.id, 'github', 'github-other')).toBe(true);
     } finally { await server.stop(); }

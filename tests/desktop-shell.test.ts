@@ -81,6 +81,7 @@ describe('desktop shell window policy', () => {
 
 function startupFixture() {
   const windows: FakeWindow[] = [];
+  const crashReporter = { start: vi.fn() };
   const app = Object.assign(new EventEmitter(), { requestSingleInstanceLock: () => true, whenReady: () => new Promise(() => {}), quit: vi.fn() });
   class FakeWindow extends EventEmitter {
     webContents = Object.assign(new EventEmitter(), {
@@ -97,15 +98,35 @@ function startupFixture() {
   }
   const require = createRequire(import.meta.url);
   const context = createContext({
-    require: (id: string) => id === 'electron' ? { app, BrowserWindow: FakeWindow, shell: {}, nativeTheme: { shouldUseDarkColors: false } } : id === 'node:fs' ? { appendFileSync: vi.fn() } : id === './app-sign-in.cjs' ? require('../desktop/app-sign-in.cjs') : require(id),
+    require: (id: string) => id === 'electron' ? { app, crashReporter, BrowserWindow: FakeWindow, shell: {}, nativeTheme: { shouldUseDarkColors: false } } : id === 'node:fs' ? { appendFileSync: vi.fn() } : id === './app-sign-in.cjs' ? require('../desktop/app-sign-in.cjs') : require(id),
     __dirname: path.resolve('desktop'), process: { env: {}, on: vi.fn() }, console,
     setTimeout: vi.fn(), clearTimeout: vi.fn(), URL,
   });
   new Script(source).runInContext(context);
-  return { context, app, windows };
+  return { context, app, windows, crashReporter };
 }
 
 describe('desktop startup handoff', () => {
+  it('keeps crash reports local and logs native child failures', () => {
+    const u = startupFixture();
+    expect(u.crashReporter.start).toHaveBeenCalledWith({ uploadToServer: false });
+    expect(() => u.app.emit('child-process-gone', {}, { type: 'GPU', reason: 'crashed', exitCode: 1 })).not.toThrow();
+  });
+  it('accepts the sign-in page without repeatedly reloading it as a failure', async () => {
+    const u = startupFixture();
+    await u.context.showStartupWindow();
+    new Script('boundPort = 8321; createMainWindow();').runInContext(u.context);
+    const main = u.windows[1]!;
+    main.webContents.executeJavaScript.mockResolvedValue('auth');
+    main.webContents.emit('did-finish-load');
+    await vi.waitFor(() => expect(main.show).toHaveBeenCalledOnce());
+    expect(main.webContents.reload).not.toHaveBeenCalled();
+    expect(u.windows[0]!.close).toHaveBeenCalledOnce();
+    const probe = source.match(/const appShellProbe = `([\s\S]*?)`;/)![1]!;
+    const state = new Script(probe).runInContext(createContext({ document: { getElementById: (id: string) => id === 'authForm' ? {} : null, querySelector: (selector: string) => selector === 'main.auth' ? {} : null } }));
+    expect(state).toBe('auth');
+    expect(new Script(probe).runInContext(createContext({ document: { getElementById: () => null, querySelector: () => null } }))).toBe('other');
+  });
   it('keeps the branded window until the real app shell loads, then closes it', async () => {
     const u = startupFixture();
     await u.context.showStartupWindow();

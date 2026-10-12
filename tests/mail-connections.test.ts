@@ -303,6 +303,10 @@ describe('mail API routes', () => {
     const post = (route: string, body: unknown) => fetch(base + route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const connections = () => fetch(base + '/api/connected-apps?agentId=' + agent.id).then((response) => response.json());
     try {
+      const setup = await connections();
+      expect(setup.configured).toBe(false);
+      expect(setup.canConfigure).toBe(true);
+      expect(setup.keyStorage).toBeDefined();
       // A mailbox needs one teammate; the port is reset for each address.
       expect((await post('/api/connected-apps/mail', valid)).status).toBe(400);
       expect((await post('/api/connected-apps/mail', { ...valid, agentId: 'not-a-teammate' })).status).toBe(400);
@@ -321,6 +325,8 @@ describe('mail API routes', () => {
       expect(store.appAccountAssigned(agent.id, 'mail', first.id)).toBe(true);
 
       const listed = await connections();
+      expect(listed.configured).toBe(false);
+      expect(listed.canConfigure).toBe(true);
       expect(listed.mail.accounts.map((account: { id: string }) => account.id)).toEqual([first.id]);
       expect(listed.accounts.map((account: { id: string }) => account.id)).toContain(first.id);
       expect(listed.mail.available).toEqual([]);

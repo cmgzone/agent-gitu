@@ -36,6 +36,7 @@ function fixture() {
     $: (id: keyof typeof elements) => elements[id],
     api,
     cwSaveDraft: vi.fn(),
+    openCowork: vi.fn(),
     cwStopPoll: vi.fn(),
     cwClosePanels: vi.fn(),
     cwSyncPanels: vi.fn(),
@@ -62,6 +63,12 @@ function fixture() {
 }
 
 describe('account and Connections UI', () => {
+  it('opens workspace apps through Cowork after its roster is loaded', () => {
+    const f = fixture();
+    f.context.cwOpenWorkspaceConnections();
+    expect(f.cw).toMatchObject({ homeAction: { kind: 'connections' } });
+    expect(f.context.openCowork).toHaveBeenCalledOnce();
+  });
   it('opens recommended app sign-in on the first click and keeps a retry link', async () => {
     const f = fixture(), openAppSignIn = vi.fn(async () => true);
     f.context.window = { gituDesktop: { openAppSignIn } };

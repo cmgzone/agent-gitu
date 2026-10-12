@@ -260,6 +260,8 @@ interface RunSession {
   fallbackHistory?: string[];
   autoApprove?: boolean;
   events: SessionEvent[];
+  /** High-water mark survives removal of superseded rows within this process. */
+  nextEventIndex?: number;
   /**
    * Native-only frames, kept so a client that reconnects mid-run still sees the
    * transitions that have no prose row. In-memory exactly like `events`, and
@@ -2053,7 +2055,7 @@ export class GituServer {
     this.publishCowork(conversationId);
   }
 
-  private companyApiDependencies():CompanyApiDeps { return {store:this.companies(),activity:()=>this.cowork().listConversations().flatMap(conv=>{const run=this.coworkRuns.get(conv.id);if(!run)return[];const progress=run.progress;return[{agentId:progress?.agentId??conv.memberIds[0]??'',agentName:progress?.agentName??this.cowork().getAgent(conv.memberIds[0]??'')?.name??'Lead',phase:progress?.phase??'working',tool:progress?.tool}];}),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>(this.coworkStore??new CoworkStore()).getAgent(id),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:async c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});await this.storageRegistry?.pauseCompany(c.id);}}; }
+  private companyApiDependencies():CompanyApiDeps { return {store:this.companies(),activity:()=>this.cowork().listConversations().flatMap(conv=>{const run=this.coworkRuns.get(conv.id);if(!run)return[];const progress=run.progress;return[{agentId:progress?.agentId??conv.memberIds[0]??'',agentName:progress?.agentName??this.cowork().getAgent(conv.memberIds[0]??'')?.name??'Lead',phase:progress?.phase??'working',tool:progress?.tool,task:this.cowork().messages(conv.id).filter(m=>m.role==='user').at(-1)?.text.slice(0,1000)}];}),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>(this.coworkStore??new CoworkStore()).getAgent(id),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:async c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});await this.storageRegistry?.pauseCompany(c.id);}}; }
 
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(agent.id);
@@ -4789,7 +4791,11 @@ export class GituServer {
     // cursor: reusing it can overwrite an old persisted event (including a
     // user message) and make the SSE client skip it.  Keep event ids strictly
     // monotonic from the highest known id instead.
-    const ev: SessionEvent = { i: s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1, t: nowIso(), text, ...(typed ? { typed } : {}) };
+    // Initialize once from restored history. Scanning the entire transcript for
+    // every streamed chunk makes a long coding run quadratic on Electron's
+    // main thread and reuses the final cursor if that row is superseded.
+    s.nextEventIndex ??= s.events.reduce((highest, existing) => Math.max(highest, existing.i), -1) + 1;
+    const ev: SessionEvent = { i: s.nextEventIndex++, t: nowIso(), text, ...(typed ? { typed } : {}) };
     s.events.push(ev);
     if (persistDb && !text.startsWith('tdelta') && !text.startsWith('activity')) {
       try {
@@ -5219,7 +5225,7 @@ export class GituServer {
             providers: MAIL_PROVIDERS,
             keyStorage: this.mailConnections.setup.keyStorage,
           };
-          if (!agentId) { this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], services: [], appPermissions, mail }); return; }
+          if (!agentId) { const availableAccounts = url.searchParams.get('available') === 'true' ? (await this.appHub.accounts()).filter(account => account.status === 'ACTIVE' && !account.disabled) : []; this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, agents, agentId, accounts: [], availableAccounts, services: [], appPermissions, mail }); return; }
           const allAccounts = await this.appHub.accounts();
           const accounts = allAccounts.filter(account => store.appAccountAssigned(agentId, account.toolkit, account.id));
           const availableAccounts = allAccounts.filter(account => !store.appAccountAssigned(agentId, account.toolkit, account.id) && account.status === 'ACTIVE' && !account.disabled);
@@ -5240,7 +5246,7 @@ export class GituServer {
             const account = accounts.find(account => account.toolkit === service.slug && account.status === 'ACTIVE' && !account.disabled) ?? accounts.find(account => account.toolkit === service.slug);
             return { ...service, status: account?.status, accountId: account?.id };
           });
-          this.sendJson(res, 200, { configured: true, ...catalog, services, agents, agentId, accounts, availableAccounts, appPermissions, requests, mail }); return;
+          this.sendJson(res, 200, { configured: this.connectedApps.configured, ...this.connectedApps.setup, ...catalog, services, agents, agentId, accounts, availableAccounts, appPermissions, requests, mail }); return;
         }
         const permissionMatch = path.match(/^\/api\/connected-apps\/permissions\/([\w-]+)$/);
         if (permissionMatch && method === 'DELETE') {

@@ -4,6 +4,10 @@ import type { CoworkStore, CoworkAgent } from '../cowork/store.js';
 import { saveWallet, type WalletGrant } from './wallets.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 
+function companyHelperWork(cowork: CoworkStore) {
+  return cowork.subAgents().map(h => ({ id: h.id, rootAgentId: h.rootAgentId, parentAgentId: h.parentAgentId, role: h.role, objective: h.objective, status: h.status, statusReason: h.statusReason, resultSummary: h.resultSummary, activity: h.activity ? { phase: h.activity.phase, current: h.activity.phase === 'reasoning' ? 'Thinking' : h.activity.current } : undefined }));
+}
+
 export interface CompanyApiDeps {
   store: CompanyStore;
   body: (req: IncomingMessage) => Promise<Record<string, unknown>>;
@@ -16,7 +20,7 @@ export interface CompanyApiDeps {
   pause: (company: Company) => void | Promise<void>;
   priced?: (agent: CoworkAgent) => Promise<boolean>;
   attachments?: (company: Company, files: unknown[]) => string[];
-  activity?: () => { agentId: string; agentName: string; phase?: string; tool?: string }[];
+  activity?: () => { agentId: string; agentName: string; phase?: string; tool?: string; task?: string }[];
 }
 export async function companyApi(req: IncomingMessage, res: ServerResponse, path: string, method: string, d: CompanyApiDeps): Promise<boolean> {
   const { store, send } = d;
@@ -51,15 +55,19 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   return d.scoped(company, async () => {
     const cowork = d.cowork();
     if (suffix === '/status' && method === 'GET') {
-      const activeJobs = store.jobs(company!.id).filter(j => j.state === 'queued' || j.state === 'running');
+      const activeJobs = store.jobs(company!.id).filter(j => (j.state === 'queued' || j.state === 'running') && (j.version === company!.directionVersion || j.payload['delivery'] === 'question'));
       send(res, 200, {
         id: company!.id, name: company!.name, state: company!.state, direction: company!.direction, directionVersion: company!.directionVersion, nextReviewAt: company!.nextReviewAt,
         agents: cowork.listAgents().map(a => ({ id: a.id, name: a.name })),
         actions: store.actions(company!.id).filter(a => a.state === 'pending' && a.version === company!.directionVersion),
         queuedCount: activeJobs.filter(j => j.state === 'queued').length,
         activity: d.activity?.() ?? [],
-        jobs: activeJobs.slice(0, 50).map(j => ({ id: j.id, kind: j.kind, state: j.state })),
-        missions: cowork.missions().filter(m => m.status === 'running' || m.status === 'blocked').map(m => ({ id: m.id, goal: m.goal, status: m.status, progress: m.progress })),
+        jobs: activeJobs.filter(j => j.version === company!.directionVersion || j.payload['delivery'] === 'question').slice(0, 50).map(j => {
+          const mission = j.kind === 'mission' ? cowork.missions().find(m => m.id === j.payload['missionId']) : undefined;
+          return { id: j.id, kind: j.kind, state: j.state, agentId: mission?.agentId ?? j.payload['agentId'] ?? company!.leadId, missionId: mission?.id, task: String(mission?.goal ?? (j.kind === 'review' ? 'Review company work' : j.payload['text'] ?? j.payload['note'] ?? company!.direction)).slice(0, 1000) };
+        }),
+        missions: cowork.missions().filter(m => m.status === 'running' || m.status === 'blocked').map(m => ({ id: m.id, agentId: m.agentId, goal: m.goal, status: m.status, progress: m.progress, blockers: m.blockers })),
+        helpers: companyHelperWork(cowork),
         pendingDecisions: store.actions(company!.id).filter(a => a.state === 'pending' && a.version === company!.directionVersion).length,
       });
       return true;
@@ -83,6 +91,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
           agents: cowork.listAgents(),
           conversations: cowork.listConversations(),
           missions: cowork.missions(),
+          helpers: companyHelperWork(cowork),
           requests: cowork.listConversations().flatMap((c) => cowork.requests(c.id)),
           actions: store.actions(company!.id),
           jobs: store.jobs(company!.id),

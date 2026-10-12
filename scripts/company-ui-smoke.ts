@@ -40,6 +40,8 @@ const chatMessages = [
   { id: 'preview-agent', role: 'agent', agentName: 'Ari', text: 'I’ll collect the research, verify the findings, and report the decisions that need your input.' },
 ];
 const sent: Array<{ text: string; delivery: string }> = [];
+let teamMissions: {id:string;agentId:string;goal:string;status:string;progress:string;blockers?:string}[]=[];
+let teamHelpers: {id:string;rootAgentId:string;role:string;objective:string;status:string}[]=[];
 let liveActivity: { agentId: string; agentName: string; phase: string; tool?: string }[] = [];
 let computer = { state: 'stopped', control: 'shared' };
 let storageConnections = [
@@ -99,9 +101,9 @@ try {
       data = { company: c, agent: fixture.agents[0] };
     } else if (suffix.match(/^\/api\/companies\/company-[\w-]+$/)) {
       if (method === 'PATCH') fixture.company = store.update(fixture.company!.id, request.postDataJSON());
-      data = { ...fixture, activity: liveActivity };
+      data = { ...fixture, missions:teamMissions,helpers:teamHelpers,activity: liveActivity };
     } else if (suffix.endsWith('/status')) {
-      data = { id: fixture.company!.id, name: fixture.company!.name, state: fixture.company!.state, direction: fixture.company!.direction, directionVersion: fixture.company!.directionVersion, agents: fixture.agents, actions: fixture.actions.filter(a => a.state === 'pending' && a.version === fixture.company!.directionVersion), activity: liveActivity, jobs: fixture.jobs, missions: fixture.missions, pendingDecisions: fixture.actions.filter(a => a.state === 'pending' && a.version === fixture.company!.directionVersion).length };
+      data = { id: fixture.company!.id, name: fixture.company!.name, state: fixture.company!.state, direction: fixture.company!.direction, directionVersion: fixture.company!.directionVersion, agents: fixture.agents, actions: fixture.actions.filter(a => a.state === 'pending' && a.version === fixture.company!.directionVersion), activity: liveActivity, jobs: fixture.jobs, missions: teamMissions,helpers:teamHelpers,pendingDecisions: fixture.actions.filter(a => a.state === 'pending' && a.version === fixture.company!.directionVersion).length };
     } else if (suffix.endsWith('/chat')) {
       if (method === 'POST') {
         const message = request.postDataJSON();
@@ -228,6 +230,24 @@ try {
   if (await page.locator('[role=tab][tabindex="0"]').count() !== 1) throw new Error('More than one company tab is in the keyboard tab order.');
   if (await selectedTab().getAttribute('id') !== await page.getByRole('tabpanel').getAttribute('aria-labelledby')) throw new Error('Company section did not expose its selected label.');
   if (!await selectedTab().evaluate(element => element === document.activeElement)) throw new Error('Changing sections lost keyboard focus.');
+  teamMissions=[{id:'task-review',agentId:lead.id,goal:'Review customer feedback',status:'running',progress:'Checked three interviews.'}];
+  teamHelpers=[{id:'helper-review',rootAgentId:lead.id,role:'Research assistant',objective:'Compare interview findings',status:'running'}];
+  liveActivity=[{agentId:lead.id,agentName:lead.name,phase:'working',tool:'read_file'}];
+  await page.getByRole('tab',{name:'Team',exact:true}).click();
+  const work=page.locator('[data-company-agent-work]');
+  await work.getByText('Review customer feedback',{exact:true}).waitFor();
+  await work.getByText('Compare interview findings',{exact:true}).waitFor();
+  await page.screenshot({path:path.join(output,'team-tasks-desktop.png'),fullPage:true});
+  await page.getByRole('tab',{name:'Team',exact:true}).focus();
+  teamMissions[0].status='blocked';teamMissions[0].blockers='Waiting for owner feedback';liveActivity=[];
+  await work.getByText('Waiting for owner feedback',{exact:true}).waitFor();
+  if(!await selectedTab().evaluate(el=>el===document.activeElement))throw new Error('Team refresh replaced focused navigation.');
+  await page.setViewportSize({width:390,height:844});
+  await page.screenshot({path:path.join(output,'team-tasks-mobile.png'),fullPage:true});
+  if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw new Error('Agent assignments overflow mobile.');
+  await page.setViewportSize({width:1440,height:1000});
+  teamMissions=[];teamHelpers=[];
+  await page.getByRole('tab',{name:'Overview',exact:true}).click();
   const desktop = page.locator('[data-company-computer]');
   await desktop.getByText('Stopped', { exact: true }).waitFor();
   if (await desktop.getByRole('button', { name: 'Stop', exact: true }).count()) throw new Error('Stopped computer showed Stop.');

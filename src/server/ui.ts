@@ -5554,6 +5554,7 @@ ${ONBOARDING_HTML}
       };
     } else if (S.setSection === 'connections') {
       b.innerHTML = '<h1>Connections</h1>' +
+        '<div class="setcard"><div class="t">Connected apps</div><div class="d">Set up Composio and sign in to services such as Gmail, Google Drive, Slack and GitHub. Manage mailbox accounts and teammate access here.</div><button class="btn dark" id="settingsConnectedApps">Connect apps with Composio</button></div>' +
         '<p style="color:var(--muted);font-size:12.5px">Save a provider connection once, then let tasks reuse its documented capabilities. Credentials stay separate from global skills, task history, and model context.</p>' +
         '<div class="setcard" style="margin-bottom:12px"><div class="t" style="margin-bottom:10px">Add a provider connection</div>' +
         '<div class="d" style="margin-bottom:10px">The form registers a read-only validation path. During a task, Gitu can research a documented write operation and show its exact request for your individual approval; it never gains unrestricted provider write access.</div>' +
@@ -5567,6 +5568,7 @@ ${ONBOARDING_HTML}
         '<input id="connToken" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model">' +
         '<div><button class="btn dark" id="saveConnection">Save and validate</button></div></div></div>' +
         '<div class="setcard" id="connectionsBody"><div class="meta">loading connections…</div></div>';
+      $('settingsConnectedApps').onclick=function(){closeSettings();cwOpenWorkspaceConnections();};
       function renderConnections() {
         api('/api/connections').then(function (data) {
           var body = $('connectionsBody');

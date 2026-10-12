@@ -72,6 +72,7 @@ export const CONNECTED_APPS_JS = String.raw`
   async function cwLockApp() {
     try { await api('/api/auth/logout', {method:'POST'}); } finally { location.replace('/auth'); }
   }
+  function cwOpenWorkspaceConnections() { cwEnsure().homeAction={kind:'connections'};openCowork(); }
   function cwOpenConnections(agentId) {
     cwSaveDraft(); cwStopPoll(); cwClosePanels();
     var cw = cwEnsure(); cw.connectionsFromProfile=!!cw.profileOpen;cw.profileOpen=false;cw.profileRevision=(cw.profileRevision||0)+1;cw.galleryOpen = false; cw.connectionsOpen = true; cw.connectionRevision = (cw.connectionRevision || 0) + 1;

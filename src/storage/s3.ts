@@ -69,9 +69,10 @@ export class S3Storage implements StorageAdapter {
     } while (token && items.length < 10000);
     return items;
   }
-  async read(id: string): Promise<StorageRead> {
+  async read(id: string, signal?: AbortSignal): Promise<StorageRead> {
+    signal?.throwIfAborted();
     const key = this.key(id),
-      result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+      result = await this.client.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }), { abortSignal: signal });
     if (!result.Body) throw new Error('Object is unavailable.');
     return { item: { id: key, name: path.posix.basename(key), size: result.ContentLength, mime: result.ContentType, folder: false }, stream: result.Body as Readable };
   }

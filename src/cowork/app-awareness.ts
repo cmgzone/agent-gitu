@@ -1,5 +1,6 @@
 import type { ConnectedAppAccount, ConnectedAppsProvider } from '../connections/provider.js';
 import { MAIL_SERVICE_CARD } from '../connections/provider.js';
+import { mailToolDefinitions } from '../connections/mail.js';
 import type { CoworkMessage, CoworkStore } from './store.js';
 
 export interface AppAwareness {
@@ -29,7 +30,10 @@ export async function appAwareness(apps: ConnectedAppsProvider | undefined, stor
   if (verified && current?.incomplete) for (const connection of assigned) {
     if (connection.service !== 'mail' && !accounts.some(account => account.id === connection.accountId)) accounts.push({ id: connection.accountId, toolkit: connection.service, status: 'UNKNOWN', disabled: false });
   }
-  return { accounts, verified, context: 'CURRENT APP ACCESS (host metadata, scoped to you; ACTIVE means connected, not that inbox content or offers have been checked):\n' + JSON.stringify(accounts) + '\nAnswer access questions from this state. For actual content use connected_apps; never claim you cannot check your connections. UNKNOWN means status could not be refreshed; explain that briefly and offer to retry. If an app is missing or inactive, recommend it with a Connect card without waiting for the user to ask. Continue independent work. Keep conversation natural; do not narrate history preservation or internal bookkeeping.' };
+  const mailboxTools = accounts.some(account => account.toolkit === 'mail' && account.status === 'ACTIVE' && !account.disabled)
+    ? '\nAVAILABLE MAILBOX ACTIONS: These run through connected_apps, independently of your private computer. Use action:"execute", service:"mail", tool:<exact slug>, args:<schema inputs>, accountId:<your active mailbox id>. Follow any pending review and repeat the exact request with its approvalId after acceptance. Native mailbox reads do not require shell, write or configuration permission. Sending and marking messages still follow the granted write and review rules.\n' + JSON.stringify(mailToolDefinitions())
+    : '';
+  return { accounts, verified, context: 'CURRENT APP ACCESS (host metadata, scoped to you; ACTIVE means connected, not that inbox content or offers have been checked):\n' + JSON.stringify(accounts) + '\nAnswer access questions from this state. For actual content use connected_apps; never claim you cannot check your connections. UNKNOWN means status could not be refreshed; explain that briefly and offer to retry. If an app is missing or inactive, recommend it with a Connect card without waiting for the user to ask. Continue independent work. Keep conversation natural; do not narrate history preservation or internal bookkeeping.' + mailboxTools };
 }
 
 export function connectionQuestion(text: string, history: CoworkMessage[]): { service?: string } | undefined {

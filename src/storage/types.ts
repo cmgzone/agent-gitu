@@ -40,7 +40,7 @@ export interface StorageAdapter {
   quota?(): Promise<{ totalBytes?: number; usedBytes?: number; availableBytes?: number }>;
   cancel?(checkpoint: Record<string, unknown>): Promise<void>;
   list(folder?: string): Promise<StorageItem[]>;
-  read(id: string): Promise<StorageRead>;
+  read(id: string, signal?: AbortSignal): Promise<StorageRead>;
   upload(file: string, name: string, checkpoint: Record<string, unknown>, save: (checkpoint: Record<string, unknown>) => void, signal?: AbortSignal): Promise<StorageItem>;
   mkdir?(name: string, parent?: string): Promise<StorageItem>;
   move?(id: string, name: string, parent?: string): Promise<StorageItem>;

@@ -4,7 +4,8 @@ import path from 'node:path';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { CoworkStore } from '../src/cowork/store.js';
 import { appAwareness, connectionQuestion, connectionReply } from '../src/cowork/app-awareness.js';
-import { runConversationTurn } from '../src/cowork/runner.js';
+import { runConversationTurn, runMissionSession, answerCoworkQuestion } from '../src/cowork/runner.js';
+import { mailToolDefinitions } from '../src/connections/mail.js';
 import type { ConnectedAppsProvider } from '../src/connections/provider.js';
 import type { LlmClient } from '../src/llm/llm.js';
 
@@ -51,6 +52,36 @@ describe('Immediate teammate app awareness', () => {
     expect(awareness.accounts[0]?.status).toBe('UNKNOWN');
     const reply = await connectionReply({ ...f, apps, text: 'Are you connected to Gmail?', history: [], agentId: f.agent.id, conversationId: f.conversation.id, awareness });
     expect(reply).toContain('couldn’t refresh'); expect(f.store.openRequests(f.conversation.id)).toHaveLength(0);
+  });
+  it('provides exact native mailbox schemas to chat and mission models only for active assigned mail', async () => {
+    const f = fixture();
+    f.store.assignAppAccount(f.agent.id, 'mail', 'mail-own');
+    vi.mocked(f.apps.accounts).mockResolvedValue([{ id: 'mail-own', toolkit: 'mail', status: 'ACTIVE', disabled: false }, { id: 'mail-foreign', toolkit: 'mail', status: 'ACTIVE', disabled: false }]);
+    const complete = vi.fn(async messages => {
+      const prompt = String(messages[0]?.content);
+      for (const tool of mailToolDefinitions()) expect(prompt).toContain(tool.slug);
+      expect(prompt).toContain('service:"mail"');
+      expect(prompt).toContain('mail-own');
+      expect(prompt).not.toContain('mail-foreign');
+      return '{"status":"done","progress":"Checked assigned mailbox actions.","criteriaMet":[],"result":"Done."}';
+    });
+    const deps = { store: f.store, agents: [f.agent], connectedApps: f.apps, resolveLlm: () => ({ complete } as unknown as LlmClient), toolContext: vi.fn(), autoLearn: false };
+    const trigger = f.store.appendMessage(f.conversation.id, { role: 'user', via: 'web', text: 'Which mailbox actions can you use?' });
+    await runConversationTurn({ conversation: f.conversation, trigger, history: [trigger], deps, append: message => f.store.appendMessage(f.conversation.id, message) });
+    const mission = f.store.createMission({ conversationId: f.conversation.id, agentId: f.agent.id, goal: 'Check the mailbox', criteria: [], maxTurns: 2 });
+    const result = await runMissionSession({ mission, agent: f.agent, deps, append: message => f.store.appendMessage(f.conversation.id, message) });
+    expect(result.status).toBe('done');
+    const before = JSON.stringify(f.store.missions());
+    const answer = await answerCoworkQuestion({ agent: f.agent, conversation: f.conversation, members: [f.agent], history: [trigger], question: 'Which email tools are available?', state: 'Working on the same mission.', appContext: (await appAwareness(f.apps, f.store, f.agent.id)).context, llm: { complete: async (messages, options) => {
+      expect(messages.some(message => String(message.content).includes('mail_read'))).toBe(true);
+      expect(options?.toolChoice).toBe('none');
+      return 'I can read your assigned mailbox.';
+    } } as LlmClient });
+    expect(answer).toBe('I can read your assigned mailbox.');
+    expect(JSON.stringify(f.store.missions())).toBe(before);
+    expect(f.apps.execute).not.toHaveBeenCalled();
+    f.store.unassignAppAccount(f.agent.id, 'mail-own');
+    expect((await appAwareness(f.apps, f.store, f.agent.id)).context).not.toContain('mail_read');
   });
   it('does not delay a response for an old-history model summary or expose maintenance chatter', async () => {
     const f = fixture();

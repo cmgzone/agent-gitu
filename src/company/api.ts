@@ -4,7 +4,7 @@ import type { CoworkStore, CoworkAgent } from '../cowork/store.js';
 import { saveWallet, type WalletGrant } from './wallets.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 
-interface CompanyApiDeps {
+export interface CompanyApiDeps {
   store: CompanyStore;
   body: (req: IncomingMessage) => Promise<Record<string, unknown>>;
   send: (res: ServerResponse, status: number, value: unknown) => void;
@@ -13,9 +13,10 @@ interface CompanyApiDeps {
   legacyAgent: (id: string) => CoworkAgent | undefined;
   routeCowork: (req: IncomingMessage, res: ServerResponse, path: string, method: string) => Promise<boolean>;
   start: () => void;
-  pause: (company: Company) => void;
+  pause: (company: Company) => void | Promise<void>;
   priced?: (agent: CoworkAgent) => Promise<boolean>;
   attachments?: (company: Company, files: unknown[]) => string[];
+  activity?: () => { agentId: string; agentName: string; phase?: string; tool?: string }[];
 }
 export async function companyApi(req: IncomingMessage, res: ServerResponse, path: string, method: string, d: CompanyApiDeps): Promise<boolean> {
   const { store, send } = d;
@@ -28,7 +29,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   if (path === '/api/companies') {
     if (method === 'GET')
       send(res, 200, {
-        companies: store.companies().map((c) => ({ ...c, usage: usageTotals(store, c.id), decisions: store.actions(c.id).filter((a) => a.state === 'pending').length })),
+        companies: store.companies().map((c) => ({ ...c, usage: usageTotals(store, c.id), decisions: store.actions(c.id).filter((a) => a.state === 'pending' && a.version === c.directionVersion).length })),
         usage: usageTotals(store),
       });
     else if (method === 'POST') send(res, 201, { company: store.create((await d.body(req)) as Partial<Company>) });
@@ -49,6 +50,20 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   const suffix = match[2] ?? '';
   return d.scoped(company, async () => {
     const cowork = d.cowork();
+    if (suffix === '/status' && method === 'GET') {
+      const activeJobs = store.jobs(company!.id).filter(j => j.state === 'queued' || j.state === 'running');
+      send(res, 200, {
+        id: company!.id, name: company!.name, state: company!.state, direction: company!.direction, directionVersion: company!.directionVersion, nextReviewAt: company!.nextReviewAt,
+        agents: cowork.listAgents().map(a => ({ id: a.id, name: a.name })),
+        actions: store.actions(company!.id).filter(a => a.state === 'pending' && a.version === company!.directionVersion),
+        queuedCount: activeJobs.filter(j => j.state === 'queued').length,
+        activity: d.activity?.() ?? [],
+        jobs: activeJobs.slice(0, 50).map(j => ({ id: j.id, kind: j.kind, state: j.state })),
+        missions: cowork.missions().filter(m => m.status === 'running' || m.status === 'blocked').map(m => ({ id: m.id, goal: m.goal, status: m.status, progress: m.progress })),
+        pendingDecisions: store.actions(company!.id).filter(a => a.state === 'pending' && a.version === company!.directionVersion).length,
+      });
+      return true;
+    }
     if (suffix === '/wallets') {
       if (method === 'GET') send(res, 200, { wallets: store.list<WalletGrant>('wallet', company!.id), transactions: store.actions(company!.id).filter((a) => a.wallet) });
       else if (method === 'POST') send(res, 201, { wallet: saveWallet(store, company!.id, (await d.body(req)) as Partial<WalletGrant>) });
@@ -64,6 +79,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
       if (method === 'GET')
         send(res, 200, {
           company,
+          activity: d.activity?.() ?? [],
           agents: cowork.listAgents(),
           conversations: cowork.listConversations(),
           missions: cowork.missions(),
@@ -90,7 +106,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
         }
         const hadHostComputer = company!.allowHostComputer;
         company = store.update(company!.id, patch);
-        if (hadHostComputer && patch.allowHostComputer === false) d.pause(company);
+        if (hadHostComputer && patch.allowHostComputer === false) await d.pause(company);
         for (const agent of cowork.listAgents())
           cowork.saveAgent({ ...agent, skills: agent.skills.filter((s) => company!.skills.includes(s)), useHostComputer: false, cloudConnectionId: company!.computerServerId });
         if (company.state === 'running') store.enqueue(company.id, 'review', { reason: 'Company configuration updated' }, 'configuration');
@@ -139,7 +155,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
       }
       company = store.transition(company!.id, state);
       if (state === 'running') d.start();
-      else d.pause(company);
+      else await d.pause(company);
       send(res, 200, { company });
       return true;
     }
@@ -162,7 +178,7 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
         if (delivery === 'steer') {
           const direction = ['EXTEND', 'CONSTRAIN'].includes(classification.kind) ? `${company!.direction || company!.purpose}\n\n${text}` : text;
           company = store.steer(company!.id, direction);
-          d.pause(company);
+          await d.pause(company);
           for (const mission of cowork.missions().filter((m) => m.status === 'running' || m.status === 'blocked'))
             cowork.updateMission(mission.id, {
               goal: company.direction,

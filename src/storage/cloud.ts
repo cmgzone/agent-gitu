@@ -169,7 +169,9 @@ export class CloudStorage implements StorageAdapter {
     }
     return items;
   }
-  async read(id: string): Promise<StorageRead> {
+  async read(id: string, signal?: AbortSignal): Promise<StorageRead> {
+    this.signal = signal;
+    signal?.throwIfAborted();
     const value = await this.assertScope(id),
       item = this.item(value);
     if (item.folder) throw new Error('Choose a file.');

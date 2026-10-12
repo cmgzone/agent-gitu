@@ -50,6 +50,20 @@ export interface ConnectedAppsProvider {
 
 export const MAIL_SERVICE_SLUG = 'mail';
 
+/** Only known reads from the native mailbox adapter bypass write/config switches. */
+export function isNativeMailRead(service: string, tool: string): boolean {
+  return service === MAIL_SERVICE_SLUG && ['mail_list', 'mail_search', 'mail_read', 'mail_folders'].includes(tool);
+}
+
+export function isNativeMailTool(service: string, tool: string): boolean {
+  return isNativeMailRead(service, tool) || service === MAIL_SERVICE_SLUG && ['mail_send', 'mail_mark'].includes(tool);
+}
+
+function mailSearchTerms(query: string): string[] {
+  return query.toLowerCase().replace(/e-?mails?/g, 'mail').replace(/\binbox\b/g, 'mail').replace(/\bmessages\b/g, 'message')
+    .replace(/\b(?:latest|newest)\b/g, 'recent').split(/[^a-z0-9_]+/).filter(term => term.length > 1 && !['the', 'my', 'me', 'an', 'of', 'to', 'in', 'for', 'with', 'from', 'please'].includes(term));
+}
+
 export const MAIL_SERVICE_CARD: ConnectedAppService = {
   slug: MAIL_SERVICE_SLUG,
   name: 'Mailbox',
@@ -75,7 +89,7 @@ export class ConnectionsHub implements ConnectedAppsProvider {
   async catalog(search: string, cursor?: string): Promise<{ services: ConnectedAppService[]; cursor?: string }> {
     const services: ConnectedAppService[] = [];
     const needle = search.trim().toLowerCase();
-    if (!needle || MAIL_SERVICE_CARD.name.toLowerCase().includes(needle) || MAIL_SERVICE_SLUG.includes(needle)) services.push(MAIL_SERVICE_CARD);
+    if (!needle || MAIL_SERVICE_CARD.name.toLowerCase().includes(needle) || MAIL_SERVICE_SLUG.includes(needle) || /\b(?:e-?mails?|mailbox|inbox|imap|smtp)\b/.test(needle)) services.push(MAIL_SERVICE_CARD);
     if (this.composio.configured) {
       try {
         const catalog = await this.composio.catalog(search, cursor);
@@ -106,7 +120,14 @@ export class ConnectionsHub implements ConnectedAppsProvider {
   async tools(service: string, query?: string, tool?: string): Promise<ConnectedAppTool[]> {
     if (service === MAIL_SERVICE_SLUG) {
       const tools = this.mail.tools();
-      return tools.filter(item => tool ? item.slug === tool : !query || `${item.slug} ${item.name} ${item.description ?? ''}`.toLowerCase().includes(query.toLowerCase()));
+      if (tool) return tools.filter(item => item.slug === tool);
+      if (!query?.trim()) return tools;
+      const terms = mailSearchTerms(query);
+      return tools.map(item => {
+        const text = `${item.slug} ${item.name} ${item.description ?? ''}`.toLowerCase();
+        const score = terms.reduce((total, term) => total + (text.includes(term) ? term === 'mail' ? 1 : 4 : 0), 0);
+        return { item, score };
+      }).filter(match => match.score > 0).sort((a, b) => b.score - a.score).map(match => match.item);
     }
     return this.composio.tools(service, query, tool);
   }

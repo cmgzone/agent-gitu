@@ -215,6 +215,18 @@ describe('Companies', () => {
     expect(s.jobs(c.id)[0]?.state).toBe('queued');
     expect(s.actions(c.id)[0]?.state).toBe('uncertain');
   });
+  it('classifies exact native mailbox reads separately from sends and mailbox mutations', async () => {
+    const store = fixture(), company = running(store);
+    const policy = companyPolicy(store, company.id, 'lead', 0);
+    for (const tool of ['mail_list', 'mail_search', 'mail_read', 'mail_folders']) {
+      expect(await policy.authorize('connected_apps', { action: 'execute', service: 'mail', tool })).toBeUndefined();
+    }
+    expect(store.actions(company.id)).toHaveLength(0);
+    for (const tool of ['mail_send', 'mail_mark', 'mail_read_and_delete']) {
+      expect(await policy.authorize('connected_apps', { action: 'execute', service: 'mail', tool })).toMatchObject({ ok: false });
+    }
+    expect(await policy.authorize('connected_apps', { action: 'execute', service: 'other', tool: 'mail_read' })).toMatchObject({ ok: false });
+  });
   it('admits fair bounded work and skips paused companies', async () => {
     const s = fixture(),
       a = running(s),

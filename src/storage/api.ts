@@ -26,7 +26,7 @@ export async function storageApi(req: IncomingMessage, res: ServerResponse, comp
     } else if (referenceMatch[2] && method === 'POST') {
       const connection = d.registry.get(companyId, reference.connectionId);
       if (reference.grantChanged) throw new Error('This reference belongs to a different account or folder, or has no saved grant. Reattach the file from its current connection.');
-      d.send(res, 201, { file: await importStorageFile(companyId, connection, reference.item.id, d) });
+      d.send(res, 201, { file: await importStorageFile(companyId, connection, reference.item.id, d, reference.authority) });
     } else d.send(res, 405, { error: 'Method not allowed.' });
     return true;
   }
@@ -157,8 +157,8 @@ export async function storageApi(req: IncomingMessage, res: ServerResponse, comp
   d.send(res, 404, { error: 'Storage route not found.' });
   return true;
 }
-async function importStorageFile(companyId: string, connection: StorageConnection, fileId: string, d: Deps) {
-  const download = await d.registry.download(connection, fileId, d.store.workspace(companyId) + '/transfers', d.limit, d.mcp);
+async function importStorageFile(companyId: string, connection: StorageConnection, fileId: string, d: Deps, expectedAuthority?: string) {
+  const download = await d.registry.download(connection, fileId, d.store.workspace(companyId) + '/transfers', d.limit, d.mcp, expectedAuthority);
   try {
     return await d.uploads.importFile(companyId + ':company', { name: download.item.name, mime: download.item.mime, sourcePath: download.file }, d.limit);
   } finally {

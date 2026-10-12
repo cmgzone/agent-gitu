@@ -30,6 +30,7 @@ export const UI_THEME_CSS = String.raw`
     --shadow-float: 0 16px 48px rgba(20,20,18,.12); --thumb: #bdbdb6;
   }
   .theme-toggle { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 32px; height: 32px; padding: 6px; color: var(--muted); border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+  #view .cw-top-nav button[aria-pressed=true] { background: var(--text) !important; color: var(--bg); }
   .theme-toggle:hover { background: var(--hover); color: var(--text); }
   .theme-toggle svg { width: 17px; height: 17px; }
   .theme-toggle .theme-moon, [data-theme="light"] .theme-toggle .theme-sun { display: none; }

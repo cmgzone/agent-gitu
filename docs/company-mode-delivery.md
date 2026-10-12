@@ -2,6 +2,8 @@
 
 This is an implementation checkpoint, not a release-completion declaration.
 
+The 0.4.1 update aligns Company setup with the shared theme, orders modes Code/Cowork/Company, uses catalog-backed provider/model selectors, bounds/searches resource lists and decision details, and excludes superseded approvals from the pending count. Cowork can create durable company drafts with isolated lead IDs and a chat card; grants, budgets, file policy and Start remain owner decisions. Company/temporary-helper access is blocked and repeated creation is deduplicated across concurrent calls and restart. Live status and Cowork cards report actual worker state without interrupting focused navigation. The update passes 52 focused regressions, a real isolated-server creation/card integration check, typecheck, full lint and synthetic desktop/mobile/theme flows. Windows x64 Setup and Portable packages were built in `release/windows-0.4.1`; both payloads passed archive CRC checks, all 563 bundled files matched source, and the bundled runtime passed CLI startup and isolated server health checks. SHA-256 files and `Agent-Gitu-0.4.1-build-manifest.json` record the verified artifacts. Native installation/update/uninstall, tray lifecycle and cross-platform release checks remain pending.
+
 Latest local validation: the Windows package passed checksum verification, bundled CLI startup, server health, archive extraction and data preservation across extraction of an update. Service installation remains unverified. The container integration script passed locally using the pinned Node runtime and an isolated Edge browser: company isolation, a 21 MiB upload resumed across server restart, checksum verification, video ranges and archive/restore. Linux container execution and Chromium validation are configured in CI but have not run here.
 
 The subsequent reference/memory controls and Drive/OneDrive recovery changes pass 35 focused storage checks, the build, typecheck and lint; the recovery suite passes all ten cases. Synthetic desktop/mobile UI checks also pass. The earlier package must be refreshed after the remaining implementation work before release. Automatic approval review blocked removal of the disposable installer test directory; it remains intact.
@@ -10,7 +12,13 @@ The next checkpoint adds scoped S3 recovery and connection grant binding (42 foc
 
 Quota-backed private computer provisioning, protected process execution and recovery pass 54 focused checks. Actual XFS kernel enforcement and the native guard compilation remain pending Linux CI. Windows desktop installer startup, tray close/reopen, Quit and data-preserving updates, plus native service lifecycle checks on all supported platforms, are now configured in CI and remain unverified. The user-visible demo is inert and the existing owner runtime has not been accessed.
 
-Final delivery must preserve the existing Agent Gitu theme, use professional, purposeful screens and polished interactions, then commit the completed, validated work to `main` and build the Windows installer. The currently generated CLI archive predates this checkpoint; it is not a completed release.
+GitHub Actions did not start the jobs on draft PR #5 because the cmgzone account is locked by a billing issue. The owner deferred resolving that issue. This is an external release-validation blocker; native platform checks have not passed. Final integration into main and release publication remain pending completion and validation.
+
+Subsequent download-handshake scope checks, cancellation and company pause/recovery pass 50 focused checks. Company tabs now support arrow keys, Home/End and a single keyboard focus target; the synthetic desktop/mobile flows pass. The refreshed inert preview includes those controls. Mailbox discovery, exact model-facing schemas, native read/write permissions, approval waits and legacy encryption migration pass all 15 mailbox checks. Related Company, app, hosted-browser and continuity checks pass; all ten recovery cases pass in the final isolated run. The HTTP suite passes its remaining cases after replacing obsolete pause fixtures and correcting the completed-session continuation fixture. Typecheck, full lint, formatting and the build pass. Browser dependency failures now report unavailable state and HTTP 503 with setup guidance.
+
+At the owner's explicit request, Windows x64 Setup and Portable builds for 0.4.0 were generated locally in `release/windows-0.4.0`. Both embedded payloads passed archive CRC checks. All 559 bundled runtime, desktop and asset files matched the current source, the bundled voice worker matched, and the packaged runtime passed CLI startup and an isolated server health check. SHA-256 files and `Agent-Gitu-0.4.0-build-manifest.json` record the artifacts, feature branch, base commit and included uncommitted changes. Lighter compression was used to reduce memory pressure; the interrupted maximum-compression archive was excluded and preserved separately. Installation/update/uninstall and tray lifecycle still require the disposable Windows CI runner. The installer smoke script's CI restriction was not bypassed.
+
+The fresh 0.4.0 CLI archive also built successfully, but its extraction/update smoke check remains pending. These local packages are not a fully validated published release. Final delivery must preserve the existing Agent Gitu theme, use professional, purposeful screens and polished interactions, then commit the completed, validated work to `main`.
 
 - [x] Company persistence, scopes, private snapshots and navigation/setup/detail UI.
 - [x] Durable coordinator, versioned steering, questions, worker/helper admission, approvals and uncertain-action recovery controls.
@@ -31,11 +39,12 @@ Final delivery must preserve the existing Agent Gitu theme, use professional, pu
 - [x] Storage account/folder changes and OAuth reconnects cannot reuse unfinished upload grants; late token refresh cannot restore an old account. External references retain their original grant.
 - [x] Browser uploads compute SHA-256 in bounded slices and verify it before publication, with explicit Company file resume/cancel controls and network-error recovery.
 - [x] Company screens follow the existing theme with restrained surfaces, visible keyboard focus and computer controls reflecting state and control ownership; synthetic desktop/mobile checks pass.
-- [ ] Separate personal desktop pairing for hosted installations, if a company should use a personal computer instead of its installation host.
 - [ ] Validate kernel disk quotas and process guards in real private computers; reconcile migration of legacy unbounded volumes.
 - [ ] Verify native provider recovery, quota reporting, cancellation and authentication expiry across all adapters.
 - [ ] Verify model pricing/output reservations and delegated coding inside private computers.
-- [ ] Finish keyboard/accessibility and connection/file/computer UI checks beyond the verified overview, chat and setup flow.
+- [x] Finish keyboard tab navigation and the synthetic connection/file/computer flows on desktop and mobile.
 - [ ] Run full regressions and platform/container/installer/service smoke validation; resolve new failures.
 - [ ] Publish a verified versioned release after release checks pass.
-- [ ] After Company mode is complete, fix email tool visibility and connected-account execution, with regression coverage.
+- [x] Fix email tool visibility and connected-account execution, including exact schemas, read/write restrictions, approval waits and encrypted legacy migration; local regressions pass.
+
+Separate personal-computer pairing for a hosted installation is outside this version. The optional Use my computer grant applies to the installation host, as described in the operating guide.

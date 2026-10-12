@@ -7,6 +7,31 @@ import { companyApi } from '../src/company/api.js';
 import { CoworkStore } from '../src/cowork/store.js';
 
 describe('company chat direction API', () => {
+  it('counts only current decisions and rejects approvals from a superseded direction', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-direction-api-')), store = new CompanyStore(root), cowork = new CoworkStore(path.join(root, 'cowork.json'));
+    try {
+      const company = store.create({ purpose: 'Original work', monthlyBudgetUsd: null, maxFileBytes: null });
+      store.update(company.id, { leadId: 'lead', conversationId: 'chat' }); store.transition(company.id, 'running');
+      const old = store.intent(company.id, 'lead', 'old-email', {}, 0);
+      store.steer(company.id, 'New work');
+      const current = store.intent(company.id, 'lead', 'current-email', {}, 1);
+      let response: any;
+      const deps = {
+        store, body: async () => ({ state: 'approved' }), send: (_res: unknown, status: number, value: unknown) => { response = { status, ...(value as object) }; },
+        scoped: <T>(_company: unknown, work: () => T) => work(), cowork: () => cowork, legacyAgent: () => undefined,
+        routeCowork: async () => false, start: () => {}, pause: () => {},
+      };
+      await companyApi({} as never, {} as never, '/api/companies', 'GET', deps);
+      expect(response.companies[0].decisions).toBe(1);
+      await expect(companyApi({} as never, {} as never, '/api/companies/' + company.id + '/actions/' + old.id, 'POST', deps)).rejects.toThrow('older direction');
+      expect(store.actions(company.id).find(a => a.id === old.id)?.state).toBe('pending');
+      await companyApi({} as never, {} as never, '/api/companies/' + company.id + '/actions/' + current.id, 'POST', deps);
+      expect(store.actions(company.id).find(a => a.id === current.id)?.state).toBe('approved');
+      await companyApi({} as never, {} as never, '/api/companies', 'GET', deps);
+      expect(response.companies[0].decisions).toBe(0);
+      expect(store.actions(company.id)).toHaveLength(2);
+    } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+  });
   it('preserves the most recent direction across questions, follow-ups and restart', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-direction-api-'));
     let store = new CompanyStore(root);

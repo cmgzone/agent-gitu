@@ -4,6 +4,9 @@ import path from 'node:path';
 import type { BrowserBridge, BrowserState, BrowserScreenshot } from './browser.js';
 import { normalizeUrl } from './browser.js';
 
+export const SERVER_BROWSER_SETUP = 'Server browser unavailable. Install the matching browser with: npx playwright install --with-deps chromium. Restart the runtime after enabling its dependencies. Your profile is preserved.';
+export class ServerBrowserUnavailableError extends Error {}
+
 /** A server-owned profile. It never attaches to a person's Chrome/Electron session. */
 export class ServerBrowser implements BrowserBridge {
   private context?: BrowserContext;
@@ -22,10 +25,10 @@ export class ServerBrowser implements BrowserBridge {
     }
   }
   available(): boolean {
-    return true;
+    return this.current.available && (Boolean(this.context) || existsSync(chromium.executablePath()));
   }
   state(): BrowserState {
-    return { ...this.current, driving: this.control === 'agent' };
+    return { ...this.current, available: this.available(), driving: this.control === 'agent' };
   }
   setControl(control: 'agent' | 'user'): void {
     this.control = control;
@@ -38,12 +41,13 @@ export class ServerBrowser implements BrowserBridge {
     this.opening = (async () => {
       mkdirSync(this.profile, { recursive: true });
       try {
+        if (!existsSync(chromium.executablePath())) throw new ServerBrowserUnavailableError(SERVER_BROWSER_SETUP);
         this.context = await chromium.launchPersistentContext(this.profile, { headless: true, viewport: { width: 1280, height: 800 }, acceptDownloads: false });
         this.page = this.context.pages()[0] ?? (await this.context.newPage());
         return this.page;
       } catch {
         this.current.available = false;
-        throw new Error('Server browser unavailable. Install the matching browser with: npx playwright install --with-deps chromium. Your profile is preserved.');
+        throw new ServerBrowserUnavailableError(SERVER_BROWSER_SETUP);
       }
     })().finally(() => {
       this.opening = undefined;

@@ -11,6 +11,7 @@ import { CompanyStore } from '../src/company/store.js';
 import { mkdtempSync } from 'node:fs';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import type { CompanyAction } from '../src/company/store.js';
 // All requests are fulfilled with synthetic fixtures. This never connects to a user runtime.
 const store = new CompanyStore(mkdtempSync(path.join(os.tmpdir(), 'gitu-ui-fixture-'))),
   company = store.create({ name: 'Northstar Studio', purpose: 'Build helpful tools for small businesses', monthlyBudgetUsd: null, maxFileBytes: null }),
@@ -23,7 +24,11 @@ let fixture = {
   agents: [lead],
   missions: [],
   requests: [],
-  actions: [],
+  actions: [
+    { id: 'stale-decision', companyId: company.id, agentId: lead.id, tool: 'Old campaign approval', digest: 'stale', version: 0, state: 'pending', parameters: {}, createdAt: '2026-10-11T10:00:00Z' },
+    { id: 'completed-decision', companyId: company.id, agentId: lead.id, tool: 'Completed email approval', digest: 'done', version: 1, state: 'done', parameters: {}, createdAt: '2026-10-11T10:00:00Z' },
+    { id: 'current-decision', companyId: company.id, agentId: lead.id, tool: 'Send research email', digest: 'current', version: 1, state: 'pending', parameters: { draft: 'Long message '.repeat(100), reference: 'x'.repeat(700) }, createdAt: '2026-10-11T10:00:00Z' },
+  ] as CompanyAction[],
   jobs: [],
   usage: [],
   totals: { knownCostUsd: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, unknownCostCalls: 0, calls: 0 },
@@ -35,6 +40,7 @@ const chatMessages = [
   { id: 'preview-agent', role: 'agent', agentName: 'Ari', text: 'I’ll collect the research, verify the findings, and report the decisions that need your input.' },
 ];
 const sent: Array<{ text: string; delivery: string }> = [];
+let liveActivity: { agentId: string; agentName: string; phase: string; tool?: string }[] = [];
 let computer = { state: 'stopped', control: 'shared' };
 let storageConnections = [
   { id: 'storage-local', companyId: company.id, name: 'Read only files', provider: 'local', config: { folder: '/company/files' }, permissions: ['list'], capabilities: ['list'] },
@@ -93,7 +99,9 @@ try {
       data = { company: c, agent: fixture.agents[0] };
     } else if (suffix.match(/^\/api\/companies\/company-[\w-]+$/)) {
       if (method === 'PATCH') fixture.company = store.update(fixture.company!.id, request.postDataJSON());
-      data = fixture;
+      data = { ...fixture, activity: liveActivity };
+    } else if (suffix.endsWith('/status')) {
+      data = { id: fixture.company!.id, name: fixture.company!.name, state: fixture.company!.state, direction: fixture.company!.direction, directionVersion: fixture.company!.directionVersion, agents: fixture.agents, actions: fixture.actions.filter(a => a.state === 'pending' && a.version === fixture.company!.directionVersion), activity: liveActivity, jobs: fixture.jobs, missions: fixture.missions, pendingDecisions: fixture.actions.filter(a => a.state === 'pending' && a.version === fixture.company!.directionVersion).length };
     } else if (suffix.endsWith('/chat')) {
       if (method === 'POST') {
         const message = request.postDataJSON();
@@ -158,10 +166,19 @@ try {
       if (method === 'DELETE') memoryEntries = [];
       data = { ok: true };
     }
+    else if (suffix === '/api/models') data = { providers: [
+      { id: 'preview', label: 'Preview provider', usable: true, models: [{ id: 'preview-model' }, { id: 'preview-model-2' }], defaultModel: 'preview-model' },
+      { id: 'second-provider', label: 'Another provider', usable: true, models: [{ id: 'second-model' }] },
+      { id: 'not-connected', label: 'Disconnected provider', usable: false, models: [{ id: 'unavailable-model' }] },
+    ] };
+    else if (suffix.endsWith('/actions/current-decision')) {
+      fixture.actions.find(a => a.id === 'current-decision')!.state = request.postDataJSON().state;
+      data = { ok: true };
+    }
     else if (suffix === '/api/cowork/agents') data = { agents: [lead] };
     else if (suffix === '/api/connected-apps') data = { accounts: [] };
     else if (suffix === '/api/connections') data = { connections: [] };
-    else if (suffix === '/api/skills') data = { skills: [] };
+    else if (suffix === '/api/skills') data = { skills: Array.from({ length: 90 }, (_, index) => ({ name: 'Skill ' + index })) };
     else if (suffix === '/api/cowork/cloud-servers') data = { servers: [] };
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) });
   });
@@ -169,6 +186,48 @@ try {
   await page.evaluate(() => (window as unknown as { openCompanies: () => void }).openCompanies());
   await page.getByRole('button', { name: 'Open company', exact: true }).click();
   await page.getByRole('heading', { name: 'Current direction', exact: true }).waitFor();
+  if ((await page.locator('[aria-label="App modes"] button').allTextContents()).join(',') !== 'Code,Cowork,Company') throw new Error('App modes are not in the requested order.');
+  if (await page.getByText('Old campaign approval', { exact: false }).count()) throw new Error('A previous direction still appears as a decision.');
+  if (await page.getByText('Completed email approval', { exact: false }).count()) throw new Error('A completed action still appears as a decision.');
+  await page.getByText('Send research email', { exact: false }).waitFor();
+  if (await page.locator('.company-decision-list').evaluate(el => el.getBoundingClientRect().height > 361)) throw new Error('Decision details are unbounded.');
+  await page.setViewportSize({ width: 390, height: 844 });
+  if (await page.locator('#companyPage').evaluate(el => el.scrollWidth > el.clientWidth)) throw new Error('Long decision parameters overflow the company page.');
+  await page.screenshot({ path: path.join(output, 'decisions-mobile.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Approve once', exact: true }).click();
+  await page.getByText('No actions need your approval.', { exact: true }).waitFor();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => document.documentElement.setAttribute('data-theme', theme), theme);
+    if (!await page.locator('#companyPage').evaluate(el => {
+      const expected = document.createElement('div'); expected.style.background = 'var(--cw-chat-surface)'; expected.hidden = true; document.body.appendChild(expected);
+      const actualStyle = getComputedStyle(el), expectedStyle = getComputedStyle(expected);
+      const matches = actualStyle.backgroundImage === expectedStyle.backgroundImage && actualStyle.backgroundColor === expectedStyle.backgroundColor;
+      expected.remove(); return matches;
+    })) throw new Error('Company mode did not inherit the app theme.');
+    if (!await page.locator('.company-mode-nav [aria-pressed="true"]').evaluate(el => {
+      const style = getComputedStyle(el);
+      return style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== style.color;
+    })) throw new Error('The selected Company mode is unreadable in this theme.');
+    await page.screenshot({ path: path.join(output, 'overview-' + theme + '.png'), fullPage: true });
+  }
+  const selectedTab = () => page.getByRole('tab', { selected: true });
+  await selectedTab().focus();
+  liveActivity = [{ agentId: lead.id, agentName: lead.name, phase: 'working', tool: 'connected_apps' }];
+  await page.locator('#companyActivity').getByText('Ari · Using connected apps', { exact: true }).waitFor();
+  if (!await selectedTab().evaluate(el => el === document.activeElement)) throw new Error('Live activity refresh replaced the focused navigation.');
+  await page.screenshot({ path: path.join(output, 'activity-desktop.png'), fullPage: true });
+  liveActivity = [];
+  await page.locator('#companyActivity').getByText('Between reviews', { exact: true }).waitFor();
+  await page.keyboard.press('ArrowRight');
+  if (await selectedTab().textContent() !== 'Chat') throw new Error('Keyboard navigation did not select the next company section.');
+  await page.keyboard.press('End');
+  if (await selectedTab().textContent() !== 'Settings') throw new Error('End did not reach the last company section.');
+  await page.keyboard.press('ArrowRight');
+  if (await selectedTab().textContent() !== 'Overview') throw new Error('Keyboard navigation did not wrap between company sections.');
+  if (await page.locator('[role=tab][tabindex="0"]').count() !== 1) throw new Error('More than one company tab is in the keyboard tab order.');
+  if (await selectedTab().getAttribute('id') !== await page.getByRole('tabpanel').getAttribute('aria-labelledby')) throw new Error('Company section did not expose its selected label.');
+  if (!await selectedTab().evaluate(element => element === document.activeElement)) throw new Error('Changing sections lost keyboard focus.');
   const desktop = page.locator('[data-company-computer]');
   await desktop.getByText('Stopped', { exact: true }).waitFor();
   if (await desktop.getByRole('button', { name: 'Stop', exact: true }).count()) throw new Error('Stopped computer showed Stop.');
@@ -272,15 +331,38 @@ try {
   if (!composer || composer.y < 0 || composer.y + composer.height > 844) throw new Error('Mobile composer is outside the viewport.');
   await page.screenshot({ path: path.join(output, 'chat-mobile.png'), fullPage: true });
   if (await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)) throw new Error('Mobile page overflowed.');
+  await page.evaluate(({ id, name }) => {
+    const app = window as unknown as { closeCompanies: () => void; companyChatCardHtml: (link: { id: string; name: string; state: string }) => string };
+    app.closeCompanies();
+    const card = document.createElement('div'); card.id = 'coworkCompanyFixture'; card.innerHTML = app.companyChatCardHtml({ id, name, state: 'draft' }); document.body.appendChild(card);
+  }, { id: fixture.company!.id, name: fixture.company!.name });
+  await page.locator('#coworkCompanyFixture').getByText('Between reviews', { exact: true }).waitFor();
+  await page.locator('#coworkCompanyFixture').getByRole('button', { name: 'Open company', exact: true }).click();
+  await page.locator('#companyActivity').getByText('Between reviews', { exact: true }).waitFor();
+  await page.locator('#coworkCompanyFixture').evaluate(el => el.remove());
   await page.getByRole('button', { name: '← Companies', exact: true }).click();
   await page.getByRole('button', { name: 'Create company', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill('Preview Company');
   await page.getByLabel('Purpose and goals').fill('Produce useful reports');
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByLabel('Lead name').waitFor();
+  await page.locator('#companyLeadProvider option[value="preview"]').waitFor({ state: 'attached' });
   if ((await page.getByLabel('Provider', { exact: true }).inputValue()) !== 'preview') throw new Error('Selected provider was parsed incorrectly.');
+  if ((await page.getByLabel('Provider', { exact: true }).evaluate(el => el.tagName)) !== 'SELECT') throw new Error('Provider still requires a typed name.');
+  if ((await page.getByLabel('Model', { exact: true }).evaluate(el => el.tagName)) !== 'SELECT') throw new Error('Model still requires a typed name.');
+  if (!await page.locator('#companyLeadProvider option[value="not-connected"]').isDisabled()) throw new Error('An unconnected provider can be chosen.');
+  await page.getByLabel('Provider', { exact: true }).selectOption('second-provider');
+  if (await page.getByLabel('Model', { exact: true }).inputValue() !== 'second-model') throw new Error('Changing provider did not update the model choices.');
+  await page.getByLabel('Provider', { exact: true }).selectOption('preview');
+  await page.getByLabel('Model', { exact: true }).selectOption('preview-model-2');
+  await page.screenshot({ path: path.join(output, 'setup-lead-mobile.png'), fullPage: true });
   await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByRole('heading', { name: 'Grant resources', exact: true }).waitFor();
+  await page.locator('.company-resource-group').filter({ has: page.getByText('Skills', { exact: false }) }).locator('summary').click();
+  await page.getByLabel('Search skills', { exact: true }).fill('Skill 89');
+  await page.getByLabel('Skill 89', { exact: true }).check();
+  if (await page.locator('.company-resource-list').last().evaluate(el => el.getBoundingClientRect().height > 221)) throw new Error('The skill list is unbounded.');
+  await page.screenshot({ path: path.join(output, 'setup-resources-mobile.png'), fullPage: true });
   if (await page.getByLabel('Use my computer if the private computer is unavailable').isChecked()) throw new Error('Host access was enabled by default.');
   await page.getByLabel('Use my computer if the private computer is unavailable').check();
   await page.getByRole('button', { name: 'Continue', exact: true }).click();

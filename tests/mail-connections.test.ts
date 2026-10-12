@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,11 @@ import { roleAppSuggestions } from '../src/cowork/app-recommendations.js';
 import { CoworkStore } from '../src/cowork/store.js';
 import { GituServer } from '../src/server/server.js';
 import { ensureGituHome } from '../src/workspace/home.js';
+import { coworkNativeTools, executeCoworkTool, type CoworkToolScope } from '../src/cowork/tools.js';
+import type { ToolContext } from '../src/tools/tools.js';
+import { runConversationTurn, runMissionSession } from '../src/cowork/runner.js';
+import { CoworkMemory } from '../src/cowork/memory.js';
+import { MemoryStore } from '../src/memory/memory-store.js';
 
 const PASSWORD = 'hunter2-should-never-appear';
 
@@ -168,6 +173,26 @@ describe('mail connections', () => {
     await expect(mail.execute('mail_send', { to: 'a@b.com', text: '' }, account.id)).rejects.toThrow('Provide the message text.');
     await expect(mail.execute('mail_delete_everything', {}, account.id)).rejects.toThrow('Unknown mail tool');
     await expect(mail.execute('mail_list', {}, 'mail-missing')).rejects.toThrow('no longer connected');
+  });
+  it('migrates legacy plaintext mailboxes and their recovery copies without losing account IDs', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail } = fixture();
+    const { account } = await mail.connect(valid);
+    const secrets = new MailSecretStore('linux');
+    const records = secrets.read()!;
+    const file = path.join(ensureGituHome().settings, 'mail-accounts.json');
+    writeFileSync(file, JSON.stringify(records));
+    writeFileSync(file + '.bak', JSON.stringify(records));
+    expect((await mail.accounts()).map(value => value.id)).toEqual([account.id]);
+    for (const copy of [file, file + '.bak']) {
+      const protectedText = readFileSync(copy, 'utf8');
+      expect(protectedText).not.toContain(PASSWORD);
+      expect(protectedText).not.toContain(valid.address);
+      expect(JSON.parse(protectedText).ciphertext).toBeTypeOf('string');
+    }
+    writeFileSync(file, '{interrupted');
+    expect((await mail.accounts()).map(value => value.id)).toEqual([account.id]);
+    expect(secrets.read()![0]?.id).toBe(account.id);
   });
 
   it('fills both servers from the address, and lets an explicit provider win', async () => {
@@ -372,5 +397,104 @@ describe('connections hub', () => {
     expect(await hub.execute('github', 'GITHUB_LIST', {}, 'own')).toEqual({ data: 'ok' });
     expect((await hub.catalog('')).services.map((service) => service.slug)).toContain('github');
     expect((await hub.accounts()).map((entry) => entry.toolkit)).toContain('github');
+  });
+
+  it('discovers native email capabilities without an OAuth provider and ranks natural requests', async () => {
+    const { mail } = fixture();
+    const provider = composio({ configured: false });
+    const hub = new ConnectionsHub(provider, mail);
+    for (const query of ['email', 'read my inbox', 'e-mail', 'SMTP']) {
+      expect((await hub.catalog(query)).services.map(service => service.slug)).toContain('mail');
+    }
+    expect((await hub.tools('mail', 'send an email'))[0]?.slug).toBe('mail_send');
+    expect((await hub.tools('mail', 'unread emails'))[0]?.slug).toBe('mail_list');
+    expect((await hub.tools('mail', undefined, 'mail_read'))[0]?.inputParameters).toMatchObject({ required: ['uid'] });
+    expect(await hub.tools('mail', 'madeupfeature')).toEqual([]);
+    expect(provider.tools).not.toHaveBeenCalled();
+  });
+
+  it('executes approved assigned mailbox reads with writes/config/shell disabled and keeps mutations gated', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, imap, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    const hub = new ConnectionsHub(composio({ configured: false }), mail);
+    const store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Reader', systemPrompt: 'Read assigned mail.', allowWrites: false, allowConfig: false, allowShell: false });
+    const other = store.saveAgent({ name: 'Other', systemPrompt: 'Help.' });
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    store.assignAppAccount(agent.id, 'mail', account.id);
+    const scope = { store, agent, conversationId: conversation.id } as CoworkToolScope;
+    const ctx = { connectedApps: hub } as ToolContext;
+    const perms = { allowWrites: false, allowConfig: false, allowShell: false, chief: false, browser: false };
+    expect(coworkNativeTools(agent, false).some(tool => tool.name === 'connected_apps')).toBe(true);
+    const params = { action: 'execute', service: 'mail', accountId: account.id, tool: 'mail_read', args: { uid: 1 } };
+    const reads = imap.getMailboxLock.mock.calls.length;
+    const review = await executeCoworkTool(ctx, 'connected_apps', params, perms, scope);
+    expect(review.output).toMatch(/^Review /);
+    expect(imap.getMailboxLock.mock.calls.length).toBe(reads);
+    const card = store.openRequests(conversation.id)[0]!;
+    store.resolveRequest(card.id, 'accepted');
+    const approved = { ...params, approvalId: card.id };
+    const read = await executeCoworkTool(ctx, 'connected_apps', approved, perms, scope);
+    expect(read.ok).toBe(true);
+    expect(JSON.parse(read.output).body).toContain('Body text for the mailbox reader.');
+    expect(read.output).not.toContain(PASSWORD);
+    expect((await executeCoworkTool(ctx, 'connected_apps', approved, perms, { ...scope, agent: other })).ok).toBe(false);
+    for (const tool of ['mail_send', 'mail_mark', 'mail_read_and_delete']) {
+      expect((await executeCoworkTool(ctx, 'connected_apps', { ...params, tool }, perms, scope)).ok).toBe(false);
+    }
+    expect(sent).toEqual([]);
+    expect(imap.messageFlagsAdd).not.toHaveBeenCalled();
+    store.unassignAppAccount(agent.id, account.id);
+    expect((await executeCoworkTool(ctx, 'connected_apps', approved, perms, scope)).ok).toBe(false);
+  });
+
+  it('stops an autonomous mail mission at a pending send approval without submitting or claiming completion', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    const hub = new ConnectionsHub(composio({ configured: false }), mail);
+    const store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Assistant', systemPrompt: 'Handle assigned mail.', allowWrites: true, allowConfig: true });
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    store.assignAppAccount(agent.id, 'mail', account.id);
+    const mission = store.createMission({ conversationId: conversation.id, agentId: agent.id, goal: 'Send an approved update', criteria: [] });
+    const memory = new CoworkMemory(new MemoryStore(path.join(process.env['AGENT_GITU_HOME']!, 'fixture-memory.json')), 'mail-fixture');
+    const complete = vi.fn(async () => '<tool>' + JSON.stringify({ name: 'connected_apps', params: { action: 'execute', service: 'mail', tool: 'mail_send', args: { to: 'someone@example.com', text: 'Update' } } }) + '</tool>\n{"status":"done","progress":"Sent","result":"Sent"}');
+    const result = await runMissionSession({ mission, agent, deps: { agents: [agent], store, memory, connectedApps: hub, resolveLlm: () => ({ complete }), toolContext: () => ({ connectedApps: hub }) as ToolContext, autoLearn: false }, append: message => store.appendMessage(conversation.id, message) });
+    expect(complete).toHaveBeenCalledOnce();
+    expect(result.status).toBe('blocked');
+    expect(result.result).toBeUndefined();
+    expect(result.blockers).toContain('request card');
+    expect(result.progress).toContain('has not been submitted');
+    expect(store.openRequests(conversation.id)).toHaveLength(1);
+    expect(sent).toEqual([]);
+    const trigger = store.appendMessage(conversation.id, { role: 'user', via: 'web', text: 'Send an update.' });
+    const chat = await runConversationTurn({ conversation, trigger, history: [trigger], deps: { agents: [agent], store, memory, connectedApps: hub, resolveLlm: () => ({ complete }), toolContext: () => ({ connectedApps: hub }) as ToolContext, autoLearn: false }, append: message => store.appendMessage(conversation.id, message) });
+    expect(chat.messages.at(-1)?.text).toBe('This action is waiting for your approval in the card above.');
+    expect(store.openRequests(conversation.id)).toHaveLength(1);
+    expect(sent).toEqual([]);
+  });
+
+  it('allows a reviewed mail send with write access while keeping account configuration disabled', async () => {
+    process.env['AGENT_GITU_SECRETS_KEY'] = serverKey();
+    const { mail, sent } = fixture();
+    const { account } = await mail.connect(valid);
+    const hub = new ConnectionsHub(composio({ configured: false }), mail), store = new CoworkStore();
+    const agent = store.saveAgent({ name: 'Writer', systemPrompt: 'Send reviewed messages.', allowWrites: true, allowConfig: false });
+    const conversation = store.saveConversation({ kind: 'dm', memberIds: [agent.id] });
+    store.assignAppAccount(agent.id, 'mail', account.id);
+    const scope = { store, agent, conversationId: conversation.id } as CoworkToolScope;
+    const ctx = { connectedApps: hub } as ToolContext;
+    const perms = { allowWrites: true, allowConfig: false, allowShell: false, chief: false, browser: false };
+    const params = { action: 'execute', service: 'mail', tool: 'mail_send', args: { to: 'someone@example.com', text: 'Reviewed update' } };
+    expect((await executeCoworkTool(ctx, 'connected_apps', params, perms, scope)).output).toMatch(/^Review /);
+    expect(sent).toEqual([]);
+    const card = store.openRequests(conversation.id)[0]!;
+    store.resolveRequest(card.id, 'accepted');
+    expect((await executeCoworkTool(ctx, 'connected_apps', { ...params, approvalId: card.id }, perms, scope)).ok).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(store.appConnections(agent.id)).toHaveLength(1);
+    expect(store.getAgent(agent.id)?.allowConfig).toBe(false);
   });
 });

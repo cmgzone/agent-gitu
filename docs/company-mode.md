@@ -4,6 +4,12 @@ Company mode uses the existing Cowork execution engine. Each company has its own
 
 Open **Companies**, create a draft, then complete **Identity → Lead → Resources → Operating rules → Review**. Choose a monthly AI budget or Unlimited and a file-size policy explicitly. Starting a company enables scheduled reviews. Archive pauses work and preserves history; Restore leaves it paused until Resume.
 
+The app modes appear in **Code → Cowork → Company** order. Company setup uses the current app theme, provider/model selectors, searchable resource lists and expandable advanced settings. Review shows the lead, model and granted-resource counts. Only pending approvals for the latest direction appear in the decisions box; completed and superseded actions remain in history.
+
+An ordinary Cowork teammate with configuration and write permissions can use `company_manage` to create a draft, list companies and inspect their activity. For example, ask: “Create a company named Research Studio to prepare verified customer research.” The tool clones that teammate into a separate company lead and adds a durable Review company card to the chat. Repeated creation with the same name and purpose in that conversation reuses the draft, including after restart. Creation does not start agents, choose budgets, grant accounts or allow host-computer access. Review resources and operating rules, then select Start. Company agents and temporary helpers cannot create or inspect other companies.
+
+**Live activity** reports the actual worker phase/tool, current missions, queued tasks and next review. The Cowork card also refreshes from saved/runtime state. Status distinguishes working, waiting for approval/input, queued, between reviews, paused and draft; a saved running state is not a claim that a worker is always active. Live refresh preserves focused navigation and uses a small status response rather than repeatedly transferring usage history.
+
 Company Chat uses the shared chat layout and composer. **Follow up** preserves the latest work automatically. **Steer** changes the current direction; **Queue** assigns another request; **Ask** answers a question without replacing the goal. Drafts and delivery mode survive tab changes. Overview displays approvals, agent questions and actions requiring provider reconciliation.
 
 ## Runtime and permissions
@@ -52,6 +58,10 @@ Self-hosted OAuth installations supply their own OAuth application credentials a
 
 Connections displays supported and granted operations. Edit a connection to change its folder, grants or protected credentials; blank credential fields retain saved values. Cancel active transfers before editing or disconnecting. Disconnect removes protected credentials, clears a matching default output location and preserves provider files and transfer history. File imports and references require a read grant.
 
+Native mailbox accounts expose their exact actions in chat, missions and read-only questions. Email and inbox searches discover the Mailbox service even without an OAuth provider. Reads require assigned or company-granted access and follow the existing review rules; sending and marking messages also require write access. Using an assigned mailbox does not require shell or account-configuration access, or a running private computer. Pending approvals stop execution without reporting an unsent message as sent. Legacy plaintext mailbox records migrate to encrypted primary and recovery files while retaining their account IDs.
+
+Provider downloads are journaled before their connection handshake begins. Pausing or redirecting a company cancels its active transfers and preserves resumable upload checkpoints. Runtime shutdown drains transfers before closing storage. Account changes and OAuth reconnects wait until active downloads have finished or been cancelled.
+
 Files & Knowledge shows whether each external reference remains connected and readable. Import a copy only while its current read grant permits it, or remove the reference without deleting the provider file or an existing imported copy. Review each teammate’s memory, save a correction against the displayed version, or archive an entry so it no longer guides that teammate.
 
 Empty OneDrive uploads persist their destination before submission and reconcile a lost response there. Conflicts fail instead of replacing provider files, following [Microsoft’s conflict behavior](https://learn.microsoft.com/en-us/graph/api/resources/driveitem?view=graph-rest-1.0).
@@ -89,4 +99,4 @@ Local packaging and installer smoke checks each require at least 3 GiB of free s
 
 Automated coverage currently includes company boundaries and restart persistence, latest-direction queue behavior, worker admission, approval recovery, mocked wallet limits, 21 MiB web/local-storage transfers, binary broker transfer, range downloads, resumable upload checksums and service manifests. Platform CI and actual Docker/service/installer smoke tests are required in addition to local tests.
 
-Remaining validation and implementation work is tracked in [company-mode-delivery.md](company-mode-delivery.md). The email connected-app tool visibility fix requested by the owner follows completion of Company mode.
+Remaining validation and implementation work is tracked in [company-mode-delivery.md](company-mode-delivery.md). Native release checks remain required before publishing the completed app.

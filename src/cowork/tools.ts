@@ -45,6 +45,7 @@ import { parseSshUrl, SshConnectionRegistry } from '../connections/ssh-connectio
 import { ConnectionRegistry } from '../connections/connections.js';
 import { createHash } from 'node:crypto';
 import type { ConnectedAppsProvider } from '../connections/provider.js';
+import { isNativeMailRead, isNativeMailTool } from '../connections/provider.js';
 import { coworkToolSchema } from './tool-schemas.js';
 
 /**
@@ -111,7 +112,7 @@ const COMPUTER_ROUTED_TOOLS = ['computer_status', 'computer_process', 'desktop_s
  * (an ephemeral worker has no future wake). `spawn_sub_agent` is refused at
  * dispatch as well, by depth. The child prompt omits these from its docs.
  */
-export const SUBAGENT_BLOCKED_TOOLS = ['spawn_sub_agent', 'gitu_task', 'computer_handoff', 'ask_user', 'request_credential', 'request_permission', 'recommend', 'message_teammate', 'schedule_followup'];
+export const SUBAGENT_BLOCKED_TOOLS = ['company_manage', 'spawn_sub_agent', 'gitu_task', 'computer_handoff', 'ask_user', 'request_credential', 'request_permission', 'recommend', 'message_teammate', 'schedule_followup'];
 /** Computer-only tools with no meaningful host equivalent. */
 const COMPUTER_ONLY_TOOLS = ['computer_status', 'computer_process', 'desktop_screenshot', 'desktop_input'];
 
@@ -138,6 +139,7 @@ export interface CoworkToolDoc {
 }
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
+  { name: 'company_manage', doc: 'Create a Company draft from Cowork chat, or inspect company activity. params: {"action":"create","name":"company name","purpose":"concrete goals","leadName":"optional lead name"} | {"action":"list"} | {"action":"status","id":"company-id"}. A new company clones you as its lead and appears as a company card in this chat. The owner reviews resources, budget and file limits, then selects Start. Never claim a draft is running. Repeating the same creation in this conversation reuses the company. Company agents and temporary helpers cannot create or inspect other companies.', gate: 'config' },
   {name:'mission_manage',doc:'Lead company work through bounded missions. params: {"action":"list"} | {"action":"create","goal":"concrete objective","criteria":["verifiable outcome"],"agentId":"optional permanent teammate","maxTurns":12} | {"action":"pause|resume|cancel","id":"mission-id"}. Mission session limits are assigned by the owner. Verify results and wait after scheduling useful work.',gate:'chief'},
   {name:'company_files',doc:'List owner-provided company knowledge files, or attach one to this conversation for receive_file. params: {"action":"list"} | {"action":"attach","artifactId":"company-file-id"}. Bytes are transferred outside the model context.',gate:undefined},
   {name:'storage',doc:'Use granted company storage. Discover resources with {"action":"connections"}; omit connectionId to use the chosen default output location. params: {"action":"list","connectionId":"storage-id"} | {"action":"download","connectionId":"storage-id","id":"provider-file-id"} | {"action":"upload","connectionId":"storage-id","artifactId":"attached-artifact-id","name":"optional output name"} | {"action":"mkdir","connectionId":"storage-id","name":"folder"} | {"action":"move","connectionId":"storage-id","id":"file-id","name":"new name"} | {"action":"delete","connectionId":"storage-id","id":"file-id"} | {"action":"link","connectionId":"storage-id","id":"file-id"}. File bytes transfer outside model context. External writes follow company approval rules.',gate:undefined},
@@ -231,18 +233,18 @@ export const COWORK_TOOLS: CoworkToolDoc[] = [
   },
 ];
 
-export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): string {
+export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>, browser: boolean): string {
   const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
-  return COWORK_TOOLS.filter((t) => (t.gate === undefined || isGated(t.gate, perms)) && (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)))
+  return COWORK_TOOLS.filter((t) => (t.gate === undefined || isGated(t.gate, perms)) && (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) && (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)))
     .map((t) => `- ${t.name} — ${t.doc}`)
     .join('\n');
 }
 
 /** Native entry point for the same permission-gated tools documented in the
  * prompt. Execution still passes through executeCoworkTool's validation. */
-export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition {
+export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>, browser: boolean): LlmToolDefinition {
   const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
-  const names = COWORK_TOOLS.filter(t => isGated(t.gate, perms) && (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites))).map(t => t.name);
+  const names = COWORK_TOOLS.filter(t => isGated(t.gate, perms) && (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) && (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites))).map(t => t.name);
   return {
     name: 'cowork_tool',
     description: 'Execute a workspace or Cowork tool now. Choose name and params from the tool documentation in the system prompt. These tools are available; use them to perform the task.',
@@ -259,9 +261,9 @@ export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowW
 }
 
 /** Each tool carries its own parameters; the legacy wrapper remains readable. */
-export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff'>, browser: boolean): LlmToolDefinition[] {
+export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allowWrites' | 'allowConfig' | 'chiefOfStaff' | 'companyId'>, browser: boolean): LlmToolDefinition[] {
   const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
-  return COWORK_TOOLS.filter(tool => isGated(tool.gate, perms) && (tool.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)))
+  return COWORK_TOOLS.filter(tool => isGated(tool.gate, perms) && (tool.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) && (tool.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)))
     .map(tool => ({ name: tool.name, description: tool.doc, parameters: coworkToolSchema(tool.name) }));
 }
 
@@ -461,6 +463,10 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
 async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   {
     switch (tool) {
+      case 'company_manage':{
+        if(!scope?.conversationId||scope.isSubAgent||scope.agent.companyId||!perms.allowConfig||!perms.allowWrites||!ctx.companyManagement)return blocked(tool);
+        return await ctx.companyManagement(params,{conversationId:scope.conversationId,agentId:scope.agent.id,threadId:scope.threadId});
+      }
       case 'mission_manage':{
         if(!scope?.agent.companyId||!scope.agent.chiefOfStaff||!scope.conversationId)return blocked(tool);
         const action=String(params['action']??'list');if(action==='list')return{ok:true,output:JSON.stringify(scope.store.missions())};
@@ -964,8 +970,9 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
       }) };
     }
     if (params['action'] !== 'execute') return { ok: false, output: 'action must be list, discover, recommend, tools, or execute.' };
-    if (!perms.allowWrites || !perms.allowConfig || !scope?.conversationId || scope.isSubAgent&&!scope.agent.companyId) return blocked('connected_apps execution');
     const tool = String(params['tool'] ?? '');
+    const mailboxRead = isNativeMailRead(service, tool);
+    if ((!mailboxRead && (!perms.allowWrites || !perms.allowConfig && !isNativeMailTool(service, tool))) || !scope?.conversationId || scope.isSubAgent&&!scope.agent.companyId) return blocked('connected_apps execution');
     const args = params['args'];
     if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return { ok: false, output: 'Provide the exact tool slug and an args object.' };
     const accounts = assigned.filter(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled);

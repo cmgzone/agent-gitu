@@ -1370,9 +1370,9 @@ export const COWORK_JS = String.raw`
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +
         '<nav class="cw-top-nav" aria-label="Agent navigation">' +
-          '<button type="button" data-company-nav title="Companies">' + cwIcon('users') + '<span>Companies</span></button>' +
-          '<button type="button" id="cwHomeBtn" aria-label="Home" title="Home">' + cwIcon('home') + '<span>Home</span></button>' +
-          '<button type="button" id="cwCurrentChat" aria-label="Current agent chat" title="Current agent chat" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Chat</span></button>' +
+          '<button type="button" id="cwHomeBtn" aria-label="Code mode" title="Code mode">' + cwIcon('home') + '<span>Code</span></button>' +
+          '<button type="button" id="cwCurrentChat" aria-label="Cowork mode" title="Cowork mode" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Cowork</span></button>' +
+          '<button type="button" data-company-nav title="Company mode">' + cwIcon('users') + '<span>Company</span></button>' +
           '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
           cwSessionNavHtml() +
         '</nav>' +
@@ -2010,6 +2010,7 @@ export const COWORK_JS = String.raw`
     var members = conv ? cwConvMembers(conv) : [];
     var agent = m.agentId ? cwAgentById(m.agentId) : null;
     if (m.role === 'system') {
+      if(m.companyLink&&typeof companyChatCardHtml==='function')return companyChatCardHtml(m.companyLink);
       var event = cwSystemEventHtml(m);
       if (event !== null) return event;
       return m.text.length > 240 ? '<details class="cw-sys"><summary>' + esc(m.text.slice(0, 110)) + '…</summary><div class="cw-sys-detail">' + esc(m.text) + '</div>' + cwFilesHtml(m.artifactIds) + '</details>' : '<div class="cw-sys">' + esc(m.text) + cwFilesHtml(m.artifactIds) + '</div>';

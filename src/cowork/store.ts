@@ -64,6 +64,8 @@ export interface CoworkMessage {
   agentId?: string;
   agentName?: string;
   text: string;
+  /** Company proposed through the trusted Cowork company tool. */
+  companyLink?: { id: string; name: string; state: string };
   via: 'web' | 'telegram' | 'discord' | 'schedule' | 'agent';
   /** Explicit composer mode; never inferred from widget or webpage content. */
   widgetRequest?: { mode: 'create' | 'edit' | 'action'; widgetId?: string; action?: string; input?: Record<string, unknown> };

@@ -46,8 +46,8 @@ export class CustomStorage implements StorageAdapter {
     if (!response.ok) throw new Error(`Storage operation failed (${response.status}).`);
     return response.json();
   }
-  private async listing(folder: string): Promise<StorageItem[]> {
-    const value = await this.invoke('list', { folder });
+  private async listing(folder: string, signal?: AbortSignal): Promise<StorageItem[]> {
+    const value = await this.invoke('list', { folder }, signal);
     const items = Array.isArray(value) ? value : value.items;
     if (!Array.isArray(items)) throw new Error('Storage adapter must return an items array.');
     if (items.length > 10000) throw new Error('Custom storage listing is too large to verify its grant.');
@@ -62,7 +62,7 @@ export class CustomStorage implements StorageAdapter {
       };
     });
   }
-  private async allowed(id: string): Promise<StorageItem> {
+  private async allowed(id: string, signal?: AbortSignal): Promise<StorageItem> {
     const pending = [this.c.config['folder'] ?? ''],
       seen = new Set<string>();
     let inspected = 0;
@@ -71,7 +71,7 @@ export class CustomStorage implements StorageAdapter {
       if (seen.has(folder)) continue;
       seen.add(folder);
       if (seen.size > 100) throw new Error('Custom storage grant traversal exceeded its verification limit.');
-      const items = await this.listing(folder);
+      const items = await this.listing(folder, signal);
       inspected += items.length;
       if (inspected > 10000) throw new Error('Custom storage grant traversal exceeded its verification limit.');
       const item = items.find((item) => item.id === id);
@@ -92,13 +92,13 @@ export class CustomStorage implements StorageAdapter {
   async metadata(id: string): Promise<StorageItem> {
     return this.allowed(id);
   }
-  async read(id: string): Promise<StorageRead> {
-    await this.allowed(id);
-    const descriptor = await this.invoke('read', { id }),
+  async read(id: string, signal?: AbortSignal): Promise<StorageRead> {
+    await this.allowed(id, signal);
+    const descriptor = await this.invoke('read', { id }, signal),
       url = this.url(String(descriptor.url));
     const response = await fetch(url, {
       headers: this.token && url.origin === new URL(this.c.config['baseUrl']!).origin ? { authorization: 'Bearer ' + this.token } : undefined,
-      signal: AbortSignal.timeout(120000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(120000)]) : AbortSignal.timeout(120000),
       redirect: 'error',
     });
     if (!response.ok || !response.body) throw new Error('Custom storage download failed.');

@@ -21,7 +21,7 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 import {SecretVault} from './secret-vault.js';
-import { readCredentialFile, writeCredentialFile } from '../llm/credential-file.js';
+import { readCredentialFile, writeCredentialFile, updateCredentialJson } from '../llm/credential-file.js';
 import { discoverMailServers } from './mail-detect.js';
 import type { MailDiscovery } from './mail-detect.js';
 
@@ -224,8 +224,8 @@ function htmlToText(html: string): string {
 
 /**
  * Encrypted-at-rest mailbox store. Mirrors the Composio key store: DPAPI on
- * Windows, AES-GCM when the host sets AGENT_GITU_SECRETS_KEY, and otherwise the
- * same 0600 permission-protected file the app already uses for model API keys.
+ * Windows and AES-GCM with an owner-managed or protected local key elsewhere.
+ * Legacy plaintext records migrate together with their recovery copies.
  */
 export class MailSecretStore {
   constructor(private readonly platform = process.platform) {}
@@ -257,8 +257,17 @@ export class MailSecretStore {
       stdio: ['pipe', 'pipe', 'pipe'],
     }).trim();
   }
+  private encrypted(value: string): string {
+    const key = this.serverKey();
+    if (!key) throw new Error('Mailbox encryption is unavailable.');
+    const iv = randomBytes(12);
+    const encrypt = createCipheriv('aes-256-gcm', key, iv);
+    encrypt.setAAD(Buffer.from('agent-gitu:mail-accounts:v1'));
+    const ciphertext = Buffer.concat([encrypt.update(value, 'utf8'), encrypt.final()]);
+    return JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') });
+  }
   read(): MailboxRecord[] | undefined {
-    const raw = readCredentialFile(this.file, (value) => value);
+    const raw = readCredentialFile(this.file, (value) => { if (this.platform !== 'win32') JSON.parse(value); return value; });
     if (raw === undefined) return undefined;
     let text: string;
     if (this.platform === 'win32') {
@@ -278,6 +287,12 @@ export class MailSecretStore {
       }
     }
     const parsed = JSON.parse(text) as unknown;
+    if (this.platform !== 'win32' && Array.isArray(JSON.parse(raw))) {
+      // Migrate under the shared credential lock; a concurrent account update
+      // must win over the snapshot this read opened. Protect the recovery copy too.
+      updateCredentialJson(this.file, value => value, current => Array.isArray(current) ? JSON.parse(this.encrypted(JSON.stringify(current))) : undefined,
+        previous => Array.isArray(JSON.parse(previous)) ? this.encrypted(previous) : previous);
+    }
     return Array.isArray(parsed) ? (parsed as MailboxRecord[]) : [];
   }
   save(records: MailboxRecord[]): void {
@@ -286,26 +301,11 @@ export class MailSecretStore {
       writeCredentialFile(this.file, this.crypt(value, false));
       return;
     }
-    const key = this.serverKey();
-    if (!key) {
-      // Local, permission-protected file — the same trust level the app uses
-      // for model provider API keys saved from the UI.
-      writeCredentialFile(this.file, value, (text) => {
-        JSON.parse(text);
-        return text;
-      });
-      return;
-    }
-    const iv = randomBytes(12);
-    const encrypt = createCipheriv('aes-256-gcm', key, iv);
-    encrypt.setAAD(Buffer.from('agent-gitu:mail-accounts:v1'));
-    const ciphertext = Buffer.concat([encrypt.update(value, 'utf8'), encrypt.final()]);
     writeCredentialFile(
       this.file,
-      JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') }),
+      this.encrypted(value),
       (text) => {
-        JSON.parse(text);
-        return text;
+        return Array.isArray(JSON.parse(text)) ? this.encrypted(text) : text;
       },
     );
   }
@@ -616,47 +616,8 @@ export class MailConnections {
     return { sent: true, messageId: result.messageId, accepted: result.accepted?.length ?? 0, rejected: result.rejected?.length ?? 0 };
   }
 
-  /** Tool schemas handed to the teammate so it can discover mailbox actions. */
-  tools(): MailTool[] {
-    return [
-      {
-        slug: 'mail_list',
-        name: 'List recent mail',
-        description: 'List the newest messages in a folder, newest first. Set unreadOnly for an inbox triage pass.',
-        inputParameters: { type: 'object', properties: { folder: { type: 'string', description: 'Mailbox path, defaults to INBOX' }, limit: { type: 'integer', minimum: 1, maximum: LIST_LIMIT }, unreadOnly: { type: 'boolean' } } },
-      },
-      {
-        slug: 'mail_search',
-        name: 'Search mail',
-        description: 'Search a folder by text across headers and body. Returns summaries with uids for mail_read.',
-        inputParameters: { type: 'object', properties: { query: { type: 'string' }, folder: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: LIST_LIMIT } }, required: ['query'] },
-      },
-      {
-        slug: 'mail_read',
-        name: 'Read a message',
-        description: 'Read one message by uid, including its text body and attachment names.',
-        inputParameters: { type: 'object', properties: { uid: { type: 'integer' }, folder: { type: 'string' } }, required: ['uid'] },
-      },
-      {
-        slug: 'mail_send',
-        name: 'Send a message',
-        description: 'Send an email from this connected mailbox. This is irreversible: review the draft with the user first.',
-        inputParameters: { type: 'object', properties: { to: { type: 'string', description: 'One or more addresses, comma separated' }, subject: { type: 'string' }, text: { type: 'string' }, cc: { type: 'string' }, bcc: { type: 'string' }, replyTo: { type: 'string' } }, required: ['to', 'text'] },
-      },
-      {
-        slug: 'mail_mark',
-        name: 'Mark read or unread',
-        description: 'Set the read state of a message in a folder.',
-        inputParameters: { type: 'object', properties: { uid: { type: 'integer' }, folder: { type: 'string' }, read: { type: 'boolean' } }, required: ['uid'] },
-      },
-      {
-        slug: 'mail_folders',
-        name: 'List folders',
-        description: 'List the mailbox folders so you can target the right path.',
-        inputParameters: { type: 'object', properties: {} },
-      },
-    ];
-  }
+  /** Exact schemas shared by discovery and the model-facing account context. */
+  tools(): MailTool[] { return mailToolDefinitions(); }
 
   /** Bound, validated execution for one assigned mailbox. */
   async execute(tool: string, args: Record<string, unknown>, accountId: string): Promise<unknown> {
@@ -696,4 +657,46 @@ export class MailConnections {
       return messages.reverse();
     });
   }
+}
+
+/** Tool schemas handed to the teammate so it can discover mailbox actions. */
+export function mailToolDefinitions(): MailTool[] {
+  return [
+    {
+      slug: 'mail_list',
+      name: 'List recent mail',
+      description: 'List the newest messages in a folder, newest first. Set unreadOnly for an inbox triage pass.',
+      inputParameters: { type: 'object', properties: { folder: { type: 'string', description: 'Mailbox path, defaults to INBOX' }, limit: { type: 'integer', minimum: 1, maximum: LIST_LIMIT }, unreadOnly: { type: 'boolean' } } },
+    },
+    {
+      slug: 'mail_search',
+      name: 'Search mail',
+      description: 'Search a folder by text across headers and body. Returns summaries with uids for mail_read.',
+      inputParameters: { type: 'object', properties: { query: { type: 'string' }, folder: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: LIST_LIMIT } }, required: ['query'] },
+    },
+    {
+      slug: 'mail_read',
+      name: 'Read a message',
+      description: 'Read one message by uid, including its text body and attachment names.',
+      inputParameters: { type: 'object', properties: { uid: { type: 'integer' }, folder: { type: 'string' } }, required: ['uid'] },
+    },
+    {
+      slug: 'mail_send',
+      name: 'Send a message',
+      description: 'Send an email from this connected mailbox. This is an external write: obey the company/account grants and any review required by the host.',
+      inputParameters: { type: 'object', properties: { to: { type: 'string', description: 'One or more addresses, comma separated' }, subject: { type: 'string' }, text: { type: 'string' }, cc: { type: 'string' }, bcc: { type: 'string' }, replyTo: { type: 'string' } }, required: ['to', 'text'] },
+    },
+    {
+      slug: 'mail_mark',
+      name: 'Mark read or unread',
+      description: 'Set the read state of a message in a folder.',
+      inputParameters: { type: 'object', properties: { uid: { type: 'integer' }, folder: { type: 'string' }, read: { type: 'boolean' } }, required: ['uid'] },
+    },
+    {
+      slug: 'mail_folders',
+      name: 'List folders',
+      description: 'List the mailbox folders so you can target the right path.',
+      inputParameters: { type: 'object', properties: {} },
+    },
+  ];
 }

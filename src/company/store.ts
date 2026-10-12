@@ -138,7 +138,7 @@ export class CompanyStore {
     const row = this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
-  saveResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference', id: string, companyId: string, value: unknown): void {
+  saveResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company', id: string, companyId: string, value: unknown): void {
     if (!this.get(companyId)) throw new Error('Company not found.');
     const existing = this.db.prepare('SELECT company_id FROM records WHERE kind=? AND id=?').get(kind, id);
     if (existing && existing['company_id'] !== companyId) throw new Error('Resource belongs to another company.');

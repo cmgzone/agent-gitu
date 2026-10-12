@@ -27,6 +27,7 @@ export interface StorageTransfer {
 export class StorageRegistry {
   readonly oauth: StorageOAuth;
   private busy = new Set<string>();
+  private stopped = false;
   private controllers = new Map<string, { abort: AbortController; finished: Promise<void>; finish: () => void }>();
   constructor(
     private readonly store: CompanyStore,
@@ -57,6 +58,8 @@ export class StorageRegistry {
   }
   assertReconnectAllowed(c: StorageConnection): void {
     this.get(c.companyId, c.id);
+    if (this.store.list<StorageTransfer>('transfer', c.companyId).some(t => t.connectionId === c.id && t.direction === 'download' && t.state === 'running'))
+      throw new Error('Cancel active transfers before changing the storage account or folder.');
     if (this.store.list<StorageTransfer>('transfer', c.companyId).some((t) => t.connectionId === c.id && t.direction !== 'download' && ['running', 'failed'].includes(t.state)))
       throw new Error('Complete or cancel unfinished uploads before changing the storage account or folder.');
   }
@@ -131,6 +134,7 @@ export class StorageRegistry {
     if (this.store.get(companyId)?.defaultStorageId === id) this.store.update(companyId, { defaultStorageId: '' });
   }
   async upload(c: StorageConnection, file: string, name: string, mcp?: McpManager): Promise<StorageItem> {
+    if (this.stopped) throw new Error('Storage runtime is stopping.');
     c = this.get(c.companyId, c.id);
     this.authorize(c, 'upload');
     if (this.oauth.secret(c).state) throw new Error('Finish storage sign-in before starting an upload.');
@@ -199,23 +203,22 @@ export class StorageRegistry {
       finish();
     }
   }
-  async download(c: StorageConnection, id: string, directory: string, limit: number | null, mcp?: McpManager): Promise<{ item: StorageItem; file: string }> {
+  async download(c: StorageConnection, id: string, directory: string, limit: number | null, mcp?: McpManager, expectedAuthority?: string): Promise<{ item: StorageItem; file: string }> {
+    if (this.stopped) throw new Error('Storage runtime is stopping.');
+    c = this.get(c.companyId, c.id);
     this.authorize(c, 'read');
-    const result = await this.adapter(c, mcp).read(id);
-    if (limit !== null && result.item.size !== undefined && result.item.size > limit) {
-      result.stream.destroy();
-      throw new Error('File exceeds your selected file-size limit.');
-    }
-    mkdirSync(directory, { recursive: true });
+    if (this.oauth.secret(c).state) throw new Error('Finish storage sign-in before starting a download.');
+    const authority = this.authority(c);
+    if (expectedAuthority && expectedAuthority !== authority) throw new Error('The referenced file belongs to a different storage account or folder. Reattach it before importing.');
     const file = path.join(directory, randomUUID() + '.download');
     let size = 0;
     const transfer: StorageTransfer = {
       id: 'transfer-' + randomUUID(),
       companyId: c.companyId,
       connectionId: c.id,
-      name: result.item.name,
+      name: id,
       state: 'running',
-      size: result.item.size ?? 0,
+      size: 0,
       offset: 0,
       updatedAt: new Date().toISOString(),
       direction: 'download',
@@ -240,6 +243,17 @@ export class StorageRegistry {
       },
     });
     try {
+      const result = await this.adapter(c, mcp).read(id, abort.signal);
+      try {
+        abort.signal.throwIfAborted();
+        this.authorize(c, 'read');
+        if (this.authority(c) !== authority) throw new Error('The storage account or folder changed during download.');
+        if (limit !== null && result.item.size !== undefined && result.item.size > limit) throw new Error('File exceeds your selected file-size limit.');
+      } catch (error) { result.stream.destroy(); throw error; }
+      transfer.name = result.item.name;
+      transfer.size = result.item.size ?? 0;
+      this.store.saveResource('transfer', transfer.id, c.companyId, transfer);
+      mkdirSync(directory, { recursive: true });
       await pipeline(result.stream, counter, createWriteStream(file, { flags: 'wx', mode: 0o600 }), { signal: abort.signal });
       if (result.item.size !== undefined && result.item.size !== size) throw new Error('Storage download size did not match the provider receipt.');
       transfer.state = 'done';
@@ -256,6 +270,15 @@ export class StorageRegistry {
       this.controllers.delete(transfer.id);
       finish();
     }
+  }
+  async stop(): Promise<void> {
+    this.stopped = true;
+    await this.pauseCompany();
+  }
+  async pauseCompany(companyId?: string): Promise<void> {
+    const active = this.store.list<StorageTransfer>('transfer', companyId).filter(transfer => transfer.state === 'running').map(transfer => this.controllers.get(transfer.id)).filter((value): value is NonNullable<typeof value> => Boolean(value));
+    for (const transfer of active) transfer.abort.abort(new Error('Company file transfer paused.'));
+    await Promise.allSettled(active.map(transfer => transfer.finished));
   }
   async cancel(c: StorageConnection, id: string, mcp?: McpManager): Promise<void> {
     const transfer = this.store.read<StorageTransfer>('transfer', id);

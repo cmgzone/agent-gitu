@@ -917,6 +917,8 @@ export interface TaskFinding {
 export interface ToolResult {
   ok: boolean;
   output: string;
+  /** Host-created company navigation card; never interpreted from model prose. */
+  companyLink?: { id: string; name: string; state: string };
   exitCode?: number;
   errorSignature?: string;
   filesTouched?: string[];

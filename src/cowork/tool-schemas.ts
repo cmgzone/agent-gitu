@@ -6,6 +6,7 @@ const object = { type: 'object', additionalProperties: true };
 const strings = { type: 'array', items: text };
 type Fields = Record<string, Record<string, unknown>>;
 const schemas: Record<string, { fields: Fields; required?: string[] }> = {
+  company_manage: { fields: { action: { type: 'string', enum: ['create', 'list', 'status'] }, id: text, name: text, purpose: text, leadName: text }, required: ['action'] },
   mission_manage:{fields:{action:text,id:text,goal:text,agentId:text,criteria:strings,maxSessions:number},required:['action']},
   company_files:{fields:{action:text,artifactId:text},required:['action']},
   storage:{fields:{action:text,connectionId:text,id:text,folder:text,parent:text,name:text,artifactId:text},required:['action']},

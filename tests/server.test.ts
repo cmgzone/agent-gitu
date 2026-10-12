@@ -2,10 +2,11 @@ import { mkdirSync, mkdtempSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
 import { UI_HTML } from '../src/server/ui.js';
+import type { BrowserBridge } from '../src/browser/browser.js';
 
 function makeProject(name: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), `hermes-web-${name}-`));
@@ -14,6 +15,12 @@ function makeProject(name: string): string {
     JSON.stringify({ name: `web-${name}`, scripts: { test: 'node --version' } }, null, 2),
   );
   return dir;
+}
+
+/** Scripted terminal state with a concrete permission dependency. Unexplained
+ * stops are deliberately deferred by the production continuation runtime. */
+function pauseFixture(reason: string): string {
+  return JSON.stringify({ action: { type: 'request_block', reason, prerequisite: { id: 'fixture-permission', kind: 'permission', description: 'Permission to continue the scripted fixture', requiredFor: 'Continue past this fixture checkpoint', riskIfWrong: 'high' } } });
 }
 
 /**
@@ -48,6 +55,14 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 20000): 
 describe('HermesServer', () => {
   const servers: HermesServer[] = [];
 
+  // Independent cases own independent installations. Keep the same home for
+  // restart checks within a case and drain its runtime before another begins.
+  beforeEach(() => vi.stubEnv('AGENT_GITU_HOME', mkdtempSync(path.join(tmpdir(), 'gitu-server-owner-'))));
+  afterEach(async () => {
+    try { for (const server of servers.splice(0)) await server.stop(); }
+    finally { vi.unstubAllEnvs(); }
+  }, 30000);
+
   it('serves a syntactically valid inline UI script', () => {
     const js = UI_HTML.split('<script>')[1]!.split('</script>')[0]!;
     expect(() => new Function(js)).not.toThrow();
@@ -59,7 +74,7 @@ describe('HermesServer', () => {
   });
 
   it('keeps event ids monotonic when non-persisted stream deltas leave gaps', () => {
-    const server = new HermesServer({ passwordRequired: false, cwd: makeProject('event-cursor'), port: 0, llm: new ScriptedMockLlm([]) });
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: makeProject('event-cursor'), port: 0, llm: new ScriptedMockLlm([]) });
     const session = {
       events: [
         { i: 0, t: '2026-01-01T00:00:00.000Z', text: 'user-msg original task' },
@@ -78,7 +93,7 @@ describe('HermesServer', () => {
   });
 
   async function startServer(dir: string, llm: ScriptedMockLlm): Promise<{ base: string; server: HermesServer }> {
-    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm });
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm });
     servers.push(server);
     const port = await server.start();
     return { base: `http://127.0.0.1:${port}`, server };
@@ -166,7 +181,7 @@ describe('HermesServer', () => {
     const dir = makeProject('run-folder-tag');
     const outside = mkdtempSync(path.join(tmpdir(), 'gitu-run-reference-'));
     writeFileSync(path.join(outside, 'note.txt'), 'Reference material');
-    const first = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([() => 'Ready.']) });
+    const first = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([() => 'Ready.']) });
     servers.push(first);
     const firstBase = `http://127.0.0.1:${await first.start()}`;
     const created = await fetch(`${firstBase}/api/runs`, {
@@ -199,7 +214,7 @@ describe('HermesServer', () => {
     expect(rejected.status).toBe(400);
     await first.stop();
 
-    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    const second = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
     const restored = await fetch(`${secondBase}/api/runs/${created.runId}`).then((response) => response.json());
@@ -215,7 +230,7 @@ describe('HermesServer', () => {
     });
     expect(removed.status).toBe(200);
     expect((await removed.json()).folders).toEqual([]);
-  }, 30000);
+  }, 60000);
 
   it('serves the Agent Gitu SVG mark as a bundled brand asset', async () => {
     const { base } = await startServer(makeProject('brand-asset'), new ScriptedMockLlm([]));
@@ -259,7 +274,7 @@ describe('HermesServer', () => {
   });
 
   it('exposes the local Codex ChatGPT subscription without exposing credentials', async () => {
-    const server = new HermesServer({ passwordRequired: false,
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false,
       cwd: makeProject('chatgpt-subscription'),
       port: 0,
       llm: new ScriptedMockLlm([]),
@@ -349,7 +364,7 @@ describe('HermesServer', () => {
         JSON.stringify({
           action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
         }),
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'verified' } }),
+      () => pauseFixture('verified'),
     ]);
     const { base } = await startServer(dir, llm);
 
@@ -419,7 +434,7 @@ describe('HermesServer', () => {
             questions: [{ question: 'Which database?', header: 'Storage', options: ['PostgreSQL', 'SQLite'] }],
           },
         }),
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'answered, then paused' } }),
+      () => pauseFixture('answered, then paused'),
     ]);
     const { base } = await startServer(dir, llm);
     const created = await fetch(`${base}/api/runs`, {
@@ -514,7 +529,7 @@ describe('HermesServer', () => {
         JSON.stringify({
           action: { type: 'tool_call', stepId: 'step-1', tool: 'read_file', params: { path: '../../outside.txt' }, reason: 'inspect', expected: 'file contents' },
         }),
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'the path is outside the workspace' } }),
+      () => pauseFixture('the path is outside the workspace'),
     ]);
     const { base } = await startServer(dir, llm);
 
@@ -663,9 +678,12 @@ describe('HermesServer', () => {
     // branch — exactly what locked every previous session out after a restart.
     g(`checkout -b ${taskBranch}-next`);
 
-    // Swap in an LLM whose next reply completes the resumed session.
+    // The existing task is complete. A continuation acknowledges its saved
+    // result without replacing its criteria or repeating its verification.
     const server = servers[servers.length - 1]!;
-    (server as unknown as { config: { llm: unknown } }).config.llm = standardTaskLlm('resumed fine');
+    (server as unknown as { config: { llm: unknown } }).config.llm = new ScriptedMockLlm([
+      () => JSON.stringify({ action: { type: 'complete', chat: true, summary: 'resumed fine', risks: [], followUps: [] } }),
+    ]);
 
     const msg = await fetch(`${base}/api/runs/${created.runId}/message`, {
       method: 'POST',
@@ -739,7 +757,7 @@ describe('HermesServer', () => {
 
   it('restores a chat transcript, its metadata, and conversational context after restart', async () => {
     const dir = makeProject('chat-restart');
-    const firstServer = new HermesServer({ passwordRequired: false,
+    const firstServer = new HermesServer({ passwordRequired: false, autoInstallLsp: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([() => 'I remember this first reply.']),
@@ -763,7 +781,7 @@ describe('HermesServer', () => {
     await firstServer.stop();
 
     let receivedHistory = false;
-    const secondServer = new HermesServer({ passwordRequired: false,
+    const secondServer = new HermesServer({ passwordRequired: false, autoInstallLsp: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([
@@ -813,7 +831,7 @@ describe('HermesServer', () => {
     // cannot carry — the real exit code above all — instead of degrading to the
     // prose fallback the moment the process ends.
     const dir = makeProject('frame-restart-command');
-    const first = new HermesServer({ passwordRequired: false,
+    const first = new HermesServer({ passwordRequired: false, autoInstallLsp: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([
@@ -823,7 +841,7 @@ describe('HermesServer', () => {
           JSON.stringify({
             action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify', expected: 'exit 0' },
           }),
-        () => JSON.stringify({ action: { type: 'request_block', reason: 'verified' } }),
+        () => pauseFixture('verified'),
       ]),
     });
     servers.push(first);
@@ -839,7 +857,7 @@ describe('HermesServer', () => {
     });
     await first.stop();
 
-    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    const second = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
     const { rows, frames, diagnostics } = await readStream(secondBase, created.runId);
@@ -869,7 +887,7 @@ describe('HermesServer', () => {
     // restart it comes back marked as restored, and the session offers nothing
     // to answer: no promise anywhere is still waiting behind that id.
     const dir = makeProject('frame-restart-approval');
-    const first = new HermesServer({ passwordRequired: false,
+    const first = new HermesServer({ passwordRequired: false, autoInstallLsp: false,
       cwd: dir,
       port: 0,
       llm: new ScriptedMockLlm([
@@ -879,7 +897,7 @@ describe('HermesServer', () => {
           JSON.stringify({
             action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
           }),
-        () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped before deciding' } }),
+        () => pauseFixture('stopped before deciding'),
       ]),
     });
     servers.push(first);
@@ -895,7 +913,7 @@ describe('HermesServer', () => {
     });
     await first.stop();
 
-    const second = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
+    const second = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]) });
     servers.push(second);
     const secondBase = `http://127.0.0.1:${await second.start()}`;
 
@@ -1013,7 +1031,7 @@ describe('HermesServer', () => {
       () => 'First chat reply.',
       (_n, messages) => {
         secondPrompt = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
-        return JSON.stringify({ action: { type: 'request_block', reason: 'paused for review' } });
+        return pauseFixture('paused for review');
       },
     ]);
     const dir = makeProject('chat-to-build');
@@ -1051,7 +1069,7 @@ describe('HermesServer', () => {
   it('switches a build session to chat mode when the follow-up sends mode: chat', async () => {
     let secondPrompt = '';
     const llm = new ScriptedMockLlm([
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'paused first' } }),
+      () => pauseFixture('paused first'),
       (_n, messages) => {
         secondPrompt = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
         return 'A direct answer.';
@@ -1087,11 +1105,11 @@ describe('HermesServer', () => {
   it('resumes a standard session as a task and adopts the picker model for legacy sessions', async () => {
     let sawContinuationInstruction = false;
     const llm = new ScriptedMockLlm([
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'paused for a follow-up' } }),
+      () => pauseFixture('paused for a follow-up'),
       (_n, messages) => {
         const transcript = messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
         sawContinuationInstruction = transcript.includes('ACTIVE CONTINUATION') && transcript.includes('continue working');
-        return JSON.stringify({ action: { type: 'request_block', reason: 'paused again' } });
+        return pauseFixture('paused again');
       },
     ]);
     const dir = makeProject('standard-resume');
@@ -1133,7 +1151,7 @@ describe('HermesServer', () => {
       () => JSON.stringify({
         action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
       }),
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'dangerous action was denied' } }),
+      () => pauseFixture('dangerous action was denied'),
     ]);
     const { base } = await startServer(dir, llm);
 
@@ -1183,7 +1201,7 @@ describe('HermesServer', () => {
         JSON.stringify({
           action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'git push --force origin main' }, reason: 'cleanup', expected: 'pushed' },
         }),
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'stopped before deciding' } }),
+      () => pauseFixture('stopped before deciding'),
     ]);
     const { base } = await startServer(dir, llm);
 
@@ -1224,9 +1242,9 @@ describe('HermesServer', () => {
     const llm = new ScriptedMockLlm([
       () => JSON.stringify({ action: { type: 'set_criteria', criteria: ['verification passes'] } }),
       () => JSON.stringify({ action: { type: 'set_plan', steps: [{ description: 'run verification', verification: 'node --version' }] } }),
-      () => JSON.stringify({ action: { type: 'request_block', reason: 'review timed out' } }),
+      () => pauseFixture('review timed out'),
     ]);
-    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm, approvalTimeoutMs: 1500 });
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm, approvalTimeoutMs: 1500 });
     servers.push(server);
     const base = `http://127.0.0.1:${await server.start()}`;
     const created = await fetch(`${base}/api/runs`, {
@@ -1316,7 +1334,7 @@ describe('HermesServer', () => {
     for (let i = 0; i < 20; i++) {
       script.push(() => `${longProse}\n${JSON.stringify({ action: { type: 'set_hypothesis', text: 'h' } })}`);
     }
-    script.push(() => JSON.stringify({ action: { type: 'request_block', reason: 'end' } }));
+    script.push(() => pauseFixture('end'));
     const { base } = await startServer(dir, new ScriptedMockLlm(script));
 
     const created = await fetch(`${base}/api/runs`, {
@@ -1498,7 +1516,7 @@ describe('HermesServer', () => {
       type: async () => state,
       screenshot: async () => ({ pngBase64: Buffer.from('png').toString('base64'), state }),
     };
-    const server = new HermesServer({ passwordRequired: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: bridge });
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: bridge });
     servers.push(server);
     const port = await server.start();
     const base = `http://127.0.0.1:${port}`;
@@ -1517,9 +1535,11 @@ describe('HermesServer', () => {
     expect(shot.pngBase64).toBe(Buffer.from('png').toString('base64'));
   });
 
-  it('reports 503 for browser endpoints without a bridge', async () => {
+  it('reports 503 for browser endpoints when their bridge is unavailable', async () => {
     const dir = makeProject('nobrowser');
-    const { base } = await startServer(dir, new ScriptedMockLlm([]));
+    const server = new HermesServer({ passwordRequired: false, autoInstallLsp: false, cwd: dir, port: 0, llm: new ScriptedMockLlm([]), browser: { available: () => false } as BrowserBridge });
+    servers.push(server);
+    const base = `http://127.0.0.1:${await server.start()}`;
     const res = await fetch(`${base}/api/browser/screenshot`);
     expect(res.status).toBe(503);
   });

@@ -1,6 +1,7 @@
 import { canonicalAction, type CompanyStore, type CompanyAction } from './store.js';
 import type { ToolResult } from '../types.js';
 import { walletFor, walletTransaction, walletField } from './wallets.js';
+import { isNativeMailRead } from '../connections/provider.js';
 
 const CONFIG = new Set(['configure_mcp', 'update_connection', 'request_permission', 'request_credential', 'create_project', 'ssh_exec']);
 export function companyPolicy(
@@ -32,7 +33,7 @@ export function companyPolicy(
         : tool === 'mcp_call' ||
           tool === 'connection_execute' ||
           (tool === 'storage' && !['list', 'read', 'download'].includes(String(args['action']))) ||
-          (tool === 'connected_apps' && args['action'] === 'execute') ||
+          (tool === 'connected_apps' && args['action'] === 'execute' && !isNativeMailRead(String(args['service']), String(args['tool']))) ||
           (tool === 'team_manage' && args['action'] === 'create');
       if (!external) return undefined;
       if (c.directionVersion !== version) return { ok: false, output: 'The owner changed direction. Replan before submitting this action.' };

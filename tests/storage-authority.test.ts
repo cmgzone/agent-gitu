@@ -7,6 +7,7 @@ import { SecretVault } from '../src/connections/secret-vault.js';
 import { StorageRegistry, type StorageTransfer } from '../src/storage/registry.js';
 import { StorageOAuth } from '../src/storage/oauth.js';
 import type { StorageConnection } from '../src/storage/types.js';
+import { Readable } from 'node:stream';
 
 const roots: string[] = [], stores: CompanyStore[] = [];
 const fixture = () => {
@@ -21,6 +22,52 @@ const fixture = () => {
 afterEach(() => { for (const store of stores.splice(0)) store.close(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('durable storage grant binding', () => {
+  it('journals pending reads before provider metadata and cancels their handshake before changing accounts', async () => {
+    const { registry, connection, store, company, root } = fixture();
+    const read = vi.fn((_id: string, signal?: AbortSignal) => new Promise<never>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })));
+    vi.spyOn(registry, 'adapter').mockReturnValue({ capabilities: ['read'], read, list: async () => [], upload: vi.fn() });
+    const downloading = registry.download(connection, 'external-file', path.join(root, 'downloads'), null).catch(error => error);
+    const transfer = store.list<StorageTransfer>('transfer', company.id)[0];
+    expect(transfer).toMatchObject({ state: 'running', direction: 'download', name: 'external-file' });
+    expect(() => registry.save(company.id, { id: connection.id }, { accessToken: 'another-account' })).toThrow('active transfers');
+    expect(() => registry.oauth.begin(connection, 'https://owner.example/callback')).toThrow('active transfers');
+    await registry.cancel(connection, transfer.id);
+    expect(await downloading).toBeInstanceOf(Error);
+    expect(store.read<StorageTransfer>('transfer', transfer.id)?.state).toBe('cancelled');
+    expect(registry.save(company.id, { id: connection.id }, { accessToken: 'another-account' })).toBeTruthy();
+  });
+  it('rejects stale references and changed grants before publishing a provider response', async () => {
+    const { registry, connection, store, company, root } = fixture();
+    const authority = registry.authority(connection);
+    let release!: (result: { item: { id: string; name: string; size: number; folder: boolean }; stream: Readable }) => void;
+    vi.spyOn(registry, 'adapter').mockReturnValue({ capabilities: ['read'], read: () => new Promise(resolve => { release = resolve; }), list: async () => [], upload: vi.fn() });
+    const downloading = registry.download(connection, 'file', path.join(root, 'downloads'), null, undefined, authority).catch(error => error);
+    store.saveResource('storage', connection.id, company.id, { ...connection, config: { folder: 'changed' } });
+    const stream = Readable.from(Buffer.from('fixture'));
+    release({ item: { id: 'file', name: 'file', size: 7, folder: false }, stream });
+    expect((await downloading).message).toContain('changed during download');
+    expect(stream.destroyed).toBe(true);
+    await expect(registry.download(connection, 'file', root, null, undefined, authority)).rejects.toThrow('different storage account');
+  });
+  it('pauses only the selected company and retains upload checkpoints for resumption', async () => {
+    const { registry, connection, store, company, file, vault } = fixture();
+    const other = store.create(), otherConnection = registry.save(other.id, { provider: 'local', config: { folder: store.workspace(other.id) }, permissions: ['upload'] });
+    const signals: AbortSignal[] = [];
+    const upload = vi.fn(async (_file, _name, _checkpoint, save, signal: AbortSignal) => {
+      save({ sessionId: 'saved-session', offset: 3 }); signals.push(signal);
+      return new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    vi.spyOn(registry, 'adapter').mockReturnValue({ capabilities: ['upload'], read: vi.fn(), list: async () => [], upload });
+    const first = registry.upload(connection, file, 'first').catch(error => error), second = registry.upload(otherConnection, file, 'second').catch(error => error);
+    await registry.pauseCompany(company.id);
+    expect(await first).toBeInstanceOf(Error);
+    expect(signals.map(signal => signal.aborted)).toEqual([true, false]);
+    const paused = store.list<StorageTransfer>('transfer', company.id)[0];
+    expect(paused).toMatchObject({ state: 'failed', offset: 3 });
+    expect(vault.read(paused.id)).toMatchObject({ sessionId: 'saved-session', offset: 3 });
+    await registry.stop(); expect(await second).toBeInstanceOf(Error);
+    await expect(registry.upload(connection, file, 'first')).rejects.toThrow('stopping');
+  });
   it('blocks account, folder and OAuth changes until interrupted uploads are reconciled or cancelled', async () => {
     const { store, registry, file, connection } = fixture();
     const upload = vi.fn(async (_file, _name, _checkpoint, save) => { save({ sessionId: 'original-session', offset: 3 }); throw new Error('Network lost'); });

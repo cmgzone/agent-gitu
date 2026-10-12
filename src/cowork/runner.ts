@@ -180,11 +180,11 @@ export interface TurnResult {
 export async function answerCoworkQuestion(input: {
   agent: CoworkAgent; conversation: CoworkConversation; members: CoworkAgent[];
   history: CoworkMessage[]; question: string; state: string; llm: LlmClient;
-  userContext?: string; memory?: string; signal?: AbortSignal;
+  userContext?: string; memory?: string; appContext?: string; signal?: AbortSignal;
 }): Promise<string> {
   const messages: LlmMessage[] = [
     { role: 'system', content: systemPrompt(input.agent, input.conversation, input.members) },
-    { role: 'system', content: 'LIVE CONVERSATION: Answer this question as the same teammate while existing work continues. This path is read-only: no tools, task changes, creation, completion markers, delegation or claims of new execution. Explain the current public state honestly; if the user asks for a change, tell them to use Steer or Queue. Keep your answer brief.\n' + input.state + '\n' + (input.userContext ?? '') + '\n' + (input.memory ?? '') },
+    { role: 'system', content: 'LIVE CONVERSATION: Answer this question as the same teammate while existing work continues. This path is read-only: no tools, task changes, creation, completion markers, delegation or claims of new execution. Explain the current public state honestly; if the user asks for a change, tell them to use Steer or Queue. Keep your answer brief.\n' + input.state + '\n' + (input.userContext ?? '') + '\n' + (input.memory ?? '') + '\n' + (input.appContext ?? '') + '\nAny app capabilities above describe access only. This question path cannot execute them or change the current work.' },
     ...input.history.slice(-24).map(message => ({ role: message.role === 'user' ? 'user' as const : 'assistant' as const, content: `${message.agentName || message.role}: ${message.text}` })),
     { role: 'user', content: input.question },
   ];
@@ -837,7 +837,7 @@ async function agentTurn(input: {
       }
       const appReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
       if (result.ok && (['ask_user', 'request_permission', 'computer_handoff'].includes(call.tool) || appReview)) {
-        reply = visibleCoworkText(reply) || 'I’m waiting for your response to the card above.';
+        reply = appReview ? 'This action is waiting for your approval in the card above.' : visibleCoworkText(reply) || 'I’m waiting for your response to the card above.';
         waitingForUser = true;
         endedByWaiting = true;
         for (const pendingCall of calls.slice(index + 1)) appendResult(pendingCall, { ok: false, output: 'Not executed: the turn is paused for the user. Continue only after the dependency is resolved.' });
@@ -1234,9 +1234,15 @@ export async function runMissionSession(input: {
       },
     ];
 
+    if (deps.store && deps.connectedApps) {
+      const awareness = await appAwareness(deps.connectedApps, deps.store, agent.id);
+      messages[0]!.content += '\n' + awareness.context;
+    }
+
     let reply = '';
     let exhausted = false;
     let waiting = false;
+    let waitingForAppReview = false;
     let lastPublicUpdate = '';
     let reasoning = '';
     const publicProgress = (raw: string, tool?: string, toolOk?: boolean, detail?: string, webUrl?: string, mcpServer?: string, phase: CoworkProgress['phase'] = 'working', appService?: string) => {
@@ -1308,7 +1314,8 @@ export async function runMissionSession(input: {
         recordToolResult(scope, call.tool, result, visibleCoworkText(reply));
         messages.push(toolResultMessage(call.tool, result, supportsImages));
         publicProgress(reply, call.tool, result.ok, summarizeParams(call.tool, call.params), coworkWebOrigin(call.tool, call.params), coworkMcpServer(call.tool, call.params), undefined, coworkAppService(call.tool, call.params));
-        if (result.ok && ['ask_user', 'request_permission', 'computer_handoff'].includes(call.tool)) { waiting = true; break; }
+        waitingForAppReview = result.ok && call.tool === 'connected_apps' && /^(?:Review \S+ posted\.|Waiting for review \S+\.)/.test(result.output);
+        if (result.ok && (['ask_user', 'request_permission', 'computer_handoff'].includes(call.tool) || waitingForAppReview)) { waiting = true; break; }
       }
       if (waiting) break;
       messages.push({ role: 'user', content: 'Continue the work session. Remember to end with your status JSON when this session is done.' });
@@ -1334,6 +1341,7 @@ export async function runMissionSession(input: {
     if (status === 'done' && parsed && typeof parsed.result === 'string') session.result = parsed.result.slice(0, 4_000);
     if (status === 'blocked' && parsed && typeof (parsed.blockers ?? parsed.blocker) === 'string') session.blockers = String(parsed.blockers ?? parsed.blocker).slice(0, 1_500);
     if (waiting) session.blockers = 'Waiting for the user to respond to the posted request card.';
+    if (waitingForAppReview) session.progress = 'The requested app action is waiting for approval. It has not been submitted.';
     if (exhausted) session.progress = 'Tool budget reached; the last requested actions were not executed. Resume from saved tool checkpoints and the checklist.';
     if (criteriaMet) session.criteriaMet = criteriaMet;
     if (artifactIds.length) session.artifactIds = artifactIds;

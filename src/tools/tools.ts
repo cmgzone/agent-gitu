@@ -28,6 +28,7 @@ export interface ToolContext {
   externalArguments?: (tool:string,params:Record<string,unknown>)=>Record<string,unknown>;
   storage?: (params:Record<string,unknown>,scope:{conversationId:string;agentId:string})=>Promise<ToolResult & {artifactId?:string}>;
   companyFiles?: (params:Record<string,unknown>,scope:{conversationId:string;agentId:string})=>Promise<ToolResult & {artifactId?:string}>;
+  companyManagement?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string; threadId?: string }) => Promise<ToolResult>;
   missionSessionLimit?:()=>number;
   signal?: AbortSignal;
   guard: ProjectGuard;

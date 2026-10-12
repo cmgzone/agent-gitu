@@ -29,6 +29,7 @@ window.fetch=async function(input,options){
     if(method==='POST'){var c={...companies[0],id:'company-demo-'+crypto.randomUUID(),name:'New company',purpose:'',state:'draft',leadId:undefined,conversationId:undefined,budgetChosen:false,fileLimitChosen:false,direction:'',directionVersion:0};companies.push(c);data={company:c};}
     else data={companies:companies.map(c=>({...c,usage:totals,decisions:0})),usage:totals};
   }else if(p.endsWith('/policy'))data={maxFileBytes:null};
+  else if(p==='/api/models')data={providers:[{id:'preview',label:'Demo provider',usable:true,defaultModel:'demo-model',models:[{id:'demo-model',label:'Demo model'}]}]};
   else if(p==='/api/cowork/agents')data={agents:[lead]};
   else if(p==='/api/connected-apps')data={accounts:[]};
   else if(p==='/api/connections')data={connections:[]};
@@ -38,6 +39,7 @@ window.fetch=async function(input,options){
     var match=p.match(/^\/api\/companies\/([^/]+)(.*)$/),c=match&&companies.find(c=>c.id===match[1]),suffix=match&&match[2];
     if(!c)return new Response(JSON.stringify({error:'Preview mode: this operation is unavailable.'}),{status:400});
     if(!suffix){if(method==='PATCH')Object.assign(c,body);data={company:c,agents:c.leadId?[lead]:[],missions:[],requests:[],actions:[],jobs:[],usage:[],totals:totals,monthly:{month:'2026-10',knownCostUsd:1.62,reservedUsd:0,unknownCalls:0}};}
+    else if(suffix==='/status'){data={id:c.id,name:c.name,state:c.state,direction:c.direction,directionVersion:c.directionVersion,activity:[],agents:[lead],actions:[],jobs:[],missions:[],pendingDecisions:0};}
     else if(suffix==='/lead'){Object.assign(lead,body);c.leadId=lead.id;c.conversationId='demo-chat';data={company:c,agent:lead};}
     else if(['/start','/resume','/pause','/archive','/restore'].includes(suffix)){c.state=suffix==='/archive'?'archived':suffix==='/start'||suffix==='/resume'?'running':'paused';data={company:c};}
     else if(suffix==='/chat'){if(method==='POST'){messages.push({id:crypto.randomUUID(),role:'user',text:body.text},{id:crypto.randomUUID(),role:'agent',agentName:lead.name,text:'This is a UI preview. Your message is shown here; no agent or external action runs.'});}data={messages:messages,artifacts:[],busy:false};}
@@ -56,7 +58,7 @@ window.fetch=async function(input,options){
 function api(url,options){return fetch(url,options).then(async r=>{var data=await r.json();if(!r.ok)throw new Error(data.error);return data;});}
 `;
 const styles = [...UI_HTML.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
-const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;top:0;left:0;right:0;z-index:1000;padding:10px 20px;background:var(--card2);border-bottom:1px solid var(--border);color:var(--muted);font-size:12px}.company-page{padding-top:66px}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nopenCompanies();</script></body></html>`;
+const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;top:0;left:0;right:0;z-index:1000;padding:10px 20px;background:var(--card2);border-bottom:1px solid var(--border);color:var(--muted);font-size:12px}.company-page,.company-page.company-chat-active{padding-top:66px}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nopenCompanies();</script></body></html>`;
 const output = path.resolve(process.env['GITU_UI_PREVIEW_OUTPUT'] ?? '.qa/company-preview.html');
 mkdirSync(path.dirname(output), { recursive: true });
 writeFileSync(output, html);

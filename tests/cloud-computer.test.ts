@@ -169,7 +169,8 @@ describe('cloud desktop transport', () => {
       await cloud.execute(['build', '-t', COWORK_COMPUTER_IMAGE, assets]);
       await cloud.execute(['cp', path.join(assets, 'server.cjs'), name + ':/computer/server.cjs']);
       expect(uploadSessions).toBe(1);
-      expect(uploaded.size).toBe(6);
+      expect(uploaded.size).toBe(7);
+      expect([...uploaded.keys()].some(file => file.endsWith('/quota-guard.c'))).toBe(true);
       expect(uploadedModes.every((mode) => mode === 0o644)).toBe(true);
       expect([...uploaded.keys()].every((file) => file.startsWith('/fixture-home/.cache/agent-gitu/' + cloud!.owner + '/'))).toBe(true);
       expect([...uploaded.entries()].find(([file]) => file.endsWith('/Dockerfile'))?.[1].toString()).toContain('FROM node:22-bookworm-slim');

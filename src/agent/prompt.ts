@@ -459,7 +459,9 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const detail: 'full' | 'compact' = isPlanningPhase(d) && scopedPlan.length <= STATE_FULL_PLAN_MAX_STEPS ? 'full' : 'compact';
   const stateGoal = scope?.goal ?? d.goal;
   const auth = d.taskAuthority;
-  const currentGoal = scope?.goal ?? auth?.currentGoal ?? stateGoal;
+  // Scope selects this phase's evidence and plan, but durable user direction
+  // is authoritative even when the caller captured an older scope goal.
+  const currentGoal = auth?.currentGoal ?? stateGoal;
   const taskGoal =
     currentGoal.length <= STATE_GOAL_MAX_CHARS
       ? currentGoal
@@ -470,7 +472,7 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const userPreferences = auth?.instructions.filter((i) => i.status === 'active' && i.type === 'preference') ?? [];
   const supersededInstructions = auth?.instructions.filter((i) => i.status === 'superseded') ?? [];
   const visualReferences = auth?.visualReferences.filter((v) => v.status === 'active') ?? [];
-  const latestFollowUp = auth?.followUps.length ? auth.followUps[auth.followUps.length - 1] : undefined;
+  const latestFollowUp = auth?.followUps.slice().reverse().find((followUp) => followUp.kind !== 'CONTINUE');
 
   const authorityParts: string[] = [
     'TASK AUTHORITY (Precedence: 1. Safety > 2. Hard Instructions > 3. User Goal > 4. Criteria > 5. Visual References > 6. Decisions > 7. Plan)',

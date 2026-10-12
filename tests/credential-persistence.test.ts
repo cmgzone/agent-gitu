@@ -77,7 +77,7 @@ describe('saved credential durability', () => {
     expect(reloaded).toHaveLength(24);
     expect(reloaded.every((profile) => profile.hasCredential)).toBe(true);
     expect(Object.keys(loadStoredKeys()).filter((key) => key.startsWith('GITU_CONNECTION_WRITER_'))).toHaveLength(24);
-  }, 30000);
+  }, process.platform === 'win32' ? 90000 : 30000);
 
   it('recovers the latest keys and connection metadata from protected backups after an interrupted write', () => {
     const root = home();

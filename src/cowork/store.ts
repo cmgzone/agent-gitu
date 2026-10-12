@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { sanitizeWidgetApp, widgetState } from './widget-app.js';
 import { ensureGituHome } from '../workspace/home.js';
@@ -22,6 +22,7 @@ export interface CoworkAvatar {
 
 export interface CoworkAgent extends AgentProfileSettings {
   id: string;
+  companyId?: string;
   name: string;
   /** Saved character and accent color. */
   avatar: CoworkAvatar;
@@ -614,9 +615,8 @@ const MESSAGE_STATUSES = new Set<CoworkMessageStatus>(['sending', 'sent', 'faile
 const MAX_REFERENCED_MESSAGES = 8;
 const MAX_MENTIONED_AGENTS = 12;
 
-/** Per-artifact ceiling (storage, Telegram download, share_file). Telegram bots
- *  can hand back at most 20 MB through getFile, so this is the practical cap for
- *  media the team exchanges; model input is bounded separately. */
+/** Legacy JSON control payload / Telegram download bound. Binary web uploads
+ * use the owner's file policy instead. Kept for existing channel callers. */
 export const MAX_ARTIFACT_BYTES = 20_000_000;
 
 /** Trim + cap credential request metadata; undefined when unusable. Secrets never pass through here. */
@@ -640,7 +640,7 @@ export class CoworkStore {
   /** Process-local roster version; message appends do not change it. */
   rosterRevision = 0;
 
-  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void) {}
+  constructor(private readonly filePath?: string, private readonly onRosterChange?: () => void, private readonly options?: { companyId?: string; persistence?: { read(): string | undefined; write(data: string): void }; maxFileBytes?: () => number | null;missionSessions?:()=>number }) {}
 
   private file(): string {
     if (this.filePath) return this.filePath;
@@ -651,9 +651,10 @@ export class CoworkStore {
     if (this.loaded) return this.data;
     this.loaded = true;
     const file = this.file();
-    if (!existsSync(file)) return this.data;
+    const saved = this.options?.persistence?.read();
+    if (!saved && !existsSync(file)) return this.data;
     try {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<CoworkData>;
+      const parsed = JSON.parse(saved ?? readFileSync(file, 'utf8')) as Partial<CoworkData>;
       this.data = {
         agents: Array.isArray(parsed.agents) ? parsed.agents : [],
         conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
@@ -740,6 +741,11 @@ export class CoworkStore {
   }
 
   private save(rosterChanged = false): void {
+    if (this.options?.persistence) {
+      this.options.persistence.write(JSON.stringify(this.data));
+      if (rosterChanged) { this.rosterRevision += 1; this.onRosterChange?.(); }
+      return;
+    }
     const file = this.file();
     mkdirSync(path.dirname(file), { recursive: true });
     // Write-then-rename so a crash mid-write cannot truncate the document.
@@ -783,6 +789,7 @@ export class CoworkStore {
     if (data.agents.some((a) => a.id !== existing?.id && a.name.toLowerCase() === name.toLowerCase())) throw new Error('Agent names must be unique so mentions identify one teammate.');
     const agent: CoworkAgent = {
       id: existing?.id ?? `ca-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4)}`,
+      ...(this.options?.companyId ? { companyId: this.options.companyId } : {}),
       name,
       ...sanitizeAgentProfile(input, existing),
       avatar: sanitizeAvatar(input.avatar, existing?.avatar),
@@ -1318,7 +1325,7 @@ export class CoworkStore {
       progress: '',
       guidance: [],
       turns: 0,
-      maxTurns: Math.max(1, Math.min(50, Math.floor(input.maxTurns ?? 12))),
+      maxTurns: Math.max(1, Math.min(this.options?.missionSessions?.()??50, Math.floor(input.maxTurns ?? this.options?.missionSessions?.()??12))),
       // Absent means "draw from the conversation pool without its own ceiling",
       // not "unlimited": the pool the mission draws from is finite either way.
       budget:
@@ -1470,6 +1477,10 @@ export class CoworkStore {
     return followUp;
   }
 
+  listFollowUps(): CoworkFollowUp[] {
+    return [...this.load().followUps];
+  }
+
   dueFollowUps(now = Date.now()): CoworkFollowUp[] {
     return this.load().followUps.filter((f) => Date.parse(f.dueAt) <= now);
   }
@@ -1542,7 +1553,8 @@ export class CoworkStore {
     const name = safeArtifactName(input.name);
     const bytes = Buffer.from(String(input.dataBase64 ?? '').replace(/\s+/g, ''), 'base64');
     if (bytes.length === 0) throw new Error('Artifact is empty');
-    if (bytes.length > MAX_ARTIFACT_BYTES) throw new Error(`Artifact exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit`);
+    const limit = this.options?.maxFileBytes?.() ?? null;
+    if (limit !== null && bytes.length > limit) throw new Error('Artifact exceeds your selected file-size limit.');
     const id = input.id && /^[a-z0-9-]{8,80}$/i.test(input.id) ? input.id : `cf-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6)}`;
     const storageName = `${id}-${name}`;
     const dir = this.artifactDir(conversation.id);
@@ -1550,7 +1562,6 @@ export class CoworkStore {
     writeFileSync(path.join(dir, storageName), bytes);
     // Keep the existing private-computer exchange format so receive_file can
     // import files attached by the user or Telegram as well as agent exports.
-    writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ agentId: input.agentId, path: name, data: bytes.toString('base64') }), 'utf8');
     const artifact: CoworkArtifact = {
       id,
       conversationId: conversation.id,
@@ -1570,6 +1581,21 @@ export class CoworkStore {
   artifacts(conversationId: string): CoworkArtifact[] {
     return this.load().artifacts.filter((artifact) => artifact.conversationId === conversationId);
   }
+
+  addArtifactFile(input: { id?: string; conversationId: string; agentId?: string; name: string; mime?: string; sourcePath: string }): CoworkArtifact {
+    const data=this.load();
+    if (!this.getConversation(input.conversationId)) throw new Error('Artifact conversation not found.');
+    if (input.agentId && !this.getAgent(input.agentId)) throw new Error('Artifact agent not found.');
+    const size=statSync(input.sourcePath).size, limit=this.options?.maxFileBytes?.() ?? null;
+    if (limit!==null && size>limit) throw new Error('Artifact exceeds your selected file-size limit.');
+    const id=input.id && /^[\w-]{8,100}$/.test(input.id)?input.id:`cf-${Date.now().toString(36)}-${Math.floor(Math.random()*1e9)}`;
+    const prior=this.getArtifact(id); if (prior) { if(prior.conversationId!==input.conversationId)throw new Error('Artifact belongs to another conversation.');return prior; }
+    const name=safeArtifactName(input.name), storageName=`${id}-${name}`,dir=this.artifactDir(input.conversationId);
+    mkdirSync(dir,{recursive:true});copyFileSync(input.sourcePath,path.join(dir,storageName));
+    const artifact:CoworkArtifact={id,conversationId:input.conversationId,agentId:input.agentId,name,mime:artifactMime(name,input.mime),size,storageName,createdAt:new Date().toISOString()};
+    data.artifacts.push(artifact);this.save();return artifact;
+  }
+  assertArtifactSize(size:number):void{const limit=this.options?.maxFileBytes?.()??null;if(limit!==null&&size>limit)throw new Error('File exceeds your selected file-size limit.');}
 
   getArtifact(id: string): CoworkArtifact | undefined {
     return this.load().artifacts.find((artifact) => artifact.id === id);

@@ -1,27 +1,38 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync,createReadStream,rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ToolResult } from '../types.js';
 import { commandTimeout, deadline } from '../tools/command-timeout.js';
+import {dockerBinary,validateComputerChunk,type ComputerBinary} from './file-transport.js';
+import { QuotaVolumes } from './quota-volumes.js';
+import { gituHomeRoot } from '../workspace/home.js';
 
-export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:7';
+export const COWORK_COMPUTER_IMAGE = 'agent-gitu-cowork:8';
 const IMAGE = COWORK_COMPUTER_IMAGE;
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 // A 20 MB binary attachment becomes about 27 MB when carried as base64 JSON.
 export const MAX_COMPUTER_MESSAGE_BYTES = 28_000_000;
-export type ComputerExec = (args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>;
+export type ComputerExec = ((args: string[], input?: string, signal?: AbortSignal, timeoutMs?: number) => Promise<string>) & {binary?:ComputerBinary};
 
 export interface CoworkSharedFile {
   artifactId: string;
   name: string;
-  dataBase64: string;
+  dataBase64?: string;
+  sourcePath?: string;
 }
 
 /** Docker receives argv and stdin separately: agent input never becomes host shell code. */
-export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_000) =>
-  new Promise((resolve, reject) => {
+export const dockerExec: ComputerExec = async (args, input, signal, timeoutMs = 120_000) => {
+  if (args[0] === 'gitu-quota') {
+    const owner = args[3] ?? 'gitu-local-' + createHash('sha256').update(path.resolve(gituHomeRoot())).digest('hex').slice(0, 24);
+    await new QuotaVolumes(process.env['AGENT_GITU_COMPUTER_QUOTA_ROOT'], owner).prepare(args[1]!, Number(args[2]), signal);
+    return 'quota-ready';
+  }
+  const program = args[1] === '-i' ? 3 : 2;
+  if (args[0] === 'exec' && /^gitu-cowork-[a-f0-9]{24}$/.test(args[program - 1] ?? '') && args[program] === 'node') args = [...args.slice(0, program), '/computer/quota-guard', ...args.slice(program)];
+  return new Promise((resolve, reject) => {
     const child = spawn('docker', args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], signal });
     let output = '';
     let error = '';
@@ -51,6 +62,7 @@ export const dockerExec: ComputerExec = (args, input, signal, timeoutMs = 120_00
     child.stdin.on('error', () => {});
     child.stdin.end(input ?? '');
   });
+};
 
 /** Hosted deployments use the restricted desktop broker on their private network. */
 export const computerExec: ComputerExec = async (args, input, signal, timeoutMs = 120_000) => {
@@ -81,12 +93,22 @@ export const computerExec: ComputerExec = async (args, input, signal, timeoutMs 
 };
 
 /** Explicit hosted selection must never fall through to a local Docker host. */
+computerExec.binary=async(request,input,signal)=>{
+  validateComputerChunk(request,input);const broker=process.env['AGENT_GITU_COMPUTER_BROKER_URL'];if(!broker)return dockerBinary(request,input,signal);
+  const key=process.env['AGENT_GITU_COMPUTER_BROKER_KEY'];if(!key||key.length<32)throw new Error('The private desktop runtime key is missing.');
+  const url=new URL('/file-chunks',broker);url.search=new URLSearchParams({metadata:JSON.stringify(request)}).toString();
+  const response=await fetch(url,{method:'POST',headers:{authorization:'Bearer '+key,'content-type':'application/octet-stream'},body:input??Buffer.alloc(0),signal:signal?AbortSignal.any([signal,AbortSignal.timeout(120000)]):AbortSignal.timeout(120000),redirect:'error'});
+  if(!response.ok)throw new Error('Private desktop file transport failed ('+response.status+').');
+  const chunks:Buffer[]=[];let size=0;for await(const chunk of response.body!){const data=Buffer.from(chunk);size+=data.length;if(size>5*1024*1024)throw new Error('Private desktop chunk exceeded its transport limit.');chunks.push(data);}return Buffer.concat(chunks,size);
+};
+dockerExec.binary=dockerBinary;
 export const hostedComputerExec: ComputerExec = (args, input, signal, timeoutMs) => {
   if (!process.env['AGENT_GITU_COMPUTER_BROKER_URL']) return Promise.reject(new Error('Gitu cloud is not configured on this server. Choose a saved cloud connection.'));
   return computerExec(args, input, signal, timeoutMs);
 };
+hostedComputerExec.binary=(request,input,signal)=>{if(!process.env['AGENT_GITU_COMPUTER_BROKER_URL'])return Promise.reject(new Error('Gitu cloud is not configured on this server.'));return computerExec.binary!(request,input,signal);};
 
-export function computerCreateArgs(name: string): string[] {
+export function computerCreateArgs(name: string,limits:{cpu?:number;memoryMb?:number;diskMb?:number}={}): string[] {
   return [
     'create',
     '--name',
@@ -95,9 +117,9 @@ export function computerCreateArgs(name: string): string[] {
     'dev.agentgitu.cowork=true',
     '--init',
     '--cpus',
-    '2',
+    String(limits.cpu??2),
     '--memory',
-    '2g',
+    limits.memoryMb?limits.memoryMb+'m':'2g',
     '--pids-limit',
     '256',
     '--shm-size',
@@ -106,10 +128,12 @@ export function computerCreateArgs(name: string): string[] {
     'ALL',
     '--security-opt',
     'no-new-privileges',
+    ...(limits.diskMb ? ['--read-only', '--tmpfs', '/tmp:rw,nosuid,nodev,size=' + Math.min(512, Math.max(64, Math.floor((limits.memoryMb ?? 2048) / 4))) + 'm,mode=1777'] : []),
     '--mount',
     `type=volume,src=${name}-workspace,dst=/workspace`,
     '--mount',
     `type=volume,src=${name}-home,dst=/home/agent`,
+    ...(limits.diskMb?['--env','GITU_DISK_LIMIT_MB='+limits.diskMb]:[]),
     IMAGE,
   ];
 }
@@ -122,6 +146,7 @@ export type ComputerUnavailableReason =
   | 'display_start_failed'
   | 'stream_failed'
   | 'operation_not_supported'
+  | 'disk_quota_unavailable'
   | 'timeout'
   | 'unknown';
 
@@ -141,6 +166,7 @@ export interface ComputerStatus {
  *  Kept in one place so the codes stay stable across client and panel. */
 function classifyUnavailable(message: string): ComputerUnavailableReason {
   const text = message.toLowerCase();
+  if (/disk quota|quota-backed|quota directory|quota server|xfs/.test(text)) return 'disk_quota_unavailable';
   if (text.includes('unsupported desktop operation')) return 'operation_not_supported';
   if (/docker|container runtime|command not found|enoent|cannot connect to the docker daemon/.test(text)) return 'runtime_not_installed';
   if (/chromium|chrome|browser/.test(text)) return 'browser_missing';
@@ -152,7 +178,9 @@ function classifyUnavailable(message: string): ComputerUnavailableReason {
 /** One persistent container and volume per stable agent id, scoped to this Gitu home. */
 export class CoworkComputer {
   readonly name: string;
-  private state: ComputerStatus['state'] = 'stopped';
+  private _state: ComputerStatus['state'] = 'stopped';
+  private get state():ComputerStatus['state']{return this._state;}
+  private set state(value:ComputerStatus['state']){this._state=value;this.runtime.onState?.(value);}
   private error?: string;
   private control: 'shared' | 'user' = 'shared';
   private handoff?: ComputerStatus['handoff'];
@@ -173,7 +201,7 @@ export class CoworkComputer {
     readonly agentId: string,
     private readonly root: string,
     private readonly exec: ComputerExec = computerExec,
-    private readonly runtime: { key: string; cloud?: boolean } = { key: 'default' },
+    private readonly runtime: { key: string; cloud?: boolean; beforeStart?:()=>void;onState?:(state:ComputerStatus['state'])=>void;limits?:()=>{cpu:number;memoryMb:number;diskMb:number};maxFileBytes?: () => number|null; resolveArtifact?: (id:string,conversationId:string)=>string|undefined } = { key: 'default' },
   ) {
     const key = createHash('sha256')
       .update(`${path.resolve(root)}:${agentId}`)
@@ -239,11 +267,15 @@ export class CoworkComputer {
   }
 
   private async provision(signal?: AbortSignal): Promise<void> {
-    this.state = 'starting';
     this.error = undefined;
     this.reason = undefined;
     try {
+      this.runtime.beforeStart?.();this.state='starting';
       await this.exec(['info', '--format', '{{.ServerVersion}}'], undefined, signal, 15_000);
+      if (this.runtime.limits) {
+        const quota = await this.exec(['gitu-quota', this.name, String(this.runtime.limits().diskMb)], undefined, signal, 120000);
+        if (quota.trim() !== 'quota-ready') throw new Error('Private computer disk quota could not be verified. Configure a quota-backed computer server before starting.');
+      }
       let exists = false;
       let legacyImage = false;
       try {
@@ -252,6 +284,11 @@ export class CoworkComputer {
         legacyImage = configuredImage.trim() !== IMAGE;
       } catch {
         signal?.throwIfAborted();
+      }
+      if (exists && !legacyImage && this.runtime.limits) {
+        const limits = this.runtime.limits();
+        const configured = JSON.parse(await this.exec(['container', 'inspect', '--format', '{{json .HostConfig}}', this.name], undefined, signal, 15_000)) as { NanoCpus?: number; Memory?: number; ReadonlyRootfs?: boolean };
+        legacyImage = configured.NanoCpus !== limits.cpu * 1_000_000_000 || configured.Memory !== limits.memoryMb * 1024 * 1024 || configured.ReadonlyRootfs !== true;
       }
       if (!exists || legacyImage) {
         try {
@@ -278,11 +315,11 @@ export class CoworkComputer {
           await this.exec(['rename', this.name, this.name + '-backup-' + Date.now()], undefined, signal);
           exists = false;
         }
-        await this.exec(computerCreateArgs(this.name), undefined, signal);
+        await this.exec(computerCreateArgs(this.name,this.runtime.limits?.()), undefined, signal);
       }
       // Refresh the small bundled service even for an existing container.
       // Volumes and login sessions stay intact; no image rebuild is needed.
-      await this.exec(['cp', path.join(ASSETS, 'server.cjs'), `${this.name}:/computer/server.cjs`], undefined, signal);
+      if (!this.runtime.limits) await this.exec(['cp', path.join(ASSETS, 'server.cjs'), `${this.name}:/computer/server.cjs`], undefined, signal);
       if (exists) {
         if ((await this.exec(['container', 'inspect', '--format', '{{.State.Status}}', this.name], undefined, signal, 15_000)).trim() === 'paused') await this.exec(['unpause', this.name], undefined, signal, 15_000);
         await this.exec(['stop', '--time', '2', this.name], undefined, signal);
@@ -307,14 +344,16 @@ export class CoworkComputer {
     this.startupAbort?.abort();
     for (const controller of this.active) controller.abort();
     if (this.starting) await this.starting.catch(() => {});
+    if(this.state==='stopped'||this.state==='unavailable')await this.refreshStatus(true);
+    if(this.state==='unavailable')throw new Error('Cannot confirm that this private computer has stopped. Reconnect its server before releasing its capacity.');
     if (this.state === 'sleeping') { await this.exec(['unpause', this.name], undefined, undefined, 15_000); this.state = 'running'; }
     if (this.state === 'running') await this.exec(['stop', '--time', '2', this.name], undefined, undefined, 15_000);
     this.state = 'stopped';
   }
 
   /** Restore paused/running state after an app restart without waking it. */
-  async refreshStatus(): Promise<ComputerStatus> {
-    if (this.state !== 'starting' && this.state !== 'unavailable') {
+  async refreshStatus(reconcile=false): Promise<ComputerStatus> {
+    if (this.state !== 'starting' && (reconcile || this.state !== 'unavailable')) {
       try {
         const state = (await this.exec(['container', 'inspect', '--format', '{{.State.Status}}', this.name], undefined, undefined, 15_000)).trim();
         if (this.state === 'stopped' && ['paused', 'running'].includes(state)) {
@@ -326,6 +365,7 @@ export class CoworkComputer {
         else if (['created', 'exited', 'dead'].includes(state)) this.state = 'stopped';
       } catch (error) {
         if (/no such|not found/i.test((error as Error).message)) this.state = 'stopped';
+        else if(reconcile){this.state='unavailable';this.error='Cannot reconcile the private computer. Check its runtime connection before continuing.';}
       }
     }
     return this.status();
@@ -416,17 +456,36 @@ export class CoworkComputer {
         if (!conversationId || !/^[\w-]+$/.test(conversationId)) throw new Error('File sharing requires a conversation.');
         const folder = path.join(this.root, 'artifacts', conversationId);
         if (tool === 'share_file') {
-          const exported = await this.request('export_file', params, signal);
-          if (!exported.ok) return exported;
-          const artifactId = randomUUID();
+          const info=await this.request('file_transfer_info',{path:params['path']},signal);if(!info.ok)return info;
+          const details=JSON.parse(info.output) as {size:number;mtime:number};
+          if(!Number.isSafeInteger(details.size)||details.size<0||!Number.isFinite(details.mtime))throw new Error('Private computer returned invalid file metadata.');
+          const limit=this.runtime.maxFileBytes?.()??null;if(limit!==null&&details.size>limit)throw new Error('File exceeds your selected file-size limit.');
           const name = path.posix.basename(String(params['path'] ?? 'file'));
           mkdirSync(folder, { recursive: true });
-          writeFileSync(path.join(folder, `${artifactId}.json`), JSON.stringify({ agentId: this.agentId, path: params['path'], data: exported.output }));
-          onSharedFile?.({ artifactId, name, dataBase64: exported.output });
+          const key=createHash('sha256').update(JSON.stringify([this.agentId,params['path'],details])).digest('hex'),checkpointPath=path.join(folder,`transfer-${key}.json`);
+          let transfer:{id:string;offset:number};
+          try{transfer=JSON.parse(readFileSync(checkpointPath,'utf8')) as {id:string;offset:number};if(!/^[a-f0-9-]{36}$/.test(transfer.id))throw new Error('Invalid checkpoint.');}catch{transfer={id:randomUUID(),offset:0};}
+          const artifactId=transfer.id,sourcePath=path.join(folder,`${artifactId}.transfer`),fd=openSync(sourcePath,existsSync(sourcePath)?'r+':'w');
+          try{while(transfer.offset<details.size){const length=Math.min(5*1024*1024,details.size-transfer.offset);let bytes:Buffer;if(this.exec.binary)bytes=await this.exec.binary({name:this.name,path:String(params['path']),offset:transfer.offset,length,write:false},undefined,signal);else{const chunk=await this.request('file_transfer_read',{path:params['path'],offset:transfer.offset,length},signal);if(!chunk.ok)throw new Error(chunk.output);bytes=Buffer.from(chunk.output,'base64');}if(!bytes.length||bytes.length>details.size-transfer.offset)throw new Error('Invalid file transfer.');writeSync(fd,bytes,0,bytes.length,transfer.offset);transfer.offset+=bytes.length;writeFileSync(checkpointPath,JSON.stringify(transfer));}}finally{closeSync(fd);}
+          const current=await this.request('file_transfer_info',{path:params['path']},signal);if(!current.ok||current.output!==info.output)throw new Error('File changed during transfer. Retry after it stops changing.');
+          const checksum=await this.request('file_transfer_checksum',{path:params['path']},signal),hash=createHash('sha256');for await(const chunk of createReadStream(sourcePath))hash.update(chunk);if(!checksum.ok||hash.digest('hex')!==checksum.output)throw new Error('Private computer transfer checksum mismatch.');
+          onSharedFile?.({ artifactId, name, sourcePath });
+          if(onSharedFile){rmSync(sourcePath,{force:true});rmSync(checkpointPath,{force:true});}
           return { ok: true, output: `Attached ${name} to chat with Open/Download controls. Artifact id: ${artifactId}. Teammates in this conversation can use receive_file with this id.` };
         }
         const artifactId = String(params['artifactId'] ?? '');
-        if (!/^[a-f0-9-]{36}$/.test(artifactId)) throw new Error('Invalid artifact id.');
+        if (!/^[\w-]{8,100}$/.test(artifactId)) throw new Error('Invalid artifact id.');
+        const sharedPath=path.join(folder,artifactId+'.transfer');
+        const sourcePath=this.runtime.resolveArtifact?.(artifactId,conversationId)??(!this.runtime.resolveArtifact&&existsSync(sharedPath)?sharedPath:undefined);
+        if(sourcePath){
+          const size=statSync(sourcePath).size,limit=this.runtime.maxFileBytes?.()??null;if(limit!==null&&size>limit)throw new Error('File exceeds your selected file-size limit.');
+          const destination=String(params['path']??path.basename(sourcePath)),temporary=path.posix.join(path.posix.dirname(destination),`.gitu-transfer-${artifactId}.part`);
+          const info=await this.request('file_transfer_info',{path:temporary},signal);let offset=info.ok?Number((JSON.parse(info.output) as {size:number}).size):0;if(offset>size)offset=0;
+          const fd=openSync(sourcePath,'r');try{while(offset<size){const bytes=Buffer.alloc(Math.min(5*1024*1024,size-offset));const count=readSync(fd,bytes,0,bytes.length,offset);if(!count)throw new Error('File changed during transfer.');if(this.exec.binary)await this.exec.binary({name:this.name,path:temporary,offset,length:count,write:true},bytes.subarray(0,count),signal);else{const written=await this.request('file_transfer_write',{path:temporary,offset,data:bytes.subarray(0,count).toString('base64')},signal);if(!written.ok)throw new Error(written.output);}offset+=count;}}finally{closeSync(fd);}
+          if(size===0){const written=await this.request('file_transfer_write',{path:temporary,offset:0,data:''},signal);if(!written.ok)return written;}
+          const hash=createHash('sha256');for await(const chunk of createReadStream(sourcePath))hash.update(chunk);
+          return await this.request('file_transfer_finish',{path:temporary,destination,size,checksum:hash.digest('hex')},signal);
+        }
         const artifact = JSON.parse(readFileSync(path.join(folder, `${artifactId}.json`), 'utf8')) as { data: string };
         return await this.request('import_file', { path: params['path'], data: artifact.data }, signal);
       }

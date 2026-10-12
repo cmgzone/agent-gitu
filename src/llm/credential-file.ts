@@ -36,7 +36,7 @@ export function withCredentialFileLock<T>(file: string, action: () => T): T {
   let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(`${file}.lock.sqlite`);
-    db.exec('PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE');
+    db.exec('PRAGMA busy_timeout = 30000; BEGIN IMMEDIATE');
   } catch {
     db?.close();
     throw storageError('save');
@@ -95,13 +95,13 @@ function commit(file: string, text: string, previous: string | undefined): void 
   catch { console.warn('[gitu] Connection saved, but its protected backup could not be refreshed.'); }
 }
 
-export function updateCredentialJson<T>(file: string, validate: (value: unknown) => T, update: (current: T | undefined) => T | undefined): void {
+export function updateCredentialJson<T>(file: string, validate: (value: unknown) => T, update: (current: T | undefined) => T | undefined, protectPrevious?: (value:string)=>string): void {
   withCredentialFileLock(file, () => {
     const current = readCredentialJson(file, validate);
-    const previous = current === undefined ? undefined : `${JSON.stringify(current, null, 2)}\n`;
+    const previous = current === undefined ? undefined : readCredentialFile(file,text=>{validate(JSON.parse(text));return text;});
     const next = update(current);
     if (next === undefined) return;
-    commit(file, `${JSON.stringify(next, null, 2)}\n`, previous);
+    commit(file, `${JSON.stringify(next, null, 2)}\n`, previous===undefined?undefined:protectPrevious?protectPrevious(previous):previous);
   });
 }
 

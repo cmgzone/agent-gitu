@@ -270,6 +270,10 @@ async function execute({ id, tool, params: p = {} }) {
   }
   if (cancelled.has(id)) throw new Error('Computer operation cancelled.');
   const file = () => safePath(p.path);
+  if(process.env.GITU_DISK_LIMIT_MB&&['run_command','write_file','import_file','file_transfer_write','browse'].includes(tool)){
+    const usage=await execFileAsync('du',['-sm','/workspace','/home/agent'],{timeout:30000});const used=usage.stdout.trim().split('\n').reduce((sum,line)=>sum+Number(line.split(/\s+/)[0]),0);
+    if(used>=Number(process.env.GITU_DISK_LIMIT_MB))throw new Error('Private computer disk allowance reached. Ask the owner to free space or raise its allowance.');
+  }
   switch (tool) {
     case 'run_command':
       return command(id, p);
@@ -313,6 +317,30 @@ async function execute({ id, tool, params: p = {} }) {
       if (info.size > 20_000_000) throw new Error('Chat attachments cannot exceed 20 MB.');
       return { ok: true, output: fs.readFileSync(target).toString('base64') };
     }
+    case 'file_transfer_info': {
+      const target=file(),info=fs.statSync(target);
+      if(!info.isFile())throw new Error('Only regular files can be transferred.');
+      return {ok:true,output:JSON.stringify({size:info.size,mtime:info.mtimeMs})};
+    }
+    case 'file_transfer_checksum': {
+      const hash=require('node:crypto').createHash('sha256');for await(const chunk of fs.createReadStream(file()))hash.update(chunk);return{ok:true,output:hash.digest('hex')};
+    }
+    case 'file_transfer_read': {
+      const target=file(),offset=Number(p.offset),length=Math.min(5*1024*1024,Number(p.length));
+      if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<1)throw new Error('Invalid transfer range.');
+      const fd=fs.openSync(target,'r');try{const buffer=Buffer.alloc(length),count=fs.readSync(fd,buffer,0,length,offset);return {ok:true,output:buffer.subarray(0,count).toString('base64')};}finally{fs.closeSync(fd);}
+    }
+    case 'file_transfer_write': {
+      const target=file(),offset=Number(p.offset),bytes=Buffer.from(String(p.data||''),'base64');
+      if(!Number.isSafeInteger(offset)||offset<0||bytes.length>5*1024*1024)throw new Error('Invalid transfer chunk.');
+      fs.mkdirSync(path.dirname(target),{recursive:true});const fd=fs.openSync(target,offset===0?'w':'r+');try{fs.writeSync(fd,bytes,0,bytes.length,offset);}finally{fs.closeSync(fd);}return {ok:true,output:String(offset+bytes.length)};
+    }
+    case 'file_transfer_finish': {
+      const target=file(),destination=safePath(String(p.destination||''));
+      if(fs.statSync(target).size!==Number(p.size))throw new Error('Transfer is incomplete.');
+      if(p.checksum){const hash=require('node:crypto').createHash('sha256');for await(const chunk of fs.createReadStream(target))hash.update(chunk);if(hash.digest('hex')!==p.checksum)throw new Error('Transfer checksum mismatch.');}
+      fs.renameSync(target,destination);return {ok:true,output:'File transfer complete.'};
+    }
     case 'apply_edit': {
       const text = smallFile(file()).toString('utf8');
       if (typeof p.oldString !== 'string' || !p.oldString || typeof p.newString !== 'string') throw new Error('oldString and newString are required.');
@@ -337,6 +365,21 @@ async function execute({ id, tool, params: p = {} }) {
 http
   .createServer(async (req, res) => {
     // Webpages in the private browser cannot invoke computer tools through CSRF.
+    if(req.url==='/file-chunks'&&['GET','PATCH'].includes(req.method)&&req.headers['x-gitu-key']===secret){
+      try{
+        const target=safePath(decodeURIComponent(String(req.headers['x-file-path']||'')),req.method==='GET'?shareRoots:undefined),offset=Number(req.headers['upload-offset']),length=Number(req.headers['x-chunk-length']);
+        if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<0||length>5*1024*1024)throw new Error('Invalid file chunk.');
+        if(req.method==='GET'){
+          const stat=fs.statSync(target);if(!stat.isFile()||offset+length>stat.size)throw new Error('Invalid file range.');
+          res.writeHead(200,{'content-type':'application/octet-stream','content-length':length});if(!length)res.end();else fs.createReadStream(target,{start:offset,end:offset+length-1}).on('error',()=>res.destroy()).pipe(res);
+        }else{
+          if(process.env.GITU_DISK_LIMIT_MB){const used=Number((await execFileAsync('du',['-sm','/workspace','/home/agent'],{timeout:10000})).stdout.split('\n').reduce((sum,line)=>sum+(Number(line.split(/\s+/)[0])||0),0));if(used+length/1048576>Number(process.env.GITU_DISK_LIMIT_MB))throw new Error('Private computer disk limit reached.');}
+          const chunks=[];let count=0;for await(const chunk of req){count+=chunk.length;if(count>length)throw new Error('File chunk too large.');chunks.push(chunk);}if(count!==length)throw new Error('File chunk incomplete.');
+          fs.mkdirSync(path.dirname(target),{recursive:true});if(offset&&(!fs.existsSync(target)||fs.statSync(target).size!==offset))throw new Error('File offset changed.');
+          const fd=fs.openSync(target,offset?'r+':'w');try{const bytes=Buffer.concat(chunks,count);let written=0;while(written<count)written+=fs.writeSync(fd,bytes,written,count-written,offset+written);fs.fsyncSync(fd);}finally{fs.closeSync(fd);}res.writeHead(200,{'content-type':'application/octet-stream'});res.end();
+        }
+      }catch{if(!res.headersSent){res.writeHead(400);res.end('Private computer file chunk failed.');}else res.destroy();}return;
+    }
     if (req.method !== 'POST' || req.headers['x-gitu-key'] !== secret) {
       res.writeHead(403);
       res.end('{}');

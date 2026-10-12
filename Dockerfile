@@ -15,11 +15,14 @@ WORKDIR /app
 COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/node_modules ./node_modules
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
 COPY assets ./assets
 COPY voice-worker/agent.mjs voice-worker/package.json voice-worker/package-lock.json voice-worker/Dockerfile ./voice-worker/
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/start.sh /usr/local/bin/start-gitu
 COPY deploy/verify-hosted-runtime.mjs ./deploy/verify-hosted-runtime.mjs
+COPY deploy/company-container-smoke.mjs ./deploy/company-container-smoke.mjs
 RUN chmod +x /usr/local/bin/start-gitu && mkdir -p /data && chown node:node /data
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1

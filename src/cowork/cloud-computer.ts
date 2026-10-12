@@ -9,9 +9,11 @@ import { deadline } from '../tools/command-timeout.js';
 import { ComputerBroker } from './computer-broker.js';
 import { MAX_COMPUTER_MESSAGE_BYTES, type ComputerExec } from './computer.js';
 import { DESKTOP_BRIDGE } from './desktop-stream.js';
+import {binaryArgs,binaryChannel,validateComputerChunk,type ComputerBinary} from './file-transport.js';
 
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
-const ASSET_NAMES = ['Dockerfile', 'server.cjs', 'start-desktop.sh', 'open-browser.cjs', 'open-agent-browser.cjs', 'gitu-wallpaper.svg'];
+const ASSET_NAMES = ['Dockerfile', 'server.cjs', 'start-desktop.sh', 'open-browser.cjs', 'open-agent-browser.cjs', 'gitu-wallpaper.svg', 'quota-guard.c'];
+const QUOTA_ENTRY = 'const {QuotaVolumes}=await import(process.argv[1]); await new QuotaVolumes(process.argv[2],process.argv[3]).prepare(process.argv[4],Number(process.argv[5])); console.log("quota-ready");';
 type CloudRegistry = Pick<SshConnectionRegistry, 'get' | 'openClient'>;
 
 function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -38,6 +40,7 @@ export class CloudComputerTransport {
   private client?: Client;
   private opening?: Promise<Client>;
   private assets?: Promise<string>;
+  private quotaAssets?: Promise<string>;
   private readonly broker: ComputerBroker;
   readonly owner: string;
 
@@ -48,9 +51,15 @@ export class CloudComputerTransport {
   ) {
     this.owner = 'gitu-cloud-' + createHash('sha256').update(path.resolve(root) + ':' + connectionId).digest('hex').slice(0, 24);
     this.broker = new ComputerBroker(this.owner, this.remoteExec);
+    this.execute.binary=this.transfer;
   }
 
   readonly execute: ComputerExec = (args, input, signal, timeoutMs = 120_000) => this.broker.execute(args, input, timeoutMs, signal);
+  private readonly transfer:ComputerBinary=async(request,input,signal)=>{
+    validateComputerChunk(request,input);await this.broker.owned(request.name,signal);
+    const channel=await this.channel(cloudDockerCommand(binaryArgs(request)),signal);
+    return binaryChannel(channel,input,signal,channel.stderr);
+  };
 
   private async connected(): Promise<Client> {
     const profile = this.registry.get(this.connectionId);
@@ -59,7 +68,7 @@ export class CloudComputerTransport {
     if (!this.opening) {
       this.opening = this.registry.openClient(this.connectionId).then((client) => {
         this.client = client;
-        const closed = () => { if (this.client === client) { this.client = undefined; this.assets = undefined; } };
+        const closed = () => { if (this.client === client) { this.client = undefined; this.assets = undefined; this.quotaAssets = undefined; } };
         client.on('error', closed);
         client.once('close', closed);
         return client;
@@ -75,8 +84,17 @@ export class CloudComputerTransport {
   }
 
   private async uploadAssets(): Promise<string> {
-    const client = await this.connected();
     const files = ASSET_NAMES.map((name) => ({ name, contents: readFileSync(path.join(ASSETS, name)) }));
+    return this.uploadFiles(files);
+  }
+  private prepareQuotaAssets(): Promise<string> {
+    // The built helper has only node:* imports, so the server does not need a
+    // second Gitu installation or receive any account credentials.
+    if (!this.quotaAssets) this.quotaAssets = this.uploadFiles([{ name: 'quota-volumes.mjs', contents: readFileSync(fileURLToPath(new URL('../../dist/cowork/quota-volumes.js', import.meta.url))) }]).catch(error => { this.quotaAssets = undefined; throw error; });
+    return this.quotaAssets;
+  }
+  private async uploadFiles(files: Array<{ name: string; contents: Buffer }>): Promise<string> {
+    const client = await this.connected();
     const hash = createHash('sha256');
     for (const file of files) hash.update(file.name).update(file.contents);
     const digest = hash.digest('hex');
@@ -113,7 +131,15 @@ export class CloudComputerTransport {
     if (argv[0] === 'build') argv[argv.length - 1] = await this.prepareAssets();
     if (argv[0] === 'cp') argv[1] = path.posix.join(await this.prepareAssets(), 'server.cjs');
     signal?.throwIfAborted();
-    const channel = await this.channel(cloudDockerCommand(argv), signal);
+    let command: string;
+    if (argv[0] === 'gitu-quota') {
+      const root = this.registry.get(this.connectionId)?.computerQuotaRoot;
+      if (!root) throw new Error('Configure the saved server’s private computer quota directory on an XFS filesystem with project quotas. The server needs Node 22.22.3+, xfsprogs and quota administrator permissions.');
+      const directory = await this.prepareQuotaAssets();
+      const quotaArgs = ['--input-type=module', '-e', QUOTA_ENTRY, path.posix.join(directory, 'quota-volumes.mjs'), root, argv[3]!, argv[1]!, argv[2]!];
+      command = 'node ' + quotaArgs.map(arg => "'" + arg.replaceAll("'", "'\\''") + "'").join(' ');
+    } else command = cloudDockerCommand(argv);
+    const channel = await this.channel(command, signal);
     return new Promise<string>((resolve, reject) => {
       let output = '';
       let bytes = 0;
@@ -169,7 +195,7 @@ export class CloudComputerTransport {
     const cancel = deadline(15_000, () => timeout.abort(new Error('Cloud desktop connection timed out.')));
     const opening = async () => {
       await this.broker.owned(name, combined);
-      const channel = await this.channel(cloudDockerCommand(['exec', '-i', name, 'node', '-e', DESKTOP_BRIDGE]), combined);
+      const channel = await this.channel(cloudDockerCommand(['exec', '-i', name, '/computer/quota-guard', 'node', '-e', DESKTOP_BRIDGE]), combined);
       channel.stderr.resume();
       return channel;
     };
@@ -179,7 +205,7 @@ export class CloudComputerTransport {
 
   close(): void {
     const client = this.client;
-    this.client = undefined; this.assets = undefined;
+    this.client = undefined; this.assets = undefined; this.quotaAssets = undefined;
     client?.end();
     void this.opening?.then((connected) => connected.end()).catch(() => {});
   }

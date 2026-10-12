@@ -463,6 +463,7 @@ export class SkillStore {
 
   static projectSkillsDir(repoRoot: string): string { return path.join(repoRoot, '.hermes', 'skills'); }
   static forProject(repoRoot: string): SkillStore { return new SkillStore(SkillStore.projectSkillsDir(repoRoot), SkillStore.globalSkillsDir(), builtinSkills()); }
+  static forCompany(repoRoot: string): SkillStore { return new SkillStore(SkillStore.projectSkillsDir(repoRoot), path.join(repoRoot,'.hermes','shared-skills'), builtinSkills()); }
   static globalSkillsDir(): string { return path.join(ensureGituHome().root, 'Skills'); }
   diagnostics(): SkillDiagnostic[] { return [...this.lastDiagnostics]; }
   private diagnostic(code: SkillDiagnosticCode, file: string, message: string, scope?: Exclude<SkillScope, 'builtin'>): void { this.lastDiagnostics.push({ code, path: file, message, scope }); }

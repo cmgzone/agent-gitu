@@ -13,6 +13,7 @@ export interface SshConnectionProfile {
   hostFingerprint: string;
   createdAt: string;
   updatedAt: string;
+  computerQuotaRoot?: string;
 }
 
 export interface SshConnectionView extends SshConnectionProfile {
@@ -140,11 +141,13 @@ export class SshConnectionRegistry {
     return openSsh(profile, password);
   }
 
-  async saveAndValidate(input: { label: string; baseUrl: string; password: string; hostFingerprint: string }): Promise<SshConnectionView> {
+  async saveAndValidate(input: { label: string; baseUrl: string; password: string; hostFingerprint: string; computerQuotaRoot?: string }): Promise<SshConnectionView> {
     const target = parseSshUrl(input.baseUrl);
     const label = input.label.trim().slice(0, 120);
     const password = input.password;
     const hostFingerprint = input.hostFingerprint.trim();
+    const computerQuotaRoot = input.computerQuotaRoot?.trim();
+    if (computerQuotaRoot && !/^\/[a-zA-Z0-9_./-]+$/.test(computerQuotaRoot)) throw new Error('Use an absolute Linux path for the private computer quota directory.');
     if (!label || !password) throw new Error('Connection name and SSH password are required.');
     if (!/^SHA256:[A-Za-z0-9+/]{43}$/.test(hostFingerprint)) throw new Error('Check and confirm the SSH host key first.');
     const connected = await openSsh({ ...target, hostFingerprint }, password);
@@ -152,7 +155,7 @@ export class SshConnectionRegistry {
     const existing = this.list().find((profile) => profile.host === target.host && profile.port === target.port && profile.username === target.username);
     const id = existing?.id ?? `ssh-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e5).toString(36)}`;
     const now = new Date().toISOString();
-    const profile: SshConnectionProfile = { id, label, ...target, hostFingerprint, createdAt: existing?.createdAt ?? now, updatedAt: now };
+    const profile: SshConnectionProfile = { id, label, ...target, hostFingerprint, computerQuotaRoot: input.computerQuotaRoot === undefined ? existing?.computerQuotaRoot : computerQuotaRoot || undefined, createdAt: existing?.createdAt ?? now, updatedAt: now };
     const profiles = this.list().filter((item) => item.id !== id).map(({ hasCredential: _hasCredential, ...item }) => item);
     writeJson(file(), { version: 1, connections: [...profiles, profile] });
     setStoredKey(keyRef(id), password);

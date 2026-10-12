@@ -94,7 +94,7 @@ export const COWORK_WIDGETS_CSS = String.raw`
     .cw.widgets-open .cw-widget-backdrop { display: block; }
   }
   @media(max-width:480px) { .cw-widget-toggle > .cw-widget-toggle-label { display: none; } .cw-widget-toggle { padding-inline: 10px; } }
-  /* Every widget is an independent card in the top grid. */
+  /* Overlay cards on small screens; desktop users can dock them beside chat. */
   .cw .cw-msgs { padding-top: 120px; scroll-padding-top: 120px; }
   .cw-widget-toggle { position: absolute; left: 12px; top: 70px; z-index: 5; display: inline-flex; align-items: center; gap: 7px; min-height: 40px; border: 0; padding: 7px 10px; background: transparent; color: var(--text); cursor: pointer; }
   .cw-widget-toggle svg { width: 15px; height: 15px; }
@@ -106,6 +106,15 @@ export const COWORK_WIDGETS_CSS = String.raw`
   .cw-widget-lane .cw-panel-card { padding: 16px; border-radius: 22px; background: color-mix(in srgb,var(--card) 78%,transparent); backdrop-filter: blur(24px) saturate(1.1); -webkit-backdrop-filter: blur(24px) saturate(1.1); box-shadow: 0 12px 36px -26px rgba(18,44,70,.22); min-width: 0; }
   #cw .cw-widget-backdrop { display: none; position: absolute; inset: 0; z-index: 11; border: 0; padding: 0; background: color-mix(in srgb,var(--bg) 15%,transparent) !important; backdrop-filter: blur(14px) saturate(.85); -webkit-backdrop-filter: blur(14px) saturate(.85); }
   #cw.widgets-open .cw-widget-backdrop { display: block; }
+  .cw-widget-placement { min-width: 0; max-width: 120px; border: 1px solid var(--border2); border-radius: 10px; padding: 5px 7px; font: inherit; font-size: 11px; background: var(--card); color: var(--text); }
+  @media(min-width:1025px) {
+    .cw.widgets-left .cw-widget-lane { position: relative; inset: auto; z-index: auto; flex: 0 0 clamp(260px,28vw,360px); width: clamp(260px,28vw,360px); max-height: none; padding: 118px 16px 18px; }
+    .cw.widgets-left .cw-widget-lane-head { padding: 0; }
+    .cw.widgets-left .cw-widget-cards { grid-template-columns: minmax(0,1fr); grid-auto-rows: max-content; }
+    #cw.widgets-left .cw-widget-backdrop { display: none; }
+    .cw.widgets-left .cw-widget-lane > div:last-child { flex-wrap: wrap; }
+  }
+  @media(max-width:1024px) { .cw-widget-placement { display: none; } }
   .cw-widget-new { width: auto; align-self: flex-start; padding: 8px 12px; font-size: 12px; }
   .cw-widget-new[hidden] { display: none !important; }
   .cw-widget-intent { display: flex; align-items: center; gap: 10px; padding: 6px 14px; font-size: 12px; color: var(--text); }
@@ -128,11 +137,18 @@ export const COWORK_WIDGETS_CSS = String.raw`
 `;
 
 export const COWORK_WIDGETS_JS = String.raw`
+  function cwWidgetPlacement() {
+    var cw = cwEnsure();
+    if (!cw.widgetPlacement) { try { cw.widgetPlacement = localStorage.getItem('hermes.cowork.widgets.placement'); } catch (e) {} }
+    if (cw.widgetPlacement !== 'overlay') cw.widgetPlacement = 'left';
+    return cw.widgetPlacement;
+  }
+  function cwWidgetsDocked() { return window.innerWidth > 1024 && cwWidgetPlacement() === 'left'; }
   function cwWidgetOrder(widget) { return typeof widget.order === 'number' ? widget.order : Date.parse(widget.createdAt); }
   function cwWidgetsShellHtml() {
     return '<button type="button" class="cw-widget-toggle" id="cwWidgetToggle" aria-label="Open widgets" aria-controls="cwWidgetLane" aria-expanded="false" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span class="cw-widget-toggle-label">Widgets</span><span class="cw-widget-count" id="cwWidgetCount" aria-live="polite" aria-atomic="true">0</span></button>' +
       '<button type="button" class="cw-widget-backdrop" id="cwWidgetBackdrop" aria-label="Close widgets" tabindex="-1" hidden></button>' +
-      '<aside class="cw-widget-lane" id="cwWidgetLane" aria-labelledby="cwWidgetLaneTitle" tabindex="-1" hidden><div class="cw-widget-lane-head"><h2 id="cwWidgetLaneTitle">Widgets</h2><span></span><button type="button" class="cw-widget-close" id="cwWidgetClose" aria-label="Close widgets">' + cwIcon('close') + '</button></div><div class="cw-widget-cards" id="cwWidgetCards"></div><div style="display:flex;gap:12px"><button type="button" class="cw-widget-new" id="cwWidgetNew">' + cwIcon('plus') + 'Create a widget</button><button type="button" class="cw-widget-new" id="cwWidgetUndo" hidden>Undo dismiss</button></div></aside>';
+      '<aside class="cw-widget-lane" id="cwWidgetLane" aria-labelledby="cwWidgetLaneTitle" tabindex="-1" hidden><div class="cw-widget-lane-head"><h2 id="cwWidgetLaneTitle">Widgets</h2><span></span><select class="cw-widget-placement" id="cwWidgetPlacement" aria-label="Widget placement"><option value="left">Left side</option><option value="overlay">Over chat</option></select><button type="button" class="cw-widget-close" id="cwWidgetClose" aria-label="Close widgets">' + cwIcon('close') + '</button></div><div class="cw-widget-cards" id="cwWidgetCards"></div><div style="display:flex;gap:12px"><button type="button" class="cw-widget-new" id="cwWidgetNew">' + cwIcon('plus') + 'Create a widget</button><button type="button" class="cw-widget-new" id="cwWidgetUndo" hidden>Undo dismiss</button></div></aside>';
   }
   function cwWidgetSafeUrl(value) {
     if (typeof outSafeUrl === 'function') return outSafeUrl(value, 'link');
@@ -194,6 +210,8 @@ export const COWORK_WIDGETS_JS = String.raw`
     if (toggle) toggle.onclick = cwWidgetsToggle;
     if (close) close.onclick = function () { cwWidgetsClose(); };
     if (backdrop) backdrop.onclick = function () { cwWidgetsClose(); };
+    var placement = $('cwWidgetPlacement');
+    if (placement) { placement.value = cwWidgetPlacement(); placement.onchange = function () { cwEnsure().widgetPlacement = placement.value === 'overlay' ? 'overlay' : 'left'; try { localStorage.setItem('hermes.cowork.widgets.placement',cwEnsure().widgetPlacement); } catch (e) {} cwRenderWidgets(); }; }
     if (add) add.onclick = function () { var conv = cwActiveConv(); if (conv) cwNewWidgetModal(conv); };
     var undo = $('cwWidgetUndo'), cw = cwEnsure();
     if (undo) { undo.hidden = !cw.widgetUndo; undo.onclick = function () { var previous = cw.widgetUndo; if (!previous) return; cwWidgetPatch(previous, { op:'restore' }).then(function () { cw.widgetUndo = null; cwRenderWidgets(); }).catch(function () {}); }; }
@@ -244,6 +262,7 @@ export const COWORK_WIDGETS_JS = String.raw`
       if (!cwEnsure().widgetsOpen) return;
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cwWidgetsClose(); }
       if (event.key !== 'Tab') return;
+      if (cwWidgetsDocked()) return;
       var focusable = Array.prototype.slice.call(lane.querySelectorAll('button:not([disabled]),a[href],input,select,textarea,video[controls],audio[controls],[tabindex="0"]')).filter(function (element) { return !element.hidden && element.offsetParent !== null; });
       if (!focusable.length) { event.preventDefault(); lane.focus(); return; }
       var first = focusable[0], last = focusable[focusable.length - 1];
@@ -259,14 +278,15 @@ export const COWORK_WIDGETS_JS = String.raw`
     if (cw.widgetConversationId !== cw.active) { cw.widgetsOpen = window.innerWidth > 1024 && widgets.length > 0; cw.widgetConversationId = cw.active; }
     if (cw.widgetCreationPending === cw.active && widgets.length > (cw.widgetLastCount || 0)) { cw.widgetsOpen = true; cw.widgetCreationPending = null; }
     cw.widgetLastCount = widgets.length;
-    var open = visible && Boolean(cw.widgetsOpen), signature = cw.active + '|' + JSON.stringify(widgets) + '|' + JSON.stringify((cw.agents || []).map(function (agent) { return [agent.id,agent.name]; }));
+    var open = visible && Boolean(cw.widgetsOpen), docked = cwWidgetsDocked(), signature = cw.active + '|' + JSON.stringify(widgets) + '|' + JSON.stringify((cw.agents || []).map(function (agent) { return [agent.id,agent.name]; }));
     if (cards._widgetSignature !== signature) { cards._widgetSignature = signature; cwRenderWidgetGrid(cards,widgets); }
     lane.hidden = !open;
-    lane.setAttribute('role','dialog'); if (open) lane.setAttribute('aria-modal','true'); else lane.removeAttribute('aria-modal');
+    lane.setAttribute('role',docked ? 'complementary' : 'dialog'); if (open && !docked) lane.setAttribute('aria-modal','true'); else lane.removeAttribute('aria-modal');
     root.classList.toggle('widgets-open', open);
+    root.classList.toggle('widgets-left', visible && docked);
     if (toggle) { toggle.hidden = !visible; toggle.setAttribute('aria-expanded',String(open)); toggle.setAttribute('aria-label',(open ? 'Close' : 'Open') + ' widgets, ' + widgets.length + ' card' + (widgets.length === 1 ? '' : 's')); }
     if (count) count.textContent = String(widgets.length);
-    if (backdrop) backdrop.hidden = !open;
+    if (backdrop) backdrop.hidden = !open || docked;
     lane.querySelectorAll('iframe[data-widget-app]').forEach(function (frame) { if (frame._widgetVisible !== open) { frame._widgetVisible = open; if (frame.contentWindow) frame.contentWindow.postMessage({type:'gitu-widget-visibility',visible:open},'*'); } });
     cwBindWidgetControls();
   }

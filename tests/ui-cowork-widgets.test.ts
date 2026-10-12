@@ -7,7 +7,7 @@ import { WIDGET_APP_RUNTIME_JS } from '../src/server/ui-widget-app-runtime.js';
 function element() {
   const attributes = new Map<string, string>();
   return {
-    innerHTML: '', textContent: '', hidden: false, disabled: false, style: {}, dataset: {}, offsetParent: {},
+    innerHTML: '', textContent: '', value: '', hidden: false, disabled: false, style: {}, dataset: {}, offsetParent: {},
     classList: { add: vi.fn(), remove: vi.fn(), toggle: vi.fn() }, focus: vi.fn(),
     setAttribute: (name: string, value: string) => attributes.set(name, value),
     getAttribute: (name: string) => attributes.get(name), removeAttribute: (name: string) => attributes.delete(name),
@@ -15,13 +15,15 @@ function element() {
     contains: vi.fn(() => true), remove: vi.fn(),
   };
 }
-function load(width = 390) {
+function load(width = 390, savedPlacement: string | null = null) {
   const nodes: Record<string, ReturnType<typeof element>> = {};
-  ['cw', 'cwWidgetLane', 'cwWidgetCards', 'cwWidgetToggle', 'cwWidgetCount', 'cwWidgetBackdrop', 'cwWidgetClose', 'cwWidgetNew'].forEach(id => { nodes[id] = element(); });
+  ['cw', 'cwWidgetLane', 'cwWidgetCards', 'cwWidgetToggle', 'cwWidgetCount', 'cwWidgetBackdrop', 'cwWidgetClose', 'cwWidgetNew', 'cwWidgetPlacement'].forEach(id => { nodes[id] = element(); });
   const state = { active: 'conversation-1', agents: [{ id: 'agent-1', name: 'Designer' }], widgets: [] as Record<string, unknown>[], widgetsOpen: false, profileOpen: false, connectionsOpen: false };
   const esc = (value: unknown) => String(value ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
   const api = vi.fn(() => Promise.resolve({ ok: true }));
+  const localStorage = { getItem: vi.fn(() => savedPlacement), setItem: vi.fn() };
   const context = createContext({
+    localStorage,
     URL, console, document: { createElement: element, createTextNode: (value: string) => ({ textContent: value }), querySelector: () => null, querySelectorAll: () => [], addEventListener: vi.fn(), body: element(), documentElement: element(), activeElement: null },
     window: { innerWidth: width, addEventListener: vi.fn(), location: { href: 'http://localhost/' } },
     navigator: { clipboard: { writeText: vi.fn() } }, S: { active: 'cowork' }, $: (id: string) => nodes[id], esc,
@@ -38,7 +40,7 @@ function load(width = 390) {
     cwWidgetsShellHtml(): string; cwWidgetCardBodyHtml(widget: Record<string, unknown>): string; cwWidgetCardHtml(widget: Record<string, unknown>): string;
     cwRenderWidgets(): void; cwWidgetsToggle(): void; cwWidgetsClose(returnFocus?: boolean): void;
   };
-  return { nodes, state, helpers, context, api };
+  return { nodes, state, helpers, context, api, localStorage };
 }
 const widget = { id: 'cw-1', conversationId: 'conversation-1', title: 'Launch review', kind: 'rich', createdByAgentId: 'agent-1', createdAt: '2026-10-09T06:00:00Z', updatedAt: '2026-10-09T06:00:00Z', data: {
   text: 'Assets ready for review', stats: [{ label: 'Files', value: '3' }], schedule: [{ label: 'Review', when: 'Tomorrow, 09:00 EAT', note: 'Design check' }],
@@ -108,7 +110,9 @@ describe('cowork glass widget cards and mobile tray', () => {
     const { helpers, nodes, state } = load(1440);
     state.widgets = [widget]; helpers.cwRenderWidgets();
     expect(nodes['cwWidgetLane']!.hidden).toBe(false);
-    expect(nodes['cwWidgetLane']!.getAttribute('role')).toBe('dialog');
+    expect(nodes['cwWidgetLane']!.getAttribute('role')).toBe('complementary');
+    expect(nodes['cwWidgetLane']!.getAttribute('aria-modal')).toBeUndefined();
+    expect(nodes['cwWidgetBackdrop']!.hidden).toBe(true);
     const original = nodes['cwWidgetCards']!.innerHTML;
     nodes['cwWidgetCards']!.innerHTML = original + '<!-- media remains mounted -->';
     helpers.cwRenderWidgets();
@@ -117,6 +121,43 @@ describe('cowork glass widget cards and mobile tray', () => {
     expect(nodes['cwWidgetLane']!.hidden).toBe(true);
     expect(nodes['cwWidgetCount']!.textContent).toBe('0');
     expect(nodes['cwWidgetCards']!.innerHTML).not.toContain('Launch review');
+  });
+
+  it('saves desktop placement and restores the overlay choice without remounting cards', () => {
+    const { helpers, nodes, state, localStorage } = load(1440);
+    state.widgets = [widget]; helpers.cwRenderWidgets();
+    const original = nodes['cwWidgetCards']!.innerHTML;
+    nodes['cwWidgetCards']!.innerHTML = original + '<!-- existing frame -->';
+    const placement = nodes['cwWidgetPlacement'] as unknown as { value: string; onchange(): void };
+    placement.value = 'overlay'; placement.onchange();
+    expect(localStorage.setItem).toHaveBeenCalledWith('hermes.cowork.widgets.placement', 'overlay');
+    expect(nodes['cwWidgetLane']!.getAttribute('role')).toBe('dialog');
+    expect(nodes['cwWidgetLane']!.getAttribute('aria-modal')).toBe('true');
+    expect(nodes['cwWidgetBackdrop']!.hidden).toBe(false);
+    expect(nodes['cwWidgetCards']!.innerHTML).toContain('existing frame');
+    const restored = load(1440, 'overlay');
+    restored.state.widgets = [widget]; restored.helpers.cwRenderWidgets();
+    expect(restored.nodes['cwWidgetPlacement']!.value).toBe('overlay');
+    expect(restored.nodes['cwWidgetBackdrop']!.hidden).toBe(false);
+    placement.value = 'left'; placement.onchange();
+    expect(nodes['cwWidgetBackdrop']!.hidden).toBe(true);
+    expect(nodes['cwWidgetCards']!.innerHTML).toContain('existing frame');
+  });
+
+  it('lets desktop users tab into the chat and switches to a dialog on narrow screens', () => {
+    const { helpers, nodes, state, context } = load(1440, 'left');
+    state.widgets = [widget]; helpers.cwRenderWidgets();
+    const lane = nodes['cwWidgetLane'] as unknown as { onkeydown(event: unknown): void };
+    const event = { key: 'Tab', preventDefault: vi.fn() };
+    lane.onkeydown(event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    new Script('window.innerWidth = 390').runInContext(context);
+    helpers.cwRenderWidgets();
+    expect(nodes['cwWidgetLane']!.getAttribute('role')).toBe('dialog');
+    expect(nodes['cwWidgetLane']!.getAttribute('aria-modal')).toBe('true');
+    expect(nodes['cwWidgetBackdrop']!.hidden).toBe(false);
+    lane.onkeydown(event);
+    expect(event.preventDefault).toHaveBeenCalled();
   });
 
   it('dismisses a widget through the persisted API and updates the notification count', async () => {

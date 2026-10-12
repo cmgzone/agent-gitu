@@ -4,6 +4,8 @@ set -eu
 # The desktop stream listens only inside this sandbox. The authenticated
 # broker carries it over Docker stdio; no VNC port is published on the VPS.
 # Container restarts preserve /tmp, but the previous X server is gone.
+mkdir -p /tmp/.X11-unix /tmp/.ICE-unix
+chmod 1777 /tmp/.X11-unix /tmp/.ICE-unix
 rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
 # The old container is stopped before reusing its home volume. Chromium's
 # hostname/PID lock symlinks can survive that stop; profile data stays intact.

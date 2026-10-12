@@ -394,13 +394,14 @@ describe('Hermes e2e - dynamic planning', () => {
       // Ask for the FULL plan explicitly - the on-demand rich representation.
       () => JSON.stringify({ action: { type: 'show_plan' } }),
       (_n, messages) => {
-        fullOnDemand = '';
+        // Capture the requested observation once; bounded autonomous retries
+        // may later compact it out of the live history.
         // The show_plan OBSERVATION is a user message; a fresh state message
         // follows right after in the same array, so scan for the observation.
         for (let i = messages.length - 1; i >= 0; i--) {
           const m = messages[i]!;
           if (m.role === 'user' && typeof m.content === 'string' && m.content.includes('FULL PLAN')) {
-            fullOnDemand = m.content;
+            fullOnDemand ||= m.content;
             break;
           }
         }

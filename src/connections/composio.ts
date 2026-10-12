@@ -4,6 +4,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
+import {SecretVault} from './secret-vault.js';
 import { readCredentialFile, readCredentialJson, writeCredentialFile } from '../llm/credential-file.js';
 
 export interface ConnectedApp {
@@ -34,7 +35,7 @@ export class ComposioKeyStore {
   }
   private serverKey(): Buffer | undefined {
     const key = process.env['AGENT_GITU_SECRETS_KEY'];
-    if (!key) return undefined;
+    if (!key) return new SecretVault(path.join(ensureGituHome().settings,'ConnectorSecrets')).encryptionKey();
     if (!/^[a-f0-9]{64}$/i.test(key)) throw new Error('Set AGENT_GITU_SECRETS_KEY to a 32-byte hexadecimal server encryption key.');
     return Buffer.from(key, 'hex');
   }

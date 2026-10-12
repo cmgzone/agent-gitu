@@ -2,6 +2,7 @@ import { createProject, loadWorkspaceSettings } from '../workspace/home.js';
 import { WIDGET_APP_TOOL_GUIDE } from './widget-app.js';
 import { connectionResponses } from '../connections/response-data.js';
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { parseDelegationParams } from './delegation.js';
 import path from 'node:path';
 import type { ToolResult } from '../types.js';
 import type { LlmToolDefinition } from '../llm/llm.js';
@@ -137,13 +138,17 @@ export interface CoworkToolDoc {
 }
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
+  {name:'mission_manage',doc:'Lead company work through bounded missions. params: {"action":"list"} | {"action":"create","goal":"concrete objective","criteria":["verifiable outcome"],"agentId":"optional permanent teammate","maxTurns":12} | {"action":"pause|resume|cancel","id":"mission-id"}. Mission session limits are assigned by the owner. Verify results and wait after scheduling useful work.',gate:'chief'},
+  {name:'company_files',doc:'List owner-provided company knowledge files, or attach one to this conversation for receive_file. params: {"action":"list"} | {"action":"attach","artifactId":"company-file-id"}. Bytes are transferred outside the model context.',gate:undefined},
+  {name:'storage',doc:'Use granted company storage. Discover resources with {"action":"connections"}; omit connectionId to use the chosen default output location. params: {"action":"list","connectionId":"storage-id"} | {"action":"download","connectionId":"storage-id","id":"provider-file-id"} | {"action":"upload","connectionId":"storage-id","artifactId":"attached-artifact-id","name":"optional output name"} | {"action":"mkdir","connectionId":"storage-id","name":"folder"} | {"action":"move","connectionId":"storage-id","id":"file-id","name":"new name"} | {"action":"delete","connectionId":"storage-id","id":"file-id"} | {"action":"link","connectionId":"storage-id","id":"file-id"}. File bytes transfer outside model context. External writes follow company approval rules.',gate:undefined},
+  {name:'connection_execute',doc:'Invoke an owner-granted, registered API operation. params: {"connectionId":"saved-id","operationId":"registered-operation","body":{},"query":{}}. Includes wallet actions when the granted API exposes them. External writes follow company access policy.',gate:'writes'},
   { name: 'computer_status', doc: 'Inspect your private virtual computer and its setup status. params: {}', gate: undefined },
   { name: 'computer_handoff', doc: 'Give the user control of your private desktop and pause your task for a human step. params: {"reason":"Please sign in using the regular Browser, then return control."}. Use this for manual login, verification, approval or a step the user must perform. Never include passwords, codes or secrets in the reason. The user can operate the desktop and choose Return to agent when done. Do not keep interacting while waiting.', gate: undefined },
   { name: 'desktop_screenshot', doc: 'See your full Linux desktop, including app windows, menus and dialogs. params: {}. Inspect the screen before choosing coordinates.', gate: 'browser' },
   { name: 'desktop_input', doc: 'Control your private Linux desktop. params: {"action":"click","x":100,"y":200,"button":1} | {"action":"double_click","x":100,"y":200} | {"action":"drag","x":10,"y":20,"endX":300,"endY":200} | {"action":"type","text":"hello"} | {"action":"key","key":"ctrl+l"} | {"action":"scroll","x":500,"y":400,"delta":3} | {"action":"launch","app":"browser|agent_browser|files|terminal"}. Coordinates use the 1280x800 desktop. Requires shell permission because desktop apps include terminals. Use browse for structured browser operations.', gate: 'shell' },
   { name: 'computer_process', doc: 'Inspect or stop a background process on your computer. params: {"action":"status","id":"..."} | {"action":"stop","id":"..."}', gate: 'shell' },
   { name: 'create_document', doc: DOCUMENT_TOOL_DOC + ' The generated file is automatically presented in this conversation.', gate: 'writes' },
-  { name: 'share_file', doc: 'Attach a real file to the conversation as an Open/Download card, with image/audio/video previews. params: {"path":"report.pdf"}. Private desktops also accept absolute paths in /home/agent/Downloads, Desktop, Documents, Pictures, Music, or Videos. Use list_files to locate files there. Maximum 20 MB per file; share the actual file, not just its path in a reply.', gate: 'writes' },
+  { name: 'share_file', doc: 'Attach a real file to the conversation as an Open/Download card, with image/audio/video previews. params: {"path":"report.pdf"}. Private desktops also accept absolute paths in /home/agent/Downloads, Desktop, Documents, Pictures, Music, or Videos. Use list_files to locate files there. The user-selected file-size limit applies; share the actual file, not just its path in a reply.', gate: 'writes' },
   { name: 'receive_file', doc: 'Copy a shared conversation artifact into your computer. params: {"artifactId":"...","path":"report.md"}', gate: 'writes' },
   { name: 'list_files', doc: 'List files in a folder. params: {"path":"src"}', gate: undefined },
   { name: 'read_file', doc: 'Read a text file. params: {"path":"src/x.ts"}', gate: undefined },
@@ -354,6 +359,14 @@ function hostContextWithFolders(ctx: ToolContext, scope?: CoworkToolScope): Tool
 
 /** Dispatch one tool call for a cowork agent. Never throws: every failure is a ToolResult. */
 export async function executeCoworkTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
+  const authorization = await ctx.authorizeTool?.(tool, params);
+  if (authorization) return authorization;
+  const result = await executeAuthorizedCoworkTool(ctx, tool, params, perms, scope);
+  ctx.toolDidExecute?.(tool,params,result);
+  return result;
+}
+
+async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   const validation = validateToolParams(tool, params);
   if (!validation.valid && validation.error) return { ok: false, output: `${tool}: ${validation.error}${validation.correction ? `\n${validation.correction}` : ''}` };
   const dispatchHost = async (): Promise<ToolResult> => {
@@ -373,6 +386,13 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
     // must not be routed through the host/computer dispatch below.
     if (tool === 'gitu_task') {
       if (!scope?.conversationId) return { ok: false, output: 'gitu_task requires a conversation.' };
+      if (scope.agent.companyId) {
+        if (scope.isSubAgent) return { ok: false, output: 'Engineering helpers report to their parent and cannot delegate again.' };
+        const parsed = parseDelegationParams(params);
+        if (!parsed.ok) return { ok: false, output: parsed.error };
+        if (!scope.subAgents) return { ok: false, output: 'Private engineering helpers are unavailable. Keep the work paused until the runtime is available.' };
+        return await scope.subAgents.run({role:'engineering',objective:parsed.value.goal+'\nWork in your isolated private computer. Inspect the repository, implement the changes, run relevant checks, and report evidence and remaining blockers to your parent.',reason:'Bounded company engineering delegation',budget:params['maxCostUsd']===undefined?{}:{maxCostUsd:params['maxCostUsd']},maxRuntimeMinutes:params['timeoutMinutes']??30});
+      }
       if (!scope.delegation) return { ok: false, output: 'Engineering delegation is unavailable in this session.' };
       return await scope.delegation.run(scope, params);
     }
@@ -397,12 +417,15 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
     if (tool === 'run_command' && (String(params['action'] ?? 'run') === 'status' || String(params['action'] ?? 'run') === 'stop')) {
       return await dispatchHost();
     }
+    if (scope?.agent.companyId && scope.agent.useHostComputer && ctx.companyHostComputer?.() !== true && COMPUTER_ROUTED_TOOLS.includes(tool))
+      return { ok: false, output: 'Use my computer is not granted to this company. Enable it in Company Resources or use the private computer.' };
     if (scope?.agent.useHostComputer && tool === 'computer_status') {
       return { ok: true, output: `My computer mode. Workspace: ${ctx.cwd}. Docker is not required. Browser: ${ctx.browser?.available() ? 'connected' : 'not connected; open the desktop app'}.` };
     }
     if (scope?.agent.useHostComputer && tool === 'computer_process') return { ok: false, output: 'Background process control requires the private computer. In My computer mode use a bounded run_command instead.' };
     if (scope?.agent.useHostComputer && ['desktop_screenshot', 'desktop_input'].includes(tool)) return { ok: false, output: 'Desktop screen and input require this teammate’s private computer.' };
     if (scope?.agent.useHostComputer && COMPUTER_ROUTED_TOOLS.includes(tool) && !COMPUTER_ONLY_TOOLS.includes(tool)) {
+      ctx.onComputerLocation?.('host');
       params = toHostPaths(params);
       return await dispatchHost();
     }
@@ -410,19 +433,24 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
       const computer = scope.computerFor(scope.agent.id, scope.agent);
       const result = await computer.execute(tool, params, scope.signal, scope.conversationId, (file) => {
         if (!scope.conversationId) throw new Error('File sharing requires a conversation.');
-        const artifact = scope.store.addArtifact({ id: file.artifactId, conversationId: scope.conversationId, agentId: scope.agent.id, name: file.name, dataBase64: file.dataBase64 });
+        const artifact = file.sourcePath ? scope.store.addArtifactFile({ id:file.artifactId,conversationId:scope.conversationId,agentId:scope.agent.id,name:file.name,sourcePath:file.sourcePath }) : scope.store.addArtifact({ id: file.artifactId, conversationId: scope.conversationId, agentId: scope.agent.id, name: file.name, dataBase64: file.dataBase64! });
         (scope.artifactIds ??= []).push(artifact.id);
       });
       const computerOnly = COMPUTER_ONLY_TOOLS.includes(tool);
-      if (result.ok || computerOnly || scope.agent.cloudConnectionId || computer.status().state !== 'unavailable') return result;
+      if (result.ok) ctx.onComputerLocation?.('private');
+      const companyHostGranted = Boolean(scope.agent.companyId && ctx.companyHostComputer?.() === true);
+      if (result.ok || computerOnly || (scope.agent.companyId && !companyHostGranted) || (scope.agent.cloudConnectionId && !companyHostGranted) || computer.status().state !== 'unavailable') return result;
       // The virtual computer cannot start (no Docker, daemon down, …) — the
       // user asked for host fallback: run the tool on the user's computer.
       const first = !scope.hostFallbackNoticed;
       scope.hostFallbackNoticed = true;
       params = toHostPaths(params);
+      ctx.onComputerLocation?.('host');
       const host = await dispatchHost();
       return first ? { ...host, output: HOST_FALLBACK_NOTICE + host.output } : host;
     }
+    if(scope?.agent.companyId && COMPUTER_ROUTED_TOOLS.includes(tool) && ctx.companyHostComputer?.() !== true)
+      return { ok: false, output: 'A private computer is required. Use my computer is not granted to this company.' };
     return await dispatchHost();
   } catch (err) {
     return { ok: false, output: `${tool} crashed: ${(err as Error).message}` };
@@ -433,11 +461,36 @@ export async function executeCoworkTool(ctx: ToolContext, tool: string, params: 
 async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   {
     switch (tool) {
+      case 'mission_manage':{
+        if(!scope?.agent.companyId||!scope.agent.chiefOfStaff||!scope.conversationId)return blocked(tool);
+        const action=String(params['action']??'list');if(action==='list')return{ok:true,output:JSON.stringify(scope.store.missions())};
+        if(action==='create'){
+          const target=scope.store.getAgent(String(params['agentId']??scope.agent.id));if(!target)throw new Error('Choose a permanent teammate from this company.');const goal=String(params['goal']??'').trim();
+          const existing=scope.store.missions().find(m=>m.agentId===target.id&&m.goal===goal&&['running','blocked'].includes(m.status));if(existing)return{ok:true,output:JSON.stringify(existing)};
+          const cap=ctx.missionSessionLimit?.()??12,requested=Number(params['maxTurns']??cap);if(!Number.isInteger(requested)||requested<1)throw new Error('Choose a positive mission session count.');
+          const mission=scope.store.createMission({conversationId:scope.conversationId,agentId:target.id,goal,criteria:Array.isArray(params['criteria'])?params['criteria'].map(String):[],maxTurns:Math.min(cap,requested)});return{ok:true,output:JSON.stringify(mission)};
+        }
+        const mission=scope.store.getMission(String(params['id']));if(!mission)throw new Error('Company mission not found.');if(!['pause','resume','cancel'].includes(action))throw new Error('Choose list, create, pause, resume or cancel.');
+        scope.store.updateMission(mission.id,{status:action==='pause'?'blocked':action==='cancel'?'cancelled':'running',nextWakeAt:action==='resume'?new Date().toISOString():undefined});return{ok:true,output:'Mission '+action+' completed.'};
+      }
+      case 'company_files':{
+        if(!ctx.companyFiles||!scope?.conversationId)return{ok:false,output:'Company knowledge files are unavailable.'};
+        const result=await ctx.companyFiles(params,{conversationId:scope.conversationId,agentId:scope.agent.id});if(result.artifactId)(scope.artifactIds??=[]).push(result.artifactId);return result;
+      }
+      case 'storage': {
+        if(!ctx.storage||!scope?.conversationId)return{ok:false,output:'Company storage is unavailable in this session.'};
+        const result=await ctx.storage(params,{conversationId:scope.conversationId,agentId:scope.agent.id});if(result.artifactId)(scope.artifactIds??=[]).push(result.artifactId);return result;
+      }
+      case 'connection_execute': {
+        if(!scope?.agent.companyId||!ctx.connections)return blocked('connection_execute');
+        const result=await ctx.connections.invoke(String(params['connectionId']??''),String(params['operationId']??''),params['body'],params['query'] as Record<string,unknown>|undefined,ctx.externalHeaders?.(tool,params));
+        return{ok:true,output:connectedAppOutput(result.data)};
+      }
       case 'create_document': {
         const result = await toolCreateDocument({ ...ctx, signal: scope?.signal ?? ctx.signal }, toHostPaths(params));
         if (result.ok && scope?.conversationId) {
           const file = String((result.payload as { path: string }).path);
-          const artifact = scope.store.addArtifact({ conversationId: scope.conversationId, agentId: scope.agent.id, name: path.basename(file), dataBase64: readFileSync(file).toString('base64') });
+          const artifact = scope.store.addArtifactFile({ conversationId: scope.conversationId, agentId: scope.agent.id, name: path.basename(file), sourcePath:file });
           (scope.artifactIds ??= []).push(artifact.id);
           result.output += ` Presented artifact ${artifact.id}; the user can open/download it.`;
         }
@@ -478,8 +531,8 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const abs = ctx.guard.resolve(requested);
         const info = statSync(abs);
         if (!info.isFile()) return { ok: false, output: 'share_file path is not a file.' };
-        if (info.size > MAX_ARTIFACT_BYTES) return { ok: false, output: `share_file exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit.` };
-        const artifact = scope.store.addArtifact({ conversationId: scope.conversationId, agentId: scope.agent.id, name: path.basename(abs), dataBase64: readFileSync(abs).toString('base64') });
+        scope.store.assertArtifactSize(info.size);
+        const artifact = scope.store.addArtifactFile({ conversationId: scope.conversationId, agentId: scope.agent.id, name: path.basename(abs), sourcePath:abs });
         (scope.artifactIds ??= []).push(artifact.id);
         return { ok: true, output: `Presented ${artifact.name}. Artifact id: ${artifact.id}.` };
       }
@@ -540,7 +593,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         const manager = ctx.mcp;
         if (!manager) return blocked('mcp_call');
         const qualified = String(params['tool'] ?? '');
-        const args = (params['args'] ?? {}) as Record<string, unknown>;
+        const args = ctx.externalArguments?.(tool,params) ?? (params['args'] ?? {}) as Record<string, unknown>;
         try {
           const output = await manager.call(qualified, args);
           return { ok: true, output: String(output ?? '(empty result)').slice(0, 8_000) };
@@ -552,7 +605,7 @@ async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<s
         if (!perms.allowConfig) return blocked(tool);
         return toolConfigureMcp(ctx, params);
       case 'list_connections':
-        return { ok: true, output: `${toolListConnections(ctx).output}\n${new SshConnectionRegistry().renderForAgent()}` };
+        return { ok: true, output: toolListConnections(ctx).output + (scope?.agent.companyId ? '' : `\n${new SshConnectionRegistry().renderForAgent()}`) };
       case 'connection_read':
         return toolConnectionRead(ctx, params);
       case 'inspect_connection_response':
@@ -880,7 +933,7 @@ function connectedAppOutput(value: unknown): string {
   return JSON.stringify(responses.inspect({ responseId }));
 }
 async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
-  if (!scope || scope.isSubAgent) return blocked('connected_apps');
+  if (!scope || scope.isSubAgent&&!scope.agent.companyId) return blocked('connected_apps');
   if (!apps?.configured) return { ok: false, output: 'Set up the connection provider in Cowork → Connections. The user then connects apps specifically for you.' };
   try {
     if (params['action'] === 'discover') {
@@ -898,7 +951,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
       if (card.status === 'dismissed') return { ok: true, output: 'The user previously skipped this app recommendation. Respect that choice and continue independent work. If this task requires it, explain the missing connection; the user can connect it in your Apps & connections.' };
       return { ok: true, output: `Connection recommendation ${card.id} shown in chat. Only the user can connect or assign this app for you. Continue independent work; do not claim it is connected until it appears in your list.` };
     }
-    const assigned = (await apps.accounts()).filter(account => scope.store.appAccountAssigned(scope.agent.id, account.toolkit, account.id));
+    const assigned = (await apps.accounts()).filter(account => scope.agent.companyId||scope.store.appAccountAssigned(scope.agent.id, account.toolkit, account.id));
     if (params['action'] === 'list') return { ok: true, output: JSON.stringify(assigned) };
     if (params['action'] === 'tools') {
       if (!assigned.some(account => account.toolkit === service && account.status === 'ACTIVE' && !account.disabled)) return { ok: false, output: 'Recommend this app so the user can connect or assign it specifically for you.' };
@@ -911,7 +964,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
       }) };
     }
     if (params['action'] !== 'execute') return { ok: false, output: 'action must be list, discover, recommend, tools, or execute.' };
-    if (!perms.allowWrites || !perms.allowConfig || !scope?.conversationId || scope.isSubAgent) return blocked('connected_apps execution');
+    if (!perms.allowWrites || !perms.allowConfig || !scope?.conversationId || scope.isSubAgent&&!scope.agent.companyId) return blocked('connected_apps execution');
     const tool = String(params['tool'] ?? '');
     const args = params['args'];
     if (!tool || !args || typeof args !== 'object' || Array.isArray(args)) return { ok: false, output: 'Provide the exact tool slug and an args object.' };
@@ -920,7 +973,7 @@ async function connectedAppTool(apps: ConnectedAppsProvider | undefined, params:
     if (!accounts.some(account => account.id === accountId)) return { ok: false, output: 'This account is not assigned to you or is inactive. Recommend the app, or choose an active accountId from your connected_apps list.' };
     const detail = JSON.stringify({ service, accountId, tool, args });
     if (detail.length > 16000) return { ok: false, output: 'This action is too large for review. Split it into smaller actions.' };
-    if (scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
+    if (scope.agent.companyId || scope.store.appActionAllowed(scope.agent.id, { service, accountId, tool })) {
       return { ok: true, output: connectedAppOutput(await apps.execute(service, tool, args as Record<string, unknown>, accountId)) };
     }
     const signature = createHash('sha256').update(scope.conversationId + ':' + scope.agent.id + ':' + detail).digest('hex');

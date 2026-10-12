@@ -10,6 +10,7 @@ import { Gitu } from '../src/agent/gitu.js';
 import { ScriptedMockLlm, type LlmMessage } from '../src/llm/llm.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { TaskLedger } from '../src/ledger/task-ledger.js';
+import { applyFollowUpToLedger } from '../src/agent/follow-up.js';
 import type { TaskLedgerData } from '../src/types.js';
 
 type Reply = (call: number, messages: LlmMessage[]) => string;
@@ -28,6 +29,140 @@ function project() {
 }
 
 describe('unified Agent workflow', () => {
+  it('resumes an unfinished task with the latest user direction even when the caller passes the original goal', async () => {
+    const dir = project();
+    const guard = ProjectGuard.detect(dir);
+    const original = 'Investigate the original backend task';
+    const latest = 'Actually, correct the typo in README.md instead';
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: original, project: guard.lock, mode: 'agent' });
+    let state = '';
+    let agent: Gitu;
+    agent = new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      resume: { taskId: ledger.data.taskId, message: latest },
+      llm: new ScriptedMockLlm([(_call, messages) => {
+        state = String(messages.at(-1)?.content);
+        agent.stop();
+        return JSON.stringify({ action: { type: 'complete', summary: 'Stopped for the continuity test' } });
+      }]),
+    });
+    const result = await agent.run(original);
+    expect(state).toContain(`CURRENT USER INTENT:\n${latest}`);
+    expect(result.ledger.data.taskAuthority?.currentGoal).toBe(latest);
+    expect(result.ledger.activeWorkPhase()?.goal).toBe(latest);
+  }, 30000);
+
+  it('keeps the most recent follow-up phase across a stop and a plain continue', async () => {
+    const dir = project();
+    const guard = ProjectGuard.detect(dir);
+    const original = 'Investigate the original backend task';
+    const latest = 'Correct the typo in README.md';
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: original, project: guard.lock, mode: 'agent' });
+    ledger.ensureInitialWorkPhase();
+    ledger.completeActiveWorkPhase();
+    const phase = ledger.startWorkPhase({ kind: 'follow_up', goal: latest });
+    applyFollowUpToLedger(ledger, latest);
+    ledger.setStatus('blocked');
+    let state = '';
+    let agent: Gitu;
+    agent = new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      resume: { taskId: ledger.data.taskId, message: 'continue' },
+      llm: new ScriptedMockLlm([(_call, messages) => {
+        state = String(messages.at(-1)?.content);
+        agent.stop();
+        return JSON.stringify({ action: { type: 'complete', summary: 'Stopped for the continuity test' } });
+      }]),
+    });
+    const result = await agent.run(original);
+    expect(state).toContain(`CURRENT USER INTENT:\n${latest}`);
+    expect(result.ledger.activeWorkPhase()?.id).toBe(phase.id);
+    expect(result.ledger.data.taskAuthority?.currentGoal).toBe(latest);
+  }, 30000);
+
+  it('updates the live state and persists a correction delivered during a run', async () => {
+    const dir = project();
+    const latest = 'Actually, correct the typo in README.md instead';
+    let state = '';
+    let agent: Gitu;
+    agent = new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([
+        (_call, messages) => { agent.queueMessage(latest); return read(0, messages); },
+        (_call, messages) => {
+          state = String(messages.at(-1)?.content);
+          agent.stop();
+          return JSON.stringify({ action: { type: 'complete', summary: 'Stopped for the continuity test' } });
+        },
+      ]),
+    });
+    const result = await agent.run('Investigate the original backend task');
+    expect(state).toContain(`CURRENT USER INTENT:\n${latest}`);
+    const loaded = TaskLedger.load(dir, result.ledger.data.taskId)!;
+    expect(loaded.data.taskAuthority?.currentGoal).toBe(latest);
+    expect(loaded.activeWorkPhase()?.goal).toBe(latest);
+  }, 30000);
+
+  it('lets a replacement task complete while preserving unfinished earlier criteria and steps', async () => {
+    const dir = project();
+    const guard = ProjectGuard.detect(dir);
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'Investigate the original backend task', project: guard.lock, mode: 'agent' });
+    ledger.setCriteria(['The original backend task is finished']);
+    ledger.setPlan([{ description: 'Implement the original backend task', verification: 'Old check passes' }]);
+    ledger.ensureInitialWorkPhase();
+    ledger.setStatus('blocked');
+    const latest = 'now implement the corrected greeting in README.md';
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      resume: { taskId: ledger.data.taskId, message: latest },
+      llm: new ScriptedMockLlm([read, edit, verify, done, reviewer]),
+    }).run(ledger.data.goal);
+    expect(result.report.status).toBe('complete');
+    expect(result.report.goal).toBe(latest);
+    expect(result.ledger.data.acceptanceCriteria[0]?.satisfied).toBe(false);
+    expect(result.ledger.step('step-1')?.status).toBe('pending');
+    expect(result.ledger.activeWorkPhase()?.kind).toBe('follow_up');
+    expect(readFileSync(path.join(dir, 'README.md'), 'utf8')).toBe('Hello world\n');
+  }, 30000);
+
+  it('preserves a new task queued just before the run is stopped', async () => {
+    const dir = project();
+    const latest = 'now implement the corrected greeting in README.md';
+    let agent: Gitu;
+    agent = new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      llm: new ScriptedMockLlm([(_call, messages) => {
+        agent.queueMessage(latest);
+        agent.stop();
+        return read(0, messages);
+      }]),
+    });
+    const result = await agent.run('Investigate the original backend task');
+    const loaded = TaskLedger.load(dir, result.ledger.data.taskId)!;
+    expect(loaded.data.taskAuthority?.currentGoal).toBe(latest);
+    expect(loaded.activeWorkPhase()?.goal).toBe(latest);
+    expect(loaded.activeWorkPhase()?.kind).toBe('follow_up');
+    expect(result.report.goal).toBe(latest);
+  }, 30000);
+
+  it('shows a question about completed follow-up work without replacing its engineering goal', async () => {
+    const dir = project();
+    const guard = ProjectGuard.detect(dir);
+    const latest = 'Correct the typo in README.md';
+    const ledger = TaskLedger.create({ repoRoot: dir, goal: 'The original task', project: guard.lock, mode: 'agent' });
+    ledger.ensureInitialWorkPhase();
+    ledger.completeActiveWorkPhase();
+    ledger.startWorkPhase({ kind: 'follow_up', goal: latest });
+    ledger.completeActiveWorkPhase();
+    ledger.setStatus('completed');
+    const question = 'What does README.md say now?';
+    let sawQuestion = false;
+    const result = await new Gitu({ cwd: dir, mode: 'agent', autoLearn: false,
+      resume: { taskId: ledger.data.taskId, message: question },
+      llm: new ScriptedMockLlm([(_call, messages) => {
+        sawQuestion = messages.some(message => String(message.content).includes(question));
+        return JSON.stringify({ action: { type: 'complete', chat: true, summary: 'The README says Helo world.' } });
+      }]),
+    }).run(ledger.data.goal);
+    expect(sawQuestion).toBe(true);
+    expect(result.ledger.data.taskAuthority?.currentGoal).toBe(latest);
+  }, 30000);
+
   const claimLatest: Reply = (_call, messages) => {
     const evidenceId = [...messages].reverse().map(m => /EVIDENCE RECORDED: (ev-\d{8}-[0-9a-f]{6}) \[PASS\]/.exec(String(m.content))?.[1]).find(Boolean);
     return JSON.stringify({ action: { type: 'claim_criterion', criterionId: 'ac-1', evidenceId } });

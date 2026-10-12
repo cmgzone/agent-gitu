@@ -187,6 +187,8 @@ export class TaskLedger {
   setCurrentGoal(goal: string, _basis?: string): void {
     const auth = this.ensureTaskAuthority();
     auth.currentGoal = goal;
+    const phase = this.activeWorkPhase();
+    if (phase && !phase.completedAt) phase.goal = goal;
     this.save();
   }
 
@@ -533,6 +535,7 @@ export class TaskLedger {
     };
     this.data.workPhases = [...phases, phase];
     this.data.activeWorkPhaseId = phase.id;
+    this.ensureTaskAuthority().currentGoal = input.goal.trim() || this.data.goal;
     this.save();
     return phase;
   }

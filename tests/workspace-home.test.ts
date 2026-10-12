@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProjectGuard } from '../src/guard/project-guard.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
@@ -11,11 +11,14 @@ let homeDir: string;
 
 beforeEach(() => {
   homeDir = mkdtempSync(path.join(tmpdir(), 'hermes-home-'));
-  process.env.HERMES_HOME_DIR = homeDir;
+  // This suite verifies the legacy alias even when a test launcher provides
+  // the preferred home variable to keep other tests away from owner data.
+  vi.stubEnv('AGENT_GITU_HOME', undefined);
+  vi.stubEnv('HERMES_HOME_DIR', homeDir);
 });
 
 afterEach(() => {
-  delete process.env.HERMES_HOME_DIR;
+  vi.unstubAllEnvs();
 });
 
 describe('Hermes home', () => {

@@ -37,6 +37,8 @@ export interface ConnectedAppTool {
 }
 
 export interface ConnectedAppsProvider {
+  /** Set only by the host's company-scoped account provider. */
+  readonly companyId?:string;
   readonly accountStatusIncomplete?: boolean;
   readonly configured: boolean;
   readonly setup: { canConfigure: boolean; keyStorage: string };

@@ -273,8 +273,7 @@ export class ConnectionResponseStore {
 }
 
 const stores = new Map<string, ConnectionResponseStore>();
-export function connectionResponses(): ConnectionResponseStore {
-  const scope = ensureGituHome().root;
+export function connectionResponses(scope = ensureGituHome().root): ConnectionResponseStore {
   let store = stores.get(scope);
   if (!store) { store = new ConnectionResponseStore(); stores.set(scope, store); }
   return store;

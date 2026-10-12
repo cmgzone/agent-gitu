@@ -16,6 +16,10 @@ import { UI_RESPONSE_JS } from './ui-response.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
+import { FILE_UPLOAD_JS } from './ui-files.js';
+import { COMPANY_CSS, COMPANY_JS } from './ui-companies.js';
+import { COMPANY_CONNECTIONS_JS } from './ui-company-connections.js';
+import { COMPANY_WALLETS_JS } from './ui-company-wallets.js';
 import { VOICE_CSS, VOICE_JS } from './ui-voice.js';
 import { OUTPUT_CSS, OUTPUT_JS } from './ui-outputs.js';
 import { CHAT_CREDENTIAL_HELPERS_JS } from './credential-chat.js';
@@ -927,6 +931,7 @@ ${HOME_CSS}
     #mascotWrap { display: none !important; }
   }
   ${COWORK_CSS}
+  ${COMPANY_CSS}
   ${VOICE_CSS}
   ${OUTPUT_CSS}
   ${CONNECTED_APPS_CSS}
@@ -952,6 +957,7 @@ ${ONBOARDING_HTML}
       <span class="spacer"></span>
       <button class="iconbtn" id="sbCowork" title="Cowork mode — your agent team" aria-label="Open Cowork mode"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
       <button class="iconbtn" id="gearBtn" title="settings" aria-label="Open settings">&#9881;</button>
+      <button class="iconbtn" id="sbCompanies" data-company-nav title="Companies" aria-label="Open Companies">▦</button>
       <button class="iconbtn" id="sbCollapse" title="collapse sidebar" aria-label="Collapse sidebar">&#171;</button>
     </div>
     <div class="scroll" id="sbScroll"></div>
@@ -1509,6 +1515,7 @@ ${ONBOARDING_HTML}
     b.title = stopMode ? 'Stop the agent' : 'send (Enter)';
     b.setAttribute('aria-label', stopMode ? 'Stop the agent' : 'Send message');
     b.innerHTML = stopMode ? '&#9632;' : '&#8593;';
+    b.disabled=!stopMode&&pendingFor().some(function(file){return file.loading||file.error;});
     // Surface interrupts right above the composer where action happens.
     var bar = b.parentElement;
     if (bar) {
@@ -1883,16 +1890,17 @@ ${ONBOARDING_HTML}
     if (!pendingFor().length) { wrap.hidden = true; wrap.innerHTML = ''; updateSendState(); return; }
     wrap.hidden = false;
     wrap.innerHTML = pendingFor().map(function (file, i) {
-      var isImage = String(file.type || '').indexOf('image/') === 0;
+      var isImage = String(file.type || '').indexOf('image/') === 0 && !!(file.previewUrl||file.dataUrl);
       var content = isImage
-        ? '<img src="' + file.dataUrl + '" alt="' + esc(file.name) + '" title="' + esc(file.name) + '">'
+        ? '<img src="' + (file.previewUrl||file.dataUrl) + '" alt="' + esc(file.name) + '" title="' + esc(file.name) + '">'
         : '<span class="th-ico">' + icon('file') + '</span><span class="th-info"><span class="th-name" title="' + esc(file.name) + '">' + esc(file.name) + '</span><span class="th-size">' + humanBytes(file.size) + '</span></span>';
-      return '<span class="th' + (isImage ? '' : ' th-file') + '">' + content + '<button class="rm" data-rm="' + i + '" title="Remove attachment" aria-label="Remove ' + esc(file.name) + '">&#10005;</button></span>';
+      return '<span class="th' + (isImage ? '' : ' th-file') + '">' + content + (file.loading?'<span>'+Math.round((file.progress||0)*100)+'%</span>':'')+(file.error?'<button class="btn ghost" data-file-retry="'+i+'">Retry</button>':'')+'<button class="rm" data-rm="' + i + '" title="Remove attachment" aria-label="Remove ' + esc(file.name) + '">&#10005;</button></span>';
     }).join('');
     wrap.querySelectorAll('[data-rm]').forEach(function (el) {
-      el.onclick = function () { pendingFor().splice(Number(el.getAttribute('data-rm')), 1); renderThumbs(); };
+      el.onclick = function () { var file=pendingFor().splice(Number(el.getAttribute('data-rm')), 1)[0];if(file&&file.cancel)file.cancel(); renderThumbs(); };
     });
     updateSendState();
+    wrap.querySelectorAll('[data-file-retry]').forEach(function(button){button.onclick=function(){var file=pendingFor()[Number(button.dataset.fileRetry)];if(file&&file.retry)file.retry();};});
   }
   function renderTaggedFolders(runId) {
     var wrap = $('runFolderTags');
@@ -1937,8 +1945,6 @@ ${ONBOARDING_HTML}
     });
   }
   var MAX_PENDING_FILES = 8;
-  var MAX_PENDING_FILE_BYTES = 8 * 1024 * 1024;
-  var MAX_PENDING_TOTAL_BYTES = 20 * 1024 * 1024;
   function humanBytes(value) {
     var n = Math.max(0, Number(value) || 0);
     if (n < 1024) return n + ' B';
@@ -1955,11 +1961,7 @@ ${ONBOARDING_HTML}
   }
   function addPendingFile(file, dataUrl) {
     if (pendingFor().length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
-    var size = Number(file.size) || dataUrlBytes(dataUrl);
-    if (size > MAX_PENDING_FILE_BYTES) { toast(file.name + ' is larger than 8 MB', true); return; }
-    if (pendingFileBytes() + size > MAX_PENDING_TOTAL_BYTES) { toast('Attachments exceed the 20 MB combined limit', true); return; }
-    pendingFor().push({ name: file.name || 'attachment', type: file.type || 'application/octet-stream', size: size, dataUrl: dataUrl });
-    renderThumbs();
+    fetch(dataUrl).then(function(response){return response.blob();}).then(function(blob){attachBinary(new File([blob],file.name||'attachment',{type:file.type||blob.type}),pendingFor(),'coding',renderThumbs);});
   }
   function downscaleImage(dataUrl, cb) {
     var img = new Image();
@@ -2008,16 +2010,7 @@ ${ONBOARDING_HTML}
   function onAttachFiles(files) {
     Array.prototype.slice.call(files).forEach(function (f) {
       if (pendingFor().length >= MAX_PENDING_FILES) { toast('Maximum 8 files per message', true); return; }
-      if (f.size > MAX_PENDING_FILE_BYTES) { toast(f.name + ' is larger than 8 MB', true); return; }
-      if (pendingFileBytes() + f.size > MAX_PENDING_TOTAL_BYTES) { toast('Attachments exceed the 20 MB combined limit', true); return; }
-      var reader = new FileReader();
-      reader.onload = function () {
-        var original = String(reader.result);
-        if (f.type && f.type.indexOf('image/') === 0) {
-          downscaleImage(original, function (final) { addPendingFile(f, final); });
-        } else addPendingFile(f, original);
-      };
-      reader.readAsDataURL(f);
+      attachBinary(f,pendingFor(),'coding',renderThumbs);
     });
   }
   // The per-run autonomy the composer is set to. persistent:true is the default
@@ -2091,6 +2084,7 @@ ${ONBOARDING_HTML}
     }
   }
   function updateAttachState() {
+    showFileLimitNear($('attachInput'));
     var attach = document.querySelector('#homePlusMenu [data-hp="attach"]');
     if (!attach) return;
     var vision = currentVision();
@@ -5429,6 +5423,7 @@ ${ONBOARDING_HTML}
     });
     var b = $('setbody');
     if(S.setSection==='overview'){wsSettingsDirectory();return;}
+    if(S.setSection==='files'){renderFileSettings(b);return;}
     // Async sections seed an instant loading row instead of a blank flash.
     if (S.setSection !== 'general' && S.setSection !== 'workspace') {
       b.innerHTML = '<h1>' + esc(S.setSection === 'mcp' ? 'MCP servers' : S.setSection === 'skills' ? 'Skills' : S.setSection === 'agents' ? 'Specialist agents' : S.setSection === 'cron' ? 'Scheduled / heartbeat' : S.setSection === 'connections' ? 'Connections' : S.setSection) + '</h1><p class="meta" style="color:var(--muted);font-size:12.5px">loading…</p>';
@@ -6391,6 +6386,10 @@ ${ONBOARDING_HTML}
   }
   function refocusEl(el) { if (el && el.isConnected && el.focus) { try { el.focus(); } catch (e) {} } }
   ${COWORK_JS}
+  ${FILE_UPLOAD_JS}
+  ${COMPANY_JS}
+  ${COMPANY_CONNECTIONS_JS}
+  ${COMPANY_WALLETS_JS}
   ${VOICE_JS}
   ${COWORK_GALLERY_JS}
   ${COWORK_PROFILE_JS}

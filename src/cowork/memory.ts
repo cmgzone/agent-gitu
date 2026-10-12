@@ -27,14 +27,15 @@ export class CoworkMemory {
     private readonly scope: string,
   ) {}
 
-  static forWorkspace(): CoworkMemory {
-    const workspace = ensureGituHome().workspace;
+  static forWorkspace(selectedWorkspace?: string): CoworkMemory {
+    const workspace = selectedWorkspace ?? ensureGituHome().workspace;
     return new CoworkMemory(MemoryStore.forProject(workspace), path.basename(workspace));
   }
 
   private ctx(agent: CoworkAgent): MemoryRetrievalContext {
-    return { requestingAgentId: agent.name, projectId: this.scope };
+    return { requestingAgentId: agent.companyId ? agent.id : agent.name, projectId: this.scope };
   }
+  private identity(agent: CoworkAgent): string { return agent.companyId ? agent.id : agent.name; }
 
   remember(agent: CoworkAgent, text: string): number {
     const claim = text.trim();
@@ -44,7 +45,7 @@ export class CoworkMemory {
       claim,
       scope: this.scope,
       visibility: 'agent',
-      agentId: agent.name,
+      agentId: this.identity(agent),
       sourceType: 'user_statement',
       source: 'cowork chat',
       confidence: 0.8,
@@ -62,7 +63,7 @@ export class CoworkMemory {
     }
     const own = this.memory
       .query({ limit: 50 }, ctx)
-      .filter((e) => e.agentId === agent.name && e.status !== 'archived' && e.status !== 'superseded')
+      .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded')
       .slice(0, 20);
     if (own.length === 0) return 'Your memory is empty — use action "remember" to persist durable knowledge about the user and your work.';
     return own.map((e, i) => `${i + 1}. [${e.type}] ${e.claim}`).join('\n');
@@ -71,7 +72,7 @@ export class CoworkMemory {
   forget(agent: CoworkAgent, query: string): number {
     const matches = this.memory
       .query({ text: query.trim(), limit: 50 }, this.ctx(agent))
-      .filter((e) => e.agentId === agent.name && e.status !== 'archived' && e.status !== 'superseded');
+      .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded');
     for (const entry of matches) this.memory.archive(entry.id);
     return matches.length;
   }
@@ -89,17 +90,17 @@ export class CoworkMemory {
   count(agent: CoworkAgent): number {
     return this.memory
       .query({ limit: 500 }, this.ctx(agent))
-      .filter((e) => e.agentId === agent.name && e.status !== 'archived' && e.status !== 'superseded').length;
+      .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded').length;
   }
 
   entries(agent: CoworkAgent, query = ''): MemoryEntry[] {
     return this.memory.query({ text: query.slice(0, 100), limit: 2000 }, this.ctx(agent))
-      .filter(entry => entry.agentId === agent.name && entry.status !== 'archived' && entry.status !== 'superseded')
+      .filter(entry => entry.agentId === this.identity(agent) && entry.status !== 'archived' && entry.status !== 'superseded')
       .slice(0, 500);
   }
 
   details(agent: CoworkAgent, id: string): ReturnType<MemoryStore['explain']> | undefined {
-    const visible = this.memory.query({ limit: 2000 }, this.ctx(agent)).some(entry => entry.id === id && entry.agentId === agent.name);
+    const visible = this.memory.query({ limit: 2000 }, this.ctx(agent)).some(entry => entry.id === id && entry.agentId === this.identity(agent));
     return visible ? this.memory.explain(id) : undefined;
   }
 
@@ -110,7 +111,7 @@ export class CoworkMemory {
       if (!old) throw new Error('Memory not found.');
       if (expectedUpdatedAt !== undefined && old.updatedAt !== expectedUpdatedAt) throw new Error('This memory changed. Reload it before saving.');
       if (old.claim === claim.trim().replace(/\s+/g, ' ')) return old;
-      const result = this.memory.add({ type: old.type, claim: claim.trim(), scope: old.scope, visibility: old.visibility, agentId: agent.name,
+      const result = this.memory.add({ type: old.type, claim: claim.trim(), scope: old.scope, visibility: old.visibility, agentId: this.identity(agent),
         projectId: old.projectId, missionId: old.missionId, sourceType: 'user_statement', source: 'Agent profile correction',
         confidence: 0.9, importance: old.importance, pinned: old.pinned, status: 'verified' }, { explicitRevision: true });
       if (result.entry.id !== old.id) this.memory.supersede(old.id, result.entry.id);
@@ -129,7 +130,7 @@ export class CoworkMemory {
   clear(agent: CoworkAgent): number {
     const own = this.memory
       .query({ limit: 500 }, this.ctx(agent))
-      .filter((e) => e.agentId === agent.name && e.status !== 'archived' && e.status !== 'superseded');
+      .filter((e) => e.agentId === this.identity(agent) && e.status !== 'archived' && e.status !== 'superseded');
     for (const entry of own) this.memory.archive(entry.id);
     return own.length;
   }

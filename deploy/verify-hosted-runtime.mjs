@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { CoworkComputer, computerExec } from '../dist/cowork/computer.js';
@@ -33,12 +33,12 @@ console.log('Wallpaper, icons and the separate regular Chrome browser are workin
 const internet = await computer.execute('run_command', { command: 'node -e \'fetch("https://example.com",{signal:AbortSignal.timeout(15000)}).then(r=>{if(!r.ok)throw Error("HTTP "+r.status);console.log("desktop-internet-ok")}).catch(e=>{console.error(e.message);process.exitCode=1})\'', timeoutMs: 20_000 });
 if (!internet.ok || !internet.output.includes('desktop-internet-ok')) throw new Error('VPS desktop Internet access failed: ' + internet.output);
 console.log('VPS desktop DNS and outbound HTTPS Internet access are working.');
-const media = await computer.execute('run_command', { command: 'node -e \'const fs=require("node:fs");fs.mkdirSync("/home/agent/Downloads",{recursive:true});fs.writeFileSync("/home/agent/Downloads/deployment-media.bin",Buffer.alloc(20000000,73))\'', timeoutMs: 10_000 });
+const media = await computer.execute('run_command', { command: 'node -e \'const fs=require("node:fs");fs.mkdirSync("/home/agent/Downloads",{recursive:true});fs.writeFileSync("/home/agent/Downloads/deployment-media.bin",Buffer.alloc(21000000,73))\'', timeoutMs: 10_000 });
 if (!media.ok) throw new Error(media.output);
 let mediaId;
 const attachment = await computer.execute('share_file', { path: '/home/agent/Downloads/deployment-media.bin' }, undefined, 'deployment-media-check', (file) => {
-  const bytes = Buffer.from(file.dataBase64, 'base64');
-  if (file.name !== 'deployment-media.bin' || bytes.length !== 20_000_000 || bytes[0] !== 73 || bytes.at(-1) !== 73) throw new Error('Desktop media was corrupted during transfer.');
+  const bytes = file.sourcePath ? readFileSync(file.sourcePath) : Buffer.from(file.dataBase64, 'base64');
+  if (file.name !== 'deployment-media.bin' || bytes.length !== 21_000_000 || bytes[0] !== 73 || bytes.at(-1) !== 73) throw new Error('Desktop media was corrupted during transfer.');
   mediaId = file.artifactId;
 });
 if (!attachment.ok || !mediaId) throw new Error('Desktop media attachment failed: ' + attachment.output);

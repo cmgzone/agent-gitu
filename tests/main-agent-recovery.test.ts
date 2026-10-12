@@ -57,12 +57,29 @@ async function post(base: string, route: string, body: unknown = {}) {
 
 async function waitSession(base: string, id: string, predicate: (view: RunSessionView) => boolean): Promise<RunSessionView> {
   const until = Date.now() + 18000;
+  let lastView: RunSessionView | undefined;
+  let lastSocketError: unknown;
   while (Date.now() < until) {
-    const view = await (await fetch(`${base}/api/runs/${id}`)).json() as RunSessionView;
+    let response: Response;
+    try {
+      response = await fetch(`${base}/api/runs/${id}`);
+    } catch (error) {
+      const code = (error as { cause?: { code?: string } })?.cause?.code;
+      // As in server.test.ts, an idle pooled connection can close between
+      // read-only polls. Retry transport failures within the original deadline;
+      // a stopped server still fails and unexpected errors remain visible.
+      if (!['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'UND_ERR_SOCKET'].includes(code ?? '')) throw error;
+      lastSocketError = (error as { cause?: unknown }).cause;
+      await new Promise(resolve => setTimeout(resolve, 20));
+      continue;
+    }
+    expect(response.ok, await response.clone().text()).toBe(true);
+    const view = await response.json() as RunSessionView;
+    lastView = view;
     if (predicate(view)) return view;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
-  throw new Error(`Run ${id} did not reach its expected state: ${await (await fetch(`${base}/api/runs/${id}`)).text()}`);
+  throw new Error(`Run ${id} did not reach its expected state: ${JSON.stringify(lastView ?? lastSocketError)}`);
 }
 
 describe('main agent automatic recovery', () => {

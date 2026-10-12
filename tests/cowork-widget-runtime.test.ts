@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CoworkStore, type CoworkMessage } from '../src/cowork/store.js';
 import { GituServer } from '../src/server/server.js';
+import {AsyncLocalStorage} from 'node:async_hooks';
 
 const homes:string[]=[];
 function setup(){
@@ -14,6 +15,7 @@ function setup(){
   let body:Record<string,unknown>={},status=0,result:Record<string,unknown>={},headers:Record<string,string>={},html='';
   type Routes={coworkStore:CoworkStore;readBody:()=>Promise<Record<string,unknown>>;sendJson:(res:ServerResponse,status:number,data:Record<string,unknown>)=>void;publishCowork:()=>void;dispatchCoworkMessage:(id:string,text:string,via:string,from:unknown,artifacts:unknown,thread:unknown,meta:{widgetRequest?:CoworkMessage['widgetRequest']})=>unknown;coworkRoutes:(req:IncomingMessage,res:ServerResponse,path:string,method:string)=>Promise<boolean>};
   const server=Object.create(GituServer.prototype) as Routes;
+  Object.assign(server,{companyScope:new AsyncLocalStorage()});
   server.coworkStore=store;server.readBody=async()=>body;server.publishCowork=vi.fn();
   server.sendJson=(_res,code,data)=>{status=code;result=data;};
   server.dispatchCoworkMessage=(id,text,_via,_from,_artifacts,_thread,meta)=>({ok:true,message:store.appendMessage(id,{role:'user',via:'web',text,widgetRequest:meta.widgetRequest})});

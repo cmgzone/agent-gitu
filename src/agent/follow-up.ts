@@ -21,7 +21,7 @@ export interface FollowUpClassificationResult {
 }
 
 const CONTINUE_PATTERNS = [
-  /^(?:continue|proceed|keep going|finish it|go ahead|next step|carry on|resume|do it|yes please|yes proceed|ok proceed)\b/i,
+  /^(?:please\s+)?(?:continue|proceed|keep going|finish it|go ahead|next step|carry on|resume|do it|yes please|yes proceed|ok proceed)(?:\s+please)?[.!]*$/i,
   /^ok$/i,
   /^yes$/i,
   /^sure$/i,
@@ -83,6 +83,7 @@ const CORRECT_PATTERNS = [
   /\b(?:instead of|rather than|not the backend|backend is fine|frontend is fine|is actually)\b/i,
   /\b(?:don't|do not|dont)\s+(?:want|use)\b[^.!?\n]{0,100}\b(?:use|switch|instead|replace)\b/i,
   /\b(?:replace\s+\S+\s+with|switch\s+(?:from\s+\S+\s+)?to)\b/i,
+  /\binstead[.!]*$/i,
 ];
 
 const EXTEND_PATTERNS = [
@@ -388,7 +389,9 @@ export function applyFollowUpToLedger(
   const classification = classifyFollowUp(rawMessage, hasImages || imagePaths.length > 0);
 
   // Update target hints
-  ledger.setTargetHints(classification.targetHints);
+  // A bare continuation or a discussion must retain the targets of the
+  // latest work. Empty hints would redirect context retrieval to the old task.
+  if (classification.kind !== 'CONTINUE') ledger.setTargetHints(classification.targetHints);
 
   const addedInstructions: string[] = [];
   const supersededInstructions: string[] = [];
@@ -404,6 +407,7 @@ export function applyFollowUpToLedger(
     classification.kind === 'CONSTRAIN' ||
     classification.kind === 'EXTEND' ||
     classification.kind === 'REFINE' ||
+    classification.kind === 'NEW_TASK' ||
     classification.kind === 'VISUAL_REFERENCE';
   if (epochBumping) {
     ledger.bumpInstructionEpoch(`follow-up ${classification.kind}: "${rawMessage.slice(0, 120)}"`);
@@ -426,7 +430,7 @@ export function applyFollowUpToLedger(
 
   // Update goal delta if relevant
   if (classification.goalDelta && classification.kind !== 'CONTINUE') {
-    if (classification.kind === 'CORRECT' || classification.kind === 'REFINE' || classification.kind === 'EXTEND') {
+    if (classification.kind === 'CORRECT' || classification.kind === 'REFINE' || classification.kind === 'EXTEND' || classification.kind === 'NEW_TASK') {
       ledger.setCurrentGoal(classification.goalDelta, `Follow-up ${classification.kind}`);
     }
   }

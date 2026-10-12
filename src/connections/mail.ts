@@ -20,6 +20,7 @@ import { execFileSync } from 'node:child_process';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
+import {SecretVault} from './secret-vault.js';
 import { readCredentialFile, writeCredentialFile } from '../llm/credential-file.js';
 import { discoverMailServers } from './mail-detect.js';
 import type { MailDiscovery } from './mail-detect.js';
@@ -237,7 +238,7 @@ export class MailSecretStore {
   }
   private serverKey(): Buffer | undefined {
     const key = process.env['AGENT_GITU_SECRETS_KEY'];
-    if (!key) return undefined;
+    if (!key) return new SecretVault(path.join(ensureGituHome().settings,'ConnectorSecrets')).encryptionKey();
     if (!/^[a-f0-9]{64}$/i.test(key)) throw new Error('Set AGENT_GITU_SECRETS_KEY to a 32-byte hexadecimal server encryption key.');
     return Buffer.from(key, 'hex');
   }

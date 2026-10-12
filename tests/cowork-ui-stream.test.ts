@@ -222,6 +222,19 @@ describe('Cowork UI live updates', () => {
     expect(u.api).not.toHaveBeenCalled();
   });
 
+  it('keeps the current teammate session and reopens the most recently updated session otherwise', () => {
+    const u = ui();
+    u.cw.convs = [
+      { id: 'original', kind: 'dm', memberIds: ['chief'], updatedAt: '2026-10-01' },
+      { id: 'recent', kind: 'dm', memberIds: ['chief'], updatedAt: '2026-10-10' },
+    ];
+    u.cw.active = 'original'; u.context.cwOpenConv = vi.fn();
+    u.context.cwOpenDm('chief');
+    expect(u.context.cwOpenConv).not.toHaveBeenCalled(); expect(u.cw.active).toBe('original');
+    u.cw.active = 'other'; u.context.cwOpenDm('chief');
+    expect(u.context.cwOpenConv).toHaveBeenCalledWith('recent'); expect(u.api).not.toHaveBeenCalled();
+  });
+
   it('keeps completed actions visible while work continues and after the run ends', () => {
     const u = ui();
     const history = [

@@ -3,12 +3,21 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { resolveSpawn } from '../lsp/server-registry.js';
 import { ensureGituHome } from '../workspace/home.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { SecretVault } from '../connections/secret-vault.js';
+import { McpOAuth } from './oauth.js';
 
 export interface McpServerConfig {
   name: string;
-  command: string;
+  command?: string;
+  url?: string;
+  credentialRef?: string;
+  oauthRedirectUrl?: string;
   args?: string[];
   env?: Record<string, string>;
+  environmentCredentialRef?:string;
+  isolatedEnvironment?:boolean;
 }
 
 export interface McpToolInfo {
@@ -17,6 +26,7 @@ export interface McpToolInfo {
   description?: string;
   /** JSON Schema for the tool's arguments, when the server declares one. */
   inputSchema?: Record<string, unknown>;
+  annotations?: {readOnlyHint?:boolean;destructiveHint?:boolean;idempotentHint?:boolean};
 }
 
 interface JsonRpcResponse {
@@ -31,6 +41,9 @@ export class McpClient {
   private nextId = 1;
   private pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   private ready?: Promise<void>;
+  private remote?:Client;
+  private transport?:StreamableHTTPClientTransport;
+  private oauth?:McpOAuth;
 
   constructor(
     private readonly config: McpServerConfig,
@@ -38,15 +51,19 @@ export class McpClient {
   ) {}
 
   private connect(): Promise<void> {
+    if(this.config.url){
+      if(!this.ready){this.ready=this.connectRemote().catch(error=>{this.ready=undefined;throw error;});}
+      return this.ready;
+    }
     if (!this.ready) {
       this.ready = new Promise<void>((resolve, reject) => {
         let settled = false;
         try {
-          const resolved = resolveSpawn(this.config.command, this.config.args);
+          const resolved = resolveSpawn(this.config.command!, this.config.args);
           this.proc = spawn(resolved.command, resolved.args, {
             cwd: this.cwd,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: { ...process.env, ...this.config.env },
+            env: this.environment(),
             shell: resolved.shell,
             windowsHide: true,
           });
@@ -141,6 +158,29 @@ export class McpClient {
     return this.ready;
   }
 
+  private environment():NodeJS.ProcessEnv{
+    const inherited=this.config.isolatedEnvironment?Object.fromEntries(Object.entries(process.env).filter(([key])=>['PATH','SYSTEMROOT','WINDIR','TEMP','TMP','COMSPEC','PATHEXT','LANG','LC_ALL'].includes(key.toUpperCase()))):process.env;
+    const root=path.join(this.cwd,'.mcp-home',this.config.name);if(this.config.isolatedEnvironment)mkdirSync(root,{recursive:true});
+    const protectedEnv=this.config.environmentCredentialRef?new SecretVault(path.join(ensureGituHome().settings,'ConnectorSecrets')).read<{environment?:Record<string,string>}>(this.config.environmentCredentialRef)?.environment:undefined;
+    return{...inherited,...(this.config.isolatedEnvironment?{HOME:root,USERPROFILE:root}:{}),...this.config.env,...protectedEnv};
+  }
+
+  private async connectRemote():Promise<void>{
+    const url=new URL(this.config.url!);if(url.protocol!=='https:'&&!(url.protocol==='http:'&&['localhost','127.0.0.1','[::1]'].includes(url.hostname)))throw new Error('Remote MCP requires HTTPS or a loopback HTTP server.');
+    const vault=new SecretVault(path.join(ensureGituHome().settings,'ConnectorSecrets'));
+    const credential=this.config.credentialRef?vault.read<{token?:string}>(this.config.credentialRef):undefined;
+    this.oauth=this.config.oauthRedirectUrl?new McpOAuth(vault,this.config.credentialRef??`mcp-${this.config.name}`,this.config.oauthRedirectUrl):undefined;
+    this.transport=new StreamableHTTPClientTransport(url,{authProvider:this.oauth,requestInit:credential?.token?{headers:{authorization:`Bearer ${credential.token}`}}:undefined});
+    const client=new Client({name:'agent-gitu',version:'0.3.12'},{capabilities:{}});this.remote=client;
+    try{await client.connect(this.transport);}catch(error){await client.close().catch(()=>{});this.remote=undefined;throw error;}
+  }
+  authorizationUrl():string|undefined{return this.oauth?.authorizationUrl();}
+  async finishOAuth(code:string,state:string):Promise<void>{
+    if(!this.config.url||!this.config.oauthRedirectUrl)throw new Error('OAuth is not configured for this MCP server.');
+    const vault=new SecretVault(path.join(ensureGituHome().settings,'ConnectorSecrets'));const provider=new McpOAuth(vault,this.config.credentialRef??`mcp-${this.config.name}`,this.config.oauthRedirectUrl);provider.consumeState(state);
+    const transport=new StreamableHTTPClientTransport(new URL(this.config.url),{authProvider:provider});await transport.finishAuth(code);this.kill();
+  }
+
   private send(msg: unknown): void {
     const stdin = this.proc?.stdin;
     if (!stdin || stdin.destroyed || !stdin.writable) return;
@@ -184,13 +224,13 @@ export class McpClient {
     const cursors = new Set<string>();
     let cursor: string | undefined;
     do {
-      const result = (await this.request('tools/list', cursor ? { cursor } : {})) as {
+      const result = (this.remote?await this.remote.listTools(cursor?{cursor}:undefined):await this.request('tools/list', cursor ? { cursor } : {})) as {
         tools?: Omit<McpToolInfo, 'server'>[]; nextCursor?: string;
       };
       if (!result || !Array.isArray(result.tools)) throw new Error('MCP server returned an invalid tools/list response.');
       for (const tool of result.tools) {
         if (!tool || typeof tool.name !== 'string' || !tool.name.trim()) continue;
-        tools.set(tool.name, { server: this.config.name, name: tool.name, description: tool.description, inputSchema: tool.inputSchema });
+        tools.set(tool.name, { server: this.config.name, name: tool.name, description: tool.description, inputSchema: tool.inputSchema,annotations:tool.annotations });
       }
       cursor = typeof result.nextCursor === 'string' && result.nextCursor ? result.nextCursor : undefined;
       if (cursor && cursors.has(cursor)) throw new Error('MCP server repeated its tool-list cursor.');
@@ -201,7 +241,7 @@ export class McpClient {
 
   async callTool(toolName: string, args: Record<string, unknown>): Promise<string> {
     await this.connect();
-    const result = (await this.request('tools/call', { name: toolName, arguments: args })) as {
+    const result = (this.remote?await this.remote.callTool({name:toolName,arguments:args}):await this.request('tools/call', { name: toolName, arguments: args })) as {
       content?: { type?: string; text?: string }[];
       isError?: boolean;
     };
@@ -214,6 +254,7 @@ export class McpClient {
   }
 
   kill(): void {
+    void this.remote?.close().catch(()=>{});this.remote=undefined;this.transport=undefined;
     for (const waiter of this.pending.values()) waiter.reject(new Error('MCP server configuration changed or connection closed. Retry discovery.'));
     this.pending.clear();
     this.proc?.kill();
@@ -236,11 +277,13 @@ export class McpManager {
     private readonly configFile: string,
     /** Optional workspace-level layer merged under the project config (project wins on name clashes). */
     private readonly globalFile?: string,
+    private readonly companyScoped=false,
   ) {}
 
   static forProject(repoRoot: string): McpManager {
     return new McpManager(path.join(repoRoot, '.hermes', 'mcp.json'), McpManager.globalConfigFile());
   }
+  static forCompany(repoRoot:string):McpManager{return new McpManager(path.join(repoRoot,'.hermes','mcp.json'),undefined,true);}
 
   /** Workspace-wide MCP layer shared by every project. */
   static globalConfigFile(): string {
@@ -292,9 +335,10 @@ export class McpManager {
   }
 
   addServer(config: McpServerConfig, scope: 'global' | 'project' = 'project'): McpServerConfig[] {
-    if (!config.name?.trim() || !/^[a-zA-Z0-9_-]+$/.test(config.name) || !config.command?.trim()) {
+    if (!config.name?.trim() || !/^[a-zA-Z0-9_-]+$/.test(config.name) || !(config.command?.trim()||config.url?.trim())) {
       throw new Error('MCP server needs a name (letters, digits, hyphens or underscores) and a command.');
     }
+    if(config.url){const url=new URL(config.url);if(url.username||url.password||!['http:','https:'].includes(url.protocol))throw new Error('Invalid MCP server URL.');}
     if (config.args !== undefined && (!Array.isArray(config.args) || config.args.some((arg) => typeof arg !== 'string'))) {
       throw new Error('MCP server args must be an array of strings.');
     }
@@ -351,12 +395,14 @@ export class McpManager {
       // Project servers run with the project as cwd; global servers run from
       // the workspace home so relative paths stay stable across projects.
       const baseFile = entry.global && this.globalFile ? this.globalFile : this.configFile;
-      client = new McpClient(entry.config, path.dirname(path.dirname(baseFile)));
+      client = new McpClient({...entry.config,...(this.companyScoped?{isolatedEnvironment:true}:{})}, path.dirname(path.dirname(baseFile)));
       this.clients.set(name, client);
       this.clientConfigs.set(name, fingerprint!);
     }
     return client;
   }
+  authorizationUrl(name:string):string|undefined{return this.clients.get(name)?.authorizationUrl();}
+  async finishOAuth(name:string,code:string,state:string):Promise<void>{const client=this.client(name);if(!client)throw new Error('MCP server not found.');await client.finishOAuth(code,state);}
 
   async listAllTools(): Promise<McpToolInfo[]> {
     this.discoveryErrors.clear();

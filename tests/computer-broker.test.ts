@@ -9,6 +9,18 @@ const fixture = () => {
   return { exec, broker: new ComputerBroker(owner, exec) };
 };
 describe('private desktop broker', () => {
+  it('requires verified disk enforcement before accepting bounded company desktops', async () => {
+    const exec = vi.fn<ComputerExec>(async (args) => args[0] === 'gitu-quota' ? 'quota-ready' : 'created');
+    const broker = new ComputerBroker(owner, exec);
+    const args = computerCreateArgs(name, { cpu: 2, memoryMb: 2048, diskMb: 10240 });
+    await broker.execute(args);
+    expect(exec.mock.calls[0][0]).toEqual(['gitu-quota', name, '10240', owner]);
+    expect(exec.mock.calls[1][0]).toContain('--read-only');
+    exec.mockImplementation(async () => 'unverified');
+    await expect(broker.execute(args)).rejects.toThrow('could not be verified');
+    expect(exec.mock.calls.filter(([args]) => args[0] === 'create')).toHaveLength(1);
+    await expect(broker.execute(['gitu-quota', name, '10240', 'another-owner'])).rejects.toThrow('Unsupported');
+  });
   it('carries a full 20 MB attachment through the authenticated hosted transport in both directions', async () => {
     const key = 'disposable-media-broker-key-for-tests';
     const media = Buffer.alloc(20_000_000, 73).toString('base64');
@@ -36,7 +48,7 @@ describe('private desktop broker', () => {
     expect(args).toContain('dev.agentgitu.broker=' + owner);
     expect(args).toContain('--cap-drop');
     expect(args.join(' ')).not.toMatch(/type=bind|--privileged|--publish|docker.sock/);
-    expect(args.at(-1)).toBe('agent-gitu-cowork:7');
+    expect(args.at(-1)).toBe('agent-gitu-cowork:8');
     for (const modified of [
       [...computerCreateArgs(name), '--privileged'],
       ['create', '--name', name, 'alpine'],
@@ -53,7 +65,7 @@ describe('private desktop broker', () => {
       ['exec', '--user', 'root', name, 'node', '-e', 'evil'],
       ['exec', '-i', name, 'sh', '-c', 'evil'],
       ['image', 'inspect', 'alpine'],
-      ['build', '-t', 'agent-gitu-cowork:7', '/tmp/untrusted'],
+      ['build', '-t', 'agent-gitu-cowork:8', '/tmp/untrusted'],
       ['cp', '/etc/passwd', name + ':/computer/server.cjs'],
       ['volume', 'rm', 'production-data'],
       ['run', '--privileged', 'alpine'],
@@ -70,7 +82,7 @@ describe('private desktop broker', () => {
     const signal = new AbortController().signal;
     const args = ['exec', '-i', name, 'node', '-e', 'process.stdin.resume()'];
     await f.broker.execute(args, 'sandbox input', 3_000_000, signal);
-    expect(f.exec).toHaveBeenLastCalledWith(args, 'sandbox input', signal, 3_000_000);
+    expect(f.exec).toHaveBeenLastCalledWith(['exec', '-i', name, '/computer/quota-guard', 'node', '-e', 'process.stdin.resume()'], 'sandbox input', signal, 3_000_000);
     await expect(f.broker.execute(['info', '--format', '{{.ServerVersion}}'], undefined, 0)).rejects.toThrow('deadline');
   });
   it('allows sleep and wake only for owned desktops with no additional arguments', async () => {

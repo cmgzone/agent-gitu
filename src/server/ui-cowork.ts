@@ -9,6 +9,7 @@ import { COWORK_COMPUTER_CSS, COWORK_COMPUTER_JS } from './ui-cowork-computer.js
 import { COWORK_WIDGETS_CSS, COWORK_WIDGETS_JS } from './ui-cowork-widgets.js';
 import { WIDGET_APP_RUNTIME_JS } from './ui-widget-app-runtime.js';
 import { COWORK_DIALOGS_JS } from './ui-cowork-dialogs.js';
+import { COWORK_SESSIONS_CSS, COWORK_SESSIONS_JS } from './ui-cowork-sessions.js';
 
 /**
  * Cowork mode UI: a messaging-app style surface (agent roster, DMs, group
@@ -578,6 +579,7 @@ export const COWORK_CSS = String.raw`
   ${COWORK_IMAGES_CSS}
   ${COWORK_COMPUTER_CSS}
   ${COWORK_WIDGETS_CSS}
+  ${COWORK_SESSIONS_CSS}
 `;
 
 export const COWORK_JS = String.raw`
@@ -595,6 +597,7 @@ export const COWORK_JS = String.raw`
   ${COWORK_WIDGETS_JS}
   ${WIDGET_APP_RUNTIME_JS}
   ${COWORK_DIALOGS_JS}
+  ${COWORK_SESSIONS_JS}
   function cwAvatarShape(shape, color) {
     if (CW_SHAPES.indexOf(shape) >= 0) return shape;
     // Existing profiles keep their identity and settings; display the plush
@@ -1202,7 +1205,8 @@ export const COWORK_JS = String.raw`
   function cwOpenDm(agentId) {
     var cw = cwEnsure();
     cw.selectedAgentId = agentId;
-    var existing = cw.convs.find(function (c) { return c.kind === 'dm' && c.memberIds[0] === agentId; });
+    var matches = cw.convs.filter(function (c) { return c.kind === 'dm' && c.memberIds[0] === agentId; });
+    var existing = matches.find(function(c){return c.id===cw.active;}) || matches.sort(function(a,b){return String(b.updatedAt||b.createdAt||'').localeCompare(String(a.updatedAt||a.createdAt||''));})[0];
     if (existing) { if (existing.id !== cw.active || cw.connectionsOpen || cw.profileOpen) cwOpenConv(existing.id); else cwRenderRail(); return; }
     api('/api/cowork/conversations', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'dm', memberIds: [agentId] }) })
       .then(function (d) { cw.convs.push(d.conversation); cwRenderRail(); cwOpenConv(d.conversation.id); })
@@ -1366,9 +1370,11 @@ export const COWORK_JS = String.raw`
       '<div class="cw-chat-head">' +
         '<button class="cw-info-toggle" id="cwBack" aria-label="Search agents and tools" title="Search">' + cwIcon('search') + '</button>' +
         '<nav class="cw-top-nav" aria-label="Agent navigation">' +
+          '<button type="button" data-company-nav title="Companies">' + cwIcon('users') + '<span>Companies</span></button>' +
           '<button type="button" id="cwHomeBtn" aria-label="Home" title="Home">' + cwIcon('home') + '<span>Home</span></button>' +
           '<button type="button" id="cwCurrentChat" aria-label="Current agent chat" title="Current agent chat" aria-pressed="true"><span class="cw-chat-face" id="cwChatAvatar" aria-hidden="true">' + headAva + '</span><span>Chat</span></button>' +
           '<button type="button" id="cwInfoBtn" aria-label="Agent profile" title="Agent profile" aria-controls="cwChat" aria-pressed="false">' + cwIcon('user') + '<span>Profile</span></button>' +
+          cwSessionNavHtml() +
         '</nav>' +
         '<div class="cw-visually-hidden"><span id="cwChatTitle">' + esc(activeThread ? activeThread.title : conv.title) + '</span>' +
         '<span class="cw-persona-status" id="cwCharacterStatus" role="status" aria-live="polite" aria-atomic="true"><span>AI teammate · Ready</span><i class="cw-persona-tool" aria-hidden="true" hidden></i></span>' +
@@ -1419,7 +1425,7 @@ export const COWORK_JS = String.raw`
     input.addEventListener('keydown', function (e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); cwSend(); } });
     input.addEventListener('input', function () { input.style.height = 'auto'; input.style.height = Math.min(160, input.scrollHeight) + 'px'; cwSaveDraft(); cwRenderComposerAction(); cwUpdateJumpLatest(); });
     $('cwMsgs').addEventListener('toggle', function () { cwUpdateJumpLatest(); }, true);
-    $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };
+    $('cwFile').onchange = function () { cwAddFiles(Array.prototype.slice.call($('cwFile').files || [])); $('cwFile').value = ''; };showFileLimitNear($('cwFile'));
     $('cwSend').onclick = cwSend;
     $('cwStop').onclick = cwStopRun;
     // "+" menu: Mission / Tag folder / Schedule. The popover toggles natively
@@ -1867,10 +1873,11 @@ export const COWORK_JS = String.raw`
     var el = $('cwPending');
     if (!el) return;
     el.innerHTML = (cw.pendingFiles || []).map(function (file, i) {
-      var preview = /^data:image\/(png|jpeg|gif|webp|bmp);base64,/i.test(file.dataUrl || '') ? '<img src="' + esc(file.dataUrl) + '" alt="' + esc(file.name) + '">' : cwIcon('file');
-      return '<span title="' + esc(file.name) + '">' + preview + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(file.name) + (file.loading ? ' · Loading…' : '') + '</span><button data-cwremovefile="' + i + '" title="Remove" aria-label="Remove ' + esc(file.name) + '">×</button></span>';
+      var preview = file.previewUrl ? '<img src="'+esc(file.previewUrl)+'" alt="'+esc(file.name)+'">' : /^data:image\/(png|jpeg|gif|webp|bmp);base64,/i.test(file.dataUrl || '') ? '<img src="' + esc(file.dataUrl) + '" alt="' + esc(file.name) + '">' : cwIcon('file');
+      return '<span title="' + esc(file.name) + '">' + preview + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(file.name) + (file.loading ? ' · '+Math.round((file.progress||0)*100)+'%' : file.error?' · Interrupted':'') + '</span>'+(file.error?'<button data-cwretryfile="'+i+'">Resume</button>':'')+'<button data-cwremovefile="' + i + '" title="Remove" aria-label="Remove ' + esc(file.name) + '">×</button></span>';
     }).join('');
-    el.querySelectorAll('[data-cwremovefile]').forEach(function (button) { button.onclick = function () { cw.pendingFiles.splice(Number(button.getAttribute('data-cwremovefile')), 1); cwRenderPending(); }; });
+    el.querySelectorAll('[data-cwremovefile]').forEach(function (button) { button.onclick = function () { var file=cw.pendingFiles.splice(Number(button.getAttribute('data-cwremovefile')), 1)[0];if(file&&file.cancel)file.cancel();cwRenderPending(); }; });
+    el.querySelectorAll('[data-cwretryfile]').forEach(function(button){button.onclick=function(){var file=cw.pendingFiles[Number(button.dataset.cwretryfile)];if(file&&file.retry)file.retry();};});
     cwRenderComposerAction();
   }
 
@@ -1892,21 +1899,7 @@ export const COWORK_JS = String.raw`
     var pending = cw.pendingFiles || (cw.pendingFiles = []);
     var room = Math.max(0, 4 - pending.length);
     files.slice(0, room).forEach(function (file) {
-      if (file.size > 20000000) { toast(file.name + ' is larger than 20 MB', true); return; }
-      var attachment = { name: file.name || 'pasted-image.' + ((file.type || '').split('/')[1] || 'png'), type: file.type || '', dataUrl: '', loading: true };
-      pending.push(attachment);
-      var reader = new FileReader();
-      reader.onload = function () {
-        attachment.dataUrl = String(reader.result || '');
-        delete attachment.loading;
-        if (cw.pendingFiles === pending) cwRenderPending();
-      };
-      reader.onerror = function () {
-        var index = pending.indexOf(attachment);
-        if (index >= 0) pending.splice(index, 1);
-        if (cw.pendingFiles === pending) { toast('Could not read ' + attachment.name, true); cwRenderPending(); }
-      };
-      reader.readAsDataURL(file);
+      attachBinary(file,pending,'cowork:'+cw.active,cwRenderPending);
     });
     cwRenderPending();
     if (files.length > room) toast('You can attach up to 4 files at once', true);
@@ -3151,9 +3144,7 @@ export const COWORK_JS = String.raw`
     cwBindComputers(el);
     $('cwDelConv').onclick = function () {
       if (!confirm('Delete this chat and its whole transcript?')) return;
-      api('/api/cowork/conversations/' + encodeURIComponent(conv.id), { method: 'DELETE' }).then(function () {
-        cw.active = null; cw.msgs = []; cwStopPoll(); cwLoad(true);
-      }).catch(function (e) { toast(e.message, true); });
+      cwDeleteSession(conv.id).catch(function (e) { toast(e.message, true); });
     };
   }
 
@@ -3593,7 +3584,7 @@ export const COWORK_JS = String.raw`
     var cw = cwEnsure(), input = $('cwInput');
     if (!input) return;
     var text = input.value.trim(), files = (cw.pendingFiles || []).slice();
-    if (files.some(function (file) { return file.loading; })) { toast('Wait for the attachments to finish loading'); return; }
+    if (files.some(function (file) { return file.loading||file.error; })) { toast('Finish or retry the attachments before sending'); return; }
     if (!text && !files.length) return;
     if (!cw.active) { toast('Open a chat first', true); return; }
     var id = crypto.randomUUID();
@@ -3729,6 +3720,7 @@ export const COWORK_JS = String.raw`
     modal.className = 'modal cw-modal';
     modal.innerHTML = '<div class="box" style="width:min(540px,calc(100vw - 32px))"><div class="bar"><strong>Add cloud server</strong><span style="flex:1"></span><button type="button" class="btn ghost" data-cancel>Cancel</button></div>' +
       '<form class="cw-body"><label style="display:block;margin-bottom:14px">Server name<input style="display:block;width:100%;margin-top:6px" name="label" required maxlength="120" placeholder="My VPS" autocomplete="off"></label><label style="display:block;margin-bottom:14px">SSH address<input style="display:block;width:100%;margin-top:6px" name="address" type="url" required placeholder="ssh://user@host:22" autocomplete="off" spellcheck="false"></label><label style="display:block;margin-bottom:14px">SSH password<input style="display:block;width:100%;margin-top:6px" name="password" type="password" required autocomplete="new-password"></label>' +
+      '<label style="display:block;margin-bottom:14px">Private computer quota directory<input style="display:block;width:100%;margin-top:6px" name="computerQuotaRoot" placeholder="/srv/gitu-computers" autocomplete="off"></label><p class="cw-note">Company computers require a Linux server with XFS project quotas, Node 22.22.3+, xfsprogs and quota administrator permissions. Leave this blank for existing Cowork computers without a disk quota.</p>' +
       '<button type="button" class="btn ghost" data-check>Check server identity</button><p class="cw-note" data-fingerprint hidden style="overflow-wrap:anywhere"></p><label data-confirm hidden><input name="confirm" type="checkbox" style="width:auto"> This fingerprint matches my hosting console or known server key.</label><p data-error role="alert" style="color:var(--err)" hidden></p><button type="submit" class="btn dark" data-connect disabled>Connect server</button></form></div>';
     document.body.appendChild(modal);
     var form = modal.querySelector('form'), address = form.elements.address, check = modal.querySelector('[data-check]'), connect = modal.querySelector('[data-connect]');
@@ -3752,7 +3744,7 @@ export const COWORK_JS = String.raw`
       event.preventDefault();
       if (connect.disabled || !form.reportValidity()) return;
       busy = true; check.disabled = true; update(); error('');
-      api('/api/cowork/cloud-servers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label: form.elements.label.value.trim(), baseUrl: checkedAddress, password: form.elements.password.value, hostFingerprint: fingerprint }) }).then(function (result) {
+      api('/api/cowork/cloud-servers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label: form.elements.label.value.trim(), baseUrl: checkedAddress, password: form.elements.password.value, hostFingerprint: fingerprint, computerQuotaRoot: form.elements.computerQuotaRoot.value.trim() }) }).then(function (result) {
         form.elements.password.value = '';
         var cw = cwEnsure(); cw.cloudServers = (cw.cloudServers || []).filter(function (server) { return server.id !== result.server.id; }).concat([result.server]);
         modal.remove(); onSaved(result.server);

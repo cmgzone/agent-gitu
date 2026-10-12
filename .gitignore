@@ -27,3 +27,6 @@ apps/mobile/ios/
 
 release-new/
 release*/
+
+.qa/
+.release/

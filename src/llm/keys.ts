@@ -3,6 +3,25 @@ import os from 'node:os';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
 import { readCredentialJson, updateCredentialJson } from './credential-file.js';
+import { SecretVault } from '../connections/secret-vault.js';
+
+const vaults = new Map<string, SecretVault>();
+function keyVault(file: string): SecretVault {
+  const root = path.join(path.dirname(file), 'KeyProtection');
+  let vault = vaults.get(root);
+  if (!vault) {
+    vault = new SecretVault(root);
+    vaults.set(root, vault);
+  }
+  return vault;
+}
+function decodeKeys(file: string, value: unknown): Record<string, unknown> {
+  const raw = keyRecord(value);
+  return raw['format'] === 'gitu-keys-v1' ? keyRecord(keyVault(file).open('keys', raw['payload'] as { iv: string; tag: string; data: string })) : raw;
+}
+function encodeKeys(file: string, value: Record<string, unknown>): Record<string, unknown> {
+  return { format: 'gitu-keys-v1', payload: keyVault(file).seal('keys', value) };
+}
 
 function keyRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid credential record.');
@@ -16,7 +35,9 @@ function keyFiles(): string[] {
 export function loadStoredKeys(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const file of [...keyFiles()].reverse()) {
-    const data = readCredentialJson(file, keyRecord) ?? {};
+    let legacy=false;
+    const data = readCredentialJson(file, (value) => {if(keyRecord(value)['format']!=='gitu-keys-v1')legacy=true;return decodeKeys(file,value);}) ?? {};
+    if(legacy)updateCredentialJson(file,value=>decodeKeys(file,value),current=>encodeKeys(file,current??{}),previous=>JSON.stringify(encodeKeys(file,decodeKeys(file,JSON.parse(previous)))));
     for (const [k, v] of Object.entries(data)) {
       if (typeof v === 'string' && v) out[k] = v;
     }
@@ -34,10 +55,7 @@ export function registryEnv(): Record<string, string> {
   if (registryEnvCache) return registryEnvCache;
   const out: Record<string, string> = {};
   if (process.platform === 'win32') {
-    const hives = [
-      'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
-      'HKEY_CURRENT_USER\\Environment',
-    ];
+    const hives = ['HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', 'HKEY_CURRENT_USER\\Environment'];
     for (const hive of hives) {
       let raw = '';
       try {
@@ -67,16 +85,27 @@ export function mergedEnv(): NodeJS.ProcessEnv {
 
 export function setStoredKey(envVar: string, key: string): void {
   const file = keyFiles()[0]!;
-  updateCredentialJson(file, keyRecord, (current) => ({ ...current, [envVar]: key }));
+  keyVault(file).encryptionKey();
+  updateCredentialJson(
+    file,
+    (value) => decodeKeys(file, value),
+    (current) => encodeKeys(file, { ...current, [envVar]: key }),
+    previous=>JSON.stringify(encodeKeys(file,decodeKeys(file,JSON.parse(previous)))),
+  );
 }
 
 export function removeStoredKey(envVar: string): void {
   for (const file of keyFiles()) {
-    if (readCredentialJson(file, keyRecord) === undefined) continue;
-    updateCredentialJson(file, keyRecord, (current) => {
-      if (!current || !(envVar in current)) return undefined;
-      delete current[envVar];
-      return current;
-    });
+    if (readCredentialJson(file, (value) => decodeKeys(file, value)) === undefined) continue;
+    updateCredentialJson(
+      file,
+      (value) => decodeKeys(file, value),
+      (current) => {
+        if (!current || !(envVar in current)) return undefined;
+        delete current[envVar];
+        return encodeKeys(file, current);
+      },
+      previous=>JSON.stringify(encodeKeys(file,decodeKeys(file,JSON.parse(previous)))),
+    );
   }
 }

@@ -7,7 +7,7 @@ import WebSocket, { createWebSocketStream } from 'ws';
 export const DESKTOP_BRIDGE = "const s=require('node:net').connect(5900,'127.0.0.1');s.setNoDelay(true);s.on('error',()=>process.exit(1));s.on('close',()=>process.exit(0));process.stdin.pipe(s);s.pipe(process.stdout);process.stdin.on('end',()=>s.end());";
 export function localDesktopStream(name: string): Duplex {
   if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name)) throw new Error('Invalid desktop container.');
-  const child = spawn('docker', ['exec', '-i', name, 'node', '-e', DESKTOP_BRIDGE], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+  const child = spawn('docker', ['exec', '-i', name, '/computer/quota-guard', 'node', '-e', DESKTOP_BRIDGE], { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
   const stream = Duplex.from({ readable: child.stdout, writable: child.stdin });
   child.once('error', (error) => stream.destroy(error));
   child.once('close', () => stream.destroy());

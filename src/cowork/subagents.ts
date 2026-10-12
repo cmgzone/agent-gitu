@@ -730,6 +730,7 @@ export class CoworkSubAgentRunner {
   constructor(
     private readonly manager: CoworkSubAgents,
     private readonly policy: SubAgentEvidencePolicy = DEFAULT_SUBAGENT_EVIDENCE_POLICY,
+    private readonly worker?:<T>(instance:SubAgentInstance,signal:AbortSignal,work:()=>Promise<T>)=>Promise<T>,
   ) {}
 
   /** True while this process executes the instance — the orphan sweep's answer. */
@@ -802,13 +803,14 @@ export class CoworkSubAgentRunner {
 
     this.manager.markRunning(instance.id);
     try {
-      const outcome = await runChild({
+      const executeChild=()=>runChild({
         instance,
         permissions,
         account,
         ...(scope.parentAccount?.remaining().costUsd !== undefined ? { availableSharedUsd: scope.parentAccount.remaining().costUsd } : {}),
         signal: controller.signal,
       });
+      const outcome = this.worker?await this.worker(instance,controller.signal,executeChild):await executeChild();
       if (controller.signal.aborted) {
         this.manager.terminate(instance.id, String(controller.signal.reason ?? 'terminated'));
         return { ok: false, output: `Sub-agent "${instance.role}" was terminated before it could report: ${String(controller.signal.reason ?? 'terminated')}. Its budget account is sealed.` };

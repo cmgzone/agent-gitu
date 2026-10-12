@@ -1,6 +1,7 @@
 import { createContext, Script } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 import { COWORK_DASHBOARD_JS } from '../src/server/ui-cowork-dashboard.js';
+import { COWORK_SESSIONS_JS } from '../src/server/ui-cowork-sessions.js';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 import { COWORK_PROFILE_JS } from '../src/server/ui-cowork-profile.js';
@@ -24,7 +25,7 @@ function fixture() {
     cwAgentModal: vi.fn(), cwMissionModal: vi.fn(), cwOpenConnections: vi.fn(), toast: vi.fn(), document: { title: '', querySelectorAll: () => [] },
     api: vi.fn(), cwRenderRail: vi.fn(), cwActionWords: (value: string) => value,
   });
-  new Script(COWORK_DASHBOARD_JS).runInContext(context);
+  new Script(COWORK_SESSIONS_JS + COWORK_DASHBOARD_JS).runInContext(context);
   return { context, cw, elements, buttons, root, agent };
 }
 

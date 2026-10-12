@@ -87,6 +87,8 @@ export const COWORK_NOW_JS = String.raw`
     var home=$('cwHomeBtn'),chat=$('cwCurrentChat');
     if(home)home.onclick=cwExit;
     var search=$('cwPageSearch');if(search)search.onclick=function(){wsOpen('cowork');};
+    var sessions=$('cwSessionsBtn');if(sessions)sessions.onclick=function(){wsOpen('cowork','Sessions');};
+    var createSession=$('cwNewSessionBtn');if(createSession)createSession.onclick=cwNewSessionModal;
     var profile=$('cwInfoBtn');if(profile)profile.onclick=function(){cwOpenProfile();};
     if(chat)chat.onclick=function(){
       var cw=cwEnsure();if(cw.profileOpen||cw.connectionsOpen){cwReturnToChat();return;}cw.infoOpen=false;cw.infoNarrowOpen=false;

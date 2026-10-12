@@ -77,7 +77,7 @@ describe('parallel verification', () => {
         { tool: 'read_file', params: { path: 'second.js' }, reason: 'inspect the other script', expected: 'file contents' },
       ] }),
       (_n, messages) => {
-        results = parallelResult(messages);
+        results ||= parallelResult(messages);
         return stop();
       },
     ]);

@@ -583,6 +583,12 @@ function profileSkillInstructions(profile: ConnectionProfile): string {
 /** Persistent provider-neutral connection registry. Profile metadata and the
  * credential are intentionally kept in separate local files. */
 export class ConnectionRegistry {
+  constructor(private readonly scope?: (id: string) => boolean) {}
+
+  /** Independent discovery caches and filtered resolution for a resource grant. */
+  scoped(allowed: (id: string) => boolean): ConnectionRegistry {
+    return new ConnectionRegistry(allowed);
+  }
   private discoveryCache = new DiscoveryFactCache();
   private discoveryTelemetry = new DiscoveryTelemetryAccumulator();
 
@@ -598,7 +604,7 @@ export class ConnectionRegistry {
     return this.decodeProfiles(readCredentialJson(connectionFile(), (raw) => {
       this.decodeProfiles(raw);
       return raw;
-    }));
+    })).filter(profile => !this.scope || this.scope(profile.id));
   }
 
   private decodeProfiles(raw: unknown): ConnectionProfile[] {
@@ -941,7 +947,7 @@ export class ConnectionRegistry {
     return Boolean(loadStoredKeys()[keyRef(id)]?.trim());
   }
 
-  async invokeOperation(id: string, operation: ConnectionOperation, body?: unknown, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
+  async invokeOperation(id: string, operation: ConnectionOperation, body?: unknown, query?: Record<string, unknown>, extraHeaders?:Record<string,string>): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
 
@@ -991,7 +997,7 @@ export class ConnectionRegistry {
     try {
       response = await fetch(url, {
         method: operation.method,
-        headers: { accept: 'application/json', authorization: `Bearer ${token}`, ...(encoded ? { 'content-type': 'application/json' } : {}) },
+        headers: { ...extraHeaders, accept: 'application/json', authorization: `Bearer ${token}`, ...(encoded ? { 'content-type': 'application/json' } : {}) },
         ...(encoded ? { body: encoded } : {}),
         redirect: 'error',
         signal: AbortSignal.timeout(15_000),
@@ -1088,7 +1094,7 @@ export class ConnectionRegistry {
     };
   }
 
-  async invoke(id: string, operationId: string, body?: unknown, query?: Record<string, unknown>): Promise<ConnectionInvocationResult> {
+  async invoke(id: string, operationId: string, body?: unknown, query?: Record<string, unknown>,extraHeaders?:Record<string,string>): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
     const canonical = canonicalOperationId(operationId);
@@ -1097,7 +1103,7 @@ export class ConnectionRegistry {
       this.recordCapability(profile.id, { miss: [canonical] });
       throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.', 'CONNECTED_MISSING_OPERATION');
     }
-    return this.invokeOperation(id, operation, body, query);
+    return this.invokeOperation(id, operation, body, query,extraHeaders);
   }
 
   async discover(request: DiscoveryRequest): Promise<DiscoveryResult> {

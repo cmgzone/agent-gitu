@@ -1,4 +1,21 @@
 import http from 'node:http';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { CompanyStore, effectiveFileLimit, type Company, type CompanyJob } from '../company/store.js';
+import { CompanyCoordinator } from '../company/coordinator.js';
+import { CompanyLlm } from '../company/llm.js';
+import { companyPricing, companyUsageCostUsd } from '../company/pricing.js';
+import { companyApi } from '../company/api.js';
+import { companyPolicy } from '../company/policy.js';
+import { StorageRegistry } from '../storage/registry.js';
+import { storageApi } from '../storage/api.js';
+import { SecretVault } from '../connections/secret-vault.js';
+import type { StorageOperation } from '../storage/types.js';
+import { companyMcpApi } from '../company/integrations.js';
+import { ServerBrowser } from '../browser/server-browser.js';
+import { CompanyWorkers } from '../company/workers.js';
+import { serverBrowserView } from '../browser/server-view.js';
+import { UploadStore, UPLOAD_CHUNK_BYTES } from '../files/uploads.js';
+import { readFilePrefix } from '../files/prefix.js';
 import { WebSocket, WebSocketServer } from 'ws';
 import { bridgeDesktop, connectDesktopStream } from '../cowork/desktop-stream.js';
 import { CloudComputerTransport } from '../cowork/cloud-computer.js';
@@ -58,7 +75,7 @@ import { MemoryStore } from '../memory/memory-store.js';
 import { CoworkComputer, hostedComputerExec } from '../cowork/computer.js';
 import { CoworkBrowserLease } from '../cowork/browser-lease.js';
 import { DiscordGateway, recentDiscordChannels, recentDiscordGuilds, sendDiscordMessage, sendDiscordRequestCard, parseDiscordRequestReply, type DiscordFetch, type DiscordWebSocketFactory } from '../cowork/discord.js';
-import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramDocument, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
+import { TelegramPoller, TelegramReplyStream, TelegramTypingIndicator, cleanTelegramText, parseTelegramRequestAction, recentTelegramChats, sendTelegramArtifact, sendTelegramMessage, sendTelegramRequestCard, telegramAgentMessage, type TelegramFetch } from '../cowork/telegram.js';
 import { coworkDocumentPreview } from '../cowork/document-preview.js';
 import { fetchWidgetSource, widgetAppDocument, WIDGET_APP_CSP, widgetState } from '../cowork/widget-app.js';
 import { readOnboarding, saveOnboarding } from './onboarding.js';
@@ -381,8 +398,6 @@ const DEFAULT_DELEGATION_BUDGET_USD = 5;
 /** Matches the runtime log's default retention, so the two stay comparable. */
 const NATIVE_FRAME_CAPACITY = 2_000;
 const MAX_SESSION_FILES_PER_MESSAGE = 8;
-const MAX_SESSION_FILE_BYTES = 8 * 1024 * 1024;
-const MAX_SESSION_FILES_TOTAL_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_EXCERPT = 12_000;
 const LONG_RESPONSE_DOCUMENT_CHARS = 6_000;
 
@@ -449,6 +464,17 @@ export class GituServer {
 
   /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
   private coworkStore?: CoworkStore;
+  private companyScope = new AsyncLocalStorage<{ id: string; version: number; taskId?: string }>();
+  private companyStore?: CompanyStore;
+  private companyCoordinator?: CompanyCoordinator;
+  private companyCowork = new Map<string,CoworkStore>();
+  private companyMemories = new Map<string,CoworkMemory>();
+  private companyHelpers = new Map<string,CoworkSubAgentRunner>();
+  private companyRecalls = new Map<string,CoworkRecall>();
+  private uploadStore?: UploadStore;
+  private storageRegistry?: StorageRegistry;
+  private companyWorkers=new CompanyWorkers(id=>this.companies().get(id)?.workers??1,()=>this.companies().runtimeSettings().workers);
+  private companyQuestionRuns = new Map<string, {companyId:string; abort:AbortController}>();
   private coworkMemoryStore?: CoworkMemory;
   private readonly coworkRuns = new Map<string, { busy: boolean; working?: string; threadId?: string; abort: AbortController; queue: CoworkMessage[]; live?: CoworkLiveMailbox; progress?: CoworkProgress; progresses?: Record<string, CoworkProgress>; telegramError?: string; forceAgentId?: string; missionId?: string }>();
   private readonly coworkQuestions = new Map<string, Promise<void>>();
@@ -474,7 +500,7 @@ export class GituServer {
   /** Per-mission envelopes, allocated inside their conversation's pool. */
   private readonly missionAccounts = new Map<string, BudgetAccount>();
   /** The envelope section as last written, so unchanged state is not rewritten. */
-  private budgetsPersisted = '';
+  private readonly budgetsPersisted = new Map<string, string>();
   /** Per-delegated-session teardown (MCP clients), released when the run settles. */
   private readonly delegatedSessionResources = new Map<string, () => void>();
   private readonly coworkSubscribers = new Map<string, Set<() => void>>();
@@ -491,7 +517,10 @@ export class GituServer {
   };
   private readonly browserPending = new Map<string, { resolve: (v: Record<string, unknown>) => void; timer: NodeJS.Timeout }>();
 
-  private browserImpl(): BrowserBridge {
+  private serverBrowsers=new Map<string,ServerBrowser>();
+  private serverBrowser(agentId='workspace'):ServerBrowser{const companyId=this.companyScope.getStore()?.id,key=(companyId??'workspace')+':'+agentId;let browser=this.serverBrowsers.get(key);if(!browser){browser=new ServerBrowser(nodePath.join(companyId?this.companies().workspace(companyId):ensureGituHome().workspace,'browser-profiles',agentId));this.serverBrowsers.set(key,browser);}return browser;}
+  private browserImpl(agentId?:string): BrowserBridge {
+    if(this.companyScope.getStore()||(!this.config.browser&&this.browserSubs.size===0))return this.serverBrowser(agentId);
     if (this.config.browser) return this.config.browser;
     const send = (action: string, payload: Record<string, unknown> = {}): Promise<Record<string, unknown>> => {
       if (this.browserSubs.size === 0) {
@@ -572,19 +601,24 @@ export class GituServer {
   ): { files: StoredSessionFile[]; attachments: ModelContextAttachment[]; images: { name: string; dataUrl: string }[] } {
     if (!Array.isArray(rawFiles) || rawFiles.length === 0) return { files: [], attachments: [], images: [] };
     const incoming = (rawFiles as Record<string, unknown>[]).slice(0, MAX_SESSION_FILES_PER_MESSAGE);
-    const decoded = incoming.map((raw, index) => {
+    const decoded = incoming.map((raw, index):{name:string;mime:string;size:number;bytes?:Buffer;sourcePath?:string;dataUrl:string} => {
+      if(typeof raw['artifactId']==='string'){
+        const uploaded=this.uploads().get(raw['artifactId'],'coding');
+        if(!uploaded||uploaded.state!=='ready')throw new Error('Attachment is unavailable.');
+        const limit=this.selectedFileLimit();if(limit!==null&&uploaded.size>limit)throw new Error('Attachment exceeds your selected file-size limit.');
+        const sourcePath=this.uploads().filePath(uploaded),dataUrl=/^image\/(png|jpeg|gif|webp)$/.test(uploaded.mime)&&uploaded.size<=8*1024*1024?`data:${uploaded.mime};base64,${readFileSync(sourcePath).toString('base64')}`:'';
+        return{name:safeFileName(uploaded.name),mime:uploaded.mime,size:uploaded.size,sourcePath,dataUrl};
+      }
       const name = safeFileName(String(raw['name'] ?? `file-${index + 1}`));
       const dataUrl = String(raw['dataUrl'] ?? '');
       const match = /^data:([^;,]*)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(dataUrl);
       if (!match?.[2]) throw new Error(`Invalid attachment: ${name}`);
       const bytes = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
       if (bytes.length === 0) throw new Error(`Invalid attachment: ${name} is empty`);
-      if (bytes.length > MAX_SESSION_FILE_BYTES) throw new Error(`Attachment too large: ${name} exceeds 8 MB`);
+      const limit=this.selectedFileLimit();if(limit!==null&&bytes.length>limit)throw new Error('Attachment exceeds your selected file-size limit.');
       const mime = mimeForFile(name, String(raw['type'] ?? match[1] ?? ''));
-      return { name, mime, bytes, dataUrl };
+      return { name, mime, bytes, size:bytes.length,dataUrl };
     });
-    const total = decoded.reduce((sum, file) => sum + file.bytes.length, 0);
-    if (total > MAX_SESSION_FILES_TOTAL_BYTES) throw new Error('Attachments too large: combined size exceeds 20 MB');
 
     const { root, dir } = this.sessionFileRoot(session, preferredRoot);
     mkdirSync(dir, { recursive: true });
@@ -594,13 +628,13 @@ export class GituServer {
     for (const entry of decoded) {
       const id = shortId('file');
       const target = nodePath.join(dir, `${id}-${entry.name}`);
-      writeFileSync(target, entry.bytes);
+      if(entry.sourcePath)copyFileSync(entry.sourcePath,target);else writeFileSync(target,entry.bytes!);
       const file: StoredSessionFile = {
         runId: session.runId,
         id,
         name: entry.name,
         mime: entry.mime,
-        size: entry.bytes.length,
+        size: entry.size,
         kind: 'user',
         path: target,
         createdAt: nowIso(),
@@ -614,10 +648,10 @@ export class GituServer {
         mime: file.mime,
         size: file.size,
         ...(isTextLikeFile(file.name, file.mime)
-          ? { textExcerpt: entry.bytes.toString('utf8', 0, Math.min(entry.bytes.length, MAX_ATTACHMENT_TEXT_EXCERPT)).replace(/\u0000/g, '') }
+          ? { textExcerpt: (entry.bytes?.subarray(0,MAX_ATTACHMENT_TEXT_EXCERPT)??readFilePrefix(target,MAX_ATTACHMENT_TEXT_EXCERPT)).toString('utf8').replace(/\u0000/g, '') }
           : {}),
       });
-      if (/^image\/(png|jpeg|gif|webp)(;|$)/i.test(file.mime)) images.push({ name: file.name, dataUrl: entry.dataUrl });
+      if (entry.dataUrl&&/^image\/(png|jpeg|gif|webp)(;|$)/i.test(file.mime)) images.push({ name: file.name, dataUrl: entry.dataUrl });
     }
     return { files, attachments, images };
   }
@@ -946,11 +980,14 @@ export class GituServer {
       // Browsers always supply Origin on a WebSocket handshake. Reject missing
       // Origin as well, so a cross-site socket cannot bypass the JSON CSRF gate.
       if (!req.headers.origin || !this.isSameOrigin(req)) { reject(403); return; }
-      const match = req.url?.match(/^\/api\/cowork\/agents\/([\w-]+)\/computer\/vnc$/);
+      const match = req.url?.match(/^\/api(?:\/companies\/([\w-]+))?\/cowork\/agents\/([\w-]+)\/computer\/vnc$/);
       if (!match) { reject(404); return; }
-      const agent = this.cowork().getAgent(match[1]!);
+      const company=match[1]?this.companies().get(match[1]):undefined;
+      if(match[1]&&!company){reject(404);return;}
+      const scoped=<T>(work:()=>T):T=>company?this.companyScope.run({id:company.id,version:company.directionVersion},work):work();
+      const agent = scoped(()=>this.cowork().getAgent(match[2]!));
       if (!agent) { reject(404); return; }
-      const computer = this.coworkComputer(agent.id);
+      const computer = scoped(()=>this.coworkComputer(agent.id));
       if (agent.useHostComputer || computer.status().state !== 'running') { reject(409); return; }
       if (desktopSockets.clients.size >= 16) { reject(429); return; }
       desktopSockets.handleUpgrade(req, socket, head, (client) => {
@@ -959,12 +996,12 @@ export class GituServer {
         client.once('close', () => this.desktopAgents.delete(client));
         const opening = new AbortController();
         client.once('close', () => opening.abort());
-        void (async () => {
+        void scoped(async () => {
           if (agent.cloudConnectionId === 'hosted' && !process.env['AGENT_GITU_COMPUTER_BROKER_URL']) throw new Error('Gitu cloud is unavailable.');
           const desktop = agent.cloudConnectionId && agent.cloudConnectionId !== 'hosted' ? await this.cloudComputer(agent.cloudConnectionId).desktopStream(computer.name, opening.signal) : connectDesktopStream(computer.name);
           if (client.readyState !== WebSocket.OPEN) { desktop.destroy(); return; }
           bridgeDesktop(client, desktop);
-        })().catch(() => client.close(1011, 'Desktop unavailable'));
+        }).catch(() => client.close(1011, 'Desktop unavailable'));
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -988,6 +1025,7 @@ export class GituServer {
         /* not a project yet */
       }
     }
+    await this.reconcileCompanyComputers();
     this.startCoworkLifecycle();
     for (const entry of this.loadRegistry()) {
       const existing = this.sessions.get(entry.runId);
@@ -1068,6 +1106,8 @@ export class GituServer {
   }
 
   async stop(): Promise<void> {
+    const companyCoordinator=this.companyCoordinator;companyCoordinator?.stop();this.companyCoordinator=undefined;
+    for(const run of this.companyQuestionRuns.values())run.abort.abort();
     await this.voiceWorker.close();
     await this.voiceCalls.close();
     this.appAuth.close();
@@ -1084,8 +1124,16 @@ export class GituServer {
       this.persistSession(session);
     }
     this.persistBudgets();
+    for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>this.persistBudgets());
     this.scheduler?.stop();
     await this.stopCoworkLifecycle();
+    await companyCoordinator?.drain();
+    await Promise.allSettled([...this.serverBrowsers.values()].map(browser=>browser.close()));this.serverBrowsers.clear();
+    for(const recall of this.companyRecalls.values())recall.close();this.companyRecalls.clear();
+    for(const manager of this.companyMcpManagers.values())manager.killAll();this.companyMcpManagers.clear();
+    this.companyCowork.clear();this.companyMemories.clear();this.companyHelpers.clear();this.coworkTools.clear();this.storageRegistry=undefined;
+    this.companyStore?.close();this.companyStore=undefined;
+    this.uploadStore?.close();this.uploadStore=undefined;
     for (const idx of this.indexWatchers.values()) {
       idx.stopWatch();
       idx.close();
@@ -1303,10 +1351,50 @@ export class GituServer {
   // ------------------------------------------------------------- cowork mode
 
   private cowork(): CoworkStore {
+    const companyId=this.companyScope.getStore()?.id;
+    if(companyId){
+      let store=this.companyCowork.get(companyId);
+      if(!store){store=new CoworkStore(nodePath.join(this.companies().root,companyId,'cowork.json'),()=>{for(const id of this.coworkSubscribers.keys())this.publishCowork(id);},{companyId,persistence:this.companies().snapshot(companyId),missionSessions:()=>this.companies().get(companyId)?.missionSessions??12,maxFileBytes:()=>this.selectedFileLimit(companyId)});this.companyCowork.set(companyId,store);}
+      return store;
+    }
     if (!this.coworkStore) this.coworkStore = new CoworkStore(undefined, () => {
       for (const id of this.coworkSubscribers.keys()) this.publishCowork(id);
-    });
+    },{maxFileBytes:()=>this.selectedFileLimit()});
     return this.coworkStore;
+  }
+
+  private companies(): CompanyStore { return this.companyStore ??= new CompanyStore(nodePath.join(ensureGituHome().root,'Companies')); }
+  private uploads(): UploadStore { return this.uploadStore ??= new UploadStore(nodePath.join(ensureGituHome().root,'Files')); }
+  private storage():StorageRegistry{return this.storageRegistry??=new StorageRegistry(this.companies(),new SecretVault(nodePath.join(ensureGituHome().settings,'ConnectorSecrets')));}
+  private selectedFileLimit(companyId=this.companyScope.getStore()?.id): number|null { return effectiveFileLimit(this.companies().workspaceFileLimit(),companyId?this.companies().get(companyId)?.maxFileBytes:undefined); }
+  private ensureCompanyCoordinator(): void {
+    if(this.companyCoordinator)return;
+    const coordinator=new CompanyCoordinator(this.companies(),job=>this.executeCompanyJob(job),()=>console.error('[company] Work failed. Review the company transcript.'),()=>{for(const run of this.companyQuestionRuns.values())run.abort.abort();for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company scheduler ownership lost.'));});});
+    coordinator.start();this.companyCoordinator=coordinator;
+  }
+  private async executeCompanyJob(job:CompanyJob):Promise<void>{
+    await this.companyScope.run({id:job.companyId,version:job.version,taskId:job.id},async()=>{
+      const c=this.companies().get(job.companyId);if(!c||c.state!=='running')throw new Error('Company paused.');
+      if(job.kind==='mission'){await this.executeMissionSession(String(job.payload['missionId']));return;}
+      const conversationId=job.kind==='wake'?String(job.payload['conversationId']):c.conversationId!;
+      if(!this.cowork().getConversation(conversationId))throw new Error('Company conversation no longer exists.');
+      if(this.coworkRuns.get(conversationId)?.busy)throw new Error('Company lead is still working.');
+      if(job.payload['delivery']==='question'){
+        const store=this.cowork(),agent=store.getAgent(c.leadId!)!,conversation=store.getConversation(conversationId)!;
+        const question=String(job.payload['text']??''),abort=new AbortController(),signal=AbortSignal.any([abort.signal,AbortSignal.timeout(120000)]);
+        this.companyQuestionRuns.set(job.id,{companyId:c.id,abort});
+        try{await this.companyWorkers.run(c.id,agent.id,signal,async()=>{
+          if(!store.messages(conversationId).some(m=>m.id==='company-question-'+job.id))store.appendMessage(conversationId,{id:'company-question-'+job.id,role:'user',via:'web',text:question,delivery:'question'});
+          const reply=await answerCoworkQuestion({agent,conversation,members:store.listAgents(),history:store.messages(conversationId),question,state:JSON.stringify(store.missions()),llm:this.coworkLlm(agent),signal});
+          signal.throwIfAborted();store.appendMessage(conversationId,{role:'agent',agentId:agent.id,agentName:agent.name,via:'agent',text:reply});
+        });}finally{this.companyQuestionRuns.delete(job.id);}return;
+      }
+      if(job.kind==='wake'){const agentId=String(job.payload['agentId']);if(!this.cowork().getAgent(agentId))return;this.dispatchAgentWake(conversationId,agentId,String(job.payload['note']),'schedule');}
+      else if(job.kind==='review')this.dispatchAgentWake(conversationId,c.leadId!,`Company review. Current owner direction (version ${c.directionVersion}): ${c.direction||c.purpose}. ${String(job.payload['event']??'')} Review work and blockers. Create or continue a bounded mission only when there is actionable work. Verify helper results. If nothing needs action, report waiting and finish this review; do not create busywork or an endless tool loop.`,'schedule');
+      else this.dispatchCoworkMessage(conversationId,String(job.payload['text']??''),'web',undefined,job.payload['artifactIds'] as string[]|undefined,undefined,{id:'company-message-'+job.id,delivery:job.payload['delivery'] as CoworkDelivery});
+      while(this.coworkRuns.get(conversationId)?.busy){if(this.companies().get(c.id)?.state!=='running'){this.coworkRuns.get(conversationId)?.abort.abort();throw new Error('Company paused.');}await new Promise(resolve=>setTimeout(resolve,200));}
+      if(job.payload['followUpId'])this.cowork().takeFollowUp(String(job.payload['followUpId']));if(job.payload['inboxId'])this.cowork().markInboxDelivered([String(job.payload['inboxId'])]);
+    });
   }
 
   private publishCowork(conversationId: string): void {
@@ -1318,7 +1406,7 @@ export class GituServer {
     // No live account yet (a restarted host, or one that never ran it): the
     // written-down record is still the mission's truth, so read it rather than
     // materializing an account just to render a card.
-    const spend = this.missionAccounts.get(mission.id)?.spend().costUsd ?? this.cowork().budgetRecords().missions[mission.id]?.spend.costUsd;
+    const spend = this.missionAccounts.get(this.budgetKey(mission.id))?.spend().costUsd ?? this.cowork().budgetRecords().missions[mission.id]?.spend.costUsd;
     if (spend === undefined) return mission;
     return { ...mission, budgetSpentUsd: Math.round(spend * 100) / 100 };
   }
@@ -1381,6 +1469,8 @@ export class GituServer {
   /** Shared MemoryStore facade: cowork agents use the SAME memory
    *  architecture as the main agent (typed, lifecycle, visibility-isolated). */
   private coworkMemory(): CoworkMemory {
+    const companyId=this.companyScope.getStore()?.id;
+    if(companyId){let memory=this.companyMemories.get(companyId);if(!memory){memory=CoworkMemory.forWorkspace(this.companies().workspace(companyId));this.companyMemories.set(companyId,memory);}return memory;}
     if (!this.coworkMemoryStore) {
       this.coworkMemoryStore = CoworkMemory.forWorkspace();
       try {
@@ -1412,25 +1502,42 @@ export class GituServer {
   private coworkComputer(agentId: string, selectedAgent?: CoworkAgent): CoworkComputer {
     const agent = this.cowork().getAgent(agentId) ?? selectedAgent;
     const cloudId = agent?.useHostComputer ? undefined : agent?.cloudConnectionId;
-    const target = cloudId && cloudId !== 'hosted' ? cloudId : 'private';
+    const target = cloudId || 'private';
     let computer = this.coworkComputers.get(agentId);
     if (computer && this.coworkComputerTargets.get(agentId) !== target) {
-      computer.setControl('user', 'Computer selection changed.');
-      void computer.stop().catch(() => {});
+      if (computer.status().state !== 'stopped') throw new Error('Stop the previous private computer before changing its server.');
       this.coworkComputers.delete(agentId);
       computer = undefined;
     }
     if (!computer) {
-      const root = nodePath.join(ensureGituHome().root, 'Cowork');
+      const root = agent?.companyId?nodePath.join(this.companies().root,agent.companyId):nodePath.join(ensureGituHome().root, 'Cowork');
+      const store=this.cowork(),transfer={beforeStart:agent?.companyId?()=>this.companies().reserveComputer(agent.companyId!,agentId,cloudId):undefined,onState:agent?.companyId?(state:string)=>this.companies().computerState(agent.companyId!,agentId,state):undefined,limits:agent?.companyId?()=>{const c=this.companies().get(agent.companyId!)!;return{cpu:c.cpu,memoryMb:c.memoryMb,diskMb:c.diskMb};}:undefined,maxFileBytes:()=>this.selectedFileLimit(agent?.companyId),resolveArtifact:(id:string,conversationId:string)=>{const artifact=store.getArtifact(id);return artifact?.conversationId===conversationId?store.artifactPath(id):undefined;}};
       computer = cloudId && cloudId !== 'hosted'
-        ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true })
-        : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted' });
+        ? new CoworkComputer(agentId, nodePath.join(root, 'cloud', cloudId), this.cloudComputer(cloudId).execute, { key: 'ssh:' + cloudId, cloud: true,...transfer })
+        : new CoworkComputer(agentId, root, cloudId === 'hosted' ? hostedComputerExec : undefined, { key: 'default', cloud: cloudId === 'hosted',...transfer });
       this.coworkComputers.set(agentId, computer);
       this.coworkComputerTargets.set(agentId, target);
     }
     return computer;
   }
 
+  private async reconcileCompanyComputers():Promise<void>{
+    for(const c of this.companies().companies())await this.companyScope.run({id:c.id,version:c.directionVersion},async()=>{
+      const agents=this.cowork().listAgents();
+      for(const record of this.companies().list<{id:string;computerServerId?:string|null;heldSlot?:boolean;state:string}>('computer',c.id)){
+        const agent=agents.find(a=>a.id===record.id);
+        if(agent && (!Object.hasOwn(record,'computerServerId') || (record.computerServerId??undefined)===agent.cloudConnectionId)) await this.coworkComputer(agent.id,agent).refreshStatus(true);
+        else if(record.state==='stopped')continue;
+        else if(Object.hasOwn(record,'computerServerId')){
+          // A temporary helper has no permanent profile after restart. Stop its
+          // saved target before releasing its slot; never guess another server.
+          const target=record.computerServerId,root=nodePath.join(this.companies().root,c.id),runtime={key:target&&target!=='hosted'?'ssh:'+target:'default',cloud:!!target,onState:(state:string)=>this.companies().computerState(c.id,record.id,state)};
+          const orphan=target&&target!=='hosted'?new CoworkComputer(record.id,nodePath.join(root,'cloud',target),this.cloudComputer(target).execute,runtime):new CoworkComputer(record.id,root,target==='hosted'?hostedComputerExec:undefined,runtime);
+          try{await orphan.stop();}catch{this.companies().computerState(c.id,record.id,'unavailable');}
+        }else this.companies().computerState(c.id,record.id,'unavailable');
+      }
+    });
+  }
   private coworkComputerBusy(agentId: string): boolean {
     return this.coworkAgentLocks.has(agentId) || this.cowork().listConversations().some((conversation) => conversation.memberIds.includes(agentId) && this.coworkRuns.get(conversation.id)?.busy);
   }
@@ -1438,9 +1545,9 @@ export class GituServer {
   private async resetCoworkComputer(agentId: string): Promise<void> {
     for (const [socket, owner] of this.desktopAgents) if (owner === agentId) socket.close(1000, 'Computer selection changed');
     const previous = this.coworkComputers.get(agentId);
+    await previous?.stop();
     this.coworkComputers.delete(agentId);
     this.coworkComputerTargets.delete(agentId);
-    await previous?.stop().catch(() => {});
   }
 
   /** Host context is only for trusted skills/connections/MCP. File, shell and
@@ -1464,6 +1571,8 @@ export class GituServer {
    * on disk belonged to a dead run and is marked orphaned.
    */
   private subAgents(): CoworkSubAgentRunner {
+    const companyId=this.companyScope.getStore()?.id;
+    if(companyId){let runner=this.companyHelpers.get(companyId);if(!runner){runner=new CoworkSubAgentRunner(new CoworkSubAgents(this.cowork(),id=>this.publishCowork(id)),undefined,(instance,signal,work)=>this.companyWorkers.child(companyId,instance.id,signal,work));runner.sweepOrphans();this.companyHelpers.set(companyId,runner);}return runner;}
     if (!this.coworkSubAgentRunner) {
       this.coworkSubAgentRunner = new CoworkSubAgentRunner(new CoworkSubAgents(this.cowork(), (conversationId) => this.publishCowork(conversationId)));
       this.coworkSubAgentRunner.sweepOrphans();
@@ -1584,7 +1693,7 @@ export class GituServer {
    * touch — because unattended work is exactly what the pool exists to bound.
    */
   private missionAccountFor(mission: CoworkMission): BudgetAccount {
-    let account = this.missionAccounts.get(mission.id);
+    let account = this.missionAccounts.get(this.budgetKey(mission.id));
     if (!account) {
       const pool = this.delegationPoolFor(mission.conversationId);
       const saved = this.cowork().budgetRecords().missions[mission.id];
@@ -1598,23 +1707,28 @@ export class GituServer {
               ? { maxCostUsd: mission.budget.maxCostUsd, ...(mission.budget.reserveUsd !== undefined ? { reserveUsd: mission.budget.reserveUsd } : {}) }
               : {},
           );
-      this.missionAccounts.set(mission.id, account);
+      this.missionAccounts.set(this.budgetKey(mission.id), account);
     }
     return account;
   }
 
   /** Drop envelopes for missions that no longer exist (deleted conversations/teammates). */
   private pruneMissionAccounts(): void {
-    for (const id of this.missionAccounts.keys()) {
-      if (!this.cowork().getMission(id)) this.missionAccounts.delete(id);
+    const prefix = this.budgetPrefix();
+    for (const key of this.missionAccounts.keys()) {
+      if (key.startsWith(prefix) && !this.cowork().getMission(key.slice(prefix.length))) this.missionAccounts.delete(key);
     }
   }
+
+  private budgetPrefix(): string { return `${this.companyScope.getStore()?.id ?? 'workspace'}:`; }
+  private budgetKey(id: string): string { return this.budgetPrefix() + id; }
 
   /** Envelopes as they are written down: the grant, and what it has spent. */
   private budgetSnapshot(): CoworkBudgetData {
     const records = (accounts: Map<string, BudgetAccount>) =>
       Object.fromEntries(
-        [...accounts].map(([id, account]) => {
+        [...accounts].filter(([id]) => id.startsWith(this.budgetPrefix())).map(([key, account]) => {
+          const id = key.slice(this.budgetPrefix().length);
           const spend = account.spend();
           return [id, { budget: { ...account.budget }, spend: { costUsd: spend.costUsd ?? 0, turns: spend.turns ?? 0, subagents: spend.subagents ?? 0 } }];
         }),
@@ -1643,8 +1757,8 @@ export class GituServer {
     for (const id of Object.keys(records.pools)) if (!this.cowork().getConversation(id)) delete records.pools[id];
     for (const id of Object.keys(records.missions)) if (!this.cowork().getMission(id)) delete records.missions[id];
     const snapshot = JSON.stringify(records);
-    if (snapshot === this.budgetsPersisted) return;
-    this.budgetsPersisted = snapshot;
+    if (snapshot === this.budgetsPersisted.get(this.budgetPrefix())) return;
+    this.budgetsPersisted.set(this.budgetPrefix(), snapshot);
     this.cowork().saveBudgetRecords(records);
   }
 
@@ -1769,7 +1883,7 @@ export class GituServer {
    * A conversation is the unit of work a person can see and reason about.
    */
   private delegationPoolFor(conversationId: string): BudgetAccount {
-    let pool = this.delegationPools.get(conversationId);
+    let pool = this.delegationPools.get(this.budgetKey(conversationId));
     if (!pool) {
       // A saved pool comes back with the grant it actually held — including a
       // top-up a person granted — and with its spend, so a restart does not hand
@@ -1778,13 +1892,13 @@ export class GituServer {
       const saved = this.cowork().budgetRecords().pools[conversationId];
       pool = createBudgetAccount(
         saved?.budget ?? {
-          maxCostUsd: this.config.coworkDelegationMaxCostUsd ?? DEFAULT_DELEGATION_BUDGET_USD,
-          maxTurns: this.config.coworkDelegationMaxTurns,
+          maxCostUsd: this.companyScope.getStore()?undefined:this.config.coworkDelegationMaxCostUsd ?? DEFAULT_DELEGATION_BUDGET_USD,
+          maxTurns: this.companyScope.getStore()?undefined:this.config.coworkDelegationMaxTurns,
         },
         undefined,
         saved?.spend,
       );
-      this.delegationPools.set(conversationId, pool);
+      this.delegationPools.set(this.budgetKey(conversationId), pool);
     }
     return pool;
   }
@@ -1886,7 +2000,7 @@ export class GituServer {
         mcp,
         agents: agentStore,
         subagents,
-        browser: this.browserImpl(),
+        browser: this.browserImpl(input.agentId),
         universalRegistry,
         connections: this.connections,
         connectionContext: () => this.connections.renderForAgent(),
@@ -1937,28 +2051,79 @@ export class GituServer {
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(agent.id);
     if (!context) {
-      const workspace = agent.useHostComputer ? ensureGituHome().workspace : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
+      const workspace = agent.companyId ? nodePath.join(this.companies().workspace(agent.companyId),'agents',agent.id) : agent.useHostComputer ? ensureGituHome().workspace : nodePath.join(ensureGituHome().root, 'Cowork', 'profiles', agent.id);
       mkdirSync(workspace, { recursive: true });
       const marker = nodePath.join(workspace, 'package.json');
       if (!existsSync(marker)) writeFileSync(marker, '{"name":"cowork-profile","private":true}');
       context = {
+        missionSessionLimit:agent.companyId?()=>this.companies().get(agent.companyId!)?.missionSessions??12:undefined,connectionResponseScope: agent.companyId ? this.companies().workspace(agent.companyId) : undefined,
         guard: ProjectGuard.detect(workspace),
         cwd: workspace,
-        skills: SkillStore.forProject(ensureGituHome().workspace),
-        mcp: McpManager.forProject(workspace),
-        connections: this.connections,
+        skills: agent.companyId ? SkillStore.forCompany(this.companies().workspace(agent.companyId)) : SkillStore.forProject(ensureGituHome().workspace),
+        mcp: agent.companyId?this.companyMcp(agent.companyId):McpManager.forProject(workspace),
+        connections: agent.companyId?this.companyConnections(agent.companyId):this.connections,
         connectedApps: this.appHub,
-        browser: this.browserImpl(),
+        browser: this.browserImpl(agent.id),
       };
       this.coworkTools.set(agent.id, context);
+    }
+    if(agent.companyId){
+      const companyId=agent.companyId,scope=this.companyScope.getStore();
+      const policy=companyPolicy(this.companies(),companyId,agent.id,scope?.version??this.companies().get(companyId)!.directionVersion,async(tool,args)=>{
+        if(tool==='connection_execute'){const profile=context!.connections!.get(String(args['connectionId']));const operation=profile?.operations.find(op=>op.id===args['operationId']);if(!operation)throw new Error('Operation is not granted to this company.');return operation.risk==='read'?'read':'write';}
+        if(tool==='mcp_call'){const tools=await context!.mcp!.listAllTools();const info=tools.find(t=>t.name===String(args['tool']??args['name']));return info?.annotations?.readOnlyHint?'read':'write';}
+        if(tool==='storage'){if(args['action']==='connections')return 'read';const connection=this.storage().get(companyId,String(args['connectionId']||this.companies().get(companyId)?.defaultStorageId||''));const action=String(args['action']);const operation=(action==='download'?'read':action) as StorageOperation;this.storage().authorize(connection,operation);return ['list','read','download'].includes(action)?'read':'write';}
+        if(tool==='run_command')return ['status','stop'].includes(String(args['action']))?'read':'write';
+        if(tool==='browse'||tool==='desktop_input')return ['evidence','screenshot','text','digest','state','navigate','back','forward','reload','wait'].includes(String(args['action']))?'read':'write';
+        return (tool==='connected_apps'&&args['action']==='execute')||(tool==='team_manage'&&args['action']==='create')?'write':'read';
+      },()=>this.cowork().listAgents().length);
+      return {...context,companyHostComputer:()=>this.companies().get(companyId)?.allowHostComputer===true,onComputerLocation:location=>{
+        const previous=this.companies().read<Record<string,unknown>>('computer',agent.id)??{id:agent.id,companyId,state:'unavailable',heldSlot:false};
+        this.companies().saveResource('computer',agent.id,companyId,{...previous,executionLocation:location});
+        if(location==='host'&&previous['executionLocation']!=='host'){
+          const conversationId=this.companies().get(companyId)?.conversationId;
+          if(conversationId){this.cowork().appendMessage(conversationId,{role:'system',via:'web',text:agent.name+' is using this computer under the company’s Use my computer grant'+(agent.useHostComputer?'.':' because the private computer is unavailable.')});this.publishCowork(conversationId);}
+        }
+      },authorizeTool:policy.authorize,toolDidExecute:policy.settled,externalHeaders:policy.headers,externalArguments:policy.arguments,connectedApps:this.companyApps(companyId),companyFiles:async(args,session)=>{
+        const scope=companyId+':company';if(args['action']==='list')return{ok:true,output:JSON.stringify({files:this.uploads().list(scope).filter(f=>f.state==='ready').map(f=>({artifactId:f.id,name:f.name,size:f.size,mime:f.mime})),references:this.storage().references(companyId)})};
+        if(args['action']!=='attach')throw new Error('Choose list or attach.');const file=this.uploads().get(String(args['artifactId']),scope);if(!file||file.state!=='ready')throw new Error('Company file not found.');
+        const artifact=this.cowork().addArtifactFile({conversationId:session.conversationId,agentId:agent.id,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)});return{ok:true,output:JSON.stringify({artifactId:artifact.id,name:artifact.name,size:artifact.size}),artifactId:artifact.id};
+      },storage:async(args,session)=>{
+        if(args['action']==='connections')return{ok:true,output:JSON.stringify({defaultOutput:this.companies().get(companyId)?.defaultStorageId,connections:this.storage().list(companyId).map(c=>({id:c.id,name:c.name,provider:c.provider,permissions:c.permissions}))})};
+        const connection=this.storage().get(companyId,String(args['connectionId']||this.companies().get(companyId)?.defaultStorageId||'')),adapter=this.storage().adapter(connection,context!.mcp),action=String(args['action']);
+        this.storage().authorize(connection,(action==='download'?'read':action) as StorageOperation);
+        if(action==='list')return{ok:true,output:JSON.stringify({items:await adapter.list(args['folder']?String(args['folder']):undefined),capabilities:adapter.capabilities.filter(op=>connection.permissions.includes(op))})};
+        if(action==='read'||action==='download'){const downloaded=await this.storage().download(connection,String(args['id']),nodePath.join(this.companies().root,companyId,'transfers'),this.selectedFileLimit(companyId),context!.mcp);try{const artifact=this.cowork().addArtifactFile({conversationId:session.conversationId,agentId:agent.id,name:downloaded.item.name,mime:downloaded.item.mime,sourcePath:downloaded.file});return{ok:true,output:JSON.stringify({artifactId:artifact.id,name:artifact.name,size:artifact.size}),artifactId:artifact.id};}finally{rmSync(downloaded.file,{force:true});}}
+        if(action==='upload'){const artifact=this.cowork().getArtifact(String(args['artifactId'])),file=this.cowork().artifactPath(String(args['artifactId']));if(!artifact||!file||artifact.conversationId!==session.conversationId)throw new Error('Choose an artifact from this company conversation.');return{ok:true,output:JSON.stringify(await this.storage().upload(connection,file,String(args['name']??artifact.name),context!.mcp))};}
+        if(action==='mkdir'&&adapter.mkdir)return{ok:true,output:JSON.stringify(await adapter.mkdir(String(args['name']),args['parent']?String(args['parent']):undefined))};
+        if(action==='move'&&adapter.move)return{ok:true,output:JSON.stringify(await adapter.move(String(args['id']),String(args['name']),args['parent']?String(args['parent']):undefined))};
+        if(action==='delete'&&adapter.remove){await adapter.remove(String(args['id']));return{ok:true,output:'Deleted the granted file.'};}
+        if(action==='link'&&adapter.link)return{ok:true,output:await adapter.link(String(args['id']))};throw new Error('Storage operation is unsupported.');
+      }};
     }
     return context;
   }
 
+  private companyMcpManagers=new Map<string,McpManager>();
+  private companyMcp(companyId:string):McpManager{let manager=this.companyMcpManagers.get(companyId);if(!manager){manager=McpManager.forCompany(this.companies().workspace(companyId));this.companyMcpManagers.set(companyId,manager);}return manager;}
+  private companyConnections(companyId:string):ConnectionRegistry{
+    const registry=this.connections.scoped(id=>this.companies().get(companyId)?.connectionIds.includes(id)??false);
+    return new Proxy(registry,{get(target,key){if(['save','remove'].includes(String(key)))return()=>{throw new Error('Manage company connections through owner settings.');};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
+  }
+
   private coworkLlm(agent: CoworkAgent): LlmClient {
-    if (this.config.llm) return this.config.llm;
-    const resolved = resolveLlm({ provider: agent.provider, model: agent.model, workingDirectory: this.coworkToolContext(agent).cwd });
-    return resolved.client;
+    const resolved=this.config.llm?{client:this.config.llm,providerId:agent.provider??'',model:agent.model??''}:resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});
+    if (!agent.companyId) return resolved.client;
+    const pricing = companyPricing(modelMetadataFor(peekModelCatalog(), resolved.providerId, resolved.model));
+    return new CompanyLlm(resolved.client, this.companies(), {
+      companyId: agent.companyId, agentId: agent.id, taskId: this.companyScope.getStore()?.taskId,
+      provider: resolved.providerId, model: resolved.model,
+    }, usage => companyUsageCostUsd(pricing, usage), pricing);
+  }
+
+  private companyApps(companyId:string): typeof this.appHub {
+    const hub=this.appHub,store=this.companies();
+    return new Proxy(hub,{get(target,key){if(key==='companyId')return companyId;if(key==='accounts')return async()=>{const ids=store.get(companyId)?.accountIds??[];return(await hub.accounts()).filter(a=>ids.includes(a.id));};if(key==='execute')return async(service:string,tool:string,args:Record<string,unknown>,accountId:string)=>{if(!store.get(companyId)?.accountIds.includes(accountId))throw new Error('Account is not granted to this company.');return hub.execute(service,tool,args,accountId);};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
   }
 
   private async coworkSupportsImages(agent: CoworkAgent): Promise<boolean> {
@@ -1984,10 +2149,9 @@ export class GituServer {
         // only burn context, so bigger ones are named for the agent to fetch.
         if (artifact.size <= 2_000_000) item.dataUrl = `data:${artifact.mime};base64,${readFileSync(filePath).toString('base64')}`;
       } else if (isTextLikeFile(artifact.name, artifact.mime)) {
-        const text = readFileSync(filePath, 'utf8');
-        const slice = text.slice(0, Math.min(12_000, textBudget));
+        const slice = readFilePrefix(filePath, Math.min(12_000, textBudget)).toString('utf8');
         textBudget -= slice.length;
-        item.text = slice.length < text.length ? `${slice}\n…[truncated]` : slice;
+        item.text = artifact.size > Buffer.byteLength(slice) ? `${slice}\n…[truncated]` : slice;
       }
       media.push(item);
     }
@@ -1995,6 +2159,7 @@ export class GituServer {
   }
 
   private startCoworkLifecycle(): void {
+    if(this.companies().companies().length)this.ensureCompanyCoordinator();
     for (const conv of this.cowork().listConversations()) this.startCoworkPoller(conv);
     // Due scheduled messages are dispatched on a coarse tick; each tick is
     // guarded so a store error can never kill the server (same contract as
@@ -2002,6 +2167,11 @@ export class GituServer {
     this.coworkTimer = setInterval(() => {
       try {
         this.coworkScheduleTick();
+        for(const company of this.companies().companies().filter(c=>c.state==='running'))this.companyScope.run({id:company.id,version:company.directionVersion},()=>{
+          for(const mission of this.cowork().missions())if(mission.status==='running'&&mission.nextWakeAt&&Date.parse(mission.nextWakeAt)<=Date.now())this.companies().enqueue(company.id,'mission',{missionId:mission.id},mission.id);
+          for(const follow of this.cowork().dueFollowUps())this.companies().enqueue(company.id,'wake',{conversationId:follow.conversationId,agentId:follow.agentId,note:follow.note,followUpId:follow.id},'followup:'+follow.id);
+          for(const mail of this.cowork().dueInbox()){const store=this.cowork(),agent=store.getAgent(mail.toAgentId);if(!agent){store.markInboxDelivered([mail.id]);continue;}const conversation=store.listConversations().find(conv=>conv.kind==='dm'&&conv.memberIds.length===1&&conv.memberIds[0]===agent.id)??store.saveConversation({kind:'dm',memberIds:[agent.id]});this.companies().enqueue(company.id,'wake',{conversationId:conversation.id,agentId:agent.id,note:mail.text,inboxId:mail.id},'inbox:'+mail.id);}
+        });
       } catch (err) {
         console.error(`[hermes] cowork schedule tick failed: ${(err as Error).message}`);
       }
@@ -2761,13 +2931,15 @@ export class GituServer {
   }
 
   /** Rendered persistent-memory block for one agent's prompt. */
-  private coworkMemoryFor(agent: { name: string }): string {
-    return this.coworkMemory().promptBlock({ name: agent.name } as CoworkAgent);
+  private coworkMemoryFor(agent: CoworkAgent): string {
+    return this.coworkMemory().promptBlock(agent);
   }
 
   /** Hybrid cross-session recall index (SQLite FTS5 + embeddings). One per
    *  server; built lazily so a server that never searches pays nothing. */
   private coworkRecallIndex(): CoworkRecall {
+    const companyId=this.companyScope.getStore()?.id;
+    if(companyId){let recall=this.companyRecalls.get(companyId);if(!recall){recall=new CoworkRecall(nodePath.join(this.companies().root,companyId,'recall.sqlite'),this.cowork(),resolveEmbedder());this.companyRecalls.set(companyId,recall);}return recall;}
     if (!this.coworkRecall) {
       this.coworkRecall = CoworkRecall.forWorkspace(this.cowork(), resolveEmbedder());
     }
@@ -2829,7 +3001,7 @@ export class GituServer {
           const artifact = store.getArtifact(id);
           const filePath = store.artifactPath(id);
           if (!artifact || !filePath) continue;
-          await sendTelegramDocument(this.config.telegramFetch, tg.token, tg.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${message.agentName ?? 'Agent Gitu'} shared ${artifact.name}`);
+          await sendTelegramArtifact(this.config.telegramFetch, tg.token, tg.chatId, { name: artifact.name, mime: artifact.mime, path: filePath, size: artifact.size, downloadUrl: this.artifactDownloadUrl(id) }, `${message.agentName ?? 'Agent Gitu'} shared ${artifact.name}`);
         }
       };
       try {
@@ -2851,10 +3023,12 @@ export class GituServer {
             return messages;
           },
           agents: store.listAgents(),
-          connectedApps: this.appHub,
+          connectedApps: this.companyScope.getStore()?this.companyApps(this.companyScope.getStore()!.id):this.appHub,
           resolveLlm: (agent) => this.coworkLlm(agent),
           toolContext: (agent) => this.coworkToolContext(agent),
           computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
+          hostComputerAllowed: agent => !!agent.companyId && this.companies().get(agent.companyId)?.allowHostComputer === true,
+          releaseSubAgentComputer: async id => {const computer=this.coworkComputers.get(id);if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(id);},
           delegation: this.delegation(),
           withAgent: (agent, work) => this.withCoworkAgent(agent.id, abort.signal, work),
           store,
@@ -2949,7 +3123,8 @@ export class GituServer {
         previous.then(resolve, reject);
       });
       signal.throwIfAborted();
-      await work();
+      const companyId=this.companyScope.getStore()?.id;
+      if(companyId)await this.companyWorkers.run(companyId,agentId,signal,work);else await work();
     } finally {
       if (onAbort) signal.removeEventListener('abort', onAbort);
       release();
@@ -3010,7 +3185,7 @@ export class GituServer {
         const artifact = store.getArtifact(id);
         const filePath = store.artifactPath(id);
         if (!artifact || !filePath) continue;
-        await sendTelegramDocument(this.config.telegramFetch, telegram.token, telegram.chatId, { name: artifact.name, mime: artifact.mime, bytes: readFileSync(filePath) }, `${agent.name} shared ${artifact.name}`);
+        await sendTelegramArtifact(this.config.telegramFetch, telegram.token, telegram.chatId, { name: artifact.name, mime: artifact.mime, path: filePath, size: artifact.size, downloadUrl: this.artifactDownloadUrl(id) }, `${agent.name} shared ${artifact.name}`);
       }
     };
     try {
@@ -3027,6 +3202,8 @@ export class GituServer {
           resolveLlm: (a) => this.coworkMissionLlm(a, account, () => abort.abort(new Error('Mission budget exhausted.'))),
           toolContext: (a) => this.coworkToolContext(a),
           computerFor: (agentId, agent) => this.coworkComputer(agentId, agent),
+          hostComputerAllowed: agent => !!agent.companyId && this.companies().get(agent.companyId)?.allowHostComputer === true,
+          releaseSubAgentComputer: async id => {const computer=this.coworkComputers.get(id);if(computer)await computer.stop().catch(()=>{});this.coworkTools.delete(id);},
           delegation: this.delegation(),
           withAgent: (a, work) => this.withCoworkAgent(a.id, abort.signal, work),
           store,
@@ -3072,6 +3249,8 @@ export class GituServer {
       await this.surfaceCoworkRequests(conversation);
       const fresh = store.getMission(missionId);
       if (!fresh || fresh.status !== 'running') return;
+      const companyScope=this.companyScope.getStore();
+      if(companyScope&&this.companies().get(companyScope.id)?.directionVersion!==companyScope.version){store.updateMission(missionId,{nextWakeAt:new Date().toISOString()});return;}
       const turns = fresh.turns + 1;
        const appendNotice = async (text: string, artifactIds?: string[]): Promise<void> => {
          if (!store.getConversation(conversationId)) return;
@@ -3127,6 +3306,8 @@ export class GituServer {
         store.updateMission(missionId, { progress: result.progress, turns, nextWakeAt: new Date(Date.now() + 20_000).toISOString() });
       }
     } catch (err) {
+      const scope=this.companyScope.getStore();
+      if(scope&&this.companies().get(scope.id)?.directionVersion!==scope.version){await finishStream('Owner direction changed. Replanning from the latest direction.');return;}
       // Budget exhaustion is not a transient failure: waking again cannot refill
       // the envelope, so the mission stops with the budget as its result.
       if (account.exhausted() && store.getMission(missionId)?.status === 'running') {
@@ -3268,7 +3449,7 @@ export class GituServer {
         if (path.endsWith('/host-key')) this.sendJson(res, 200, { hostFingerprint: await probeSshHost(String(body['baseUrl'] ?? '')) });
         else {
           const server = await new SshConnectionRegistry().saveAndValidate({
-            label: String(body['label'] ?? ''), baseUrl: String(body['baseUrl'] ?? ''), password: String(body['password'] ?? ''), hostFingerprint: String(body['hostFingerprint'] ?? ''),
+            label: String(body['label'] ?? ''), baseUrl: String(body['baseUrl'] ?? ''), password: String(body['password'] ?? ''), hostFingerprint: String(body['hostFingerprint'] ?? ''), ...(body['computerQuotaRoot'] === undefined ? {} : { computerQuotaRoot: String(body['computerQuotaRoot']) }),
           });
           this.sendJson(res, 200, { server });
         }
@@ -3305,6 +3486,8 @@ export class GituServer {
           const cloudConnectionId = useHostComputer ? undefined : typeof body['cloudConnectionId'] === 'string' ? body['cloudConnectionId'].trim() || undefined : existing?.cloudConnectionId;
           if (cloudConnectionId && !this.cloudServers().some((server) => server.id === cloudConnectionId && server.hasCredential)) throw new Error('Choose a saved cloud server with a working credential.');
           const changingComputer = Boolean(existing && (existing.useHostComputer !== useHostComputer || existing.cloudConnectionId !== cloudConnectionId));
+          const companyId=this.companyScope.getStore()?.id;
+          if(companyId && useHostComputer && this.companies().get(companyId)?.allowHostComputer !== true) throw new Error('Enable Use my computer in Company Resources before selecting it for a teammate.');
           if (existing && changingComputer && this.coworkComputerBusy(existing.id)) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish, or stop its task before changing computers.' }); return true; }
           let agent!: CoworkAgent;
           const save = async () => {
@@ -3375,7 +3558,7 @@ export class GituServer {
       let targetAgent = store.getAgent(computerMatch[1]!);
       if (!targetAgent) { this.sendJson(res, 404, { error: 'agent not found' }); return true; }
       const computer = this.coworkComputer(computerMatch[1]!);
-      const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer });
+      const status = () => ({ ...computer.status(), useHostComputer: targetAgent!.useHostComputer, ...(targetAgent!.companyId?{executionLocation:this.companies().read<{executionLocation?:string}>('computer',targetAgent!.id)?.executionLocation??'private',hostComputerAllowed:this.companies().get(targetAgent!.companyId)?.allowHostComputer===true}:{}) });
       if (method === 'GET') { if (!targetAgent.useHostComputer) await computer.refreshStatus(); this.sendJson(res, 200, { computer: status() }); return true; }
       if (method === 'POST') {
         const body = await this.readBody(req);
@@ -3533,7 +3716,7 @@ export class GituServer {
 
     if (path === '/api/cowork/conversations') {
       if (method === 'GET') {
-        this.sendJson(res, 200, { conversations: store.listConversations().map((conversation) => this.coworkConversationView(conversation)) });
+        this.sendJson(res, 200, { conversations: store.listConversations().map((conversation) => this.coworkConversationView(conversation)), followUps: store.listFollowUps() });
         return true;
       }
       if (method === 'POST') {
@@ -3915,6 +4098,12 @@ export class GituServer {
         try {
           const files = Array.isArray(body['files']) ? (body['files'] as Record<string, unknown>[]).slice(0, 4) : [];
           for (const file of files) {
+            if(typeof file['artifactId']==='string'){
+              const scope=(this.companyScope.getStore()?.id?this.companyScope.getStore()!.id+':' : '')+'cowork:'+convId;
+              const uploaded=this.uploads().get(file['artifactId'],scope);
+              if(!uploaded||uploaded.state!=='ready')throw new Error('Attachment is not available in this conversation.');
+              artifactIds.push(store.addArtifactFile({id:uploaded.id,conversationId:convId,name:uploaded.name,mime:uploaded.mime,sourcePath:this.uploads().filePath(uploaded)}).id);continue;
+            }
             const match = /^data:([^;,]*)(?:;[^,]*)?;base64,([a-z0-9+/=\r\n]+)$/i.exec(String(file['dataUrl'] ?? ''));
             if (!match?.[2]) throw new Error(`Invalid attachment: ${String(file['name'] ?? 'file')}`);
             artifactIds.push(store.addArtifact({ conversationId: convId, name: String(file['name'] ?? 'file'), mime: String(file['type'] ?? match[1] ?? ''), dataBase64: match[2] }).id);
@@ -4138,6 +4327,7 @@ export class GituServer {
       let status: 'approved' | 'denied' | 'answered' | 'accepted' | 'dismissed' | 'provided';
       let credentialConnection: { id: string; label: string } | undefined;
       if (request.kind === 'permission') {
+        if(this.companyScope.getStore()&&request.permission==='host'&&this.companies().get(this.companyScope.getStore()!.id)?.allowHostComputer!==true){this.sendJson(res,400,{error:'Enable Use my computer in Company Resources before approving host access.'});return true;}
         if (action !== 'approve' && action !== 'deny') { this.sendJson(res, 400, { error: 'action must be approve or deny' }); return true; }
         status = action === 'approve' ? 'approved' : 'denied';
       }
@@ -4196,7 +4386,7 @@ export class GituServer {
     }
 
     const artifactPreviewMatch = path.match(/^\/api\/cowork\/artifacts\/([\w-]+)\/preview$/);
-    if (artifactPreviewMatch && method === 'GET') {
+    if (artifactPreviewMatch && (method === 'GET'||method==='HEAD')) {
       const artifact = store.getArtifact(artifactPreviewMatch[1]!);
       const filePath = store.artifactPath(artifactPreviewMatch[1]!);
       if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
@@ -4207,7 +4397,7 @@ export class GituServer {
         || (/^image\//i.test(artifact.mime) && !/^image\/svg\+xml/i.test(artifact.mime))
         || /^(audio|video)\//i.test(artifact.mime);
       if (rawViewer) {
-        this.sendLocalFile(res, filePath, artifact.name, artifact.mime, true);
+        this.sendLocalFile(res, filePath, artifact.name, artifact.mime, true,method==='HEAD',req.headers.range);
         return true;
       }
       try {
@@ -4232,12 +4422,12 @@ export class GituServer {
     }
 
     const artifactMatch = path.match(/^\/api\/cowork\/artifacts\/([\w-]+)$/);
-    if (artifactMatch && method === 'GET') {
+    if (artifactMatch && (method === 'GET'||method==='HEAD')) {
       const artifact = store.getArtifact(artifactMatch[1]!);
       const filePath = store.artifactPath(artifactMatch[1]!);
       if (!artifact || !filePath) { this.sendJson(res, 404, { error: 'artifact not found' }); return true; }
       const inline = new URL(req.url ?? '/', 'http://localhost').searchParams.get('inline') === '1';
-      this.sendLocalFile(res, filePath, artifact.name, artifact.mime, inline);
+      this.sendLocalFile(res, filePath, artifact.name, artifact.mime, inline,method==='HEAD',req.headers.range);
       return true;
     }
 
@@ -4271,10 +4461,43 @@ export class GituServer {
     return false;
   }
 
+  private artifactDownloadUrl(id: string): string {
+    const address = this.server?.address() as AddressInfo | undefined;
+    const base = new URL(process.env['AGENT_GITU_PUBLIC_URL'] || `http://localhost:${address?.port ?? this.config.port ?? 8321}/`);
+    if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) throw new Error('Configure AGENT_GITU_PUBLIC_URL as your app’s public address.');
+    const companyId = this.companyScope.getStore()?.id;
+    const relative = companyId ? `api/companies/${companyId}/cowork/artifacts/${id}` : `api/cowork/artifacts/${id}`;
+    base.search = ''; base.hash = ''; if (!base.pathname.endsWith('/')) base.pathname += '/';
+    return new URL(relative, base).toString();
+  }
+
   private sendJson(res: http.ServerResponse, status: number, body: unknown): void {
     const data = JSON.stringify(body);
     res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(data);
+  }
+
+  private async fileRoutes(req:http.IncomingMessage,res:http.ServerResponse,path:string,method:string):Promise<boolean>{
+    const url=new URL(req.url??'/','http://localhost'),companyId=this.companyScope.getStore()?.id;
+    const prefix=companyId?companyId+':':'';
+    if(path==='/api/files/policy'){
+      if(method==='GET')this.sendJson(res,200,{maxFileBytes:this.selectedFileLimit(),workspaceMaxFileBytes:this.companies().workspaceFileLimit(),chunkBytes:UPLOAD_CHUNK_BYTES});
+      else if(method==='PATCH'&&!companyId){const body=await this.readBody(req);this.sendJson(res,200,{maxFileBytes:this.companies().setWorkspaceFileLimit(body['maxFileBytes'])});}
+      else this.sendJson(res,405,{error:'Method not allowed.'});return true;
+    }
+    const scope=prefix+(url.searchParams.get('scope')??'coding');
+    if(path==='/api/files/uploads'){
+      if(method==='GET')this.sendJson(res,200,{files:this.uploads().list(scope)});
+      else if(method==='POST'){const body=await this.readBody(req);const requested=String(body['scope']??'coding');if(requested.startsWith('cowork:')&&!this.cowork().getConversation(requested.slice(7)))throw new Error('Conversation not found.');this.sendJson(res,201,{file:this.uploads().create(prefix+requested,{name:body['name'],mime:body['mime'],size:body['size'],checksum:body['checksum']},this.selectedFileLimit()),chunkBytes:UPLOAD_CHUNK_BYTES});}
+      else this.sendJson(res,405,{error:'Method not allowed.'});return true;
+    }
+    const match=path.match(/^\/api\/files\/uploads\/([\w-]+)(\/complete|\/content)?$/);if(!match)return false;
+    const id=match[1]!,file=this.uploads().get(id,scope);if(!file){this.sendJson(res,404,{error:'Upload not found.'});return true;}
+    if(match[2]==='/content'&&(method==='GET'||method==='HEAD')){if(file.state!=='ready')throw new Error('Upload incomplete.');this.sendLocalFile(res,this.uploads().filePath(file),file.name,file.mime,url.searchParams.get('inline')==='1',method==='HEAD',req.headers.range);return true;}
+    if(match[2]==='/complete'&&method==='POST'){const body=await this.readBody(req);this.sendJson(res,200,{file:await this.uploads().finalize(id,scope,this.selectedFileLimit(),body['checksum'])});return true;}
+    if(method==='PATCH'){const offset=Number(req.headers['upload-offset']);if(!Number.isSafeInteger(offset)||offset<0)throw new Error('Invalid upload offset.');this.sendJson(res,200,{file:await this.uploads().append(id,scope,offset,req,this.selectedFileLimit())});return true;}
+    if(method==='DELETE'){await this.uploads().cancel(id,scope);this.sendJson(res,200,{ok:true});return true;}
+    if(method==='GET'){this.sendJson(res,200,{file});return true;}this.sendJson(res,405,{error:'Method not allowed.'});return true;
   }
 
   private sendLocalFile(
@@ -4284,6 +4507,7 @@ export class GituServer {
     mime: string,
     inline = false,
     headOnly = false,
+    range?: string,
   ): void {
     if (!existsSync(filePath)) {
       this.sendJson(res, 404, { error: 'file not found' });
@@ -4296,15 +4520,23 @@ export class GituServer {
     }
     const safe = safeFileName(name).replace(/["\\]/g, '-');
     const disposition = inline && isPreviewableMime(mime) ? 'inline' : 'attachment';
-    res.writeHead(200, {
+    let start=0,end=info.size-1,partial=false;
+    if(range){const match=/^bytes=(\d*)-(\d*)$/.exec(range);if(!match||(!match[1]&&!match[2])){res.writeHead(416,{'content-range':`bytes */${info.size}`});res.end();return;}
+      if(!match[1])start=Math.max(0,info.size-Number(match[2]));else start=Number(match[1]);end=match[1]&&match[2]?Math.min(Number(match[2]),info.size-1):info.size-1;
+      if(!Number.isSafeInteger(start)||!Number.isSafeInteger(end)||start<0||start>=info.size||end<start){res.writeHead(416,{'content-range':`bytes */${info.size}`});res.end();return;}partial=true;
+    }
+    res.writeHead(partial?206:200, {
       'content-type': mime || 'application/octet-stream',
-      'content-length': info.size,
+      'content-length': partial?end-start+1:info.size,
+      'accept-ranges': 'bytes',
+      ...(partial?{'content-range':`bytes ${start}-${end}/${info.size}`} : {}),
       'content-disposition': `${disposition}; filename="${safe}"; filename*=UTF-8''${encodeURIComponent(name)}`,
       'cache-control': 'private, no-store',
       'x-content-type-options': 'nosniff',
+      'content-security-policy': "sandbox; default-src 'none'; img-src data:; media-src 'self' blob:; style-src 'unsafe-inline'",
     });
     if (headOnly) res.end();
-    else this.pipeFile(res, filePath);
+    else if(partial){const stream=createReadStream(filePath,{start,end});stream.on('error',()=>res.destroy());stream.pipe(res);}else this.pipeFile(res, filePath);
   }
 
   /**
@@ -4908,6 +5140,35 @@ export class GituServer {
     }
     this.appAuth.track(req, res);
     if (this.appAuth.enabled) res.setHeader('Cache-Control', 'no-store');
+
+    const serverBrowserRoute=path.match(/^\/api(?:\/companies\/([\w-]+))?\/server-browser(?:\/([\w-]+))?(\/view)?$/);
+    if(serverBrowserRoute){
+      if(!['GET','HEAD'].includes(method)&&!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
+      const company=serverBrowserRoute[1]?this.companies().get(serverBrowserRoute[1]):undefined;if(serverBrowserRoute[1]&&!company){this.sendJson(res,404,{error:'Company not found.'});return;}
+      try{const work=async()=>{const agentId=serverBrowserRoute[2]??'workspace';if(company&&!this.cowork().getAgent(agentId))throw new Error('Company agent not found.');const browser=this.serverBrowser(agentId);
+        if(serverBrowserRoute[3]&&method==='GET'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN'});res.end(serverBrowserView(path.slice(0,-5)));return;}
+        if(method==='GET'){this.sendJson(res,200,{screenshot:await browser.screenshot(),control:browser.state().driving?'agent':'user'});return;}
+        if(method==='POST'){const body=await this.readBody(req),action=String(body['action']);if(action==='take-control'||action==='return-control'){browser.setControl(action==='take-control'?'user':'agent');this.sendJson(res,200,{ok:true});}else this.sendJson(res,200,{state:await browser.human(action,body)});return;}this.sendJson(res,405,{error:'Method not allowed.'});};if(company)await this.companyScope.run({id:company.id,version:company.directionVersion},work);else await work();}catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;
+    }
+
+    if(path.startsWith('/api/companies')){
+      if(!['GET','HEAD'].includes(method)&&!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
+      const companyFile=path.match(/^\/api\/companies\/([\w-]+)(\/files\/.*)$/);
+      if(companyFile){const c=this.companies().get(companyFile[1]!);if(!c){this.sendJson(res,404,{error:'Company not found.'});return;}try{await this.companyScope.run({id:c.id,version:c.directionVersion},()=>this.fileRoutes(req,res,'/api'+companyFile[2]!,method));}catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;}
+      const integration=path.match(/^\/api\/companies\/([\w-]+)(\/(?:storage|mcp|cowork\/agents\/[\w-]+\/computer\/view)(?:\/.*)?)$/);
+      if(integration){const c=this.companies().get(integration[1]!);if(!c){this.sendJson(res,404,{error:'Company not found.'});return;}try{await this.companyScope.run({id:c.id,version:c.directionVersion},async()=>{
+        const suffix=integration[2]!,mcp=this.companyMcp(c.id);
+        if(await storageApi(req,res,c.id,suffix,method,{registry:this.storage(),store:this.companies(),uploads:this.uploads(),mcp,limit:this.selectedFileLimit(c.id),body:r=>this.readBody(r),send:(r,s,v)=>this.sendJson(r,s,v)}))return;
+        if(await companyMcpApi(req,res,c.id,suffix,method,mcp,r=>this.readBody(r),(r,s,v)=>this.sendJson(r,s,v)))return;
+        const agentId=suffix.match(/\/agents\/([\w-]+)/)?.[1],agent=agentId?this.cowork().getAgent(agentId):undefined;if(!agent||this.coworkComputer(agent.id).status().state!=='running')throw new Error('Start this private desktop first.');res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-store','x-frame-options':'SAMEORIGIN'});res.end(desktopView(agent.id,c.id));
+      });}catch(error){this.sendJson(res,400,{error:(error as Error).message});}return;}
+      try{if(await companyApi(req,res,path,method,{store:this.companies(),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>(this.coworkStore??new CoworkStore()).getAgent(id),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});}}))return;}
+      catch(error){this.sendJson(res,400,{error:(error as Error).message});return;}
+    }
+    if(path.startsWith('/api/files/')){
+      if(!['GET','HEAD'].includes(method)&&!this.isSameOrigin(req)){this.sendJson(res,403,{error:'cross-origin request rejected'});return;}
+      try{if(await this.fileRoutes(req,res,path,method))return;}catch(error){this.sendJson(res,400,{error:(error as Error).message});return;}
+    }
 
     if (path.startsWith('/api/desktop-assets/') && method === 'GET') {
       const asset = desktopAsset(path.slice('/api/desktop-assets/'.length));
@@ -7021,7 +7282,7 @@ export class GituServer {
           actionProtocolMode: session.actionProtocolMode,
           autoApprove: session.autoApprove,
           autoLearn: original?.autoLearn ?? false,
-          resume: session.taskId ? { taskId: session.taskId, message: 'Continue the unfinished user request from preserved results. Do not repeat completed actions. The previous model request was interrupted by a temporary provider or connection failure.' } : original?.resume,
+          resume: session.taskId ? { taskId: session.taskId, message: 'continue' } : original?.resume,
           conversationHistory: this.conversationHistory(session),
         }).catch(error => {
           if (this.sessions.get(session.runId) !== session || session.status !== 'running') return;
@@ -7478,7 +7739,7 @@ export class GituServer {
               model: next.model,
               actionProtocolMode: next.toolMode,
               resume: session.taskId
-                ? { taskId: session.taskId, message: 'Continue from the preserved task state after the previous model became unavailable.' }
+                ? { taskId: session.taskId, message: 'continue' }
                 : opts.resume,
               conversationHistory: this.conversationHistory(session),
             });

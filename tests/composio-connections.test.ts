@@ -83,8 +83,9 @@ describe('Composio connections', () => {
       writeFileSync(file, JSON.stringify(record));
       expect(() => keys.read()).toThrow();
       vi.stubEnv('AGENT_GITU_SECRETS_KEY', '');
-      expect(keys.canSave).toBe(false);
-      expect(() => keys.save('secret')).toThrow('Enable encrypted integration storage');
+      expect(keys.canSave).toBe(true);
+      keys.save('automatically-protected-secret');
+      expect(keys.read()).toBe('automatically-protected-secret');
     } finally {
       vi.unstubAllEnvs();
     }

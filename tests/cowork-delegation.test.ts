@@ -498,6 +498,14 @@ describe('gitu_task tool dispatch', () => {
     expect(calls).toEqual([{ goal: 'fix the build' }]);
   });
 
+  it('uses the scoped temporary helper bridge for company engineering and refuses recursive delegation',async()=>{
+    const run=vi.fn(async()=>({ok:true,output:'verified private work'})),host=vi.fn(async()=>({ok:true,output:'host'}));
+    const scope={agent:{id:'lead',name:'Lead',companyId:'company'},conversationId:'chat',subAgents:{run},delegation:{run:host}} as unknown as CoworkToolScope;
+    const perms={allowShell:true,allowWrites:true,allowConfig:false,chief:true,browser:false};
+    expect((await executeCoworkTool({} as ToolContext,'gitu_task',{goal:'Fix the repository',maxCostUsd:1},perms,scope)).ok).toBe(true);
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({role:'engineering',objective:expect.stringContaining('isolated private computer'),budget:{maxCostUsd:1}}));expect(host).not.toHaveBeenCalled();
+    expect((await executeCoworkTool({} as ToolContext,'gitu_task',{goal:'More work'},perms,{...scope,isSubAgent:true})).ok).toBe(false);expect(run).toHaveBeenCalledOnce();
+  });
   it('is offered only to teammates that can already write', () => {
     const agent = { allowShell: true, allowWrites: true, allowConfig: false, chiefOfStaff: false };
     expect(coworkToolDocs(agent, false)).toContain('gitu_task');

@@ -23,6 +23,7 @@ import { mergedEnv } from './llm/keys.js';
 import { MemoryStore } from './memory/memory-store.js';
 import { Reporter } from './report/reporter.js';
 import { GituServer } from './server/server.js';
+import { manageService, type ServiceAction } from './service/service.js';
 import { SkillStore } from './skills/skills.js';
 import type { MemoryStatus, MemoryType, MemoryVisibility } from './types.js';
 
@@ -80,6 +81,7 @@ Usage:
   gitu skill export <name> [--out D]   Export a skill as agentskills.io SKILL.md
   gitu skill import <path> [--global]  Import a SKILL.md folder (or file) into the skill store
   gitu serve [--port 8321] [--host ADDRESS] Headless server: cowork, schedules and learning run with no UI
+  gitu service install|start|stop|status|uninstall [--data-dir DIR] Manage the background runtime
 
 Run options:
   --fast                 Skip context-pack ceremony (small tasks)
@@ -406,7 +408,7 @@ async function main(): Promise<void> {
     case 'serve': {
       const portRaw = flags.get('port');
       const port = typeof portRaw === 'string' ? Number(portRaw) : 8321;
-      if (!Number.isFinite(port) || port < 1 || port > 65535) throw new Error('Invalid --port');
+      if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid --port');
       const host = typeof flags.get('host') === 'string' ? String(flags.get('host')) : undefined;
       const server = new GituServer({ cwd, port, host });
       const bound = await server.start();
@@ -421,6 +423,11 @@ async function main(): Promise<void> {
       };
       process.on('SIGINT', shutdown);
       process.on('SIGTERM', shutdown);
+      return;
+    }
+
+    case 'service': {
+      console.log(await manageService(positional[1] as ServiceAction, flags));
       return;
     }
 

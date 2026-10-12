@@ -72,6 +72,8 @@ export interface LlmOptions {
    * know the model's ceiling — see src/llm/output-budget.ts.
    */
   outputBudgetTokens?: number;
+  /** Enforce a caller's paid output reservation even when a model ceiling is unknown. */
+  requireOutputLimit?:boolean;
 }
 
 export interface LlmUsage {
@@ -658,7 +660,7 @@ export class OpenAiCompatClient implements LlmClient {
       capability: this.outputCapability,
       overrideTokens: opts.outputBudgetTokens,
       modelMaxOutputTokens: this.modelMaxOutputTokens,
-    });
+    })??(opts.requireOutputLimit?opts.outputBudgetTokens:undefined);
     if (budgetTokens !== undefined) {
       body[this.outputCapability.field] = budgetTokens;
     }

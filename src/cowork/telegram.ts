@@ -1,5 +1,10 @@
 import { excerpt } from '../util.js';
-import { MAX_ARTIFACT_BYTES, type CoworkRequest } from './store.js';
+import type { CoworkRequest } from './store.js';
+import { readFileSync } from 'node:fs';
+
+// Telegram Bot API transport ceilings are independent of the workspace file policy.
+export const TELEGRAM_DOWNLOAD_BYTES = 20_000_000;
+export const TELEGRAM_UPLOAD_BYTES = 50_000_000;
 
 /**
  * Telegram message gateway for cowork conversations. One long-polling bot per
@@ -115,7 +120,7 @@ async function downloadTelegramFile(fetchImpl: TelegramFetch | undefined, token:
   if (!response.arrayBuffer) throw new TelegramError('Telegram file download did not provide binary data.');
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length === 0) throw new TelegramError('Telegram file was empty.');
-  if (bytes.length > MAX_ARTIFACT_BYTES) throw new TelegramError(`Telegram file exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit.`);
+  if (bytes.length > TELEGRAM_DOWNLOAD_BYTES) throw new TelegramError('Telegram bots can download up to 20 MB. Attach this file in the web app instead.');
   return { name, mime, dataBase64: bytes.toString('base64') };
 }
 
@@ -308,6 +313,14 @@ export async function sendTelegramMessage(fetchImpl: TelegramFetch | undefined, 
 
 export async function sendTelegramRequestCard(fetchImpl: TelegramFetch | undefined, token: string, chatId: string, request: CoworkRequest, agentName?: string): Promise<void> {
   await sendTelegramMessage(fetchImpl, token, chatId, telegramRequestCardText(request, agentName), { replyMarkup: telegramRequestReplyMarkup(request) });
+}
+
+export async function sendTelegramArtifact(fetchImpl: TelegramFetch | undefined, token: string, chatId: string, file: { name: string; mime: string; path: string; size: number; downloadUrl: string }, caption: string): Promise<void> {
+  if (file.size > TELEGRAM_UPLOAD_BYTES) {
+    await sendTelegramMessage(fetchImpl, token, chatId, `${caption}\nThis file exceeds Telegram’s 50 MB upload limit. Sign in to Agent Gitu to download it:\n${file.downloadUrl}`);
+    return;
+  }
+  await sendTelegramDocument(fetchImpl, token, chatId, { name: file.name, mime: file.mime, bytes: readFileSync(file.path) }, caption);
 }
 
 export async function sendTelegramDocument(
@@ -577,7 +590,7 @@ export class TelegramPoller {
                     : sticker?.file_id
                       ? { id: sticker.file_id, name: sticker.file_name || `telegram-${kind}-${message.message_id}`, mime: sticker.mime_type || 'image/webp', size: sticker.file_size }
                       : undefined;
-            if (selected?.size && selected.size > MAX_ARTIFACT_BYTES) throw new TelegramError(`Telegram file exceeds the ${MAX_ARTIFACT_BYTES / 1_000_000} MB Cowork limit.`);
+            if (selected?.size && selected.size > TELEGRAM_DOWNLOAD_BYTES) throw new TelegramError('Telegram bots can download up to 20 MB. Attach this file in the web app instead.');
             const file = selected ? await downloadTelegramFile(fetchImpl, this.options.token, selected.id, selected.name, selected.mime) : undefined;
             const text = message.text || message.caption || (file ? `Attached ${file.name}` : '');
             if (text || file) await this.options.onMessage(from, text, String(message.chat?.id ?? ''), file);

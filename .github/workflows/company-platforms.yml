@@ -1,0 +1,111 @@
+name: Company platforms and CLI releases
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  platforms:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test:fast
+      - run: npx vitest run tests/storage-s3-recovery.test.ts tests/storage-authority.test.ts tests/storage-custom.test.ts tests/storage-onedrive-recovery.test.ts tests/ui-file-uploads.test.ts
+      - run: npx vitest run tests/company.test.ts tests/company-http.test.ts tests/company-direction-api.test.ts tests/company-workers.test.ts tests/company-storage.test.ts tests/company-storage-references.test.ts tests/storage-hashes.test.ts tests/storage-drive-recovery.test.ts tests/company-computer-recovery.test.ts tests/company-host-computer.test.ts tests/company-wallets.test.ts tests/computer-binary.test.ts tests/cowork-delegation.test.ts tests/credential-persistence.test.ts tests/file-uploads.test.ts tests/service.test.ts tests/follow-up-continuity.test.ts tests/cowork-sessions.test.ts tests/cowork-schedules.test.ts tests/ui-cowork-widgets.test.ts tests/computer-broker.test.ts tests/cowork-computer-service.test.ts
+      - run: npx playwright install --with-deps chromium
+      - run: npx tsx scripts/company-ui-smoke.ts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: company-ui-${{ matrix.runner }}
+          path: .qa/company-ui/*.png
+      - run: npm run package:cli
+      - run: node scripts/installer-smoke.mjs
+      - run: node scripts/service-smoke.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.runner }}
+          path: |
+            .release/*.tar.gz
+            .release/*.tar.gz.sha256
+  linux-container:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t agent-gitu-company-ci .
+      - run: docker run --rm -e AGENT_GITU_SECRETS_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --entrypoint node agent-gitu-company-ci -e "Promise.all([import('./dist/company/store.js'),import('./dist/server/server.js'),import('playwright')]).then(()=>console.log('Runtime modules loaded'))"
+      - run: docker run --rm -e AGENT_GITU_SECRETS_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --entrypoint node agent-gitu-company-ci deploy/company-container-smoke.mjs
+      - run: docker build -t agent-gitu-cowork:8 assets/cowork-computer
+      - run: docker run --rm --entrypoint node agent-gitu-cowork:8 -e "require('playwright').chromium.launch({headless:true}).then(b=>b.close())"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm run build
+      - run: sudo apt-get update && sudo apt-get install -y xfsprogs
+      - run: sudo --preserve-env=CI,GITHUB_ACTIONS,PATH "$(command -v node)" deploy/computer-quota-smoke.mjs
+  windows-desktop:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.3
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run dist
+      - run: node scripts/desktop-installer-smoke.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-desktop-installer
+          path: |
+            release/Agent-Gitu-Setup-*.exe
+            release/Agent-Gitu-Setup-*.exe.sha256
+            release/Agent-Gitu-Portable-*.exe
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [platforms, linux-container, windows-desktop]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: release-assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-desktop-installer
+          path: release-assets
+      - name: Publish verified packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release-assets/* scripts/install.sh scripts/install.ps1 --verify-tag --generate-notes

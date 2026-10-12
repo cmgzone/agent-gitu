@@ -21,8 +21,8 @@ export function desktopAsset(relative: string): string | undefined {
   return path.join(DESKTOP_ASSETS, relative);
 }
 
-export function desktopView(agentId: string): string {
-  const endpoint = JSON.stringify('/api/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
+export function desktopView(agentId: string,companyId?:string): string {
+  const endpoint = JSON.stringify((companyId?'/api/companies/'+encodeURIComponent(companyId):'/api')+'/cowork/agents/' + encodeURIComponent(agentId) + '/computer/vnc');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Shared desktop</title><style>html,body,#screen{width:100%;height:100%;margin:0;overflow:hidden;background:#151821}#message{position:fixed;inset:0;display:grid;place-items:center;color:#c3c6d1;font:14px system-ui;pointer-events:none}#message[hidden]{display:none}</style></head><body><div id="screen"></div><div id="message">Connecting to live desktop…</div><script type="module">
 import RFB from '/api/desktop-assets/core/rfb.js';
 let rfb, activeSocket, timer, frames, monitorTimer, closed=false;

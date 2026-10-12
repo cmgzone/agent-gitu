@@ -36,8 +36,9 @@ describe('Cowork media gallery', () => {
     u.cw.artifacts = ['image/png', 'video/mp4', 'audio/mpeg', 'application/pdf'].map((mime, i) => ({ id: 'file-' + i, name: 'File <' + i + '>', mime, size: 20 }));
     const html = u.context.cwFilesHtml(u.cw.artifacts.map(file => file.id), 'agent');
     expect(html.match(/class="cw-stack-sheet"/g)).toHaveLength(3);
-    expect(html).toContain('data-cwgallery="file-0"');
-    expect(html).toContain('4 shared files');
+    expect(html).toContain('data-cwphoto="file-0"');
+    expect(html).toContain('data-cwgallery="file-1"');
+    expect(html).toContain('3 shared files');
     expect(html).toContain('is-new');
     expect(html).not.toMatch(/<video|<audio|<iframe|cw-bubble/);
     expect(u.context.cwFilesHtml(['file-0', 'file-1', 'file-2', 'file-3'])).not.toContain('is-new');

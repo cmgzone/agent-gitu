@@ -5,6 +5,7 @@ import path from 'node:path';
 import { WebSocketServer } from 'ws';
 import { bridgeDesktop, localDesktopStream } from './desktop-stream.js';
 import { COWORK_COMPUTER_IMAGE as IMAGE, MAX_COMPUTER_MESSAGE_BYTES, computerCreateArgs, dockerExec, type ComputerExec } from './computer.js';
+import {validateComputerChunk, type ComputerChunk, COMPUTER_CHUNK_BYTES} from './file-transport.js';
 
 const ASSETS = fileURLToPath(new URL('../../assets/cowork-computer/', import.meta.url));
 const namePattern = /^gitu-cowork-[a-f0-9]{24}(?:-backup-\d{10,16})?$/;
@@ -34,12 +35,24 @@ export class ComputerBroker {
       return this.exec(argv, undefined, signal, 15_000);
     }
     if (same(argv, ['build', '-t', IMAGE, ASSETS])) return this.exec(argv, undefined, signal, 900_000);
+    if (argv[0] === 'gitu-quota' && argv.length === 3) {
+      const disk = Number(argv[2]);
+      if (!/^gitu-cowork-[a-f0-9]{24}$/.test(argv[1]!) || !Number.isInteger(disk) || disk < 256 || disk > 1048576) throw new Error('Invalid private disk quota.');
+      return this.exec([...argv, this.owner], undefined, signal, 120000);
+    }
     if (argv[0] === 'create') {
       const name = argv[2] ?? '';
-      if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name) || !same(argv, computerCreateArgs(name))) throw new Error('Unsafe desktop creation rejected.');
+      const cpu=Number(argv[argv.indexOf('--cpus')+1]),memory=argv[argv.indexOf('--memory')+1]??'',diskEnv=argv[argv.indexOf('--env')+1]??'';
+      const limits=diskEnv.startsWith('GITU_DISK_LIMIT_MB=')?{cpu,memoryMb:Number(memory.slice(0,-1)),diskMb:Number(diskEnv.split('=')[1])}:undefined;
+      if(limits&&(!Number.isInteger(cpu)||cpu<1||cpu>32||!/^\d+m$/.test(memory)||limits.memoryMb<256||limits.memoryMb>65536||!Number.isInteger(limits.diskMb)||limits.diskMb<256||limits.diskMb>1048576))throw new Error('Invalid desktop resource limits.');
+      if (!/^gitu-cowork-[a-f0-9]{24}$/.test(name) || !same(argv, computerCreateArgs(name,limits))) throw new Error('Unsafe desktop creation rejected.');
+      if (limits) {
+        const ready = await this.exec(['gitu-quota', name, String(limits.diskMb), this.owner], undefined, signal, 120000);
+        if (ready.trim() !== 'quota-ready') throw new Error('Private computer disk quota could not be verified.');
+      }
       return this.exec([...argv.slice(0, -1), '--label', `dev.agentgitu.broker=${this.owner}`, IMAGE], undefined, signal, 120_000);
     }
-    if (argv[0] === 'container' && argv[1] === 'inspect' && argv[2] === '--format' && ['{{.Config.Image}}', '{{.State.Running}}', '{{.State.Status}}'].includes(argv[3]!) && argv.length === 5) {
+    if (argv[0] === 'container' && argv[1] === 'inspect' && argv[2] === '--format' && ['{{.Config.Image}}', '{{.State.Running}}', '{{.State.Status}}', '{{json .HostConfig}}'].includes(argv[3]!) && argv.length === 5) {
       await this.owned(argv[4]!, signal);
       return this.exec(argv, undefined, signal, 15_000);
     }
@@ -68,7 +81,7 @@ export class ComputerBroker {
     const offset = argv[1] === '-i' ? 2 : 1;
     if (argv[0] === 'exec' && argv[offset + 1] === 'node' && argv[offset + 2] === '-e' && argv.length >= offset + 4 && argv.length <= offset + 5) {
       await this.owned(argv[offset]!, signal);
-      return this.exec(argv, input as string | undefined, signal, timeoutMs);
+      return this.exec([...argv.slice(0, offset + 1), '/computer/quota-guard', ...argv.slice(offset + 1)], input as string | undefined, signal, timeoutMs);
     }
     throw new Error(`Unsupported desktop operation: ${argv.join(' ')}`);
   }
@@ -103,6 +116,16 @@ export function createComputerBrokerServer(key: string, owner: string, exec: Com
     if (!authorized(req)) {
       send(401, { error: 'Private desktop authentication required.' });
       return;
+    }
+    if(req.url?.startsWith('/file-chunks?')&&req.method==='POST'){
+      try{
+        const metadata=JSON.parse(new URL(req.url,'http://broker').searchParams.get('metadata')??'{}') as ComputerChunk;
+        if(active>=32){send(429,{error:'Private desktop runtime is busy.'});return;}
+        validateComputerChunk(metadata,metadata.write?Buffer.alloc(metadata.length):undefined);await broker.owned(metadata.name);
+        if(!exec.binary)throw new Error('Binary private computer transport is unavailable.');
+        const abort=new AbortController();res.once('close',()=>{if(!res.writableEnded)abort.abort();});active++;
+        try{const chunks:Buffer[]=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>COMPUTER_CHUNK_BYTES)throw new Error('File chunk too large.');chunks.push(chunk);}const input=Buffer.concat(chunks,size);validateComputerChunk(metadata,metadata.write?input:undefined);const output=await exec.binary(metadata,metadata.write?input:undefined,abort.signal);res.writeHead(200,{'content-type':'application/octet-stream','cache-control':'no-store'});res.end(output);}finally{active--;}
+      }catch{send(400,{error:'Private computer file transfer failed.'});}return;
     }
     if (req.url !== '/execute' || req.method !== 'POST') {
       send(404, { error: 'Route not found.' });

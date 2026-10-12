@@ -8,7 +8,7 @@ it('persists human control, blocks agent input, and wakes without restarting ope
   const root = mkdtempSync(path.join(tmpdir(), 'gitu-handoff-'));
   let state = 'created';
   const exec = vi.fn<ComputerExec>(async (args, input) => {
-    if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:7';
+    if (args.includes('{{.Config.Image}}')) return 'agent-gitu-cowork:8';
     if (args.includes('{{.State.Status}}')) return state;
     if (args[0] === 'start' || args[0] === 'unpause') state = 'running';
     if (args[0] === 'pause') state = 'paused';

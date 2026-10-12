@@ -92,7 +92,7 @@ it('resolves real plan, question and approval gates through the mobile client', 
         reason: 'Exercise denied approval',
         expected: 'Must not execute',
       }),
-      action({ type: 'request_block', reason: 'Dangerous action denied by the mobile user' }),
+      action({ type: 'request_block', reason: 'Required permission for the dangerous action was denied by the mobile user' }),
     ]),
   });
   const api = new GituApi(`http://127.0.0.1:${await server.start()}`, key);

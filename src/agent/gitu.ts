@@ -525,34 +525,24 @@ export class Gitu {
     // boundaries retain the history but give the new request a clean baseline
     // for planning, context selection, verification, and reporting.
     const phaseBaseRef = (await gitExec(guard.activeWritableRoot, ['rev-parse', 'HEAD']).catch(() => '')).trim() || undefined;
-    let activeWorkPhase = ledger.ensureInitialWorkPhase(ledger.data.goal, phaseBaseRef);
-    if (resumedCompletedScope) {
-      ledger.completeActiveWorkPhase();
+    // The server retains the original goal as the session title. Intake must
+    // admit the actual resume message and restore the latest active phase.
+    const intakeMessage = resumeNote ?? (this.config.resume ? 'continue' : goal);
+    const intakeKind = classifyFollowUp(intakeMessage).kind;
+    let activeWorkPhase = ledger.activeWorkPhase() ?? ledger.ensureInitialWorkPhase(ledger.data.goal, phaseBaseRef);
+    if (resumedCompletedScope || (this.config.resume && intakeKind === 'NEW_TASK')) {
+      if (resumedCompletedScope) ledger.completeActiveWorkPhase();
       activeWorkPhase = ledger.startWorkPhase({
         kind: 'follow_up',
-        goal: resumeNote ?? goal,
+        goal: intakeKind === 'CONTINUE' ? ledger.ensureTaskAuthority().currentGoal : intakeMessage,
         baseRef: phaseBaseRef,
       });
       this.emit(`phase    follow-up started — prior work preserved; new scope: ${activeWorkPhase.goal.slice(0, 160)}`);
     }
-    const isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
-    const activeGoal = isFollowUpPhase ? activeWorkPhase.goal : goal;
-    const agentWorkflow = ledger.data.mode === 'agent';
-    const agentBaselineFingerprint = agentWorkflow ? await getWorkspaceFingerprint(guard.activeWritableRoot) : '';
-    let temporaryPlanPending = agentWorkflow && Boolean(this.config.requirePlanReview);
+    let isFollowUpPhase = activeWorkPhase.kind === 'follow_up';
 
-    // Investigation depth is computed ONCE at intake from the goal plus the
-    // Task Authority target hints, and recorded in the ledger. Escalation is
-    // explicit and evidence-driven — one ladder level at a time.
-    const investigationDepth = determineInvestigationDepth(activeGoal, ledger.data.taskAuthority?.targetHints);
-    ledger.setInvestigationDepth(investigationDepth);
-    this.emit(`depth    investigation depth: ${investigationDepth}${investigationDepth === 'direct' ? ' — targeted context fast path active' : ''}`);
-
-    // Durable visual-reference rehydration: active user-reference images
-    // persisted under .hermes/task-assets/ ride along on every run — newly
-    // attached images and rehydrated durable ones are merged. A missing or
-    // corrupt asset is marked unavailable and surfaced to the model, never
-    // silently dropped.
+    // Rehydrate earlier references before registering today's attachments, so
+    // a newly persisted image is not also attached as a historical reference.
     const rehydratedVisuals = rehydrateVisualReferences(ledger, guard.lock.repoRoot);
     if (rehydratedVisuals.unavailable.length > 0) {
       markUnavailableVisualReferences(ledger, rehydratedVisuals.unavailable);
@@ -564,12 +554,18 @@ export class Gitu {
     }
 
     const durableVisualRefs = persistVisualAssets(this.config.images ?? [], ledger, guard.lock.repoRoot, this.emit);
-    applyFollowUpToLedger(
-      ledger,
-      activeGoal,
-      Boolean(durableVisualRefs.length || this.config.images?.length),
-      durableVisualRefs,
-    );
+    applyFollowUpToLedger(ledger, intakeMessage, Boolean(durableVisualRefs.length || this.config.images?.length), durableVisualRefs);
+    let activeGoal = ledger.ensureTaskAuthority().currentGoal;
+    const agentWorkflow = ledger.data.mode === 'agent';
+    const agentBaselineFingerprint = agentWorkflow ? await getWorkspaceFingerprint(guard.activeWritableRoot) : '';
+    let temporaryPlanPending = agentWorkflow && Boolean(this.config.requirePlanReview);
+
+    // Investigation depth is computed ONCE at intake from the goal plus the
+    // Task Authority target hints, and recorded in the ledger. Escalation is
+    // explicit and evidence-driven — one ladder level at a time.
+    const investigationDepth = determineInvestigationDepth(activeGoal, ledger.data.taskAuthority?.targetHints);
+    ledger.setInvestigationDepth(investigationDepth);
+    this.emit(`depth    investigation depth: ${investigationDepth}${investigationDepth === 'direct' ? ' — targeted context fast path active' : ''}`);
 
     const policy = new PolicyEngine(this.config.autoApprove ?? false, this.config.approvalHandler, this.config.safeMode ?? false);
     const prerequisiteResolver = new CapabilityAwareResolver(this.config.prerequisiteRecovery);
@@ -980,8 +976,8 @@ export class Gitu {
       const followUpSection =
         resumeNote && ledger.data.mode !== 'chat'
           ? isFollowUpPhase
-            ? `ACTIVE FOLLOW-UP WORK PHASE — user request:\n"${activeGoal}"\n` +
-              `The earlier phase is complete and preserved. Work ONLY on this new request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. ${agentWorkflow ? 'Formal criteria and plans remain optional; quick edits can proceed directly.' : 'Add only the needed criteria and append only the needed plan steps.'} ` +
+            ? `ACTIVE FOLLOW-UP WORK PHASE — user request:\n"${resumeNote}"\nCurrent engineering goal:\n"${activeGoal}"\n` +
+              `Earlier work is preserved outside the active scope. Work ONLY on this request. Do not reread, re-plan, or re-verify the old phase unless this request changes one of its files or contracts. ${agentWorkflow ? 'Formal criteria and plans remain optional; quick edits can proceed directly.' : 'Add only the needed criteria and append only the needed plan steps.'} ` +
               `Only when this is purely a comment, thanks, opinion, or question with no request to continue work may you answer directly with the detail needed to address it and end with {"type":"complete","summary":"<your complete conversational reply>","chat":true}.`
             : `ACTIVE CONTINUATION — the user wrote:\n"${resumeNote}"\n` +
               `The task is unfinished. Continue from the durable ledger and take the next useful action; do not restart discovery or planning unless the evidence requires it. ` +
@@ -1276,7 +1272,7 @@ export class Gitu {
       let unresolvedQualityReviewFingerprint: string | undefined;
       let bugRigorRejections = 0;
       let planReconcileRejections = 0;
-      const isBugTask = classifyTaskKind(activeGoal) === 'bug-fix';
+      let isBugTask = classifyTaskKind(activeGoal) === 'bug-fix';
       const effortNote = buildPlanNote(effortPlan, riskPlan);
       const activePhaseStateScope = () => ({
         goal: activeGoal,
@@ -1851,8 +1847,15 @@ export class Gitu {
             (queued.attachmentContext ? `\n${queued.attachmentContext}` : '') +
             (intent ? '\nAnswer naturally before doing further work. The existing goal and unfinished plan remain on hold.' :
               steered.kind === 'CORRECT' ? '\nRevise affected plan steps and replace obsolete todos for the new direction; reactivate a cancelled step with status:pending after revising it, or append the replacement steps. Do not continue the rejected provider.' : ''));
+          if (steered.kind === 'NEW_TASK') {
+            activeWorkPhase = ledger.startWorkPhase({ kind: 'follow_up', goal: queued.text });
+            isFollowUpPhase = true;
+            this.emit(`phase    new task started — earlier work preserved; new scope: ${queued.text.slice(0, 160)}`);
+          }
           applyFollowUpToLedger(ledger, queued.text);
-          if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND') {
+          activeGoal = ledger.ensureTaskAuthority().currentGoal;
+          isBugTask = classifyTaskKind(activeGoal) === 'bug-fix';
+          if (steered.kind === 'REFINE' || steered.kind === 'CORRECT' || steered.kind === 'EXTEND' || steered.kind === 'NEW_TASK') {
             const extraTurns = Math.max(budgetExtensionTurns, 10);
             budgetCap = turns + extraTurns;
             ledger.addBudgetExtension({
@@ -3106,8 +3109,8 @@ export class Gitu {
               }
               const currentFp = await getWorkspaceFingerprint(guard.activeWritableRoot);
               finalizationRecoveryFingerprint = currentFp;
-              const gate = evidence.gate(ledger.data, currentFp);
               const verificationPhaseData = activePhaseData();
+              const gate = evidence.gate(verificationPhaseData, currentFp);
               const criterionCommands = verificationPhaseData.acceptanceCriteria.length
                 // Linked evidence is supporting history, not a growing list of
                 // mandatory commands. Only explicitly pinned checks must all run.
@@ -4022,7 +4025,12 @@ export class Gitu {
         while (this.inbox.length > 0) {
           const queued = this.inbox.shift()!;
           this.emit(`user-msg ${queued.text}`);
+          if (classifyFollowUp(queued.text).kind === 'NEW_TASK') {
+            activeWorkPhase = ledger.startWorkPhase({ kind: 'follow_up', goal: queued.text });
+            isFollowUpPhase = true;
+          }
           applyFollowUpToLedger(ledger, queued.text);
+          activeGoal = ledger.ensureTaskAuthority().currentGoal;
         }
         if (!ledger.data.blockers.some((blocker) => blocker.includes('Stopped by user'))) {
           ledger.addBlocker('Stopped by user.');

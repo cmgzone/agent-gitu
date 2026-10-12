@@ -448,7 +448,7 @@ describe('GituSessionRuntime end to end through the real engine', () => {
           thought: 'verify',
           action: { type: 'tool_call', stepId: 'step-1', tool: 'run_command', params: { command: 'node --version' }, reason: 'verify runtime', expected: 'exit 0' },
         }),
-      () => JSON.stringify({ thought: 'stop', action: { type: 'request_block', reason: 'test collected the events it needed' } }),
+      () => JSON.stringify({ thought: 'stop', action: { type: 'request_block', reason: 'Required permission to continue beyond the collected test events is unavailable' } }),
     ]);
     const runtime = new GituSessionRuntime();
     const session = runtime.createSession({

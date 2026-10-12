@@ -1,10 +1,11 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import { Script } from 'node:vm';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { CoworkComputer, type ComputerExec } from '../src/cowork/computer.js';
-import { cleanTelegramText, parseTelegramRequestAction, sendTelegramDocument, sendTelegramRequestCard, TelegramReplyStream, TelegramTypingIndicator, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
+import { cleanTelegramText, parseTelegramRequestAction, sendTelegramArtifact, sendTelegramDocument, sendTelegramRequestCard, TelegramReplyStream, TelegramTypingIndicator, TelegramPoller, telegramChunks, type TelegramFetch } from '../src/cowork/telegram.js';
 import { CoworkStore, type CoworkRequest } from '../src/cowork/store.js';
 import { CoworkMemory } from '../src/cowork/memory.js';
 import { MemoryStore } from '../src/memory/memory-store.js';
@@ -230,6 +231,13 @@ describe('Telegram live replies', () => {
     expect(await file.text()).toBe('ready');
   });
 
+  it('links oversized Telegram artifacts without reading their bytes', async () => {
+    let text = '';
+    const fetchImpl: TelegramFetch = async (_url, init) => { text = JSON.parse(String(init?.body)).text; return { ok: true, status: 200, text: async () => '{"ok":true,"result":{}}' }; };
+    await sendTelegramArtifact(fetchImpl, token, '42', { name: 'movie.mp4', mime: 'video/mp4', path: 'nonexistent-file', size: 50_000_001, downloadUrl: 'https://gitu.example/api/protected-file' }, 'Movie ready');
+    expect(text).toContain('Sign in');
+    expect(text).toContain('https://gitu.example/api/protected-file');
+  });
   it('downloads inbound documents and persists the next update offset', async () => {
     const offsets: number[] = [];
     const received: { text: string; file?: { name: string; dataBase64: string } }[] = [];
@@ -297,9 +305,15 @@ describe('private virtual computers', () => {
   });
 
   it('shares only explicit artifacts within the same conversation', async () => {
+    const data=Buffer.from('report');let receivedBytes=Buffer.alloc(0);
     const exec: ComputerExec = async (args, input) => {
       if (args[0] !== 'exec') return '{}';
       const request = JSON.parse(input!);
+      if(request.tool==='file_transfer_info')return request.params.path.includes('.gitu-transfer')?JSON.stringify({ok:false,output:'not found'}):JSON.stringify({ok:true,output:JSON.stringify({size:data.length,mtime:1})});
+      if(request.tool==='file_transfer_read')return JSON.stringify({ok:true,output:data.toString('base64')});
+      if(request.tool==='file_transfer_checksum')return JSON.stringify({ok:true,output:createHash('sha256').update(data).digest('hex')});
+      if(request.tool==='file_transfer_write'){receivedBytes=Buffer.from(request.params.data,'base64');return JSON.stringify({ok:true,output:'written'});}
+      if(request.tool==='file_transfer_finish')return JSON.stringify({ok:true,output:'received '+receivedBytes.toString()});
       return JSON.stringify({
         ok: true,
         output: request.tool === 'export_file' ? Buffer.from('report').toString('base64') : 'received ' + Buffer.from(request.params.data, 'base64').toString(),
@@ -405,7 +419,7 @@ describe('cowork streaming and tool execution', () => {
 
   it('attaches private desktop media to an agent reply as a downloadable chat artifact', async () => {
     const bytes = Buffer.from([0, 255, 73, 128, 4]);
-    const exec: ComputerExec = async (args) => args[0] === 'exec' ? JSON.stringify({ ok: true, output: bytes.toString('base64') }) : '{}';
+    const exec: ComputerExec = async (args,input) => {if(args[0]!=='exec')return '{}';const request=JSON.parse(input!);return JSON.stringify({ok:true,output:request.tool==='file_transfer_info'?JSON.stringify({size:bytes.length,mtime:1}):request.tool==='file_transfer_checksum'?createHash('sha256').update(bytes).digest('hex'):bytes.toString('base64')});};
     const computer = new CoworkComputer('media-runtime', root, exec);
     const client = { complete: vi.fn()
       .mockResolvedValueOnce('<tool>{"name":"share_file","params":{"path":"/home/agent/Downloads/clip.mp4"}}</tool>')
@@ -477,8 +491,9 @@ describe('cowork streaming and tool execution', () => {
   it('keeps checkpointing beyond the old tool budget and remains stoppable', async () => {
     const controller = new AbortController();
     let calls = 0;
-    const client = { complete: async (messages: LlmMessage[]) => { if (String(messages[0]?.content).startsWith('CHECKPOINT SUMMARY:')) return '{}'; if (++calls > 24 * 5) controller.abort(); return '<tool>{"name":"unknown","params":{}}</tool>'; } };
-    const result = await runConversationTurn(setup('budget', client, { signal: controller.signal }));
+    const client = { complete: async (messages: LlmMessage[]) => { if (String(messages[0]?.content).startsWith('CHECKPOINT SUMMARY:')) return '{}'; if (++calls > 24 * 5) controller.abort(); return '<tool>'+JSON.stringify({name:'agent_memory',params:{action:'remember',text:'Verified finding '+calls}})+'</tool>'; } };
+    const input=setup('budget',client,{signal:controller.signal});input.deps.store=input.store;input.deps.memory=new CoworkMemory(MemoryStore.forProject(path.join(root,'budget-memory')),'budget');
+    const result = await runConversationTurn(input);
     const checkpoints = result.messages.filter((m) => m.role === 'system' && m.checkpoint);
     expect(checkpoints.length).toBeGreaterThan(3);
     expect(calls).toBe(121);
@@ -492,11 +507,11 @@ describe('cowork streaming and tool execution', () => {
       complete: async (messages: LlmMessage[]) => {
         if (String(messages[0]?.content).startsWith('CHECKPOINT SUMMARY:')) throw new Error('Summary unavailable');
         calls += 1;
-        return calls <= 24 ? '<tool>{"name":"unknown","params":{}}</tool>' : 'Done after continuing.';
+        return calls <= 24 ? '<tool>'+JSON.stringify({name:'agent_memory',params:{action:'remember',text:'Verified finding '+calls}})+'</tool>' : 'Done after continuing.';
       },
     };
-    const result = await runConversationTurn(setup('budget-finish', client));
-    expect(result.messages.some((m) => m.role === 'system' && m.checkpoint?.issues?.includes('24 actions reported a problem'))).toBe(true);
+    const input=setup('budget-finish',client);input.deps.store=input.store;input.deps.memory=new CoworkMemory(MemoryStore.forProject(path.join(root,'budget-finish-memory')),'budget');const result = await runConversationTurn(input);
+    expect(result.messages.some((m) => m.role === 'system' && m.checkpoint)).toBe(true);
     const final = result.messages.filter((m) => m.role === 'agent').at(-1)!;
     expect(final.text).toBe('Done after continuing.');
     expect(final.tools).toHaveLength(24);

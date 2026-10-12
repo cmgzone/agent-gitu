@@ -18,6 +18,17 @@ import { commandTimeout, commandWaitMs, deadline, pollWaitMs } from './command-t
 import { diffFileContents, formatDiffBlock, formatLineCounts } from './diff.js';
 
 export interface ToolContext {
+  /** Trusted owner grant, checked live before Company work uses the runtime host. */
+  companyHostComputer?: () => boolean;
+  onComputerLocation?: (location: 'host' | 'private') => void;
+  connectionResponseScope?: string;
+  authorizeTool?: (tool: string, params: Record<string, unknown>) => Promise<ToolResult | undefined>;
+  toolDidExecute?: (tool: string, params: Record<string, unknown>, result: ToolResult) => void;
+  externalHeaders?: (tool:string,params:Record<string,unknown>)=>Record<string,string>;
+  externalArguments?: (tool:string,params:Record<string,unknown>)=>Record<string,unknown>;
+  storage?: (params:Record<string,unknown>,scope:{conversationId:string;agentId:string})=>Promise<ToolResult & {artifactId?:string}>;
+  companyFiles?: (params:Record<string,unknown>,scope:{conversationId:string;agentId:string})=>Promise<ToolResult & {artifactId?:string}>;
+  missionSessionLimit?:()=>number;
   signal?: AbortSignal;
   guard: ProjectGuard;
   cwd: string;
@@ -1916,15 +1927,15 @@ export async function toolConnectionRead(ctx: ToolContext, params: Record<string
       ...(typeof params['operationId'] === 'string' ? { operationId: params['operationId'] } : {}),
       ...(operation ? { operation, documented: true } : {}),
     }, params['query'] as Record<string, unknown> | undefined);
-    const store = connectionResponses();
+    const store = connectionResponses(ctx.connectionResponseScope);
     const view = store.inspect({ responseId: store.put(result.data) });
     return { ok: true, output: `${result.message}\n${JSON.stringify(view)}` };
   } catch (error) { return fail(`connection_read failed: ${(error as Error).message}`); }
 }
 
-export function toolInspectConnectionResponse(_ctx: ToolContext, params: Record<string, unknown>): ToolResult {
+export function toolInspectConnectionResponse(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   try {
-    return { ok: true, output: JSON.stringify(connectionResponses().inspect(params as unknown as ConnectionResponseQuery)) };
+    return { ok: true, output: JSON.stringify(connectionResponses(ctx.connectionResponseScope).inspect(params as unknown as ConnectionResponseQuery)) };
   } catch (error) { return fail(`inspect_connection_response failed: ${(error as Error).message}`); }
 }
 

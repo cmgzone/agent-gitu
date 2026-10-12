@@ -1,4 +1,4 @@
-const { app, BrowserWindow, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, shell, nativeTheme,Tray,Menu,nativeImage } = require('electron');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -12,6 +12,11 @@ let server = null;
 let boundPort = 0;
 let startupWindow = null;
 let starting = false;
+let runtimeTray = null;
+let quitting = false;
+let runtimeStopped = false;
+function showWorkspace(){if(mainWindow&&!mainWindow.isDestroyed()){mainWindow.show();if(mainWindow.isMinimized())mainWindow.restore();mainWindow.focus();}else if(boundPort)createMainWindow();}
+function createRuntimeTray(){if(runtimeTray)return;const icon=nativeImage.createFromPath(APP_ICON_PATH).resize({width:24,height:24});runtimeTray=new Tray(icon);runtimeTray.setToolTip('Agent Gitu — companies running in the background');runtimeTray.setContextMenu(Menu.buildFromTemplate([{label:'Open Agent Gitu',click:showWorkspace},{type:'separator'},{label:'Quit Agent Gitu',click:()=>app.quit()}]));runtimeTray.on('double-click',showWorkspace);}
 
 async function showStartupWindow() {
   if (startupWindow && !startupWindow.isDestroyed()) { startupWindow.show(); return; }
@@ -815,6 +820,7 @@ function createMainWindow() {
   });
   mainWindow.on('close', (e) => {
     log(`mainWindow close event fired! defaultPrevented=${e.defaultPrevented}`);
+    if(!quitting&&runtimeTray){e.preventDefault();mainWindow.hide();}
   });
   mainWindow.on('closed', () => {
     log('mainWindow closed event fired!');
@@ -909,12 +915,14 @@ if (!gotLock) {
       createMainWindow();
     }
   });
-  app.whenReady().then(start).catch(showStartupFailure);
+  app.whenReady().then(()=>{createRuntimeTray();return start();}).catch(showStartupFailure);
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0 && boundPort) createMainWindow();
   });
-  app.on('before-quit', () => {
+  app.on('before-quit', (event) => {
     log('app before-quit event fired');
+    quitting=true;
+    if(server&&!runtimeStopped){event.preventDefault();void server.stop().catch(()=>{}).finally(()=>{runtimeStopped=true;runtimeTray?.destroy();runtimeTray=null;app.quit();});}
   });
   app.on('will-quit', () => {
     log('app will-quit event fired');
@@ -925,7 +933,7 @@ if (!gotLock) {
   });
   app.on('window-all-closed', () => {
     log('app window-all-closed event fired');
-    app.quit();
+    if(quitting||!runtimeTray)app.quit();
   });
 }
 

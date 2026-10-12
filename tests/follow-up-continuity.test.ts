@@ -5,6 +5,7 @@ import type { ProjectLock } from '../src/types.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { buildStateMessage } from '../src/agent/prompt.js';
 
 function createMockProject(): { repoRoot: string; project: ProjectLock; cleanup: () => void } {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitu-fu-test-'));
@@ -28,6 +29,33 @@ function createMockProject(): { repoRoot: string; project: ProjectLock; cleanup:
 }
 
 describe('Follow-up Continuity & Delta Routing', () => {
+  it('does not discard a direction attached to a continuation', () => {
+    expect(classifyFollowUp('continue with the README fix instead').kind).toBe('CORRECT');
+    expect(classifyFollowUp('go ahead and fix src/new.ts').goalDelta).toContain('src/new.ts');
+  });
+
+  it('persists a replacement task and keeps its target on a later continue', () => {
+    const { repoRoot, project, cleanup } = createMockProject();
+    try {
+      const ledger = TaskLedger.create({ repoRoot, goal: 'Fix the original backend task', project, mode: 'agent' });
+      ledger.ensureInitialWorkPhase();
+      const epoch = ledger.instructionEpoch;
+      applyFollowUpToLedger(ledger, 'now implement src/new.ts');
+      expect(ledger.data.taskAuthority?.currentGoal).toBe('now implement src/new.ts');
+      expect(ledger.instructionEpoch).toBeGreaterThan(epoch);
+      applyFollowUpToLedger(ledger, 'continue');
+      const loaded = TaskLedger.load(repoRoot, ledger.data.taskId)!;
+      expect(loaded.data.taskAuthority?.currentGoal).toBe('now implement src/new.ts');
+      expect(loaded.data.taskAuthority?.targetHints.files).toContain('src/new.ts');
+      expect(loaded.data.goal).toBe('Fix the original backend task');
+      const state = buildStateMessage(loaded, undefined, undefined, {
+        goal: 'Fix the original backend task', criterionIds: [], planStepIds: [], evidenceStartIndex: 0,
+      });
+      expect(state).toContain('CURRENT USER INTENT:\nnow implement src/new.ts');
+      expect(state).toContain('LATEST DIRECTION (NEW_TASK):\nnow implement src/new.ts');
+    } finally { cleanup(); }
+  });
+
   it('classifies various user intent categories accurately', () => {
     expect(classifyFollowUp('continue').kind).toBe('CONTINUE');
     expect(classifyFollowUp('proceed').kind).toBe('CONTINUE');

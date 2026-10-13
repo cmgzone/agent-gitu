@@ -129,7 +129,7 @@ The callable tool names "browse" and "browser" are exact aliases. Prefer the can
 3. Exercise the requested interaction path with browse click/fill/select/press/type/scroll/wait actions; do not treat a screenshot alone as proof that behavior works.
 4. Check responsive behavior with evidence viewports ["mobile","tablet","desktop"] when the task affects layout.
 5. Use browse {"action":"screenshot"} when a visual criterion needs pixels, and ground visual claims in the captured result.
-6. If the browser is unavailable, report the missing capability and use the strongest non-browser verification available; never claim browser verification passed.`
+6. If the browser is unavailable, report the missing capability and use the strongest non-browser verification available; never claim browser verification passed.`,
 });
 
 /** All built-in skills, in stable order. */
@@ -137,7 +137,7 @@ export const BROWSER_WORKFLOW_SKILL: ResolvedBuiltinSkill = def({
   name: 'browser-workflow',
   description: 'Browse websites, inspect controls, complete workflows, verify changes and retain the existing artifact or tab.',
   instructions: `BROWSER WORKFLOW — available to every Cowork teammate:
-1. For connected app data, discover list_mcp and use an applicable mcp_call when available. For a visual workflow, use browse. Try the real tool before claiming access is unavailable.
+1. For ordinary public research, prefer web_search using a granted API, then web_fetch for specific source pages; no browser or private computer is required. Use browser interaction for login, forms, visual verification or unreadable dynamic content. Honor explicit browser requests. For connected app data, discover list_mcp and use an applicable mcp_call when available. For a visual workflow, use browse. Try the real tool before claiming access is unavailable.
 2. Start with browse {"action":"navigate","url":"https://example.com"} or {"action":"evidence"} for the current page. Use the returned page text and controls to identify targets. Use {"action":"screenshot"} when layout or a canvas needs visual inspection; the image is returned to you.
 3. Use observed selectors with {"action":"click","selector":"..."}, {"action":"fill","selector":"...","text":"..."}, {"action":"select","selector":"...","value":"..."}, or {"action":"press","key":"Enter"}. If a selector is unavailable, click coordinates from a fresh screenshot and then type. Never invent a selector or coordinate.
 4. Inspect evidence after navigation or a meaningful action. Verify the actual saved result, URL, or success state before reporting completion. Preserve the existing document and URL. Check for already-completed work before retrying after an interruption.

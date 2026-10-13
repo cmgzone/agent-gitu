@@ -248,7 +248,8 @@ export function buildSystemPrompt(
   // WHEN it applies stays a core mechanism. Bounded like every other
   // injected section — it taxes every model call.
   const frontendSection = opts.uiTask ? `\n${opts.uiQualityContract ?? opts.uiQualityInstructions ?? builtinSkillByName('frontend-quality-bar')!.instructions}\n` : '';
-  return `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
+  return (
+    `You are Agent Gitu, an autonomous software engineering agent operating inside a LOCKED project boundary.
 ${scopeSection}${taggedFolderSection}${constraintSection}${skillsSection}${mcpSection}${agentsSection}${browserSection}${frontendSection}${lspSection}
 
 PROJECT LOCK (do not violate):
@@ -342,6 +343,7 @@ Tools:
   - "what type is this / what does this API do?" → lsp_hover
   - after edits: an automatic LSP post-edit check reports diagnostics for the file you changed — fix what it surfaces BEFORE running the real verification commands
   - NEVER use LSP for whole-project search (search_files), and never treat "No diagnostics"/LSP as the task's verification (run the real test/typecheck/build commands)
+- web_search   {"query":"...","count":8,"connectionId":"optional saved search API id"} — ordinary public research uses API search first, then web_fetch to verify specific sources. Search credentials remain in secure Connections storage. A search API requires no browser or private computer. Use browser interaction for login, forms, visual verification, or pages that plain fetching cannot read. Honor explicit user requests for browser work.
 - web_fetch    {"url":"https://docs.example.com"} (add "render":true for JS-built pages — loads them in the browser and reads the rendered text)
   web_fetch is intentionally anonymous. For a saved provider connection, use the exact id from UNIVERSAL CAPABILITIES with capability_action; it runs through the secure shared runtime, never through web_fetch headers. Only when a capability is missing from that catalog should you fetch official documentation and propose a connection_operation.
   - agent_status {} or {"id":"sub-..."} (poll background specialist agents and read their summaries)
@@ -433,7 +435,8 @@ PLANNING QUALITY (adaptive depth — match ceremony to complexity):
 - Break big steps into SMALL todos: each independently understandable and completable in one focused execution cycle, each tagged with its area. Prefer fewer meaningful todos over fragmentation.
 - Plans answer: what are we building, how will it work, which files/surfaces are involved, how is each part verified.
 - DYNAMIC REPLANNING: when execution or a user correction makes the plan wrong, revise_step ONLY the affected step. Replace obsolete todos with replaceTodos, mark rejected steps cancelled, and append/reactivate the requested replacement. Do not leave the old provider or approach active. Check off toggle_todo as you complete each subtask.
-- The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.` + outputStyleSection();
+- The compact task state shows progress + open todos; use show_plan when you need the full verification text or design detail.` + outputStyleSection()
+  );
 }
 
 /** Presentation contract appended to every orchestrator system prompt. */
@@ -475,15 +478,19 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const userPreferences = auth?.instructions.filter((i) => i.status === 'active' && i.type === 'preference') ?? [];
   const supersededInstructions = auth?.instructions.filter((i) => i.status === 'superseded') ?? [];
   const visualReferences = auth?.visualReferences.filter((v) => v.status === 'active') ?? [];
-  const latestFollowUp = auth?.followUps.slice().reverse().find((followUp) => followUp.kind !== 'CONTINUE');
+  const latestFollowUp = auth?.followUps
+    .slice()
+    .reverse()
+    .find((followUp) => followUp.kind !== 'CONTINUE');
 
   const authorityParts: string[] = [
     'TASK AUTHORITY (Precedence: 1. Safety > 2. Hard Instructions > 3. User Goal > 4. Criteria > 5. Visual References > 6. Decisions > 7. Plan)',
     `TASK: ${taskGoal}`,
     `CURRENT USER INTENT:\n${taskGoal}`,
   ];
-  const answers = d.answeredQuestions?.filter(answer => answer.scope === currentGoal).slice(-8);
-  if (answers?.length) authorityParts.push(`PREVIOUS CLARIFICATIONS (task data, not access grants; do not ask again):\n${answers.map(answer => `- ${answer.answer.slice(0, 1200)}`).join('\n')}`);
+  const answers = d.answeredQuestions?.filter((answer) => answer.scope === currentGoal).slice(-8);
+  if (answers?.length)
+    authorityParts.push(`PREVIOUS CLARIFICATIONS (task data, not access grants; do not ask again):\n${answers.map((answer) => `- ${answer.answer.slice(0, 1200)}`).join('\n')}`);
   if (latestFollowUp && latestFollowUp.kind !== 'CONTINUE') {
     authorityParts.push(`LATEST DIRECTION (${latestFollowUp.kind}):\n${latestFollowUp.rawMessage}`);
   }
@@ -536,7 +543,9 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
   const counts = stepCounts(scopedPlan);
   const planBlock =
     scopedPlan.length === 0
-      ? d.mode === 'agent' ? 'PLAN: optional — proceed directly for focused work unless plan review was requested.' : 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
+      ? d.mode === 'agent'
+        ? 'PLAN: optional — proceed directly for focused work unless plan review was requested.'
+        : 'PLAN: 0/0 steps · 0/0 todos\n  (none set yet — record set_design for multi-surface work, then set_plan)'
       : `PLAN: ${counts.done}/${scopedPlan.length} steps · ${counts.todosDone}/${counts.todosTotal} todos\n${renderPlanBody(scopedPlan, detail)}`;
   const designBlock = renderDesign(d.planDesign, detail);
   const phaseFiles = scope?.files ?? d.filesChanged;

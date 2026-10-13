@@ -25,43 +25,76 @@ export function isObservationTool(tool: string, params: Record<string, unknown> 
     const action = String(params['action'] ?? 'run');
     return action === 'status' || (action === 'run' && typeof params['command'] === 'string' && isInspectionCommand(params['command']));
   }
-  if (['read_file', 'search_files', 'list_files', 'web_fetch', 'list_skills', 'use_skill', 'use_skill_reference',
-    'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols', 'agent_status', 'list_mcp', 'list_connections', 'connection_read', 'inspect_connection_response'].includes(tool)) return true;
+  if (
+    [
+      'read_file',
+      'search_files',
+      'list_files',
+      'web_search',
+      'web_fetch',
+      'list_skills',
+      'use_skill',
+      'use_skill_reference',
+      'lsp_diagnostics',
+      'lsp_definition',
+      'lsp_references',
+      'lsp_hover',
+      'lsp_symbols',
+      'agent_status',
+      'list_mcp',
+      'list_connections',
+      'connection_read',
+      'inspect_connection_response',
+    ].includes(tool)
+  )
+    return true;
   if (tool === 'schedule_manage') return params['action'] === 'list';
   return tool === 'browse' && ['screenshot', 'evidence'].includes(String(params['action']));
 }
 
 /** Quick work needs fresh checks, without inventing formal acceptance criteria. */
-export function agentVerificationGate(data: TaskLedgerData, baselineFingerprint: string, currentFingerprint: string, criterionCommands?: ReadonlySet<string>): { open: boolean; reason: string } {
-  const actions = data.actions.filter(a => a.status === 'success');
-  const work = actions.some(a => !(a.observationOnly ?? isObservationTool(a.tool)));
+export function agentVerificationGate(
+  data: TaskLedgerData,
+  baselineFingerprint: string,
+  currentFingerprint: string,
+  criterionCommands?: ReadonlySet<string>,
+): { open: boolean; reason: string } {
+  const actions = data.actions.filter((a) => a.status === 'success');
+  const work = actions.some((a) => !(a.observationOnly ?? isObservationTool(a.tool)));
   if (!work && baselineFingerprint === currentFingerprint) return { open: true, reason: 'Conversation or read-only investigation.' };
 
-  const checks = data.evidence.filter(e => e.command && !isTrivialEvidenceCommand(e.command) && !isManufacturedEvidenceCommand(e.command));
+  const checks = data.evidence.filter((e) => e.command && !isTrivialEvidenceCommand(e.command) && !isManufacturedEvidenceCommand(e.command));
   const commandKey = (command: string): string => command.trim().replace(/\s+/g, ' ').toLowerCase();
-  const latest = new Map<string, typeof checks[number]>();
+  const latest = new Map<string, (typeof checks)[number]>();
   for (const check of checks) latest.set(commandKey(check.command!), check);
-  const fresh = checks.filter(e => latest.get(commandKey(e.command!)) === e && !e.stale && e.workspaceFingerprint === currentFingerprint);
+  const fresh = checks.filter((e) => latest.get(commandKey(e.command!)) === e && !e.stale && e.workspaceFingerprint === currentFingerprint);
   // Formal criteria identify the checks that are required for completion.
   // A failed exploratory command remains history unless a criterion requires
   // it; the evidence gate separately validates every linked criterion.
-  const failing = fresh.find(e => !e.passed && criterionCommands?.has(commandKey(e.command!)))
-    ?? (!criterionCommands?.size && fresh.at(-1)?.passed === false ? fresh.at(-1) : undefined);
+  const failing =
+    fresh.find((e) => !e.passed && criterionCommands?.has(commandKey(e.command!))) ?? (!criterionCommands?.size && fresh.at(-1)?.passed === false ? fresh.at(-1) : undefined);
   if (failing) {
-    return { open: false, reason: `Verification failed: ${failing.command}. ${failing.outputExcerpt?.slice(0, 600) ?? ''} Resolve this check or replace an incorrect diagnostic with a meaningful passing check; pinned criterion commands remain required.` };
+    return {
+      open: false,
+      reason: `Verification failed: ${failing.command}. ${failing.outputExcerpt?.slice(0, 600) ?? ''} Resolve this check or replace an incorrect diagnostic with a meaningful passing check; pinned criterion commands remain required.`,
+    };
   }
   if (criterionCommands?.size) {
-    const requiredPassing = [...criterionCommands].every(command =>
-      fresh.some(e => e.passed && commandKey(e.command!) === command),
-    );
+    const requiredPassing = [...criterionCommands].every((command) => fresh.some((e) => e.passed && commandKey(e.command!) === command));
     if (!requiredPassing) return { open: false, reason: 'Fresh passing verification is required for every criterion command.' };
     return { open: true, reason: 'Fresh verification passed for every criterion command.' };
   }
-  if (fresh.some(e => e.passed)) return { open: true, reason: 'Fresh, lightweight verification passed.' };
-  const productWork = actions.every(a => (a.observationOnly ?? isObservationTool(a.tool)) || ['browse', 'create_document', 'schedule_manage'].includes(a.tool));
-  const verifiedResults = data.evidence.filter(e => !e.command && e.passed && !e.stale && e.workspaceFingerprint === currentFingerprint && ['file', 'manual', 'log'].includes(e.kind));
+  if (fresh.some((e) => e.passed)) return { open: true, reason: 'Fresh, lightweight verification passed.' };
+  const productWork = actions.every((a) => (a.observationOnly ?? isObservationTool(a.tool)) || ['browse', 'create_document', 'schedule_manage'].includes(a.tool));
+  const verifiedResults = data.evidence.filter(
+    (e) => !e.command && e.passed && !e.stale && e.workspaceFingerprint === currentFingerprint && ['file', 'manual', 'log'].includes(e.kind),
+  );
   if (productWork && verifiedResults.length) return { open: true, reason: 'Fresh browser, document or schedule verification recorded.' };
-  return { open: false, reason: 'Verify the changed result: a focused check for code, a fresh browser screenshot/evidence for web work, or the document/schedule tool’s verified result. Checks from before the latest edit do not count.' };
+  return {
+    open: false,
+    reason:
+      'Verify the changed result: a focused check for code, a fresh browser screenshot/evidence for web work, or the document/schedule tool’s verified result. Checks from before the latest edit do not count.',
+  };
 }
 
 /** Terminal plan states. 'failed' and 'blocked' are deliberately NOT terminal:
@@ -85,7 +118,7 @@ export function agentCompletionReady(data: TaskLedgerData): { ready: boolean; re
   if (openSteps.length > 0) {
     return { ready: false, reason: `${openSteps.length} plan step(s) unresolved: ${openSteps.map((s) => `${s.id} (${s.status})`).join(', ')}` };
   }
-  const openTodos = data.plan.filter(step => step.status !== 'cancelled').flatMap((step) => (step.subtasks ?? []).filter((todo) => !todo.done).map((todo) => todo.text));
+  const openTodos = data.plan.filter((step) => step.status !== 'cancelled').flatMap((step) => (step.subtasks ?? []).filter((todo) => !todo.done).map((todo) => todo.text));
   if (openTodos.length > 0) {
     return { ready: false, reason: `${openTodos.length} unresolved todo(s): ${openTodos.join('; ')}` };
   }
@@ -121,9 +154,11 @@ export function isFinalizationAction(action: { type: string; tool?: string; para
 /** Deterministic, identical text for every non-finalization action refused
  *  while finalizing, so the model cannot re-enter ordinary execution. */
 export function finalizationRejection(): string {
-  return `${FINALIZATION_ERROR_CODE}: the runtime owns completion for this task; only finalization actions are accepted. `
-    + 'Stop any temporary processes you started, inspect the repository or diff if the report needs it, then emit complete with the final report. '
-    + 'Extra execution, evidence collection and verification are refused, and this state is bounded. A required completion gate failure or new user direction reopens the affected work.';
+  return (
+    `${FINALIZATION_ERROR_CODE}: the runtime owns completion for this task; only finalization actions are accepted. ` +
+    'Stop any temporary processes you started, inspect the repository or diff if the report needs it, then emit complete with the final report. ' +
+    'Extra execution, evidence collection and verification are refused, and this state is bounded. A required completion gate failure or new user direction reopens the affected work.'
+  );
 }
 
 export function asksOnlyForVerificationChoice(questions: readonly AskUserQuestion[]): boolean {
@@ -132,7 +167,9 @@ export function asksOnlyForVerificationChoice(questions: readonly AskUserQuestio
     const text = `${header ?? ''} ${question} ${options.join(' ')}`;
     if (/\b(credential|password|token|permission|approval|approve|authorize|production|deploy|release|payment|billing|cost|access|destructive)\b/i.test(text)) return false;
     const check = /\b(verif(?:y|ication)|tests?|checks?|typecheck|lint|build|screenshot)\b/i.test(text);
-    const choice = /\b(which|what|how|can|could|should|would|prefer|choose|select|run|want|need|expect)\b/i.test(question) || Boolean(header && /verif|check|test/i.test(header) && options.length > 1);
+    const choice =
+      /\b(which|what|how|can|could|should|would|prefer|choose|select|run|want|need|expect)\b/i.test(question) ||
+      Boolean(header && /verif|check|test/i.test(header) && options.length > 1);
     return check && choice;
   });
 }
@@ -152,7 +189,9 @@ export function agentWorkflowPrompt(planRequested: boolean): string {
 - When the request is unclear, offer a specific recommendation and two or three concrete options using ask_user. Ask only about choices that change the result; make routine reversible decisions yourself. Inspect relevant context first when it can answer the question.
 - Permissions come from the host policy and existing user authorization. Do not ask again for routine work the user already authorized. When an action is denied, explain the exact action and policy reason, then use a compliant alternative if one exists. A denial does not authorize another tool, path, or command to evade the same restriction. Ask only for the missing decision, scoped access, or credential that actually prevents progress; credentials belong in the private connection form.
 - A failed method is not a blocked task. Diagnose it and try a reasonable authorized alternative: another available tool, corrected command, narrower provider read, or direct work when a specialist is unavailable. Preserve successful work and evidence. Stop for a concrete prerequisite only when useful alternatives are exhausted; do not keep trying impossible access or unknown-outcome writes.
-${planRequested
+${
+  planRequested
     ? '- TEMPORARY PLAN REQUEST: investigate with read-only tools and inspection commands, propose a concise set_plan, and wait for the user to approve it. Do not edit, run mutating commands, delegate, or perform external writes until approval. Once approved, execute immediately in the same task. Approval is needed only for this requested planning step.'
-    : '- Planning is optional. Proceed with authorized work without requiring plan acceptance. A plan from an earlier turn does not put this request into plan review.'}`;
+    : '- Planning is optional. Proceed with authorized work without requiring plan acceptance. A plan from an earlier turn does not put this request into plan review.'
+}`;
 }

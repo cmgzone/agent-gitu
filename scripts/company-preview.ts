@@ -1,5 +1,6 @@
+import { CUSTOM_CONNECTION_JS } from '../src/server/ui-custom-connection.js';
 import { createServer } from 'node:http';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { UI_HTML } from '../src/server/ui.js';
 import { COMPANY_JS } from '../src/server/ui-companies.js';
@@ -9,6 +10,7 @@ import { COMPANY_WALLETS_JS } from '../src/server/ui-company-wallets.js';
 import { FILE_UPLOAD_JS } from '../src/server/ui-files.js';
 import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 import { MAIL_PROVIDERS } from '../src/connections/mail.js';
+import { FONTS_DIR, FONT_FILES, CHARACTERS_DIR, CHARACTER_FILES } from '../src/server/static-assets.js';
 
 // A separate, inert demonstration of the implemented UI. It never calls the app runtime.
 const demo = String.raw`
@@ -21,9 +23,13 @@ function humanBytes(v){return v<1048576?Math.round(v/1024)+' KB':(v/1048576).toF
 function openSettings(){openCompanies();toast('Connections are managed in the real app.');}
 function cwOpenWorkspaceConnections(){openCompanies();toast('This demo cannot connect accounts. In the installed app, use Settings → Connections → Connect apps with Composio.');}
 var lead={id:'demo-lead',name:'Ari',tagline:'Company lead',systemPrompt:'Plan bounded work, delegate to helpers, and verify their results.',provider:'preview',model:'demo-model'};
+var demoAgents=[lead,{id:'demo-designer',name:'Nia',tagline:'Design & communication',avatar:{shape:'dot-mint',color:'#73d5c0'}},{id:'demo-engineer',name:'Milo',tagline:'Product & engineering',avatar:{shape:'dot-orange',color:'#ffa66b'}}];
 var totals={knownCostUsd:1.62,inputTokens:124500,outputTokens:18900,cachedTokens:8200,unknownCostCalls:0,calls:14};
 var companies=[{id:'company-demo-northstar',name:'Northstar Studio',purpose:'Build helpful tools for small businesses',state:'running',access:'supervised',monthlyBudgetUsd:100,budgetChosen:true,maxFileBytes:null,fileLimitChosen:true,reviewMinutes:15,workers:2,computerLimit:2,missionSessions:12,staffLimit:10,cpu:2,memoryMb:2048,diskMb:10240,skills:[],connectionIds:[],accountIds:[],direction:'Prepare a customer research summary.',directionVersion:1,leadId:lead.id,conversationId:'demo-chat'}];
 var demoMissions=[{id:'demo-mission',agentId:lead.id,goal:'Prepare a customer research summary',status:'running',progress:'Collected customer feedback; checking the findings.',turns:2,maxTurns:12}];
+demoMissions.push({id:'demo-design',agentId:'demo-designer',goal:'Design the customer report',status:'blocked',progress:'The first layout is ready.',blockers:'Waiting for the preferred report format.',turns:1,maxTurns:12},{id:'demo-build',agentId:'demo-engineer',goal:'Prepare the feedback collection form',status:'done',progress:'Checked the form and recorded the results.',result:'The collection form is ready. The required fields, submission flow and confirmation message were checked.',turns:2,maxTurns:12});
+var demoRequests=[{id:'demo-question',agentId:'demo-designer',kind:'question',status:'open',title:'Choose the report format',detail:'Would you prefer a concise document or a slide presentation for the customer findings?'}];
+var demoActions=[];
 var demoHelpers=[{id:'demo-helper',rootAgentId:lead.id,parentAgentId:lead.id,role:'Research assistant',objective:'Compare customer feedback and identify recurring needs',status:'running',activity:{phase:'working',current:'Checking the research notes'}}];
 var demoActivity=[{agentId:lead.id,agentName:lead.name,phase:'working',tool:'read_file'}];
 var demoMailProviders=${JSON.stringify(MAIL_PROVIDERS)};
@@ -45,17 +51,19 @@ window.fetch=async function(input,options){
   else{
     var match=p.match(/^\/api\/companies\/([^/]+)(.*)$/),c=match&&companies.find(c=>c.id===match[1]),suffix=match&&match[2];
     if(!c)return new Response(JSON.stringify({error:'Preview mode: this operation is unavailable.'}),{status:400});
-    if(!suffix){if(method==='PATCH')Object.assign(c,body);data={company:c,agents:c.leadId?[lead]:[],missions:c.leadId?demoMissions:[],helpers:c.leadId?demoHelpers:[],activity:c.state==='running'?demoActivity:[],requests:[],actions:[],jobs:[],usage:[],totals:totals,monthly:{month:'2026-10',knownCostUsd:1.62,reservedUsd:0,unknownCalls:0}};}
-    else if(suffix==='/status'){data={id:c.id,name:c.name,state:c.state,direction:c.direction,directionVersion:c.directionVersion,activity:c.state==='running'?demoActivity:[],agents:[lead],actions:[],jobs:[],missions:demoMissions,helpers:demoHelpers,pendingDecisions:0};}
+    if(!suffix){if(method==='PATCH')Object.assign(c,body);data={company:c,agents:c.leadId?demoAgents:[],missions:c.leadId?demoMissions:[],helpers:c.leadId?demoHelpers:[],activity:c.state==='running'?demoActivity:[],requests:demoRequests,actions:demoActions,jobs:[],usage:[],totals:totals,monthly:{month:'2026-10',knownCostUsd:1.62,reservedUsd:0,unknownCalls:0}};}
+    else if(suffix==='/dashboard'){var days=Number(url.searchParams.get('days')||14);data={days:days,timezone:'Africa/Nairobi',monthly:{month:'2026-10',knownCostUsd:1.62,reservedUsd:0,unknownCalls:0},missions:demoMissions,helpers:demoHelpers,jobs:[],daily:Array.from({length:days},function(_,i){var date=new Date();date.setUTCDate(date.getUTCDate()-days+i+1);var active=i>=days-7;return {day:date.toISOString().slice(0,10),calls:active?2:0,knownCostUsd:active?(i===days-7?.18:.24):0,unknownCalls:0};})};}
+    else if(suffix==='/status'){data={id:c.id,name:c.name,state:c.state,access:c.access,direction:c.direction,directionVersion:c.directionVersion,activity:c.state==='running'?demoActivity:[],agents:demoAgents,requests:demoRequests,actions:demoActions,jobs:[],missions:demoMissions,helpers:demoHelpers,pendingDecisions:0};}
     else if(suffix==='/lead'){Object.assign(lead,body);c.leadId=lead.id;c.conversationId='demo-chat';data={company:c,agent:lead};}
     else if(['/start','/resume','/pause','/archive','/restore'].includes(suffix)){c.state=suffix==='/archive'?'archived':suffix==='/start'||suffix==='/resume'?'running':'paused';data={company:c};}
-    else if(suffix==='/chat'){if(method==='POST'){messages.push({id:crypto.randomUUID(),role:'user',text:body.text},{id:crypto.randomUUID(),role:'agent',agentName:lead.name,text:'This is a UI preview. Your message is shown here; no agent or external action runs.'});}data={messages:messages,artifacts:[],busy:false};}
+    else if(suffix==='/chat'){if(method==='POST'){messages.push({id:crypto.randomUUID(),role:'user',text:body.text},{id:crypto.randomUUID(),role:'agent',agentName:lead.name,text:'This is a UI preview. Your message is shown here; no agent or external action runs.'});}data={messages:messages,artifacts:[],requests:demoRequests,agents:demoAgents,busy:false};}
+    else if(suffix==='/cowork/requests/demo-question'&&method==='POST'){demoRequests[0].status='answered';demoRequests[0].response=body.response;data={ok:true};}
     else if(suffix==='/storage')data={connections:[],transfers:[],references:demoReferences[c.id]||[]};
     else if(suffix==='/connected-apps'&&method==='GET')data={configured:true,canConfigure:true,services:[{slug:'gmail',name:'Gmail'},{slug:'googledrive',name:'Google Drive'},{slug:'slack',name:'Slack'}],accounts:[],availableAccounts:[],agents:c.leadId?[lead]:[],assignments:{},mail:{providers:demoMailProviders,accounts:[],available:[]}};
     else if(suffix==='/storage/references/reference-demo'&&method==='DELETE'){demoReferences[c.id]=[];data={ok:true};}
     else if(suffix==='/mcp')data={servers:[],tools:[]};
     else if(suffix==='/wallets')data={wallets:[],transactions:[]};
-    else if(suffix.endsWith('/computer')&&method==='GET')data={computer:{state:'stopped',control:'shared'}};
+    else if(suffix.endsWith('/computer')&&method==='GET')data={computer:{state:c.state==='running'?'running':'stopped',control:'shared'}};
     else if(suffix.endsWith('/memory'))data={entries:demoMemories[c.id]||[]};
     else if(suffix.endsWith('/memory/demo-memory')){if(method==='PATCH')Object.assign((demoMemories[c.id]||[])[0],{claim:body.claim,updatedAt:new Date().toISOString()});if(method==='DELETE')demoMemories[c.id]=[];data={ok:true};}
     else if(suffix.endsWith('/uploads')&&method==='GET')data={files:[]};
@@ -65,15 +73,38 @@ window.fetch=async function(input,options){
 };
 function api(url,options){return fetch(url,options).then(async r=>{var data=await r.json();if(!r.ok)throw new Error(data.error);return data;});}
 `;
-const styles = [...UI_HTML.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
-const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;top:0;left:0;right:0;z-index:1000;padding:10px 20px;background:var(--card2);border-bottom:1px solid var(--border);color:var(--muted);font-size:12px}.company-page,.company-page.company-chat-active{padding-top:66px}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${CONNECTED_APPS_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nfunction cwExit(){openCompanies();toast('Open the installed app to use Code mode.');}function openCowork(){openCompanies();toast('Open the installed app to use Cowork mode.');}var previewTab=new URLSearchParams(location.search).get('preview');if(previewTab==='team'||previewTab==='connections'){companyShow();companyOpen(companies[0].id).then(function(){Companies.tab=previewTab==='team'?'Team':'Connections';companyRender();});}else openCompanies();</script></body></html>`;
+const styles = [...UI_HTML.slice(0, UI_HTML.indexOf('</head>')).matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
+const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;bottom:8px;right:8px;z-index:1000;max-width:calc(100vw - 16px);padding:5px 10px;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:10px;pointer-events:none;opacity:.85}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${CONNECTED_APPS_JS}\n${CUSTOM_CONNECTION_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nfunction cwExit(){openCompanies();toast('Open the installed app to use Code mode.');}function openCowork(){openCompanies();toast('Open the installed app to use Cowork mode.');}var previewTab=new URLSearchParams(location.search).get('preview');if(['team','connections','work','overview','chat'].includes(previewTab)){companyShow();companyOpen(companies[0].id).then(function(){Companies.tab={team:'Team',connections:'Connections',work:'Work',overview:'Overview',chat:'Chat'}[previewTab];companyRender();});}else openCompanies();</script></body></html>`;
 const output = path.resolve(process.env['GITU_UI_PREVIEW_OUTPUT'] ?? '.qa/company-preview.html');
 mkdirSync(path.dirname(output), { recursive: true });
 writeFileSync(output, html);
 const server = createServer((req, res) => {
-  if (new URL(req.url || '/', 'http://127.0.0.1').pathname !== '/') { res.writeHead(404); res.end(); return; }
-  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'" });
+  const route = new URL(req.url || '/', 'http://127.0.0.1').pathname,
+    name = path.basename(route);
+  const resource =
+    route.startsWith('/fonts/') && FONT_FILES[name]
+      ? { folder: FONTS_DIR, mime: FONT_FILES[name] }
+      : route.startsWith('/characters/') && CHARACTER_FILES[name]
+        ? { folder: CHARACTERS_DIR, mime: CHARACTER_FILES[name] }
+        : undefined;
+  if (resource) {
+    res.writeHead(200, { 'content-type': resource.mime });
+    res.end(readFileSync(path.join(resource.folder, name)));
+    return;
+  }
+  if (new URL(req.url || '/', 'http://127.0.0.1').pathname !== '/') {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'none'",
+  });
   res.end(html);
 });
-server.listen(Number(process.env['GITU_UI_PREVIEW_PORT'] || 0), '127.0.0.1', () => console.log('Company demo preview: http://127.0.0.1:' + (server.address() as { port: number }).port + '/'));
+server.listen(Number(process.env['GITU_UI_PREVIEW_PORT'] || 0), '127.0.0.1', () =>
+  console.log('Company demo preview: http://127.0.0.1:' + (server.address() as { port: number }).port + '/'),
+);
 process.on('SIGTERM', () => server.close());

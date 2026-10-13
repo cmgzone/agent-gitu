@@ -26,12 +26,12 @@ export interface ToolContext {
   connectionResponseScope?: string;
   authorizeTool?: (tool: string, params: Record<string, unknown>) => Promise<ToolResult | undefined>;
   toolDidExecute?: (tool: string, params: Record<string, unknown>, result: ToolResult) => void;
-  externalHeaders?: (tool:string,params:Record<string,unknown>)=>Record<string,string>;
-  externalArguments?: (tool:string,params:Record<string,unknown>)=>Record<string,unknown>;
-  storage?: (params:Record<string,unknown>,scope:{conversationId:string;agentId:string})=>Promise<ToolResult & {artifactId?:string}>;
-  companyFiles?: (params:Record<string,unknown>,scope:{conversationId:string;agentId:string})=>Promise<ToolResult & {artifactId?:string}>;
+  externalHeaders?: (tool: string, params: Record<string, unknown>) => Record<string, string>;
+  externalArguments?: (tool: string, params: Record<string, unknown>) => Record<string, unknown>;
+  storage?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string }) => Promise<ToolResult & { artifactId?: string }>;
+  companyFiles?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string }) => Promise<ToolResult & { artifactId?: string }>;
   companyManagement?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string; threadId?: string }) => Promise<ToolResult>;
-  missionSessionLimit?:()=>number;
+  missionSessionLimit?: () => number;
   signal?: AbortSignal;
   guard: ProjectGuard;
   cwd: string;
@@ -76,6 +76,7 @@ export const KNOWN_TOOL_NAMES = new Set([
   'list_files',
   'search_files',
   'web_fetch',
+  'web_search',
   'browse',
   // Compatibility alias used by the bundled browser skill and by models that
   // naturally call the capability by its advertised name.
@@ -346,6 +347,13 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
       }
       return { valid: true };
     }
+    case 'web_search': {
+      const error = checkNonEmptyString('query');
+      if (error) return { valid: false, error, schema: 'web_search({query:string,count?:number,connectionId?:string})' };
+      if (p['count'] !== undefined && (!Number.isInteger(p['count']) || Number(p['count']) < 1 || Number(p['count']) > 20))
+        return { valid: false, error: 'count must be an integer from 1 to 20.' };
+      return { valid: true };
+    }
     case 'web_fetch': {
       const urlErr = checkNonEmptyString('url');
       if (urlErr) {
@@ -454,7 +462,12 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
     case 'update_connection': {
       const identity = tool === 'update_connection' ? 'connectionId' : 'name';
       const nameErr = checkNonEmptyString(identity);
-      if (nameErr) return { valid: false, error: nameErr, correction: `Use ${tool === 'update_connection' ? 'list_connections' : tool === 'update_skill' ? 'list_skills' : 'list_mcp'} to inspect existing names and values first.` };
+      if (nameErr)
+        return {
+          valid: false,
+          error: nameErr,
+          correction: `Use ${tool === 'update_connection' ? 'list_connections' : tool === 'update_skill' ? 'list_skills' : 'list_mcp'} to inspect existing names and values first.`,
+        };
       const fields = tool === 'update_skill' ? ['description', 'instructions'] : tool === 'configure_mcp' ? ['command'] : ['label', 'documentationUrl'];
       for (const field of fields) {
         if (p[field] !== undefined) {
@@ -463,12 +476,20 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
         }
       }
       if (tool === 'configure_mcp') {
-        if (p['args'] !== undefined && (!Array.isArray(p['args']) || p['args'].some((arg) => typeof arg !== 'string'))) return { valid: false, error: 'args must be an array of strings.' };
+        if (p['args'] !== undefined && (!Array.isArray(p['args']) || p['args'].some((arg) => typeof arg !== 'string')))
+          return { valid: false, error: 'args must be an array of strings.' };
         if (p['global'] !== undefined && typeof p['global'] !== 'boolean') return { valid: false, error: 'global must be a boolean.' };
-        if (p['env'] !== undefined) return { valid: false, error: 'Configure credentials through secure settings. configure_mcp preserves the saved environment without exposing it.' };
+        if (p['env'] !== undefined)
+          return { valid: false, error: 'Configure credentials through secure settings. configure_mcp preserves the saved environment without exposing it.' };
       }
-      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl'].includes(key))) return { valid: false, error: 'update_connection changes label and documentationUrl only. Change endpoint or credentials through the secure connection form; register operations with connection_operation.' };
-      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined)) return { valid: false, error: `Provide at least one field to update: ${fields.join(', ')}.` };
+      if (tool === 'update_connection' && Object.keys(p).some((key) => !['connectionId', 'label', 'documentationUrl'].includes(key)))
+        return {
+          valid: false,
+          error:
+            'update_connection changes label and documentationUrl only. Change endpoint or credentials through the secure connection form; register operations with connection_operation.',
+        };
+      if (tool !== 'configure_mcp' && !fields.some((field) => p[field] !== undefined))
+        return { valid: false, error: `Provide at least one field to update: ${fields.join(', ')}.` };
       return { valid: true };
     }
     case 'use_skill': {
@@ -609,8 +630,10 @@ export function validateToolParams(tool: string, params: unknown): ToolValidatio
     case 'connection_read': {
       const err = checkNonEmptyString('connectionId');
       if (err) return { valid: false, error: err };
-      if (typeof p['operationId'] !== 'string' && (!p['operation'] || typeof p['operation'] !== 'object' || Array.isArray(p['operation']))) return { valid: false, error: 'Use an operationId from list_connections or an operation derived from official documentation.' };
-      if (p['query'] !== undefined && (!p['query'] || typeof p['query'] !== 'object' || Array.isArray(p['query']))) return { valid: false, error: 'query must be an object of documented pagination/filter parameters.' };
+      if (typeof p['operationId'] !== 'string' && (!p['operation'] || typeof p['operation'] !== 'object' || Array.isArray(p['operation'])))
+        return { valid: false, error: 'Use an operationId from list_connections or an operation derived from official documentation.' };
+      if (p['query'] !== undefined && (!p['query'] || typeof p['query'] !== 'object' || Array.isArray(p['query'])))
+        return { valid: false, error: 'query must be an object of documented pagination/filter parameters.' };
       return { valid: true };
     }
     case 'inspect_connection_response': {
@@ -803,11 +826,7 @@ export function toolWriteFile(ctx: ToolContext, params: Record<string, unknown>)
  * path that keeps acknowledging non-persistent writes must stop the lane,
  * not create an infinite edit loop.
  */
-function writeAndVerify(
-  ctx: ToolContext,
-  abs: string,
-  expected: string,
-): { ok: true; recovered: boolean } | { ok: false; result: ToolResult } {
+function writeAndVerify(ctx: ToolContext, abs: string, expected: string): { ok: true; recovered: boolean } | { ok: false; result: ToolResult } {
   let lastReason = 'unknown persistence mismatch';
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     try {
@@ -837,11 +856,7 @@ function writeAndVerify(
 }
 
 /** Exported for regression tests and non-tool mutation adapters. */
-export function verifyPersistedContent(
-  ctx: Pick<ToolContext, 'guard'>,
-  abs: string,
-  expected: string,
-): { ok: true; hash: string } | { ok: false; reason: string } {
+export function verifyPersistedContent(ctx: Pick<ToolContext, 'guard'>, abs: string, expected: string): { ok: true; hash: string } | { ok: false; reason: string } {
   try {
     const canonicalTarget = ctx.guard.resolve(abs);
     ctx.guard.assertInside(canonicalTarget);
@@ -876,7 +891,8 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
   try {
     const content = readFileSync(abs, 'utf8');
     const count = content.split(oldStr).length - 1;
-    if (!replaceAll && count > 1) return fail(`apply_edit: oldString matches ${count} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
+    if (!replaceAll && count > 1)
+      return fail(`apply_edit: oldString matches ${count} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
 
     if (count >= 1) {
       // split/join instead of String.replace: the latter interprets $&, $`,
@@ -897,25 +913,26 @@ export function toolApplyEdit(ctx: ToolContext, params: Record<string, unknown>)
     const normNew = newStr.replace(/\r\n/g, '\n');
     const normCount = normFile.split(normOld).length - 1;
     if (normCount === 0) return fail(`apply_edit: oldString not found in ${rel}`);
-    if (!replaceAll && normCount > 1) return fail(`apply_edit: oldString matches ${normCount} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
+    if (!replaceAll && normCount > 1)
+      return fail(`apply_edit: oldString matches ${normCount} locations in ${rel}; provide more context, or pass replaceAll:true to change every occurrence`);
     const normUpdated = normFile.split(normOld).join(normNew);
     const finalContent = hadCRLF ? normUpdated.replace(/\n/g, '\r\n') : normUpdated;
     const persisted = writeAndVerify(ctx, abs, finalContent);
     if (!persisted.ok) return persisted.result;
-    return editSuccess(ctx, abs, rel, content, finalContent, replaceAll ? ` (replaced ${normCount} occurrence${normCount === 1 ? '' : 's'}, normalized line endings)` : ' (matched with normalized line endings)');
+    return editSuccess(
+      ctx,
+      abs,
+      rel,
+      content,
+      finalContent,
+      replaceAll ? ` (replaced ${normCount} occurrence${normCount === 1 ? '' : 's'}, normalized line endings)` : ' (matched with normalized line endings)',
+    );
   } catch (err) {
     return fail(`apply_edit failed: ${(err as Error).message}`);
   }
 }
 
-function editSuccess(
-  ctx: ToolContext,
-  abs: string,
-  rel: string,
-  before: string,
-  after: string,
-  note: string,
-): ToolResult {
+function editSuccess(ctx: ToolContext, abs: string, rel: string, before: string, after: string, note: string): ToolResult {
   const diff = diffFileContents(before, after);
   const body = formatDiffBlock(diff);
   return {
@@ -1060,10 +1077,12 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
   const maxFileSize = 256 * 1024;
 
   // Validate before traversing, but run actual matching off the app thread.
-  try { if (mode === 'regex') new RegExp(pattern, flags + 'g'); }
-  catch (err) { return fail(`search_files: invalid regex: ${(err as Error).message}`); }
-  const crossLineCapable = mode === 'literal' ? pattern.includes('\n') :
-    flags.includes('s') || flags.includes('m') || /\\s|\\n|\[\s\S|\[\^[^\]]*\s/.test(pattern);
+  try {
+    if (mode === 'regex') new RegExp(pattern, flags + 'g');
+  } catch (err) {
+    return fail(`search_files: invalid regex: ${(err as Error).message}`);
+  }
+  const crossLineCapable = mode === 'literal' ? pattern.includes('\n') : flags.includes('s') || flags.includes('m') || /\\s|\\n|\[\s\S|\[\^[^\]]*\s/.test(pattern);
   const matcher = new SearchMatcher(ctx.signal);
 
   const ignores = new Set(ctx.guard.lock.ignorePaths);
@@ -1075,7 +1094,11 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
   let stopReason = '';
   const stopped = (): boolean => {
     if (ctx.signal?.aborted) throw new Error('search_files: cancelled.');
-    if (matches >= maxResults) { truncated = true; stopReason = 'result limit'; return true; }
+    if (matches >= maxResults) {
+      truncated = true;
+      stopReason = 'result limit';
+      return true;
+    }
     return false;
   };
 
@@ -1155,12 +1178,16 @@ export async function toolSearchFiles(ctx: ToolContext, params: Record<string, u
     }
   };
 
-  try { await walk(abs); stopped(); }
-  catch (error) { return fail((error as Error).message); }
-  finally { await matcher.close(); }
+  try {
+    await walk(abs);
+    stopped();
+  } catch (error) {
+    return fail((error as Error).message);
+  } finally {
+    await matcher.close();
+  }
   const capability =
-    `[search mode=${mode} flags=${flags || 'none'} multiline=${crossLineCapable} files=${filesHit} ` +
-    `matches=${matches} truncated=${truncated} languageAware=false]`;
+    `[search mode=${mode} flags=${flags || 'none'} multiline=${crossLineCapable} files=${filesHit} ` + `matches=${matches} truncated=${truncated} languageAware=false]`;
   const hint = truncated ? `\nSearch stopped at the ${stopReason}; results are partial. Narrow path/include/exclude and search again.` : '';
   return { ok: true, output: (lines.length ? `${lines.join('\n')}\n${capability}` : `${truncated ? '(no matches in scanned files)' : '(no matches)'}\n${capability}`) + hint };
 }
@@ -1353,11 +1380,7 @@ export class BackgroundCommandRegistry {
    * elapses. Settlement is driven by the process's own `exit`, never by the stdio
    * pipes closing, so a command that crashed still reports its failure.
    */
-  run(
-    command: string,
-    cwd: string,
-    opts: { waitMs: number; timeoutMs: number; signal?: AbortSignal },
-  ): Promise<ToolResult> {
+  run(command: string, cwd: string, opts: { waitMs: number; timeoutMs: number; signal?: AbortSignal }): Promise<ToolResult> {
     const { job, child } = this.launch(command, cwd, false);
     job.hardDeadlineMs = opts.timeoutMs;
 
@@ -1462,8 +1485,7 @@ export class BackgroundCommandRegistry {
     return {
       ok: true,
       output:
-        `${jobs.map((job) => this.summaryLine(job)).join('\n')}\n` +
-        `Poll one with run_command {"action":"status","id":"<id>"}; stop one with {"action":"stop","id":"<id>"}.`,
+        `${jobs.map((job) => this.summaryLine(job)).join('\n')}\n` + `Poll one with run_command {"action":"status","id":"<id>"}; stop one with {"action":"stop","id":"<id>"}.`,
     };
   }
 
@@ -1514,11 +1536,13 @@ export class BackgroundCommandRegistry {
     };
     this.jobs.set(job.id, job);
     this.children.set(job.id, child);
-    const capture = (stream: 'stdout' | 'stderr') => (chunk: unknown): void => {
-      const text = `${job[stream]}${String(chunk)}`;
-      // A dev server's log must not grow the harness without bound.
-      job[stream] = text.length > MAX_CAPTURED_OUTPUT ? text.slice(text.length - MAX_CAPTURED_OUTPUT) : text;
-    };
+    const capture =
+      (stream: 'stdout' | 'stderr') =>
+      (chunk: unknown): void => {
+        const text = `${job[stream]}${String(chunk)}`;
+        // A dev server's log must not grow the harness without bound.
+        job[stream] = text.length > MAX_CAPTURED_OUTPUT ? text.slice(text.length - MAX_CAPTURED_OUTPUT) : text;
+      };
     child.stdout?.on('data', capture('stdout'));
     child.stderr?.on('data', capture('stderr'));
     this.trimHistory();
@@ -1739,7 +1763,12 @@ export function toolListSkills(ctx: ToolContext): ToolResult {
   if (skills.length === 0) return { ok: true, output: '(no skills yet)' };
   return {
     ok: true,
-    output: skills.map((s) => `${s.name}@${String(s.version ?? '1')} — ${s.description} (${s.createdBy}${s.scope ? `, ${s.scope}` : ''}${s.specialists?.length ? `; specialists: ${s.specialists.join(', ')}` : ''})`).join('\n'),
+    output: skills
+      .map(
+        (s) =>
+          `${s.name}@${String(s.version ?? '1')} — ${s.description} (${s.createdBy}${s.scope ? `, ${s.scope}` : ''}${s.specialists?.length ? `; specialists: ${s.specialists.join(', ')}` : ''})`,
+      )
+      .join('\n'),
   };
 }
 
@@ -1764,8 +1793,20 @@ export function toolCreateSkill(ctx: ToolContext, params: Record<string, unknown
 }
 
 const MEMORY_TYPE_VALUES = new Set([
-  'project', 'architecture', 'decision', 'task', 'failure', 'preference', 'fact', 'constraint',
-  'lesson', 'pattern', 'task_result', 'project_convention', 'evidence', 'observation',
+  'project',
+  'architecture',
+  'decision',
+  'task',
+  'failure',
+  'preference',
+  'fact',
+  'constraint',
+  'lesson',
+  'pattern',
+  'task_result',
+  'project_convention',
+  'evidence',
+  'observation',
 ]);
 
 /**
@@ -1797,9 +1838,7 @@ export async function toolMemory(ctx: ToolContext, params: Record<string, unknow
           ctx.memoryContext,
         );
         if (entries.length === 0) return { ok: true, output: '(no memories match — nothing recorded yet for this scope)' };
-        const body = entries
-          .map((e) => `${e.id} [${e.type}] (${e.status ?? 'candidate'}, confidence ${e.confidence.toFixed(2)}) ${e.claim.slice(0, 160)}`)
-          .join('\n');
+        const body = entries.map((e) => `${e.id} [${e.type}] (${e.status ?? 'candidate'}, confidence ${e.confidence.toFixed(2)}) ${e.claim.slice(0, 160)}`).join('\n');
         return { ok: true, output: `${entries.length} memory(ies):\n${body}\nUse these ids with memory promote/verify/archive/promote_scope.` };
       }
       case 'search': {
@@ -1808,9 +1847,7 @@ export async function toolMemory(ctx: ToolContext, params: Record<string, unknow
           ctx: ctx.memoryContext,
         });
         if (results.length === 0) return { ok: true, output: '(no matching memories)' };
-        const body = results
-          .map((r) => `${r.id} [${r.type}] (${r.status}, score ${r.score.toFixed(2)}) ${r.claim.slice(0, 160)}`)
-          .join('\n');
+        const body = results.map((r) => `${r.id} [${r.type}] (${r.status}, score ${r.score.toFixed(2)}) ${r.claim.slice(0, 160)}`).join('\n');
         return { ok: true, output: `${results.length} match(es):\n${body}` };
       }
       case 'promote': {
@@ -1877,11 +1914,18 @@ export async function toolListMcp(ctx: ToolContext): Promise<ToolResult> {
   if (!ctx.mcp) return fail('MCP support is not available in this session.');
   const tools = await ctx.mcp.listAllTools();
   const scopes = ctx.mcp.serverScopes();
-  return { ok: true, output: JSON.stringify({
-    servers: ctx.mcp.servers().map((server) => ({ name: server.name, scope: scopes[server.name] })),
-    tools: tools.map((tool) => ({ name: `mcp:${tool.server}:${tool.name}`, description: tool.description, inputSchema: tool.inputSchema })),
-    errors: ctx.mcp.discoveryFailures(),
-  }, null, 2) };
+  return {
+    ok: true,
+    output: JSON.stringify(
+      {
+        servers: ctx.mcp.servers().map((server) => ({ name: server.name, scope: scopes[server.name] })),
+        tools: tools.map((tool) => ({ name: `mcp:${tool.server}:${tool.name}`, description: tool.description, inputSchema: tool.inputSchema })),
+        errors: ctx.mcp.discoveryFailures(),
+      },
+      null,
+      2,
+    ),
+  };
 }
 
 export function toolConfigureMcp(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -1890,16 +1934,21 @@ export function toolConfigureMcp(ctx: ToolContext, params: Record<string, unknow
     const name = String(params['name'] ?? '');
     const existing = ctx.mcp.servers().find((server) => server.name === name);
     const existingScope = ctx.mcp.serverScopes()[name];
-    const scope = typeof params['global'] === 'boolean' ? (params['global'] ? 'global' : 'project') : existingScope ?? 'project';
+    const scope = typeof params['global'] === 'boolean' ? (params['global'] ? 'global' : 'project') : (existingScope ?? 'project');
     if (existing?.env && existingScope && existingScope !== scope) {
-      return fail(`MCP server "${name}" has saved credentials. Move it between project and global settings through secure settings so its credentials are not copied into the wrong scope.`);
+      return fail(
+        `MCP server "${name}" has saved credentials. Move it between project and global settings through secure settings so its credentials are not copied into the wrong scope.`,
+      );
     }
-    ctx.mcp.addServer({
-      ...existing,
-      name,
-      command: typeof params['command'] === 'string' ? params['command'] : existing?.command ?? '',
-      ...(Array.isArray(params['args']) ? { args: params['args'] as string[] } : {}),
-    }, scope);
+    ctx.mcp.addServer(
+      {
+        ...existing,
+        name,
+        command: typeof params['command'] === 'string' ? params['command'] : (existing?.command ?? ''),
+        ...(Array.isArray(params['args']) ? { args: params['args'] as string[] } : {}),
+      },
+      scope,
+    );
     return { ok: true, output: `MCP server "${name}" ${existing ? 'updated' : 'added'} in ${scope} settings. Call list_mcp now to discover its tools and exact input schemas.` };
   } catch (error) {
     return fail(`configure_mcp failed: ${(error as Error).message}`);
@@ -1911,28 +1960,57 @@ export function toolListConnections(ctx: ToolContext): ToolResult {
   return { ok: true, output: registry.renderForAgent() };
 }
 
+export async function toolWebSearch(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
+  try {
+    const registry = ctx.connections ?? new ConnectionRegistry();
+    let id = typeof params['connectionId'] === 'string' ? params['connectionId'] : '';
+    if (!id) {
+      const choices = registry.list().filter((c) => ['brave', 'tavily'].includes(c.provider) && c.capabilities.includes('web.search') && c.hasCredential);
+      if (choices.length !== 1)
+        return fail(
+          choices.length
+            ? 'Multiple search APIs are available. Use list_connections and choose an exact connectionId for web_search.'
+            : 'Connect a Brave or Tavily Search API in Connections → Custom APIs, or use an already-granted API/MCP search tool. A browser is not required for API research.',
+        );
+      id = choices[0]!.id;
+    }
+    const result = await registry.webSearch(id, String(params['query'] ?? ''), params['count'] === undefined ? 8 : Number(params['count']), ctx.signal);
+    return { ok: true, output: JSON.stringify(result) };
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : 'Search API failed. Check its connection.');
+  }
+}
+
 export async function toolConnectionRead(ctx: ToolContext, params: Record<string, unknown>): Promise<ToolResult> {
   try {
     const registry = ctx.connections ?? new ConnectionRegistry();
     const operation = params['operation'] as ConnectionOperation | undefined;
     const documentationUrl = normalizeConnectionDocumentationUrl(params['documentationUrl']);
-    if (operation && (operation.method !== 'GET' || operation.risk !== 'read')) return fail('connection_read accepts read-only GET operations. Use the normal write approval flow for mutations.');
+    if (operation && (operation.method !== 'GET' || operation.risk !== 'read'))
+      return fail('connection_read accepts read-only GET operations. Use the normal write approval flow for mutations.');
     if (operation && !documentationUrl) return fail('A new read operation needs an official HTTPS documentationUrl. Read the provider documentation first.');
-    const result = await registry.resolveAndExecuteRead({
-      connectionId: String(params['connectionId'] ?? ''),
-      ...(typeof params['operationId'] === 'string' ? { operationId: params['operationId'] } : {}),
-      ...(operation ? { operation, documented: true } : {}),
-    }, params['query'] as Record<string, unknown> | undefined);
+    const result = await registry.resolveAndExecuteRead(
+      {
+        connectionId: String(params['connectionId'] ?? ''),
+        ...(typeof params['operationId'] === 'string' ? { operationId: params['operationId'] } : {}),
+        ...(operation ? { operation, documented: true } : {}),
+      },
+      params['query'] as Record<string, unknown> | undefined,
+    );
     const store = connectionResponses(ctx.connectionResponseScope);
     const view = store.inspect({ responseId: store.put(result.data) });
     return { ok: true, output: `${result.message}\n${JSON.stringify(view)}` };
-  } catch (error) { return fail(`connection_read failed: ${(error as Error).message}`); }
+  } catch (error) {
+    return fail(`connection_read failed: ${(error as Error).message}`);
+  }
 }
 
 export function toolInspectConnectionResponse(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
   try {
     return { ok: true, output: JSON.stringify(connectionResponses(ctx.connectionResponseScope).inspect(params as unknown as ConnectionResponseQuery)) };
-  } catch (error) { return fail(`inspect_connection_response failed: ${(error as Error).message}`); }
+  } catch (error) {
+    return fail(`inspect_connection_response failed: ${(error as Error).message}`);
+  }
 }
 
 export function toolUpdateConnection(ctx: ToolContext, params: Record<string, unknown>): ToolResult {
@@ -2055,11 +2133,7 @@ export function formatPageDiagnostics(shot: { consoleErrors?: string[]; textDige
   const parts: string[] = [];
   if (Array.isArray(shot.consoleErrors)) {
     const errors = shot.consoleErrors.filter(Boolean).slice(-8);
-    parts.push(
-      errors.length > 0
-        ? `CONSOLE PROBLEMS (${errors.length}):\n${errors.map((e) => `  - ${e.slice(0, 220)}`).join('\n')}`
-        : 'CONSOLE PROBLEMS: none',
-    );
+    parts.push(errors.length > 0 ? `CONSOLE PROBLEMS (${errors.length}):\n${errors.map((e) => `  - ${e.slice(0, 220)}`).join('\n')}` : 'CONSOLE PROBLEMS: none');
   }
   if (shot.loadIncomplete) parts.push('PAGE LOAD: incomplete — the document was still loading; wait and screenshot again before judging the render');
   const text = (shot.textDigest ?? '').trim();
@@ -2211,8 +2285,12 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
       ? source['startingFiles']
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
           .map((item) => ({
-            path: String(item['path'] ?? '').trim().slice(0, 320),
-            role: String(item['role'] ?? 'unknown').trim().slice(0, 32) as SpecialistHandoff['startingFiles'][number]['role'],
+            path: String(item['path'] ?? '')
+              .trim()
+              .slice(0, 320),
+            role: String(item['role'] ?? 'unknown')
+              .trim()
+              .slice(0, 32) as SpecialistHandoff['startingFiles'][number]['role'],
             score: Number.isFinite(Number(item['score'])) ? Number(item['score']) : 0,
             ...(typeof item['note'] === 'string' && item['note'].trim() ? { note: item['note'].trim().slice(0, 240) } : {}),
           }))
@@ -2222,19 +2300,34 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
     const excerpts = Array.isArray(source['excerpts'])
       ? source['excerpts']
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
-          .map((item) => ({ path: String(item['path'] ?? '').trim().slice(0, 320), content: String(item['content'] ?? '').slice(0, 3_000) }))
+          .map((item) => ({
+            path: String(item['path'] ?? '')
+              .trim()
+              .slice(0, 320),
+            content: String(item['content'] ?? '').slice(0, 3_000),
+          }))
           .filter((item) => Boolean(item.path) && Boolean(item.content))
           .slice(0, 3)
       : [];
     const planSteps = Array.isArray(source['planSteps'])
       ? source['planSteps']
           .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
-          .map((item) => ({ description: String(item['description'] ?? '').trim().slice(0, 280), verification: String(item['verification'] ?? '').trim().slice(0, 240) }))
+          .map((item) => ({
+            description: String(item['description'] ?? '')
+              .trim()
+              .slice(0, 280),
+            verification: String(item['verification'] ?? '')
+              .trim()
+              .slice(0, 240),
+          }))
           .filter((item) => Boolean(item.description))
           .slice(0, 3)
       : [];
     const verificationTargets = Array.isArray(source['verificationTargets'])
-      ? source['verificationTargets'].map((item) => String(item).trim().slice(0, 280)).filter(Boolean).slice(0, 5)
+      ? source['verificationTargets']
+          .map((item) => String(item).trim().slice(0, 280))
+          .filter(Boolean)
+          .slice(0, 5)
       : [];
     return { parentGoal, startingFiles, excerpts, planSteps, verificationTargets };
   };
@@ -2249,13 +2342,15 @@ export async function toolDelegate(ctx: ToolContext, params: Record<string, unkn
       }))
       .filter((t) => t.agent && t.task);
   } else if (params['agent'] && params['task']) {
-    specs = [{
-      agent: String(params['agent']),
-      task: String(params['task']),
-      criteria: Array.isArray(params['criteria']) ? (params['criteria'] as DelegateSpec['criteria']) : undefined,
-      handoff: parseHandoff(params['handoff']),
-      resume: parseResume(params['resume']),
-    }];
+    specs = [
+      {
+        agent: String(params['agent']),
+        task: String(params['task']),
+        criteria: Array.isArray(params['criteria']) ? (params['criteria'] as DelegateSpec['criteria']) : undefined,
+        handoff: parseHandoff(params['handoff']),
+        resume: parseResume(params['resume']),
+      },
+    ];
   }
   if (specs.length === 0) return fail('delegate: provide {"tasks":[{"agent":"name","task":"..."}]} — or resume a paused attempt with "resume":{"jobId":"sub-…"}');
   // Match the action parser and the escalation budget, which both allow up to
@@ -2289,16 +2384,34 @@ export function toolAgentStatus(ctx: ToolContext, params: Record<string, unknown
     output: jobs
       .map((job) => {
         const detail = job.summary ? `\n${job.summary.slice(0, 1200)}` : '';
-        const identity = job.logicalJobId && job.logicalJobId !== job.id
-          ? `${job.id}; logical ${job.logicalJobId}; attempt ${job.executionAttempt ?? 1}`
-          : job.executionAttempt && job.executionAttempt > 1
-            ? `${job.id}; attempt ${job.executionAttempt}`
-            : job.id;
+        const identity =
+          job.logicalJobId && job.logicalJobId !== job.id
+            ? `${job.id}; logical ${job.logicalJobId}; attempt ${job.executionAttempt ?? 1}`
+            : job.executionAttempt && job.executionAttempt > 1
+              ? `${job.id}; attempt ${job.executionAttempt}`
+              : job.id;
         return `[${job.status.toUpperCase()}] ${job.agent} (${identity}) — ${job.task.slice(0, 160)}${detail}`;
       })
       .join('\n\n'),
   };
 }
 
-export const TOOL_NAMES = ['read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'run_command', 'web_fetch', 'browse', 'delegate', 'agent_status', 'lsp_diagnostics', 'lsp_definition', 'lsp_references', 'lsp_hover', 'lsp_symbols'] as const;
+export const TOOL_NAMES = [
+  'read_file',
+  'write_file',
+  'apply_edit',
+  'list_files',
+  'search_files',
+  'run_command',
+  'web_search',
+  'web_fetch',
+  'browse',
+  'delegate',
+  'agent_status',
+  'lsp_diagnostics',
+  'lsp_definition',
+  'lsp_references',
+  'lsp_hover',
+  'lsp_symbols',
+] as const;
 export type ToolName = (typeof TOOL_NAMES)[number];

@@ -4,9 +4,22 @@ import type { CoworkStore, CoworkAgent } from '../cowork/store.js';
 import { saveWallet, type WalletGrant } from './wallets.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { companyConnectedApps, type CompanyApps } from './connected-apps.js';
+import { companyDashboard } from './dashboard.js';
 
 function companyHelperWork(cowork: CoworkStore) {
-  return cowork.subAgents().map(h => ({ id: h.id, rootAgentId: h.rootAgentId, parentAgentId: h.parentAgentId, role: h.role, objective: h.objective, status: h.status, statusReason: h.statusReason, resultSummary: h.resultSummary, activity: h.activity ? { phase: h.activity.phase, current: h.activity.phase === 'reasoning' ? 'Thinking' : h.activity.current } : undefined }));
+  return cowork
+    .subAgents()
+    .map((h) => ({
+      id: h.id,
+      rootAgentId: h.rootAgentId,
+      parentAgentId: h.parentAgentId,
+      role: h.role,
+      objective: h.objective,
+      status: h.status,
+      statusReason: h.statusReason,
+      resultSummary: h.resultSummary,
+      activity: h.activity ? { phase: h.activity.phase, current: h.activity.phase === 'reasoning' ? 'Thinking' : h.activity.current } : undefined,
+    }));
 }
 
 export interface CompanyApiDeps {
@@ -35,7 +48,9 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   if (path === '/api/companies') {
     if (method === 'GET')
       send(res, 200, {
-        companies: store.companies().map((c) => ({ ...c, usage: usageTotals(store, c.id), decisions: store.actions(c.id).filter((a) => a.state === 'pending' && a.version === c.directionVersion).length })),
+        companies: store
+          .companies()
+          .map((c) => ({ ...c, usage: usageTotals(store, c.id), decisions: store.actions(c.id).filter((a) => a.state === 'pending' && a.version === c.directionVersion).length })),
         usage: usageTotals(store),
       });
     else if (method === 'POST') send(res, 201, { company: store.create((await d.body(req)) as Partial<Company>) });
@@ -57,21 +72,56 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   return d.scoped(company, async () => {
     const cowork = d.cowork();
     if (await companyConnectedApps(req, res, suffix, method, company!, d)) return true;
-    if (suffix === '/status' && method === 'GET') {
-      const activeJobs = store.jobs(company!.id).filter(j => (j.state === 'queued' || j.state === 'running') && (j.version === company!.directionVersion || j.payload['delivery'] === 'question'));
+    if (suffix === '/dashboard' && method === 'GET') {
+      const days = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('days') || 14);
       send(res, 200, {
-        id: company!.id, name: company!.name, state: company!.state, direction: company!.direction, directionVersion: company!.directionVersion, nextReviewAt: company!.nextReviewAt,
-        agents: cowork.listAgents().map(a => ({ id: a.id, name: a.name })),
-        actions: store.actions(company!.id).filter(a => a.state === 'pending' && a.version === company!.directionVersion),
-        queuedCount: activeJobs.filter(j => j.state === 'queued').length,
-        activity: d.activity?.() ?? [],
-        jobs: activeJobs.filter(j => j.version === company!.directionVersion || j.payload['delivery'] === 'question').slice(0, 50).map(j => {
-          const mission = j.kind === 'mission' ? cowork.missions().find(m => m.id === j.payload['missionId']) : undefined;
-          return { id: j.id, kind: j.kind, state: j.state, agentId: mission?.agentId ?? j.payload['agentId'] ?? company!.leadId, missionId: mission?.id, task: String(mission?.goal ?? (j.kind === 'review' ? 'Review company work' : j.payload['text'] ?? j.payload['note'] ?? company!.direction)).slice(0, 1000) };
-        }),
-        missions: cowork.missions().filter(m => m.status === 'running' || m.status === 'blocked').map(m => ({ id: m.id, agentId: m.agentId, goal: m.goal, status: m.status, progress: m.progress, blockers: m.blockers })),
+        ...companyDashboard(store, company!, days),
+        missions: cowork.missions(),
         helpers: companyHelperWork(cowork),
-        pendingDecisions: store.actions(company!.id).filter(a => a.state === 'pending' && a.version === company!.directionVersion).length,
+        jobs: store.jobs(company!.id).filter((j) => ['queued', 'running'].includes(j.state) && (j.version === company!.directionVersion || j.payload['delivery'] === 'question')),
+      });
+      return true;
+    }
+    if (suffix === '/status' && method === 'GET') {
+      const activeJobs = store
+        .jobs(company!.id)
+        .filter((j) => (j.state === 'queued' || j.state === 'running') && (j.version === company!.directionVersion || j.payload['delivery'] === 'question'));
+      send(res, 200, {
+        id: company!.id,
+        name: company!.name,
+        state: company!.state,
+        access: company!.access,
+        direction: company!.direction,
+        directionVersion: company!.directionVersion,
+        nextReviewAt: company!.nextReviewAt,
+        agents: cowork.listAgents().map((a) => ({ id: a.id, name: a.name })),
+        actions: store.actions(company!.id).filter((a) => a.state === 'uncertain' || (a.state === 'pending' && a.version === company!.directionVersion)),
+        requests: cowork
+          .listConversations()
+          .flatMap((c) => cowork.requests(c.id))
+          .filter((r) => r.status === 'open'),
+        queuedCount: activeJobs.filter((j) => j.state === 'queued').length,
+        activity: d.activity?.() ?? [],
+        jobs: activeJobs
+          .filter((j) => j.version === company!.directionVersion || j.payload['delivery'] === 'question')
+          .slice(0, 50)
+          .map((j) => {
+            const mission = j.kind === 'mission' ? cowork.missions().find((m) => m.id === j.payload['missionId']) : undefined;
+            return {
+              id: j.id,
+              kind: j.kind,
+              state: j.state,
+              agentId: mission?.agentId ?? j.payload['agentId'] ?? company!.leadId,
+              missionId: mission?.id,
+              task: String(mission?.goal ?? (j.kind === 'review' ? 'Review company work' : (j.payload['text'] ?? j.payload['note'] ?? company!.direction))).slice(0, 1000),
+            };
+          }),
+        missions: cowork
+          .missions()
+          .filter((m) => m.status === 'running' || m.status === 'blocked')
+          .map((m) => ({ id: m.id, agentId: m.agentId, goal: m.goal, status: m.status, progress: m.progress, blockers: m.blockers })),
+        helpers: companyHelperWork(cowork),
+        pendingDecisions: store.actions(company!.id).filter((a) => a.state === 'pending' && a.version === company!.directionVersion).length,
       });
       return true;
     }
@@ -105,15 +155,26 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
       else if (method === 'PATCH') {
         const patch = (await d.body(req)) as Partial<Company>;
         if (patch.defaultStorageId) {
-          const storage = store.list<{ id: string; provider: string; config: Record<string, string>; permissions: string[] }>('storage', company!.id).find(c => c.id === patch.defaultStorageId);
-          if (!storage || !storage.permissions.includes('upload') ||
-              (['api','mcp'].includes(storage.provider) && !storage.config[storage.provider === 'mcp' ? 'uploadTool' : 'uploadPath']))
+          const storage = store
+            .list<{ id: string; provider: string; config: Record<string, string>; permissions: string[] }>('storage', company!.id)
+            .find((c) => c.id === patch.defaultStorageId);
+          if (
+            !storage ||
+            !storage.permissions.includes('upload') ||
+            (['api', 'mcp'].includes(storage.provider) && !storage.config[storage.provider === 'mcp' ? 'uploadTool' : 'uploadPath'])
+          )
             throw new Error('Choose a granted, writable storage connection for company output.');
         }
-        if ((Object.hasOwn(patch, 'computerServerId') && (patch.computerServerId || undefined) !== (company!.computerServerId || undefined)) ||
-            (['cpu','memoryMb','diskMb'] as const).some(key => patch[key] !== undefined && patch[key] !== company![key])) {
+        if (
+          (Object.hasOwn(patch, 'computerServerId') && (patch.computerServerId || undefined) !== (company!.computerServerId || undefined)) ||
+          (['cpu', 'memoryMb', 'diskMb'] as const).some((key) => patch[key] !== undefined && patch[key] !== company![key])
+        ) {
           if (company!.state === 'running') throw new Error('Pause the company before changing its private computer server or resource limits.');
-          if (store.list<{ state: string; heldSlot?: boolean }>('computer', company!.id).some(c => c.heldSlot ?? ['starting', 'running', 'sleeping', 'unavailable'].includes(c.state)))
+          if (
+            store
+              .list<{ state: string; heldSlot?: boolean }>('computer', company!.id)
+              .some((c) => c.heldSlot ?? ['starting', 'running', 'sleeping', 'unavailable'].includes(c.state))
+          )
             throw new Error('Stop the company’s private desktops before changing their server or resource limits. Unavailable desktops must be reconciled first.');
         }
         const hadHostComputer = company!.allowHostComputer;
@@ -176,6 +237,11 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
         send(res, 200, {
           messages: company!.conversationId ? cowork.messages(company!.conversationId) : [],
           artifacts: company!.conversationId ? cowork.artifacts(company!.conversationId) : [],
+          requests: cowork
+            .listConversations()
+            .flatMap((c) => cowork.requests(c.id))
+            .filter((r) => r.status === 'open'),
+          agents: cowork.listAgents().map((a) => ({ id: a.id, name: a.name })),
           busy: store.jobs(company!.id).some((j) => j.state === 'running'),
         });
       else if (method === 'POST') {
@@ -183,7 +249,8 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
           text = String(body['text'] ?? '').trim(),
           requestedDelivery = String(body['delivery'] ?? 'auto'),
           classification = classifyFollowUp(text),
-          delivery = requestedDelivery === 'auto' ? (conversationIntent(text) === 'question' ? 'question' : classification.kind === 'CONTINUE' ? 'queue' : 'steer') : requestedDelivery;
+          delivery =
+            requestedDelivery === 'auto' ? (conversationIntent(text) === 'question' ? 'question' : classification.kind === 'CONTINUE' ? 'queue' : 'steer') : requestedDelivery;
         if (!['question', 'steer', 'queue'].includes(delivery) || !text) throw new Error('Choose a delivery mode and enter a message.');
         if (company!.state !== 'running') throw new Error('Resume the company before sending work.');
         const artifactIds = d.attachments?.(company!, Array.isArray(body['files']) ? body['files'] : []) ?? [];
@@ -233,9 +300,8 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
       const body = await d.body(req);
       if (action.version !== company!.directionVersion && action.state !== 'uncertain') throw new Error('This action belongs to an older direction.');
       if (action.state === 'uncertain') {
-        if (!['confirmed-done', 'confirmed-not-submitted'].includes(String(body['resolution'])))
-          throw new Error('Reconcile with the provider and choose confirmed-done or confirmed-not-submitted.');
-        if (!String(body['receipt'] ?? '').trim()) throw new Error('Record the provider receipt or reconciliation evidence.');
+        if (!['confirmed-done', 'confirmed-not-submitted'].includes(String(body['resolution']))) throw new Error('Choose whether the action completed or did not happen.');
+        if (!String(body['receipt'] ?? '').trim()) throw new Error('Explain how you checked the result before saving it.');
         store.actionState(
           action,
           body['resolution'] === 'confirmed-done' ? 'done' : action.version !== company!.directionVersion ? 'rejected' : 'approved',

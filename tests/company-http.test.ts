@@ -6,6 +6,59 @@ import { describe, it, expect, vi } from 'vitest';
 import { GituServer } from '../src/server/server.js';
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 describe('company and file HTTP boundaries', () => {
+  it('shows open questions in scoped status and chat, and answers without changing company direction', async () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-company-questions-'));
+    vi.stubEnv('AGENT_GITU_HOME', root);
+    const server = new GituServer({ passwordRequired: false, port: 0, llm: new ScriptedMockLlm([]) });
+    try {
+      const origin = 'http://localhost:' + (await server.start());
+      const request = async (route: string, body?: unknown) => {
+        const response = await fetch(origin + route, {
+          method: body ? 'POST' : 'GET',
+          headers: { origin, 'content-type': 'application/json' },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        return { status: response.status, data: (await response.json()) as any };
+      };
+      const a = (await request('/api/companies', { name: 'Alpha' })).data.company;
+      const b = (await request('/api/companies', { name: 'Beta' })).data.company;
+      const lead = (await request('/api/companies/' + a.id + '/lead', { name: 'Lead' })).data.agent;
+      await request('/api/companies/' + b.id + '/lead', { name: 'Other lead' });
+      const own = (await request('/api/companies/' + a.id)).data;
+      const charts = await request('/api/companies/' + a.id + '/dashboard?days=7');
+      expect(charts.status).toBe(200);
+      expect(charts.data.daily).toHaveLength(7);
+      expect(charts.data.daily.every((day: any) => day.calls === 0)).toBe(true);
+      expect(charts.data).not.toHaveProperty('usage');
+      expect((await request('/api/companies/' + b.id + '/dashboard?days=30')).data.daily).toHaveLength(30);
+      expect((await request('/api/companies/' + a.id + '/dashboard?days=100')).status).toBe(400);
+      expect((await request('/api/companies/company-missing/dashboard?days=7')).status).toBe(404);
+      const cowork = (server as any).companyCowork.get(a.id);
+      const question = cowork.addRequest({
+        conversationId: own.company.conversationId,
+        agentId: lead.id,
+        kind: 'question',
+        title: 'Choose a market',
+        detail: 'Which market should we focus on?',
+      });
+      expect((await request('/api/companies/' + a.id + '/status')).data.requests).toContainEqual(expect.objectContaining({ id: question.id }));
+      expect((await request('/api/companies/' + a.id + '/chat')).data.requests).toContainEqual(expect.objectContaining({ id: question.id }));
+      expect((await request('/api/companies/' + b.id + '/chat')).data.requests).toEqual([]);
+      expect((await request('/api/companies/' + b.id + '/cowork/requests/' + question.id, { action: 'answer', response: 'Retail' })).status).toBe(404);
+      expect((await request('/api/companies/' + a.id + '/cowork/requests/' + question.id, { action: 'answer', response: 'Retail' })).status).toBe(200);
+      expect((await request('/api/companies/' + a.id + '/chat')).data.requests).toEqual([]);
+      const specialist = cowork.saveAgent({ name: 'Specialist', systemPrompt: 'Help the company' });
+      const separate = cowork.saveConversation({ kind: 'dm', memberIds: [specialist.id] });
+      const followUp = cowork.addRequest({ conversationId: separate.id, agentId: specialist.id, kind: 'question', title: 'Report format', detail: 'Choose the format' });
+      expect((await request('/api/companies/' + a.id + '/chat')).data.requests).toContainEqual(expect.objectContaining({ id: followUp.id }));
+      expect((await request('/api/companies/' + b.id + '/chat')).data.requests).toEqual([]);
+      expect((await request('/api/companies/' + a.id)).data.company.directionVersion).toBe(own.company.directionVersion);
+    } finally {
+      await server.stop();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it('scopes companies and resumable binary uploads, serves video ranges and preserves history after restart', async () => {
     const root = mkdtempSync(path.join(os.tmpdir(), 'gitu-company-http-'));
     vi.stubEnv('AGENT_GITU_HOME', root);

@@ -1,21 +1,9 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
-import {
-  extractJson,
-  findXmlCallStart,
-  parseXmlFunctionCall,
-  xmlMarkerHoldBack,
-  type LlmToolDefinition,
-  type LlmTurnResult,
-} from '../llm/llm.js';
+import { extractJson, findXmlCallStart, parseXmlFunctionCall, xmlMarkerHoldBack, type LlmToolDefinition, type LlmTurnResult } from '../llm/llm.js';
 import { KNOWN_TOOL_NAMES } from '../tools/tools.js';
-import {
-  normalizeConnectionDocumentationUrl,
-  normalizeConnectionOperation,
-  normalizeConnectionOperationBody,
-  type ConnectionOperation,
-} from '../connections/connections.js';
+import { normalizeConnectionDocumentationUrl, normalizeConnectionOperation, normalizeConnectionOperationBody, type ConnectionOperation } from '../connections/connections.js';
 import type { DiscoveryIntent } from '../connections/discovery-engine.js';
 import type { CriterionSpec, DecisionBasis, MissingPrerequisite, PlanArea } from '../types.js';
 import { normalizeDecisionDraft } from './architecture.js';
@@ -119,7 +107,12 @@ export type ParsedAction =
     };
 
 export function visibleActionSummary(action: ParsedAction): string | undefined {
-  const clean = (value: string, limit = 280): string => value.replace(/\s+/g, ' ').trim().replace(/^next:\s*/i, '').slice(0, limit);
+  const clean = (value: string, limit = 280): string =>
+    value
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^next:\s*/i, '')
+      .slice(0, limit);
   switch (action.type) {
     case 'set_criteria':
       return `I’m defining ${action.criteria.length === 1 ? 'a clear acceptance check' : `${action.criteria.length} clear acceptance checks`} before I proceed.`;
@@ -136,15 +129,25 @@ export function visibleActionSummary(action: ParsedAction): string | undefined {
       if (reason) return reason;
       const target = typeof action.params['path'] === 'string' ? clean(action.params['path'], 160) : '';
       switch (action.tool) {
-        case 'read_file': return target ? `I’m reading ${target}.` : 'I’m reading the relevant file.';
+        case 'read_file':
+          return target ? `I’m reading ${target}.` : 'I’m reading the relevant file.';
         case 'write_file':
-        case 'apply_edit': return target ? `I’m updating ${target}.` : 'I’m applying the requested change.';
-        case 'search_files': return 'I’m searching the project for the relevant implementation.';
-        case 'list_files': return 'I’m checking the project files.';
-        case 'run_command': return 'I’m running the command and checking its result.';
-        case 'web_fetch': return 'I’m reading the requested page.';
-        case 'browse': return 'I’m checking the page in the browser.';
-        default: return `I’m running ${action.tool.replace(/_/g, ' ')}.`;
+        case 'apply_edit':
+          return target ? `I’m updating ${target}.` : 'I’m applying the requested change.';
+        case 'search_files':
+          return 'I’m searching the project for the relevant implementation.';
+        case 'list_files':
+          return 'I’m checking the project files.';
+        case 'run_command':
+          return 'I’m running the command and checking its result.';
+        case 'web_search':
+          return 'I’m searching the web through a connected API.';
+        case 'web_fetch':
+          return 'I’m reading the requested page.';
+        case 'browse':
+          return 'I’m checking the page in the browser.';
+        default:
+          return `I’m running ${action.tool.replace(/_/g, ' ')}.`;
       }
     }
     case 'capability_action':
@@ -232,22 +235,29 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
     case 'add_criteria': {
       const criteria = action['criteria'];
       if (!Array.isArray(criteria) || criteria.length === 0) return undefined;
-      const parsed = criteria.flatMap((criterion): (string | CriterionSpec)[] => {
-        if (typeof criterion === 'string') {
-          const text = criterion.trim();
-          return text && text !== '[object Object]' ? [text] : [];
-        }
-        if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return [];
-        const spec = criterion as Record<string, unknown>;
-        const text = typeof spec['text'] === 'string' ? spec['text'].trim() : '';
-        if (!text || text === '[object Object]') return [];
-        const verification = typeof spec['verification'] === 'string' ? spec['verification'].trim() : '';
-        const evidenceType = spec['evidenceType'];
-        return [{ text, ...(verification ? { verification } : {}),
-          ...(['command_success', 'test_success', 'build_success', 'lint_success', 'typecheck_success', 'any'].includes(String(evidenceType))
-            ? { evidenceType: evidenceType as CriterionSpec['evidenceType'] } : {}),
-        }];
-      }).slice(0, 10);
+      const parsed = criteria
+        .flatMap((criterion): (string | CriterionSpec)[] => {
+          if (typeof criterion === 'string') {
+            const text = criterion.trim();
+            return text && text !== '[object Object]' ? [text] : [];
+          }
+          if (!criterion || typeof criterion !== 'object' || Array.isArray(criterion)) return [];
+          const spec = criterion as Record<string, unknown>;
+          const text = typeof spec['text'] === 'string' ? spec['text'].trim() : '';
+          if (!text || text === '[object Object]') return [];
+          const verification = typeof spec['verification'] === 'string' ? spec['verification'].trim() : '';
+          const evidenceType = spec['evidenceType'];
+          return [
+            {
+              text,
+              ...(verification ? { verification } : {}),
+              ...(['command_success', 'test_success', 'build_success', 'lint_success', 'typecheck_success', 'any'].includes(String(evidenceType))
+                ? { evidenceType: evidenceType as CriterionSpec['evidenceType'] }
+                : {}),
+            },
+          ];
+        })
+        .slice(0, 10);
       return parsed.length ? { type, criteria: parsed } : undefined;
     }
     case 'set_plan':
@@ -326,7 +336,7 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       const tool = String(action['tool'] ?? action['tool_name'] ?? action['name'] ?? '');
       if (!tool) return undefined;
       const rawParams = action['params'] ?? action['parameters'] ?? action['arguments'] ?? action['args'];
-      const params: Record<string, unknown> = (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)) ? { ...(rawParams as Record<string, unknown>) } : {};
+      const params: Record<string, unknown> = rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams) ? { ...(rawParams as Record<string, unknown>) } : {};
       if (Object.keys(params).length === 0) {
         for (const [k, v] of Object.entries(action)) {
           if (k !== 'type' && k !== 'tool' && k !== 'tool_name' && k !== 'name' && k !== 'reason' && k !== 'thought' && k !== 'expected' && k !== 'stepId') {
@@ -354,7 +364,9 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
       if (!rawArguments || typeof rawArguments !== 'object' || Array.isArray(rawArguments)) return undefined;
       const freshness = action['freshness'];
       if (freshness !== undefined && freshness !== 'current' && freshness !== 'cached' && freshness !== 'force-refresh') return undefined;
-      const reason = String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240);
+      const reason = String(action['reason'] ?? action['thought'] ?? '')
+        .trim()
+        .slice(0, 240);
       if (!reason) return undefined;
       return {
         type,
@@ -366,26 +378,40 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
     }
     case 'connection_action': {
       const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
-      const rawOp = action['operationId'] ?? action['operation_id'] ?? (typeof action['operation'] === 'string' ? action['operation'] : (action['operation'] as Record<string, unknown>)?.['id']) ?? action['op'];
-      const connectionId = String(rawConn ?? '').trim().toLowerCase();
-      const operationId = String(rawOp ?? '').trim().toLowerCase();
+      const rawOp =
+        action['operationId'] ??
+        action['operation_id'] ??
+        (typeof action['operation'] === 'string' ? action['operation'] : (action['operation'] as Record<string, unknown>)?.['id']) ??
+        action['op'];
+      const connectionId = String(rawConn ?? '')
+        .trim()
+        .toLowerCase();
+      const operationId = String(rawOp ?? '')
+        .trim()
+        .toLowerCase();
       if (!connectionId) return undefined;
       // Auto-promote to connection_discovery if intents array is provided
       if (action['intents'] || action['intent']) {
         const rawIntents = action['intents'] ?? action['intent'];
-        const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents])
-          .map((i) => String(i).trim())
-          .filter(Boolean) as DiscoveryIntent[];
+        const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents]).map((i) => String(i).trim()).filter(Boolean) as DiscoveryIntent[];
         if (intentsArray.length > 0) {
           const resourceType = action['resourceType'] ? String(action['resourceType']).trim() : undefined;
-          const resourceIdOrName = action['resourceIdOrName'] ? String(action['resourceIdOrName']).trim() : (action['resource'] ? String(action['resource']).trim() : (action['name'] ? String(action['name']).trim() : undefined));
+          const resourceIdOrName = action['resourceIdOrName']
+            ? String(action['resourceIdOrName']).trim()
+            : action['resource']
+              ? String(action['resource']).trim()
+              : action['name']
+                ? String(action['name']).trim()
+                : undefined;
           return {
             type: 'connection_discovery',
             connectionId,
             intents: intentsArray,
             ...(resourceType ? { resourceType } : {}),
             ...(resourceIdOrName ? { resourceIdOrName } : {}),
-            reason: String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240),
+            reason: String(action['reason'] ?? action['thought'] ?? '')
+              .trim()
+              .slice(0, 240),
           };
         }
       }
@@ -404,17 +430,25 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
     }
     case 'connection_discovery': {
       const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
-      const connectionId = String(rawConn ?? '').trim().toLowerCase();
+      const connectionId = String(rawConn ?? '')
+        .trim()
+        .toLowerCase();
       if (!connectionId || !/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
       const rawIntents = action['intents'] ?? action['intent'] ?? ['list_resources'];
-      const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents])
-        .map((i) => String(i).trim())
-        .filter(Boolean) as DiscoveryIntent[];
+      const intentsArray = (Array.isArray(rawIntents) ? rawIntents : [rawIntents]).map((i) => String(i).trim()).filter(Boolean) as DiscoveryIntent[];
       if (intentsArray.length === 0) return undefined;
       const resourceType = action['resourceType'] ? String(action['resourceType']).trim() : undefined;
-      const resourceIdOrName = action['resourceIdOrName'] ? String(action['resourceIdOrName']).trim() : (action['resource'] ? String(action['resource']).trim() : (action['name'] ? String(action['name']).trim() : undefined));
+      const resourceIdOrName = action['resourceIdOrName']
+        ? String(action['resourceIdOrName']).trim()
+        : action['resource']
+          ? String(action['resource']).trim()
+          : action['name']
+            ? String(action['name']).trim()
+            : undefined;
       const filters = action['filters'] && typeof action['filters'] === 'object' && !Array.isArray(action['filters']) ? (action['filters'] as Record<string, string>) : undefined;
-      const reason = String(action['reason'] ?? action['thought'] ?? '').trim().slice(0, 240);
+      const reason = String(action['reason'] ?? action['thought'] ?? '')
+        .trim()
+        .slice(0, 240);
       return {
         type: 'connection_discovery',
         connectionId,
@@ -427,7 +461,9 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
     }
     case 'connection_operation': {
       const rawConn = action['connectionId'] ?? action['connection_id'] ?? action['connection'] ?? action['provider'];
-      const connectionId = String(rawConn ?? '').trim().toLowerCase();
+      const connectionId = String(rawConn ?? '')
+        .trim()
+        .toLowerCase();
       if (!connectionId || !/^[a-z0-9][a-z0-9_/-]{0,99}$/i.test(connectionId)) return undefined;
       const rawOp = action['operation'] ?? action['op'];
       const operation = normalizeConnectionOperation(rawOp);
@@ -594,11 +630,8 @@ export function actionReplyFromTurn(turn: LlmTurnResult): string {
       return '';
     case 'tool_calls': {
       if (turn.calls.length === 0) return '';
-      const explicitActionCall = turn.calls.find((candidate) =>
-        candidate.name === GITU_ACTION_TOOL.name ||
-        candidate.name === 'agent_gitu_action' ||
-        candidate.name === 'gitu_action' ||
-        candidate.name === 'agent_action',
+      const explicitActionCall = turn.calls.find(
+        (candidate) => candidate.name === GITU_ACTION_TOOL.name || candidate.name === 'agent_gitu_action' || candidate.name === 'gitu_action' || candidate.name === 'agent_action',
       );
       if (explicitActionCall) {
         const actionObj = explicitActionCall.arguments['action'] ?? explicitActionCall.arguments;
@@ -609,7 +642,15 @@ export function actionReplyFromTurn(turn: LlmTurnResult): string {
         return JSON.stringify({ action: { type: first.name, ...first.arguments } });
       }
       if (KNOWN_TOOL_NAMES.has(first.name) || first.name.startsWith('mcp:')) {
-        return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: String(first.arguments['reason'] ?? ''), expected: String(first.arguments['expected'] ?? '') } });
+        return JSON.stringify({
+          action: {
+            type: 'tool_call',
+            tool: first.name,
+            params: first.arguments,
+            reason: String(first.arguments['reason'] ?? ''),
+            expected: String(first.arguments['expected'] ?? ''),
+          },
+        });
       }
       return JSON.stringify({ action: { type: 'tool_call', tool: first.name, params: first.arguments, reason: '', expected: '' } });
     }

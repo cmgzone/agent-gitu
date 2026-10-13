@@ -74,7 +74,7 @@ export interface CompanyAction {
   tool: string;
   digest: string;
   version: number;
-  state: 'pending' | 'approved' | 'rejected' | 'executing' | 'done' | 'uncertain';
+  state: 'pending' | 'approved' | 'rejected' | 'executing' | 'done' | 'uncertain' | 'agent-managed';
   createdAt: string;
   receipt?: string;
   parameters?: unknown;
@@ -125,6 +125,7 @@ export class CompanyStore {
       CREATE INDEX IF NOT EXISTS company_records ON records(company_id,kind);
       CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,month TEXT NOT NULL,cost REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS scheduler_lock(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,expires INTEGER NOT NULL);`);
+    this.manageCommandReviews();
   }
   close(): void {
     this.db.close();
@@ -138,7 +139,12 @@ export class CompanyStore {
     const row = this.db.prepare('SELECT data FROM records WHERE kind=? AND id=?').get(kind, id) as { data: string } | undefined;
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
-  saveResource(kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account', id: string, companyId: string, value: unknown): void {
+  saveResource(
+    kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account',
+    id: string,
+    companyId: string,
+    value: unknown,
+  ): void {
     if (!this.get(companyId)) throw new Error('Company not found.');
     const existing = this.db.prepare('SELECT company_id FROM records WHERE kind=? AND id=?').get(kind, id);
     if (existing && existing['company_id'] !== companyId) throw new Error('Resource belongs to another company.');
@@ -184,8 +190,11 @@ export class CompanyStore {
       if (!c) throw new Error('Company not found.');
       const previous = this.read<{ companyId: string; heldSlot?: boolean; state: string; computerServerId?: string | null }>('computer', agentId);
       if (previous && previous.companyId !== companyId) throw new Error('Private computer belongs to another company.');
-      if (previous && (previous.heldSlot ?? ['starting', 'running', 'sleeping', 'unavailable'].includes(previous.state)) &&
-          (!Object.hasOwn(previous, 'computerServerId') || (previous.computerServerId ?? undefined) !== computerServerId))
+      if (
+        previous &&
+        (previous.heldSlot ?? ['starting', 'running', 'sleeping', 'unavailable'].includes(previous.state)) &&
+        (!Object.hasOwn(previous, 'computerServerId') || (previous.computerServerId ?? undefined) !== computerServerId)
+      )
         throw new Error('Reconcile and stop the previous private computer before selecting another server.');
       const computers = this.list<{ id: string; companyId: string; state: string; heldSlot?: boolean }>('computer').filter(
         (v) => (v.heldSlot ?? ['starting', 'running', 'sleeping'].includes(v.state)) && v.id !== agentId,
@@ -210,7 +219,7 @@ export class CompanyStore {
     });
   }
   companies(): Company[] {
-    return this.list<Company>('company').map(c => ({ ...c, allowHostComputer: c.allowHostComputer === true }));
+    return this.list<Company>('company').map((c) => ({ ...c, allowHostComputer: c.allowHostComputer === true }));
   }
   get(id: string): Company | undefined {
     const c = this.read<Company>('company', id);
@@ -317,6 +326,7 @@ export class CompanyStore {
       }
     company.updatedAt = stamp();
     this.put('company', id, company, id);
+    if (company.access === 'full') this.manageCommandReviews(id);
     return company;
   }
   transition(id: string, state: CompanyState): Company {
@@ -398,6 +408,7 @@ export class CompanyStore {
     this.db.prepare('DELETE FROM scheduler_lock WHERE owner=?').run(owner);
   }
   recover(): void {
+    this.manageCommandReviews();
     for (const job of this.jobs()) if (job.state === 'running') this.finishJob(job, 'queued');
     for (const action of this.list<CompanyAction>('action'))
       if (action.state === 'executing') {
@@ -462,7 +473,10 @@ export class CompanyStore {
       const reservation = this.db.prepare('SELECT company_id FROM reservations WHERE id=?').get(id);
       if (reservation && reservation['company_id'] !== event.companyId) throw new Error('Usage reservation belongs to another company.');
       if (!this.get(event.companyId)) throw new Error('Company not found.');
-      if (previous && !['running', 'uncertain'].includes(previous.outcome)) { this.db.exec('COMMIT'); return; }
+      if (previous && !['running', 'uncertain'].includes(previous.outcome)) {
+        this.db.exec('COMMIT');
+        return;
+      }
       if (event.costUsd !== undefined && (!Number.isFinite(event.costUsd) || event.costUsd < 0)) throw new Error('Invalid model cost.');
       this.put('usage', id, { ...event, id, createdAt: previous?.createdAt ?? stamp(), provenance: event.costUsd === undefined ? 'unknown' : 'catalog' }, event.companyId);
       if (event.costUsd !== undefined) this.db.prepare('DELETE FROM reservations WHERE id=?').run(id);
@@ -475,11 +489,54 @@ export class CompanyStore {
   actions(companyId: string): CompanyAction[] {
     return this.list<CompanyAction>('action', companyId);
   }
+  /** Retain legacy command records without claiming they completed. Only the
+   * owner's Full access setting delegates their recovery back to the agent. */
+  manageCommandReviews(companyId?: string): void {
+    const full = new Set(
+      this.companies()
+        .filter((c) => c.access === 'full' && (!companyId || c.id === companyId))
+        .map((c) => c.id),
+    );
+    if (!full.size) return;
+    const commands = this.list<CompanyAction>('action', companyId).filter(
+      (a) => full.has(a.companyId) && a.tool === 'run_command' && !a.wallet && ['pending', 'approved', 'executing', 'uncertain'].includes(a.state),
+    );
+    if (!commands.length) return;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const candidate of commands) {
+        const action = this.read<CompanyAction>('action', candidate.id);
+        if (
+          !action ||
+          action.companyId !== candidate.companyId ||
+          action.wallet ||
+          this.get(action.companyId)?.access !== 'full' ||
+          !['pending', 'approved', 'executing', 'uncertain'].includes(action.state)
+        )
+          continue;
+        this.put(
+          'action',
+          action.id,
+          {
+            ...action,
+            state: 'agent-managed',
+            receipt:
+              'Command verification remains with the agent under Full access. This record does not confirm completion; check its output and resulting files before retrying.',
+          },
+          action.companyId,
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
   intent(companyId: string, agentId: string, tool: string, args: unknown, version: number): CompanyAction {
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const digest = createHash('sha256').update(canonicalAction(args)).digest('hex');
-      const prior = this.actions(companyId).find((a) => a.agentId === agentId && a.tool === tool && a.digest === digest && a.version === version);
+      const prior = this.actions(companyId).find((a) => a.state !== 'agent-managed' && a.agentId === agentId && a.tool === tool && a.digest === digest && a.version === version);
       if (prior) {
         this.db.exec('COMMIT');
         return prior;

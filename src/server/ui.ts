@@ -13,6 +13,7 @@ import { ACTIVITY_CSS, ACTIVITY_MARK_HTML } from './ui-activity.js';
 import { UI_APPROACH_JS } from './ui-approach.js';
 import { SUBAGENT_CSS, SUBAGENT_JS } from './ui-subagents.js';
 import { UI_RESPONSE_JS } from './ui-response.js';
+import { CUSTOM_CONNECTION_CSS, CUSTOM_CONNECTION_JS } from './ui-custom-connection.js';
 import { UI_CONNECTIONS_JS } from './ui-connections.js';
 import { CONNECTED_APPS_CSS, CONNECTED_APPS_JS } from './ui-connected-apps.js';
 import { COWORK_CSS, COWORK_JS } from './ui-cowork.js';
@@ -937,6 +938,7 @@ ${HOME_CSS}
   ${VOICE_CSS}
   ${OUTPUT_CSS}
   ${CONNECTED_APPS_CSS}
+  ${CUSTOM_CONNECTION_CSS}
   ${UI_THEME_CSS}
   ${ONBOARDING_CSS}
   ${UI_BUTTON_CSS}
@@ -1005,6 +1007,7 @@ ${ONBOARDING_HTML}
   ${UI_RESPONSE_JS}
   ${UI_CONNECTIONS_JS}
   ${CONNECTED_APPS_JS}
+  ${CUSTOM_CONNECTION_JS}
   ${CHAT_CREDENTIAL_HELPERS_JS}
   ${UI_MODEL_CATALOG_JS}
   var S = {
@@ -5400,6 +5403,7 @@ ${ONBOARDING_HTML}
   function closeSettings() {
     if($('settings').hidden)return;
     $('settings').hidden = true;
+    if(typeof cwCloseConnectionManager==='function')cwCloseConnectionManager();
     document.querySelector('.shell').inert=!!S.settingsShellInert;
     var focus=S.settingsFocus&&S.settingsFocus.isConnected?S.settingsFocus:$('homeSettings')||$('mainChatHistory')||$('cwBack')||$('cwPageSearch');if(focus)focus.focus({preventScroll:true});
   }
@@ -5412,6 +5416,7 @@ ${ONBOARDING_HTML}
 
   function renderSettings() {
     var items = WORKSPACE_SETTINGS;
+    if(S.setSection!=='connections'&&typeof cwCloseConnectionManager==='function')cwCloseConnectionManager();
     var settings=$('settings');settings.classList.toggle('settings-directory',S.setSection==='overview');
     var close=$('settingsClose');if(!close){settings.insertAdjacentHTML('afterbegin','<button class="settings-close" id="settingsClose" aria-label="Close settings">'+icon('x')+'</button><button class="settings-top-back" id="settingsDirectoryBack">'+icon('back')+'<span>All settings</span></button>');close=$('settingsClose');}
     close.onclick=closeSettings;$('settingsDirectoryBack').hidden=S.setSection==='overview';$('settingsDirectoryBack').onclick=function(){openSettings('overview');};
@@ -5557,22 +5562,10 @@ ${ONBOARDING_HTML}
         renderSettings();
       };
     } else if (S.setSection === 'connections') {
-      b.innerHTML = '<h1>Connections</h1>' +
-        '<div class="setcard"><div class="t">Connected apps</div><div class="d">Set up Composio and sign in to services such as Gmail, Google Drive, Slack and GitHub. Manage mailbox accounts and teammate access here.</div><button class="btn dark" id="settingsConnectedApps">Connect apps with Composio</button></div>' +
-        '<p style="color:var(--muted);font-size:12.5px">Save a provider connection once, then let tasks reuse its documented capabilities. Credentials stay separate from global skills, task history, and model context.</p>' +
-        '<div class="setcard" style="margin-bottom:12px"><div class="t" style="margin-bottom:10px">Add a provider connection</div>' +
-        '<div class="d" style="margin-bottom:10px">The form registers a read-only validation path. During a task, Gitu can research a documented write operation and show its exact request for your individual approval; it never gains unrestricted provider write access.</div>' +
-        '<div style="display:grid;gap:8px;max-width:620px">' +
-        '<input id="connLabel" placeholder="Connection name (for example: Production platform)">' +
-        '<input id="connProvider" placeholder="Provider identifier (for example: platform-api)">' +
-        '<input id="connBaseUrl" placeholder="Base URL (HTTPS, or HTTP only for localhost)">' +
-        '<input id="connDocsUrl" placeholder="Documentation URL (optional, HTTPS)">' +
-        '<input id="connCapabilities" placeholder="Capabilities, comma-separated (for example: servers.read, databases.read)">' +
-        '<input id="connValidationPath" value="/" placeholder="Read-only validation path, for example: /api/v1/servers">' +
-        '<input id="connToken" type="password" autocomplete="new-password" placeholder="Paste API key or token — never sent to the model">' +
-        '<div><button class="btn dark" id="saveConnection">Save and validate</button></div></div></div>' +
-        '<div class="setcard" id="connectionsBody"><div class="meta">loading connections…</div></div>';
-      $('settingsConnectedApps').onclick=function(){closeSettings();cwOpenWorkspaceConnections();};
+      b.innerHTML = '<h1>Connections</h1><p class="connection-intro">Apps, accounts and APIs in one place. Choose team access for connected accounts; grant company access from its resource settings.</p><nav class="connection-manager-tabs" aria-label="Connection categories"><button class="btn ghost" data-connection-category="apps" aria-pressed="true">Apps & accounts</button><button class="btn ghost" data-connection-category="apis" aria-pressed="false">Custom APIs</button></nav><section id="workspaceAppsPanel"></section><section id="workspaceApiPanel" hidden><div class="connection-api-heading"><div><h2>Custom APIs</h2><p class="connection-intro">Connect a service with its own API key or access token.</p></div><button class="btn dark" id="workspaceAddApi">Add connection</button></div><div id="connectionsBody"><p role="status">Loading saved APIs…</p></div><div id="workspaceConnectionForm"></div></section>';
+      cwMountConnections($('workspaceAppsPanel'));
+      b.querySelectorAll('[data-connection-category]').forEach(function(button){button.onclick=function(){var apps=button.dataset.connectionCategory==='apps';$('workspaceAppsPanel').hidden=!apps;$('workspaceApiPanel').hidden=apps;b.querySelectorAll('[data-connection-category]').forEach(function(tab){tab.setAttribute('aria-pressed',String(tab===button));});};});
+      $('workspaceAddApi').onclick=function(){mountCustomConnection($('workspaceConnectionForm'),{onSaved:function(){renderConnections();},onCancel:function(){$('workspaceConnectionForm').innerHTML='';}});};
       function renderConnections() {
         api('/api/connections').then(function (data) {
           var body = $('connectionsBody');
@@ -5581,8 +5574,9 @@ ${ONBOARDING_HTML}
           body.innerHTML = rows.map(function (c) {
             var capabilities = (c.capabilities || []).join(', ') || 'no declared capabilities';
             var status = c.lastValidationStatus === 'ok' ? '<span class="chip ok">validated</span>' : c.lastValidationStatus === 'failed' ? '<span class="chip bad">validation failed</span>' : '<span class="chip">not tested</span>';
-            return '<div class="setrow" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(c.label) + ' ' + status + '</div><div class="d">' + esc(c.provider) + ' · ' + esc(capabilities) + '</div><div class="hint">' + esc(c.baseUrl) + (c.documentationUrl ? ' · docs configured' : '') + ' · credential ' + (c.hasCredential ? 'saved locally' : 'missing') + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" data-testconn="' + esc(c.id) + '">Test</button><button class="btn ghost" data-delconn="' + esc(c.id) + '">Remove</button></div></div>';
+            return '<div class="setrow" style="align-items:flex-start"><div class="grow"><div class="t">' + esc(c.label) + ' ' + status + '</div><div class="d">' + esc(c.provider) + ' · ' + esc(capabilities) + '</div><div class="hint">' + esc(c.baseUrl) + (c.documentationUrl ? ' · docs configured' : '') + ' · credential ' + (c.hasCredential ? 'saved locally' : 'missing') + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" data-editconn="' + esc(c.id) + '">Edit</button><button class="btn ghost" data-testconn="' + esc(c.id) + '">Test</button><button class="btn ghost" data-delconn="' + esc(c.id) + '">Remove</button></div></div>';
           }).join('') || '<div class="meta">No saved connections yet.</div>';
+          body.querySelectorAll('[data-editconn]').forEach(function(btn){btn.onclick=function(){mountCustomConnection($('workspaceConnectionForm'),{profile:rows.find(function(c){return c.id===btn.dataset.editconn;}),onSaved:function(){renderConnections();}});};});
           body.querySelectorAll('[data-testconn]').forEach(function (btn) {
             btn.onclick = function () {
               var id = btn.getAttribute('data-testconn'); btn.disabled = true; btn.textContent = 'Testing…';
@@ -5598,26 +5592,6 @@ ${ONBOARDING_HTML}
           });
         }).catch(function (e) { if ($('connectionsBody')) $('connectionsBody').innerHTML = '<div class="meta">Could not load connections: ' + esc((e && e.message) || 'unknown error') + '</div>'; });
       }
-      $('saveConnection').onclick = function () {
-        var btn = this;
-        var caps = $('connCapabilities').value.split(',').map(function (v) { return v.trim(); }).filter(Boolean);
-        var capability = caps[0] || 'connection.discover';
-        var profile = {
-          label: $('connLabel').value,
-          provider: $('connProvider').value,
-          baseUrl: $('connBaseUrl').value,
-          documentationUrl: $('connDocsUrl').value,
-          capabilities: caps.length ? caps : [capability],
-          operations: [{ id: 'validate', label: 'Validate saved connection', capability: capability, method: 'GET', path: $('connValidationPath').value || '/', risk: 'read' }],
-          token: $('connToken').value
-        };
-        btn.disabled = true; btn.textContent = 'Saving…';
-        api('/api/connections', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
-          .then(function (result) { return api('/api/connections/' + encodeURIComponent(result.connection.id) + '/test', { method: 'POST' }); })
-          .then(function () { $('connToken').value = ''; toast('Connection saved and validated'); renderConnections(); })
-          .catch(function (e) { toast((e && e.message) || 'Could not save connection', true); })
-          .finally(function () { btn.disabled = false; btn.textContent = 'Save and validate'; });
-      };
       renderConnections();
     } else if (S.setSection === 'providers') {
       b.innerHTML = '<h1>Providers</h1>' +

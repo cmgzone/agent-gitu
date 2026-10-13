@@ -7,6 +7,7 @@ import type { Capability, ConnectionSetupHint, MissingPrerequisite } from '../ty
 import { nowIso, sha256 } from '../util.js';
 import { ensureGituHome } from '../workspace/home.js';
 import { readConnectionResponse } from './response-data.js';
+import { searchApi, SearchApiError } from './web-search.js';
 import { catalogCapabilityDeclared, catalogOperation, catalogOperationFor, catalogProvider } from './catalog.js';
 import {
   UniversalDiscoveryEngine,
@@ -247,7 +248,11 @@ function slug(value: unknown, fallback = 'connection'): string {
 }
 
 function compactText(value: unknown, limit: number): string {
-  return String(value ?? '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit);
 }
 
 function normalizeCapabilities(value: unknown): string[] {
@@ -282,7 +287,9 @@ function normalizeRejectedOperations(value: unknown): RejectedOperationRecord[] 
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
     const r = item as Record<string, unknown>;
     const operationId = String(r['operationId'] ?? '').trim();
-    const method = String(r['method'] ?? '').trim().toUpperCase() as ConnectionHttpMethod;
+    const method = String(r['method'] ?? '')
+      .trim()
+      .toUpperCase() as ConnectionHttpMethod;
     const opPath = String(r['path'] ?? '').trim();
     const status = Number(r['status']);
     if (!operationId || !METHODS.has(method) || !opPath || isNaN(status)) continue;
@@ -337,9 +344,15 @@ export function normalizeConnectionSetupHint(value: unknown): ConnectionSetupHin
   const label = compactText(raw['label'], 120);
   const baseUrl = normalizeBaseUrl(raw['baseUrl']);
   const documentationUrl = normalizeConnectionDocumentationUrl(raw['documentationUrl']);
-  const validationPath = typeof raw['validationPath'] === 'string' && /^\/[a-zA-Z0-9._~!$&'()*+,;=:@/%-]*$/.test(raw['validationPath']) && !raw['validationPath'].includes('//') && !raw['validationPath'].includes('..') && !raw['validationPath'].includes('?') && !raw['validationPath'].includes('#')
-    ? raw['validationPath']
-    : undefined;
+  const validationPath =
+    typeof raw['validationPath'] === 'string' &&
+    /^\/[a-zA-Z0-9._~!$&'()*+,;=:@/%-]*$/.test(raw['validationPath']) &&
+    !raw['validationPath'].includes('//') &&
+    !raw['validationPath'].includes('..') &&
+    !raw['validationPath'].includes('?') &&
+    !raw['validationPath'].includes('#')
+      ? raw['validationPath']
+      : undefined;
   const validationCapability = normalizeCapabilities([raw['validationCapability']])[0];
   const hint: ConnectionSetupHint = {
     ...(label ? { label } : {}),
@@ -356,12 +369,23 @@ export function normalizeConnectionOperation(value: unknown): ConnectionOperatio
   const raw = value as Record<string, unknown>;
   const id = slug(raw['id'], '');
   const label = compactText(raw['label'], 120);
-  const capability = String(raw['capability'] ?? '').trim().toLowerCase();
-  const method = String(raw['method'] ?? '').trim().toUpperCase() as ConnectionHttpMethod;
+  const capability = String(raw['capability'] ?? '')
+    .trim()
+    .toLowerCase();
+  const method = String(raw['method'] ?? '')
+    .trim()
+    .toUpperCase() as ConnectionHttpMethod;
   const operationPath = String(raw['path'] ?? '').trim();
   const risk = raw['risk'];
   if (!id || !OPERATION_RE.test(id) || !label || !CAPABILITY_RE.test(capability) || !METHODS.has(method) || !RISKS.has(risk as ConnectionOperationRisk)) return undefined;
-  if (!/^\/[a-zA-Z0-9._~!$&'()*+,;=:@/%-]*$/.test(operationPath) || operationPath.includes('//') || operationPath.includes('..') || operationPath.includes('?') || operationPath.includes('#')) return undefined;
+  if (
+    !/^\/[a-zA-Z0-9._~!$&'()*+,;=:@/%-]*$/.test(operationPath) ||
+    operationPath.includes('//') ||
+    operationPath.includes('..') ||
+    operationPath.includes('?') ||
+    operationPath.includes('#')
+  )
+    return undefined;
   // GET operations are discovery only. Every provider mutation must carry an
   // explicit non-read risk, so it cannot slip through the read path.
   if ((method === 'GET' && risk !== 'read') || (method !== 'GET' && risk === 'read')) return undefined;
@@ -481,12 +505,7 @@ export class ConnectionInvocationError extends Error {
    * scope-related and is never auth evidence. */
   readonly authEvident: boolean;
 
-  constructor(
-    outcome: ConnectionInvocationOutcome,
-    message: string,
-    state: ConnectionState = 'CONFIG_INVALID',
-    authEvident = false,
-  ) {
+  constructor(outcome: ConnectionInvocationOutcome, message: string, state: ConnectionState = 'CONFIG_INVALID', authEvident = false) {
     super(message);
     this.name = 'ConnectionInvocationError';
     this.outcome = outcome;
@@ -530,7 +549,14 @@ function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
   const rejectedOperations = normalizeRejectedOperations(raw['rejectedOperations']);
   if (!id || !label || !provider || !baseUrl || operations.length === 0) return undefined;
   return {
-    id, label, provider, baseUrl, capabilities, operations, createdAt, updatedAt,
+    id,
+    label,
+    provider,
+    baseUrl,
+    capabilities,
+    operations,
+    createdAt,
+    updatedAt,
     ...(documentationUrl ? { documentationUrl } : {}),
     ...(lastValidatedAt ? { lastValidatedAt } : {}),
     ...(lastValidationStatus ? { lastValidationStatus } : {}),
@@ -571,7 +597,9 @@ function requirementFrom(prerequisite: MissingPrerequisite): ConnectionRequireme
 }
 
 function profileSkillInstructions(profile: ConnectionProfile): string {
-  const operations = profile.operations.map((operation) => `- ${operation.id}: ${operation.label} (${operation.method} ${operation.path}; ${operation.risk}; capability ${operation.capability})`).join('\n');
+  const operations = profile.operations
+    .map((operation) => `- ${operation.id}: ${operation.label} (${operation.method} ${operation.path}; ${operation.risk}; capability ${operation.capability})`)
+    .join('\n');
   return [
     `Use the saved ${profile.label} connection when the task requires ${profile.provider} capabilities: ${profile.capabilities.join(', ') || 'general provider access'}.`,
     `Documentation: ${profile.documentationUrl ?? 'not configured'}.`,
@@ -603,10 +631,12 @@ export class ConnectionRegistry {
   }
 
   private profiles(): ConnectionProfile[] {
-    return this.decodeProfiles(readCredentialJson(connectionFile(), (raw) => {
-      this.decodeProfiles(raw);
-      return raw;
-    })).filter(profile => !this.scope || this.scope(profile.id));
+    return this.decodeProfiles(
+      readCredentialJson(connectionFile(), (raw) => {
+        this.decodeProfiles(raw);
+        return raw;
+      }),
+    ).filter((profile) => !this.scope || this.scope(profile.id));
   }
 
   private decodeProfiles(raw: unknown): ConnectionProfile[] {
@@ -616,7 +646,7 @@ export class ConnectionRegistry {
     const values: unknown[] = Array.isArray(raw)
       ? raw
       : raw && typeof raw === 'object' && Array.isArray((raw as Record<string, unknown>)['connections'])
-        ? (raw as Record<string, unknown>)['connections'] as unknown[]
+        ? ((raw as Record<string, unknown>)['connections'] as unknown[])
         : [];
     const out: ConnectionProfile[] = [];
     const seen = new Set<string>();
@@ -630,10 +660,14 @@ export class ConnectionRegistry {
   }
 
   private mutateProfiles(update: (profiles: ConnectionProfile[]) => ConnectionProfile[]): void {
-    updateCredentialJson(connectionFile(), (raw) => {
-      this.decodeProfiles(raw);
-      return raw;
-    }, (raw) => ({ version: 1, connections: update(this.decodeProfiles(raw)) }));
+    updateCredentialJson(
+      connectionFile(),
+      (raw) => {
+        this.decodeProfiles(raw);
+        return raw;
+      },
+      (raw) => ({ version: 1, connections: update(this.decodeProfiles(raw)) }),
+    );
   }
 
   list(): ConnectionProfileView[] {
@@ -644,6 +678,24 @@ export class ConnectionRegistry {
   get(id: string): ConnectionProfile | undefined {
     const normalized = slug(id, '');
     return normalized ? this.profiles().find((profile) => profile.id === normalized) : undefined;
+  }
+
+  async webSearch(id: string, query: string, count = 8, signal?: AbortSignal) {
+    const profile = this.get(id);
+    if (!profile) throw new Error('Search connection is not available in this workspace or company.');
+    const token = loadStoredKeys()[keyRef(profile.id)] ?? '';
+    let result: Awaited<ReturnType<typeof searchApi>>;
+    try {
+      result = await searchApi(profile, token, query, count, signal);
+    } catch (error) {
+      this.updateValidation(profile.id, 'failed');
+      if (error instanceof SearchApiError && error.status === 401) this.recordAuth(profile.id, 'invalid', 'Search API rejected authentication (HTTP 401).');
+      throw error;
+    }
+    this.recordAuth(profile.id, 'valid');
+    this.updateValidation(profile.id, 'ok');
+    if (!this.get(id)) throw new Error('Search connection access was revoked while the request was running.');
+    return result;
   }
 
   /**
@@ -663,12 +715,8 @@ export class ConnectionRegistry {
       const credentialed = byProvider.find((p) => this.credentialPresent(p.id));
       return credentialed ?? byProvider[0];
     }
-    const byFuzzy = profiles.filter((p) =>
-      p.id.includes(normalized) ||
-      normalized.includes(p.id) ||
-      p.provider.includes(normalized) ||
-      normalized.includes(p.provider) ||
-      slug(p.label, '').includes(normalized),
+    const byFuzzy = profiles.filter(
+      (p) => p.id.includes(normalized) || normalized.includes(p.id) || p.provider.includes(normalized) || normalized.includes(p.provider) || slug(p.label, '').includes(normalized),
     );
     if (byFuzzy.length > 0) {
       const credentialed = byFuzzy.find((p) => this.credentialPresent(p.id));
@@ -697,18 +745,22 @@ export class ConnectionRegistry {
   renderForAgent(): string {
     const profiles = this.list();
     if (profiles.length === 0) return 'No saved provider connections are currently available.';
-    return profiles.map((profile) => {
-      const readOperations = profile.operations
-        .filter((operation) => operation.risk === 'read')
-        .map((operation) => `${operation.id} (${operation.capability})`)
-        .join(', ') || 'none';
-      const writeOperations = profile.operations
-        .filter((operation) => operation.risk !== 'read')
-        .map((operation) => `${operation.id} (${operation.method} ${operation.path}; ${operation.capability}; ${operation.risk})`)
-        .join(', ') || 'none';
-      const auth = !profile.hasCredential ? 'credential missing' : profile.authState?.status ?? 'available';
-      return `- ${profile.id}: ${profile.label} [provider ${profile.provider}; auth ${auth}; capabilities ${profile.capabilities.join(', ') || 'none'}; read operations ${readOperations}; approved write operations ${writeOperations}]`;
-    }).join('\n');
+    return profiles
+      .map((profile) => {
+        const readOperations =
+          profile.operations
+            .filter((operation) => operation.risk === 'read')
+            .map((operation) => `${operation.id} (${operation.capability})`)
+            .join(', ') || 'none';
+        const writeOperations =
+          profile.operations
+            .filter((operation) => operation.risk !== 'read')
+            .map((operation) => `${operation.id} (${operation.method} ${operation.path}; ${operation.capability}; ${operation.risk})`)
+            .join(', ') || 'none';
+        const auth = !profile.hasCredential ? 'credential missing' : (profile.authState?.status ?? 'available');
+        return `- ${profile.id}: ${profile.label} [provider ${profile.provider}; auth ${auth}; capabilities ${profile.capabilities.join(', ') || 'none'}; read operations ${readOperations}; approved write operations ${writeOperations}]`;
+      })
+      .join('\n');
   }
 
   requirementFor(prerequisite: MissingPrerequisite): ConnectionRequirement {
@@ -721,18 +773,21 @@ export class ConnectionRegistry {
     const saved = exact ?? (candidates.length === 1 ? candidates[0] : undefined);
     const catalog = catalogProvider(saved?.provider ?? requirement.providerHint ?? '');
     const catalogValidation = catalog?.operations.find((operation) => operation.risk === 'read' && operation.method === 'GET');
-    const validation = saved?.operations.find((operation) => operation.id === 'validate' && operation.risk === 'read' && operation.method === 'GET')
-      ?? saved?.operations.find((operation) => operation.risk === 'read' && operation.method === 'GET');
+    const validation =
+      saved?.operations.find((operation) => operation.id === 'validate' && operation.risk === 'read' && operation.method === 'GET') ??
+      saved?.operations.find((operation) => operation.risk === 'read' && operation.method === 'GET');
     const setup: ConnectionSetupHint = {
       ...(catalog ? { documentationUrl: catalog.documentationUrl } : {}),
       ...(catalog?.baseUrl ? { baseUrl: catalog.baseUrl } : {}),
       ...(catalogValidation ? { validationPath: catalogValidation.path, validationCapability: catalogValidation.capability } : {}),
       ...(requirement.setup ?? {}),
-      ...(saved ? {
-        label: saved.label,
-        baseUrl: saved.baseUrl,
-        ...(saved.documentationUrl ? { documentationUrl: saved.documentationUrl } : {}),
-      } : {}),
+      ...(saved
+        ? {
+            label: saved.label,
+            baseUrl: saved.baseUrl,
+            ...(saved.documentationUrl ? { documentationUrl: saved.documentationUrl } : {}),
+          }
+        : {}),
       ...(validation ? { validationPath: validation.path, validationCapability: validation.capability } : {}),
     };
     const providerHint = saved?.provider ?? requirement.providerHint;
@@ -791,16 +846,23 @@ export class ConnectionRegistry {
       if (!token && !loadStoredKeys()[keyRef(id)]?.trim()) throw new Error('An API key or token is required for a new connection.');
       this.assertGeneratedSkillAvailable(id);
       profile = {
-        id, label, provider, baseUrl, capabilities, operations,
+        id,
+        label,
+        provider,
+        baseUrl,
+        capabilities,
+        operations,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
         ...(documentationUrl ? { documentationUrl } : {}),
         ...(existing?.lastValidatedAt ? { lastValidatedAt: existing.lastValidatedAt } : {}),
         ...(existing?.lastValidationStatus ? { lastValidationStatus: existing.lastValidationStatus } : {}),
-        ...(token ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } } : {
-          ...(existing?.authState ? { authState: existing.authState } : {}),
-          ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
-        }),
+        ...(token
+          ? { authState: { status: 'unknown' as const }, capabilityState: { denied: [], missing: [] } }
+          : {
+              ...(existing?.authState ? { authState: existing.authState } : {}),
+              ...(existing?.capabilityState ? { capabilityState: existing.capabilityState } : {}),
+            }),
         // Operation registration rewrites the profile; the provider's recorded
         // route rejections (do-not-retry memory) must survive that rewrite.
         ...(existing?.rejectedOperations?.length ? { rejectedOperations: existing.rejectedOperations } : {}),
@@ -841,7 +903,17 @@ export class ConnectionRegistry {
     } else if (existing) {
       throw new Error(`A user-owned global skill named "${name}" already exists; rename it before saving this connection.`);
     } else {
-      skills.create({ name, description, instructions, createdBy: 'agent', aliases: [profile.provider, profile.label], keywords: [profile.provider, ...profile.capabilities], requires: { capabilities: profile.capabilities }, risk: 'medium', scope: 'global' });
+      skills.create({
+        name,
+        description,
+        instructions,
+        createdBy: 'agent',
+        aliases: [profile.provider, profile.label],
+        keywords: [profile.provider, ...profile.capabilities],
+        requires: { capabilities: profile.capabilities },
+        risk: 'medium',
+        scope: 'global',
+      });
     }
   }
 
@@ -899,7 +971,8 @@ export class ConnectionRegistry {
       const denied = [...new Set([...current.denied, ...(patch.deny ?? [])])].slice(0, 24);
       const missing = [...new Set([...current.missing, ...(patch.miss ?? [])])].filter((item) => !denied.includes(item)).slice(0, 24);
       profile.capabilityState = {
-        denied, missing,
+        denied,
+        missing,
         ...(patch.discovered || current.discoveredAt ? { discoveredAt: current.discoveredAt ?? nowIso() } : {}),
       };
     });
@@ -949,9 +1022,28 @@ export class ConnectionRegistry {
     return Boolean(loadStoredKeys()[keyRef(id)]?.trim());
   }
 
-  async invokeOperation(id: string, operation: ConnectionOperation, body?: unknown, query?: Record<string, unknown>, extraHeaders?:Record<string,string>): Promise<ConnectionInvocationResult> {
+  async invokeOperation(
+    id: string,
+    operation: ConnectionOperation,
+    body?: unknown,
+    query?: Record<string, unknown>,
+    extraHeaders?: Record<string, string>,
+  ): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
+    if (['brave', 'tavily'].includes(profile.provider) && operation.capability === 'web.search') {
+      if (operation.method !== 'GET' || operation.risk !== 'read' || body !== undefined)
+        throw new ConnectionInvocationError('not-run', 'Search connections expose read-only API research. Use web_search.', 'CONFIG_INVALID');
+      const text = query?.['q'] ?? query?.['query'];
+      if (typeof text !== 'string' || !text.trim())
+        throw new ConnectionInvocationError('not-run', 'Use web_search with a query, or pass query:{q:"search terms"} to this registered search read.', 'CONFIG_INVALID');
+      return {
+        ok: true,
+        status: 200,
+        message: 'Search API returned source results.',
+        data: await this.webSearch(profile.id, text, query?.['count'] === undefined ? 8 : Number(query['count'])),
+      };
+    }
 
     let encoded: string | undefined;
     if (body !== undefined) {
@@ -965,13 +1057,16 @@ export class ConnectionRegistry {
     const url = new URL(operation.path, `${profile.baseUrl}/`);
     if (query !== undefined) {
       if (operation.method !== 'GET') throw new ConnectionInvocationError('not-run', 'Query parameters are supported for read-only GET operations only.', 'CONFIG_INVALID');
-      if (!query || typeof query !== 'object' || Array.isArray(query) || Object.keys(query).length > 100) throw new ConnectionInvocationError('not-run', 'query must be an object with at most 100 parameters.', 'CONFIG_INVALID');
+      if (!query || typeof query !== 'object' || Array.isArray(query) || Object.keys(query).length > 100)
+        throw new ConnectionInvocationError('not-run', 'query must be an object with at most 100 parameters.', 'CONFIG_INVALID');
       for (const [key, raw] of Object.entries(query)) {
-        if (!key || key.length > 120 || /[\u0000-\u001f\u007f]/.test(key) || SECRET_BODY_FIELD_RE.test(key)) throw new ConnectionInvocationError('not-run', 'Query contains an unsafe or credential-like field. Use secure connection setup for credentials.', 'CONFIG_INVALID');
+        if (!key || key.length > 120 || /[\u0000-\u001f\u007f]/.test(key) || SECRET_BODY_FIELD_RE.test(key))
+          throw new ConnectionInvocationError('not-run', 'Query contains an unsafe or credential-like field. Use secure connection setup for credentials.', 'CONFIG_INVALID');
         const values = Array.isArray(raw) ? raw : [raw];
         if (values.length > 100) throw new ConnectionInvocationError('not-run', 'Too many values for a query parameter.', 'CONFIG_INVALID');
         for (const value of values) {
-          if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value))) throw new ConnectionInvocationError('not-run', 'Query values must be strings, finite numbers, booleans, or arrays of these.', 'CONFIG_INVALID');
+          if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value)))
+            throw new ConnectionInvocationError('not-run', 'Query values must be strings, finite numbers, booleans, or arrays of these.', 'CONFIG_INVALID');
           url.searchParams.append(key, String(value));
         }
       }
@@ -1096,7 +1191,7 @@ export class ConnectionRegistry {
     };
   }
 
-  async invoke(id: string, operationId: string, body?: unknown, query?: Record<string, unknown>,extraHeaders?:Record<string,string>): Promise<ConnectionInvocationResult> {
+  async invoke(id: string, operationId: string, body?: unknown, query?: Record<string, unknown>, extraHeaders?: Record<string, string>): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new ConnectionInvocationError('not-run', 'Saved connection not found.', 'CONFIG_INVALID');
     const canonical = canonicalOperationId(operationId);
@@ -1105,7 +1200,7 @@ export class ConnectionRegistry {
       this.recordCapability(profile.id, { miss: [canonical] });
       throw new ConnectionInvocationError('not-run', 'Connection operation is not registered.', 'CONNECTED_MISSING_OPERATION');
     }
-    return this.invokeOperation(id, operation, body, query,extraHeaders);
+    return this.invokeOperation(id, operation, body, query, extraHeaders);
   }
 
   async discover(request: DiscoveryRequest): Promise<DiscoveryResult> {
@@ -1149,14 +1244,7 @@ export class ConnectionRegistry {
       };
     };
 
-    const engine = new UniversalDiscoveryEngine(
-      catalogOps,
-      this.discoveryCache,
-      this.discoveryTelemetry,
-      fetcher,
-      profile.baseUrl,
-      headers,
-    );
+    const engine = new UniversalDiscoveryEngine(catalogOps, this.discoveryCache, this.discoveryTelemetry, fetcher, profile.baseUrl, headers);
 
     return engine.discover({ ...request, connectionId: profile.id });
   }
@@ -1189,14 +1277,14 @@ export class ConnectionRegistry {
     if (resolution.resolution === 'requires_approval') {
       // A read that resolved to the write-approval channel is a config error,
       // never an approval request for a safe read.
-      throw new ConnectionInvocationError('not-run', 'Safe reads never use the approval channel; the operation was classified as a write. Use the exact registered GET operation.', 'CONFIG_INVALID');
-    }
-    if (resolution.resolution === 'discovery_failed' || !resolution.operation) {
       throw new ConnectionInvocationError(
         'not-run',
-        resolution.reason,
-        resolution.state === 'KNOWN_REJECTED_OPERATION' ? 'KNOWN_REJECTED_OPERATION' : 'DISCOVERY_FAILED',
+        'Safe reads never use the approval channel; the operation was classified as a write. Use the exact registered GET operation.',
+        'CONFIG_INVALID',
       );
+    }
+    if (resolution.resolution === 'discovery_failed' || !resolution.operation) {
+      throw new ConnectionInvocationError('not-run', resolution.reason, resolution.state === 'KNOWN_REJECTED_OPERATION' ? 'KNOWN_REJECTED_OPERATION' : 'DISCOVERY_FAILED');
     }
     if (resolution.resolution === 'provisional') {
       // Phase 2: Execute candidate operation PROVISIONALLY.
@@ -1239,11 +1327,11 @@ export class ConnectionRegistry {
     if (!profile) throw new Error('Saved connection not found.');
     const operation = normalizeConnectionOperation(candidate);
     if (!operation) throw new Error('Connection operation is malformed or has an unsafe method/risk combination.');
-    const capabilityKnown = profile.capabilities.includes(operation.capability)
-      || documentedCapability
-      || catalogCapabilityDeclared(profile.provider, operation.capability);
+    const capabilityKnown = profile.capabilities.includes(operation.capability) || documentedCapability || catalogCapabilityDeclared(profile.provider, operation.capability);
     if (!capabilityKnown) {
-      throw new Error(`Saved connection does not declare capability "${operation.capability}", and no documented provider catalog entry or verified documentation supports adding it. Add the capability through a documented connection_operation proposal or secure connection setup.`);
+      throw new Error(
+        `Saved connection does not declare capability "${operation.capability}", and no documented provider catalog entry or verified documentation supports adding it. Add the capability through a documented connection_operation proposal or secure connection setup.`,
+      );
     }
     const existing = profile.operations.find((item) => item.id === operation.id);
     if (existing) {
@@ -1343,11 +1431,11 @@ export class ConnectionRegistry {
         // the same method and capability — re-point the operation in place
         // instead of dead-ending the agent on the stale route.
         if (
-          input.documented
-          && registered.method === wanted.method
-          && registered.capability === wanted.capability
-          && registered.path !== wanted.path
-          && this.isOperationRejected(profile.id, registered.id, registered.method, registered.path)
+          input.documented &&
+          registered.method === wanted.method &&
+          registered.capability === wanted.capability &&
+          registered.path !== wanted.path &&
+          this.isOperationRejected(profile.id, registered.id, registered.method, registered.path)
         ) {
           this.withProfile(profile.id, (mutable) => {
             mutable.operations = mutable.operations.map((op) => (op.id === registered.id ? wanted : op));
@@ -1490,21 +1578,11 @@ export class ConnectionRegistry {
           operation.risk === 'read' &&
           operation.method === 'GET' &&
           !this.isOperationRejected(id, operation.id, operation.method, operation.path),
-      ) ??
-      candidates.find(
-        (operation) =>
-          operation.capability === capability &&
-          !this.isOperationRejected(id, operation.id, operation.method, operation.path),
-      )
+      ) ?? candidates.find((operation) => operation.capability === capability && !this.isOperationRejected(id, operation.id, operation.method, operation.path))
     );
   }
 
-  private operateOn(
-    profile: ConnectionProfile,
-    operation: ConnectionOperation,
-    source: string,
-    documented = false,
-  ): ResolveConnectionOperationResult {
+  private operateOn(profile: ConnectionProfile, operation: ConnectionOperation, source: string, documented = false): ResolveConnectionOperationResult {
     // Phase 3 & 4: If this exact operation was already rejected, return KNOWN_REJECTED_OPERATION locally
     const rejected = this.isOperationRejected(profile.id, operation.id, operation.method, operation.path);
     if (rejected) {
@@ -1606,12 +1684,10 @@ export class ConnectionRegistry {
     // Only a POSITIVELY classified authentication failure (401 / expired /
     // revoked / missing credential) on the single matching connection routes
     // to secure reauthorization. Everything else stays capability-level.
-    const invalid = matching
-      .filter((profile) => {
-        const auth = this.authStateOf(profile.id);
-        return !profile.hasCredential || auth.status === 'invalid' || auth.status === 'expired';
-      })
-      .length;
+    const invalid = matching.filter((profile) => {
+      const auth = this.authStateOf(profile.id);
+      return !profile.hasCredential || auth.status === 'invalid' || auth.status === 'expired';
+    }).length;
     if (matching.length === 1 && invalid === 1) {
       const auth = this.authStateOf(matching[0]!.id);
       return {
@@ -1624,16 +1700,22 @@ export class ConnectionRegistry {
     return {
       action: 'capability-resolution',
       state: missing.length > 0 ? 'CONNECTED_MISSING_OPERATION' : 'DISCOVERY_FAILED',
-      reason: missing.length > 0
-        ? `A saved connection matches, but capability${missing.length > 1 ? 'ies' : ''} ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not registered. Resolve the operation (safe reads auto-register; writes need operation approval) — do NOT re-enter the credential.`
-        : 'A saved connection matches and validates; the unresolved need is capability-level. Resolve the documented operation — do NOT re-enter the credential.',
+      reason:
+        missing.length > 0
+          ? `A saved connection matches, but capability${missing.length > 1 ? 'ies' : ''} ${missing.join(', ')} ${missing.length > 1 ? 'are' : 'is'} not registered. Resolve the operation (safe reads auto-register; writes need operation approval) — do NOT re-enter the credential.`
+          : 'A saved connection matches and validates; the unresolved need is capability-level. Resolve the documented operation — do NOT re-enter the credential.',
     };
   }
 
   async validate(id: string): Promise<ConnectionInvocationResult> {
     const profile = this.get(id);
     if (!profile) throw new Error('Saved connection not found.');
-    const operation = profile.operations.find((candidate) => candidate.id === 'validate') ?? profile.operations.find((candidate) => candidate.risk === 'read' && candidate.method === 'GET');
+    if (['brave', 'tavily'].includes(profile.provider) && profile.capabilities.includes('web.search')) {
+      await this.webSearch(profile.id, 'Agent Gitu', 1);
+      return { ok: true, status: 200, message: 'Search API is connected.' };
+    }
+    const operation =
+      profile.operations.find((candidate) => candidate.id === 'validate') ?? profile.operations.find((candidate) => candidate.risk === 'read' && candidate.method === 'GET');
     if (!operation || operation.risk !== 'read' || operation.method !== 'GET') throw new Error('Connection needs a registered read-only GET validation operation.');
     return this.invoke(profile.id, operation.id);
   }
@@ -1643,21 +1725,27 @@ export class ConnectionRegistry {
     return {
       id: 'saved-connections',
       get capabilities(): Capability[] {
-        return registry.list().flatMap((profile) => profile.capabilities.map((capability) => ({
-          id: capability,
-          provider: profile.provider,
-          actions: ['discover'],
-          riskClass: 'read' as const,
-        })));
+        return registry.list().flatMap((profile) =>
+          profile.capabilities.map((capability) => ({
+            id: capability,
+            provider: profile.provider,
+            actions: ['discover'],
+            riskClass: 'read' as const,
+          })),
+        );
       },
       async resolveCapability(input: { providerHint?: string; capabilities: string[] }): Promise<ProviderCapabilityResult> {
         if (input.capabilities.length === 0) {
           return { status: 'unresolved', registeredReads: 0, awaitingApproval: [], summary: 'No capability was requested for resolution.' };
         }
         const hint = slug(input.providerHint ?? '', '');
-        const candidates = registry.list().filter((profile) =>
-          profile.hasCredential
-          && (hint ? [profile.id, profile.provider, slug(profile.label, '')].includes(hint) : input.capabilities.some((capability) => profile.capabilities.includes(capability))));
+        const candidates = registry
+          .list()
+          .filter(
+            (profile) =>
+              profile.hasCredential &&
+              (hint ? [profile.id, profile.provider, slug(profile.label, '')].includes(hint) : input.capabilities.some((capability) => profile.capabilities.includes(capability))),
+          );
         if (candidates.length === 0) {
           return { status: 'unresolved', registeredReads: 0, awaitingApproval: [], summary: 'No saved connection with a credential matches these capabilities.' };
         }
@@ -1671,7 +1759,13 @@ export class ConnectionRegistry {
           riskLevel: 'read',
         });
         if (check.connectionValid === false && (check.state === 'AUTH_INVALID' || check.state === 'AUTH_EXPIRED')) {
-          return { status: 'unresolved', registeredReads: 0, awaitingApproval: [], healthyConnection: false, summary: `Saved connection "${profile.label}" was positively rejected by the provider — reauthorization is required.` };
+          return {
+            status: 'unresolved',
+            registeredReads: 0,
+            awaitingApproval: [],
+            healthyConnection: false,
+            summary: `Saved connection "${profile.label}" was positively rejected by the provider — reauthorization is required.`,
+          };
         }
         let registeredReads = 0;
         const awaitingApproval: string[] = [];
@@ -1694,16 +1788,36 @@ export class ConnectionRegistry {
         const matches = registry.list().filter((profile) => profile.hasCredential && profileMatches(profile, requirement));
         if (matches.length === 0) return { status: 'unresolved', summary: 'No compatible saved connection is configured.' };
         if (matches.length > 1) {
-          const checks = await Promise.allSettled(matches.slice(0, 6).map(async profile => { await registry.validate(profile.id); return profile; }));
-          const usable = checks.flatMap(check => check.status === 'fulfilled' ? [check.value] : []);
+          const checks = await Promise.allSettled(
+            matches.slice(0, 6).map(async (profile) => {
+              await registry.validate(profile.id);
+              return profile;
+            }),
+          );
+          const usable = checks.flatMap((check) => (check.status === 'fulfilled' ? [check.value] : []));
           if (usable.length === 0) return { status: 'unresolved', summary: 'Matching saved connections could not be validated.' };
-          if (usable.length === 1) return { status: 'resolved', source: 'existing-resource', reference: usable[0]!.id, summary: `Validated saved connection "${usable[0]!.label}"; other matching accounts were unavailable. Its credential remains private.` };
-          return { status: 'needs-user', summary: 'More than one validated saved connection can meet this prerequisite.', candidates: usable.map((profile) => ({ id: profile.id, label: profile.label })) };
+          if (usable.length === 1)
+            return {
+              status: 'resolved',
+              source: 'existing-resource',
+              reference: usable[0]!.id,
+              summary: `Validated saved connection "${usable[0]!.label}"; other matching accounts were unavailable. Its credential remains private.`,
+            };
+          return {
+            status: 'needs-user',
+            summary: 'More than one validated saved connection can meet this prerequisite.',
+            candidates: usable.map((profile) => ({ id: profile.id, label: profile.label })),
+          };
         }
         const profile = matches[0]!;
         try {
           await registry.validate(profile.id);
-          return { status: 'resolved', source: 'existing-resource', reference: profile.id, summary: `Validated saved connection "${profile.label}" for ${requirement.description}; its credential remains private.` };
+          return {
+            status: 'resolved',
+            source: 'existing-resource',
+            reference: profile.id,
+            summary: `Validated saved connection "${profile.label}" for ${requirement.description}; its credential remains private.`,
+          };
         } catch (error) {
           return { status: 'unresolved', summary: `Saved connection "${profile.label}" could not be validated: ${(error as Error).message}` };
         }

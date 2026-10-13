@@ -52,6 +52,7 @@ import {
   toolUseSkill,
   toolUseSkillReference,
   toolWebFetch,
+  toolWebSearch,
   toolWriteFile,
   validateToolParams,
   type DelegateFn,
@@ -67,13 +68,36 @@ import { isObservationTool } from '../agent/agent-workflow.js';
 
 /** Every tool name this executor dispatches, for "did you mean" suggestions. */
 const EXECUTOR_TOOL_NAMES = [
-  'read_file', 'write_file', 'apply_edit', 'list_files', 'search_files', 'web_fetch',
-  'browse', 'browser', 'delegate', 'agent_status', 'list_skills', 'create_skill',
-  'update_skill', 'use_skill', 'use_skill_reference', 'memory', 'list_mcp',
-  'configure_mcp', 'list_connections', 'update_connection', 'run_command',
-  'connection_read', 'inspect_connection_response',
-  'create_document', 'schedule_manage', 'lsp_diagnostics', 'lsp_definition',
-  'lsp_references', 'lsp_hover', 'lsp_symbols',
+  'read_file',
+  'write_file',
+  'apply_edit',
+  'list_files',
+  'search_files',
+  'web_fetch',
+  'browse',
+  'browser',
+  'delegate',
+  'agent_status',
+  'list_skills',
+  'create_skill',
+  'update_skill',
+  'use_skill',
+  'use_skill_reference',
+  'memory',
+  'list_mcp',
+  'configure_mcp',
+  'list_connections',
+  'update_connection',
+  'run_command',
+  'connection_read',
+  'inspect_connection_response',
+  'create_document',
+  'schedule_manage',
+  'lsp_diagnostics',
+  'lsp_definition',
+  'lsp_references',
+  'lsp_hover',
+  'lsp_symbols',
 ];
 
 /**
@@ -86,7 +110,9 @@ function unknownToolGuidance(tool: string): string {
   const parts = [`Unknown tool: ${tool} — nothing was executed; that name is not a valid action tool.`];
   const suggestions = closestNameMatches(tool, EXECUTOR_TOOL_NAMES);
   if (suggestions.length > 0) parts.push(`Did you mean: ${suggestions.join(', ')}? Retry with the exact name and params from the action grammar.`);
-  parts.push('Do NOT abandon the task because of this. Recover: check the action grammar for the real tool name; if no tool covers the goal, accomplish it with run_command (a shell equivalent, an installable CLI, or a small script) or add an integration with configure_mcp after checking list_mcp. If the work needs a credential, API key, or account you do not have, end with request_block naming the exact missing prerequisite (which service, which key) so the user is asked for it — never stop silently.');
+  parts.push(
+    'Do NOT abandon the task because of this. Recover: check the action grammar for the real tool name; if no tool covers the goal, accomplish it with run_command (a shell equivalent, an installable CLI, or a small script) or add an integration with configure_mcp after checking list_mcp. If the work needs a credential, API key, or account you do not have, end with request_block naming the exact missing prerequisite (which service, which key) so the user is asked for it — never stop silently.',
+  );
   return parts.join(' ');
 }
 
@@ -198,12 +224,13 @@ export class Executor {
     try {
       const abs = this.guard.resolve(rel);
       if (['read_file', 'list_files', 'search_files'].includes(req.tool)) {
-        try { this.guard.assertReadable(abs); }
-        catch (error) {
+        try {
+          this.guard.assertReadable(abs);
+        } catch (error) {
           const hardInstructions = typeof this.ledger.hardInstructions === 'function' ? this.ledger.hardInstructions() : [];
           if (!this.instructionPolicy.evaluate(req.tool, req.params, hardInstructions).allowed) throw error;
           const scope = this.guard.diagnosticReadScope(abs);
-          if (!await this.policy.approveDiagnosticRead(req.tool, scope.path, scope.directory)) throw error;
+          if (!(await this.policy.approveDiagnosticRead(req.tool, scope.path, scope.directory))) throw error;
           if (this.signal?.()?.aborted) throw new Error('Diagnostic read cancelled');
           this.guard.grantDiagnosticRead(scope);
           this.guard.assertReadable(abs);
@@ -248,7 +275,10 @@ export class Executor {
     // completion. No filename pattern matching: placement is declared, not guessed.
     let scratchNote: string | undefined;
     if (req.tool === 'write_file' && req.params['scratch'] === true && this.guard.taskTmpRoot) {
-      const base = String(req.params['path'] ?? '').replace(/\\/g, '/').split('/').pop();
+      const base = String(req.params['path'] ?? '')
+        .replace(/\\/g, '/')
+        .split('/')
+        .pop();
       if (base) {
         const targetRel = path.join(path.relative(this.guard.activeWritableRoot, this.guard.taskTmpRoot), base);
         req = { ...req, params: { ...req.params, path: targetRel } };
@@ -379,7 +409,9 @@ export class Executor {
     // newly-added helper cannot crash otherwise valid tool execution.
     const refreshRead = req.tool === 'read_file' && req.params['refresh'] === true;
     const reusableRead =
-      !refreshRead && typeof this.loopDetector.reusableSuccessfulRead === 'function' ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash, readContextFingerprint) : undefined;
+      !refreshRead && typeof this.loopDetector.reusableSuccessfulRead === 'function'
+        ? this.loopDetector.reusableSuccessfulRead(this.ledger.data.actions, req.tool, paramsHash, readContextFingerprint)
+        : undefined;
     if (reusableRead) {
       const cachedEntry = readContextFingerprint ? this.readCache.get(readContextFingerprint) : undefined;
       const cachedContent = cachedEntry?.output ?? reusableRead.observation;
@@ -552,6 +584,9 @@ export class Executor {
         case 'search_files':
           result = await toolSearchFiles({ ...ctx, signal: this.signal?.() }, req.params);
           break;
+        case 'web_search':
+          result = await toolWebSearch({ ...ctx, signal: this.signal?.() }, req.params);
+          break;
         case 'web_fetch':
           result = await toolWebFetch(ctx, req.params);
           break;
@@ -637,7 +672,11 @@ export class Executor {
             break;
           }
           if (req.tool.startsWith('mcp:')) {
-            result = { ok: false, output: `Unknown tool: ${req.tool} — MCP support is not wired in this session, so MCP tools cannot be called. Accomplish the goal another way (run_command with a shell equivalent) or, if a credential or integration is missing, end with request_block naming the exact missing prerequisite so the user is asked.`, errorSignature: 'unknown-tool' };
+            result = {
+              ok: false,
+              output: `Unknown tool: ${req.tool} — MCP support is not wired in this session, so MCP tools cannot be called. Accomplish the goal another way (run_command with a shell equivalent) or, if a credential or integration is missing, end with request_block naming the exact missing prerequisite so the user is asked.`,
+              errorSignature: 'unknown-tool',
+            };
             break;
           }
           result = { ok: false, output: unknownToolGuidance(req.tool), errorSignature: 'unknown-tool' };

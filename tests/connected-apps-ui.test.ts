@@ -5,8 +5,27 @@ import { authPage } from '../src/server/ui-auth.js';
 import { COWORK_JS } from '../src/server/ui-cowork.js';
 
 function fixture() {
-  const control = () => ({ onclick: undefined as undefined | (() => void), onkeydown: undefined as undefined | ((event: { key: string; preventDefault: () => void }) => void), attributes: {} as Record<string, string>, tabIndex: 0, focus: vi.fn(), setAttribute(name: string, value: string) { this.attributes[name] = value; } });
-  const content = { innerHTML: '', attributes: {} as Record<string, string>, setAttribute(name: string, value: string) { this.attributes[name] = value; }, querySelectorAll: () => [], insertAdjacentHTML(_position: string, html: string) { this.innerHTML += html; } };
+  const control = () => ({
+    onclick: undefined as undefined | (() => void),
+    onkeydown: undefined as undefined | ((event: { key: string; preventDefault: () => void }) => void),
+    attributes: {} as Record<string, string>,
+    tabIndex: 0,
+    focus: vi.fn(),
+    setAttribute(name: string, value: string) {
+      this.attributes[name] = value;
+    },
+  });
+  const content = {
+    innerHTML: '',
+    attributes: {} as Record<string, string>,
+    setAttribute(name: string, value: string) {
+      this.attributes[name] = value;
+    },
+    querySelectorAll: () => [],
+    insertAdjacentHTML(_position: string, html: string) {
+      this.innerHTML += html;
+    },
+  };
   const providerButton = { disabled: false };
   const elements = {
     cwChat: { innerHTML: '' },
@@ -25,9 +44,22 @@ function fixture() {
     cwProviderError: { hidden: true, textContent: '' },
   };
   const cw = {
-    connectionsOpen: false, connectionRevision: 0, active: null, selectedAgentId: 'writer', connectionsAgentId: 'writer', servicesTab: 'available', servicesSearch: '', services: [] as { slug: string; name: string }[],
+    connectionsOpen: false,
+    connectionRevision: 0,
+    active: null,
+    selectedAgentId: 'writer',
+    connectionsAgentId: 'writer',
+    servicesTab: 'available',
+    servicesSearch: '',
+    services: [] as { slug: string; name: string }[],
     requests: [] as { id: string; agentId: string; appConnection?: { service: string; name: string; reason?: string } }[],
-    mail: undefined as { accounts: { id: string; label: string; address: string }[]; available: { id: string; label: string; address: string }[]; providers: { id: string; name: string; imap: { host: string; port: number; secure: boolean }; smtp: { host: string; port: number; secure: boolean }; note: string }[] } | undefined,
+    mail: undefined as
+      | {
+          accounts: { id: string; label: string; address: string }[];
+          available: { id: string; label: string; address: string }[];
+          providers: { id: string; name: string; imap: { host: string; port: number; secure: boolean }; smtp: { host: string; port: number; secure: boolean }; note: string }[];
+        }
+      | undefined,
     mailFormOpen: false,
   };
   const api = vi.fn();
@@ -59,23 +91,27 @@ function fixture() {
     esc: (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!),
   });
   new Script(CONNECTED_APPS_JS).runInContext(context);
+  context.openSettings = vi.fn(() => context.cwMountConnections(elements.cwChat));
+  context.closeSettings = vi.fn(() => context.cwCloseConnectionManager());
   return { content, elements, cw, api, context };
 }
 
 describe('account and Connections UI', () => {
-  it('opens workspace apps through Cowork after its roster is loaded', () => {
+  it('opens one workspace manager in Settings without switching modes', () => {
     const f = fixture();
     f.context.cwOpenWorkspaceConnections();
-    expect(f.cw).toMatchObject({ homeAction: { kind: 'connections' } });
-    expect(f.context.openCowork).toHaveBeenCalledOnce();
+    expect(f.context.openSettings).toHaveBeenCalledWith('connections');
+    expect(f.context.openCowork).not.toHaveBeenCalled();
   });
   it('opens recommended app sign-in on the first click and keeps a retry link', async () => {
-    const f = fixture(), openAppSignIn = vi.fn(async () => true);
+    const f = fixture(),
+      openAppSignIn = vi.fn(async () => true);
     f.context.window = { gituDesktop: { openAppSignIn } };
-    f.context.cwRenderMsgs = vi.fn(); f.context.cwPollAppConnections = vi.fn();
+    f.context.cwRenderMsgs = vi.fn();
+    f.context.cwPollAppConnections = vi.fn();
     f.cw.requests.push({ id: 'connect-request', agentId: 'writer', appConnection: { service: 'tavily', name: 'Tavily' } });
     const button = { disabled: false, getAttribute: () => 'connect-request', onclick: undefined as undefined | (() => Promise<void>) };
-    const root = { querySelectorAll: (selector: string) => selector === '[data-cwconnectrequest]' ? [button] : [] };
+    const root = { querySelectorAll: (selector: string) => (selector === '[data-cwconnectrequest]' ? [button] : []) };
     f.api.mockResolvedValue({ url: 'https://connect.composio.dev/link', accountId: 'own' });
     f.context.cwBindAppConnections(root);
     await button.onclick!();
@@ -86,7 +122,8 @@ describe('account and Connections UI', () => {
     expect(f.context.toast).toHaveBeenCalledWith('Finish sign-in in your browser. This card updates automatically.');
   });
   it('reserves a web popup before the async request and closes it on failure', async () => {
-    const f = fixture(), tab = { opener: {}, closed: false, close: vi.fn(), location: { replace: vi.fn() } };
+    const f = fixture(),
+      tab = { opener: {}, closed: false, close: vi.fn(), location: { replace: vi.fn() } };
     f.context.window = { open: vi.fn(() => tab) };
     const signIn = f.context.cwPrepareAppSignIn();
     expect(f.context.window.open).toHaveBeenCalledWith('about:blank', '_blank');
@@ -94,7 +131,8 @@ describe('account and Connections UI', () => {
     expect(await signIn.open('https://connect.composio.dev/link')).toBe(true);
     expect(tab.location.replace).toHaveBeenCalledWith('https://connect.composio.dev/link');
     await expect(signIn.open('https://evil.example')).rejects.toThrow('Invalid sign-in link');
-    signIn.cancel(); expect(tab.close).toHaveBeenCalledOnce();
+    signIn.cancel();
+    expect(tab.close).toHaveBeenCalledOnce();
     f.context.cwAppSignInError(new Error(JSON.stringify({ code: 'APP_SIGN_IN_FAILED', error: 'Check this app’s authentication setup in Composio.' })), 'writer');
     expect(f.context.toast).toHaveBeenCalledWith('Check this app’s authentication setup in Composio.', true);
   });
@@ -137,11 +175,14 @@ describe('account and Connections UI', () => {
         { name: '<img onerror=alert(1)>', slug: 'gmail', status: 'ACTIVE' },
         { name: 'Slack', slug: 'slack', status: 'EXPIRED' },
       ],
-      accounts: [{ id: 'own', toolkit: 'gmail', status: 'ACTIVE', disabled: false }, { id: 'expired', toolkit: 'slack', status: 'EXPIRED', disabled: false }],
+      accounts: [
+        { id: 'own', toolkit: 'gmail', status: 'ACTIVE', disabled: false },
+        { id: 'expired', toolkit: 'slack', status: 'EXPIRED', disabled: false },
+      ],
     });
     f.context.cwOpenConnections();
     await f.context.cwLoadServices('', false);
-    expect(f.elements.cwChat.innerHTML).toContain('Connections');
+    expect(f.elements.cwChat.innerHTML).toContain('Apps & accounts');
     expect(f.content.innerHTML).toContain('&lt;img');
     expect(f.content.innerHTML).not.toContain('<img');
     expect(f.content.innerHTML).toContain('Connected');
@@ -149,16 +190,24 @@ describe('account and Connections UI', () => {
     expect(f.content.innerHTML).not.toContain('data-cwdisconnect');
     f.elements.cwServicesConnected.onclick!();
     expect(f.content.innerHTML).toContain('data-cwdisconnect="own"');
-    f.elements.cwServicesBack.onclick!();
+    f.context.closeSettings();
     expect(f.cw.connectionsOpen).toBe(false);
-    expect(f.context.cwRenderChat).toHaveBeenCalledOnce();
+    expect(f.context.cwRenderChat).not.toHaveBeenCalled();
   });
   it('offers an Email section that connects any mailbox and opens it from a mail suggestion', async () => {
     const f = fixture();
     const mailPayload = {
       accounts: [{ id: 'mail-1', label: 'Support', address: 'help@example.com' }],
       available: [{ id: 'mail-2', label: 'Sales', address: 'sales@example.com' }],
-      providers: [{ id: 'gmail', name: 'Gmail', imap: { host: 'imap.gmail.com', port: 993, secure: true }, smtp: { host: 'smtp.gmail.com', port: 465, secure: true }, note: 'App password required.' }],
+      providers: [
+        {
+          id: 'gmail',
+          name: 'Gmail',
+          imap: { host: 'imap.gmail.com', port: 993, secure: true },
+          smtp: { host: 'smtp.gmail.com', port: 465, secure: true },
+          note: 'App password required.',
+        },
+      ],
     };
     f.cw.mail = mailPayload;
     const html = f.context.cwMailSectionHtml('writer');
@@ -172,7 +221,24 @@ describe('account and Connections UI', () => {
     // Picking a provider fills the documented servers, and submit posts them for this teammate.
     const elements: Record<string, Record<string, unknown>> = {};
     const field = (id: string) => (elements[id] = { id, value: '', checked: false, hidden: false, textContent: '', focus: vi.fn() });
-    ['cwMailForm', 'cwMailAdd', 'cwMailError', 'cwMailNote', 'cwMailProvider', 'cwMailAddress', 'cwMailPassword', 'cwMailLabel', 'cwMailUsername', 'cwMailImapHost', 'cwMailImapPort', 'cwMailImapSecure', 'cwMailSmtpHost', 'cwMailSmtpPort', 'cwMailSmtpSecure', 'cwMailSelfSigned'].forEach(field);
+    [
+      'cwMailForm',
+      'cwMailAdd',
+      'cwMailError',
+      'cwMailNote',
+      'cwMailProvider',
+      'cwMailAddress',
+      'cwMailPassword',
+      'cwMailLabel',
+      'cwMailUsername',
+      'cwMailImapHost',
+      'cwMailImapPort',
+      'cwMailImapSecure',
+      'cwMailSmtpHost',
+      'cwMailSmtpPort',
+      'cwMailSmtpSecure',
+      'cwMailSelfSigned',
+    ].forEach(field);
     elements['cwMailForm']!.querySelector = () => ({ disabled: false });
     mailPayload.providers[0]!.note = 'App password required.';
     elements['cwMailProvider']!.value = 'gmail';
@@ -189,11 +255,28 @@ describe('account and Connections UI', () => {
     await (elements['cwMailForm']!.onsubmit as (event: { preventDefault: () => void }) => Promise<void>)({ preventDefault: vi.fn() });
     const mailCall = f.api.mock.calls.find((call) => String(call[0]) === '/api/connected-apps/mail');
     expect(mailCall).toBeDefined();
-    expect(JSON.parse(String((mailCall![1] as { body: string }).body))).toMatchObject({ agentId: 'writer', provider: 'gmail', address: 'help@example.com', imapHost: 'imap.gmail.com', imapPort: 993, imapSecure: true, smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecure: true });
+    expect(JSON.parse(String((mailCall![1] as { body: string }).body))).toMatchObject({
+      agentId: 'writer',
+      provider: 'gmail',
+      address: 'help@example.com',
+      imapHost: 'imap.gmail.com',
+      imapPort: 993,
+      imapSecure: true,
+      smtpHost: 'smtp.gmail.com',
+      smtpPort: 465,
+      smtpSecure: true,
+    });
     expect(elements['cwMailPassword']!.value).toBe('');
     // Typing an address from a known provider selects it and fills both servers.
     f.cw.mail = mailPayload; // a refresh clears it, exactly like the live page
-    f.cw.mail.providers.push({ id: 'fastmail', name: 'Fastmail', domains: ['fastmail.com'], imap: { host: 'imap.fastmail.com', port: 993, secure: true }, smtp: { host: 'smtp.fastmail.com', port: 465, secure: true }, note: 'App password.' });
+    f.cw.mail.providers.push({
+      id: 'fastmail',
+      name: 'Fastmail',
+      domains: ['fastmail.com'],
+      imap: { host: 'imap.fastmail.com', port: 993, secure: true },
+      smtp: { host: 'smtp.fastmail.com', port: 465, secure: true },
+      note: 'App password.',
+    });
     elements['cwMailProvider']!.value = 'custom';
     elements['cwMailImapHost']!.value = '';
     elements['cwMailSmtpHost']!.value = '';
@@ -219,13 +302,21 @@ describe('account and Connections UI', () => {
   });
   it('shows real role suggestions once, filters the catalog, and switches views without a network call', async () => {
     const f = fixture();
-    f.api.mockResolvedValue({ configured: true, agents: [{ id: 'writer', name: 'Atlas' }],
-      services: [{ slug: 'github', name: 'GitHub' }, { slug: 'future-tool', name: 'Future tool', description: 'Team diagrams' }],
+    f.api.mockResolvedValue({
+      configured: true,
+      agents: [{ id: 'writer', name: 'Atlas' }],
+      services: [
+        { slug: 'github', name: 'GitHub' },
+        { slug: 'future-tool', name: 'Future tool', description: 'Team diagrams' },
+      ],
       accounts: [{ id: 'private-id-1234', toolkit: 'github', status: 'ACTIVE', disabled: false }],
       availableAccounts: [{ id: 'unassigned', toolkit: 'gmail', status: 'ACTIVE', disabled: false }],
-      requests: [{ agentId: 'writer', status: 'accepted', appConnection: { service: 'github', name: 'GitHub', reason: 'Review repository code.' } },
+      requests: [
+        { agentId: 'writer', status: 'accepted', appConnection: { service: 'github', name: 'GitHub', reason: 'Review repository code.' } },
         { agentId: 'someone-else', status: 'open', appConnection: { service: 'slack', name: 'Slack' } },
-        { agentId: 'writer', status: 'dismissed', appConnection: { service: 'facebook', name: 'Facebook' } }] });
+        { agentId: 'writer', status: 'dismissed', appConnection: { service: 'facebook', name: 'Facebook' } },
+      ],
+    });
     f.context.cwOpenConnections();
     await f.context.cwLoadServices('', false);
     expect(f.content.innerHTML).toContain('Suggested for Atlas');
@@ -254,7 +345,13 @@ describe('account and Connections UI', () => {
     f.api.mockResolvedValueOnce({ configured: true, services: [{ slug: 'first', name: 'App one' }], cursor: 'next-page' });
     f.context.cwOpenConnections();
     await vi.waitFor(() => expect(f.content.innerHTML).toContain('App one'));
-    f.api.mockResolvedValueOnce({ configured: true, services: [{ slug: 'first', name: 'App one' }, { slug: 'second', name: 'App two' }] });
+    f.api.mockResolvedValueOnce({
+      configured: true,
+      services: [
+        { slug: 'first', name: 'App one' },
+        { slug: 'second', name: 'App two' },
+      ],
+    });
     await f.context.cwLoadServices('App', true);
     expect(f.api.mock.calls[1]![0]).toContain('search=App&cursor=next-page');
     expect(f.content.innerHTML.match(/data-service="first"/g)).toHaveLength(1);
@@ -267,9 +364,13 @@ describe('account and Connections UI', () => {
     const f = fixture();
     const assign = { disabled: false, onclick: undefined as undefined | (() => Promise<void>), getAttribute: () => 'existing-account' };
     const remove = { disabled: false, onclick: undefined as undefined | (() => Promise<void>), getAttribute: () => 'own-account' };
-    const root = { querySelectorAll: (selector: string) => selector === '[data-cwassignapp]' ? [assign] : selector === '[data-cwdisconnect]' ? [remove] : [] };
+    const root = { querySelectorAll: (selector: string) => (selector === '[data-cwassignapp]' ? [assign] : selector === '[data-cwdisconnect]' ? [remove] : []) };
     let resolve!: () => void;
-    f.api.mockReturnValueOnce(new Promise<void>((r) => { resolve = r; }));
+    f.api.mockReturnValueOnce(
+      new Promise<void>((r) => {
+        resolve = r;
+      }),
+    );
     f.context.cwBindServiceActions(root, 'atlas');
     const pending = assign.onclick!();
     await assign.onclick!();
@@ -287,7 +388,11 @@ describe('account and Connections UI', () => {
     f.context.cwOpenConnections();
     await vi.waitFor(() => expect(f.content.innerHTML).toContain('GitHub'));
     let resolve!: (data: unknown) => void;
-    f.api.mockReturnValueOnce(new Promise((r) => { resolve = r; }));
+    f.api.mockReturnValueOnce(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
     const oldSearch = f.context.cwLoadServices('', false);
     f.api.mockResolvedValueOnce({ configured: true, services: [{ slug: 'instagram', name: 'Instagram' }] });
     f.elements.cwServicesAgent.value = 'nova';

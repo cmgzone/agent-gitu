@@ -25,7 +25,10 @@ export function companyPolicy(
       if (!c || c.state !== 'running') return { ok: false, output: 'Company is paused. Wait for the owner to resume it.' };
       if (c.directionVersion !== version) return { ok: false, output: 'The owner changed direction. End this turn and replan using the latest direction.' };
       if (CONFIG.has(tool)) return { ok: false, output: 'Only the owner can change company grants or connections in Company settings.' };
-      if (tool === 'connection_read' && !c.connectionIds.includes(String(args['connectionId'] ?? args['connection'] ?? '')))
+      // Full access leaves command verification/recovery with the agent. The
+      // dispatcher still enforces shell permission and computer/file grants.
+      if (tool === 'run_command' && c.access === 'full') return undefined;
+      if ((tool === 'connection_read' || (tool === 'web_search' && args['connectionId'])) && !c.connectionIds.includes(String(args['connectionId'] ?? args['connection'] ?? '')))
         return { ok: false, output: 'This connection is not granted to this company.' };
       if (tool === 'team_manage' && String(args['action']) === 'create' && (staffCount?.() ?? 0) >= c.staffLimit) return { ok: false, output: 'Company staff limit reached.' };
       const external = classify
@@ -62,6 +65,10 @@ export function companyPolicy(
       return undefined;
     },
     settled(tool, args, result) {
+      if (tool === 'run_command' && store.get(companyId)?.access === 'full') {
+        if (inFlight.delete(key(tool, args))) store.manageCommandReviews(companyId);
+        return;
+      }
       const action = inFlight.get(key(tool, args));
       if (!action) return;
       inFlight.delete(key(tool, args));

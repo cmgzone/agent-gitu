@@ -60,7 +60,14 @@ export function classifyCommand(command: string): { tier: RiskTier; why: string 
   }
   // Recognize common Windows inspection pipelines. Reject script blocks,
   // substitutions, redirections and invocation operators before splitting.
-  if (!/[`$(){}<>]|&&|\|\||(?:^|\s)&/.test(command) && command.split(/[;|\r\n]+/).filter(s => s.trim()).every(s => POWERSHELL_READ_RE.test(s.trim())) && command.trim()) {
+  if (
+    !/[`$(){}<>]|&&|\|\||(?:^|\s)&/.test(command) &&
+    command
+      .split(/[;|\r\n]+/)
+      .filter((s) => s.trim())
+      .every((s) => POWERSHELL_READ_RE.test(s.trim())) &&
+    command.trim()
+  ) {
     return { tier: 'safe', why: 'PowerShell read-only inspection' };
   }
   for (const { re, why } of MODERATE_COMMAND_PATTERNS) {
@@ -72,12 +79,7 @@ export function classifyCommand(command: string): { tier: RiskTier; why: string 
   return { tier: 'dangerous', why: 'unrecognized command (fail closed)' };
 }
 
-export type ApprovalHandler = (request: {
-  tool: string;
-  tier: RiskTier;
-  why: string;
-  summary: string;
-}) => Promise<boolean> | boolean;
+export type ApprovalHandler = (request: { tool: string; tier: RiskTier; why: string; summary: string }) => Promise<boolean> | boolean;
 
 export class PolicyEngine {
   constructor(
@@ -107,6 +109,7 @@ export class PolicyEngine {
       case 'read_file':
       case 'list_files':
       case 'search_files':
+      case 'web_search':
       case 'web_fetch':
       case 'browse':
       case 'browser':

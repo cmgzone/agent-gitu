@@ -557,6 +557,8 @@ ${HOME_CSS}
   .qcard .opts { display: flex; gap: 6px; flex-wrap: wrap; }
   .qcard .opt { border: 1px solid var(--border2); background: var(--card2); color: var(--text); border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; }
   .qcard .opt.sel { border-color: var(--run); color: var(--run); background: var(--run-dim); }
+  .qcard .opt { max-width: 100%; overflow-wrap: anywhere; white-space: normal; text-align: left; }
+  .qcard .qt { overflow-wrap: anywhere; }
   .qcard .custom { width: 100%; margin-top: 6px; border: 1px solid var(--border2); border-radius: 8px; padding: 6px 9px; font-size: 12px; background: var(--card2); color: var(--text); }
 
   .summary-card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 16px 0; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
@@ -4583,16 +4585,17 @@ ${ONBOARDING_HTML}
     var selections = {};
     var questions = (q.questions || []).filter(function(qq){return qq && typeof qq === 'object';}).map(function(qq){
       var options = Array.isArray(qq.options) ? qq.options : [];
-      return { question: qq.question, header: qq.header, options: options.map(function(option){
+      var seen = {};
+      return { question: qq.question, header: qq.header, detail: qq.detail, kind: qq.kind, options: options.map(function(option){
         var label = typeof option === 'string' ? option : option && typeof option === 'object' ? option.label : '';
         return typeof label === 'string' && label.trim() !== '[object Object]' ? label.trim() : '';
-      }).filter(Boolean) };
+      }).filter(function(label){var key=qq.kind==='workspace'&&label.charAt(0)==='/'?label:label.toLowerCase();if(!label||Object.prototype.hasOwnProperty.call(seen,key))return false;seen[key]=true;return true;}) };
     });
     var div = document.createElement('div');
     div.className = 'qcard';
-    var html = '<h3>Agent Gitu has a few questions before starting</h3>';
+    var html = '<h3>Agent Gitu needs your input</h3>';
     questions.forEach(function (qq, qi) {
-      html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(qq.question) + '</div><div class="opts">';
+      html += '<div class="q"><div class="qt">' + esc(qq.header ? qq.header + ' — ' : '') + esc(qq.question) + '</div>' + (qq.detail ? '<div class="meta" style="margin:6px 0;overflow-wrap:anywhere">' + esc(qq.detail) + '</div>' : '') + (qq.kind === 'workspace' ? '<button class="btn ghost" data-workspace-controls="1">Open folder access controls</button>' : '') + '<div class="opts">';
       qq.options.forEach(function (op, oi) {
         html += '<button class="opt" data-q="' + qi + '" data-o="' + oi + '">' + esc(op) + '</button>';
       });
@@ -4604,6 +4607,7 @@ ${ONBOARDING_HTML}
     if (working) stream.insertBefore(div, working); else stream.appendChild(div);
     stickScroll(stream, true);
     div.onclick = function (e) {
+      if (e.target.closest && e.target.closest('[data-workspace-controls]')) { openFolderBrowser('tag'); return; }
       var btn = e.target.closest && e.target.closest('.opt');
       if (!btn) return;
       var qi = btn.getAttribute('data-q');

@@ -59,7 +59,7 @@ import { SubAgentRunner } from '../agent/subagent.js';
 import { AgentStore } from '../agents/registry.js';
 import type { BrowserBridge, BrowserState } from '../browser/browser.js';
 import { CronScheduler, CronStore, parseEvery, type CronJob } from '../cron/scheduler.js';
-import { ProjectGuard } from '../guard/project-guard.js';
+import { ProjectGuard, ProjectGuardError } from '../guard/project-guard.js';
 import { gitCommit, gitDiff, gitDiscard, gitInfo, gitInit, gitPush } from '../git/git.js';
 import { TaskLedger } from '../ledger/task-ledger.js';
 import { gitExec } from '../git/git.js';
@@ -7366,8 +7366,14 @@ export class GituServer {
       const lock = (await ProjectGuard.detectAsync(opts.projectPath ?? this.config.cwd)).lock;
       root = lock.repoRoot;
       ignorePaths = lock.ignorePaths;
-    } catch {
-      root = this.config.cwd;
+    } catch (error) {
+      // A stale picker/session path must never execute against the server's
+      // unrelated default project. Keep this session and its task for recovery.
+      session.status = 'blocked';
+      session.error = `Selected workspace is unavailable: ${(error as Error).message}. Restore the selected folder and resume this task, or explicitly choose another project.`;
+      this.pushEvent(session, session.error);
+      this.persistSession(session);
+      return;
     }
     const index = this.sharedIndex(root, ignorePaths);
     this.pushEvent(session, 'activity indexing-project');
@@ -7719,6 +7725,12 @@ export class GituServer {
       }
     } catch (err) {
       if (!isCurrentExecution()) return;
+      if (err instanceof ProjectGuardError) {
+        session.status = 'blocked';
+        session.error = err.message;
+        this.pushEvent(session, `workspace access required: ${err.message}`);
+        return;
+      }
       const llmError = err instanceof LlmError ? err : undefined;
       const canFallback = llmError && ['quota_exhausted', 'billing', 'auth', 'access', 'provider_unavailable', 'rate_limit_temporary'].includes(llmError.details.kind);
       const activeProvider = session.activeProvider ?? session.provider;

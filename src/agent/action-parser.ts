@@ -19,7 +19,7 @@ import {
 import type { DiscoveryIntent } from '../connections/discovery-engine.js';
 import type { CriterionSpec, DecisionBasis, MissingPrerequisite, PlanArea } from '../types.js';
 import { normalizeDecisionDraft } from './architecture.js';
-import { parseMissingPrerequisite, type AskUserQuestion } from './recovery-synthesizer.js';
+import { normalizeQuestionOptions, parseMissingPrerequisite, type AskUserQuestion } from './recovery-synthesizer.js';
 
 /** One planned step as offered by the model: bounded on ingest, optionally
  *  tagged with its surface (frontend/backend/...) and broken into todos. */
@@ -508,10 +508,9 @@ export function parseAction(raw: unknown): ParsedAction | undefined {
         .map((q) => ({
           question: typeof q['question'] === 'string' ? q['question'].trim() : '',
           header: typeof q['header'] === 'string' ? q['header'] : undefined,
-          options: Array.isArray(q['options']) ? [...new Set((q['options'] as unknown[]).map((option) => {
-            const label = typeof option === 'string' ? option : option && typeof option === 'object' && !Array.isArray(option) ? (option as Record<string, unknown>)['label'] : undefined;
-            return typeof label === 'string' && label.trim() !== '[object Object]' ? label.trim() : '';
-          }).filter(Boolean))].slice(0, 6) : [],
+          ...(q['kind'] === 'workspace' ? { kind: 'workspace' as const } : {}),
+          ...(typeof q['detail'] === 'string' ? { detail: q['detail'].trim().slice(0, 600) } : {}),
+          options: normalizeQuestionOptions(q['options']),
         }))
         .filter((q) => q.question);
       if (parsed.length === 0) return undefined;

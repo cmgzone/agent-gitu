@@ -132,6 +132,7 @@ export class ProjectGuard {
   taskTmpRoot?: string;
 
   static detect(cwd: string): ProjectGuard {
+    if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new ProjectGuardError(`Selected workspace is not an existing directory: ${cwd}`);
     const located = findRepoRoot(cwd);
     if (!located) {
       throw new ProjectGuardError(
@@ -152,6 +153,8 @@ export class ProjectGuard {
 
   /** Desktop/run startup must not wait for Git on Electron's main thread. */
   static async detectAsync(cwd: string): Promise<ProjectGuard> {
+    const selected = await stat(cwd).catch(() => undefined);
+    if (!selected?.isDirectory()) throw new ProjectGuardError(`Selected workspace is not an existing directory: ${cwd}`);
     const located = findRepoRoot(cwd);
     if (!located) throw new ProjectGuardError(`No project marker found at or above ${cwd}. Agent Gitu refuses to act without a locked project scope.`);
     const root = canonicalPath(located.root);

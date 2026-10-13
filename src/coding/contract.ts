@@ -73,6 +73,8 @@ export interface CodingQuestion {
   question: string;
   header?: string;
   options: string[];
+  kind?: 'workspace';
+  detail?: string;
 }
 
 export interface CodingQuestionsRequest {

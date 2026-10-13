@@ -53,6 +53,8 @@ import type {
 import type { DiscoveryRequest, DiscoveryResult, DiscoveryIntent } from '../connections/discovery-engine.js';
 import { catalogOperation } from '../connections/catalog.js';
 import { CapabilityAwareResolver, formatBlockedPrerequisite, inferMissingPrerequisite, type PrerequisiteRecoveryOptions } from '../recovery/prerequisites.js';
+import { inspectWorkspace, isWorkspacePath, isWorkspacePrerequisite, isWorkspaceQuestion, matchesSelectedWorkspace, workspaceAccessSummary, workspaceQuestionOptions, workspaceReady, workspaceUserDetail } from '../recovery/workspace.js';
+import { answerQuestionsOnce } from './question-memory.js';
 import { renderSkillContract, SkillStore, type SkillIdentity } from '../skills/skills.js';
 import type { BrowserBridge } from '../browser/browser.js';
 import type { SubAgentResult, SubAgentRunner } from './subagent.js';
@@ -429,7 +431,14 @@ export class Gitu {
     }
     if (this.config.taggedReadFolders) guard.setTaggedReadFolders(this.config.taggedReadFolders);
     if (this.config.taggedWriteFolders) guard.setTaggedWriteFolders(this.config.taggedWriteFolders);
-    guard.persist();
+    const selectedWorkspace = await inspectWorkspace(guard.activeWritableRoot, guard);
+    if (!selectedWorkspace.exists || !selectedWorkspace.readable) throw new ProjectGuardError(`Selected project cannot be read: ${guard.activeWritableRoot}. Restore folder access and resume this task.`);
+    try { guard.persist(); } catch (error) {
+      if (['EACCES', 'EPERM', 'EROFS'].includes(String((error as NodeJS.ErrnoException).code))) {
+        throw new ProjectGuardError(`Cannot save task progress in the selected project: ${guard.activeWritableRoot}. Restore write access to its task data folder and resume.`, { cause: error });
+      }
+      throw error;
+    }
     this.emit(
       `project  locked: ${guard.lock.name} @ ${guard.activeWritableRoot} (${guard.lock.branch ?? 'no branch'}) ` +
         `[repo=${guard.workspace.repositoryRoot}; worktree=${guard.workspace.worktreeRoot}; writable=${guard.workspace.writableRoot}]`,
@@ -936,6 +945,7 @@ export class Gitu {
       const protectedSection = memory.renderProtected(guard.lock.name, 12, this.config.memoryRetrieval);
 
       const systemPrompt = buildSystemPrompt(guard, memory, {
+        workspaceAccess: workspaceAccessSummary(selectedWorkspace),
         scopeFiles: this.config.scopeFiles,
         taggedReadFolders: this.config.taggedReadFolders?.(),
         taggedWriteFolders: this.config.taggedWriteFolders?.(),
@@ -3495,6 +3505,24 @@ export class Gitu {
               break;
             }
             case 'ask_user': {
+              const validatedQuestions: AskUserQuestion[] = [];
+              const workspaceQuestions: AskUserQuestion[] = [];
+              for (const question of action.questions) {
+                if (!isWorkspaceQuestion(question)) { validatedQuestions.push(question); continue; }
+                const options = await workspaceQuestionOptions(question.options, guard, question.question);
+                const current = await inspectWorkspace(guard.activeWritableRoot, guard);
+                const explicitTargets = question.options.some(isWorkspacePath);
+                if (workspaceReady(current, question.question) && (!explicitTargets || options.includes(current.path))) {
+                  observe(`${workspaceAccessSummary(current)} Continue the authorized task using Gitu tools. Do not request a different workspace because the reasoning transport reports read-only.`);
+                  continue;
+                }
+                workspaceQuestions.push(question);
+                validatedQuestions.push({ kind: 'workspace', header: 'Project folder',
+                  question: options.length > 0 ? 'Which verified project folder is the intended target?' : 'Can you select or restore access to the intended project folder?',
+                  detail: `${workspaceUserDetail(current)} ${options.length ? 'Choose the intended folder to continue this task.' : 'Review the folder and project controls, then resume after access is restored.'}`, options });
+              }
+              action.questions = validatedQuestions;
+              if (action.questions.length === 0) break;
               if (agentWorkflow && !temporaryPlanPending && asksOnlyForVerificationChoice(action.questions)) {
                 this.emit('verification choice handled by agent — no user question');
                 observe('Choose the smallest meaningful verification for the changed result yourself. Inspect project scripts and instructions, run the check, and reuse fresh passing evidence. If a required tool or environment is genuinely unavailable, request_block with that concrete dependency. Do not ask the user to choose checks again.');
@@ -3522,8 +3550,20 @@ export class Gitu {
               }
               if (this.config.askUserHandler) {
                 this.emit(`ask-user ${action.questions.length} question(s) for you`);
-                const answer = await this.config.askUserHandler(action.questions);
+                const { answer, reused } = await answerQuestionsOnce(ledger, activeGoal, action.questions, this.config.askUserHandler);
+                if (reused) this.emit('ask-user reusing the recorded answer for this task');
                 this.emit('ask-user answered');
+                for (const question of workspaceQuestions) {
+                  const options = await workspaceQuestionOptions(question.options, guard, question.question);
+                  const current = await inspectWorkspace(guard.activeWritableRoot, guard);
+                  const currentRestored = workspaceReady(current, question.question) && (!question.options.some(isWorkspacePath) || options.includes(current.path));
+                  const selectedVerified = options.some(option => answer.includes(option));
+                  if (currentRestored || selectedVerified) continue;
+                  ledger.addBlocker(`The intended workspace is still unavailable or unselected. ${workspaceAccessSummary(current)} Restore access through the folder controls and resume this task.`);
+                  exitReason = 'blocked';
+                  break;
+                }
+                if (exitReason === 'blocked') break;
                 observe(`User answered your clarifying questions:\n${answer}\n${agentWorkflow ? 'Apply these answers and continue the requested work; create a plan or criteria only when useful.' : 'Use these answers to set criteria and plan.'}`);
               } else {
                 observe('No interactive user is available. State explicit assumptions with set_hypothesis and proceed.');
@@ -3611,6 +3651,7 @@ export class Gitu {
                 this.emit(`recovery RESOLVING_PREREQUISITE — ${prerequisite.description}`);
                 const resolution = await prerequisiteResolver.resolve(prerequisite, {
                   repoRoot: guard.activeWritableRoot,
+                  workspace: () => inspectWorkspace(guard.activeWritableRoot, guard),
                   goal: activeGoal,
                   ledger,
                   specialist: false,
@@ -3629,8 +3670,19 @@ export class Gitu {
                 }
                 if (resolution.status === 'needs-user' && this.config.askUserHandler && resolution.question) {
                   this.emit(`ask-user prerequisite decision needed — ${prerequisite.description}`);
-                  const answer = await this.config.askUserHandler([resolution.question]);
+                  const { answer } = await answerQuestionsOnce(ledger, activeGoal, [resolution.question], this.config.askUserHandler);
                   this.emit('ask-user answered prerequisite decision');
+                  if (isWorkspacePrerequisite(prerequisite)) {
+                    const refreshed = await inspectWorkspace(guard.activeWritableRoot, guard);
+                    if (prerequisite.kind === 'permission' || !matchesSelectedWorkspace(prerequisite.workspacePath, refreshed.path) || !workspaceReady(refreshed, `${prerequisite.description} ${prerequisite.requiredFor}`)) {
+                      ledger.addBlocker(`Workspace access is still required. ${workspaceAccessSummary(refreshed)} User response: ${answer}`);
+                      exitReason = 'blocked';
+                      observe('The question was answered, but no new authority was granted. Keep the task paused until the user restores access through the existing folder or approval controls.');
+                      break;
+                    }
+                    observe(`${workspaceAccessSummary(refreshed)} Resume the same task with its existing findings and plan.`);
+                    break;
+                  }
                   observe(`User chose how to resolve ${prerequisite.description}: ${answer}\nContinue with that decision; do not claim a provider action you did not execute.`);
                   break;
                 }

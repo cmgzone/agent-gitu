@@ -542,6 +542,8 @@ function profileFromUnknown(value: unknown): ConnectionProfile | undefined {
 
 function profileMatches(profile: ConnectionProfile, requirement: ConnectionRequirement): boolean {
   const hint = slug(requirement.providerHint, '');
+  // [].every() used to offer every credential for unrelated local prerequisites.
+  if (!hint && requirement.capabilities.length === 0) return false;
   if (hint && ![profile.id, profile.provider, slug(profile.label, '')].includes(hint)) return false;
   return requirement.capabilities.every((capability) => profile.capabilities.includes(capability));
 }
@@ -1691,7 +1693,13 @@ export class ConnectionRegistry {
         const requirement = registry.requirementFor(input.prerequisite);
         const matches = registry.list().filter((profile) => profile.hasCredential && profileMatches(profile, requirement));
         if (matches.length === 0) return { status: 'unresolved', summary: 'No compatible saved connection is configured.' };
-        if (matches.length > 1) return { status: 'needs-user', summary: 'More than one saved connection can meet this prerequisite.', candidates: matches.map((profile) => ({ id: profile.id, label: profile.label })) };
+        if (matches.length > 1) {
+          const checks = await Promise.allSettled(matches.slice(0, 6).map(async profile => { await registry.validate(profile.id); return profile; }));
+          const usable = checks.flatMap(check => check.status === 'fulfilled' ? [check.value] : []);
+          if (usable.length === 0) return { status: 'unresolved', summary: 'Matching saved connections could not be validated.' };
+          if (usable.length === 1) return { status: 'resolved', source: 'existing-resource', reference: usable[0]!.id, summary: `Validated saved connection "${usable[0]!.label}"; other matching accounts were unavailable. Its credential remains private.` };
+          return { status: 'needs-user', summary: 'More than one validated saved connection can meet this prerequisite.', candidates: usable.map((profile) => ({ id: profile.id, label: profile.label })) };
+        }
         const profile = matches[0]!;
         try {
           await registry.validate(profile.id);

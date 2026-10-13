@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import { ScriptedMockLlm } from '../src/llm/llm.js';
 import { HermesServer } from '../src/server/server.js';
 import { UI_HTML } from '../src/server/ui.js';
+import { ProjectGuard } from '../src/guard/project-guard.js';
 import type { BrowserBridge } from '../src/browser/browser.js';
 
 function makeProject(name: string): string {
@@ -116,6 +117,39 @@ describe('HermesServer', () => {
     const port = await server.start();
     return { base: `http://127.0.0.1:${port}`, server };
   }
+
+  it('blocks an unavailable selected workspace instead of executing in the server default project', async () => {
+    const root = makeProject('workspace-fallback');
+    const llm = new ScriptedMockLlm([]);
+    const complete = vi.spyOn(llm, 'complete');
+    const { base } = await startServer(root, llm);
+    const created = await fetch(`${base}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ goal: 'Update the selected repository', projectPath: path.join(root, 'removed-project'), mode: 'agent', review: false }) }).then(response => response.json());
+    const stopped = await waitFor(async () => {
+      const run = await fetch(`${base}/api/runs/${created.runId}`).then(response => response.json());
+      return run.status !== 'running' ? run : undefined;
+    });
+    expect(stopped.status).toBe('blocked');
+    expect(stopped.error).toContain('Selected workspace is unavailable');
+    expect(stopped.projectPath).toBe(path.join(root, 'removed-project'));
+    expect(complete).not.toHaveBeenCalled();
+  }, 30000);
+
+  it('reports task-state write denial as a recoverable workspace block before the model runs', async () => {
+    const root = makeProject('readonly-task-state'), llm = new ScriptedMockLlm([]);
+    const complete = vi.spyOn(llm, 'complete');
+    const { base } = await startServer(root, llm);
+    const persist = vi.spyOn(ProjectGuard.prototype, 'persist').mockImplementation(() => { throw Object.assign(new Error('Read-only filesystem'), { code: 'EROFS' }); });
+    try {
+      const created = await fetch(`${base}/api/runs`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ goal: 'Inspect the selected project', mode: 'agent', review: false }) }).then(response => response.json());
+      const stopped = await waitFor(async () => {
+        const run = await fetch(`${base}/api/runs/${created.runId}`).then(response => response.json());
+        return run.status !== 'running' ? run : undefined;
+      });
+      expect(stopped.status).toBe('blocked');
+      expect(stopped.error).toContain('Cannot save task progress');
+      expect(complete).not.toHaveBeenCalled();
+    } finally { persist.mockRestore(); }
+  }, 30000);
 
   type StreamFrame = {
     i?: number;

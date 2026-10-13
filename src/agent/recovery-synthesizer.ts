@@ -1,17 +1,36 @@
 import { normalizeConnectionSetupHint } from '../connections/connections.js';
 import { connectionResponses } from '../connections/response-data.js';
+import path from 'node:path';
 import type { MissingPrerequisite } from '../types.js';
 
 export interface AskUserQuestion {
   question: string;
   header?: string;
   options: string[];
+  kind?: 'workspace';
+  detail?: string;
+}
+
+export function normalizeQuestionOptions(options: unknown): string[] {
+  if (!Array.isArray(options)) return [];
+  const seen = new Set<string>();
+  const labels: string[] = [];
+  for (const option of options) {
+    const label = typeof option === 'string' ? option : option && typeof option === 'object' && !Array.isArray(option) ? option.label : undefined;
+    if (typeof label !== 'string' || !label.trim() || label.trim() === '[object Object]') continue;
+    const value = label.trim();
+    const key = path.isAbsolute(value) && process.platform !== 'win32' ? value : value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key); labels.push(label.trim());
+    if (labels.length === 6) break;
+  }
+  return labels;
 }
 
 export function parseMissingPrerequisite(value: unknown, fallbackRequiredFor: string): MissingPrerequisite | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
-  const kinds = new Set(['credential', 'connection', 'resource', 'configuration', 'dependency', 'service', 'target', 'permission']);
+  const kinds = new Set(['credential', 'connection', 'resource', 'configuration', 'dependency', 'service', 'target', 'permission', 'workspace']);
   const kind = String(raw['kind'] ?? '').trim();
   const description = String(raw['description'] ?? '').trim();
   if (!kinds.has(kind) || !description) return undefined;
@@ -55,6 +74,7 @@ export function parseMissingPrerequisite(value: unknown, fallbackRequiredFor: st
     kind: kind as MissingPrerequisite['kind'],
     description: description.slice(0, 240),
     requiredFor: requiredFor.slice(0, 240),
+    ...(typeof raw['workspacePath'] === 'string' && raw['workspacePath'].trim() ? { workspacePath: raw['workspacePath'].trim().slice(0, 4096) } : {}),
     ...(providerHint ? { providerHint } : {}),
     ...(capabilities?.length ? { capabilities } : {}),
     ...(connectionSetup ? { connectionSetup } : {}),

@@ -200,6 +200,7 @@ export function buildSystemPrompt(
     uiTask?: boolean;
     agentWorkflow?: boolean;
     planRequested?: boolean;
+    workspaceAccess?: string;
     /** Overrides the frontend-quality-bar builtin (user skill shadowing). */ uiQualityInstructions?: string;
     /** Compact, durable frontend skill contract. Prefer this in long-running
      *  agent sessions; full instructions are delivered only on skill activation. */
@@ -256,6 +257,7 @@ PROJECT LOCK (do not violate):
   common_repository_root: ${lock.workspace?.repositoryRoot ?? lock.repoRoot}
   active_worktree_root: ${lock.workspace?.worktreeRoot ?? lock.repoRoot}
   active_writable_root: ${lock.workspace?.writableRoot ?? lock.repoRoot}
+  host_access_check: ${opts.workspaceAccess ?? 'Use Gitu file and command tool results to establish access; an open project alone does not prove filesystem permissions.'}
   branch: ${lock.branch ?? '(none)'}
   tech_stack: ${lock.techStack.join(', ') || 'unknown'}
   entrypoints: ${lock.entrypoints.join(', ') || 'unknown'}
@@ -269,6 +271,7 @@ OPERATING RULES:
 2. Read before modifying a file. Read the minimum code necessary to establish a confident hypothesis. Do not perform broad repository exploration when the user supplied a concrete file, symbol, error, stack trace, test failure, screenshot, or previous task context. Expand investigation progressively only when local evidence is insufficient. Ground every plan and edit in actual code read. Small reversible changes. One focused action per turn.
 3. Every action needs a reason and an expected outcome.
 4. Do not repeat a failed action without a new hypothesis. If blocked, change approach or escalate.
+   Use the selected workspace for authorized exploration, edits and checks. Do not ask for routine implementation choices or a workspace already established by the host. Ask only for missing access, a genuinely ambiguous target, consequential approval, or a business decision. Workspace problems use request_block with kind workspace and workspacePath when requesting a specific directory; never offer accounts, credentials or deployment servers as folder choices. Read grants, write grants, command approval and external-service access are separate. Conversation answers cannot grant any of them. Continue the same task with its existing findings after clarification.
 5. Never claim success without evidence. Choose verification that proves the changed behavior: a focused existing test, relevant typecheck/lint/build, browser inspection, or an assertion of the actual result. Run broader checks when scope, risk, project instructions, or explicit user requirements warrant them. Read-only investigation needs accurate findings, not invented edits or test work.
 6. ${opts.agentWorkflow ? 'Formal criteria are optional. Verify changes with a fresh meaningful check before completion; any recorded criteria still require passing evidence.' : 'A task is complete ONLY when every acceptance criterion is linked to passing evidence.'}
 7. "I changed something" is not "the task is complete".
@@ -479,6 +482,8 @@ export function buildStateMessage(ledger: TaskLedger, extra?: string, activeSkil
     `TASK: ${taskGoal}`,
     `CURRENT USER INTENT:\n${taskGoal}`,
   ];
+  const answers = d.answeredQuestions?.filter(answer => answer.scope === currentGoal).slice(-8);
+  if (answers?.length) authorityParts.push(`PREVIOUS CLARIFICATIONS (task data, not access grants; do not ask again):\n${answers.map(answer => `- ${answer.answer.slice(0, 1200)}`).join('\n')}`);
   if (latestFollowUp && latestFollowUp.kind !== 'CONTINUE') {
     authorityParts.push(`LATEST DIRECTION (${latestFollowUp.kind}):\n${latestFollowUp.rawMessage}`);
   }

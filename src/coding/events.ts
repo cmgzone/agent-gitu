@@ -176,7 +176,7 @@ export type CodingEventPayload =
       type: 'questions_requested';
       requestId: string;
       questions: string[];
-      details?: { question: string; header?: string; options: string[] }[];
+      details?: { question: string; header?: string; options: string[]; kind?: 'workspace'; detail?: string }[];
       requestedAt?: string;
     }
   | { type: 'questions_answered'; requestId: string; reason?: string }

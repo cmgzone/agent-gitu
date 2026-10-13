@@ -9,6 +9,8 @@ import {
   type PrerequisiteRecoveryStatus,
 } from '../types.js';
 import { sha256 } from '../util.js';
+import { isWorkspacePrerequisite, matchesSelectedWorkspace, workspaceAccessSummary, workspaceReady, workspaceUserDetail, type WorkspaceAccess } from './workspace.js';
+import type { AskUserQuestion } from '../agent/recovery-synthesizer.js';
 
 /**
  * A connected provider is deliberately provider-neutral. A Coolify adapter,
@@ -105,6 +107,8 @@ export interface RecoveryContext {
   capabilities: Capability[];
   policy: RecoveryPolicy;
   specialist?: boolean;
+  /** Host-owned selected workspace probe; never supplied by the model. */
+  workspace?: () => Promise<WorkspaceAccess>;
 }
 
 export interface RecoveryStrategy {
@@ -142,7 +146,7 @@ export interface PrerequisiteResolution {
   prerequisite: MissingPrerequisite;
   attempts: RecoveryAttempt[];
   message: string;
-  question?: { question: string; header: string; options: string[] };
+  question?: AskUserQuestion;
 }
 
 const SKIP_DIRECTORIES = new Set(['.git', '.hermes', 'node_modules', 'dist', 'release', 'coverage']);
@@ -336,7 +340,9 @@ export function inferMissingPrerequisite(reason: string, requiredFor = 'continue
   let kind: PrerequisiteKind | undefined;
   let description: string | undefined;
   let hints: string[] = [];
-  if (/database_url|postgres(?:ql)?|mysql|redis|database connection|connection string/.test(lowered)) {
+  if (isWorkspacePrerequisite({ id: 'legacy', kind: 'resource', description: text, requiredFor })) {
+    kind = 'workspace'; description = text;
+  } else if (/database_url|postgres(?:ql)?|mysql|redis|database connection|connection string/.test(lowered)) {
     kind = 'connection'; description = 'database connection'; hints = ['DATABASE_URL'];
   } else if (/api[ _-]?key|access token|secret|credential|password/.test(lowered)) {
     kind = 'credential'; description = 'credential'; hints = (text.match(/\b[A-Z][A-Z0-9_]{2,}\b/g) ?? []).filter((part) => /KEY|TOKEN|SECRET|PASSWORD/.test(part));
@@ -481,6 +487,37 @@ export class CapabilityAwareResolver {
 
   async resolve(prerequisite: MissingPrerequisite, input: Omit<RecoveryContext, 'providers' | 'capabilities' | 'policy'> & { retry?: boolean }): Promise<PrerequisiteResolution> {
     const context: RecoveryContext = { ...input, providers: this.providers, capabilities: this.capabilities(), policy: this.policy };
+    // Local filesystem authority has no relationship to saved service accounts.
+    // Recheck it on every continuation: a user can restore access while waiting.
+    if (isWorkspacePrerequisite(prerequisite)) {
+      const workspace = await context.workspace?.();
+      const workspaceTools = new Set(['read_file', 'list_files', 'search_files', 'write_file', 'apply_edit', 'run_command']);
+      const latestOperations = new Map<string, (typeof context.ledger.data.actions)[number]>();
+      for (let i = context.ledger.data.actions.length - 1; i >= 0; i--) {
+        const action = context.ledger.data.actions[i]!;
+        const key = `${action.tool}:${action.paramsHash}`;
+        if (workspaceTools.has(action.tool) && !latestOperations.has(key)) latestOperations.set(key, action);
+      }
+      const deniedAccess = [...latestOperations.values()].some(action => action.status === 'denied'
+        || action.status === 'error' && /access denied|requires approval|read.only|permission denied|not authorized|EACCES|EPERM|EROFS/i.test(action.observation ?? ''));
+      // A model's permission claim alone is not a real access failure. Reuse
+      // available directory authority; each actual operation still meets policy.
+      const permissionMissing = prerequisite.kind === 'permission' && deniedAccess;
+      const resolved = !permissionMissing && Boolean(workspace && matchesSelectedWorkspace(prerequisite.workspacePath, workspace.path) && workspaceReady(workspace, `${prerequisite.description} ${prerequisite.requiredFor}`));
+      const message = (workspace ? workspaceAccessSummary(workspace) : 'No selected workspace has been verified by the host.')
+        + (prerequisite.workspacePath ? ` Requested folder (not an access grant): ${prerequisite.workspacePath}.` : '')
+        + (permissionMissing ? ' An explicit permission decision is required through the existing approval controls. Resume after reviewing access; conversation answers cannot override denial.' : '');
+      const attempt: RecoveryAttempt = { strategy: 'selected-workspace', status: resolved ? 'RESOURCE_REUSED' : 'NEEDS_USER', outcome: message, risk: RecoveryRisk.READ_ONLY };
+      context.ledger.recordPrerequisiteRecovery({ prerequisiteId: prerequisite.id, prerequisiteKind: prerequisite.kind, description: prerequisite.description, requiredFor: prerequisite.requiredFor, ...attempt });
+      return {
+        status: resolved ? 'resolved' : 'needs-user', prerequisite, attempts: [attempt], message,
+        ...(!resolved && !permissionMissing ? { question: {
+          kind: 'workspace' as const, header: 'Workspace access', options: [],
+          question: 'Can you restore access to the selected project folder?',
+          detail: `${workspace ? workspaceUserDetail(workspace) : 'No accessible project has been selected.'} Review the folder and project controls, then resume this task after access is restored.`,
+        } } : {}),
+      };
+    }
     const historical = context.ledger.data.prerequisiteRecoveries ?? [];
     const previous = historical.filter((record) => record.prerequisiteId === prerequisite.id);
     // A user can add a connection after an earlier pass exhausted discovery.
@@ -524,10 +561,21 @@ export class CapabilityAwareResolver {
       });
       if (result.status === 'resolved') return { status: 'resolved', prerequisite, attempts, message: result.summary };
       if (result.status === 'needs-user') {
-        const options = (result.candidates ?? []).slice(0, 6).map((candidate) => candidate.label);
+        const ids = new Set<string>();
+        const candidates = (Array.isArray(result.candidates) ? result.candidates : []).filter((candidate) => {
+          if (!candidate || typeof candidate.id !== 'string' || typeof candidate.label !== 'string') return false;
+          const id = candidate.id.trim(), label = candidate.label.trim();
+          if (!id || !label || ids.has(id)) return false;
+          ids.add(id); return true;
+        }).slice(0, 6);
+        const options = candidates.map(candidate => {
+          const label = candidate.label.trim();
+          const ambiguous = candidates.filter(other => other.label.trim().toLowerCase() === label.toLowerCase()).length > 1;
+          return ambiguous ? `${label} (${candidate.id.trim()})` : label;
+        });
         return {
           status: 'needs-user', prerequisite, attempts, message: result.summary,
-          question: { header: 'Choose target', question: `Which ${prerequisite.description} should Gitu use for ${prerequisite.requiredFor}?`, options },
+          question: { header: 'Choose resource', question: 'Which available resource should Gitu use?', detail: `Needed for: ${prerequisite.requiredFor}. ${result.summary}`, options },
         };
       }
     }

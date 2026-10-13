@@ -151,6 +151,17 @@ describe('CapabilityAwareResolver', () => {
     expect(provisions).toBe(0);
   });
 
+  it('deduplicates candidate identities and distinguishes different resources sharing a name', async () => {
+    const root = project('duplicate-targets'), ledger = ledgerFor(root);
+    const resolver = new CapabilityAwareResolver({ providers: [provider({ discover: async () => ({
+      status: 'needs-user', summary: 'Select the intended server.', candidates: [{ id: 'a', label: 'Server' }, { id: 'a', label: 'Server' }, { id: 'b', label: 'server' }, { id: '', label: 'Unknown' }],
+    }) })] });
+    const result = await resolver.resolve(postgres, { repoRoot: root, goal: 'Run migration', ledger });
+    expect(result.question?.options).toEqual(['Server (a)', 'server (b)']);
+    expect(result.question?.question).toBe('Which available resource should Gitu use?');
+    expect(result.question?.detail).toContain('database migration');
+  });
+
   it('does not auto-provision costly/destructive resources or let a specialist bypass parent policy', async () => {
     const root = project('policy');
     const ledger = ledgerFor(root);

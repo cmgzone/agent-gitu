@@ -688,6 +688,8 @@ export interface TaskLedgerData {
   skillEvents?: SkillLifecycleEvent[];
   /** Durable audit trail for prerequisite discovery/reuse/provisioning. */
   prerequisiteRecoveries?: PrerequisiteRecoveryRecord[];
+  /** Clarifications are task-scoped data, never permission grants. */
+  answeredQuestions?: { signature: string; scope: string; answer: string; createdAt: string }[];
   taskAuthority?: TaskAuthority;
   acceptanceCriteria: AcceptanceCriterion[];
   constraints: string[];
@@ -753,7 +755,7 @@ export interface SkillLifecycleEvent {
 }
 
 /** A concrete thing the task cannot safely continue without. */
-export type PrerequisiteKind = 'credential' | 'connection' | 'resource' | 'configuration' | 'dependency' | 'service' | 'target' | 'permission';
+export type PrerequisiteKind = 'credential' | 'connection' | 'resource' | 'configuration' | 'dependency' | 'service' | 'target' | 'permission' | 'workspace';
 
 /** Safe, non-secret connection details Gitu learned from an official provider
  * document or an existing saved profile. They prefill the secure form so the
@@ -771,6 +773,8 @@ export interface MissingPrerequisite {
   kind: PrerequisiteKind;
   description: string;
   requiredFor: string;
+  /** A requested local directory, never an access grant or a replacement cwd. */
+  workspacePath?: string;
   /** Optional provider identifier such as "coolify" or "internal-cloud".
    * It selects a user-saved connection without putting a URL or token in the
    * model protocol. */

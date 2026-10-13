@@ -18,11 +18,24 @@ function card(questions: unknown[]) {
   });
   new Script(UI_HTML.slice(UI_HTML.indexOf('  function renderQuestions('), UI_HTML.indexOf('  function renderPlanReview('))).runInContext(context);
   context.renderQuestions('run', {});
-  const choose = (index: number) => div.onclick?.({ target: { closest: () => ({ getAttribute: (name: string) => name === 'data-q' ? '0' : String(index), classList: { add: vi.fn() } }) } });
+  const choose = (index: number) => div.onclick?.({ target: { closest: (selector: string) => selector === '.opt' ? ({ getAttribute: (name: string) => name === 'data-q' ? '0' : String(index), classList: { add: vi.fn() } }) : null } });
   return { div, api, choose, submit };
 }
 
 describe('question choices', () => {
+  it('deduplicates labels regardless of whitespace and case while preserving workspace metadata', () => {
+    const action = parseAction({ action: { type: 'ask_user', questions: [{ kind: 'workspace', question: 'Which folder?', detail: 'Selection grants no access.', options: [' C:/project ', 'c:/PROJECT', 'C:/other'] }] } });
+    expect(action).toMatchObject({ type: 'ask_user', questions: [{ kind: 'workspace', detail: 'Selection grants no access.', options: ['C:/project', 'C:/other'] }] });
+  });
+
+  it('preserves distinct case-sensitive workspace paths on POSIX', () => {
+    const action = parseAction({ action: { type: 'ask_user', questions: [{ kind: 'workspace', question: 'Which folder?', options: ['/workspace/A', '/workspace/a'] }] } });
+    if (action?.type !== 'ask_user') throw new Error('Question was not parsed');
+    expect(action.questions[0]!.options).toHaveLength(process.platform === 'win32' ? 1 : 2);
+    const ui = card([{ kind: 'workspace', question: 'Which folder?', options: ['/workspace/A', '/workspace/a'] }]);
+    expect(ui.div.innerHTML).toContain('/workspace/A');
+    expect(ui.div.innerHTML).toContain('/workspace/a');
+  });
   it('takes structured model options through parsing, rendering and submitting the selected label', () => {
     const action = parseAction({ action: { type: 'ask_user', questions: [null, {
       question: 'Which product card style?', header: 'Style', options: [

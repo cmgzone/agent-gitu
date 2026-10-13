@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConnectionRegistry } from '../src/connections/connections.js';
 import { Executor } from '../src/executor/executor.js';
 import { ProjectGuard } from '../src/guard/project-guard.js';
@@ -42,6 +42,25 @@ const prerequisite: MissingPrerequisite = {
 };
 
 describe('ConnectionRegistry', () => {
+  it('never treats empty connector requirements as a match for every saved credential', async () => {
+    const root = home();
+    const registry = new ConnectionRegistry();
+    registry.save({ label: 'Server', provider: 'platform-api', baseUrl: 'https://platform.example.test', capabilities: ['servers.read'], token: 'private-token', operations: [{ id: 'validate', label: 'Validate', capability: 'servers.read', method: 'GET', path: '/servers', risk: 'read' }] });
+    const fetch = vi.fn(); globalThis.fetch = fetch;
+    const discovered = await registry.asPrerequisiteProvider().discover!({ prerequisite: { id: 'local', kind: 'resource', description: 'Writable local repository', requiredFor: 'Edit source' }, goal: 'Edit source', repoRoot: root });
+    expect(discovered).toMatchObject({ status: 'unresolved' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('validates matching account choices and excludes unavailable accounts', async () => {
+    const root = home(), registry = new ConnectionRegistry();
+    for (const name of ['Healthy', 'Expired']) registry.save({ label: name, provider: 'platform-api', baseUrl: `https://${name.toLowerCase()}.example.test`, capabilities: ['servers.read'], token: `private-${name}`, operations: [{ id: 'validate', label: 'Validate', capability: 'servers.read', method: 'GET', path: '/servers', risk: 'read' }] });
+    globalThis.fetch = (async input => new Response('{}', { status: String(input).includes('expired') ? 401 : 200 })) as typeof fetch;
+    const result = await registry.asPrerequisiteProvider().discover!({ prerequisite, goal: 'List servers', repoRoot: root });
+    expect(result.status).toBe('resolved');
+    expect(result.summary).toContain('Healthy');
+    expect(result.candidates).toBeUndefined();
+  });
   it('keeps credentials out of profiles and global provider skills while validating through an allowlisted request', async () => {
     const root = home();
     const secret = 'private-token-must-not-appear';

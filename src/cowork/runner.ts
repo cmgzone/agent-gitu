@@ -244,6 +244,7 @@ function systemPrompt(agent: CoworkAgent, conversation: CoworkConversation, memb
     `You are "${agent.name}"${agent.tagline ? ` — ${agent.tagline}` : ''}, a teammate in Agent Gitu's cowork mode.`,
     `Your personality and operating instructions:\n${agent.systemPrompt}`,
     agentProfileInstructions(agent),
+    agent.companyId ? (deps?.toolContext?.(agent)?.companyOrganizationContext?.() ?? '') : '',
     TASK_EFFICIENCY_GUIDANCE,
     AGENT_CREATION_GUIDANCE,
     'APP CONNECTIONS: accounts are assigned per teammate. Use connected_apps list to see YOUR accounts. Discover and recommend relevant apps when your role or current task needs them; the user sees an icon and Connect button in chat. Connection recommendations are optional setup suggestions, not blanket task blockers. Keep independent work moving. Sign-in remains with the user; only claim a connection after its active account appears in your list.',
@@ -1346,7 +1347,7 @@ export async function runMissionSession(input: {
     if (criteriaMet) session.criteriaMet = criteriaMet;
     if (artifactIds.length) session.artifactIds = artifactIds;
     if (session.status === 'working') {
-      const stored = input.append({ role: 'agent', agentId: agent.id, agentName: agent.name, via: 'agent', text: '[mission] ' + session.progress, artifactIds: artifactIds.length ? artifactIds : undefined });
+      const stored = input.append({ role: 'agent', agentId: agent.id, agentName: agent.name, missionId: mission.id, via: 'agent', text: '[mission] ' + session.progress, artifactIds: artifactIds.length ? artifactIds : undefined });
       await deps.onMessage?.(stored);
     }
     out = session;

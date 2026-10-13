@@ -2,6 +2,17 @@ import http from 'node:http';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { CompanyStore, effectiveFileLimit, type Company, type CompanyJob } from '../company/store.js';
 import { CompanyCoordinator } from '../company/coordinator.js';
+import { CompanyOrganization } from '../company/organization.js';
+import { CompanyBoardroom } from '../company/boardroom.js';
+import { CompanyHandbook } from '../company/handbook.js';
+import { CompanyOnboardingService } from '../company/onboarding.js';
+import { executeHandbookTool } from '../company/handbook-api.js';
+import { CompanyWorkflows } from '../company/workflows.js';
+import { executeWorkflowTool } from '../company/workflow-api.js';
+import { CompanyCalendar } from '../company/calendar.js';
+import { coworkNativeTools } from '../cowork/tools.js';
+import { executeBoardroomTool } from '../company/boardroom-tool.js';
+import { CompanyMeetingRuntime, type MeetingTurnInput } from '../company/meeting-runtime.js';
 import { CompanyLlm } from '../company/llm.js';
 import { companyPricing, companyUsageCostUsd } from '../company/pricing.js';
 import { companyApi, type CompanyApiDeps } from '../company/api.js';
@@ -467,7 +478,9 @@ export class GituServer {
 
   /** Cowork mode: team profiles + conversations, one in-flight turn per chat. */
   private coworkStore?: CoworkStore;
-  private companyScope = new AsyncLocalStorage<{ id: string; version: number; taskId?: string }>();
+  private companyScope = new AsyncLocalStorage<{ id: string; version: number; taskId?: string; missionId?: string; meetingId?: string; meetingTurnId?: string }>();
+  private companyMeetingRuntime?: CompanyMeetingRuntime;
+  private companyMeetingTurns = new Map<string,{companyId:string;turnId:string;abort:AbortController}>();
   private companyStore?: CompanyStore;
   private companyCoordinator?: CompanyCoordinator;
   private companyCowork = new Map<string,CoworkStore>();
@@ -1375,13 +1388,15 @@ export class GituServer {
   private selectedFileLimit(companyId=this.companyScope.getStore()?.id): number|null { return effectiveFileLimit(this.companies().workspaceFileLimit(),companyId?this.companies().get(companyId)?.maxFileBytes:undefined); }
   private ensureCompanyCoordinator(): void {
     if(this.companyCoordinator)return;
-    const coordinator=new CompanyCoordinator(this.companies(),job=>this.executeCompanyJob(job),()=>console.error('[company] Work failed. Review the company transcript.'),()=>{for(const run of this.companyQuestionRuns.values())run.abort.abort();for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company scheduler ownership lost.'));});});
+    const coordinator=new CompanyCoordinator(this.companies(),job=>this.executeCompanyJob(job),()=>console.error('[company] Work failed. Review the company transcript.'),()=>{for(const run of this.companyQuestionRuns.values())run.abort.abort();for(const c of this.companies().companies())this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company scheduler ownership lost.'));});},recovering=>{if(recovering)for(const company of this.companies().companies())this.companyCalendar(company.id).recover();this.prepareCompanyManagement();this.companyMeetings().prepare(recovering);for(const meetingId of this.companyMeetingTurns.keys())this.checkCompanyMeetingTurn(meetingId);});
     coordinator.start();this.companyCoordinator=coordinator;
   }
   private async executeCompanyJob(job:CompanyJob):Promise<void>{
-    await this.companyScope.run({id:job.companyId,version:job.version,taskId:job.id},async()=>{
+    await this.companyScope.run({id:job.companyId,version:job.version,taskId:job.id,missionId:job.kind==='mission'?String(job.payload['missionId']):undefined},async()=>{
       const c=this.companies().get(job.companyId);if(!c||c.state!=='running')throw new Error('Company paused.');
       if(job.kind==='mission'){await this.executeMissionSession(String(job.payload['missionId']));return;}
+      if(job.kind==='meeting'){await this.companyMeetings().execute(job);return;}
+      if(job.kind==='calendar'){const calendar=this.companyCalendar(job.companyId),link=calendar.read(String(job.payload['linkId']));if(link.autoSync)await calendar.sync({kind:'director'},link.id,link.revision);return;}
       const conversationId=job.kind==='wake'?String(job.payload['conversationId']):c.conversationId!;
       if(!this.cowork().getConversation(conversationId))throw new Error('Company conversation no longer exists.');
       if(this.coworkRuns.get(conversationId)?.busy)throw new Error('Company lead is still working.');
@@ -2055,7 +2070,7 @@ export class GituServer {
     this.publishCowork(conversationId);
   }
 
-  private companyApiDependencies():CompanyApiDeps { return {store:this.companies(),apps:{provider:this.connectedApps,mail:this.mailConnections,secure:req=>AppAuth.local(req)||(this.appAuth.secure(req)&&this.appAuth.authenticated(req)),accounts:()=>this.appHub.accounts(),configure:async(req,key)=>{if(!AppAuth.local(req)&&(!this.appAuth.secure(req)||!this.appAuth.authenticated(req)))throw new Error('Integration setup requires an authenticated HTTPS session.');await this.connectedApps.configure(key);}},activity:()=>this.cowork().listConversations().flatMap(conv=>{const run=this.coworkRuns.get(conv.id);if(!run)return[];const progress=run.progress;return[{agentId:progress?.agentId??conv.memberIds[0]??'',agentName:progress?.agentName??this.cowork().getAgent(conv.memberIds[0]??'')?.name??'Lead',phase:progress?.phase??'working',tool:progress?.tool,task:this.cowork().messages(conv.id).filter(m=>m.role==='user').at(-1)?.text.slice(0,1000)}];}),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>(this.coworkStore??new CoworkStore()).getAgent(id),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:async c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});await this.storageRegistry?.pauseCompany(c.id);}}; }
+  private companyApiDependencies():CompanyApiDeps { return {store:this.companies(),calendar:id=>this.companyCalendar(id),workflows:id=>this.companyWorkflows(id),onboardingResources:(id,requirements)=>this.companyOnboardingResources(id,requirements),boardroom:id=>this.companyBoardroom(id),meetingChanged:id=>this.checkCompanyMeetingTurn(id),invalidateAgent:agentId=>{for(const conversation of this.cowork().listConversations())if(conversation.memberIds.includes(agentId))this.coworkRuns.get(conversation.id)?.abort.abort(new Error('Company authority changed. Recheck grants before continuing.'));},apps:{provider:this.connectedApps,mail:this.mailConnections,secure:req=>AppAuth.local(req)||(this.appAuth.secure(req)&&this.appAuth.authenticated(req)),accounts:()=>this.appHub.accounts(),configure:async(req,key)=>{if(!AppAuth.local(req)&&(!this.appAuth.secure(req)||!this.appAuth.authenticated(req)))throw new Error('Integration setup requires an authenticated HTTPS session.');await this.connectedApps.configure(key);}},activity:()=>this.cowork().listConversations().flatMap(conv=>{const run=this.coworkRuns.get(conv.id);if(!run)return[];const progress=run.progress;return[{agentId:progress?.agentId??conv.memberIds[0]??'',agentName:progress?.agentName??this.cowork().getAgent(conv.memberIds[0]??'')?.name??'Lead',phase:progress?.phase??'working',tool:progress?.tool,task:this.cowork().messages(conv.id).filter(m=>m.role==='user').at(-1)?.text.slice(0,1000)}];}),body:r=>this.readBody(r),send:(r,status,value)=>this.sendJson(r,status,value),scoped:(c,work)=>this.companyScope.run({id:c.id,version:c.directionVersion},work),cowork:()=>this.cowork(),legacyAgent:id=>(this.coworkStore??new CoworkStore()).getAgent(id),routeCowork:(r,s,p,m)=>this.coworkRoutes(r,s,p,m),start:()=>this.ensureCompanyCoordinator(),priced:async agent=>{await fetchModelCatalog().catch(()=>undefined);const resolved=resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});return companyPricing(modelMetadataFor(peekModelCatalog(),resolved.providerId,resolved.model))!==undefined;},attachments:(c,files)=>files.map(value=>{const id=String((value as {artifactId?:string}).artifactId??''),file=this.uploads().get(id,c.id+':company');if(!file||file.state!=='ready')throw new Error('Choose a completed upload from this company.');return this.cowork().addArtifactFile({id:file.id,conversationId:c.conversationId!,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)}).id;}),pause:async c=>{for(const run of this.companyQuestionRuns.values())if(run.companyId===c.id)run.abort.abort();this.companyScope.run({id:c.id,version:c.directionVersion},()=>{for(const conv of this.cowork().listConversations())this.coworkRuns.get(conv.id)?.abort.abort(new Error('Company paused or redirected.'));});await this.storageRegistry?.pauseCompany(c.id);}}; }
 
   private coworkToolContext(agent: CoworkAgent): ToolContext {
     let context = this.coworkTools.get(agent.id);
@@ -2093,7 +2108,49 @@ export class GituServer {
           const conversationId=this.companies().get(companyId)?.conversationId;
           if(conversationId){this.cowork().appendMessage(conversationId,{role:'system',via:'web',text:agent.name+' is using this computer under the company’s Use my computer grant'+(agent.useHostComputer?'.':' because the private computer is unavailable.')});this.publishCowork(conversationId);}
         }
-      },authorizeTool:policy.authorize,toolDidExecute:policy.settled,externalHeaders:policy.headers,externalArguments:policy.arguments,connectedApps:this.companyApps(companyId),companyFiles:async(args,session)=>{
+      },authorizeTool:async(tool,args)=>{
+        const current=this.companyScope.getStore();
+        if(current?.missionId){try{this.companyWorkflows(companyId).assertMission(current.missionId);}catch(error){return{ok:false,output:(error as Error).message};}}
+        if(current?.meetingId&&current.meetingTurnId){const denied=this.companyMeetings().authorize(companyId,agent.id,current.meetingId,current.meetingTurnId,tool,args);if(denied)return denied;}
+        const onboarding=this.companyOnboarding(companyId),assessment=onboarding.assessmentAllowed(agent.id,current?.missionId)?onboarding.read({kind:'director'},agent.id):undefined;
+        return this.companyOrganization(companyId).authorizeTool(agent.id,tool,args,assessment?.requirements.tools)??await policy.authorize(tool,args);
+      },companyBoardroom:async(args,session)=>{
+        if(session.agentId!==agent.id)throw new Error('Meeting actor does not match the running agent.');
+        const current=this.companyScope.getStore();
+        const selected={...args,...(current?.meetingId&&!args['meetingId']?{meetingId:current.meetingId}:{})};
+        return executeBoardroomTool(this.companyBoardroom(companyId),{kind:'agent',agentId:agent.id},selected);
+      },companyHandbook:async(args,session)=>{
+        if(session.agentId!==agent.id)throw new Error('Handbook actor does not match the running agent.');
+        return executeHandbookTool(new CompanyHandbook(this.companyOrganization(companyId)),agent.id,args);
+      },companyWorkflow:async(args,session)=>{
+        if(session.agentId!==agent.id)throw new Error('Workflow actor does not match the running agent.');
+        const task=this.companyScope.getStore()?.taskId,message=session.conversationId?this.cowork().messages(session.conversationId).filter(m=>m.role==='user'&&(m.threadId||'')===(session.threadId||'')).at(-1)?.id:undefined;
+        return executeWorkflowTool(this.companyWorkflows(companyId),agent.id,args,task??message??session.conversationId??agent.id);
+      },companyOnboarding:async(args,session)=>{
+        if(session.agentId!==agent.id)throw new Error('Onboarding actor does not match the running agent.');
+        const service=this.companyOnboarding(companyId),actor={kind:'agent' as const,agentId:agent.id},target=String(args['agentId']??agent.id),revision=Number(args['revision']),input=args['input'] as never;
+        let value;
+        switch(args['action']){
+          case 'list':value=service.list(actor);break;
+          case 'read':value=service.read(actor,target);break;
+          case 'orient':value=service.orient(actor,target,revision,input);break;
+          case 'schedule':value=service.schedule(actor,target,revision);break;
+          case 'check':value=service.check(actor,target,revision,await this.companyOnboardingResources(companyId,service.read(actor,target).requirements));break;
+          case 'assess':value=service.assess(actor,target,revision,input);break;
+          case 'review':value=service.review(actor,target,revision,input);break;
+          default:throw new Error('Choose a supported onboarding operation; the director retains activation authority.');
+        }
+        return{ok:true,output:JSON.stringify(value)};
+      },companyOrganizationContext:()=>this.companyOrganization(companyId).context(agent.id)+'\n'+new CompanyHandbook(this.companyOrganization(companyId)).context(),companyOrganization:async(args,session)=>{
+        if(session.agentId!==agent.id)throw new Error('Organization actor does not match the running agent.');
+        if(Object.keys(args).some(key=>!['action','agentId','member','department','revision'].includes(key)))throw new Error('Unsupported organization fields.');
+        const organization=this.companyOrganization(companyId),actor={kind:'agent' as const,agentId:agent.id},action=String(args['action']??'read');
+        if(action==='read')return{ok:true,output:JSON.stringify({organization:organization.snapshot(),departments:organization.departments()})};
+        if(!agent.allowWrites)throw new Error('Organization changes require the agent’s existing write permission.');
+        if(action==='save_department')return{ok:true,output:JSON.stringify(organization.saveDepartment(actor,(args['department']??{}) as never))};
+        if(action==='update_member')return{ok:true,output:JSON.stringify(organization.updateMember(actor,String(args['agentId']), (args['member']??{}) as never,Number(args['revision'])))};
+        throw new Error('Choose read, save_department or update_member.');
+      },toolDidExecute:policy.settled,externalHeaders:policy.headers,externalArguments:policy.arguments,connectedApps:this.companyApps(companyId),companyFiles:async(args,session)=>{
         const scope=companyId+':company';if(args['action']==='list')return{ok:true,output:JSON.stringify({files:this.uploads().list(scope).filter(f=>f.state==='ready').map(f=>({artifactId:f.id,name:f.name,size:f.size,mime:f.mime})),references:this.storage().references(companyId)})};
         if(args['action']!=='attach')throw new Error('Choose list or attach.');const file=this.uploads().get(String(args['artifactId']),scope);if(!file||file.state!=='ready')throw new Error('Company file not found.');
         const artifact=this.cowork().addArtifactFile({conversationId:session.conversationId,agentId:agent.id,name:file.name,mime:file.mime,sourcePath:this.uploads().filePath(file)});return{ok:true,output:JSON.stringify({artifactId:artifact.id,name:artifact.name,size:artifact.size}),artifactId:artifact.id};
@@ -2127,14 +2184,94 @@ export class GituServer {
     return new Proxy(registry,{get(target,key){if(['save','remove'].includes(String(key)))return()=>{throw new Error('Manage company connections through owner settings.');};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
   }
 
+  private companyOrganization(companyId:string):CompanyOrganization {
+    return this.companyScope.run({id:companyId,version:this.companies().get(companyId)?.directionVersion??0},()=>new CompanyOrganization(this.companies(),companyId,this.cowork()));
+  }
+
+  private companyMeetings():CompanyMeetingRuntime {
+    return this.companyMeetingRuntime??=new CompanyMeetingRuntime(this.companies(),id=>this.companyBoardroom(id),input=>this.executeCompanyMeetingTurn(input),Date.now,(_companyId,agentId)=>!this.coworkAgentLocks.has(agentId));
+  }
+
+  private companyOnboarding(companyId:string):CompanyOnboardingService {
+    const org=this.companyOrganization(companyId);
+    return new CompanyOnboardingService(org,new CompanyHandbook(org),this.companyBoardroom(companyId),id=>{const profile=org.cowork.getAgent(id);return profile?coworkNativeTools(profile,true).map(t=>t.name):[];});
+  }
+
+  private prepareCompanyManagement():void {
+    for(const company of this.companies().companies()){
+      const service=this.companyOnboarding(company.id);
+      service.list({kind:'director'});
+      service.handbook.syncMemory();
+      this.companyWorkflows(company.id).prepare();
+      this.companyCalendar(company.id).prepare();
+    }
+  }
+
+  private companyWorkflows(companyId:string):CompanyWorkflows{
+    const org=this.companyOrganization(companyId);
+    return new CompanyWorkflows(org,id=>{const a=org.cowork.getAgent(id);return a?coworkNativeTools(a,true).map(t=>t.name):[];},missionId=>{const mission=org.cowork.getMission(missionId);if(mission){const run=this.coworkRuns.get(mission.conversationId);if(run?.missionId===missionId)run.abort.abort(new Error('Workflow mission stopped.'));}},Date.now,step=>{
+      const issues:import('../company/workflow-models.js').WorkflowIssue[]=[],apis=this.companyConnections(companyId).list(),accounts=this.companies().list<import('../connections/provider.js').ConnectedAppAccount>('connected-account',companyId);
+      for(const id of step.connectionIds){const profile=apis.find(p=>p.id===id);if(!profile||profile.lastValidationStatus!=='ok'||['invalid','expired'].includes(profile.authState?.status??''))issues.push({stepId:step.id,code:'connection-status',message:'Validate the required API connection: '+id,section:'Connections',severity:'error'});}
+      for(const id of step.accountIds){const account=accounts.find(a=>a.id===id);if(!account||account.status!=='ACTIVE'||account.disabled||!org.cowork.appAccountAssigned(step.agentId!,account.toolkit,id))issues.push({stepId:step.id,code:'account-status',message:'Connect and assign the required account to this employee: '+id,section:'Connections',severity:'error'});}
+      return issues;
+    });
+  }
+  private companyCalendar(companyId:string):CompanyCalendar{return new CompanyCalendar(this.companyOrganization(companyId),{accounts:()=>this.companyApps(companyId).accounts(),request:(accountId,calendarId,eventId,method,body,etag)=>{const version=this.companies().get(companyId)!.directionVersion;return this.connectedApps.googleCalendarRequest(accountId,calendarId,eventId,method,body,etag,()=>{const c=this.companies().get(companyId);if(!c||c.state!=='running'||c.directionVersion!==version||!c.accountIds.includes(accountId))throw new Error('Calendar authorization changed before submission.');});}});}
+
+  private async companyOnboardingResources(companyId:string,requirements:import('../company/management-models.js').CompanyOnboarding['requirements']):Promise<string[]> {
+    const problems:string[]=[];
+    const connections=this.companyConnections(companyId).list();
+    for(const id of requirements.connectionIds){const profile=connections.find(c=>c.id===id);if(!profile||profile.lastValidationStatus!=='ok'||['invalid','expired'].includes(profile.authState?.status??''))problems.push('Validate the company API connection: '+id);}
+    if(requirements.accountIds.length){try{const accounts=await this.companyApps(companyId).accounts();for(const id of requirements.accountIds)if(!accounts.some(a=>a.id===id&&a.status==='ACTIVE'&&!a.disabled))problems.push('Sign in to the required connected account: '+id);}catch{problems.push('Connected account availability could not be verified.');}}
+    return problems;
+  }
+
+  private companyBoardroom(companyId:string):CompanyBoardroom {
+    return new CompanyBoardroom(this.companyOrganization(companyId),Date.now,agentId=>!this.coworkAgentLocks.has(agentId));
+  }
+
+  private checkCompanyMeetingTurn(meetingId:string):void {
+    const active=this.companyMeetingTurns.get(meetingId);if(!active)return;
+    const meeting=this.companies().read<import('../company/management-models.js').CompanyMeeting>('meeting',meetingId),company=this.companies().get(active.companyId);
+    if(!meeting||meeting.companyId!==active.companyId||meeting.state!=='active'||meeting.lease?.id!==active.turnId||company?.state!=='running'||company.directionVersion!==meeting.directionVersion||Date.parse(meeting.lease.expiresAt)<=Date.now())active.abort.abort(new Error('Meeting speaking permission ended.'));
+  }
+
+  private async executeCompanyMeetingTurn({meeting,lease,job,signal,instruction}:MeetingTurnInput):Promise<{text:string;messageId:string}> {
+    return this.companyScope.run({id:job.companyId,version:job.version,taskId:job.id,meetingId:meeting.id,meetingTurnId:lease.id},async()=>{
+      const store=this.cowork(),conversationId=meeting.conversationId!,agent=store.getAgent(lease.agentId);
+      if(!agent||!store.getConversation(conversationId))throw new Error('Meeting participant or conversation is unavailable.');
+      if(this.coworkRuns.get(conversationId)?.busy||this.coworkAgentLocks.has(agent.id))throw new Error('Company lead is still working.');
+      signal.throwIfAborted();
+      const trigger=store.appendMessage(conversationId,{id:'meeting-turn-'+lease.id,role:'system',via:'schedule',text:instruction+'\nCurrent assignments: '+JSON.stringify(store.missions().filter(m=>m.agentId===agent.id).map(m=>({id:m.id,goal:m.goal,status:m.status,criteria:m.criteria})).slice(-12))});
+      const abort=new AbortController(),stop=()=>abort.abort(signal.reason);
+      signal.addEventListener('abort',stop,{once:true});
+      this.coworkRuns.set(conversationId,{busy:true,working:agent.name,abort,queue:[trigger],forceAgentId:agent.id});
+      this.companyMeetingTurns.set(meeting.id,{companyId:job.companyId,turnId:lease.id,abort});
+      this.publishCowork(conversationId);
+      try {
+        await this.executeCoworkTurn(conversationId,abort);
+        abort.signal.throwIfAborted();
+        const reply=store.messages(conversationId).filter(m=>m.seq>trigger.seq&&m.agentId===agent.id&&m.role==='agent'&&!m.checkpoint).at(-1);
+        if(!reply?.text.trim())throw new Error('No participant contribution was saved.');
+        return{text:reply.text,messageId:reply.id};
+      }finally{
+        signal.removeEventListener('abort',stop);
+        if(this.coworkRuns.get(conversationId)?.abort===abort)this.coworkRuns.delete(conversationId);
+        if(this.companyMeetingTurns.get(meeting.id)?.abort===abort)this.companyMeetingTurns.delete(meeting.id);
+        this.publishCowork(conversationId);
+      }
+    });
+  }
+
   private coworkLlm(agent: CoworkAgent): LlmClient {
     const resolved=this.config.llm?{client:this.config.llm,providerId:agent.provider??'',model:agent.model??''}:resolveLlm({provider:agent.provider,model:agent.model,workingDirectory:this.coworkToolContext(agent).cwd});
     if (!agent.companyId) return resolved.client;
     const pricing = companyPricing(modelMetadataFor(peekModelCatalog(), resolved.providerId, resolved.model));
     return new CompanyLlm(resolved.client, this.companies(), {
       companyId: agent.companyId, agentId: agent.id, taskId: this.companyScope.getStore()?.taskId,
+      meetingId: this.companyScope.getStore()?.meetingId, meetingTurnId: this.companyScope.getStore()?.meetingTurnId,
       provider: resolved.providerId, model: resolved.model,
-    }, usage => companyUsageCostUsd(pricing, usage), pricing);
+    }, usage => companyUsageCostUsd(pricing, usage), pricing,()=>{this.companyWorkflows(agent.companyId!).assertMission(this.companyScope.getStore()?.missionId);this.companyOrganization(agent.companyId!).assertExecution(agent.id,this.companyScope.getStore()?.meetingId,this.companyOnboarding(agent.companyId!).assessmentAllowed(agent.id,this.companyScope.getStore()?.missionId));});
   }
 
   private companyApps(companyId:string): typeof this.appHub {
@@ -2991,7 +3128,7 @@ export class GituServer {
       // a scheduled review created. 'off' never reflects.
       const learningMode = this.coworkLearningMode();
       const isLearningReview = this.coworkReviewTriggers.delete(trigger.id);
-      const autoLearn = learningMode === 'off' ? false : learningMode === 'proactive' ? isLearningReview : true;
+      const autoLearn = this.companyScope.getStore()?.meetingId ? false : learningMode === 'off' ? false : learningMode === 'proactive' ? isLearningReview : true;
       const streams = new Map<string, TelegramReplyStream>();
       const activeAgents = new Map<string, string>();
       const tg = conv.telegram;
@@ -3055,7 +3192,7 @@ export class GituServer {
           userContext: this.coworkUserContext(),
           memoryFor: (agent) => this.coworkMemoryFor(agent),
           autoLearn,
-          requireCompletionState: this.config.coworkCompletionProtocol !== 'legacy',
+          requireCompletionState: !this.companyScope.getStore()?.meetingId && this.config.coworkCompletionProtocol !== 'legacy',
           learningReview: isLearningReview,
           recall: this.coworkRecallIndex(),
           subAgents: this.subAgents(),
@@ -3106,6 +3243,7 @@ export class GituServer {
         },
       });
       // Delivery state of the logical message, never its identity.
+      if(this.companyScope.getStore()?.meetingId&&turn.error)throw new Error('Meeting participant turn failed.',{cause:turn.error});
       if (trigger.role === 'user') store.setMessageStatus(conversationId, trigger.id, turn.error ? 'failed' : 'sent');
       await this.surfaceCoworkRequests(conv);
       } catch (err) {
@@ -3271,7 +3409,7 @@ export class GituServer {
       const turns = fresh.turns + 1;
        const appendNotice = async (text: string, artifactIds?: string[]): Promise<void> => {
          if (!store.getConversation(conversationId)) return;
-         store.appendMessage(conversationId, { role: 'system', via: 'web', text, artifactIds });
+         store.appendMessage(conversationId, { role: 'system', via: 'web', agentId: agent.id, agentName: agent.name, missionId, text, artifactIds });
          this.publishCowork(conversationId);
          await finishStream(text);
          await sendArtifacts(artifactIds);
@@ -3504,6 +3642,10 @@ export class GituServer {
           if (cloudConnectionId && !this.cloudServers().some((server) => server.id === cloudConnectionId && server.hasCredential)) throw new Error('Choose a saved cloud server with a working credential.');
           const changingComputer = Boolean(existing && (existing.useHostComputer !== useHostComputer || existing.cloudConnectionId !== cloudConnectionId));
           const companyId=this.companyScope.getStore()?.id;
+          // Establish the existing roster before adding staff, even when the owner
+          // has never opened Company structure. Newly saved staff must not be
+          // mistaken for migrated employees on the first organization read.
+          if(companyId)this.companyOrganization(companyId).snapshot();
           if(companyId && useHostComputer && this.companies().get(companyId)?.allowHostComputer !== true) throw new Error('Enable Use my computer in Company Resources before selecting it for a teammate.');
           if (existing && changingComputer && this.coworkComputerBusy(existing.id)) { this.sendJson(res, 409, { error: 'Wait for this teammate to finish, or stop its task before changing computers.' }); return true; }
           let agent!: CoworkAgent;
@@ -3529,6 +3671,7 @@ export class GituServer {
               cloudConnectionId: cloudConnectionId ?? '',
               chiefOfStaff: body['chiefOfStaff'] === undefined ? existing?.chiefOfStaff : body['chiefOfStaff'] === true,
             });
+            if(companyId)this.companyOnboarding(companyId).read({kind:'director'},agent.id);
             if (existing && changingName) await this.coworkMemory().renameAgent(existing.name, agent.name);
             if (changingComputer) await this.resetCoworkComputer(agent.id);
             // Profile preferences apply on the next turn and leave an active tool session intact.

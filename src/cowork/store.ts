@@ -20,6 +20,8 @@ export interface CoworkAvatar {
   shape: 'orb' | 'cube' | 'home-blob' | 'diamond' | 'pyramid' | 'dot-blue' | 'dot-mint' | 'dot-orange' | 'dot-purple';
 }
 
+class CoworkScopeError extends Error {}
+
 export interface CoworkAgent extends AgentProfileSettings {
   id: string;
   companyId?: string;
@@ -63,6 +65,8 @@ export interface CoworkMessage {
   role: 'user' | 'agent' | 'system';
   agentId?: string;
   agentName?: string;
+  /** Host-attributed mission session/outcome; ordinary chat cannot supply this provenance. */
+  missionId?: string;
   text: string;
   /** Company proposed through the trusted Cowork company tool. */
   companyLink?: { id: string; name: string; state: string };
@@ -646,17 +650,24 @@ export class CoworkStore {
 
   private file(): string {
     if (this.filePath) return this.filePath;
+    if (this.options?.companyId) {
+      if (!/^[\w-]+$/.test(this.options.companyId)) throw new CoworkScopeError('Invalid company storage scope.');
+      return path.join(ensureGituHome().root, 'Companies', this.options.companyId, 'cowork.json');
+    }
     return path.join(ensureGituHome().root, 'Cowork', 'cowork.json');
   }
 
   private load(): CoworkData {
     if (this.loaded) return this.data;
-    this.loaded = true;
     const file = this.file();
+    this.loaded = true;
     const saved = this.options?.persistence?.read();
+    if (!saved && this.options?.persistence && !this.filePath) return this.data;
     if (!saved && !existsSync(file)) return this.data;
     try {
       const parsed = JSON.parse(saved ?? readFileSync(file, 'utf8')) as Partial<CoworkData>;
+      if (this.options?.companyId && Array.isArray(parsed.agents) && parsed.agents.some(a => a.companyId && a.companyId !== this.options!.companyId))
+        throw new CoworkScopeError('Saved roster belongs to another company. Restore the correct scoped snapshot before continuing.');
       this.data = {
         agents: Array.isArray(parsed.agents) ? parsed.agents : [],
         conversations: Array.isArray(parsed.conversations) ? parsed.conversations : [],
@@ -702,6 +713,7 @@ export class CoworkStore {
       this.data.todos = [...unique.values()];
       let avatarsChanged = false;
       for (const agent of this.data.agents) {
+        if (this.options?.companyId && !agent.companyId) { agent.companyId = this.options.companyId; avatarsChanged = true; }
         agent.skills = [...new Set(['browser-workflow', ...(agent.skills ?? [])])];
         const previousAvatar = JSON.stringify(agent.avatar);
         agent.avatar = sanitizeAvatar(agent.avatar, undefined);
@@ -734,7 +746,8 @@ export class CoworkStore {
         this.changeSeqs.set(conversationId, change);
       }
       if (identityChanged) this.save();
-    } catch {
+    } catch (error) {
+      if (error instanceof CoworkScopeError) { this.loaded = false; throw error; }
       // A corrupt file must not wipe the team silently: keep defaults in
       // memory; the next successful save replaces the damaged document.
       this.data = emptyCoworkData();

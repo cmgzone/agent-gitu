@@ -4,7 +4,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { ensureGituHome } from '../workspace/home.js';
-import {SecretVault} from './secret-vault.js';
+import { SecretVault } from './secret-vault.js';
 import { readCredentialFile, readCredentialJson, writeCredentialFile } from '../llm/credential-file.js';
 
 export interface ConnectedApp {
@@ -35,7 +35,7 @@ export class ComposioKeyStore {
   }
   private serverKey(): Buffer | undefined {
     const key = process.env['AGENT_GITU_SECRETS_KEY'];
-    if (!key) return new SecretVault(path.join(ensureGituHome().settings,'ConnectorSecrets')).encryptionKey();
+    if (!key) return new SecretVault(path.join(ensureGituHome().settings, 'ConnectorSecrets')).encryptionKey();
     if (!/^[a-f0-9]{64}$/i.test(key)) throw new Error('Set AGENT_GITU_SECRETS_KEY to a 32-byte hexadecimal server encryption key.');
     return Buffer.from(key, 'hex');
   }
@@ -87,10 +87,14 @@ export class ComposioKeyStore {
     const encrypt = createCipheriv('aes-256-gcm', key, iv);
     encrypt.setAAD(Buffer.from('agent-gitu:composio-key:v1'));
     const ciphertext = Buffer.concat([encrypt.update(value, 'utf8'), encrypt.final()]);
-    writeCredentialFile(this.file, JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') }), (text) => {
-      JSON.parse(text);
-      return text;
-    });
+    writeCredentialFile(
+      this.file,
+      JSON.stringify({ version: 1, iv: iv.toString('hex'), tag: encrypt.getAuthTag().toString('hex'), ciphertext: ciphertext.toString('base64') }),
+      (text) => {
+        JSON.parse(text);
+        return text;
+      },
+    );
   }
 }
 
@@ -124,7 +128,11 @@ export class ComposioConnections {
       const file = path.join(ensureGituHome().settings, 'composio-session.json');
       const saved = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { owner: string; sessionId: string }) : undefined;
       const request = { signal: AbortSignal.timeout(15_000) };
-      this.session = (saved?.owner === owner && saved.sessionId ? this.client().sessions.use(saved.sessionId, undefined, request) : this.client().sessions.create(owner, { manageConnections: false }, request))
+      this.session = (
+        saved?.owner === owner && saved.sessionId
+          ? this.client().sessions.use(saved.sessionId, undefined, request)
+          : this.client().sessions.create(owner, { manageConnections: false }, request)
+      )
         .then((session) => {
           writeFileSync(file, JSON.stringify({ owner, sessionId: session.sessionId }), { mode: 0o600 });
           return session;
@@ -192,14 +200,17 @@ export class ComposioConnections {
       throw new Error('Connect this service in Cowork → Connections first.');
     const tools = await this.client().tools.getRawComposioTools(
       tool ? { tools: [tool] } : { toolkits: [slug], ...(query ? { search: query.slice(0, 200), limit: 5 } : { limit: 100 }) },
-      undefined, { signal: AbortSignal.timeout(15_000) },
+      undefined,
+      { signal: AbortSignal.timeout(15_000) },
     );
-    return tools.filter(item => !tool || item.toolkit?.slug === slug).map((tool) => ({
-      slug: tool.slug,
-      name: tool.name,
-      description: tool.description,
-      inputParameters: tool.inputParameters,
-    }));
+    return tools
+      .filter((item) => !tool || item.toolkit?.slug === slug)
+      .map((tool) => ({
+        slug: tool.slug,
+        name: tool.name,
+        description: tool.description,
+        inputParameters: tool.inputParameters,
+      }));
   }
   async execute(slug: string, tool: string, args: Record<string, unknown>, accountId: string): Promise<unknown> {
     const account = (await this.accounts()).find((item) => item.id === accountId && item.toolkit === slug && item.status === 'ACTIVE' && !item.disabled);
@@ -213,12 +224,21 @@ export class ComposioConnections {
     if (!pendingSession) {
       const matches = await this.client().tools.getRawComposioTools({ tools: [tool] }, undefined, { signal });
       if (!matches.some((item) => item.slug === tool && item.toolkit?.slug === slug)) throw new Error('That tool does not belong to the connected service.');
-      pendingSession = this.client().sessions.create(owner, {
-        toolkits: [slug],
-        tools: { [slug]: [tool] },
-        connectedAccounts: { [slug]: account.id },
-        manageConnections: false,
-      }, { signal }).catch(error => { this.executionSessions.delete(sessionKey); throw error; });
+      pendingSession = this.client()
+        .sessions.create(
+          owner,
+          {
+            toolkits: [slug],
+            tools: { [slug]: [tool] },
+            connectedAccounts: { [slug]: account.id },
+            manageConnections: false,
+          },
+          { signal },
+        )
+        .catch((error) => {
+          this.executionSessions.delete(sessionKey);
+          throw error;
+        });
       this.executionSessions.set(sessionKey, pendingSession);
     }
     const session = await pendingSession;
@@ -227,5 +247,44 @@ export class ComposioConnections {
     const result = await this.client().getClient().withOptions({ maxRetries: 0 }).toolRouter.session.execute(session.sessionId, { tool_slug: tool, arguments: args }, { signal });
     if (result.error) throw new Error(`The connected service rejected this action: ${String(result.error).slice(0, 600)}`);
     return result;
+  }
+  /** Fixed Calendar endpoints through the existing OAuth account transport; no raw tokens or arbitrary URLs. */
+  async googleCalendarRequest(
+    accountId: string,
+    calendarId: string,
+    eventId: string | undefined,
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+    body?: Record<string, unknown>,
+    etag?: string,
+    authorize?: () => void,
+  ): Promise<{ status: number; data: unknown }> {
+    if (!/^[\w@.+-]{1,300}$/.test(calendarId) || ['.', '..'].includes(calendarId) || (eventId && !/^[0-9a-v]{5,1024}$/.test(eventId)))
+      throw new Error('Choose a valid Calendar and event identifier.');
+    const account = (await this.accounts()).find((a) => a.id === accountId && a.toolkit === 'googlecalendar' && a.status === 'ACTIVE' && !a.disabled);
+    if (!account) throw new Error('Connect an active Google Calendar account first.');
+    authorize?.();
+    const endpoint = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(calendarId) + '/events' + (eventId ? '/' + eventId : '');
+    const result = await this.client()
+      .getClient()
+      .withOptions({ maxRetries: 0 })
+      .tools.proxy(
+        {
+          connected_account_id: account.id,
+          endpoint,
+          method,
+          body,
+          parameters:
+            method === 'GET' && !eventId
+              ? [
+                  { name: 'maxResults', value: '1', type: 'query' },
+                  { name: 'fields', value: 'kind', type: 'query' },
+                ]
+              : etag
+                ? [{ name: 'If-Match', value: etag, type: 'header' }]
+                : undefined,
+        },
+        { signal: AbortSignal.timeout(30000) },
+      );
+    return { status: Number(result.status), data: result.data };
   }
 }

@@ -6,6 +6,11 @@ const object = { type: 'object', additionalProperties: true };
 const strings = { type: 'array', items: text };
 type Fields = Record<string, Record<string, unknown>>;
 const schemas: Record<string, { fields: Fields; required?: string[] }> = {
+  company_workflow: {fields:{action:{type:'string',enum:['list','read','save','validate','simulate','start','run']},id:text,version:number,input:object,samples:object},required:['action']},
+  company_handbook: { fields: { action: { type: 'string', enum: ['list', 'read', 'propose'] }, id: text, input: object }, required: ['action'] },
+  company_onboarding: { fields: { action: { type: 'string', enum: ['list', 'read', 'orient', 'schedule', 'check', 'assess', 'review'] }, agentId: text, revision: number, input: object }, required: ['action'] },
+  company_organization: { fields: { action: { type: 'string', enum: ['read', 'save_department', 'update_member'] }, agentId: text, member: object, department: object, revision: number }, required: ['action'] },
+  company_boardroom: { fields: { action: { type: 'string', enum: ['list', 'read', 'create', 'start', 'raise_hand', 'grant', 'revoke', 'moderate', 'contribute', 'written', 'propose', 'propose_assignment', 'assign', 'decide', 'finish', 'interrupt', 'cancel'] }, meetingId: text, query: text, input: object }, required: ['action'] },
   company_manage: { fields: { action: { type: 'string', enum: ['create', 'list', 'status'] }, id: text, name: text, purpose: text, leadName: text }, required: ['action'] },
   mission_manage: { fields: { action: text, id: text, goal: text, agentId: text, criteria: strings, maxSessions: number }, required: ['action'] },
   company_files: { fields: { action: text, artifactId: text }, required: ['action'] },

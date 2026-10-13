@@ -31,6 +31,12 @@ export interface ToolContext {
   storage?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string }) => Promise<ToolResult & { artifactId?: string }>;
   companyFiles?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string }) => Promise<ToolResult & { artifactId?: string }>;
   companyManagement?: (params: Record<string, unknown>, scope: { conversationId: string; agentId: string; threadId?: string }) => Promise<ToolResult>;
+  companyOrganization?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
+  companyBoardroom?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
+  companyOrganizationContext?: () => string;
+  companyHandbook?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
+  companyWorkflow?: (params: Record<string, unknown>, scope: { agentId: string;conversationId?:string;threadId?:string }) => Promise<ToolResult>;
+  companyOnboarding?: (params: Record<string, unknown>, scope: { agentId: string }) => Promise<ToolResult>;
   missionSessionLimit?: () => number;
   signal?: AbortSignal;
   guard: ProjectGuard;

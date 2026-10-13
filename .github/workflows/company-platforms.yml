@@ -32,6 +32,10 @@ jobs:
       - run: npx vitest run tests/company.test.ts tests/company-http.test.ts tests/company-direction-api.test.ts tests/company-workers.test.ts tests/company-storage.test.ts tests/company-storage-references.test.ts tests/storage-hashes.test.ts tests/storage-drive-recovery.test.ts tests/company-computer-recovery.test.ts tests/company-host-computer.test.ts tests/company-wallets.test.ts tests/computer-binary.test.ts tests/cowork-delegation.test.ts tests/credential-persistence.test.ts tests/file-uploads.test.ts tests/service.test.ts tests/follow-up-continuity.test.ts tests/cowork-sessions.test.ts tests/cowork-schedules.test.ts tests/ui-cowork-widgets.test.ts tests/computer-broker.test.ts tests/cowork-computer-service.test.ts
       - run: npx playwright install --with-deps chromium
       - run: npx tsx scripts/company-ui-smoke.ts
+      - run: npx tsx scripts/company-organization-ui-smoke.ts
+      - run: npx tsx scripts/company-boardroom-ui-smoke.ts
+      - run: npx tsx scripts/company-handbook-ui-smoke.ts
+      - run: npx tsx scripts/company-workflows-ui-smoke.ts
       - uses: actions/upload-artifact@v4
         if: always()
         with:

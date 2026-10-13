@@ -129,6 +129,11 @@ const COMPUTER_ROUTED_TOOLS = [
  */
 export const SUBAGENT_BLOCKED_TOOLS = [
   'company_manage',
+  'company_organization',
+  'company_boardroom',
+  'company_handbook',
+  'company_onboarding',
+  'company_workflow',
   'spawn_sub_agent',
   'gitu_task',
   'computer_handoff',
@@ -165,6 +170,11 @@ export interface CoworkToolDoc {
 }
 
 export const COWORK_TOOLS: CoworkToolDoc[] = [
+  {name:'company_workflow',gate:undefined,doc:'Company workflows: list/read id; authorized designers save input={id?,revision?,title,inputs:typed schema,parallelism,steps:[{id,name,type:mission|approval,agentId?,goal,criteria,dependsOn,bindings:{field:{source:input|step,stepId?,field?}},inputSchema,outputSchema,tools,skills,connectionIds,accountIds,maxSessions:1..10,maxAttempts:1..3,timeoutMinutes:1..1440}]}. validate/simulate id+version with input and samples by step ID; simulation never executes work. Director approves versions separately. Authorized leaders start id+version+input; run id reads live missions and handoffs. Never claim simulation as live completion or use workflows to enlarge grants.'},
+  { name: 'company_handbook', gate: undefined, doc: 'Company handbook: action=list for approved versions and pending proposal IDs; read with id returns director-approved guidance only. Propose input={id?,revision?,title?,kind:guideline|suggestion,content}; only the director reviews versions. Guidance and suggestions never grant tools, accounts, budgets or policy authority.' },
+  { name: 'company_onboarding', gate: undefined, doc: 'Company onboarding: list/read with agentId; your own record is readable. Authorized reporting leaders may orient with revision and input={tools:[],connectionIds:[],accountIds:[],skills:[]}; schedule an onboarding meeting; check tools after a completed meeting with an employee contribution; assess input={goal,criteria,maxTurns:1..5}; review input={approved,notes,evidenceMessageIds} using saved assessment messages. Pass current revision at each change. Only the director activates after reviewed evidence; onboarding never expands resource grants.' },
+  { name: 'company_organization', gate: undefined, doc: 'Read company roles, departments, reporting relationships and your authority. action=read; authorized leaders may save_department with department={name,purpose,id?}, or update_member with agentId, member={jobTitle,responsibilities,departmentId,managerId}, revision from read. Only the director changes roles, grants or activation. Never infer authority from a job title.' },
+  { name: 'company_boardroom', gate: undefined, doc: 'Company meetings: action=list/read with meetingId. Authorized organizers create using input={title,type,participants:[{agentId}],agenda:[text],startAt?,durationMinutes?,maxTurns?,budgetUsd?}; chair starts/grants/moderates/finishes. Employees raise_hand with input={agendaId,reason,priority?,evidence?,objectionTo?}; contribute only with input={turnId,text,evidence?,objectionTo?} matching the current speaking lease. Chair may moderate input={requestId,response:defer|reject|written,reason}; employee written input={requestId,text}. Propose input={agendaId,title,rationale,requiresDirector?,actionId?}; chair decide input={decisionId,approved}, subject to director approval. Read actual IDs first. Meetings preserve work and cannot grant tools, budgets or external action approval.' },
   {
     name: 'company_manage',
     doc: 'Create a Company draft from Cowork chat, or inspect company activity. params: {"action":"create","name":"company name","purpose":"concrete goals","leadName":"optional lead name"} | {"action":"list"} | {"action":"status","id":"company-id"}. A new company clones you as its lead and appears as a company card in this chat. The owner reviews resources, budget and file limits, then selects Start. Never claim a draft is running. Repeating the same creation in this conversation reuses the company. Company agents and temporary helpers cannot create or inspect other companies.',
@@ -366,9 +376,10 @@ export function coworkToolDocs(agent: Pick<CoworkAgent, 'allowShell' | 'allowWri
   const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
   return COWORK_TOOLS.filter(
     (t) =>
-      (t.gate === undefined || isGated(t.gate, perms)) &&
+      (t.gate === undefined || isGated(t.gate, perms) || (t.name === 'mission_manage' && Boolean(agent.companyId))) &&
       (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) &&
-      (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)),
+      (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)) &&
+      (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(t.name) || Boolean(agent.companyId)),
   )
     .map((t) => `- ${t.name} — ${t.doc}`)
     .join('\n');
@@ -380,9 +391,10 @@ export function coworkNativeTool(agent: Pick<CoworkAgent, 'allowShell' | 'allowW
   const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
   const names = COWORK_TOOLS.filter(
     (t) =>
-      isGated(t.gate, perms) &&
+      (isGated(t.gate, perms) || (t.name === 'mission_manage' && Boolean(agent.companyId))) &&
       (t.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) &&
-      (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)),
+      (t.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)) &&
+      (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(t.name) || Boolean(agent.companyId)),
   ).map((t) => t.name);
   return {
     name: 'cowork_tool',
@@ -405,9 +417,10 @@ export function coworkNativeTools(agent: Pick<CoworkAgent, 'allowShell' | 'allow
   const perms: CoworkToolPerms = { allowShell: agent.allowShell, allowWrites: agent.allowWrites, allowConfig: agent.allowConfig, chief: agent.chiefOfStaff, browser };
   return COWORK_TOOLS.filter(
     (tool) =>
-      isGated(tool.gate, perms) &&
+      (isGated(tool.gate, perms) || (tool.name === 'mission_manage' && Boolean(agent.companyId))) &&
       (tool.name !== 'mcp_call' || (agent.allowConfig && agent.allowShell && agent.allowWrites)) &&
-      (tool.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)),
+      (tool.name !== 'company_manage' || (!agent.companyId && agent.allowWrites)) &&
+      (!['company_organization', 'company_boardroom', 'company_handbook', 'company_onboarding', 'company_workflow'].includes(tool.name) || Boolean(agent.companyId)),
   ).map((tool) => ({ name: tool.name, description: tool.doc, parameters: coworkToolSchema(tool.name) }));
 }
 
@@ -542,7 +555,8 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
     // A status poll reads the host's command registry and executes no shell, so it
     // is not gated on the shell permission.
     const statusRead = tool === 'run_command' && String(params['action'] ?? 'run') === 'status';
-    if (!statusRead && !isGated(definition.gate, perms)) return blocked(tool);
+    const companyAssignment = tool === 'mission_manage' && Boolean(scope?.agent.companyId) && Boolean(ctx.companyOrganization);
+    if (!statusRead && !companyAssignment && !isGated(definition.gate, perms)) return blocked(tool);
     // Delegated engineering is not a host tool: it runs its own session, so it
     // must not be routed through the host/computer dispatch below.
     if (tool === 'gitu_task') {
@@ -650,12 +664,33 @@ async function executeAuthorizedCoworkTool(ctx: ToolContext, tool: string, param
 async function dispatchHostTool(ctx: ToolContext, tool: string, params: Record<string, unknown>, perms: CoworkToolPerms, scope?: CoworkToolScope): Promise<ToolResult> {
   {
     switch (tool) {
+      case 'company_handbook':
+      case 'company_onboarding': {
+        const callback = tool === 'company_handbook' ? ctx.companyHandbook : ctx.companyOnboarding;
+        if (!scope?.agent.companyId || scope.isSubAgent || !callback) return blocked(tool);
+        if (!['list','read'].includes(String(params['action'] ?? 'list')) && !perms.allowWrites) return blocked(tool);
+        return await callback(params, { agentId: scope.agent.id });
+      }
+      case 'company_workflow':{
+        if(!scope?.agent.companyId||scope.isSubAgent||!ctx.companyWorkflow)return blocked(tool);
+        if(!['list','read','validate','run'].includes(String(params['action']))&&!perms.allowWrites)return blocked(tool);
+        return await ctx.companyWorkflow(params,{agentId:scope.agent.id,conversationId:scope.conversationId,threadId:scope.threadId});
+      }
+      case 'company_organization': {
+        if (!scope?.agent.companyId || scope.isSubAgent || !ctx.companyOrganization) return blocked(tool);
+        if (params['action'] && params['action'] !== 'read' && !perms.allowWrites) return blocked(tool);
+        return await ctx.companyOrganization(params, { agentId: scope.agent.id });
+      }
+      case 'company_boardroom': {
+        if (!scope?.agent.companyId || scope.isSubAgent || !ctx.companyBoardroom) return blocked(tool);
+        return await ctx.companyBoardroom(params, { agentId: scope.agent.id });
+      }
       case 'company_manage': {
         if (!scope?.conversationId || scope.isSubAgent || scope.agent.companyId || !perms.allowConfig || !perms.allowWrites || !ctx.companyManagement) return blocked(tool);
         return await ctx.companyManagement(params, { conversationId: scope.conversationId, agentId: scope.agent.id, threadId: scope.threadId });
       }
       case 'mission_manage': {
-        if (!scope?.agent.companyId || !scope.agent.chiefOfStaff || !scope.conversationId) return blocked(tool);
+        if (!scope?.agent.companyId || (!scope.agent.chiefOfStaff && !ctx.companyOrganization) || !scope.conversationId) return blocked(tool);
         const action = String(params['action'] ?? 'list');
         if (action === 'list') return { ok: true, output: JSON.stringify(scope.store.missions()) };
         if (action === 'create') {

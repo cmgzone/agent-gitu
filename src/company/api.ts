@@ -5,6 +5,11 @@ import { saveWallet, type WalletGrant } from './wallets.js';
 import { classifyFollowUp, conversationIntent } from '../agent/follow-up.js';
 import { companyConnectedApps, type CompanyApps } from './connected-apps.js';
 import { companyDashboard } from './dashboard.js';
+import { companyOrganizationApi } from './organization-api.js';
+import { companyBoardroomApi } from './boardroom-api.js';
+import { companyHandbookApi } from './handbook-api.js';
+import { companyWorkflowApi } from './workflow-api.js';
+import { companyCalendarApi } from './calendar-api.js';
 
 function companyHelperWork(cowork: CoworkStore) {
   return cowork
@@ -35,6 +40,12 @@ export interface CompanyApiDeps {
   priced?: (agent: CoworkAgent) => Promise<boolean>;
   attachments?: (company: Company, files: unknown[]) => string[];
   activity?: () => { agentId: string; agentName: string; phase?: string; tool?: string; task?: string }[];
+  invalidateAgent?: (agentId: string) => void;
+  meetingChanged?: (meetingId: string) => void;
+  boardroom?: (companyId:string)=>import('./boardroom.js').CompanyBoardroom;
+  onboardingResources?: (companyId: string, requirements: import('./management-models.js').CompanyOnboarding['requirements']) => Promise<string[]>;
+  workflows?: (companyId:string)=>import('./workflows.js').CompanyWorkflows;
+  calendar?: (companyId:string)=>import('./calendar.js').CompanyCalendar;
   apps?: CompanyApps;
 }
 export async function companyApi(req: IncomingMessage, res: ServerResponse, path: string, method: string, d: CompanyApiDeps): Promise<boolean> {
@@ -71,6 +82,11 @@ export async function companyApi(req: IncomingMessage, res: ServerResponse, path
   const suffix = match[2] ?? '';
   return d.scoped(company, async () => {
     const cowork = d.cowork();
+    if (await companyOrganizationApi(req, res, suffix, method, company!, d)) return true;
+    if (await companyBoardroomApi(req, res, suffix, method, company!, d)) return true;
+    if (await companyHandbookApi(req, res, suffix, method, company!, d)) return true;
+    if (await companyWorkflowApi(req, res, suffix, method, company!, d)) return true;
+    if (await companyCalendarApi(req, res, suffix, method, company!, d)) return true;
     if (await companyConnectedApps(req, res, suffix, method, company!, d)) return true;
     if (suffix === '/dashboard' && method === 'GET') {
       const days = Number(new URL(req.url || '/', 'http://localhost').searchParams.get('days') || 14);

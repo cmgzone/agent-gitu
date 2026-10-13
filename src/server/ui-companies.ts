@@ -5,6 +5,11 @@ import { COMPANY_ACTION_CSS, COMPANY_ACTION_JS } from './ui-company-actions.js';
 import { COMPANY_WORK_CSS, COMPANY_WORK_JS } from './ui-company-work.js';
 import { COMPANY_SHELL_CSS, COMPANY_SHELL_JS } from './ui-company-shell.js';
 import { COMPANY_DASHBOARD_CSS, COMPANY_DASHBOARD_JS } from './ui-company-dashboard.js';
+import { COMPANY_ORGANIZATION_CSS, COMPANY_ORGANIZATION_JS } from './ui-company-organization.js';
+import { COMPANY_HANDBOOK_CSS, COMPANY_HANDBOOK_JS } from './ui-company-handbook.js';
+import { COMPANY_WORKFLOWS_CSS, COMPANY_WORKFLOWS_JS } from './ui-company-workflows.js';
+import { COMPANY_CALENDAR_CSS, COMPANY_CALENDAR_JS } from './ui-company-calendar.js';
+import { COMPANY_BOARDROOM_CSS, COMPANY_BOARDROOM_JS } from './ui-company-boardroom.js';
 export const COMPANY_CSS = String.raw`${COMPANY_CHAT_CSS}${COMPANY_FILES_CSS}${COMPANY_ACTION_CSS}${COMPANY_WORK_CSS}
   .company-page{position:fixed;inset:0;z-index:45;overflow:auto;background:var(--cw-chat-surface);color:var(--text);padding:0 clamp(16px,4vw,48px) 24px;scroll-padding-top:84px}
   .company-page[hidden]{display:none}.company-shell{max-width:1180px;margin:auto;min-width:0}
@@ -42,6 +47,11 @@ export const COMPANY_CSS = String.raw`${COMPANY_CHAT_CSS}${COMPANY_FILES_CSS}${C
   @media(max-width:600px){.company-fields{grid-template-columns:1fr;gap:0}.company-page{padding-left:12px;padding-right:12px}.company-head h1{font-size:21px}.company-card,.company-form{padding:16px;border-radius:12px}.company-head .company-controls{width:100%;margin:0}.company-wizard-actions{margin-left:-16px;margin-right:-16px;margin-bottom:-16px;padding:12px 16px}.company-mode-nav button{padding:8px 10px}.company-steps{gap:8px}.company-steps span{font-size:10px}.company-controls .btn{max-width:100%;white-space:normal}.company-decision-list{max-height:300px}}
   ${COMPANY_SHELL_CSS}
   ${COMPANY_DASHBOARD_CSS}
+  ${COMPANY_ORGANIZATION_CSS}
+  ${COMPANY_HANDBOOK_CSS}
+  ${COMPANY_WORKFLOWS_CSS}
+  ${COMPANY_CALENDAR_CSS}
+  ${COMPANY_BOARDROOM_CSS}
 `;
 export const COMPANY_JS = String.raw`${COMPANY_CHAT_JS}
   ${COMPANY_ACTION_JS}
@@ -49,6 +59,11 @@ export const COMPANY_JS = String.raw`${COMPANY_CHAT_JS}
   ${COMPANY_ACTIVITY_JS}
   ${COMPANY_SHELL_JS}
   ${COMPANY_DASHBOARD_JS}
+  ${COMPANY_ORGANIZATION_JS}
+  ${COMPANY_HANDBOOK_JS}
+  ${COMPANY_WORKFLOWS_JS}
+  ${COMPANY_CALENDAR_JS}
+  ${COMPANY_BOARDROOM_JS}
   var Companies={id:null,tab:'Overview',data:null,step:null,timer:null,resources:null,files:[]};
   function companyUrl(suffix){return '/api/companies/'+encodeURIComponent(Companies.id)+(suffix||'');}
   function companyPost(suffix,body,method){return api(companyUrl(suffix),{method:method||'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body||{})});}
@@ -70,17 +85,21 @@ export const COMPANY_JS = String.raw`${COMPANY_CHAT_JS}
   }
   async function companyOpen(id,wizard){if(Companies.timer)clearInterval(Companies.timer);if(Companies.id!==id){Companies.workFilter='active';Companies.workStatus='';Companies.workAgent='';Companies.chart=null;Companies.chartUpdatedAt=0;Companies.workQuery='';Companies.workLimit=20;Companies.connectionTarget=null;Companies.connectionService=null;Companies.connectionReturn=null;Companies.files.forEach(function(f){f.cancel();});Companies.files=[];}Companies.id=id;Companies.tab='Overview';Companies.step=null;await companyLoad();if(Companies.id!==id)return;if(wizard||Companies.data.company.state==='draft'){var c=Companies.data.company,lead=Companies.data.agents.find(function(a){return a.id===c.leadId;});companyWizard(!c.purpose?0:!lead||!lead.provider||!lead.model?1:!c.budgetChosen||!c.fileLimitChosen?2:4);}else{Companies.timer=setInterval(companyRefresh,4000);}}
   async function companyLoad(){var id=Companies.id,data=await api(companyUrl());if(id!==Companies.id)return data;Companies.data=data;if(Companies.step===null)companyRender();return data;}
-  function companyRefresh(){if(companyRoot().hidden||Companies.step!==null)return;if(Companies.tab==='Chat')companyChatRefresh();else if(Companies.tab==='Overview')companyStatusRefresh(companyOverviewRefresh);else if(Companies.tab==='Team')companyStatusRefresh(companyTeamRefresh);else if(Companies.tab==='Work')companyStatusRefresh(companyWorkRefresh);else if((Companies.tab==='Usage')&&!companyRoot().contains(document.activeElement)&&!companyRoot().querySelector('iframe'))companyLoad().catch(companyError);}
+  function companyRefresh(){if(companyRoot().hidden||Companies.step!==null)return;if(Companies.tab==='Chat')companyChatRefresh();else if(Companies.tab==='Overview')companyStatusRefresh(companyOverviewRefresh);else if(Companies.tab==='Team')companyStatusRefresh(companyTeamRefresh);else if(Companies.tab==='Work')companyStatusRefresh(companyWorkRefresh);else if(Companies.tab==='Boardroom'){var boardroom=$('companyBody');if(boardroom&&boardroom._meetingRefresh)boardroom._meetingRefresh();}else if(Companies.tab==='Workflows'){var workflow=$('companyBody');if(workflow&&workflow._workflowRefresh)workflow._workflowRefresh();}else if(Companies.tab==='Calendar'){var calendar=$('companyBody');if(calendar&&calendar._calendarRefresh)calendar._calendarRefresh();}else if(Companies.tab==='Handbook'){var guidance=$('companyBody');if(guidance&&guidance._guidanceRefresh)guidance._guidanceRefresh();}else if((Companies.tab==='Usage')&&!companyRoot().contains(document.activeElement)&&!companyRoot().querySelector('iframe'))companyLoad().catch(companyError);}
   function companyRender(){
-    var c=Companies.data.company,root=companyRoot();root.classList.remove('company-setup');root.classList.toggle('company-chat-active',Companies.tab==='Chat');root.hidden=false;root.innerHTML=companyModeNav()+'<div class="company-workspace-shell">'+companySidebar(Companies.data)+'<main class="company-main">'+companyHeader(c,true)+'<div id="companyBody" role="tabpanel"></div><p id="companyError" class="company-error" role="alert"></p></main></div>';companyBind();companyBindRail();root.querySelectorAll('[data-company-tab]').forEach(function(button,index){button.onclick=function(){Companies.tab=button.dataset.companyTab;companyRender();var selected=root.querySelector('[role=tab][aria-selected=true]');if(selected){selected.focus();selected.scrollIntoView({block:'nearest',inline:'nearest'});}};button.onkeydown=function(event){var tabs=Array.from(root.querySelectorAll('[data-company-tab]')),next;if(event.key==='ArrowRight'||event.key==='ArrowDown')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft'||event.key==='ArrowUp')next=(index+tabs.length-1)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].click();};});$('companyBody').setAttribute('aria-labelledby',root.querySelector('[role=tab][aria-selected=true]').id);
+    var c=Companies.data.company,root=companyRoot();root.classList.remove('company-setup');root.classList.toggle('company-chat-active',Companies.tab==='Chat');root.classList.toggle('company-boardroom-active',Companies.tab==='Boardroom');root.hidden=false;root.innerHTML=companyModeNav()+'<div class="company-workspace-shell">'+companySidebar(Companies.data)+'<main class="company-main">'+companyHeader(c,true)+'<div id="companyBody" role="tabpanel"></div><p id="companyError" class="company-error" role="alert"></p></main></div>';companyBind();companyBindRail();root.querySelectorAll('[data-company-tab]').forEach(function(button,index){button.onclick=function(){Companies.tab=button.dataset.companyTab;companyRender();var selected=root.querySelector('[role=tab][aria-selected=true]');if(selected){selected.focus();selected.scrollIntoView({block:'nearest',inline:'nearest'});}};button.onkeydown=function(event){var tabs=Array.from(root.querySelectorAll('[data-company-tab]')),next;if(event.key==='ArrowRight'||event.key==='ArrowDown')next=(index+1)%tabs.length;else if(event.key==='ArrowLeft'||event.key==='ArrowUp')next=(index+tabs.length-1)%tabs.length;else if(event.key==='Home')next=0;else if(event.key==='End')next=tabs.length-1;else return;event.preventDefault();tabs[next].click();};});$('companyBody').setAttribute('aria-labelledby',root.querySelector('[role=tab][aria-selected=true]').id);
     var body=$('companyBody'),d=Companies.data;
     if(Companies.tab==='Overview'){
       body.innerHTML='<div class="company-summary"><div><strong id="companyCurrentSpending">'+companyMoney(d.totals)+'</strong><span class="company-muted">AI spending</span></div><div><strong id="companyCurrentTeam">'+d.agents.length+'</strong><span class="company-muted">Permanent teammates</span></div><div><strong id="companyCurrentMissions">'+d.missions.filter(function(m){return m.status==='running';}).length+'</strong><span class="company-muted">Active missions</span></div></div><div class="company-overview-grid"><div class="company-overview-main"><article class="company-card company-direction"><h2>Current direction</h2><p id="companyCurrentDirection">'+esc(c.direction||c.purpose)+'</p><p class="company-muted">Version '+c.directionVersion+' · Reviews every '+c.reviewMinutes+' minutes · '+esc(c.access)+' access</p><button class="btn ghost" id="companyGoChat">Talk to the lead</button></article><section id="companyActivity">'+companyActivityHtml(d)+'</section></div><article class="company-card company-overview-attention"><h2>Your decisions</h2><div id="companyDecisions" class="company-decision-list">'+companyDecisionsHtml(d)+'</div></article></div><section id="companyDashboard" aria-label="Company performance"></section><h2>Team and computers</h2><div class="company-grid" data-company-team-cards>'+companyTeamHtml(d.agents)+'</div>';
       $('companyGoChat').onclick=function(){Companies.tab='Chat';companyRender();};companyBindDecisions(body);companyBindComputers();companyDecisionCards(body,d);companyDashboardMount();
     }else if(Companies.tab==='Chat'){
       companyChatMount(body);
-    }else if(Companies.tab==='Team'){body.innerHTML='<p class="company-muted">Each permanent teammate has a saved private desktop. Ask the lead to create temporary helpers or permanent staff. Current assignments appear below.</p><div class="company-grid" data-company-team-cards>'+companyTeamHtml(d.agents)+'</div>';companyBindComputers();}
+    }else if(Companies.tab==='Team'){body.innerHTML='<div class="company-work-heading"><div><h2>Your organization</h2><p class="company-muted">See reporting roles and authority, then inspect each teammate’s current work and computer.</p></div><button class="btn ghost" id="companyOpenOrganization" aria-expanded="false" aria-controls="companyOrganization">Company structure</button></div><section id="companyOrganization" hidden></section><div class="company-grid" data-company-team-cards>'+companyTeamHtml(d.agents)+'</div>';companyBindComputers();$('companyOpenOrganization').onclick=function(){var panel=$('companyOrganization');panel.hidden=!panel.hidden;this.setAttribute('aria-expanded',String(!panel.hidden));if(!panel.hidden&&!panel.children.length)companyOrganizationMount(panel);};}
     else if(Companies.tab==='Work')companyWork(body,d);
+    else if(Companies.tab==='Boardroom')companyBoardroomMount(body);
+    else if(Companies.tab==='Handbook')companyHandbookMount(body);
+    else if(Companies.tab==='Workflows')companyWorkflowsMount(body);
+    else if(Companies.tab==='Calendar')companyCalendarMount(body);
     else if(Companies.tab==='Files & Knowledge'){var filesCompanyId=Companies.id;companyFiles(body).then(function(){if(body.isConnected&&Companies.id===filesCompanyId)companyKnowledge(body).catch(companyError);}).catch(companyError);}
     else if(Companies.tab==='Connections')companyConnections(body);
     else if(Companies.tab==='Usage')companyUsage(body,d);

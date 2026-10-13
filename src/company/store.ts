@@ -4,6 +4,9 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import type { WalletTransaction } from './wallets.js';
+import type { CompanyMeeting } from './management-models.js';
+
+export type CompanyResourceKind = 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account' | 'organization' | 'department' | 'management-event' | 'meeting' | 'onboarding' | 'handbook' | 'workflow' | 'workflow-run' | 'workflow-mission' | 'workflow-simulation' | 'company-decision' | 'calendar-link';
 
 export type CompanyState = 'draft' | 'running' | 'paused' | 'archived';
 export interface Company {
@@ -45,6 +48,8 @@ export interface CompanyUsage {
   companyId: string;
   agentId: string;
   taskId?: string;
+  meetingId?: string;
+  meetingTurnId?: string;
   provider: string;
   model: string;
   inputTokens?: number;
@@ -59,7 +64,7 @@ export interface CompanyUsage {
 export interface CompanyJob {
   id: string;
   companyId: string;
-  kind: 'review' | 'message' | 'mission' | 'wake';
+    kind: 'review' | 'message' | 'mission' | 'wake' | 'meeting' | 'calendar';
   payload: Record<string, unknown>;
   version: number;
   state: 'queued' | 'running' | 'done' | 'failed' | 'superseded';
@@ -124,6 +129,7 @@ export class CompanyStore {
       CREATE TABLE IF NOT EXISTS records(kind TEXT NOT NULL,id TEXT NOT NULL,company_id TEXT,data TEXT NOT NULL,PRIMARY KEY(kind,id));
       CREATE INDEX IF NOT EXISTS company_records ON records(company_id,kind);
       CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,month TEXT NOT NULL,cost REAL NOT NULL);
+      CREATE TABLE IF NOT EXISTS meeting_reservations(id TEXT PRIMARY KEY,company_id TEXT NOT NULL,meeting_id TEXT NOT NULL,cost REAL NOT NULL);
       CREATE TABLE IF NOT EXISTS scheduler_lock(id INTEGER PRIMARY KEY CHECK(id=1),owner TEXT NOT NULL,expires INTEGER NOT NULL);`);
     this.manageCommandReviews();
   }
@@ -140,7 +146,7 @@ export class CompanyStore {
     return row ? (JSON.parse(row.data) as T) : undefined;
   }
   saveResource(
-    kind: 'storage' | 'transfer' | 'webhook' | 'wallet' | 'computer' | 'file-reference' | 'cowork-company' | 'connected-account',
+    kind: CompanyResourceKind,
     id: string,
     companyId: string,
     value: unknown,
@@ -442,7 +448,13 @@ export class CompanyStore {
       unknownCalls: events.filter((u) => u.costUsd === undefined).length,
     };
   }
-  reserve(companyId: string, estimate: number | undefined, attempt?: Pick<CompanyUsage, 'agentId' | 'taskId' | 'provider' | 'model' | 'pricing'>): string {
+  meetingAccounting(companyId: string, meetingId: string): { knownCostUsd: number; reservedUsd: number; unknownCalls: number } {
+    const meeting = this.read<CompanyMeeting>('meeting', meetingId);
+    if (!meeting || meeting.companyId !== companyId) throw new Error('Meeting not found in this company.');
+    const events = this.usage(companyId).filter(u => u.meetingId === meetingId);
+    return { knownCostUsd: events.reduce((sum, u) => sum + (u.costUsd ?? 0), 0), reservedUsd: Number(this.db.prepare('SELECT COALESCE(SUM(cost),0) AS cost FROM meeting_reservations WHERE company_id=? AND meeting_id=?').get(companyId, meetingId)?.['cost']), unknownCalls: events.filter(u => u.costUsd === undefined).length };
+  }
+  reserve(companyId: string, estimate: number | undefined, attempt?: Pick<CompanyUsage, 'agentId' | 'taskId' | 'provider' | 'model' | 'pricing' | 'meetingId' | 'meetingTurnId'>): string {
     const c = this.get(companyId);
     if (!c || c.state !== 'running') throw new Error('Company is paused.');
     if (c.monthlyBudgetUsd !== null && estimate === undefined) throw new Error('Configure model prices before using a finite company budget.');
@@ -451,6 +463,15 @@ export class CompanyStore {
       month = this.month(c);
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      if (attempt?.meetingId) {
+        const meeting = this.read<CompanyMeeting>('meeting', attempt.meetingId), lease = meeting?.lease;
+        if (!meeting || meeting.companyId !== companyId || meeting.state !== 'active' || meeting.directionVersion !== c.directionVersion || Date.parse(meeting.endAt) <= Date.now() || !lease || lease.id !== attempt.meetingTurnId || lease.agentId !== attempt.agentId || Date.parse(lease.expiresAt) <= Date.now()) throw new Error('Meeting speaking permission expired or was revoked.');
+        const accounting = this.meetingAccounting(companyId, meeting.id);
+        if (meeting.budgetUsd !== null && estimate === undefined) throw new Error('Configure usable model prices before a meeting with a finite budget.');
+        if (meeting.budgetUsd !== null && accounting.knownCostUsd + accounting.reservedUsd + (estimate ?? 0) > meeting.budgetUsd) throw new Error('Meeting budget reached.');
+        if (this.usage(companyId).filter(u => u.meetingTurnId === lease.id).length >= 6) throw new Error('Meeting contribution attempt limit reached. Retain outstanding matters.');
+        this.db.prepare('INSERT INTO meeting_reservations VALUES(?,?,?,?)').run(id, companyId, meeting.id, estimate ?? 0);
+      } else if (attempt?.meetingTurnId) throw new Error('A meeting turn requires its company-scoped meeting.');
       const spend = this.usage(companyId)
         .filter((u) => this.month(c, new Date(u.createdAt)) === month)
         .reduce((n, u) => n + (u.costUsd ?? 0), 0);
@@ -472,6 +493,7 @@ export class CompanyStore {
       if (previous && previous.companyId !== event.companyId) throw new Error('Usage attempt belongs to another company.');
       const reservation = this.db.prepare('SELECT company_id FROM reservations WHERE id=?').get(id);
       if (reservation && reservation['company_id'] !== event.companyId) throw new Error('Usage reservation belongs to another company.');
+      if (previous && (previous.meetingId !== event.meetingId || previous.meetingTurnId !== event.meetingTurnId)) throw new Error('Usage meeting identity cannot change during reconciliation.');
       if (!this.get(event.companyId)) throw new Error('Company not found.');
       if (previous && !['running', 'uncertain'].includes(previous.outcome)) {
         this.db.exec('COMMIT');
@@ -479,7 +501,10 @@ export class CompanyStore {
       }
       if (event.costUsd !== undefined && (!Number.isFinite(event.costUsd) || event.costUsd < 0)) throw new Error('Invalid model cost.');
       this.put('usage', id, { ...event, id, createdAt: previous?.createdAt ?? stamp(), provenance: event.costUsd === undefined ? 'unknown' : 'catalog' }, event.companyId);
-      if (event.costUsd !== undefined) this.db.prepare('DELETE FROM reservations WHERE id=?').run(id);
+      if (event.costUsd !== undefined) {
+        this.db.prepare('DELETE FROM reservations WHERE id=?').run(id);
+        this.db.prepare('DELETE FROM meeting_reservations WHERE id=?').run(id);
+      }
       this.db.exec('COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');

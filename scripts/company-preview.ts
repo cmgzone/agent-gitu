@@ -11,6 +11,7 @@ import { FILE_UPLOAD_JS } from '../src/server/ui-files.js';
 import { CONNECTED_APPS_JS } from '../src/server/ui-connected-apps.js';
 import { MAIL_PROVIDERS } from '../src/connections/mail.js';
 import { FONTS_DIR, FONT_FILES, CHARACTERS_DIR, CHARACTER_FILES } from '../src/server/static-assets.js';
+import { BOARDROOM_DEMO_JS } from './company-boardroom-demo.js';
 
 // A separate, inert demonstration of the implemented UI. It never calls the app runtime.
 const demo = String.raw`
@@ -36,6 +37,7 @@ var demoMailProviders=${JSON.stringify(MAIL_PROVIDERS)};
 var messages=[{id:'demo-user',role:'user',text:'Prepare a customer research summary.'},{id:'demo-agent',role:'agent',agentName:'Ari',text:'I’ll collect the research, verify the findings, and report the decisions that need your input.'}];
 var demoMemories={'company-demo-northstar':[{id:'demo-memory',claim:'Use concise reports with evidence and clear decisions.',kind:'preference',updatedAt:'2026-10-11T10:00:00Z'}]};
 var demoReferences={'company-demo-northstar':[{id:'reference-demo',connectionId:'demo-drive',item:{id:'demo-report',name:'Research report.pdf',folder:false},connected:false,readable:false}]};
+${BOARDROOM_DEMO_JS}
 window.fetch=async function(input,options){
   var url=new URL(String(input),'https://company-preview.invalid'),p=url.pathname,method=(options&&options.method)||'GET',body=options&&options.body?JSON.parse(options.body):{},data={};
   if(p==='/api/companies'){
@@ -51,6 +53,7 @@ window.fetch=async function(input,options){
   else{
     var match=p.match(/^\/api\/companies\/([^/]+)(.*)$/),c=match&&companies.find(c=>c.id===match[1]),suffix=match&&match[2];
     if(!c)return new Response(JSON.stringify({error:'Preview mode: this operation is unavailable.'}),{status:400});
+    if(suffix==='/organization'||suffix==='/boardroom'||suffix.startsWith('/boardroom/'))return new Response(JSON.stringify(demoBoardroom(c,suffix,method,body,url)),{headers:{'content-type':'application/json'}});
     if(!suffix){if(method==='PATCH')Object.assign(c,body);data={company:c,agents:c.leadId?demoAgents:[],missions:c.leadId?demoMissions:[],helpers:c.leadId?demoHelpers:[],activity:c.state==='running'?demoActivity:[],requests:demoRequests,actions:demoActions,jobs:[],usage:[],totals:totals,monthly:{month:'2026-10',knownCostUsd:1.62,reservedUsd:0,unknownCalls:0}};}
     else if(suffix==='/dashboard'){var days=Number(url.searchParams.get('days')||14);data={days:days,timezone:'Africa/Nairobi',monthly:{month:'2026-10',knownCostUsd:1.62,reservedUsd:0,unknownCalls:0},missions:demoMissions,helpers:demoHelpers,jobs:[],daily:Array.from({length:days},function(_,i){var date=new Date();date.setUTCDate(date.getUTCDate()-days+i+1);var active=i>=days-7;return {day:date.toISOString().slice(0,10),calls:active?2:0,knownCostUsd:active?(i===days-7?.18:.24):0,unknownCalls:0};})};}
     else if(suffix==='/status'){data={id:c.id,name:c.name,state:c.state,access:c.access,direction:c.direction,directionVersion:c.directionVersion,activity:c.state==='running'?demoActivity:[],agents:demoAgents,requests:demoRequests,actions:demoActions,jobs:[],missions:demoMissions,helpers:demoHelpers,pendingDecisions:0};}
@@ -74,7 +77,7 @@ window.fetch=async function(input,options){
 function api(url,options){return fetch(url,options).then(async r=>{var data=await r.json();if(!r.ok)throw new Error(data.error);return data;});}
 `;
 const styles = [...UI_HTML.slice(0, UI_HTML.indexOf('</head>')).matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n');
-const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;bottom:8px;right:8px;z-index:1000;max-width:calc(100vw - 16px);padding:5px 10px;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:10px;pointer-events:none;opacity:.85}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${CONNECTED_APPS_JS}\n${CUSTOM_CONNECTION_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nfunction cwExit(){openCompanies();toast('Open the installed app to use Code mode.');}function openCowork(){openCompanies();toast('Open the installed app to use Cowork mode.');}var previewTab=new URLSearchParams(location.search).get('preview');if(['team','connections','work','overview','chat'].includes(previewTab)){companyShow();companyOpen(companies[0].id).then(function(){Companies.tab={team:'Team',connections:'Connections',work:'Work',overview:'Overview',chat:'Chat'}[previewTab];companyRender();});}else openCompanies();</script></body></html>`;
+const html = `<!doctype html><html data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Company UI preview</title><style>${styles}\n#previewNotice{position:fixed;bottom:8px;right:8px;z-index:1000;max-width:calc(100vw - 16px);padding:5px 10px;background:var(--card2);border:1px solid var(--border);border-radius:8px;color:var(--muted);font-size:10px;pointer-events:none;opacity:.85}</style></head><body><div id="previewNotice">Company UI preview · Demo data · No agents or external actions run</div><script>${demo}\n${FILE_UPLOAD_JS}\n${COWORK_JS}\n${CONNECTED_APPS_JS}\n${CUSTOM_CONNECTION_JS}\n${COMPANY_JS}\n${COMPANY_CONNECTIONS_JS}\n${COMPANY_WALLETS_JS}\nfunction cwExit(){openCompanies();toast('Open the installed app to use Code mode.');}function openCowork(){openCompanies();toast('Open the installed app to use Cowork mode.');}var previewTab=new URLSearchParams(location.search).get('preview');if(['team','connections','work','overview','chat','boardroom'].includes(previewTab)){companyShow();companyOpen(companies[0].id).then(function(){Companies.tab={team:'Team',connections:'Connections',work:'Work',overview:'Overview',chat:'Chat',boardroom:'Boardroom'}[previewTab];companyRender();});}else openCompanies();</script></body></html>`;
 const output = path.resolve(process.env['GITU_UI_PREVIEW_OUTPUT'] ?? '.qa/company-preview.html');
 mkdirSync(path.dirname(output), { recursive: true });
 writeFileSync(output, html);

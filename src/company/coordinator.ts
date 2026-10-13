@@ -14,12 +14,14 @@ export class CompanyCoordinator {
     private readonly execute: (job: CompanyJob) => Promise<void>,
     private readonly onError: (error: unknown) => void = () => {},
     private readonly onLeaseLost: () => void = () => {},
+    private readonly prepare: (recovering: boolean) => void = () => {},
   ) {}
   start(): void {
     if (this.timer) return;
     this.stopped = false;
     if (!this.store.acquireScheduler(this.owner)) throw new Error('Another company scheduler is using this data directory.');
     this.store.recover();
+    this.prepare(true);
     this.tick();
     this.timer = setInterval(() => this.tick(), 5000);
     this.timer.unref();
@@ -44,6 +46,7 @@ export class CompanyCoordinator {
         return;
       }
       const companies = this.store.companies().filter((c) => c.state === 'running');
+      this.prepare(false);
       for (const c of companies)
         if (!c.nextReviewAt || Date.parse(c.nextReviewAt) <= Date.now()) {
           this.store.enqueue(c.id, 'review', {}, 'review');
